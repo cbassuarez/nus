@@ -9,5 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 vte.workspace = true
+bitflags.workspace = true
 unicode-width.workspace = true
 tracing.workspace = true
