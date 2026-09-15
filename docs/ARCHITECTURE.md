@@ -46,7 +46,7 @@ cannot see, filter, or inject into our tabs. The things extensions are used
 for are built natively instead:
 
 - ad/tracker blocking: `adblock` in the resource request handler (above)
-- userscripts / userstyles: our own, injected per browser through CEF.s
+- userscripts / userstyles: our own, injected per browser through CEF's
   DevTools protocol (`Page.addScriptToEvaluateOnNewDocument`). Covers
   Vimium-style keys, dark mode, Arc "Boosts"
 - password manager: `op` (1Password) / `bw` (Bitwarden) CLIs behind a
