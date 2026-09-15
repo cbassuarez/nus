@@ -16,16 +16,16 @@ vte = "0.15"
 portable-pty = "0.9"
 unicode-width = "0.2"
 # rendering
-wgpu = "26"
+wgpu = "30"
 winit = "0.30"
 raw-window-handle = "0.6"
 swash = "0.2"
 rustybuzz = "0.20"
-fontdb = "0.23"
+fontdb = "0.24"
 # browser
-adblock = "0.11"
+adblock = "0.13"
 # config
-mlua = { version = "0.11", features = ["luau", "vendored", "send"] }
+mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
 # misc
 anyhow = "1"
 thiserror = "2"
@@ -34,7 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 parking_lot = "0.12"
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 keyring = "3"
 notify-rust = "4"
 
