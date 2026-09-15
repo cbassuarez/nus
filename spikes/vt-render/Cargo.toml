@@ -1,0 +1,24 @@
+[package]
+name = "vt-render"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Spike 3 — see docs/SPIKES.md. Renders nus-vt through a swash/rustybuzz
+# glyph atlas on wgpu, driven by a real PTY.
+
+[dependencies]
+nus-vt = { path = "../../crates/vt" }
+nus-pty = { path = "../../crates/pty" }
+wgpu = "30"
+winit = "0.30"
+swash = "0.2"
+rustybuzz = "0.20"
+fontdb = "0.24"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace]
