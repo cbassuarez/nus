@@ -5,3 +5,4 @@
 *.pdb
 .DS_Store
 /.env
+/spikes/*/Cargo.lock
