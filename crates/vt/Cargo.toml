@@ -1,0 +1,13 @@
+[package]
+name = "nus-vt"
+description = "Terminal state: VT parser, grid, scrollback, modes, Kitty keyboard protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vte.workspace = true
+unicode-width.workspace = true
+tracing.workspace = true

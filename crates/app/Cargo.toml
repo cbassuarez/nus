@@ -1,0 +1,20 @@
+[package]
+name = "nus"
+description = "nus — the terminal that is also a browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nus-vt = { path = "../vt" }
+nus-pty = { path = "../pty" }
+nus-render = { path = "../render" }
+nus-ui = { path = "../ui" }
+nus-browser = { path = "../browser" }
+nus-config = { path = "../config" }
+winit.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

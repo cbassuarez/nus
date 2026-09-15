@@ -1,0 +1,17 @@
+[package]
+name = "nus-render"
+description = "wgpu compositor: retained scene graph, glyph atlas, external texture layers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+raw-window-handle.workspace = true
+swash.workspace = true
+rustybuzz.workspace = true
+fontdb.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
