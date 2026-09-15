@@ -37,6 +37,13 @@ wrap_app! {
                 Some(&"remote-debugging-port".into()),
                 Some(&"9229".into()),
             );
+            if let Ok(ext) = std::env::var("NUS_EXT") {
+                command_line.append_switch_with_value(
+                    Some(&"load-extension".into()),
+                    Some(&ext.as_str().into()),
+                );
+                tracing::info!("load-extension={ext}");
+            }
         }
 
         fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {
@@ -81,11 +88,10 @@ wrap_browser_process_handler! {
                 return;
             };
 
-            command_line.append_switch(Some(&"disable-web-security".into()));
-            command_line.append_switch(Some(&"allow-running-insecure-content".into()));
+            // The upstream example also passes disable-web-security,
+            // allow-running-insecure-content and ignore-certificate-errors here.
+            // We don't: the spike must reflect real browsing security.
             command_line.append_switch(Some(&"disable-session-crashed-bubble".into()));
-            command_line.append_switch(Some(&"ignore-certificate-errors".into()));
-            command_line.append_switch(Some(&"ignore-ssl-errors".into()));
             command_line.append_switch(Some(&"enable-logging=stderr".into()));
         }
     }

@@ -297,7 +297,7 @@ impl ApplicationHandler for App {
         let browser = cef::browser_host_create_browser_sync(
             Some(&window_info),
             Some(&mut ClientBuilder::build(render_handler)),
-            Some(&"https://github.com".into()),
+            Some(&std::env::var("NUS_URL").unwrap_or_else(|_| "https://github.com".into()).as_str().into()),
             Some(&browser_settings),
             None,
             context.as_mut(),
@@ -387,8 +387,11 @@ fn main() -> std::process::ExitCode {
         // non-browser process does not initialize cef
         return 0.into();
     }
+    let profile = std::env::current_dir().unwrap().join("profile");
     let settings = Settings {
         windowless_rendering_enabled: true as _,
+        root_cache_path: profile.to_string_lossy().as_ref().into(),
+        cache_path: profile.to_string_lossy().as_ref().into(),
         external_message_pump: true as _,
         ..Default::default()
     };

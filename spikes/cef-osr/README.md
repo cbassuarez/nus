@@ -47,3 +47,42 @@ Run the same; expect dmabuf → Vulkan import (`dmabuf.rs`). Record:
 - whether CEF boots in a Wayland-only session (`WAYLAND_DISPLAY` set,
   no XWayland) — if not, which switches fix it (`--ozone-platform=wayland`)
 - CPU-upload fallback cost at 4K if dmabuf import fails
+
+## spike 2 — extensions under windowless (Chrome runtime, Alloy style)
+
+Same binary; `NUS_EXT=<unpacked dir>` adds `--load-extension`, `NUS_URL` sets
+the start page, and the profile persists under `spikes/cef-osr/profile/`.
+Measured through the DevTools protocol on port 9229 (scripts in the
+session notes; they are ~20 lines of PowerShell each).
+
+### Windows 11 — 2026-09-15 — CEF 152.0.6, uBlock Origin Lite 2026.914.1325
+
+**Verdict: extensions load, but windowless tabs are invisible to them.**
+
+What works:
+- `--load-extension` is honoured. `/json/list` shows the MV3 service worker
+  `chrome-extension://pnjl…/js/background.js` running in the browser process.
+- Inside the worker: `getEnabledRulesets()` → 6 rulesets,
+  `getDynamicRules()` → 161, and `testMatchOutcome()` on
+  `pagead2.googlesyndication.com/pagead/js/adsbygoogle.js` **matches** rule
+  5229. The extension is fully initialised and would block.
+
+What doesn't:
+- From the OSR tab, `<script src>` loads of that exact URL (and
+  googletagmanager) return **200**. No `ERR_BLOCKED_BY_CLIENT`. DNR is not
+  attached to Alloy-style WebContents' URLLoaderFactory.
+- `chrome.tabs.query({})` from the worker → `[]`. The OSR browser is not in
+  the tab model, so content scripts, `activeTab`, popups, messaging all have
+  nothing to target.
+- Navigating the OSR tab to `chrome-extension://<id>/dashboard.html` →
+  `ERR_BLOCKED_BY_CLIENT`; `chrome://extensions/` → `ERR_ABORTED`.
+
+This is the mechanical form of CEF's documented rule: "Windowless rendering
+will always use Alloy style" + extensions are a Chrome-style feature. Not a
+bug we can configure around; it is the absence of TabHelpers and the
+extension request proxy on Alloy WebContents in libcef itself.
+
+Native messaging was not tested — nothing to message from.
+
+Side finding: with a real `cache_path` the startup
+"Network service crashed" line from spike 1 no longer appears.
