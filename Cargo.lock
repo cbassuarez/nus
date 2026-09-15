@@ -1311,6 +1311,7 @@ name = "nus-pty"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "nus-vt",
  "portable-pty",
  "serde",
  "tracing",

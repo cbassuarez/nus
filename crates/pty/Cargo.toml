@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[dev-dependencies]
+nus-vt = { path = "../vt" }
+
 [dependencies]
 portable-pty.workspace = true
 anyhow.workspace = true
