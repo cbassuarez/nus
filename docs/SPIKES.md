@@ -5,6 +5,9 @@ workspace. A spike is done when its README records the answer. Order matters:
 each one can kill or reshape the design, cheapest-to-kill first.
 
 ## 1. `cef-osr` — CEF offscreen → wgpu texture, all three OSes
+**Windows done 2026-09-15: shared texture via D3D11→D3D12, 144 fps.**
+macOS and Linux runs still TODO — see `spikes/cef-osr/README.md`.
+
 Boot CEF (Chrome runtime, windowless), load a page, get paint callbacks into a
 wgpu texture, draw it in a winit window.
 - Shared texture path works on Windows (D3D11) and macOS (IOSurface)?
@@ -13,6 +16,10 @@ wgpu texture, draw it in a winit window.
 - Which `cef-rs` version/commit; what needed patching.
 
 ## 2. `cef-ext` — extensions + native messaging under OSR
+**Done 2026-09-15 on Windows — answer: no.** See `spikes/cef-osr/README.md`.
+Extensions run but cannot reach Alloy-style tabs. Design amended in
+ARCHITECTURE.md: native replacements in v1, own libcef build later.
+
 On top of #1: load uBlock Origin Lite and the 1Password extension. Log in.
 - MV3 extensions load and run in Chrome runtime + windowless?
 - Extension popups/options pages render in OSR?

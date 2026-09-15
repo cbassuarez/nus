@@ -39,8 +39,23 @@ request contexts; a Space can pin a profile.
 Ad-blocking is ours: Brave's `adblock` engine hooked into CEF's resource
 request handler, so it works with zero extensions installed.
 
-Extensions and password managers go through CEF's Chrome runtime. This is the
-least certain part of the design — see SPIKES.md #2.
+**No Chrome extensions in v1** (decided 2026-09-15 after spike 2). Windowless
+browsers are Alloy style, and libcef does not attach the tab model or the
+extension request proxy to Alloy WebContents: extensions load and run but
+cannot see, filter, or inject into our tabs. The things extensions are used
+for are built natively instead:
+
+- ad/tracker blocking: `adblock` in the resource request handler (above)
+- userscripts / userstyles: our own, injected per browser through CEF.s
+  DevTools protocol (`Page.addScriptToEvaluateOnNewDocument`). Covers
+  Vimium-style keys, dark mode, Arc "Boosts"
+- password manager: `op` (1Password) / `bw` (Bitwarden) CLIs behind a
+  `nus-browser` credential provider; form detection and fill via injected JS
+- profiles: CEF request contexts, one per Space if configured
+
+Escape hatch, post-v1: build our own libcef with Alloy-style tabs wired into
+the extension system. Chromium-scale build on three OSes, monthly. Tracked as
+a future phase, not a v1 dependency.
 
 PiP is ours: a tab's texture drawn into a small always-on-top window. Not
 Chromium's PiP.
