@@ -362,7 +362,7 @@ pub fn rotate_hue(c: Color, turns: f32) -> Color {
     from_hsl((h + turns).rem_euclid(1.0), s, l, c[3])
 }
 
-fn to_hsl(c: Color) -> (f32, f32, f32) {
+pub fn to_hsl(c: Color) -> (f32, f32, f32) {
     let (r, g, b) = (c[0], c[1], c[2]);
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -382,7 +382,7 @@ fn to_hsl(c: Color) -> (f32, f32, f32) {
     (h, s, l)
 }
 
-fn from_hsl(h: f32, s: f32, l: f32, a: f32) -> Color {
+pub fn from_hsl(h: f32, s: f32, l: f32, a: f32) -> Color {
     if s == 0.0 {
         return [l, l, l, a];
     }

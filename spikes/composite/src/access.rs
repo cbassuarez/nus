@@ -14,6 +14,7 @@ use crate::settings::Hit;
 #[derive(Clone, Copy, Debug)]
 pub enum Target {
     Crumb(CrumbHit),
+    Side(crate::app::SideHit),
     Row(usize),
     Setting(Hit, f32),
     Palette(usize),
@@ -108,6 +109,35 @@ impl App {
                 nodes.push((id, n));
                 side_kids.push(id);
             }
+        }
+        // The header and footer buttons, and any open menu.
+        for (r, hit) in self.side_hits.clone() {
+            use crate::app::SideHit as S;
+            let label = match hit {
+                S::Close(i) => format!("close tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
+                S::Profile => "profile".into(),
+                S::NewTab => "new tab, choose a kind".into(),
+                S::NewShell => "new tab".into(),
+                S::Window => format!("window {}", self.window_name()),
+                S::Kinds => "kinds of tab".into(),
+                S::Kind(k) => format!("new {} tab", self.profiles.get(k).map(|p| p.name.clone()).unwrap_or_default()),
+                S::KindPage => "new page".into(),
+                S::WinFront(i) => format!("window {}", self.windows.get(i).map(|e| e.name.clone()).unwrap_or_default()),
+                S::Rename => "rename window".into(),
+                S::NewWindow | S::RailNew => "new window".into(),
+                S::Rail(k) => format!("window {}", self.windows.get(k).map(|e| e.name.clone()).unwrap_or_else(|| self.window_name())),
+                S::Look => "look studio".into(),
+                S::Closed => "recently closed".into(),
+                S::Downloads => "downloads".into(),
+                S::Settings => "settings".into(),
+            };
+            let id = fresh(&mut map, Target::Side(hit));
+            let mut n = Node::new(Role::Button);
+            n.set_label(label);
+            n.set_bounds(bounds(r));
+            n.add_action(Action::Click);
+            nodes.push((id, n));
+            side_kids.push(id);
         }
         let mut side = Node::new(Role::List);
         side.set_label("tabs");
@@ -271,6 +301,7 @@ impl App {
                 self.selected.clear();
                 self.activate(i);
             }
+            (Action::Click, Target::Side(h)) => self.side_action(h, false),
             (Action::Click, Target::Setting(hit, x)) => {
                 self.apply_setting(hit, x);
                 self.save_prefs();

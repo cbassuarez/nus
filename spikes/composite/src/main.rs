@@ -61,8 +61,15 @@ impl ApplicationHandler<UserEvent> for Host {
         // fullscreen, or centred at 1440×900.
         let prefs = prefs::Prefs::load();
         let start = prefs.behavior.as_ref().map(|b| b.window_start).unwrap_or(settings::WindowStart::Last);
+        // The icon from the first frame: Broadsheet ink and signal until
+        // the app redraws it in the live colours.
+        let icon = {
+            let rgba = nus_render::icon::app_icon(64, nus_render::theme::hex(0x141414), nus_render::theme::hex(0xc8102e));
+            winit::window::Icon::from_rgba(rgba, 64, 64).ok()
+        };
         let mut attrs = Window::default_attributes()
             .with_title("nus")
+            .with_window_icon(icon.clone())
             .with_decorations(false)
             .with_transparent(true)
             .with_visible(false)
@@ -127,6 +134,7 @@ impl ApplicationHandler<UserEvent> for Host {
         if let Some(url) = a.little_request.take() {
             let attrs = Window::default_attributes()
                 .with_title("nus · little")
+                .with_window_icon(icon_default())
                 .with_decorations(false)
                 .with_visible(false)
                 .with_inner_size(winit::dpi::LogicalSize::new(little::LITTLE_W, little::LITTLE_H));
@@ -138,6 +146,7 @@ impl ApplicationHandler<UserEvent> for Host {
         if let Some((tab, right)) = a.pip_request.take() {
             let attrs = Window::default_attributes()
                 .with_title("nus · pip")
+                .with_window_icon(icon_default())
                 .with_decorations(false)
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
                 .with_resizable(false)
@@ -333,4 +342,10 @@ fn main() -> ExitCode {
     host.app = None;
     cef::shutdown();
     ExitCode::from(code as u8)
+}
+
+/// The bundled icon for secondary windows, before the app recolours it.
+fn icon_default() -> Option<winit::window::Icon> {
+    let rgba = nus_render::icon::app_icon(64, nus_render::theme::hex(0x141414), nus_render::theme::hex(0xc8102e));
+    winit::window::Icon::from_rgba(rgba, 64, 64).ok()
 }

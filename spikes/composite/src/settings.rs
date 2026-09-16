@@ -4,6 +4,8 @@
 //! page is native chrome like everything else. The Luau file is the other
 //! way in; the RULES section shows it and reloads it.
 
+use crate::anim::Anim;
+use crate::app::{fade, hover_key, Hover};
 use crate::app::{App, Pane, SettingsPane};
 use crate::anim::{BarColor, BarStyle};
 use crate::surface::{self, Fullscreen, HoverFrom, OpacityOn, Shell, Side, TextureKind, TextureOn, SWATCHES};
@@ -244,6 +246,9 @@ pub enum Slider {
     Saturation,
     BlinkPeriod,
     CurWeight,
+    Hue,
+    Sat,
+    Light,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -299,6 +304,10 @@ pub enum Hit {
     Import(usize),
     OpenThemes,
     Starter(usize),
+    LookTab(usize),
+    TokSel(TokSel),
+    /// Set the selected token to this colour.
+    TokSet(Color),
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
     HdrDateline(bool),
@@ -331,13 +340,29 @@ pub enum Hit {
 
 /// The sections, grouped by what they're about: how nus looks, how it
 /// feels, what you work in, and the machine.
-pub const GROUPS: [(&str, std::ops::Range<usize>); 4] = [("LOOK", 0..4), ("FEEL", 4..8), ("WORK", 8..12), ("SYSTEM", 12..14)];
+pub const GROUPS: [(&str, std::ops::Range<usize>); 4] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("SYSTEM", 9..11)];
 
-pub const SECTIONS: [(&str, (&str, &str)); 14] = [
-    ("APPEARANCE", icons::BRUSH),
-    ("SURFACE", icons::PALETTE),
-    ("THEME", icons::SQUARES),
-    ("CURSOR", icons::CURSOR),
+/// The look studio's tabs.
+pub const LOOK_TABS: [&str; 5] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CURSOR"];
+pub const LOOK_PRESETS: usize = 0;
+pub const LOOK_SURFACE: usize = 1;
+pub const LOOK_TOKENS: usize = 2;
+pub const LOOK_TYPE: usize = 3;
+pub const LOOK_CURSOR: usize = 4;
+
+/// Which token the picker is editing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TokSel {
+    Signal,
+    Stop(usize),
+    Paper,
+    Ink,
+    Page,
+    Ansi(usize),
+}
+
+pub const SECTIONS: [(&str, (&str, &str)); 11] = [
+    ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
     ("SIDEBAR", icons::SIDEBAR),
@@ -350,13 +375,12 @@ pub const SECTIONS: [(&str, (&str, &str)); 14] = [
     ("UPDATES", icons::DOWNLOAD),
 ];
 
-pub const SEC_THEME: usize = 2;
-pub const SEC_CURSOR: usize = 3;
-pub const SEC_SOUND: usize = 4;
-pub const SEC_STARTUP: usize = 5;
-pub const SEC_TERMINAL: usize = 8;
-pub const SEC_BROWSER: usize = 9;
-pub const RULES: usize = 11;
+pub const SEC_LOOK: usize = 0;
+pub const SEC_SOUND: usize = 1;
+pub const SEC_STARTUP: usize = 2;
+pub const SEC_TERMINAL: usize = 5;
+pub const SEC_BROWSER: usize = 6;
+pub const RULES: usize = 8;
 
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
@@ -368,6 +392,14 @@ fn key(k: &str, shift: bool) -> String {
 
 /// One row's control.
 enum Control {
+    /// The live proof of the current look: a miniature window.
+    Studio,
+    /// The studio's tab strip.
+    Strip(Vec<(String, Hit, bool)>),
+    /// Preset cards: name, ramp, signal, hit, current.
+    Cards(Vec<(String, Vec<Color>, Color, f32, Hit, bool)>),
+    /// Token tiles: name, colour (None = dashed "none/add"), caption, hit, selected, big.
+    Tokens(Vec<(String, Option<Color>, String, Hit, bool)>, bool),
     Info(String),
     Choice(Vec<(String, Hit, bool)>),
     Slider(Slider, f32, String),
@@ -398,6 +430,9 @@ impl App {
             Slider::Volume => self.sound.prefs.volume,
             Slider::SplashHold => (self.behavior.splash_hold - 0.4) / 2.2,
             Slider::Saturation => (self.theme_edit.saturation - 0.5) / 1.0,
+            Slider::Hue => surface::to_hsl(self.tok_color()).0,
+            Slider::Sat => surface::to_hsl(self.tok_color()).1,
+            Slider::Light => surface::to_hsl(self.tok_color()).2,
             Slider::BlinkPeriod => (self.cursor.period as f32 - 200.0) / 1000.0,
             Slider::CurWeight => (self.cursor.weight - 1.0) / 5.0,
         }
@@ -427,6 +462,15 @@ impl App {
             Slider::Saturation => {
                 self.theme_edit.saturation = (0.5 + v * 20.0).round() / 20.0;
                 self.rebuild_theme();
+            }
+            Slider::Hue | Slider::Sat | Slider::Light => {
+                let (h, sa, l) = surface::to_hsl(self.tok_color());
+                let c = match s {
+                    Slider::Hue => surface::from_hsl(v, sa.max(0.02), l, 1.0),
+                    Slider::Sat => surface::from_hsl(h, v, l, 1.0),
+                    _ => surface::from_hsl(h, sa, v, 1.0),
+                };
+                self.set_tok(c);
             }
             Slider::BlinkPeriod => self.cursor.period = ((200.0 + v * 1000.0) / 10.0).round() as u32 * 10,
             Slider::CurWeight => self.cursor.weight = (1.0 + v * 5.0 * 2.0).round() / 2.0,
@@ -509,6 +553,9 @@ impl App {
             Hit::Import(k) => format!("import {}", crate::theme_edit::imports().get(k).map(|t| t.name.clone()).unwrap_or_default()),
             Hit::OpenThemes => "open the themes folder".into(),
             Hit::Starter(k) => format!("start from {}", surface::STARTERS.get(k).map(|s| s.0).unwrap_or("")),
+            Hit::LookTab(k) => LOOK_TABS.get(k).map(|t| t.to_lowercase()).unwrap_or_default(),
+            Hit::TokSel(t) => format!("edit {:?}", t).to_lowercase(),
+            Hit::TokSet(c) => format!("set to {}", surface::hex(c)),
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
             Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
             Hit::HdrDateline(b) => if b { "dateline on".into() } else { "dateline off".into() },
@@ -674,7 +721,10 @@ impl App {
                 };
                 self.run_in_shell(&cmd);
             }
-            Hit::StopSel(i) => self.stop_sel = i,
+            Hit::StopSel(i) => {
+                self.stop_sel = i;
+                self.tok_sel = TokSel::Stop(i);
+            }
             Hit::StopAdd => {
                 if self.surface.stops.len() < 4 {
                     let ink = self.theme.ink;
@@ -759,6 +809,21 @@ impl App {
                 }
             }
             Hit::Starter(k) => self.rules.write_starter(k),
+            Hit::LookTab(k) => {
+                self.look_tab = k;
+                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    s.scroll = 0.0;
+                }
+            }
+            Hit::TokSel(t) => {
+                self.tok_sel = t;
+                match t {
+                    TokSel::Stop(i) => self.stop_sel = i,
+                    TokSel::Ansi(i) => self.ansi_sel = i,
+                    _ => {}
+                }
+            }
+            Hit::TokSet(c) => self.set_tok(c),
             Hit::HdrStyle(s) => {
                 self.header.style = s;
                 if s == HeaderStyle::Rail && self.header.style != s {
@@ -880,42 +945,265 @@ impl App {
         }
     }
 
+    /// The colour of the token the picker is on.
+    pub(crate) fn tok_color(&self) -> Color {
+        let ink = self.theme.ink;
+        match self.tok_sel {
+            TokSel::Signal => self.surface.signal,
+            TokSel::Stop(i) => self.surface.ramp(ink).get(i).copied().unwrap_or(self.surface.signal),
+            TokSel::Paper => self.theme.paper,
+            TokSel::Ink => self.theme.ink,
+            TokSel::Page => self.theme.page,
+            TokSel::Ansi(i) => crate::theme_edit::from_rgb(self.theme.ansi[i.min(15)]),
+        }
+    }
+
+    /// Set the token the picker is on.
+    pub(crate) fn set_tok(&mut self, c: Color) {
+        let hit = match self.tok_sel {
+            TokSel::Signal => Hit::Signal(c),
+            TokSel::Stop(i) => {
+                self.stop_sel = i;
+                Hit::StopColor(c)
+            }
+            TokSel::Paper => Hit::TokPaper(c),
+            TokSel::Ink => Hit::TokInk(c),
+            TokSel::Page => Hit::TokPage(c),
+            TokSel::Ansi(i) => {
+                self.ansi_sel = i;
+                Hit::AnsiSet(c)
+            }
+        };
+        self.apply_setting(hit, 0.0);
+    }
+
+    /// A neobrutal tile: hard offset shadow, 2px ink outline, the colour
+    /// inside; lifts on hover; a double ring when selected. None = a
+    /// dashed "nothing here" tile.
+    fn draw_tile(&mut self, scene: &mut Scene, r: Rect, color: Option<Color>, on: bool, key: u64) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let (mx, my) = self.mouse;
+        let hot = r.contains(mx, my);
+        let dur = self.motion.dur(120.0);
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        if hot != h.hot {
+            h.hot = hot;
+            h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
+        }
+        let a = h.alpha.value();
+        if h.alpha.active() {
+            self.dirty = true;
+        }
+        let lift = self.px(2.0) * a;
+        let off = self.px(4.0) + lift;
+        let tile = Rect::new(r.x - lift, r.y - lift, r.w, r.h);
+        let sw = self.px(m::STRUCTURE);
+        scene.rect(Rect::new(tile.x + off, tile.y + off, tile.w, tile.h), ink);
+        match color {
+            Some(c) => scene.rect(tile, c),
+            None => {
+                scene.rect(tile, t.paper);
+                scene.push(nus_render::Instance::hazard(tile, self.px(1.0), fade(ink, 0.35), [0.0, 0.0, 0.0, 0.0], self.px(8.0)));
+            }
+        }
+        scene.outline(tile, sw, ink);
+        if on {
+            // Double ring: paper inside the ink.
+            let inner = Rect::new(tile.x + sw, tile.y + sw, tile.w - 2.0 * sw, tile.h - 2.0 * sw);
+            scene.outline(inner, sw, t.paper);
+            let inner2 = Rect::new(inner.x + sw, inner.y + sw, inner.w - 2.0 * sw, inner.h - 2.0 * sw);
+            scene.outline(inner2, sw, ink);
+        }
+    }
+
+    /// A preset card: the ramp as its face, the signal as a chip, the name
+    /// set in Newsreader; hard shadow, ink outline.
+    fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let key = hover_key("card", r.y as usize * 4096 + r.x as usize);
+        let (mx, my) = self.mouse;
+        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(6.0)).contains(mx, my);
+        let dur = self.motion.dur(140.0);
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        if hot != h.hot {
+            h.hot = hot;
+            h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
+        }
+        let a = h.alpha.value();
+        if h.alpha.active() {
+            self.dirty = true;
+        }
+        let lift = self.px(3.0) * a;
+        let off = self.px(5.0) + lift;
+        let card = Rect::new(r.x - lift, r.y - lift, r.w, r.h);
+        let sw = self.px(m::STRUCTURE);
+        scene.rect(Rect::new(card.x + off, card.y + off, card.w, card.h), if on { signal } else { ink });
+        if ramp.is_empty() {
+            // Save-as: paper face, dashed feel via a hazard, a plus.
+            scene.rect(card, t.paper);
+            scene.push(nus_render::Instance::hazard(card, self.px(1.0), fade(ink, 0.25), [0.0, 0.0, 0.0, 0.0], self.px(10.0)));
+            let isz = self.px(22.0);
+            self.fonts.draw_icon(scene, icons::PLUS, isz, card.x + (card.w - isz) / 2.0, card.y + (card.h - isz) / 2.0 - self.px(8.0), ink);
+        } else {
+            scene.push(nus_render::Instance::rounded_stops(card, 0.0, ramp, angle, 0.0, false));
+            // A paper strip along the bottom for the name, like a label.
+            let strip_h = self.px(30.0);
+            scene.rect(Rect::new(card.x, card.bottom() - strip_h, card.w, strip_h), t.paper);
+            scene.hline(card.x, card.bottom() - strip_h, card.w, sw, ink);
+            let chip = self.px(12.0);
+            scene.rect(Rect::new(card.x + self.px(12.0), card.bottom() - strip_h + (strip_h - chip) / 2.0, chip, chip), signal);
+            scene.outline(Rect::new(card.x + self.px(12.0), card.bottom() - strip_h + (strip_h - chip) / 2.0, chip, chip), self.px(1.0), ink);
+        }
+        let wm = Style { font: self.f.wordmark, px: self.px(19.0), color: ink, tracking: 0.0 };
+        let ny = if ramp.is_empty() { card.bottom() - self.px(14.0) } else { card.bottom() - self.px(10.0) };
+        let nx = if ramp.is_empty() { card.x + self.px(12.0) } else { card.x + self.px(32.0) };
+        let nm = self.fit(wm, name, card.w - (nx - card.x) - self.px(10.0));
+        self.fonts.draw(scene, wm, nx, ny, &nm);
+        scene.outline(card, sw, ink);
+        if on {
+            let inner = Rect::new(card.x + sw, card.y + sw, card.w - 2.0 * sw, card.h - 2.0 * sw);
+            scene.outline(inner, sw, t.paper);
+        }
+    }
+
+    /// The live proof: a miniature nus window in the current look —
+    /// carapace with its ramp and texture, chrome, sidebar, a shell with
+    /// coloured runs and the cursor, a page.
+    fn draw_studio(&mut self, scene: &mut Scene, r: Rect) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let paper = self.paper();
+        let ramp = self.surface.ramp(ink);
+        let sw = (self.px(self.surface.shell_width) * 0.6).max(self.px(3.0));
+        let radius = self.px(self.surface.shell_radius) * 0.5;
+        let win = r;
+        // Hard shadow under the whole proof: it's a card too.
+        scene.rect(Rect::new(win.x + self.px(6.0), win.y + self.px(6.0), win.w, win.h), ink);
+        scene.push(nus_render::Instance::rounded(win, radius, paper));
+        match self.surface.shell {
+            Shell::Band => {
+                scene.layer(Some(Rect::new(win.x, win.y, win.w, sw)));
+                scene.push(nus_render::Instance::rounded(win, radius, self.surface.signal));
+                scene.layer(None);
+            }
+            Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, None, 0.0)),
+            Shell::Gradient => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &ramp, self.surface.angle, 0.0, false)),
+            Shell::Aurora => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &ramp, self.surface.angle, self.shell_phase, true)),
+        }
+        if let Some(kind) = self.surface.texture_kind.shader_kind() {
+            if self.surface.texture > 0.0 && self.surface.texture_on == TextureOn::Carapace {
+                let gc = [1.0, 1.0, 1.0, (self.surface.texture * 3.0).min(1.0)];
+                let tm = if self.surface.texture_motion { self.started.elapsed().as_secs_f32() % 3600.0 } else { 0.0 };
+                let pitch = self.px(self.surface.texture_scale);
+                if self.surface.shell == Shell::Band {
+                    scene.layer(Some(Rect::new(win.x, win.y, win.w, sw)));
+                    scene.push(nus_render::Instance::texture_stroke(win, kind, gc, pitch, tm, radius, sw));
+                    scene.layer(None);
+                } else {
+                    scene.push(nus_render::Instance::texture_stroke(win, kind, gc, pitch, tm, radius, sw));
+                }
+            }
+        }
+        // Inside the carapace.
+        let inner = Rect::new(win.x + sw, win.y + sw, win.w - 2.0 * sw, win.h - 2.0 * sw);
+        scene.layer(Some(inner));
+        let strip_h = self.px(20.0);
+        let wm = Style { font: self.f.wordmark, px: self.px(13.0), color: ink, tracking: 0.0 };
+        self.fonts.draw(scene, wm, inner.x + self.px(10.0), inner.y + self.px(14.0), "nus");
+        let tiny = Style { font: self.f.ui, px: self.px(8.0), color: t.dim, tracking: 0.08 };
+        self.fonts.draw(scene, tiny, inner.x + self.px(40.0), inner.y + self.px(13.5), "01 SHELL · ~/NUS");
+        scene.hline(inner.x, inner.y + strip_h, inner.w, self.px(1.0), ink);
+        // Sidebar.
+        let sb_w = self.px(74.0);
+        let sb = Rect::new(inner.x, inner.y + strip_h + 1.0, sb_w, inner.h - strip_h - 1.0);
+        scene.vline(sb.right(), sb.y, sb.h, self.px(1.0), ink);
+        let row_h = self.px(16.0);
+        for (i, name) in ["shell", "docs", "cargo"].iter().enumerate() {
+            let ry = sb.y + self.px(6.0) + i as f32 * row_h;
+            if i == 0 {
+                scene.rect(Rect::new(sb.x, ry, sb.w, row_h), t.tint);
+                scene.rect(Rect::new(sb.x, ry, self.px(1.5), row_h), self.surface.signal);
+            }
+            let st = Style { font: if i == 0 { self.f.strong } else { self.f.ui }, px: self.px(8.0), color: if i == 0 { ink } else { t.dim }, tracking: 0.0 };
+            self.fonts.draw(scene, st, sb.x + self.px(10.0), ry + self.px(11.0), name);
+        }
+        // Shell pane.
+        let pane = Rect::new(sb.right() + 1.0, sb.y, (inner.w - sb_w) * 0.58, sb.h);
+        let ansi: Vec<Color> = (0..16).map(|i| crate::theme_edit::from_rgb(t.ansi[i])).collect();
+        let mono = |c: Color, me: &Self| Style { font: me.f.ui, px: me.px(9.0), color: c, tracking: 0.0 };
+        let lines: Vec<Vec<(Color, &str)>> = vec![
+            vec![(ansi[2], "seb@nus"), (ink, ":"), (ansi[4], "~/nus"), (ink, "$ cargo test")],
+            vec![(ansi[3], "warning"), (ink, ": unused"), (t.dim, " · 18 passed "), (ansi[1], "0 failed")],
+            vec![(ansi[5], "> "), (ansi[6], "git"), (ink, " log "), (t.dim, "9058fca")],
+        ];
+        let mut ly = pane.y + self.px(16.0);
+        for line in lines {
+            let mut lx = pane.x + self.px(10.0);
+            for (c, txt) in line {
+                lx += self.fonts.draw(scene, mono(c, self), lx, ly, txt);
+            }
+            ly += self.px(14.0);
+        }
+        // Prompt with the cursor as configured.
+        let mut lx = pane.x + self.px(10.0);
+        lx += self.fonts.draw(scene, mono(ansi[2], self), lx, ly, "$ ");
+        let cur_c = match self.cursor.color { crate::settings::CursorColor::Ink => ink, _ => self.surface.signal };
+        let cw = self.px(5.5);
+        let chh = self.px(11.0);
+        match self.cursor.shape {
+            crate::settings::CursorShapePref::Beam => scene.rect(Rect::new(lx, ly - self.px(9.0), self.px(1.5), chh), cur_c),
+            crate::settings::CursorShapePref::Underline => scene.rect(Rect::new(lx, ly + self.px(1.0), cw, self.px(1.5)), cur_c),
+            _ => scene.rect(Rect::new(lx, ly - self.px(9.0), cw, chh), cur_c),
+        }
+        // Page pane.
+        let page = Rect::new(pane.right(), pane.y, inner.right() - pane.right(), pane.h);
+        scene.vline(page.x, page.y, page.h, self.px(1.0), ink);
+        scene.rect(Rect::new(page.x + 1.0, page.y, page.w, page.h), t.page);
+        let page_ink = if crate::theme_edit::contrast(ink, t.page) >= crate::theme_edit::contrast(t.paper, t.page) { ink } else { t.paper };
+        let serif = Style { font: self.f.serif, px: self.px(12.0), color: page_ink, tracking: 0.0 };
+        self.fonts.draw(scene, serif, page.x + self.px(12.0), page.y + self.px(24.0), "Monterey Bay");
+        for k in 0..4 {
+            let w = page.w - self.px(24.0) - if k == 3 { page.w * 0.3 } else { 0.0 };
+            scene.rect(Rect::new(page.x + self.px(12.0), page.y + self.px(34.0) + k as f32 * self.px(9.0), w.max(0.0), self.px(3.0)), fade(page_ink, 0.25));
+        }
+        // ANSI strip along the bottom of the shell pane.
+        let strip_y = pane.bottom() - self.px(12.0);
+        let cell = (pane.w - self.px(20.0)) / 16.0;
+        for i in 0..16 {
+            scene.rect(Rect::new(pane.x + self.px(10.0) + i as f32 * cell, strip_y, cell - 1.0, self.px(6.0)), ansi[i]);
+        }
+        scene.layer(None);
+        scene.outline(win, self.px(m::STRUCTURE), ink);
+    }
+
     fn rows_for(&self, section: usize) -> Vec<(String, Control)> {
         use Control::*;
         let hex = surface::hex;
         let ink = self.theme.mode == nus_render::Mode::Ink;
         match section {
-            0 => vec![
-                (
-                    "THEME".into(),
-                    Choice(vec![
-                        ("FOLLOW OS".into(), Hit::Theme(None), self.behavior.follow_os_theme),
-                        ("PAPER".into(), Hit::Theme(Some(false)), !self.behavior.follow_os_theme && !ink),
-                        ("INK".into(), Hit::Theme(Some(true)), !self.behavior.follow_os_theme && ink),
-                    ]),
-                ),
-                (
-                    "MOTION".into(),
-                    Slider(
-                        self::Slider::Motion,
-                        self.slider_value(self::Slider::Motion),
-                        format!("{} · snappy ← → cinematic · sidebar {}ms", self.motion.name(), (self.motion.dur(crate::anim::base::SIDEBAR) * 1000.0).round()),
-                    ),
-                ),
-                (
-                    "REDUCE MOTION".into(),
-                    Choice(vec![
-                        (format!("FOLLOW OS · {}", if crate::anim::os_reduce_motion() { "ON" } else { "OFF" }), Hit::Reduce(None), self.motion.reduce.is_none()),
-                        ("OFF".into(), Hit::Reduce(Some(false)), self.motion.reduce == Some(false)),
-                        ("ON".into(), Hit::Reduce(Some(true)), self.motion.reduce == Some(true)),
-                    ]),
-                ),
-                ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
-                ("TERMINAL FONT".into(), Info("IBM Plex Mono · 13pt · ligatures on".into())),
-                ("WORDMARK".into(), Info("Newsreader Italic".into())),
-                ("CURSOR".into(), Buttons(vec![(format!("{:?} · {:?} · {:?}", self.cursor.shape, self.cursor.blink, self.cursor.motion).to_uppercase(), icons::CURSOR, Hit::Section(SEC_CURSOR))])),
-            ],
-            1 => {
+            0 => {
+                let tab = self.look_tab.min(LOOK_TABS.len() - 1);
+                let strip: Vec<(String, Hit, bool)> = LOOK_TABS.iter().enumerate().map(|(k, n)| (n.to_string(), Hit::LookTab(k), k == tab)).collect();
+                let mut v: Vec<(String, Control)> = vec![("".into(), Studio), ("".into(), Strip(strip))];
+                let rest: Vec<(String, Control)> = match tab {
+                    LOOK_PRESETS => {
+                        let ink_c = self.theme.ink;
+                        let presets = surface::presets();
+                        let mut cards: Vec<(String, Vec<Color>, Color, f32, Hit, bool)> = presets
+                            .iter()
+                            .enumerate()
+                            .map(|(k, p)| (p.name.clone(), p.surface.ramp(ink_c), p.surface.signal, p.surface.angle, Hit::Preset(k), p.name == self.preset_name))
+                            .collect();
+                        cards.push(("save as…".into(), Vec::new(), self.surface.signal, 0.0, Hit::SavePreset, false));
+                        vec![
+                            ("PRESETS".into(), Cards(cards)),
+                            ("".into(), Info("a preset is the whole surface: signal, stops, base, texture, carapace · saved ones live in profile/surfaces".into())),
+                            ("".into(), Buttons(vec![("OPEN PRESETS FOLDER".into(), icons::FOLDER, Hit::OpenPresets)])),
+                        ]
+                    }
+                    LOOK_SURFACE => {
                 let ink = self.theme.ink;
                 let presets = surface::presets();
                 let mut preset_chips: Vec<(String, Hit, bool)> =
@@ -934,22 +1222,45 @@ impl App {
                 let mut base: Vec<(Option<Color>, Hit, bool)> = vec![(None, Hit::Base(None), self.surface.base.is_none())];
                 base.extend(SWATCHES.iter().map(|&(_, c)| (Some(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
                 let translucent = self.target.translucent();
-                vec![
-                    ("PRESET".into(), Choice(preset_chips)),
-                    ("".into(), Buttons(vec![("OPEN PRESETS FOLDER".into(), icons::FOLDER, Hit::OpenPresets)])),
-                    ("SIGNAL".into(), Swatches(sig)),
-                    ("FAMILY".into(), Swatches(fam)),
-                    ("SIGNAL HEX".into(), Info(format!("{} · carapace, Space square, ticks, progress · family: tints and shades", hex(self.surface.signal)))),
-                    ("STOPS".into(), Swatches(stops)),
-                    (
-                        format!("STOP {} COLOUR", stop_sel + 1),
-                        Swatches(stop_colors),
-                    ),
-                    (
-                        "".into(),
-                        Buttons(vec![("REMOVE LAST STOP".into(), icons::MINIMIZE, Hit::StopRemove)]),
-                    ),
-                    ("BASE".into(), Swatches(base)),
+                let _ = (&preset_chips, &sig, &fam, &stops, &stop_colors);
+                // The carapace's tokens as tiles: signal, then the ramp's stops.
+                let mut tiles: Vec<(String, Option<Color>, String, Hit, bool)> = vec![("SIGNAL".into(), Some(self.surface.signal), hex(self.surface.signal), Hit::TokSel(TokSel::Signal), self.tok_sel == TokSel::Signal)];
+                for (i, &c) in ramp.iter().enumerate() {
+                    tiles.push((format!("STOP {}", i + 1), Some(c), hex(c), Hit::TokSel(TokSel::Stop(i)), self.tok_sel == TokSel::Stop(i)));
+                }
+                if ramp.len() < 4 {
+                    tiles.push(("ADD".into(), None, "a stop".into(), Hit::StopAdd, false));
+                }
+                if self.surface.stops.len() > 2 {
+                    tiles.push(("REMOVE".into(), None, "last stop".into(), Hit::StopRemove, false));
+                }
+                let editing = matches!(self.tok_sel, TokSel::Signal | TokSel::Stop(_));
+                let mut tray: Vec<(String, Option<Color>, String, Hit, bool)> = Vec::new();
+                if editing {
+                    let cur = self.tok_color();
+                    for &c in surface::family(self.surface.signal).iter() {
+                        tray.push((String::new(), Some(c), hex(c), Hit::TokSet(c), c == cur));
+                    }
+                    for &(_, c) in SWATCHES.iter() {
+                        tray.push((String::new(), Some(c), hex(c), Hit::TokSet(c), c == cur));
+                    }
+                }
+                let mut base_tiles: Vec<(String, Option<Color>, String, Hit, bool)> = vec![("NONE".into(), None, "paper as is".into(), Hit::Base(None), self.surface.base.is_none())];
+                base_tiles.extend(SWATCHES.iter().map(|&(_, c)| (String::new(), Some(c), hex(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
+                let _ = base;
+                let mut v = vec![
+                    ("CARAPACE TOKENS".into(), Tokens(tiles, true)),
+                ];
+                if editing {
+                    let what = match self.tok_sel { TokSel::Signal => "signal".to_string(), TokSel::Stop(i) => format!("stop {}", i + 1), _ => String::new() };
+                    v.push((format!("{} HUE", what.to_uppercase()), Slider(self::Slider::Hue, self.slider_value(self::Slider::Hue), format!("{}°", (surface::to_hsl(self.tok_color()).0 * 360.0).round()))));
+                    v.push(("SATURATION".into(), Slider(self::Slider::Sat, self.slider_value(self::Slider::Sat), format!("{}%", (surface::to_hsl(self.tok_color()).1 * 100.0).round()))));
+                    v.push(("LIGHTNESS".into(), Slider(self::Slider::Light, self.slider_value(self::Slider::Light), format!("{}% · {}", (surface::to_hsl(self.tok_color()).2 * 100.0).round(), hex(self.tok_color())))));
+                    v.push(("TRAY".into(), Tokens(tray, false)));
+                }
+                v.push(("".into(), Info("signal: the carapace, the window square, ticks, progress · stops: the gradient and aurora ramps".into())));
+                v.push(("BASE".into(), Tokens(base_tiles, false)));
+                v.extend(vec![
                     (
                         "TINT".into(),
                         Slider(
@@ -1032,9 +1343,10 @@ impl App {
                         "BREATH".into(),
                         Slider(self::Slider::Breath, self.slider_value(self::Slider::Breath), format!("{}% · the aurora stroke swells", (self.surface.breath * 100.0).round())),
                     ),
-                ]
+                ]);
+                v
             }
-            2 => {
+                    LOOK_TOKENS => {
                 use crate::theme_edit::{contrast, grade, Family};
                 let t = self.theme.clone();
                 let ink_mode = t.mode == nus_render::Mode::Ink;
@@ -1065,29 +1377,89 @@ impl App {
                 let proof: Vec<(Color, String)> = vec![
                     (ansi[2], "seb@nus".into()), (t.ink, ":".into()), (ansi[4], "~/nus".into()), (t.ink, "$ cargo test  ".into()),
                     (ansi[3], "warning".into()), (t.ink, ": unused  ".into()), (ansi[2], "ok".into()), (t.ink, " 18 passed ".into()),
-                    (ansi[1], "0 failed  ".into()), (ansi[5], "➜ ".into()), (ansi[6], "git".into()), (t.ink, " log  ".into()), (t.dim, "9058fca".into()),
+                    (ansi[1], "0 failed  ".into()), (ansi[5], "> ".into()), (ansi[6], "git".into()), (t.ink, " log  ".into()), (t.dim, "9058fca".into()),
                 ];
                 let brights: Vec<(Color, String)> = (8..16).map(|i| (ansi[i], format!("{i} "))).collect();
-                vec![
-                    ("EDITING".into(), Info(format!("the {} theme · switch with THEME under APPEARANCE", if ink_mode { "ink" } else { "paper" }))),
-                    ("PAPER".into(), Swatches(sw(papers, t.paper, Hit::TokPaper))),
-                    ("INK".into(), Swatches(sw(inks, t.ink, Hit::TokInk))),
-                    ("PAGE".into(), Swatches(sw(pages, t.page, Hit::TokPage))),
-                    ("DERIVED".into(), Info(format!("dim {} · tint ink 7% · hot ink 14% · follow paper and ink", surface::hex(t.dim)))),
-                    ("CONTRAST".into(), Info(format!("ink on paper {:.1}:1 {} · dim {:.1}:1 {} · signal {:.1}:1 {}", c_ink, grade(c_ink), c_dim, grade(c_dim), c_sig, grade(c_sig)))),
-                    ("".into(), Buttons(vec![("RESET TOKENS".into(), icons::WARNING, Hit::TokReset)])),
-                    ("ANSI 0–7".into(), Swatches(row(0))),
-                    ("ANSI 8–15".into(), Swatches(row(8))),
-                    (format!("ANSI {sel} COLOUR"), Swatches(cands)),
+                let _ = (&sw, &row, &cands);
+                let hx = surface::hex;
+                let tiles: Vec<(String, Option<Color>, String, Hit, bool)> = vec![
+                    ("PAPER".into(), Some(t.paper), hx(t.paper), Hit::TokSel(TokSel::Paper), self.tok_sel == TokSel::Paper),
+                    ("INK".into(), Some(t.ink), hx(t.ink), Hit::TokSel(TokSel::Ink), self.tok_sel == TokSel::Ink),
+                    ("PAGE".into(), Some(t.page), hx(t.page), Hit::TokSel(TokSel::Page), self.tok_sel == TokSel::Page),
+                    ("DIM".into(), Some(t.dim), format!("{} · derived", hx(t.dim)), Hit::TokSel(self.tok_sel), false),
+                ];
+                let ansi_tiles: Vec<(String, Option<Color>, String, Hit, bool)> = (0..16).map(|i| (format!("{i}"), Some(ansi[i]), hx(ansi[i]), Hit::TokSel(TokSel::Ansi(i)), self.tok_sel == TokSel::Ansi(i))).collect();
+                let editing_tok = matches!(self.tok_sel, TokSel::Paper | TokSel::Ink | TokSel::Page);
+                let editing_ansi = matches!(self.tok_sel, TokSel::Ansi(_));
+                let cur = self.tok_color();
+                let tray: Vec<(String, Option<Color>, String, Hit, bool)> = match self.tok_sel {
+                    TokSel::Paper => papers.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
+                    TokSel::Ink => inks.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
+                    TokSel::Page => pages.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
+                    TokSel::Ansi(_) => cands.iter().map(|(c, _, _)| { let c = c.unwrap(); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
+                    _ => Vec::new(),
+                };
+                let mut v: Vec<(String, Control)> = vec![
+                    (format!("{} TOKENS", if ink_mode { "INK" } else { "PAPER" }), Tokens(tiles, true)),
+                ];
+                let picker = |v: &mut Vec<(String, Control)>, what: String, me: &Self| {
+                    let (h, sa, l) = surface::to_hsl(me.tok_color());
+                    v.push((format!("{} HUE", what.to_uppercase()), Slider(self::Slider::Hue, me.slider_value(self::Slider::Hue), format!("{}°", (h * 360.0).round()))));
+                    v.push(("SATURATION".into(), Slider(self::Slider::Sat, me.slider_value(self::Slider::Sat), format!("{}%", (sa * 100.0).round()))));
+                    v.push(("LIGHTNESS".into(), Slider(self::Slider::Light, me.slider_value(self::Slider::Light), format!("{}% · {}", (l * 100.0).round(), hx(me.tok_color())))));
+                };
+                if editing_tok {
+                    picker(&mut v, format!("{:?}", self.tok_sel), self);
+                    v.push(("TRAY".into(), Tokens(tray.clone(), false)));
+                }
+                v.push(("CONTRAST".into(), Info(format!("ink on paper {:.1}:1 {} · dim {:.1}:1 {} · signal {:.1}:1 {}", c_ink, grade(c_ink), c_dim, grade(c_dim), c_sig, grade(c_sig)))));
+                v.push(("".into(), Info(format!("dim, tint and hot follow paper and ink · editing the {} theme; TYPE & MOTION switches", if ink_mode { "ink" } else { "paper" }))));
+                v.push(("".into(), Buttons(vec![("RESET TOKENS".into(), icons::WARNING, Hit::TokReset)])));
+                v.push(("ANSI".into(), Tokens(ansi_tiles, false)));
+                if editing_ansi {
+                    picker(&mut v, format!("ansi {sel}"), self);
+                    v.push(("TRAY".into(), Tokens(tray, false)));
+                }
+                v.extend(vec![
                     ("FAMILY".into(), Choice(Family::ALL.iter().map(|&f| (f.name().to_uppercase(), Hit::Family(f), f == self.theme_edit.family)).chain(std::iter::once(("IMPORTED".to_string(), Hit::Family(Family::Imported), self.theme_edit.family == Family::Imported))).collect())),
                     ("SATURATION".into(), Slider(self::Slider::Saturation, self.slider_value(self::Slider::Saturation), format!("{}%", (self.theme_edit.saturation * 100.0).round()))),
                     ("PROOF".into(), Proof(proof)),
                     ("BRIGHTS".into(), Proof(brights)),
                     ("IMPORT".into(), Choice(import_chips)),
                     ("".into(), Buttons(vec![("OPEN THEMES FOLDER".into(), icons::FOLDER, Hit::OpenThemes)])),
-                ]
+                ]);
+                v
             }
-            3 => {
+                    LOOK_TYPE => vec![
+                (
+                    "THEME".into(),
+                    Choice(vec![
+                        ("FOLLOW OS".into(), Hit::Theme(None), self.behavior.follow_os_theme),
+                        ("PAPER".into(), Hit::Theme(Some(false)), !self.behavior.follow_os_theme && !ink),
+                        ("INK".into(), Hit::Theme(Some(true)), !self.behavior.follow_os_theme && ink),
+                    ]),
+                ),
+                (
+                    "MOTION".into(),
+                    Slider(
+                        self::Slider::Motion,
+                        self.slider_value(self::Slider::Motion),
+                        format!("{} · snappy ← → cinematic · sidebar {}ms", self.motion.name(), (self.motion.dur(crate::anim::base::SIDEBAR) * 1000.0).round()),
+                    ),
+                ),
+                (
+                    "REDUCE MOTION".into(),
+                    Choice(vec![
+                        (format!("FOLLOW OS · {}", if crate::anim::os_reduce_motion() { "ON" } else { "OFF" }), Hit::Reduce(None), self.motion.reduce.is_none()),
+                        ("OFF".into(), Hit::Reduce(Some(false)), self.motion.reduce == Some(false)),
+                        ("ON".into(), Hit::Reduce(Some(true)), self.motion.reduce == Some(true)),
+                    ]),
+                ),
+                ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
+                ("TERMINAL FONT".into(), Info("IBM Plex Mono · 13pt · ligatures on".into())),
+                ("WORDMARK".into(), Info("Newsreader Italic".into())),
+            ],
+                    _ => {
                 let c = &self.cursor;
                 vec![
                     (
@@ -1146,7 +1518,11 @@ impl App {
                     ),
                 ]
             }
-            4 => {
+                };
+                v.extend(rest);
+                v
+            }
+            1 => {
                 let on = self.sound.prefs.enabled;
                 let mut rows: Vec<(String, Control)> = vec![
                     (
@@ -1186,7 +1562,7 @@ impl App {
                 rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
                 rows
             }
-            5 => {
+            2 => {
                 let b = &self.behavior;
                 let launch_cue = self.sound.prefs.cue_for("launch");
                 let sound_chips: Vec<(String, Hit, bool)> = {
@@ -1254,7 +1630,7 @@ impl App {
                     ("".into(), Info(if self.login_note.is_empty() { "a shortcut in the Startup folder · reversible".into() } else { self.login_note.clone() })),
                 ]
             }
-            6 => vec![
+            3 => vec![
                 (
                     "HEADER".into(),
                     Choice(vec![
@@ -1336,7 +1712,7 @@ impl App {
                 ),
                 ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
             ],
-            7 => vec![
+            4 => vec![
                 (
                     "LINKS FROM PAGES".into(),
                     Choice(vec![
@@ -1363,7 +1739,7 @@ impl App {
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
                 ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
             ],
-            8 => {
+            5 => {
                 let mut v: Vec<(String, Control)> = vec![(
                     "DEFAULT SHELL".into(),
                     Choice(
@@ -1387,7 +1763,7 @@ impl App {
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
                 v
             }
-            9 => vec![
+            6 => vec![
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
@@ -1427,7 +1803,7 @@ impl App {
                 ("PASSWORDS".into(), Info("1Password via op (v1)".into())),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
-            10 => {
+            7 => {
                 let mut v: Vec<(String, Control)> =
                     self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))).collect();
                 if v.is_empty() {
@@ -1437,7 +1813,7 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            11 => {
+            8 => {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
                 let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
@@ -1476,7 +1852,7 @@ impl App {
                 ),
             ]
             }
-            12 => vec![
+            9 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
                 ("URL".into(), Info(key("L", true))),
@@ -1502,19 +1878,16 @@ impl App {
     /// One-line hint under each tile.
     fn tile_hint(&self, k: usize) -> String {
         match k {
-            0 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.motion.name()),
-            1 => format!("{} · {}", surface::hex(self.surface.signal), self.surface.shell.name()),
-            2 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.theme_edit.family.name()),
-            3 => format!("{:?} · {:?}", self.cursor.shape, self.cursor.motion).to_lowercase(),
-            4 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
-            5 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
-            6 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
-            7 => format!("links → {:?}", self.behavior.links).to_lowercase(),
-            8 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
-            9 => format!("{} bar · google", self.load_bar.style.name()),
-            10 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
-            11 => self.rules.status.clone(),
-            12 => "chords".into(),
+            0 => format!("{} · {} · {}", self.preset_name.to_lowercase(), if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.surface.shell.name()),
+            1 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
+            2 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
+            3 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
+            4 => format!("links → {:?}", self.behavior.links).to_lowercase(),
+            5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
+            6 => format!("{} bar · google", self.load_bar.style.name()),
+            7 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            8 => self.rules.status.clone(),
+            9 => "chords".into(),
             _ => "github releases".into(),
         }
     }
@@ -1648,14 +2021,116 @@ impl App {
         let label_w = if tiles { self.px(140.0) } else { self.px(200.0) };
         let rows = self.rows_for(p.section);
         for (k, control) in rows {
+            // Full-width controls: caption above, the control across the column.
+            let full = matches!(control, Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..));
+            let cap_h = if full && !k.is_empty() { self.px(22.0) } else { 0.0 };
+            let card_w = self.px(168.0);
+            let card_h = self.px(104.0);
+            let gap = self.px(14.0);
+            let per_row = ((maxw + gap) / (card_w + gap)).floor().max(1.0) as usize;
             let rh = match &control {
+                Control::Studio => self.px(180.0) + self.px(18.0),
+                Control::Strip(_) => self.px(44.0) + self.px(10.0),
+                Control::Cards(cards) => {
+                    let rows = (cards.len() + per_row - 1) / per_row;
+                    cap_h + rows as f32 * (card_h + self.px(8.0) + gap) + self.px(10.0)
+                }
+                Control::Tokens(items, big) => {
+                    let (tw, th) = if *big { (self.px(84.0), self.px(64.0) + self.px(34.0)) } else { (self.px(34.0), self.px(34.0)) };
+                    let tg = if *big { self.px(16.0) } else { self.px(10.0) };
+                    let per = ((maxw + tg) / (tw + tg)).floor().max(1.0) as usize;
+                    let rows = (items.len().max(1) + per - 1) / per;
+                    cap_h + rows as f32 * (th + tg) + self.px(10.0)
+                }
                 Control::Swatches(_) => self.px(12.0) * 2.0 + self.px(18.0) + self.px(m::HAIRLINE),
                 _ => self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE),
             };
+            let control_kind = if matches!(control, Control::Studio | Control::Strip(_)) { 0 } else { 1 };
             let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);
-            self.fonts.draw(scene, dim, cx, base, &k);
-            let vx = cx + label_w;
+            if full {
+                if !k.is_empty() {
+                    self.fonts.draw(scene, dim, cx, y + self.px(12.0), &k);
+                }
+            } else {
+                self.fonts.draw(scene, dim, cx, base, &k);
+            }
+            // In the studio, unlabelled rows run the full column.
+            let vx = if p.section == SEC_LOOK && k.is_empty() { cx } else { cx + label_w };
             match control {
+                Control::Studio => {
+                    let r = Rect::new(cx, y, maxw, self.px(180.0));
+                    self.draw_studio(scene, r);
+                }
+                Control::Strip(items) => {
+                    // Neobrutal tab strip: outlined chips, the current one filled with a hard shadow.
+                    let mut x = cx;
+                    let ch = self.px(34.0);
+                    let sy = y + self.px(5.0);
+                    for (text, hit, on) in items {
+                        let w = self.fonts.measure(strong, &text) + self.px(28.0);
+                        let chip = Rect::new(x, sy, w, ch);
+                        let hot = chip.contains(self.mouse.0, self.mouse.1);
+                        let off = if on { self.px(4.0) } else if hot { self.px(3.0) } else { 0.0 };
+                        if off > 0.0 {
+                            scene.rect(Rect::new(chip.x + off, chip.y + off, chip.w, chip.h), if on { self.surface.signal } else { ink });
+                        }
+                        scene.rect(chip, if on { ink } else { t.paper });
+                        scene.outline(chip, self.px(m::STRUCTURE), ink);
+                        let st = Style { color: if on { t.paper } else { ink }, ..strong };
+                        self.fonts.draw(scene, st, x + self.px(14.0), sy + ch / 2.0 + self.px(4.0), &text);
+                        self.settings_hits.push((chip, hit));
+                        x += w + self.px(10.0);
+                    }
+                }
+                Control::Cards(cards) => {
+                    let mut x = cx;
+                    let mut cy = y + cap_h;
+                    let mut n = 0;
+                    for (name, ramp, signal, angle, hit, on) in cards {
+                        if n > 0 && n % per_row == 0 {
+                            x = cx;
+                            cy += card_h + self.px(8.0) + gap;
+                        }
+                        let card = Rect::new(x, cy, card_w, card_h);
+                        self.draw_card(scene, card, &name, &ramp, signal, angle, on);
+                        self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(6.0)), hit));
+                        x += card_w + gap;
+                        n += 1;
+                    }
+                }
+                Control::Tokens(items, big) => {
+                    let (tw, th) = if big { (self.px(84.0), self.px(64.0)) } else { (self.px(34.0), self.px(34.0)) };
+                    let tg = if big { self.px(16.0) } else { self.px(10.0) };
+                    let per = ((maxw + tg) / (tw + tg)).floor().max(1.0) as usize;
+                    let row_h = if big { th + self.px(34.0) + tg } else { th + tg };
+                    let mut x = cx;
+                    let mut ty = y + cap_h;
+                    for (n, (name, color, caption, hit, on)) in items.into_iter().enumerate() {
+                        if n > 0 && n % per == 0 {
+                            x = cx;
+                            ty += row_h;
+                        }
+                        let tile = Rect::new(x, ty, tw, th);
+                        let hk = hover_key("tok", (ty as usize) * 4096 + x as usize);
+                        self.draw_tile(scene, tile, color, on, hk);
+                        if color.is_none() {
+                            // An empty tile says what it does: add, remove, or none.
+                            let icon = match name.as_str() { "ADD" => Some(icons::PLUS), "REMOVE" => Some(icons::MINIMIZE), "NONE" => Some(icons::CLOSE), _ => None };
+                            if let Some(icon) = icon {
+                                let isz = (th * 0.4).round();
+                                self.fonts.draw_icon(scene, icon, isz, tile.x + ((tw - isz) / 2.0).round(), tile.y + ((th - isz) / 2.0).round(), ink);
+                            }
+                        }
+                        if big {
+                            let nm = self.fit(label, &name, tw + self.px(8.0));
+                            self.fonts.draw(scene, Style { color: ink, ..label }, x, ty + th + self.px(18.0), &nm);
+                            let cp = self.fit(dim, &caption, tw + self.px(8.0));
+                            self.fonts.draw(scene, dim, x, ty + th + self.px(31.0), &cp);
+                        }
+                        self.settings_hits.push((Rect::new(tile.x - self.px(2.0), tile.y - self.px(2.0), tile.w + self.px(8.0), tile.h + self.px(8.0) + if big { self.px(30.0) } else { 0.0 }), hit));
+                        x += tw + tg;
+                    }
+                }
                 Control::Info(v) => {
                     let vs = self.fit(ui, &v, maxw - label_w);
                     self.fonts.draw(scene, ui, vx, base, &vs);
@@ -1753,7 +2228,9 @@ impl App {
                     }
                 }
             }
-            scene.hline(cx, y + rh - self.px(m::HAIRLINE), maxw, self.px(m::HAIRLINE), t.tint);
+            if !matches!(control_kind, 0) {
+                scene.hline(cx, y + rh - self.px(m::HAIRLINE), maxw, self.px(m::HAIRLINE), t.tint);
+            }
             y += rh;
         }
         // Remember the reach so the wheel can clamp.

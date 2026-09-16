@@ -391,6 +391,8 @@ pub struct App {
     pub next_row_hot: bool,
     pub registered_tabs: usize,
     pub hovers: std::collections::HashMap<u64, Hover>,
+    pub look_tab: usize,
+    pub tok_sel: crate::settings::TokSel,
     /// Last keystroke into a shell, for blink-after-idle and pointer hiding.
     pub last_key: Instant,
     pub pointer_hidden: bool,
@@ -554,6 +556,8 @@ impl App {
             next_row_hot: false,
             registered_tabs: usize::MAX,
             hovers: std::collections::HashMap::new(),
+            look_tab: 0,
+            tok_sel: crate::settings::TokSel::Signal,
             last_key: Instant::now(),
             pointer_hidden: false,
             pointer_request: None,
@@ -2454,8 +2458,9 @@ impl App {
             let (title, _) = tab.row_text();
             let st = if active { ui_strong } else { ui };
             let st = Style { color: if active { ink } else { Theme::with_alpha(ink, 0.82) }, ..st };
-            let title = self.fit(st, &title, right - x);
-            self.fonts.draw(scene, st, x, base, &title);
+            let row_bg = if active { crate::surface::mix(self.paper(), ink, t.tint[3]) } else if hovered { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.5) } else { self.paper() };
+            let tab_id = tab.id;
+            self.marquee(scene, st, x, base, right - x, &title, active || hovered, row_bg, hover_key("row", tab_id as usize));
             scene.layer(None);
         }
         self.tabs = tabs;
@@ -2581,6 +2586,93 @@ impl App {
         self.side_hits.push((hit, SideHit::Look));
     }
 
+    /// What a sidebar target does. From the mouse, NEW TAB waits for the
+    /// release (a hold fans out); from the accessibility tree it acts at once.
+    pub(crate) fn side_action(&mut self, hit: SideHit, from_mouse: bool) {
+        match hit {
+            SideHit::Close(i) => {
+                self.selected.clear();
+                self.activate(i);
+                self.close_tabs(false);
+            }
+            SideHit::Profile => {
+                self.open_settings();
+                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    s.section = crate::settings::SEC_TERMINAL;
+                }
+            }
+            SideHit::NewTab => self.open_palette(PaletteMode::New),
+            SideHit::NewShell => {
+                self.press = Some((Instant::now(), SideHit::NewShell));
+                self.play_event("control.press");
+            }
+            SideHit::Window => {
+                if self.win_menu {
+                    self.close_menus();
+                } else {
+                    self.open_win_menu();
+                }
+            }
+            SideHit::Kinds => {
+                if self.kinds_menu {
+                    self.close_menus();
+                } else {
+                    self.open_kinds_menu();
+                }
+            }
+            SideHit::Kind(p) => {
+                self.close_menus();
+                self.new_tab(p);
+            }
+            SideHit::KindPage => {
+                self.close_menus();
+                self.open_palette(PaletteMode::New);
+            }
+            SideHit::WinFront(i) => {
+                self.close_menus();
+                if let Some(e) = self.windows.get(i).cloned() {
+                    crate::windows::front(&e);
+                }
+            }
+            SideHit::Rail(k) => {
+                if self.windows.is_empty() {
+                    self.windows = crate::windows::list();
+                }
+                if let Some(e) = self.windows.get(k).cloned() {
+                    if e.pid != std::process::id() {
+                        crate::windows::front(&e);
+                    }
+                }
+            }
+            SideHit::RailNew | SideHit::NewWindow => {
+                self.close_menus();
+                self.run(Action::NewWindow);
+            }
+            SideHit::Rename => {
+                self.close_menus();
+                self.open_palette(PaletteMode::Rename);
+            }
+            SideHit::Look => {
+                self.open_settings();
+                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    s.section = crate::settings::SEC_LOOK;
+                }
+                self.look_tab = crate::settings::LOOK_PRESETS;
+                {
+                }
+            }
+            SideHit::Closed => {
+                self.open_palette(PaletteMode::Go);
+                if let Some((_, input)) = self.palette.as_mut() {
+                    input.push_str("reopen");
+                }
+            }
+            SideHit::Downloads => {}
+            SideHit::Settings => self.open_settings(),
+        }
+        self.dirty = true;
+    }
+
     /// The rail: every window as its square along the sidebar's outer edge.
     fn draw_rail(&mut self, scene: &mut Scene, full: Rect) {
         let rw = self.rail_w();
@@ -2650,12 +2742,12 @@ impl App {
             }
             if masthead {
                 let wm = Style { font: self.f.wordmark, px: self.px(26.0), color: ink, tracking: 0.0 };
-                let text = self.fit(wm, &name, sb.w - self.px(52.0));
-                self.fonts.draw(scene, wm, sb.x + self.px(12.0), y + self.px(31.0), &text);
+                let bg = if hot || self.win_menu { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.6) } else { self.paper() };
+                self.marquee(scene, wm, sb.x + self.px(12.0), y + self.px(31.0), sb.w - self.px(52.0), &name, hot, bg, hover_key("mast", 0));
             } else {
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
-                let text = self.fit(strong, &name.to_uppercase(), sb.w - self.px(60.0));
-                self.fonts.draw(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), &text);
+                let bg = if hot || self.win_menu { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.6) } else { self.paper() };
+                self.marquee(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), sb.w - self.px(60.0), &name.to_uppercase(), hot, bg, hover_key("mast", 1));
             }
             let csz = self.px(12.0);
             let ca = if hot || self.win_menu { 1.0 } else { 0.0 };
@@ -2678,9 +2770,11 @@ impl App {
         if self.header.dateline {
             let dh = self.px(16.0);
             let dl = Style { color: t.dim, px: self.px(10.0), ..label };
-            let text = self.fit(dl, &self.dateline().to_uppercase(), sb.w - self.px(24.0));
+            let text = self.dateline().to_uppercase();
             let dy = if !bar || masthead { y - self.px(6.0) } else { y };
-            self.fonts.draw(scene, dl, sb.x + self.px(12.0), dy + self.px(11.0), &text);
+            let dl_hot = Rect::new(sb.x, dy, sb.w, self.px(16.0)).contains(mx, my) && vis;
+            let bg = self.paper();
+            self.marquee(scene, dl, sb.x + self.px(12.0), dy + self.px(11.0), sb.w - self.px(24.0), &text, dl_hot, bg, hover_key("dateline", 0));
             if !bar || masthead {
                 y = dy + dh;
                 scene.hline(sb.x, y, sb.w, if self.header.header_button && bar { self.px(m::HAIRLINE) } else { self.px(m::STRUCTURE) }, ink);
@@ -2701,8 +2795,8 @@ impl App {
                 }
                 scene.rect(Rect::new(x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
                 if self.header.show_name {
-                    let text = self.fit(label, &name.to_uppercase(), cw - self.px(48.0));
-                    self.fonts.draw(scene, label, x + self.px(30.0), y + self.px(19.0), &text);
+                    let bg = if hot || self.win_menu { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.6) } else { self.paper() };
+                    self.marquee(scene, label, x + self.px(30.0), y + self.px(19.0), cw - self.px(48.0), &name.to_uppercase(), hot, bg, hover_key("mast", 2));
                     let csz = self.px(11.0);
                     self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, x + cw - self.px(10.0) - csz, y + ((rh - csz) / 2.0).round(), t.dim);
                 }
@@ -3226,6 +3320,44 @@ impl App {
                 self.fonts.draw_icon(scene, icon, isz, rx, base - isz + self.px(2.0), if local { self.surface.signal } else { ink });
             }
         }
+    }
+
+    /// Text that fits draws as is; text that doesn't marquees when `live`
+    /// (the row is active or hovered) and otherwise clips under a fade to
+    /// the background — never an ellipsis in the sidebar. `key` keeps the
+    /// marquee's phase across frames.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn marquee(&mut self, scene: &mut Scene, style: Style, x: f32, base: f32, max_w: f32, text: &str, live: bool, bg: nus_render::Color, key: u64) {
+        let w = self.fonts.measure(style, text);
+        if w <= max_w {
+            self.fonts.draw(scene, style, x, base, text);
+            return;
+        }
+        let over = w - max_w;
+        let clip = Rect::new(x, base - style.px * 1.4, max_w, style.px * 2.0);
+        scene.layer(Some(clip));
+        let off = if live && !self.motion.reduced() {
+            // Crawl: pause, slide left over the overflow, pause, slide back.
+            let speed = 28.0 * self.motion.register.max(0.2); // px/s, slower when cinematic
+            let slide = over / speed;
+            let period = slide * 2.0 + 2.4;
+            let t = (self.started.elapsed().as_secs_f32() + (key % 7) as f32 * 0.37) % period;
+            self.dirty = true;
+            if t < 1.2 { 0.0 } else if t < 1.2 + slide { (t - 1.2) / slide * over } else if t < 2.4 + slide { over } else { over - (t - 2.4 - slide) / slide * over }
+        } else {
+            0.0
+        };
+        self.fonts.draw(scene, style, x - off, base, text);
+        // The fade: background over the tail (and the head while scrolled).
+        let fw = self.px(18.0).min(max_w / 3.0);
+        let clear = [bg[0], bg[1], bg[2], 0.0];
+        if off < over - 0.5 {
+            scene.push(nus_render::Instance::rounded_stops(Rect::new(x + max_w - fw, clip.y, fw, clip.h), 0.0, &[clear, bg], 0.0, 0.0, false));
+        }
+        if off > 0.5 {
+            scene.push(nus_render::Instance::rounded_stops(Rect::new(x, clip.y, fw, clip.h), 0.0, &[bg, clear], 0.0, 0.0, false));
+        }
+        scene.layer(None);
     }
 
     pub(crate) fn fit(&self, style: Style, text: &str, max_w: f32) -> String {
@@ -4339,84 +4471,7 @@ impl App {
             let sb = self.sidebar_rect();
             let g = self.sidebar_geometry();
             if let Some(&(_, hit)) = self.side_hits.iter().find(|(r, _)| r.contains(x, y)) {
-                match hit {
-                    SideHit::Close(i) => {
-                        self.selected.clear();
-                        self.activate(i);
-                        self.close_tabs(false);
-                    }
-                    SideHit::Profile => {
-                        self.open_settings();
-                        if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
-                            s.section = crate::settings::SEC_TERMINAL;
-                        }
-                    }
-                    SideHit::NewTab => self.open_palette(PaletteMode::New),
-                    SideHit::NewShell => {
-                        self.press = Some((Instant::now(), SideHit::NewShell));
-                        self.play_event("control.press");
-                    }
-                    SideHit::Window => {
-                        if self.win_menu {
-                            self.close_menus();
-                        } else {
-                            self.open_win_menu();
-                        }
-                    }
-                    SideHit::Kinds => {
-                        if self.kinds_menu {
-                            self.close_menus();
-                        } else {
-                            self.open_kinds_menu();
-                        }
-                    }
-                    SideHit::Kind(p) => {
-                        self.close_menus();
-                        self.new_tab(p);
-                    }
-                    SideHit::KindPage => {
-                        self.close_menus();
-                        self.open_palette(PaletteMode::New);
-                    }
-                    SideHit::WinFront(i) => {
-                        self.close_menus();
-                        if let Some(e) = self.windows.get(i).cloned() {
-                            crate::windows::front(&e);
-                        }
-                    }
-                    SideHit::Rail(k) => {
-                        if self.windows.is_empty() {
-                            self.windows = crate::windows::list();
-                        }
-                        if let Some(e) = self.windows.get(k).cloned() {
-                            if e.pid != std::process::id() {
-                                crate::windows::front(&e);
-                            }
-                        }
-                    }
-                    SideHit::RailNew | SideHit::NewWindow => {
-                        self.close_menus();
-                        self.run(Action::NewWindow);
-                    }
-                    SideHit::Rename => {
-                        self.close_menus();
-                        self.open_palette(PaletteMode::Rename);
-                    }
-                    SideHit::Look => {
-                        self.open_settings();
-                        if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
-                            s.section = 1;
-                        }
-                    }
-                    SideHit::Closed => {
-                        self.open_palette(PaletteMode::Go);
-                        if let Some((_, input)) = self.palette.as_mut() {
-                            input.push_str("reopen");
-                        }
-                    }
-                    SideHit::Downloads => {}
-                    SideHit::Settings => self.open_settings(),
-                }
+                self.side_action(hit, true);
                 self.dirty = true;
                 return;
             }
@@ -4947,6 +5002,6 @@ fn git_root_name() -> Option<String> {
 }
 
 /// A colour at a fraction of its own alpha.
-fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {
+pub(crate) fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {
     [c[0], c[1], c[2], c[3] * k]
 }
