@@ -35,6 +35,8 @@ pub enum PaletteMode {
     New,
     /// ⌘L: navigate the browser pane.
     Url,
+    /// F2: name this window.
+    Rename,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -54,6 +56,8 @@ pub enum Action {
     ShellRadius(f32),
     Start,
     Pip,
+    RenameWindow(String),
+    NewWindow,
 }
 
 pub use crate::surface::Shell;
@@ -203,8 +207,20 @@ pub enum SideHit {
     NewTab,
     /// The header's primary button: a shell in the default profile.
     NewShell,
-    /// The window cell (name · switcher to come).
+    /// The window cell: opens the list of windows.
     Window,
+    /// The split caret: the kinds of tab.
+    Kinds,
+    /// A kind in the fan-out: a shell profile, or a page.
+    Kind(usize),
+    KindPage,
+    /// A window in the list (index into the registry list).
+    WinFront(usize),
+    Rename,
+    NewWindow,
+    /// A square on the rail.
+    Rail(usize),
+    RailNew,
     Closed,
     Downloads,
     Settings,
@@ -213,6 +229,8 @@ pub enum SideHit {
 pub struct SidebarGeom {
     pub pinned: Vec<usize>,
     pub pinned_h: f32,
+    /// Where the row after the last tab would start.
+    pub next_y: f32,
     /// (tab index, y, height) for each listed row.
     pub rows: Vec<(usize, f32, f32)>,
     pub foot_y: f32,
@@ -324,6 +342,22 @@ pub struct App {
     pub theme_edit: crate::theme_edit::ThemeEdit,
     pub ansi_sel: usize,
     pub cursor: crate::settings::CursorPrefs,
+    pub header: crate::settings::HeaderPrefs,
+    /// The user's name for this window (None = auto).
+    pub window_named: Option<String>,
+    pub instance_port: u16,
+    /// Other nus windows, refreshed when the list opens.
+    pub windows: Vec<crate::windows::Entry>,
+    pub win_menu: bool,
+    pub win_anim: Anim,
+    pub kinds_menu: bool,
+    pub kinds_anim: Anim,
+    /// NEW TAB pressed and not yet released: (when, hit) — a hold fans out.
+    pub press: Option<(Instant, SideHit)>,
+    pub flash_anim: Anim,
+    pub rail_anim: Anim,
+    pub next_row_hot: bool,
+    pub registered_tabs: usize,
     /// Last keystroke into a shell, for blink-after-idle and pointer hiding.
     pub last_key: Instant,
     pub pointer_hidden: bool,
@@ -473,6 +507,19 @@ impl App {
             theme_edit: crate::theme_edit::ThemeEdit::default(),
             ansi_sel: 1,
             cursor: crate::settings::CursorPrefs::default(),
+            header: crate::settings::HeaderPrefs::default(),
+            window_named: None,
+            instance_port: 0,
+            windows: Vec::new(),
+            win_menu: false,
+            win_anim: Anim::at(0.0),
+            kinds_menu: false,
+            kinds_anim: Anim::at(0.0),
+            press: None,
+            flash_anim: Anim::at(0.0),
+            rail_anim: Anim::at(0.0),
+            next_row_hot: false,
+            registered_tabs: usize::MAX,
             last_key: Instant::now(),
             pointer_hidden: false,
             pointer_request: None,
@@ -838,6 +885,25 @@ impl App {
             self.dirty = true;
         }
         if self.surface.texture_motion && self.surface.texture > 0.0 && self.surface.texture_kind != crate::surface::TextureKind::None {
+            self.dirty = true;
+        }
+        if self.registered_tabs != usize::MAX && self.registered_tabs != self.tabs.len() {
+            self.register_window();
+        }
+        // A held NEW TAB fans the kinds out.
+        if let Some((at, SideHit::NewShell)) = self.press {
+            if at.elapsed().as_millis() >= 240 && !self.kinds_menu {
+                self.press = None;
+                self.open_kinds_menu();
+            }
+        }
+        if self.header.rail_hover {
+            let want = if self.sidebar_hover || (self.sidebar_pinned() && self.sidebar_rect().contains(self.mouse.0, self.mouse.1)) { 1.0 } else { 0.0 };
+            if (self.rail_anim.target() - want).abs() > 0.01 {
+                self.rail_anim.go(want, self.motion.dur(120.0));
+            }
+        }
+        if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() {
             self.dirty = true;
         }
         // A blinking cursor wants a frame at each half period.
@@ -1937,7 +2003,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url" };
+            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -2030,9 +2096,102 @@ impl App {
 
     /// Sidebar layout: the pinned row, then one entry per listed tab with its
     /// y and height (previews expand under the hovered row and waiting tabs).
-    pub(crate) fn sidebar_geometry(&self) -> SidebarGeom {
+    /// The rail's width right now (0 when off or hidden).
+    pub(crate) fn rail_w(&self) -> f32 {
+        if self.header.style != crate::settings::HeaderStyle::Rail {
+            return 0.0;
+        }
+        let full = self.px(30.0);
+        if self.header.rail_hover { full * self.rail_anim.value() } else { full }
+    }
+
+    /// The sidebar minus the rail: where the header, tabs and footer go.
+    pub(crate) fn list_rect(&self) -> Rect {
         let sb = self.sidebar_rect();
-        let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
+        let rw = self.rail_w();
+        if self.sidebar_right() {
+            Rect::new(sb.x, sb.y, sb.w - rw, sb.h)
+        } else {
+            Rect::new(sb.x + rw, sb.y, sb.w - rw, sb.h)
+        }
+    }
+
+    /// Height of the sidebar header for the current prefs.
+    pub(crate) fn side_header_h(&self) -> f32 {
+        use crate::settings::HeaderStyle;
+        let row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
+        let title = if self.header.masthead { self.px(44.0) } else { row };
+        let dateline = if self.header.dateline { self.px(16.0) } else { 0.0 };
+        match self.header.style {
+            HeaderStyle::Bar => {
+                if self.header.masthead {
+                    title + dateline + if self.header.header_button { row } else { 0.0 }
+                } else {
+                    row + dateline
+                }
+            }
+            HeaderStyle::Rail => title + dateline + if self.header.header_button { row } else { 0.0 },
+        }
+    }
+
+    /// The window's name: the user's, else where we are (git root, dominant host), else nus.
+    pub(crate) fn window_name(&self) -> String {
+        if let Some(n) = &self.window_named {
+            if !n.trim().is_empty() {
+                return n.clone();
+            }
+        }
+        if let Some(root) = git_root_name() {
+            return self.unique_name(root);
+        }
+        let mut hosts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for t in &self.tabs {
+            let (_, host) = t.row_text();
+            if !host.is_empty() {
+                *hosts.entry(host).or_default() += 1;
+            }
+        }
+        let base = hosts.into_iter().max_by_key(|(_, n)| *n).map(|(h, _)| h).unwrap_or_else(|| "nus".into());
+        self.unique_name(base)
+    }
+
+    /// Another window already called that? Number this one.
+    fn unique_name(&self, base: String) -> String {
+        let me = std::process::id();
+        let taken = self.windows.iter().filter(|e| e.pid != me && e.pid < me && (e.name == base || e.name.starts_with(&format!("{base} ")))).count();
+        if taken == 0 { base } else { format!("{base} {}", taken + 1) }
+    }
+
+    /// Where this window is, for the dateline.
+    pub(crate) fn dateline(&self) -> String {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        let mut here = cwd.to_string_lossy().replace('\\', "/");
+        if !home.is_empty() {
+            let h = home.replace('\\', "/");
+            if here.starts_with(&h) {
+                here = format!("~{}", &here[h.len()..]);
+            }
+        }
+        let tabs = self.tabs.len();
+        let mut s = format!("{here} · {tabs} tab{}", if tabs == 1 { "" } else { "s" });
+        if !self.ports.is_empty() {
+            s.push_str(&format!(" · {} port{}", self.ports.len(), if self.ports.len() == 1 { "" } else { "s" }));
+        }
+        s
+    }
+
+    pub(crate) fn register_window(&mut self) {
+        self.windows = crate::windows::list();
+        self.registered_tabs = self.tabs.len();
+        crate::windows::register(&self.window_name(), self.instance_port, self.tabs.len());
+        let name = self.window_name();
+        self.window.set_title(&if name == "nus" { "nus".to_string() } else { format!("{name} · nus") });
+    }
+
+    pub(crate) fn sidebar_geometry(&self) -> SidebarGeom {
+        let sb = self.list_rect();
+        let space_row = self.side_header_h();
         let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned).collect();
         let pinned_h = if pinned.is_empty() { 0.0 } else { self.px(8.0) * 2.0 + self.px(m::UI_PX) + self.px(m::STRUCTURE) };
         let row = self.px(m::ROW_H);
@@ -2055,46 +2214,24 @@ impl App {
             rows.push((i, y, h));
             y += h;
         }
-        SidebarGeom { pinned, pinned_h, rows, foot_y: sb.bottom() - self.px(m::FOOT_H) }
+        SidebarGeom { pinned, pinned_h, rows, foot_y: sb.bottom() - self.px(m::FOOT_H), next_y: y }
     }
 
     fn draw_sidebar(&mut self, scene: &mut Scene) {
         let t = self.theme.clone();
         let ink = t.ink;
-        let sb = self.sidebar_rect();
+        let full = self.sidebar_rect();
+        let sb = self.list_rect();
         let label = self.label();
         let strong = self.label_strong();
         let ui = self.ui();
         let ui_strong = self.ui_strong();
         let dim = Style { color: t.dim, ..label };
 
-        // Header row: the window's name (narrow) and NEW TAB, the button
-        // hit most, wide. Quick fix ahead of the sidebar-header redesign.
         self.side_hits.clear();
-        let row_h = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
-        let cell_w = (sb.w / 3.0).floor();
-        let (mx, my) = self.mouse;
-        let win_cell = Rect::new(sb.x, sb.y, cell_w, row_h - self.px(m::STRUCTURE));
-        let new_cell = Rect::new(sb.x + cell_w, sb.y, sb.w - cell_w, row_h - self.px(m::STRUCTURE));
-        let new_hot = new_cell.contains(mx, my) && self.sidebar_visible();
-        scene.rect(Rect::new(sb.x + self.px(10.0), sb.y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
-        let name = self.fit(label, &self.space_name.to_uppercase(), cell_w - self.px(38.0));
-        self.fonts.draw(scene, label, sb.x + self.px(28.0), sb.y + self.px(19.0), &name);
-        scene.vline(sb.x + cell_w, sb.y, row_h, self.px(m::HAIRLINE), ink);
-        if new_hot {
-            scene.rect(new_cell, ink);
-        }
-        {
-            let isz = self.px(12.0);
-            let c = if new_hot { t.paper } else { ink };
-            let st = Style { color: c, ..strong };
-            let x = sb.x + cell_w + self.px(10.0);
-            self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x, sb.y + self.px(19.0) - isz + self.px(2.0), c);
-            self.fonts.draw(scene, st, x + isz + self.px(6.0), sb.y + self.px(19.0), "NEW TAB");
-        }
-        scene.hline(sb.x, sb.y + row_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
-        self.side_hits.push((win_cell, SideHit::Window));
-        self.side_hits.push((new_cell, SideHit::NewShell));
+        self.draw_rail(scene, full);
+        self.draw_sidebar_header(scene, sb);
+        let row_h = self.side_header_h();
 
         let g = self.sidebar_geometry();
         let tabs = std::mem::take(&mut self.tabs);
@@ -2146,7 +2283,7 @@ impl App {
                 scene.rect(Rect::new(sb.x, ty, sb.w, row_h), t.tint);
                 scene.rect(Rect::new(sb.x, ty, self.px(2.0), row_h), tab.look.signal.unwrap_or(self.surface.signal));
             } else if hovered {
-                scene.rect(Rect::new(sb.x, y, sb.w, row_h), Theme::with_alpha(t.tint, 0.5));
+                scene.rect(Rect::new(sb.x, y, sb.w, row_h), fade(t.tint, 0.5));
             }
             scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
             if self.selected.contains(&i) {
@@ -2218,6 +2355,36 @@ impl App {
         }
         self.tabs = tabs;
 
+        // The next ruled row is NEW TAB: a ghost plus where the tab will appear.
+        if self.header.next_row && g.next_y + row_h <= g.foot_y {
+            let r = Rect::new(sb.x, g.next_y, sb.w, row_h);
+            let (mx, my) = self.mouse;
+            let hot = r.contains(mx, my) && self.sidebar_visible() && !self.win_menu && !self.kinds_menu;
+            let pressing = matches!(self.press, Some((_, SideHit::NewShell)));
+            if hot {
+                scene.rect(r, fade(t.tint, if pressing { 1.0 } else { 0.6 }));
+            }
+            let isz = self.px(15.0);
+            let iy = g.next_y + ((row_h - isz) / 2.0).round();
+            let c = if hot { ink } else { t.dim };
+            let x = sb.x + pad_x + self.px(18.0);
+            self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x, iy, c);
+            let base = g.next_y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0);
+            if hot {
+                self.fonts.draw(scene, Style { color: ink, ..strong }, x + isz + self.px(10.0), base, "NEW TAB");
+            } else {
+                // A dashed rule where the title would sit.
+                let dash = self.px(3.0);
+                let mut dx = x + isz + self.px(10.0);
+                let end = sb.right() - pad_x;
+                while dx < end {
+                    scene.hline(dx, g.next_y + row_h / 2.0, dash, self.px(m::HAIRLINE), Theme::with_alpha(t.dim, 0.6));
+                    dx += dash * 2.0;
+                }
+            }
+            self.side_hits.push((r, SideHit::NewShell));
+        }
+
         // Footer: one row of verbs. Avatar · new tab · recently closed · downloads · settings.
         let fy = g.foot_y;
         scene.hline(sb.x, fy, sb.w, self.px(m::STRUCTURE), ink);
@@ -2258,6 +2425,329 @@ impl App {
             rx -= self.px(14.0);
         }
         let _ = (label, ui, dim);
+        self.draw_sidebar_menus(scene, sb);
+    }
+
+    /// The rail: every window as its square along the sidebar's outer edge.
+    fn draw_rail(&mut self, scene: &mut Scene, full: Rect) {
+        let rw = self.rail_w();
+        if rw < 0.5 {
+            return;
+        }
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let x = if self.sidebar_right() { full.right() - rw } else { full.x };
+        let r = Rect::new(x, full.y, rw, full.h - self.px(m::FOOT_H));
+        scene.layer(Some(r));
+        let edge_x = if self.sidebar_right() { x } else { x + rw - self.px(m::HAIRLINE) };
+        scene.vline(edge_x, r.y, r.h, self.px(m::HAIRLINE), ink);
+        let row = self.px(m::ROW_H);
+        let sq = self.px(10.0);
+        let me = std::process::id();
+        let entries = if self.windows.is_empty() { vec![crate::windows::Entry { pid: me, name: self.window_name(), port: self.instance_port, tabs: self.tabs.len() }] } else { self.windows.clone() };
+        let (mx, my) = self.mouse;
+        for (k, e) in entries.iter().enumerate() {
+            let cy = r.y + k as f32 * row;
+            let cell = Rect::new(x, cy, rw, row);
+            let on = e.pid == me;
+            let hot = cell.contains(mx, my) && self.sidebar_visible();
+            if on {
+                scene.rect(cell, t.tint);
+                let bar_x = if self.sidebar_right() { x } else { x + rw - self.px(2.0) };
+                scene.rect(Rect::new(bar_x, cy, self.px(2.0), row), self.surface.signal);
+            } else if hot {
+                scene.rect(cell, fade(t.tint, 0.5));
+            }
+            let color = if on { self.surface.signal } else { Theme::with_alpha(self.surface.signal, 0.55) };
+            scene.rect(Rect::new(x + ((rw - sq) / 2.0).round(), cy + ((row - sq) / 2.0).round(), sq, sq), color);
+            self.side_hits.push((cell, SideHit::Rail(k)));
+        }
+        let cy = r.y + entries.len() as f32 * row;
+        let isz = self.px(12.0);
+        let cell = Rect::new(x, cy, rw, row);
+        let hot = cell.contains(mx, my) && self.sidebar_visible();
+        self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x + ((rw - isz) / 2.0).round(), cy + ((row - isz) / 2.0).round(), if hot { ink } else { t.dim });
+        self.side_hits.push((cell, SideHit::RailNew));
+        scene.layer(None);
+    }
+
+    /// The header: Bar (one ruled row) or Rail (name above the tabs), with
+    /// the masthead title and dateline folded in.
+    fn draw_sidebar_header(&mut self, scene: &mut Scene, sb: Rect) {
+        use crate::settings::HeaderStyle;
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let label = self.label();
+        let strong = self.label_strong();
+        let row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
+        let (mx, my) = self.mouse;
+        let vis = self.sidebar_visible() && !self.win_menu && !self.kinds_menu;
+        let name = self.window_name();
+        let mut y = sb.y;
+        let bar = self.header.style == HeaderStyle::Bar;
+        let masthead = self.header.masthead;
+
+        // Title line (Rail always; Bar when masthead): name, caret on hover.
+        if !bar || masthead {
+            let th = if masthead { self.px(44.0) } else { row };
+            let cell = Rect::new(sb.x, y, sb.w, th - self.px(m::STRUCTURE));
+            let hot = cell.contains(mx, my) && vis;
+            if hot || self.win_menu {
+                scene.rect(cell, fade(t.tint, 0.6));
+            }
+            if masthead {
+                let wm = Style { font: self.f.wordmark, px: self.px(26.0), color: ink, tracking: 0.0 };
+                let text = self.fit(wm, &name, sb.w - self.px(52.0));
+                self.fonts.draw(scene, wm, sb.x + self.px(12.0), y + self.px(31.0), &text);
+            } else {
+                scene.rect(Rect::new(sb.x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
+                let text = self.fit(strong, &name.to_uppercase(), sb.w - self.px(60.0));
+                self.fonts.draw(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), &text);
+            }
+            let csz = self.px(12.0);
+            let ca = if hot || self.win_menu { 1.0 } else { 0.0 };
+            if ca > 0.0 {
+                self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, sb.right() - self.px(12.0) - csz, y + ((th - csz) / 2.0).round() - self.px(1.0), Theme::with_alpha(t.dim, ca));
+            }
+            self.side_hits.push((cell, SideHit::Window));
+            y += th - self.px(m::STRUCTURE);
+            if !self.header.dateline && (!bar || !self.header.header_button) {
+                scene.hline(sb.x, y, sb.w, self.px(m::STRUCTURE), ink);
+                y += self.px(m::STRUCTURE);
+            } else if !self.header.dateline {
+                scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
+                y += self.px(m::STRUCTURE);
+            } else {
+                y += self.px(m::STRUCTURE);
+            }
+        }
+        // Dateline: where · tabs · ports, dim caps under the title.
+        if self.header.dateline {
+            let dh = self.px(16.0);
+            let dl = Style { color: t.dim, px: self.px(10.0), ..label };
+            let text = self.fit(dl, &self.dateline().to_uppercase(), sb.w - self.px(24.0));
+            let dy = if !bar || masthead { y - self.px(6.0) } else { y };
+            self.fonts.draw(scene, dl, sb.x + self.px(12.0), dy + self.px(11.0), &text);
+            if !bar || masthead {
+                y = dy + dh;
+                scene.hline(sb.x, y, sb.w, if self.header.header_button && bar { self.px(m::HAIRLINE) } else { self.px(m::STRUCTURE) }, ink);
+                y += self.px(m::STRUCTURE);
+            }
+        }
+        // The bar row: [■ NAME ▾ | + NEW TAB | ▾], or just NEW TAB under a masthead / rail.
+        let button_row = bar || self.header.header_button;
+        if button_row {
+            let rh = row - self.px(m::STRUCTURE);
+            let mut x = sb.x;
+            if bar && !masthead {
+                let cw = if self.header.show_name { (sb.w * 0.4).floor() } else { self.px(34.0) };
+                let cell = Rect::new(x, y, cw, rh);
+                let hot = cell.contains(mx, my) && vis;
+                if hot || self.win_menu {
+                    scene.rect(cell, fade(t.tint, 0.6));
+                }
+                scene.rect(Rect::new(x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
+                if self.header.show_name {
+                    let text = self.fit(label, &name.to_uppercase(), cw - self.px(48.0));
+                    self.fonts.draw(scene, label, x + self.px(30.0), y + self.px(19.0), &text);
+                    let csz = self.px(11.0);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, x + cw - self.px(10.0) - csz, y + ((rh - csz) / 2.0).round(), t.dim);
+                }
+                self.side_hits.push((cell, SideHit::Window));
+                scene.vline(x + cw, y, rh, self.px(m::HAIRLINE), ink);
+                x += cw;
+            }
+            if self.header.header_button || bar {
+                let caret_w = if self.header.kinds_caret { self.px(26.0) } else { 0.0 };
+                let cell = Rect::new(x, y, sb.right() - x - caret_w, rh);
+                let hot = cell.contains(mx, my) && vis;
+                let pressing = matches!(self.press, Some((_, SideHit::NewShell)));
+                let flash = self.flash_anim.value();
+                // Press: ink → signal → ink; hover: ink.
+                let fill = if flash > 0.0 {
+                    let k = (flash * std::f32::consts::PI).sin();
+                    Some(crate::surface::mix(ink, self.surface.signal, k))
+                } else if hot || pressing {
+                    Some(ink)
+                } else {
+                    None
+                };
+                if let Some(f) = fill {
+                    scene.rect(cell, f);
+                }
+                let c = if fill.is_some() { t.paper } else { ink };
+                let isz = self.px(12.0);
+                let ix = x + self.px(if bar && !masthead { 10.0 } else { 12.0 });
+                self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, ix, y + self.px(19.0) - isz + self.px(2.0), c);
+                self.fonts.draw(scene, Style { color: c, ..strong }, ix + isz + self.px(6.0), y + self.px(19.0), "NEW TAB");
+                if !bar || masthead {
+                    let k = "CTRL T";
+                    let kw = self.fonts.measure(label, k);
+                    self.fonts.draw(scene, Style { color: Theme::with_alpha(c, 0.6), ..label }, cell.right() - self.px(12.0) - kw, y + self.px(19.0), k);
+                }
+                self.side_hits.push((cell, SideHit::NewShell));
+                if self.header.kinds_caret {
+                    let cc = Rect::new(cell.right(), y, caret_w, rh);
+                    let chot = cc.contains(mx, my) && vis;
+                    scene.vline(cc.x, y, rh, self.px(m::HAIRLINE), ink);
+                    if chot || self.kinds_menu {
+                        scene.rect(Rect::new(cc.x + self.px(m::HAIRLINE), y, cc.w - self.px(m::HAIRLINE), rh), ink);
+                    }
+                    let csz = self.px(11.0);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, cc.x + ((cc.w - csz) / 2.0).round(), y + ((rh - csz) / 2.0).round(), if chot || self.kinds_menu { t.paper } else { t.dim });
+                    self.side_hits.push((cc, SideHit::Kinds));
+                }
+            }
+            y += rh;
+            scene.hline(sb.x, y, sb.w, self.px(m::STRUCTURE), ink);
+        }
+    }
+
+    /// The window list and the kinds fan-out, drawn last so they sit over the rows.
+    fn draw_sidebar_menus(&mut self, scene: &mut Scene, sb: Rect) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let label = self.label();
+        let strong = self.label_strong();
+        let row = self.px(30.0);
+        let (mx, my) = self.mouse;
+        let top = sb.y + self.side_header_h();
+        if self.win_menu || self.win_anim.active() {
+            let k = self.win_anim.value();
+            let me = std::process::id();
+            let n = self.windows.len().max(1) + 2;
+            let h = n as f32 * row * k;
+            let r = Rect::new(sb.x, top, sb.w, h);
+            scene.layer(Some(r));
+            scene.rect(r, t.paper);
+            let mut y = top;
+            let entries = if self.windows.is_empty() { vec![crate::windows::Entry { pid: me, name: self.window_name(), port: self.instance_port, tabs: self.tabs.len() }] } else { self.windows.clone() };
+            for (i, e) in entries.iter().enumerate() {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                let hot = cell.contains(mx, my);
+                if hot {
+                    scene.rect(cell, t.tint);
+                }
+                let sq = self.px(10.0);
+                scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), if e.pid == me { self.surface.signal } else { Theme::with_alpha(self.surface.signal, 0.55) });
+                let base = y + self.px(19.0);
+                let st = if e.pid == me { strong } else { label };
+                let tabs = format!("{} TAB{}", e.tabs, if e.tabs == 1 { "" } else { "S" });
+                let tw = self.fonts.measure(label, &tabs);
+                let mut right = sb.right() - self.px(12.0);
+                if e.pid == me {
+                    let csz = self.px(12.0);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::CHECK, csz, right - csz, y + ((row - csz) / 2.0).round(), ink);
+                    right -= csz + self.px(8.0);
+                }
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, right - tw, base, &tabs);
+                let text = self.fit(st, &e.name.to_uppercase(), right - tw - self.px(8.0) - (sb.x + self.px(30.0)));
+                self.fonts.draw(scene, st, sb.x + self.px(30.0), base, &text);
+                scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
+                if self.win_menu {
+                    self.side_hits.push((cell, if e.pid == me { SideHit::Window } else { SideHit::WinFront(i) }));
+                }
+                y += row;
+            }
+            for (icon, text, key, hit) in [
+                (nus_render::text::icons::PENCIL, "RENAME", "F2", SideHit::Rename),
+                (nus_render::text::icons::PLUS, "NEW WINDOW", "CTRL N", SideHit::NewWindow),
+            ] {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                let hot = cell.contains(mx, my);
+                if hot {
+                    scene.rect(cell, t.tint);
+                }
+                let isz = self.px(12.0);
+                let c = if hot { ink } else { t.dim };
+                self.fonts.draw_icon(scene, icon, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), c);
+                self.fonts.draw(scene, Style { color: c, ..label }, sb.x + self.px(30.0), y + self.px(19.0), text);
+                let kw = self.fonts.measure(label, key);
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), key);
+                if self.win_menu {
+                    self.side_hits.push((cell, hit));
+                }
+                y += row;
+            }
+            scene.hline(sb.x, top + h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
+            scene.layer(None);
+        }
+        if self.kinds_menu || self.kinds_anim.active() {
+            let k = self.kinds_anim.value();
+            let n = self.profiles.len() + 1;
+            let h = n as f32 * row * k;
+            let r = Rect::new(sb.x, top, sb.w, h);
+            scene.layer(Some(r));
+            scene.rect(r, t.paper);
+            let mut y = top;
+            let profiles = self.profiles.clone();
+            for (i, p) in profiles.iter().enumerate() {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                let hot = cell.contains(mx, my);
+                if hot {
+                    scene.rect(cell, t.tint);
+                }
+                let sq = self.px(10.0);
+                let ctx = TabCtx { kind: "terminal", index: self.tabs.len(), profile: &p.name, space: &self.space_name, space_signal: self.surface.signal, theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, host: "", parent: None };
+                let color = self.rules.new_tab(&ctx).signal.unwrap_or(self.surface.signal);
+                scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), color);
+                let st = if i == self.behavior.default_profile { strong } else { label };
+                self.fonts.draw(scene, st, sb.x + self.px(30.0), y + self.px(19.0), &p.name.to_uppercase());
+                if i == self.behavior.default_profile {
+                    let d = "DEFAULT";
+                    let dw = self.fonts.measure(label, d);
+                    self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - dw, y + self.px(19.0), d);
+                }
+                scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
+                if self.kinds_menu {
+                    self.side_hits.push((cell, SideHit::Kind(i)));
+                }
+                y += row;
+            }
+            let cell = Rect::new(sb.x, y, sb.w, row);
+            let hot = cell.contains(mx, my);
+            if hot {
+                scene.rect(cell, t.tint);
+            }
+            let isz = self.px(12.0);
+            self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), ink);
+            self.fonts.draw(scene, label, sb.x + self.px(30.0), y + self.px(19.0), "PAGE");
+            let k2 = "CTRL L";
+            let kw = self.fonts.measure(label, k2);
+            self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), k2);
+            if self.kinds_menu {
+                self.side_hits.push((cell, SideHit::KindPage));
+            }
+            scene.hline(sb.x, top + h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
+            scene.layer(None);
+        }
+    }
+
+    pub(crate) fn open_win_menu(&mut self) {
+        self.kinds_menu = false;
+        self.windows = crate::windows::list();
+        self.win_menu = true;
+        self.win_anim.replay(0.0, 1.0, self.motion.dur(160.0));
+        self.dirty = true;
+    }
+
+    pub(crate) fn open_kinds_menu(&mut self) {
+        self.win_menu = false;
+        self.kinds_menu = true;
+        self.kinds_anim.replay(0.0, 1.0, self.motion.dur(140.0));
+        self.dirty = true;
+    }
+
+    pub(crate) fn close_menus(&mut self) {
+        if self.win_menu {
+            self.win_menu = false;
+            self.win_anim.go(0.0, self.motion.dur(100.0));
+        }
+        if self.kinds_menu {
+            self.kinds_menu = false;
+            self.kinds_anim.go(0.0, self.motion.dur(100.0));
+        }
+        self.dirty = true;
     }
 
     fn user_initial(&self) -> String {
@@ -2677,6 +3167,13 @@ impl App {
                     self.query_rows(input, &mut rows, false);
                 }
             }
+            PaletteMode::Rename => {
+                if q.is_empty() {
+                    rows.push(row("·", format!("name this window · now “{}” · empty = automatic", self.window_name()), Action::RenameWindow(String::new())));
+                } else {
+                    rows.push(row("→", format!("call this window “{q}”"), Action::RenameWindow(q.to_string())));
+                }
+            }
         }
         rows
     }
@@ -2742,6 +3239,13 @@ impl App {
         match action {
             Action::SwitchTab(i) => self.activate(i),
             Action::NewTerminal(p) => self.new_tab(p),
+            Action::RenameWindow(n) => {
+                self.window_named = if n.trim().is_empty() { None } else { Some(n.trim().to_string()) };
+                self.register_window();
+                self.save_prefs();
+                self.dirty = true;
+            }
+            Action::NewWindow => crate::windows::spawn(),
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
             Action::NewBrowser(url) => {
                 self.tick_hint(1);
@@ -2875,6 +3379,12 @@ impl App {
         };
         if pressed && code == Some(KeyCode::F11) && !ctrl && !shift {
             return self.toggle_fullscreen();
+        }
+        if pressed && code == Some(KeyCode::F2) && !ctrl && !shift && self.palette.is_none() {
+            return self.open_palette(PaletteMode::Rename);
+        }
+        if pressed && code == Some(KeyCode::KeyN) && ctrl && !shift && self.palette.is_none() {
+            return self.run(Action::NewWindow);
         }
         if pressed && app {
             match code {
@@ -3506,7 +4016,14 @@ impl App {
     }
 
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
+        let was = self.mouse;
         self.mouse = (x, y);
+        if (was.0 - x).abs() + (was.1 - y).abs() > 0.0 {
+            let strip = self.strip_rect();
+            if strip.contains(x, y) || strip.contains(was.0, was.1) || (self.sidebar_visible() && (self.sidebar_rect().contains(x, y) || self.sidebar_rect().contains(was.0, was.1))) {
+                self.dirty = true;
+            }
+        }
         if self.pointer_hidden {
             self.window.set_cursor_visible(true);
             self.pointer_hidden = false;
@@ -3634,12 +4151,35 @@ impl App {
             return;
         }
 
-        // Right-click on NEW TAB fans out: the palette asks which kind.
+        // A menu is up: a click elsewhere closes it.
+        if pressed && (self.win_menu || self.kinds_menu) {
+            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds));
+            if !on_menu {
+                self.close_menus();
+            }
+        }
+        // Right-click on NEW TAB fans out the kinds.
         if pressed && button == MouseButton::Right && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             if self.side_hits.iter().any(|(r, h)| *h == SideHit::NewShell && r.contains(x, y)) {
-                self.open_palette(PaletteMode::New);
+                self.open_kinds_menu();
             }
             return;
+        }
+        // NEW TAB acts on release: a hold fans the kinds out instead.
+        if !pressed && button == MouseButton::Left {
+            if let Some((at, SideHit::NewShell)) = self.press.take() {
+                let still = self.side_hits.iter().any(|(r, h)| *h == SideHit::NewShell && r.contains(x, y));
+                if still && at.elapsed().as_millis() < 240 && !self.kinds_menu {
+                    if self.header.flash {
+                        self.flash_anim.replay(0.0, 1.0, self.motion.dur(120.0));
+                        self.flash_anim.go(0.0, self.motion.dur(120.0));
+                    }
+                    let p = self.behavior.default_profile;
+                    self.new_tab(p);
+                    self.dirty = true;
+                }
+                return;
+            }
         }
         // Sidebar: pinned cells, tab rows, footer. Ctrl-click selects, Shift-click ranges.
         if pressed && button == MouseButton::Left && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
@@ -3660,10 +4200,55 @@ impl App {
                     }
                     SideHit::NewTab => self.open_palette(PaletteMode::New),
                     SideHit::NewShell => {
-                        let p = self.behavior.default_profile;
+                        self.press = Some((Instant::now(), SideHit::NewShell));
+                        self.play_event("control.press");
+                    }
+                    SideHit::Window => {
+                        if self.win_menu {
+                            self.close_menus();
+                        } else {
+                            self.open_win_menu();
+                        }
+                    }
+                    SideHit::Kinds => {
+                        if self.kinds_menu {
+                            self.close_menus();
+                        } else {
+                            self.open_kinds_menu();
+                        }
+                    }
+                    SideHit::Kind(p) => {
+                        self.close_menus();
                         self.new_tab(p);
                     }
-                    SideHit::Window => self.open_palette(PaletteMode::Go),
+                    SideHit::KindPage => {
+                        self.close_menus();
+                        self.open_palette(PaletteMode::New);
+                    }
+                    SideHit::WinFront(i) => {
+                        self.close_menus();
+                        if let Some(e) = self.windows.get(i).cloned() {
+                            crate::windows::front(&e);
+                        }
+                    }
+                    SideHit::Rail(k) => {
+                        if self.windows.is_empty() {
+                            self.windows = crate::windows::list();
+                        }
+                        if let Some(e) = self.windows.get(k).cloned() {
+                            if e.pid != std::process::id() {
+                                crate::windows::front(&e);
+                            }
+                        }
+                    }
+                    SideHit::RailNew | SideHit::NewWindow => {
+                        self.close_menus();
+                        self.run(Action::NewWindow);
+                    }
+                    SideHit::Rename => {
+                        self.close_menus();
+                        self.open_palette(PaletteMode::Rename);
+                    }
                     SideHit::Closed => {
                         self.open_palette(PaletteMode::Go);
                         if let Some((_, input)) = self.palette.as_mut() {
@@ -3679,7 +4264,7 @@ impl App {
             if y > g.foot_y {
                 return;
             }
-            let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
+            let space_row = self.header_h();
             let pinned_y = sb.y + space_row;
             let hit = if !g.pinned.is_empty() && y >= pinned_y && y < pinned_y + g.pinned_h {
                 let k = ((x - sb.x) / (sb.w / g.pinned.len() as f32).floor()) as usize;
@@ -4187,4 +4772,22 @@ fn vk_code(phys: &PhysicalKey, logical: &WKey) -> i32 {
         }
         _ => 0,
     }
+}
+
+/// The name of the git repository the app was launched in, if any.
+fn git_root_name() -> Option<String> {
+    let mut d = std::env::current_dir().ok()?;
+    loop {
+        if d.join(".git").exists() {
+            return d.file_name().map(|n| n.to_string_lossy().to_string());
+        }
+        if !d.pop() {
+            return None;
+        }
+    }
+}
+
+/// A colour at a fraction of its own alpha.
+fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {
+    [c[0], c[1], c[2], c[3] * k]
 }

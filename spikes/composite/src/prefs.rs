@@ -21,6 +21,8 @@ pub struct Prefs {
     pub window_rect: Option<(i32, i32, u32, u32)>,
     pub theme: Option<crate::theme_edit::ThemeEdit>,
     pub cursor: Option<crate::settings::CursorPrefs>,
+    pub header: Option<crate::settings::HeaderPrefs>,
+    pub window_name: Option<String>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -63,6 +65,12 @@ impl App {
         if let Some(c) = p.cursor {
             self.cursor = c;
         }
+        if let Some(h) = p.header {
+            self.header = h;
+        }
+        if !crate::windows::is_secondary() {
+            self.window_named = p.window_name;
+        }
     }
 
     pub(crate) fn save_prefs(&self) {
@@ -77,6 +85,8 @@ impl App {
             window_rect: self.window_rect,
             theme: Some(self.theme_edit.clone()),
             cursor: Some(self.cursor.clone()),
+            header: Some(self.header.clone()),
+            window_name: if crate::windows::is_secondary() { None } else { self.window_named.clone() },
         };
         let _ = std::fs::create_dir_all(path().parent().unwrap());
         let _ = std::fs::write(path(), serde_json::to_string_pretty(&p).unwrap_or_default());

@@ -25,8 +25,9 @@ use crate::app::{App, WebPane};
 // this to a named pipe / unix socket; the protocol is one URL per line.
 
 pub enum Claim {
-    /// We are the instance: URLs from later launches arrive here.
-    Primary(Receiver<String>),
+    /// We are the instance: URLs from later launches arrive here; the
+    /// port other processes reach us on.
+    Primary(Receiver<String>, u16),
     /// Another instance took the URLs; exit.
     HandedOff,
 }
@@ -51,15 +52,24 @@ pub fn claim(urls: &[String]) -> Claim {
             }
         }
     }
+    let (rx, port) = listen(urls);
+    if port != 0 {
+        let _ = std::fs::create_dir_all(instance_file().parent().unwrap());
+        let _ = std::fs::write(instance_file(), port.to_string());
+    }
+    Claim::Primary(rx, port)
+}
+
+/// Listen on a loopback port for URLs and "raise"; `urls` are queued first.
+pub fn listen(urls: &[String]) -> (Receiver<String>, u16) {
     let (tx, rx) = channel();
     for u in urls {
         let _ = tx.send(u.clone());
     }
+    let mut port = 0;
     match TcpListener::bind("127.0.0.1:0") {
         Ok(l) => {
-            let port = l.local_addr().map(|a| a.port()).unwrap_or(0);
-            let _ = std::fs::create_dir_all(instance_file().parent().unwrap());
-            let _ = std::fs::write(instance_file(), port.to_string());
+            port = l.local_addr().map(|a| a.port()).unwrap_or(0);
             std::thread::spawn(move || {
                 for conn in l.incoming().flatten() {
                     let r = BufReader::new(conn);
@@ -71,7 +81,7 @@ pub fn claim(urls: &[String]) -> Claim {
         }
         Err(e) => tracing::warn!("single instance: {e}"),
     }
-    Claim::Primary(rx)
+    (rx, port)
 }
 
 /// URLs on the command line (anything that parses as http(s) or a bare host).

@@ -2,6 +2,7 @@
 //! See docs/SPIKES.md.
 
 mod access;
+mod windows;
 mod anim;
 mod app;
 mod browser;
@@ -256,19 +257,29 @@ fn main() -> ExitCode {
 
     // One instance: a second launch hands its URLs to the first and exits.
     let urls = little::urls_from_args();
-    let urls_rx = match little::claim(&urls) {
-        little::Claim::HandedOff => return ExitCode::SUCCESS,
-        little::Claim::Primary(rx) => rx,
+    let secondary = windows::is_secondary();
+    let (urls_rx, port) = if secondary {
+        little::listen(&urls)
+    } else {
+        match little::claim(&urls) {
+            little::Claim::HandedOff => return ExitCode::SUCCESS,
+            little::Claim::Primary(rx, port) => (rx, port),
+        }
     };
 
     let profile = std::env::current_dir().unwrap().join("profile");
+    // A second window is a second process. Chromium's process singleton
+    // lives in the root cache, so a second process needs its own root —
+    // its own cookies, until windows move in-process.
+    let cache = if secondary { profile.join(format!("win-{}", std::process::id())) } else { profile.clone() };
+    let root = cache.clone();
     let settings = Settings {
         windowless_rendering_enabled: 1,
         external_message_pump: 1,
         // Brands "Google Chrome" in Sec-CH-UA; sites treat bare "Chromium" as a bot.
         user_agent_product: format!("Chrome/{}", chromium_version()).as_str().into(),
-        root_cache_path: profile.to_string_lossy().as_ref().into(),
-        cache_path: profile.to_string_lossy().as_ref().into(),
+        root_cache_path: root.to_string_lossy().as_ref().into(),
+        cache_path: cache.to_string_lossy().as_ref().into(),
         ..Default::default()
     };
     assert_eq!(
@@ -290,6 +301,8 @@ fn main() -> ExitCode {
         if let Some(a) = host.app.as_mut() {
             if a.urls_rx.is_none() {
                 a.urls_rx = urls_rx.take();
+                a.instance_port = port;
+                a.register_window();
             }
             a.tick();
             a.process_requests();
@@ -315,6 +328,7 @@ fn main() -> ExitCode {
     };
     if let Some(a) = host.app.as_ref() {
         a.save_session();
+        windows::unregister();
     }
     host.app = None;
     cef::shutdown();

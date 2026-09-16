@@ -352,6 +352,8 @@ pub mod icons {
     icon!(HARD_HAT, "hard-hat");
     icon!(COPY, "copy");
     icon!(CHECK, "check");
+    icon!(PENCIL, "pencil-simple");
+    icon!(APP_WINDOW, "app-window");
     icon!(WARNING, "warning");
     icon!(HOME, "house");
     icon!(GLOBE_BOLD, "globe-bold");

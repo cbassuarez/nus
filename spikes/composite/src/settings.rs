@@ -27,6 +27,42 @@ pub enum PromptUrl {
     NewTab,
 }
 
+/// The sidebar header: what it does is what it's called.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum HeaderStyle {
+    /// One ruled row: the window's name and NEW TAB.
+    Bar,
+    /// A rail of windows along the sidebar's edge; the name above the tabs.
+    Rail,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct HeaderPrefs {
+    pub style: HeaderStyle,
+    /// The name set large in Newsreader (masthead) instead of caps.
+    pub masthead: bool,
+    /// A dateline under the name: where · tabs · ports.
+    pub dateline: bool,
+    /// NEW TAB in the header row.
+    pub header_button: bool,
+    /// The ruled line after the last tab is also NEW TAB.
+    pub next_row: bool,
+    /// The window's name in the bar's cell (else just its square).
+    pub show_name: bool,
+    /// A split caret on NEW TAB that fans the kinds out.
+    pub kinds_caret: bool,
+    /// The rail only while the pointer is over the sidebar.
+    pub rail_hover: bool,
+    /// Press feedback on NEW TAB: a flash through the signal.
+    pub flash: bool,
+}
+
+impl Default for HeaderPrefs {
+    fn default() -> Self {
+        HeaderPrefs { style: HeaderStyle::Bar, masthead: false, dateline: false, header_button: true, next_row: true, show_name: true, kinds_caret: true, rail_hover: false, flash: true }
+    }
+}
+
 /// The terminal cursor, the app's way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CursorShapePref {
@@ -263,6 +299,15 @@ pub enum Hit {
     Import(usize),
     OpenThemes,
     Starter(usize),
+    HdrStyle(HeaderStyle),
+    HdrMasthead(bool),
+    HdrDateline(bool),
+    HdrButton(bool),
+    HdrNextRow(bool),
+    HdrName(bool),
+    HdrCaret(bool),
+    HdrRailHover(bool),
+    HdrFlash(bool),
     CurShape(CursorShapePref),
     CurBlink(Blink),
     CurColor(CursorColor),
@@ -460,6 +505,15 @@ impl App {
             Hit::Import(k) => format!("import {}", crate::theme_edit::imports().get(k).map(|t| t.name.clone()).unwrap_or_default()),
             Hit::OpenThemes => "open the themes folder".into(),
             Hit::Starter(k) => format!("start from {}", surface::STARTERS.get(k).map(|s| s.0).unwrap_or("")),
+            Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
+            Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
+            Hit::HdrDateline(b) => if b { "dateline on".into() } else { "dateline off".into() },
+            Hit::HdrButton(b) => if b { "new tab in the header".into() } else { "no new tab in the header".into() },
+            Hit::HdrNextRow(b) => if b { "next row is new tab".into() } else { "next row off".into() },
+            Hit::HdrName(b) => if b { "window name shown".into() } else { "window square only".into() },
+            Hit::HdrCaret(b) => if b { "kinds caret on".into() } else { "kinds caret off".into() },
+            Hit::HdrRailHover(b) => if b { "rail on hover".into() } else { "rail always".into() },
+            Hit::HdrFlash(b) => if b { "press flash".into() } else { "no press flash".into() },
             Hit::CurShape(s) => format!("cursor {:?}", s).to_lowercase(),
             Hit::CurBlink(b) => format!("blink {:?}", b).to_lowercase(),
             Hit::CurColor(c) => format!("cursor colour {:?}", c).to_lowercase(),
@@ -701,6 +755,20 @@ impl App {
                 }
             }
             Hit::Starter(k) => self.rules.write_starter(k),
+            Hit::HdrStyle(s) => {
+                self.header.style = s;
+                if s == HeaderStyle::Rail && self.header.style != s {
+                    self.header.header_button = false;
+                }
+            }
+            Hit::HdrMasthead(b) => self.header.masthead = b,
+            Hit::HdrDateline(b) => self.header.dateline = b,
+            Hit::HdrButton(b) => self.header.header_button = b,
+            Hit::HdrNextRow(b) => self.header.next_row = b,
+            Hit::HdrName(b) => self.header.show_name = b,
+            Hit::HdrCaret(b) => self.header.kinds_caret = b,
+            Hit::HdrRailHover(b) => self.header.rail_hover = b,
+            Hit::HdrFlash(b) => self.header.flash = b,
             Hit::CurShape(s) => self.cursor.shape = s,
             Hit::CurBlink(b) => self.cursor.blink = b,
             Hit::CurColor(c) => self.cursor.color = c,
@@ -1183,6 +1251,52 @@ impl App {
                 ]
             }
             6 => vec![
+                (
+                    "HEADER".into(),
+                    Choice(vec![
+                        ("BAR".into(), Hit::HdrStyle(HeaderStyle::Bar), self.header.style == HeaderStyle::Bar),
+                        ("RAIL".into(), Hit::HdrStyle(HeaderStyle::Rail), self.header.style == HeaderStyle::Rail),
+                    ]),
+                ),
+                ("".into(), Info(match self.header.style { HeaderStyle::Bar => "bar: the window's name and NEW TAB share one ruled row".into(), HeaderStyle::Rail => "rail: every window as its square along the edge; the name above the tabs".into() })),
+                (
+                    "TITLE".into(),
+                    Choice(vec![
+                        ("CAPS".into(), Hit::HdrMasthead(false), !self.header.masthead),
+                        ("MASTHEAD".into(), Hit::HdrMasthead(true), self.header.masthead),
+                    ]),
+                ),
+                (
+                    "DATELINE".into(),
+                    Choice(vec![
+                        ("WHERE · TABS · PORTS".into(), Hit::HdrDateline(true), self.header.dateline),
+                        ("OFF".into(), Hit::HdrDateline(false), !self.header.dateline),
+                    ]),
+                ),
+                (
+                    "NEW TAB".into(),
+                    Choice(vec![
+                        ("IN THE HEADER".into(), Hit::HdrButton(!self.header.header_button), self.header.header_button),
+                        ("AS THE NEXT ROW".into(), Hit::HdrNextRow(!self.header.next_row), self.header.next_row),
+                    ]),
+                ),
+                ("".into(), Info("both can be on; click for a shell in the default profile, hold or right-click for the kinds".into())),
+                (
+                    "KINDS CARET".into(),
+                    Choice(vec![("ON".into(), Hit::HdrCaret(true), self.header.kinds_caret), ("OFF".into(), Hit::HdrCaret(false), !self.header.kinds_caret)]),
+                ),
+                (
+                    "WINDOW CELL".into(),
+                    Choice(vec![("SQUARE + NAME".into(), Hit::HdrName(true), self.header.show_name), ("SQUARE".into(), Hit::HdrName(false), !self.header.show_name)]),
+                ),
+                (
+                    "RAIL".into(),
+                    Choice(vec![("ALWAYS".into(), Hit::HdrRailHover(false), !self.header.rail_hover), ("ON HOVER".into(), Hit::HdrRailHover(true), self.header.rail_hover)]),
+                ),
+                (
+                    "PRESS".into(),
+                    Choice(vec![("FLASH".into(), Hit::HdrFlash(true), self.header.flash), ("NONE".into(), Hit::HdrFlash(false), !self.header.flash)]),
+                ),
                 (
                     "SIDE".into(),
                     Choice(vec![
