@@ -13,7 +13,7 @@ use nus_render::theme::metric as m;
 use nus_render::{Color, Rect, Scene};
 
 /// Where links a page opens go (target=_blank, window.open).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Links {
     Stack,
     Split,
@@ -21,14 +21,14 @@ pub enum Links {
 }
 
 /// Where a URL typed at a prompt goes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum PromptUrl {
     Split,
     NewTab,
 }
 
 /// Tab and terminal behaviour the settings page edits.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Behavior {
     pub links: Links,
     pub prompt_url: PromptUrl,
@@ -43,7 +43,7 @@ pub struct Behavior {
 
 impl Default for Behavior {
     fn default() -> Self {
-        Behavior { links: Links::Stack, prompt_url: PromptUrl::Split, close_asks: true, default_profile: 0, follow_os_theme: true, start_on_launch: true, startup_sound: false }
+        Behavior { links: Links::Stack, prompt_url: PromptUrl::Split, close_asks: true, default_profile: 0, follow_os_theme: true, start_on_launch: false, startup_sound: false }
     }
 }
 
@@ -90,6 +90,8 @@ pub enum Hit {
     Unregister,
     StartOnLaunch(bool),
     StartupSound(bool),
+    ReloadAvatar,
+    OpenProfileDir,
 }
 
 pub const SECTIONS: [(&str, (&str, &str)); 10] = [
@@ -175,6 +177,7 @@ impl App {
         }
         let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| r.contains(x, y)) else { return true };
         self.apply_setting(hit, x);
+        self.save_prefs();
         self.dirty = true;
         true
     }
@@ -205,7 +208,9 @@ impl App {
             Hit::ResetRules => "reset rules to default".into(),
             Hit::Reduce(None) => "reduce motion follows the OS".into(),
             Hit::Reduce(Some(r)) => format!("reduce motion {}", if r { "on" } else { "off" }),
-            Hit::StartOnLaunch(b) => if b { "show start at launch".into() } else { "no start at launch".into() },
+            Hit::ReloadAvatar => "reload avatar".into(),
+            Hit::OpenProfileDir => "open the profile folder".into(),
+            Hit::StartOnLaunch(b) => if b { "atlas also at launch".into() } else { "atlas from the planet".into() },
             Hit::StartupSound(b) => if b { "startup sound on".into() } else { "startup sound off".into() },
             Hit::MakeDefault => "make nus the default browser".into(),
             Hit::Unregister => "unregister nus as a browser".into(),
@@ -306,6 +311,18 @@ impl App {
                 let _ = crate::little::unregister();
                 self.register_note = "unregistered".into();
             }
+            Hit::ReloadAvatar => self.load_avatar(),
+            Hit::OpenProfileDir => {
+                let dir = std::env::current_dir().unwrap_or_default().join("profile");
+                let cmd = if cfg!(target_os = "windows") {
+                    format!("start \"\" \"{}\"", dir.display())
+                } else if cfg!(target_os = "macos") {
+                    format!("open \"{}\"", dir.display())
+                } else {
+                    format!("xdg-open \"{}\"", dir.display())
+                };
+                self.run_in_shell(&cmd);
+            }
             Hit::StartOnLaunch(b) => self.behavior.start_on_launch = b,
             Hit::StartupSound(b) => {
                 self.behavior.startup_sound = b;
@@ -350,10 +367,10 @@ impl App {
                     ]),
                 ),
                 (
-                    "START".into(),
+                    "ATLAS".into(),
                     Choice(vec![
-                        ("AT LAUNCH".into(), Hit::StartOnLaunch(true), self.behavior.start_on_launch),
-                        ("ONLY FROM THE PLANET".into(), Hit::StartOnLaunch(false), !self.behavior.start_on_launch),
+                        ("FROM THE PLANET".into(), Hit::StartOnLaunch(false), !self.behavior.start_on_launch),
+                        ("ALSO AT LAUNCH".into(), Hit::StartOnLaunch(true), self.behavior.start_on_launch),
                     ]),
                 ),
                 (
@@ -500,6 +517,11 @@ impl App {
                 for p in &self.profiles {
                     v.push((format!("PROFILE · {}", p.name.to_uppercase()), Info(format!("{} {}", p.program, p.args.join(" ")))));
                 }
+                v.push((
+                    "AVATAR".into(),
+                    Buttons(vec![("RELOAD".into(), icons::RELOAD, Hit::ReloadAvatar), ("OPEN PROFILE FOLDER".into(), icons::FOLDER, Hit::OpenProfileDir)]),
+                ));
+                v.push(("".into(), Info(if self.avatar.is_some() { "profile/avatar.png · shown in the sidebar".into() } else { "drop a PNG at profile/avatar.png, then reload".into() })));
                 v.push(("SCROLLBACK".into(), Info("10 000 lines · restored with the session".into())));
                 v.push(("ATTENTION".into(), Info("BEL and OSC 133 mark a tab WAITING while it is not active".into())));
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));

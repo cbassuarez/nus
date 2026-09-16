@@ -7,8 +7,10 @@ mod app;
 mod browser;
 mod little;
 mod pip;
+mod prefs;
 mod reader;
 mod settings;
+mod splash;
 mod start;
 mod surface;
 

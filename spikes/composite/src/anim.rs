@@ -52,7 +52,7 @@ impl Anim {
 }
 
 /// The register: 0 = snappy, 1 = cinematic. Durations scale 0.45× … 2.2×.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Motion {
     pub register: f32,
     /// Reduce-motion: None follows the OS, Some forces it.
@@ -150,7 +150,7 @@ impl Follow {
 }
 
 /// How the loading bar looks; edited in settings → BROWSER.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BarStyle {
     /// A rule growing from the left.
     Rule,
@@ -171,14 +171,14 @@ impl BarStyle {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BarColor {
     Signal,
     Tab,
     Ink,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LoadBar {
     pub style: BarStyle,
     pub color: BarColor,

@@ -49,7 +49,7 @@ impl App {
             CrumbHit::Close => "close window".into(),
             CrumbHit::Maximize => "maximize window".into(),
             CrumbHit::Minimize => "minimize window".into(),
-            CrumbHit::Start => "start: last session and recent places".into(),
+            CrumbHit::Start => "atlas: last session and recent places".into(),
         }
     }
 

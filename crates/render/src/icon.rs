@@ -10,22 +10,33 @@ use crate::Color;
 
 /// Straight-alpha RGBA, `size`×`size`.
 pub fn app_icon(size: u32, n_color: Color, band: Color) -> Vec<u8> {
+    app_icon_at(size, n_color, band, 1.0)
+}
+
+/// The same, with the swoosh drawn only `progress` (0..1) of the way from
+/// its start — the splash draws it in.
+pub fn app_icon_at(size: u32, n_color: Color, band: Color, progress: f32) -> Vec<u8> {
     let s = size as f32;
     let mut px = vec![0.0f32; (size * size * 4) as usize];
 
     // The n, from Newsreader Italic, centred and sized to the frame.
-    let glyph = raster_n(s * 1.22);
+    let glyph = raster_n(s * 1.38);
     let (gw, gh) = (glyph.w as f32, glyph.h as f32);
     let gx = ((s - gw) / 2.0 + s * 0.01).round();
     let gy = ((s - gh) / 2.0 + s * 0.02).round();
 
-    // The band: an ellipse tilted 22°, thin, passing through the glyph.
-    let (cx, cy) = (s * 0.5, s * 0.53);
-    let (a, b) = (s * 0.485, s * 0.155);
+    // A stroke, not a ring: it starts, swells, thins, and ends — open on
+    // the right like a swoosh, tilted 24°. Small sizes get a heavier stroke.
+    let (cx, cy) = (s * 0.5, s * 0.54);
+    let (a, b) = (s * 0.49, s * 0.16);
     let tilt = -24.0f32.to_radians();
     let (cos, sin) = (tilt.cos(), tilt.sin());
-    // Small sizes need a heavier band to survive the taskbar.
-    let thick = if s <= 32.0 { s * 0.08 } else { s * 0.048 };
+    let base_t = if s <= 32.0 { s * 0.085 } else { s * 0.05 };
+    let gap_center = 0.12f32; // parametric angle; 0 = the right end
+    let gap = 0.9f32; // radians left open
+    let start = gap_center + gap / 2.0; // the stroke runs from here …
+    let span = std::f32::consts::TAU - gap; // … this far around
+    let drawn = span * progress.clamp(0.0, 1.0);
     let band_at = |x: f32, y: f32| -> (f32, bool) {
         // Into the ellipse frame.
         let (dx, dy) = (x - cx, y - cy);
@@ -37,6 +48,17 @@ pub fn app_icon(size: u32, n_color: Color, band: Color) -> Vec<u8> {
             .max(1e-6)
             / r.max(1e-6);
         let d = (r - 1.0) / g;
+        // Where along the stroke: parametric angle from the start.
+        let th = (v / b).atan2(u / a);
+        let along = (th - start).rem_euclid(std::f32::consts::TAU);
+        if along > drawn {
+            return (0.0, v > 0.0);
+        }
+        // Weight: swells through the middle, tapers to the ends.
+        let ends = (along / 0.55).min((drawn - along) / 0.55).clamp(0.0, 1.0);
+        let swell =
+            0.55 + 0.45 * (0.5 - 0.5 * (2.0 * std::f32::consts::PI * along / span + 0.6).cos());
+        let thick = base_t * swell * (0.15 + 0.85 * ends);
         let cov = (thick / 2.0 - d.abs() + 0.5).clamp(0.0, 1.0);
         (cov, v > 0.0) // v > 0: the near half, drawn over the n.
     };

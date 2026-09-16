@@ -212,6 +212,18 @@ impl Scene {
         self.texture_uv(rect, [0.0, 0.0, 1.0, 1.0], bind, clip);
     }
 
+    /// Draw an external texture with an alpha, as its own layer.
+    pub fn texture_alpha(&mut self, rect: Rect, bind: Arc<wgpu::BindGroup>, alpha: f32) {
+        self.close();
+        let start = self.instances.len();
+        self.instances.push(Instance::textured(rect, alpha));
+        self.layers.push(Layer {
+            range: start..start + 1,
+            clip: None,
+            bind: Bind::External(bind),
+        });
+    }
+
     /// Draw a sub-rectangle (`uv` = u0, v0, u1, v1) of an external texture.
     pub fn texture_uv(
         &mut self,

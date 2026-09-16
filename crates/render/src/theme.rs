@@ -62,7 +62,11 @@ pub mod metric {
     pub const FLOATING: f32 = 2.0;
     pub const BAND: f32 = 6.0;
     pub const TOP_STRIP: f32 = 30.0;
-    pub const SIDEBAR: f32 = 272.0;
+    pub const SIDEBAR: f32 = 248.0;
+    /// One sidebar tab row.
+    pub const ROW_H: f32 = 32.0;
+    /// The sidebar footer: one row of icons.
+    pub const FOOT_H: f32 = 44.0;
     pub const SPLIT: f32 = 520.0;
     pub const PALETTE: f32 = 600.0;
     pub const ROW_PAD_Y: f32 = 12.0;

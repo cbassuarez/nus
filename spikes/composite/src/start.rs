@@ -199,9 +199,6 @@ impl App {
         if let Some(s) = self.start.as_mut() {
             s.rise.replay(0.0, 1.0, self.motion.dur(base::PALETTE) * 2.5);
         }
-        if self.behavior.startup_sound {
-            crate::start::chime();
-        }
         self.dirty = true;
     }
 
@@ -352,7 +349,6 @@ impl App {
         let t: Theme = self.theme.clone();
         let ink = t.ink;
         let rise = st.rise.value();
-        let elapsed = st.opened.elapsed().as_secs_f32();
         let label = self.label();
         let strong = self.label_strong();
         let ui = self.ui();
@@ -364,7 +360,7 @@ impl App {
         scene.layer(None);
         scene.rect(Rect::new(0.0, 0.0, w, h), Theme::with_alpha(t.scrim, t.scrim[3] * rise));
         let pw = self.px(560.0).min(w - 2.0 * self.px(16.0));
-        let head_h = self.px(118.0);
+        let head_h = self.px(56.0);
         let line_h = self.px(14.0) * 2.0 + self.px(16.0) + self.px(2.0);
         let row_h = self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
         let foot_h = self.px(8.0) * 2.0 + self.px(m::LABEL_PX) + self.px(2.0);
@@ -376,55 +372,18 @@ impl App {
         scene.rect(r, t.paper);
         scene.outline(r, self.px(m::FLOATING), ink);
 
-        // Masthead: the n with its band. The band's head travels one full
-        // orbit while the panel rises; the ring itself stays dim.
-        let (cx, cy) = (r.x + self.px(70.0), r.y + head_h / 2.0 + self.px(2.0));
-        let (a, b) = (self.px(48.0), self.px(15.0));
-        let tilt = -24.0f32.to_radians();
-        let (cos, sin) = (tilt.cos(), tilt.sin());
-        let on_ring = |th: f32| -> (f32, f32, bool) {
-            let (u, v) = (a * th.cos(), b * th.sin());
-            (cx + u * cos - v * sin, cy + u * sin + v * cos, v > 0.0)
-        };
-        let orbit = ((elapsed / (self.motion.dur(base::PALETTE) * 2.5 + 0.6)).min(1.0)) * std::f32::consts::TAU;
-        let ring_dim = Theme::with_alpha(ink, 0.35);
-        let segs = 180;
-        let signal = self.surface.signal;
-        let (dot, dot_lit) = (self.px(3.0), self.px(1.8));
-        let seg = move |scene: &mut Scene, k: usize, front_pass: bool| {
-            let th = k as f32 / segs as f32 * std::f32::consts::TAU;
-            let (x, y, front) = on_ring(th);
-            if front != front_pass {
-                return;
-            }
-            // Distance behind the head along the orbit: the comet tail.
-            let behind = (orbit - th).rem_euclid(std::f32::consts::TAU);
-            let tail = 1.2;
-            let lit = if behind < tail && elapsed < 2.0 { 1.0 - behind / tail } else { 0.0 };
-            let col = crate::surface::mix(ring_dim, signal, lit);
-            let s = dot + lit * dot_lit;
-            scene.rect(Rect::new(x - s / 2.0, y - s / 2.0, s, s), col);
-        };
-        for k in 0..segs {
-            seg(scene, k, false);
-        }
-        let wm = Style { font: self.f.wordmark, px: self.px(64.0), color: self.surface.base.unwrap_or(ink), tracking: 0.0 };
-        let nw = self.fonts.measure(wm, "n");
-        self.fonts.draw(scene, wm, cx - nw / 2.0, cy + self.px(20.0), "n");
-        for k in 0..segs {
-            seg(scene, k, true);
-        }
-        // Wordmark and greeting.
-        let tx = r.x + self.px(140.0);
-        let big = Style { font: self.f.wordmark, px: self.px(30.0), color: ink, tracking: 0.0 };
-        self.fonts.draw(scene, big, tx, r.y + self.px(52.0), "nus");
+        // Header: the planet, the word, and what last time held.
+        let isz = self.px(18.0);
+        let hx = r.x + self.px(18.0);
+        self.fonts.draw_icon(scene, icons::PLANET, isz, hx, r.y + (head_h - isz) / 2.0, self.surface.signal);
+        let big = Style { font: self.f.wordmark, px: self.px(26.0), color: ink, tracking: 0.0 };
+        let ww = self.fonts.draw(scene, big, hx + isz + self.px(12.0), r.y + head_h / 2.0 + self.px(9.0), "atlas");
         let greet = match &self.last_session {
             Some(s) if !s.tabs.is_empty() => format!("LAST TIME · {}", s.summary().to_uppercase()),
-            _ => "A TERMINAL THAT IS ALSO A BROWSER".to_string(),
+            _ => "LAST SESSION · RECENT PAGES AND SHELLS".to_string(),
         };
-        self.fonts.draw(scene, dim, tx, r.y + self.px(76.0), &self.fit(dim, &greet, r.right() - self.px(18.0) - tx));
-        let isz = self.px(14.0);
-        self.fonts.draw_icon(scene, icons::PLANET, isz, r.right() - self.px(18.0) - isz, r.y + self.px(16.0), t.dim);
+        let gx = hx + isz + self.px(12.0) + ww + self.px(16.0);
+        self.fonts.draw(scene, dim, gx, r.y + head_h / 2.0 + self.px(4.0), &self.fit(dim, &greet, r.right() - self.px(18.0) - gx));
         scene.hline(r.x, r.y + head_h - self.px(2.0), r.w, self.px(2.0), ink);
 
         // Typed line.
@@ -484,10 +443,6 @@ impl App {
         self.fonts.draw(scene, dim, r.right() - self.px(18.0) - nw, fb, note);
         if let Some(st) = self.start.as_mut() {
             st.rows = rects;
-        }
-        // Keep frames coming while the head orbits.
-        if elapsed < 2.2 {
-            self.dirty = true;
         }
     }
 }

@@ -9,7 +9,7 @@
 use nus_render::Color;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Shell {
     Band,
     Stroke,
@@ -38,7 +38,7 @@ impl Shell {
 }
 
 /// Where the sidebar lives and how it shows itself.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Side {
     Left,
     Right,
@@ -46,13 +46,13 @@ pub enum Side {
 
 /// Which edge hovers reveal it: the screen edge counts (so a flick from the
 /// desktop works), or only movement that starts inside the window.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum HoverFrom {
     ScreenEdge,
     InsideWindow,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Fullscreen {
     /// Hover reveals it, as windowed.
     Hover,
@@ -62,7 +62,7 @@ pub enum Fullscreen {
     Pinned,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SidebarRules {
     pub side: Side,
     pub hover_from: HoverFrom,
@@ -89,7 +89,7 @@ pub const SWATCHES: [(&str, Color); 8] = [
     ("ink", [0.078, 0.078, 0.078, 1.0]),
 ];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Surface {
     /// The signal colour: carapace, Space square, ticks, progress.
     pub signal: Color,

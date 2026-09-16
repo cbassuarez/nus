@@ -183,6 +183,17 @@ pub enum Pane {
     Hints(HintsPane),
 }
 
+/// Sidebar click targets besides tab rows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SideHit {
+    Close(usize),
+    Profile,
+    NewTab,
+    Closed,
+    Downloads,
+    Settings,
+}
+
 pub struct SidebarGeom {
     pub pinned: Vec<usize>,
     pub pinned_h: f32,
@@ -295,6 +306,7 @@ pub struct App {
     pub register_note: String,
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
+    pub splash: Option<crate::splash::Splash>,
     pub start_shown: bool,
     pub last_session: Option<crate::start::Session>,
     pub recent: Vec<crate::start::Recent>,
@@ -326,6 +338,9 @@ pub struct App {
     /// Deferred DevTools open (tab, right pane), created from the main loop.
     pub devtools_request: Option<(usize, bool)>,
     pub crumb_hits: Vec<(Rect, CrumbHit)>,
+    pub side_hits: Vec<(Rect, SideHit)>,
+    /// profile/avatar.png as a texture, when there is one.
+    pub avatar: Option<Arc<wgpu::BindGroup>>,
     pub next_id: u64,
     /// Onboarding ticks (see HINTS); the panel leaves once all five are set.
     pub hints: [bool; 5],
@@ -416,6 +431,7 @@ impl App {
             urls_rx: None,
             register_note: String::new(),
             start: None,
+            splash: Some(crate::splash::Splash::new()),
             start_shown: false,
             last_session: crate::start::Session::load(),
             recent: crate::start::load_recent(),
@@ -437,6 +453,8 @@ impl App {
             pip_request: None,
             devtools_request: None,
             crumb_hits: Vec::new(),
+            side_hits: Vec::new(),
+            avatar: None,
             next_id: 1,
             hints: App::load_hints(),
             hint_hits: Vec::new(),
@@ -468,9 +486,14 @@ impl App {
         };
         let first = app.make_tab(Pane::Term(term), right);
         app.tabs.push(first);
+        app.apply_prefs(crate::prefs::Prefs::load());
         app.layout();
         app.apply_term_resizes(true);
         app.refresh_icon();
+        app.load_avatar();
+        if app.behavior.startup_sound {
+            crate::start::chime();
+        }
         Ok(app)
     }
 
@@ -714,7 +737,7 @@ impl App {
         self.poll_reader();
         self.sync_favicons();
         // The Start modal greets the second frame (the first is the window).
-        if !self.start_shown && self.frames > 1 {
+        if !self.start_shown && self.splash.is_none() {
             self.start_shown = true;
             if self.behavior.start_on_launch {
                 self.open_start();
@@ -756,20 +779,12 @@ impl App {
         let want = if self.sidebar_hover && !self.sidebar_pinned() { 1.0 } else { 0.0 };
         self.sidebar_anim.go(want, hover_dur);
         // Row heights.
-        let compact = self.px(9.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
-        let expanded = compact + self.px(8.0) + self.px(m::PREVIEW_H) + self.px(3.0);
+        let compact = self.px(m::ROW_H);
         let ids: Vec<(u64, f32)> = (0..self.tabs.len())
             .map(|i| {
                 let t = &self.tabs[i];
                 let hidden = t.pinned || (t.parent.is_some() && !self.stack_open(self.stack_root(i)));
-                let h = if hidden {
-                    0.0
-                } else if self.hover_row == Some(i) || t.waiting() {
-                    expanded
-                } else {
-                    compact
-                };
-                (t.id, h)
+                (t.id, if hidden { 0.0 } else { compact })
             })
             .collect();
         for (id, h) in ids {
@@ -900,6 +915,46 @@ impl App {
 
     fn reader_fonts(&self) -> crate::reader::ReaderFonts {
         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+    }
+
+    /// profile/avatar.png → a texture (any size; drawn at 22px).
+    pub(crate) fn load_avatar(&mut self) {
+        let path = std::env::current_dir().unwrap_or_default().join("profile").join("avatar.png");
+        let Ok(file) = std::fs::File::open(&path) else {
+            self.avatar = None;
+            return;
+        };
+        let decoder = png::Decoder::new(std::io::BufReader::new(file));
+        let Ok(mut reader) = decoder.read_info() else { return };
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let Ok(info) = reader.next_frame(&mut buf) else { return };
+        let (w, h) = (info.width, info.height);
+        let rgba: Vec<u8> = match info.color_type {
+            png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
+            png::ColorType::Rgb => buf[..info.buffer_size()].chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+            png::ColorType::Grayscale => buf[..info.buffer_size()].iter().flat_map(|&g| [g, g, g, 255]).collect(),
+            png::ColorType::GrayscaleAlpha => buf[..info.buffer_size()].chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+            _ => return,
+        };
+        // BGRA for the quad pipeline.
+        let bgra: Vec<u8> = rgba.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("avatar"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bgra,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.avatar = Some((self.bind_texture)(&tex));
     }
 
     /// The window icon follows the surface: the n in the base colour (ink
@@ -1321,14 +1376,8 @@ impl App {
             hits.push((r, hit));
             *x += w + p18;
         };
-        {
-            let sw = self.px(10.0);
-            scene.rect(Rect::new(x, strip.y + ((strip.h - sw) / 2.0).round(), sw, sw), self.surface.signal);
-            let name = self.space_name.to_uppercase();
-            let w = sw + self.px(8.0) + self.fonts.measure(label, &name);
-            self.fonts.draw(&mut scene, label, x + sw + self.px(8.0), lbase, &name);
-            segment(&mut self.crumb_hits, &mut x, w, CrumbHit::Space);
-        }
+        // The Space lives in the sidebar; the header keeps the wordmark once.
+        let _ = CrumbHit::Space;
         let (focused_web, url) = {
             let tab = &self.tabs[self.active];
             let pane = if tab.focus_right && tab.right.is_some() { tab.right.as_ref().unwrap() } else { &tab.left };
@@ -1652,6 +1701,7 @@ impl App {
             }
         }
         self.draw_start(&mut scene);
+        self.draw_splash(&mut scene);
         self.scene = scene;
     }
 
@@ -1688,8 +1738,7 @@ impl App {
         let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
         let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned).collect();
         let pinned_h = if pinned.is_empty() { 0.0 } else { self.px(8.0) * 2.0 + self.px(m::UI_PX) + self.px(m::STRUCTURE) };
-        let compact = self.px(9.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
-        let expanded = compact + self.px(8.0) + self.px(m::PREVIEW_H) + self.px(3.0);
+        let row = self.px(m::ROW_H);
         let mut y = sb.y + space_row + pinned_h;
         let mut rows = Vec::new();
         for i in 0..self.tabs.len() {
@@ -1697,15 +1746,8 @@ impl App {
                 continue;
             }
             let hidden = self.tabs[i].parent.is_some() && !self.stack_open(self.stack_root(i));
-            let waiting = self.tabs[i].waiting();
-            let want = if hidden {
-                0.0
-            } else if self.hover_row == Some(i) || waiting {
-                expanded
-            } else {
-                compact
-            };
-            // Animated height when one is running; otherwise the target.
+            let want = if hidden { 0.0 } else { row };
+            // Animated height while a stack unfolds; otherwise the target.
             let h = match self.row_anims.get(&self.tabs[i].id) {
                 Some(a) if a.active() => a.value(),
                 _ => want,
@@ -1716,11 +1758,7 @@ impl App {
             rows.push((i, y, h));
             y += h;
         }
-        let foot_rows = 4.0;
-        let foot_h = self.px(10.0) * 2.0 + self.px(22.0) + self.px(m::HAIRLINE)
-            + (foot_rows - 1.0) * (self.px(8.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE))
-            + self.px(m::STRUCTURE);
-        SidebarGeom { pinned, pinned_h, rows, foot_y: sb.bottom() - foot_h }
+        SidebarGeom { pinned, pinned_h, rows, foot_y: sb.bottom() - self.px(m::FOOT_H) }
     }
 
     fn draw_sidebar(&mut self, scene: &mut Scene) {
@@ -1782,34 +1820,44 @@ impl App {
             scene.hline(sb.x, py + g.pinned_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
         }
 
-        // Tab rows.
+        // Tab rows: icon · title · (hover ×). Waiting shows a signal dot.
         let pad_x = self.px(m::ROW_PAD_X);
         let labels: Vec<String> = g.rows.iter().map(|&(i, _, _)| self.tab_label_of(&tabs, i)).collect();
+        let row_h = self.px(m::ROW_H);
+        self.side_hits.clear();
         for (k, &(i, y, h)) in g.rows.iter().enumerate() {
             let tab = &tabs[i];
             let waiting = tab.waiting();
             let child = tab.parent.is_some();
             let stack: Vec<usize> = if child { Vec::new() } else { (0..tabs.len()).filter(|&j| tabs[j].parent == Some(tab.id)).collect() };
             let open = !stack.is_empty() && (i == self.active || stack.contains(&self.active));
-            if i == self.active {
+            let active = i == self.active;
+            let hovered = self.hover_row == Some(i);
+            if active {
                 let ty = if self.tint_anim.active() { self.tint_anim.value() } else { y };
-                scene.rect(Rect::new(sb.x, ty, sb.w, h), t.tint);
+                scene.rect(Rect::new(sb.x, ty, sb.w, row_h), t.tint);
+                scene.rect(Rect::new(sb.x, ty, self.px(2.0), row_h), tab.look.signal.unwrap_or(self.surface.signal));
+            } else if hovered {
+                scene.rect(Rect::new(sb.x, y, sb.w, row_h), Theme::with_alpha(t.tint, 0.5));
             }
             scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
             if self.selected.contains(&i) {
-                scene.outline(Rect::new(sb.x, y, sb.w, h - self.px(m::HAIRLINE)), self.px(m::STRUCTURE), ink);
+                scene.outline(Rect::new(sb.x, y, sb.w, row_h), self.px(m::STRUCTURE), ink);
             }
-            let base = y + self.px(9.0) + self.px(m::UI_PX) - self.px(3.0);
+            let base = y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0);
             let mut x = sb.x + pad_x;
+            // A dim numeral for the first nine stacks; children hang off a rule.
+            let numw = self.px(18.0);
             if child {
-                // Children hang off a rule under the parent's number.
-                let cx = x + self.px(6.0);
-                scene.vline(cx, y, h - self.px(m::HAIRLINE), self.px(m::HAIRLINE), ink);
-                x += self.px(18.0);
-                x += self.fonts.draw(scene, dim, x, base, &labels[k][labels[k].len() - 1..]) + self.px(10.0);
+                scene.vline(x + self.px(5.0), y, row_h, self.px(m::HAIRLINE), t.dim);
+                x += numw;
             } else {
-                let num = Style { color: tab.look.signal.unwrap_or(ink), ..ui_strong };
-                x += self.fonts.draw(scene, num, x, base, &labels[k]) + self.px(10.0);
+                let n: usize = labels[k].parse().unwrap_or(99);
+                if n <= 9 {
+                    let ns = Style { color: if active { tab.look.signal.unwrap_or(t.dim) } else { t.dim }, ..label };
+                    self.fonts.draw(scene, ns, x, base - self.px(1.0), &n.to_string());
+                }
+                x += numw;
             }
             let icon = match &tab.left {
                 Pane::Term(_) => nus_render::text::icons::TERMINAL,
@@ -1817,150 +1865,91 @@ impl App {
                 Pane::Settings(_) => nus_render::text::icons::SETTINGS,
                 Pane::Hints(_) => nus_render::text::icons::HOME,
             };
-            let isz = self.px(14.0);
+            let isz = self.px(15.0);
+            let iy = y + ((row_h - isz) / 2.0).round();
             let fav = match &tab.left {
                 Pane::Web(w) => w.favicon.as_ref().map(|(_, b)| b.clone()),
                 _ => None,
             };
             match fav {
                 Some(b) => {
-                    scene.texture(Rect::new(x, base - isz + self.px(2.0), isz, isz), b, None);
+                    scene.texture(Rect::new(x, iy, isz, isz), b, None);
                     scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
-                    x += isz + self.px(10.0);
                 }
-                None => x += self.fonts.draw_icon(scene, icon, isz, x, base - isz + self.px(2.0), ink) + self.px(10.0),
+                None => {
+                    self.fonts.draw_icon(scene, icon, isz, x, iy, if active { ink } else { t.dim });
+                }
             }
-            let (title, detail) = tab.row_text();
-            let tag = if waiting {
-                "WAITING".to_string()
+            x += isz + self.px(10.0);
+            // Right side: × on hover, else a signal dot when waiting, else a
+            // collapsed stack's count.
+            let mut right = sb.right() - pad_x;
+            if hovered {
+                let cx = right - isz;
+                self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, cx, iy, ink);
+                self.side_hits.push((Rect::new(cx - self.px(6.0), y, isz + self.px(12.0), row_h), SideHit::Close(i)));
+                right = cx - self.px(8.0);
+            } else if waiting {
+                let d = self.px(7.0);
+                scene.rect(Rect::new(right - d, y + (row_h - d) / 2.0, d, d), self.surface.signal);
+                right -= d + self.px(8.0);
             } else if !stack.is_empty() && !open {
-                format!("+{}", stack.len())
-            } else {
-                detail.to_uppercase()
-            };
-            let tag_w = if tag.is_empty() { 0.0 } else { self.fonts.measure(label, &tag) + self.px(12.0) };
-            let st = if i == self.active { ui_strong } else { ui };
-            let title = self.fit(st, &title, sb.w - (x - sb.x) - pad_x - tag_w);
+                let tag = format!("{}", stack.len());
+                let tw = self.fonts.measure(label, &tag);
+                let csz = self.px(11.0);
+                self.fonts.draw(scene, dim, right - tw, base - self.px(1.0), &tag);
+                self.fonts.draw_icon(scene, nus_render::text::icons::CARET_RIGHT, csz, right - tw - csz - self.px(2.0), y + (row_h - csz) / 2.0, t.dim);
+                right -= tw + csz + self.px(10.0);
+            }
+            let (title, _) = tab.row_text();
+            let st = if active { ui_strong } else { ui };
+            let st = Style { color: if active { ink } else { Theme::with_alpha(ink, 0.82) }, ..st };
+            let title = self.fit(st, &title, right - x);
             self.fonts.draw(scene, st, x, base, &title);
-            if waiting {
-                let w = self.fonts.measure(strong, &tag) + self.px(12.0);
-                let r = Rect::new(sb.right() - pad_x - w, base - self.px(m::LABEL_PX) - self.px(1.0), w, self.px(m::LABEL_PX) + self.px(4.0));
-                scene.rect(r, self.surface.signal);
-                self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, r.x + self.px(6.0), base, &tag);
-            } else if !stack.is_empty() && !open {
-                // Collapsed stack: count and a caret.
-                let isz = self.px(12.0);
-                let tx = sb.right() - pad_x - tag_w + self.px(12.0);
-                self.fonts.draw(scene, dim, tx, base, &tag);
-                self.fonts.draw_icon(scene, nus_render::text::icons::CARET_RIGHT, isz, tx - isz - self.px(4.0), base - isz + self.px(2.0), t.dim);
-            } else if !tag.is_empty() {
-                self.fonts.draw(scene, dim, sb.right() - pad_x - tag_w + self.px(12.0), base, &tag);
-            }
-            // Preview, when expanded.
-            if h > self.px(40.0) {
-                let pr = Rect::new(sb.x + pad_x, base + self.px(8.0), sb.w - 2.0 * pad_x, self.px(m::PREVIEW_H));
-                scene.outline(pr, self.px(m::HAIRLINE), ink);
-                match &tab.left {
-                    Pane::Term(tp) => {
-                        let small = Style { font: self.f.ui, px: self.px(7.5), color: ink, tracking: 0.0 };
-                        let lines = last_lines(&tp.term, 4);
-                        let lh = self.px(7.5 * 1.5);
-                        let mut ly = pr.y + self.px(6.0) + self.px(7.5);
-                        scene.layer(Some(pr.inset(1.0)));
-                        for l in lines {
-                            self.fonts.draw(scene, small, pr.x + self.px(8.0), ly, &l);
-                            ly += lh;
-                        }
-                        scene.layer(None);
-                    }
-                    Pane::Web(wp) => {
-                        if let Some(bind) = wp.tab.shared.borrow().bind.clone() {
-                            let inner = pr.inset(1.0);
-                            let aspect = wp.page.w / wp.page.h.max(1.0);
-                            let tw = (inner.h * aspect).min(inner.w);
-                            scene.texture(Rect::new(inner.x, inner.y, tw, inner.h), bind, Some(inner));
-                            scene.layer(None);
-                        }
-                    }
-                    Pane::Settings(_) | Pane::Hints(_) => {}
-                }
-            }
-            scene.hline(sb.x, y + h - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), ink);
             scene.layer(None);
         }
         self.tabs = tabs;
 
-        // Footer: identity, shell, assistants, new tab / settings.
+        // Footer: one row of verbs. Avatar · new tab · recently closed · downloads · settings.
         let fy = g.foot_y;
         scene.hline(sb.x, fy, sb.w, self.px(m::STRUCTURE), ink);
-        let mut y = fy + self.px(m::STRUCTURE);
-        // identity
-        let id_h = self.px(10.0) * 2.0 + self.px(22.0);
-        let av = Rect::new(sb.x + pad_x, y + self.px(10.0), self.px(22.0), self.px(22.0));
-        scene.rect(av, self.surface.signal);
-        let initial = self.user_initial();
-        let iw = self.fonts.measure(ui_strong, &initial);
-        self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..ui_strong }, av.x + (av.w - iw) / 2.0, av.y + self.px(16.0), &initial);
-        let tx = av.right() + self.px(10.0);
-        self.fonts.draw(scene, ui_strong, tx, y + self.px(10.0) + self.px(11.0), &self.space_name);
-        {
-            let by = y + self.px(10.0) + self.px(24.0);
-            let mut x = tx;
-            x += self.fonts.draw(scene, dim, x, by, &format!("{} ·", self.user_name.to_uppercase())) + self.px(6.0);
-            let isz = self.px(11.0);
-            self.fonts.draw_icon(scene, nus_render::text::icons::COOKIE, isz, x, by - isz + self.px(2.0), t.dim);
-            self.fonts.draw(scene, dim, x + isz + self.px(4.0), by, &self.space_name.to_uppercase());
-        }
+        let fh = self.px(m::FOOT_H);
         let isz = self.px(16.0);
-        self.fonts.draw_icon(scene, nus_render::text::icons::MORE, isz, sb.right() - pad_x - isz, y + self.px(10.0) + self.px(3.0), ink);
-        y += id_h;
-        scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
-        y += self.px(m::HAIRLINE);
-        // shell row
-        let lr = self.px(8.0) * 2.0 + self.px(m::LABEL_PX);
-        let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
-        let mut x = sb.x + pad_x;
-        {
-            let isz = self.px(12.0);
-            self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, isz, x, base - isz + self.px(2.0), t.dim);
-            x += isz + self.px(10.0);
+        let iy = fy + ((fh - isz) / 2.0).round();
+        // Avatar: profile/avatar.png, else the initial in the signal square.
+        let av = self.px(22.0);
+        let ar = Rect::new(sb.x + pad_x, fy + ((fh - av) / 2.0).round(), av, av);
+        match self.avatar.clone() {
+            Some(b) => {
+                scene.texture(ar, b, None);
+                scene.layer(None);
+            }
+            None => {
+                scene.rect(ar, self.surface.signal);
+                let initial = self.user_initial();
+                let iw = self.fonts.measure(strong, &initial);
+                self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, ar.x + (ar.w - iw) / 2.0, ar.y + av / 2.0 + self.px(4.0), &initial);
+            }
         }
-        let default = self.profiles.first().map(|p| p.name.clone()).unwrap_or_default();
-        x += self.fonts.draw(scene, strong, x, base, &default.to_uppercase()) + self.px(10.0);
-        let others: Vec<String> = self.profiles.iter().skip(1).map(|p| p.name.to_uppercase()).collect();
-        if !others.is_empty() {
-            let s = self.fit(dim, &format!("· {}", others.join(" · ")), sb.right() - pad_x - x);
-            self.fonts.draw(scene, dim, x, base, &s);
+        self.side_hits.push((Rect::new(sb.x, fy, ar.right() + self.px(8.0) - sb.x, fh), SideHit::Profile));
+        let mut x = ar.right() + self.px(14.0);
+        self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x, iy, ink);
+        self.side_hits.push((Rect::new(x - self.px(8.0), fy, isz + self.px(16.0), fh), SideHit::NewTab));
+        x += isz + self.px(18.0);
+        let _ = x;
+        // Right cluster.
+        let mut rx = sb.right() - pad_x;
+        for (icon, hit, lit) in [
+            (nus_render::text::icons::SETTINGS, SideHit::Settings, true),
+            (nus_render::text::icons::DOWNLOAD, SideHit::Downloads, false),
+            (nus_render::text::icons::HISTORY, SideHit::Closed, !self.closed.is_empty()),
+        ] {
+            rx -= isz;
+            self.fonts.draw_icon(scene, icon, isz, rx, iy, if lit { ink } else { t.dim });
+            self.side_hits.push((Rect::new(rx - self.px(8.0), fy, isz + self.px(16.0), fh), hit));
+            rx -= self.px(14.0);
         }
-        y += lr;
-        scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
-        y += self.px(m::HAIRLINE);
-        // assistants row
-        let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
-        let mut x = sb.x + pad_x;
-        {
-            let isz = self.px(12.0);
-            self.fonts.draw_icon(scene, nus_render::text::icons::ASSISTANT, isz, x, base - isz + self.px(2.0), t.dim);
-            x += isz + self.px(10.0);
-        }
-        let mut names: Vec<String> = self.llm_tools.iter().map(|(n, _)| n.to_uppercase()).collect();
-        names.push("CHATGPT".into());
-        names.push("CLAUDE.AI".into());
-        x += self.fonts.draw(scene, strong, x, base, &names[0]) + self.px(10.0);
-        let s = self.fit(dim, &format!("· {}", names[1..].join(" · ")), sb.right() - pad_x - x);
-        self.fonts.draw(scene, dim, x, base, &s);
-        y += lr;
-        scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
-        y += self.px(m::HAIRLINE);
-        // new tab / settings
-        let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
-        let isz = self.px(14.0);
-        self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, sb.x + pad_x, base - isz + self.px(2.0), ink);
-        self.fonts.draw(scene, label, sb.x + pad_x + isz + self.px(8.0), base, "NEW TAB");
-        let ks = key(",", false);
-        let kw = self.fonts.measure(label, &ks);
-        self.fonts.draw(scene, dim, sb.right() - pad_x - kw, base, &ks);
-        self.fonts.draw_icon(scene, nus_render::text::icons::SETTINGS, isz, sb.right() - pad_x - kw - self.px(8.0) - isz, base - isz + self.px(2.0), ink);
+        let _ = (label, ui, dim);
     }
 
     fn user_initial(&self) -> String {
@@ -2327,7 +2316,7 @@ impl App {
                         Action::TogglePin,
                     ),
                     (format!("reopen closed tab · {}", key("Z", true)), Action::Reopen),
-                    ("start · last session, recent pages and shells".to_string(), Action::Start),
+                    ("atlas · last session, recent pages and shells".to_string(), Action::Start),
                     (format!("carapace · {:?} → next", self.surface.shell).to_lowercase(), Action::ShellStyle),
                     (format!("corner radius {} → +2", self.surface.shell_radius), Action::ShellRadius(2.0)),
                     (format!("corner radius {} → −2", self.surface.shell_radius), Action::ShellRadius(-2.0)),
@@ -2482,7 +2471,10 @@ impl App {
         // App chords: ⌘ on macOS, Ctrl+Shift elsewhere — never reaches the shell.
         let app = if cfg!(target_os = "macos") { sup } else { ctrl && shift };
 
-        // Start owns the keyboard while open; then the palette.
+        if self.splash.is_some() {
+            return;
+        }
+        // Atlas owns the keyboard while open; then the palette.
         if self.start_key(ev) {
             return;
         }
@@ -3294,13 +3286,30 @@ impl App {
         if pressed && button == MouseButton::Left && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             let sb = self.sidebar_rect();
             let g = self.sidebar_geometry();
-            let foot_row = self.px(8.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
-            if y > sb.bottom() - foot_row {
-                if x > sb.x + sb.w / 2.0 {
-                    self.open_settings();
-                } else {
-                    self.open_palette(PaletteMode::New);
+            if let Some(&(_, hit)) = self.side_hits.iter().find(|(r, _)| r.contains(x, y)) {
+                match hit {
+                    SideHit::Close(i) => {
+                        self.selected.clear();
+                        self.activate(i);
+                        self.close_tabs(false);
+                    }
+                    SideHit::Profile => {
+                        self.open_settings();
+                        if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                            s.section = 4;
+                        }
+                    }
+                    SideHit::NewTab => self.open_palette(PaletteMode::New),
+                    SideHit::Closed => {
+                        self.open_palette(PaletteMode::Go);
+                        if let Some((_, input)) = self.palette.as_mut() {
+                            input.push_str("reopen");
+                        }
+                    }
+                    SideHit::Downloads => {}
+                    SideHit::Settings => self.open_settings(),
                 }
+                self.dirty = true;
                 return;
             }
             if y > g.foot_y {
