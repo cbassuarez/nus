@@ -117,3 +117,32 @@ the tab's row menu.
   (`claude "…"`, `codex "…"`, `ollama run <model> "…"`), which types the
   command into the focused terminal. The router (which tool, which model,
   args vs stdin) is a config table.
+
+## Arc parity targets (settled 2026-09-16, fourth pass)
+
+**Shell (carapace).** The Space color as a physical shell around the window.
+Styles: `band` (today's 6px top band), `stroke` (all four edges), `gradient`
+(signal → ink along the stroke), `aurora` (slowly animated gradient). A global
+`radius` rounds the window corners and the stroke together (0 by default —
+Broadsheet — but yours to turn). Config: `nus.shell = { style, width, radius }`.
+
+**PiP.** Ours, in the compositor. Trigger: automatically when a playing video's
+tab leaves view (tab/Space switch, window blur); returning to the tab pulls it
+back; manual toggle too. Source: the tab's own texture cropped to the video's
+rect, tracked by an injected script that also scrolls it into view — no second
+decode, no DRM issue. Transport keys act on the element through CDP, so sites
+can't hide them: ←/→ ±10 s, Space/K play-pause, J/L ±10, ,/. frame-step, ↑/↓
+volume, M mute — only while the PiP window is focused. Bezier easing on every
+move/resize, wheel-over scales around the cursor, corner snapping.
+
+**Local sites.** Detected: localhost, 127.0.0.1, `*.local`, RFC-1918. Safety
+tape (diagonal signal + ink hazard stroke) around the page and in the URL
+field. Dev suite, all v1: ports list in the palette (listening ports with
+process names → open with tape on), DevTools as a windowless CEF pane,
+responsive presets (390/768/1440) + screenshot from our texture, reload on
+directory change + console mirrored into the terminal split.
+
+**Script channel.** One mechanism under PiP, theme reach, the JSON viewer and
+the dev suite: scripts injected per tab via CEF's DevTools protocol
+(`Page.addScriptToEvaluateOnNewDocument`, `Runtime.addBinding`), results back
+through a DevTools message observer. This is also the userscript system.
