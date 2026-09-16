@@ -152,6 +152,10 @@ pub struct SidebarGeom {
 }
 
 pub struct Tab {
+    pub id: u64,
+    /// Stack parent (a top-level tab's id). One level only: a child never
+    /// has children; links from a child join the same stack.
+    pub parent: Option<u64>,
     pub left: Pane,
     pub right: Option<Pane>,
     pub focus_right: bool,
@@ -238,6 +242,9 @@ pub struct App {
     /// Deferred DevTools open (tab, right pane), created from the main loop.
     pub devtools_request: Option<(usize, bool)>,
     pub crumb_hits: Vec<(Rect, CrumbHit)>,
+    pub next_id: u64,
+    /// Closing a stack's parent asks first: the parent's index.
+    pub confirm_stack: Option<usize>,
     pub window_focused: bool,
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
@@ -317,6 +324,8 @@ impl App {
             pip_request: None,
             devtools_request: None,
             crumb_hits: Vec::new(),
+            next_id: 1,
+            confirm_stack: None,
             window_focused: true,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
@@ -338,12 +347,8 @@ impl App {
         };
         let term = app.new_term_pane(true, 0)?;
         let web = app.new_web_pane("https://docs.rs/wgpu/latest/wgpu/");
-        app.tabs.push(Tab {
-            left: Pane::Term(term),
-            right: web.map(Pane::Web),
-            focus_right: false,
-            pinned: false,
-        });
+        let first = app.make_tab(Pane::Term(term), web.map(Pane::Web));
+        app.tabs.push(first);
         app.layout();
         app.apply_term_resizes(true);
         Ok(app)
@@ -515,6 +520,7 @@ impl App {
 
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
+        self.drain_popups();
         if self.shell == Shell::Aurora {
             self.shell_phase = (self.shell_phase + 0.0015) % 1.0;
             self.dirty = true;
@@ -829,7 +835,7 @@ impl App {
                 Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
             };
-            let title = format!("{:02} {}", self.active + 1, title).to_uppercase();
+            let title = format!("{} {}", self.tab_label(self.active), title).to_uppercase();
             let tw = self.fonts.measure(label, &title);
             self.fonts.draw_icon(&mut scene, icon, ic, x, iy, ink);
             self.fonts.draw(&mut scene, label, x + ic + self.px(8.0), lbase, &title);
@@ -907,14 +913,14 @@ impl App {
             };
             scene.vline(r.x - self.px(m::STRUCTURE), r.y, r.h, self.px(m::STRUCTURE), ink);
         }
+        let n = self.tab_label(active);
         let mut tabs = std::mem::take(&mut self.tabs);
         {
             let tab = &mut tabs[active];
-            let n = active + 1;
             let left_focused = !(focus_right && has_right);
-            self.draw_pane(&mut scene, &mut tab.left, n, left_focused);
+            self.draw_pane(&mut scene, &mut tab.left, &n, left_focused);
             if let Some(r) = tab.right.as_mut() {
-                self.draw_pane(&mut scene, r, n, !left_focused);
+                self.draw_pane(&mut scene, r, &n, !left_focused);
             }
         }
         self.tabs = tabs;
@@ -951,6 +957,24 @@ impl App {
                 ];
                 self.chip(&mut scene, x, y, &parts);
             }
+        }
+
+        // Stack close confirmation: a band across the content.
+        if let Some(root) = self.confirm_stack {
+            let c = self.content_rect();
+            let hh = self.header_h();
+            let cr = Rect::new(c.x, c.y, c.w, hh);
+            scene.layer(None);
+            scene.rect(cr, ink);
+            let inv = Style { color: t.paper, ..self.label_strong() };
+            let inv_l = Style { color: t.paper, ..label };
+            let by = cr.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
+            let mut x = cr.x + self.px(m::HEADER_PAD_X);
+            let n = self.children(root).len();
+            x += self.fonts.draw(&mut scene, inv, x, by, &format!("STACK OF {}", n + 1)) + self.px(14.0);
+            x += self.fonts.draw(&mut scene, inv_l, x, by, &format!("CLOSE THIS TAB AND ITS {n} PAGE{}?", if n == 1 { "" } else { "S" })) + self.px(14.0);
+            x += self.fonts.draw(&mut scene, inv, x, by, "ENTER") + self.px(14.0);
+            self.fonts.draw(&mut scene, inv_l, x, by, "· ESC KEEPS THEM");
         }
 
         // Hover-revealed sidebar slides over the content.
@@ -1082,6 +1106,9 @@ impl App {
             if self.tabs[i].pinned {
                 continue;
             }
+            if self.tabs[i].parent.is_some() && !self.stack_open(self.stack_root(i)) {
+                continue;
+            }
             let waiting = self.tabs[i].waiting();
             let h = if self.hover_row == Some(i) || waiting { expanded } else { compact };
             rows.push((i, y, h));
@@ -1147,9 +1174,13 @@ impl App {
 
         // Tab rows.
         let pad_x = self.px(m::ROW_PAD_X);
-        for &(i, y, h) in &g.rows {
+        let labels: Vec<String> = g.rows.iter().map(|&(i, _, _)| self.tab_label_of(&tabs, i)).collect();
+        for (k, &(i, y, h)) in g.rows.iter().enumerate() {
             let tab = &tabs[i];
             let waiting = tab.waiting();
+            let child = tab.parent.is_some();
+            let stack: Vec<usize> = if child { Vec::new() } else { (0..tabs.len()).filter(|&j| tabs[j].parent == Some(tab.id)).collect() };
+            let open = !stack.is_empty() && (i == self.active || stack.contains(&self.active));
             if i == self.active {
                 scene.rect(Rect::new(sb.x, y, sb.w, h), t.tint);
             }
@@ -1158,7 +1189,15 @@ impl App {
             }
             let base = y + self.px(9.0) + self.px(m::UI_PX) - self.px(3.0);
             let mut x = sb.x + pad_x;
-            x += self.fonts.draw(scene, ui_strong, x, base, &format!("{:02}", i + 1)) + self.px(10.0);
+            if child {
+                // Children hang off a rule under the parent's number.
+                let cx = x + self.px(6.0);
+                scene.vline(cx, y, h - self.px(m::HAIRLINE), self.px(m::HAIRLINE), ink);
+                x += self.px(18.0);
+                x += self.fonts.draw(scene, dim, x, base, &labels[k][labels[k].len() - 1..]) + self.px(10.0);
+            } else {
+                x += self.fonts.draw(scene, ui_strong, x, base, &labels[k]) + self.px(10.0);
+            }
             let icon = match &tab.left {
                 Pane::Term(_) => nus_render::text::icons::TERMINAL,
                 Pane::Web(_) => nus_render::text::icons::GLOBE,
@@ -1167,7 +1206,13 @@ impl App {
             let isz = self.px(14.0);
             x += self.fonts.draw_icon(scene, icon, isz, x, base - isz + self.px(2.0), ink) + self.px(10.0);
             let (title, detail) = tab.row_text();
-            let tag = if waiting { "WAITING".to_string() } else { detail.to_uppercase() };
+            let tag = if waiting {
+                "WAITING".to_string()
+            } else if !stack.is_empty() && !open {
+                format!("+{}", stack.len())
+            } else {
+                detail.to_uppercase()
+            };
             let tag_w = if tag.is_empty() { 0.0 } else { self.fonts.measure(label, &tag) + self.px(12.0) };
             let st = if i == self.active { ui_strong } else { ui };
             let title = self.fit(st, &title, sb.w - (x - sb.x) - pad_x - tag_w);
@@ -1177,6 +1222,12 @@ impl App {
                 let r = Rect::new(sb.right() - pad_x - w, base - self.px(m::LABEL_PX) - self.px(1.0), w, self.px(m::LABEL_PX) + self.px(4.0));
                 scene.rect(r, self.signal);
                 self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, r.x + self.px(6.0), base, &tag);
+            } else if !stack.is_empty() && !open {
+                // Collapsed stack: count and a caret.
+                let isz = self.px(12.0);
+                let tx = sb.right() - pad_x - tag_w + self.px(12.0);
+                self.fonts.draw(scene, dim, tx, base, &tag);
+                self.fonts.draw_icon(scene, nus_render::text::icons::CARET_RIGHT, isz, tx - isz - self.px(4.0), base - isz + self.px(2.0), t.dim);
             } else if !tag.is_empty() {
                 self.fonts.draw(scene, dim, sb.right() - pad_x - tag_w + self.px(12.0), base, &tag);
             }
@@ -1281,12 +1332,8 @@ impl App {
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
             return self.activate(i);
         }
-        self.tabs.push(Tab {
-            left: Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0 }),
-            right: None,
-            focus_right: false,
-            pinned: false,
-        });
+        let tab = self.make_tab(Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0 }), None);
+        self.tabs.push(tab);
         self.activate(self.tabs.len() - 1);
     }
 
@@ -1388,7 +1435,7 @@ impl App {
         let _ = strong;
     }
 
-    fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: usize, focused: bool) {
+    fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
@@ -1403,7 +1450,7 @@ impl App {
                 let hh = self.header_h();
                 let base = r.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
                 let mut x = r.x + self.px(m::HEADER_PAD_X);
-                x += self.fonts.draw(scene, strong, x, base, &format!("{:02} · {}", n, p.title).to_uppercase()) + self.px(14.0);
+                x += self.fonts.draw(scene, strong, x, base, &format!("{} · {}", n, p.title).to_uppercase()) + self.px(14.0);
                 let dims = format!("{}×{}", p.term.cols(), p.term.rows());
                 let dw = self.fonts.measure(label, &dims);
                 self.fonts.draw(scene, label, r.right() - self.px(m::HEADER_PAD_X) - dw, base, &dims);
@@ -1537,7 +1584,7 @@ impl App {
             PaletteMode::Go => {
                 for (i, t) in self.tabs.iter().enumerate() {
                     if hit(&t.title()) {
-                        rows.push(row(&format!("{:02}", i + 1), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
+                        rows.push(row(&self.tab_label(i), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
                     }
                 }
                 for p in &self.ports {
@@ -1738,6 +1785,18 @@ impl App {
         }
 
         // A close confirmation owns Enter / Esc.
+        if pressed && self.confirm_stack.is_some() {
+            match ev.logical_key {
+                WKey::Named(NamedKey::Enter) => {
+                    self.confirm_stack = None;
+                    self.close_tabs(true);
+                }
+                WKey::Named(NamedKey::Escape) => self.confirm_stack = None,
+                _ => {}
+            }
+            self.dirty = true;
+            return;
+        }
         if pressed {
             if let Some(Pane::Term(t)) = self.tabs.get_mut(self.active).map(|t| t.focused()) {
                 if t.confirm_close.is_some() {
@@ -1799,9 +1858,7 @@ impl App {
                 _ => None,
             };
             if let Some(n) = digit {
-                if n < self.tabs.len() {
-                    self.activate(n);
-                }
+                self.activate_stack(n);
                 return;
             }
             match code {
@@ -1993,6 +2050,113 @@ impl App {
         }
     }
 
+    fn make_tab(&mut self, left: Pane, right: Option<Pane>) -> Tab {
+        let id = self.next_id;
+        self.next_id += 1;
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false }
+    }
+
+    // ── Stacks ─────────────────────────────────────────────────────────
+    // A stack is a top-level tab plus the tabs pages opened from it (popups,
+    // target=_blank). Children sit right after their parent in `tabs`, show
+    // in the sidebar only while the stack is active, and share the parent's
+    // number: Ctrl+N goes to whichever member was used last.
+
+    /// Index of the stack's top-level tab.
+    fn stack_root(&self, i: usize) -> usize {
+        match self.tabs[i].parent {
+            Some(pid) => self.tabs.iter().position(|t| t.id == pid).unwrap_or(i),
+            None => i,
+        }
+    }
+
+    fn children(&self, root: usize) -> Vec<usize> {
+        let id = self.tabs[root].id;
+        (0..self.tabs.len()).filter(|&j| self.tabs[j].parent == Some(id)).collect()
+    }
+
+    /// Stacks unfold only while one of their members is active.
+    fn stack_open(&self, root: usize) -> bool {
+        self.stack_root(self.active) == root
+    }
+
+    fn top_level(&self) -> Vec<usize> {
+        (0..self.tabs.len()).filter(|&j| self.tabs[j].parent.is_none()).collect()
+    }
+
+    /// Sidebar / crumb label: top-level tabs count 01, 02, …; a child carries
+    /// its parent's number and a letter (03·b).
+    fn tab_label(&self, i: usize) -> String {
+        self.tab_label_of(&self.tabs, i)
+    }
+
+    fn tab_label_of(&self, tabs: &[Tab], i: usize) -> String {
+        let root = match tabs[i].parent {
+            Some(pid) => tabs.iter().position(|t| t.id == pid).unwrap_or(i),
+            None => i,
+        };
+        let n = (0..tabs.len()).filter(|&j| tabs[j].parent.is_none()).position(|j| j == root).map(|p| p + 1).unwrap_or(0);
+        if root == i {
+            format!("{n:02}")
+        } else {
+            let id = tabs[root].id;
+            let k = (0..tabs.len()).filter(|&j| tabs[j].parent == Some(id)).position(|j| j == i).unwrap_or(0);
+            format!("{n:02}·{}", (b'a' + (k % 26) as u8) as char)
+        }
+    }
+
+    /// Ctrl+N: the n-th stack, at its most recently used member.
+    fn activate_stack(&mut self, n: usize) {
+        let Some(&root) = self.top_level().get(n) else { return };
+        let members: Vec<usize> = std::iter::once(root).chain(self.children(root)).collect();
+        let target = self.mru.iter().copied().find(|t| members.contains(t)).unwrap_or(root);
+        self.activate(target);
+    }
+
+    /// Open `url` as a page in the stack of tab `source`.
+    fn open_in_stack(&mut self, source: usize, url: &str) {
+        let root = self.stack_root(source);
+        let Some(w) = self.new_web_pane(url) else { return };
+        let mut tab = self.make_tab(Pane::Web(w), None);
+        tab.parent = Some(self.tabs[root].id);
+        let at = self.children(root).last().copied().unwrap_or(root) + 1;
+        self.tabs.insert(at, tab);
+        // Indices after `at` shifted by one.
+        for t in self.mru.iter_mut() {
+            if *t >= at {
+                *t += 1;
+            }
+        }
+        self.selected = self.selected.iter().map(|&t| if t >= at { t + 1 } else { t }).collect();
+        if let Some(p) = self.pip.as_mut() {
+            if p.tab >= at {
+                p.tab += 1;
+            }
+        }
+        if self.active >= at {
+            self.active += 1;
+        }
+        self.activate(at);
+    }
+
+    /// Pages that asked for a new window since the last frame.
+    fn drain_popups(&mut self) {
+        let mut opens = Vec::new();
+        for (i, tab) in self.tabs.iter().enumerate() {
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Web(w) = p {
+                    if let Some(url) = w.tab.shared.borrow_mut().popup.take() {
+                        opens.push((i, url));
+                    }
+                }
+            }
+        }
+        for (i, url) in opens {
+            self.open_in_stack(i, &url);
+            self.dirty = true;
+        }
+    }
+
     /// Make tab `i` active and record it as most recently used.
     pub fn activate(&mut self, i: usize) {
         if i >= self.tabs.len() {
@@ -2103,12 +2267,8 @@ impl App {
     fn open_url(&mut self, url: &str, new_tab: bool) {
         if new_tab {
             if let Some(w) = self.new_web_pane(url) {
-                self.tabs.push(Tab {
-                    left: Pane::Web(w),
-                    right: None,
-                    focus_right: false,
-                    pinned: false,
-                });
+                let tab = self.make_tab(Pane::Web(w), None);
+                self.tabs.push(tab);
                 self.activate(self.tabs.len() - 1);
             }
         } else {
@@ -2129,12 +2289,8 @@ impl App {
 
     fn new_tab(&mut self, profile: usize) {
         if let Ok(t) = self.new_term_pane(false, profile) {
-            self.tabs.push(Tab {
-                left: Pane::Term(t),
-                right: None,
-                focus_right: false,
-                pinned: false,
-            });
+            let tab = self.make_tab(Pane::Term(t), None);
+            self.tabs.push(tab);
             self.activate(self.tabs.len() - 1);
         }
     }
@@ -2151,8 +2307,22 @@ impl App {
             }
             v
         };
+        // A parent takes its children along.
+        for i in targets.clone() {
+            if self.tabs[i].parent.is_none() {
+                targets.extend(self.children(i));
+            }
+        }
         targets.sort_unstable();
         targets.dedup();
+        if !force {
+            if let Some(&root) = targets.iter().find(|&&i| self.tabs[i].parent.is_none() && !self.children(i).is_empty()) {
+                self.confirm_stack = Some(root);
+                self.active = root;
+                self.dirty = true;
+                return;
+            }
+        }
         if targets.len() >= self.tabs.len() {
             // Never close the last tab; keep one.
             targets.retain(|&t| t != self.active);

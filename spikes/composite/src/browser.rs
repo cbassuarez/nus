@@ -31,6 +31,9 @@ pub struct Shared {
     /// screen_point → popup placement.
     pub origin: (f32, f32),
     pub window_pos: (i32, i32),
+    /// A page asked for a new window (target=_blank, window.open); the app
+    /// opens it as a tab in this tab's stack.
+    pub popup: Option<String>,
 }
 
 /// A video's state in CSS px relative to the viewport.
@@ -321,11 +324,11 @@ wrap_dev_tools_message_observer! {
 
 wrap_life_span_handler! {
     pub struct LifeBuilder {
-        _unit: (),
+        d: Display,
     }
 
     impl LifeSpanHandler {
-        // Popups would be separate native windows; this spike opens them in place.
+        // Popups would be separate native windows; hand the URL to the app instead.
         fn on_before_popup(
             &self,
             browser: Option<&mut Browser>,
@@ -342,10 +345,9 @@ wrap_life_span_handler! {
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
-            if let (Some(b), Some(url)) = (browser, target_url) {
-                if let Some(f) = b.main_frame() {
-                    f.load_url(Some(url));
-                }
+            let _ = browser;
+            if let Some(url) = target_url {
+                self.d.shared.borrow_mut().popup = Some(url.to_string());
             }
             1
         }
@@ -432,7 +434,7 @@ impl BrowserTab {
             DisplayBuilder::new(Display {
                 shared: shared.clone(),
             }),
-            LifeBuilder::new(()),
+            LifeBuilder::new(Display { shared: shared.clone() }),
         );
         let mut context = request_context_create_context(
             Some(&RequestContextSettings::default()),
