@@ -152,6 +152,42 @@
       "h": 900,
       "title": "Cursor",
       "page": "page-3"
+    },
+    {
+      "file": "HeaderMasthead.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-4",
+      "title": "A \u00b7 Masthead"
+    },
+    {
+      "file": "HeaderLedger.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-4",
+      "title": "B \u00b7 Ledger"
+    },
+    {
+      "file": "HeaderSpine.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-4",
+      "title": "C \u00b7 Spine"
+    },
+    {
+      "file": "HeaderSettings.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-4",
+      "title": "Settings \u00b7 motion \u00b7 flow"
     }
   ],
   "annotations": [
@@ -274,11 +310,19 @@
       "w": 640,
       "page": "page-3",
       "text": "CURSOR \u2014 shape, blink policy, colour (ink \u00b7 signal \u00b7 the tab's own \u00b7 custom), motion (jump \u00b7 glide \u00b7 comet trail on the motion register), beam width; the pointer over the chrome; hide while typing. Drawn by nus, not the shell."
+    },
+    {
+      "id": "n-header",
+      "x": 0,
+      "y": -150,
+      "w": 620,
+      "page": "page-4",
+      "text": "Sidebar header \u2014 three directions. Windows, not spaces; the name is the title the wordmark was holding; NEW TAB is the button hit most. Approve one or name the amalgam (e.g. Masthead title + Ledger next-row + Spine on hover)."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-3"
+    "page": "page-4"
   },
   "pages": [
     {
@@ -292,6 +336,10 @@
     {
       "id": "page-3",
       "name": "Look & feel (settings)"
+    },
+    {
+      "id": "page-4",
+      "name": "Sidebar header"
     }
   ]
 }

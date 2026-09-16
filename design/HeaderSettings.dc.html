@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; font-style: italic; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .sig { color: #c8102e; }
+    .sb { width: 248px; background: #141414; border-right: 1.5px solid #ece7da; display: flex; flex-direction: column; box-sizing: border-box; flex-shrink: 0; position: relative; }
+    .band { height: 6px; background: #c8102e; }
+    .row { height: 32px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid rgba(236,231,218,0.18); white-space: nowrap; }
+    .row .n { width: 10px; color: #8a857a; font-size: 11px; }
+    .row.on { background: rgba(236,231,218,0.07); font-weight: 600; box-shadow: inset 3px 0 0 #c8102e; }
+    .rule { border-bottom: 1.5px solid #ece7da; }
+    .sq { width: 10px; height: 10px; background: #c8102e; flex-shrink: 0; }
+    .sq.o { background: none; border: 1px solid #ece7da; box-sizing: border-box; }
+    .inv { background: #ece7da; color: #141414; }
+    .foot { margin-top: auto; height: 44px; border-top: 1.5px solid #ece7da; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+    .av { width: 22px; height: 22px; border-radius: 50%; background: #8a857a; }
+    .frame { display: flex; flex-direction: column; gap: 6px; }
+    .frame > .cap { color: #8a857a; }
+    .term { flex-grow: 1; padding: 14px 18px; white-space: pre; line-height: 1.55; opacity: 0.55; }
+    .k { width: 140px; flex-shrink: 0; color: #8a857a; }
+    .v { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { padding: 5px 10px; border: 1px solid #ece7da; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .chip.on { background: #ece7da; color: #141414; }
+    .srow { display: flex; gap: 18px; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; }
+    .note { font-size: 12px; line-height: 1.6; color: #8a857a; max-width: 420px; }
+    .note b { color: #ece7da; font-weight: 600; }
+    .drop { position: absolute; left: 0; right: 0; background: #141414; border-bottom: 1.5px solid #ece7da; box-shadow: 0 8px 0 rgba(236,231,218,0.18); z-index: 2; }
+    .dashed { border-bottom: 1px dashed #8a857a; color: #8a857a; }
+    .tl { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; font-size: 12px; align-items: center; }
+    .bar { height: 6px; background: #ece7da; }
+    .bar.s { background: #c8102e; }
+</style>
+</helmet>
+
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 36px 40px; display:flex; gap: 60px; overflow:hidden;">
+  <div style="width: 640px">
+    <h1>Settings · sidebar › header</h1>
+    <div class="note" style="margin: 8px 0 18px">One group in the SIDEBAR section. Every design above is a preset of these rows; an amalgam is just another combination.</div>
+    <div class="srow"><span class="k cap">header</span><span class="v"><span class="chip on">masthead</span><span class="chip ">ledger</span><span class="chip ">spine</span></span></div>
+    <div class="srow"><span class="k cap">window name</span><span class="v"><span class="chip on">auto · editable</span><span class="chip ">fixed</span></span></div>
+    <div class="srow"><span class="k cap">dateline</span><span class="v"><span class="chip on">cwd · tabs · ports</span><span class="chip ">cwd</span><span class="chip ">off</span></span></div>
+    <div class="srow"><span class="k cap">new tab</span><span class="v"><span class="chip on">band</span><span class="chip ">next row</span><span class="chip ">both</span></span></div>
+    <div class="srow"><span class="k cap">new tab click</span><span class="v"><span class="chip on">default shell</span><span class="chip ">ask</span><span class="chip ">same kind</span></span></div>
+    <div class="srow"><span class="k cap">kinds</span><span class="v"><span class="chip on">hold + right-click</span><span class="chip ">caret</span><span class="chip ">both</span></span></div>
+    <div class="srow"><span class="k cap">windows</span><span class="v"><span class="chip on">name is the list</span><span class="chip ">spine left</span><span class="chip ">spine right</span><span class="chip ">atlas only</span></span></div>
+    <div class="srow"><span class="k cap">band</span><span class="v"><span class="chip on">inverted</span><span class="chip ">outlined</span></span></div>
+    <div class="srow"><span class="k cap">press</span><span class="v"><span class="chip on">flash</span><span class="chip ">fill</span><span class="chip ">none</span></span></div>
+  </div>
+  <div style="flex-grow:1">
+    <h1>Motion</h1>
+    <div class="note" style="margin: 8px 0 18px">All on the motion register (snappy 0.45× … cinematic 2.2×). Base durations below; ease-out cubic; nothing scales or blurs.</div>
+    <div class="tl">
+      <span class="cap dim">hover fill</span><div class="bar" style="width:60px"></div>
+      <span class="cap dim">caret fade</span><div class="bar" style="width:80px"></div>
+      <span class="cap dim">press flash</span><div style="display:flex"><div class="bar" style="width:40px"></div><div class="bar s" style="width:40px"></div><div class="bar" style="width:40px"></div></div>
+      <span class="cap dim">row grows in</span><div class="bar" style="width:140px"></div>
+      <span class="cap dim">list unfolds</span><div class="bar" style="width:160px"></div>
+      <span class="cap dim">list rows stagger</span><div style="display:flex; gap:4px"><div class="bar" style="width:20px"></div><div class="bar" style="width:20px"></div><div class="bar" style="width:20px"></div><div class="bar" style="width:20px"></div></div>
+      <span class="cap dim">fan-out</span><div class="bar" style="width:140px"></div>
+      <span class="cap dim">window switch</span><div class="bar" style="width:140px"></div>
+      <span class="cap dim">rename commit</span><div class="bar" style="width:120px"></div>
+      <span class="cap dim">tooltip rise</span><div class="bar" style="width:80px"></div>
+      <span class="cap dim"></span><span class="dim" style="font-size:10px">60 · 80 · 120 · 140 · 160 · 20×n · 140 · 140 · 120 · 80 ms</span>
+    </div>
+    <h1 style="margin-top:36px">Flow</h1>
+    <div class="note" style="margin-top:8px">
+      <b>Ctrl T</b> palette (new) · <b>Ctrl Shift T</b> reopen · <b>Ctrl N</b> new window · <b>F2</b> rename window · <b>Ctrl 1–9</b> tabs · <b>Ctrl Shift 1–9</b> windows.<br>
+      Click NEW TAB → shell in the default profile; rules colour it. Hold 240ms / right-click / caret → kinds.<br>
+      Windows are OS windows. Auto-name: git root of the first shell’s cwd → dominant host → “Window n”; <code>window_name(ctx)</code> in rules.luau.<br>
+      The name shows in the sidebar header, the atlas, the OS title bar, and Alt-Tab.
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>
