@@ -75,6 +75,12 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - **SetCursorPos alone yields no CursorMoved** in winit; hover tests need
   relative `mouse_event` deltas (`$TEMP/hover2.ps1`).
 
+- **The exe icon is a resource.** `winresource` in build.rs embeds
+  `assets/icon/nus.ico`; `set_window_icon` alone leaves Alt-Tab and
+  Explorer on the default glyph until the window exists.
+- **HSL in 0..1.** `surface::to_hsl` returns hue as a fraction of a turn;
+  the picker multiplies for display only.
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - CEF popup surfaces (`<select>` dropdowns) are not composited.

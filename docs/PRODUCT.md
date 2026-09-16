@@ -343,3 +343,27 @@ bob, swing. No icon is ever a bare glyph you have to guess at.
 
 **Look chip.** Paper · ink · signal in the footer, fanned on hover;
 opens the look pages. Settings are grouped LOOK · FEEL · WORK · SYSTEM.
+
+## The look studio (settled 2026-09-16, tenth pass)
+
+**One roof.** Appearance, surface, theme and cursor are one section,
+LOOK: a live **proof** of the window at the top (carapace with its ramp
+and texture, chrome, sidebar, a shell with coloured runs and the cursor,
+a page), a tab strip beneath — PRESETS · SURFACE · TOKENS · TYPE &
+MOTION · CURSOR — and the rows of the tab you're on. What you change,
+you see change in the proof and in the window around it.
+
+**Neobrutal tokens.** Presets are cards faced with their own ramp, the
+signal as a chip, the name in Newsreader; a hard offset shadow, a 2px
+ink outline, the current one ringed. Tokens are big tiles with name and
+hex under them; ANSI as a row of small tiles. Tiles lift on hover.
+
+**A real picker.** Pick a tile and hue / saturation / lightness sliders
+appear with a tray of candidates (the signal's family, the swatches, the
+mode's papers or inks). Any token can be any colour; the tray is a
+shortcut, not a limit.
+
+**Icon and text.** The icon is embedded in the exe and set on every
+window from the first frame — never the default exe glyph. Sidebar text
+fits, or marquees when its row is active or hovered, or clips under a
+fade; never an ellipsis.
