@@ -136,6 +136,22 @@ impl Instance {
     }
 }
 
+impl Instance {
+    /// Grain overlay: speckles of `color` (its alpha = strength), `grain` px each.
+    pub fn grain(r: Rect, color: Color, grain: f32) -> Instance {
+        Instance {
+            pos: [r.x, r.y],
+            size: [r.w, r.h],
+            uv: [0.0; 4],
+            color,
+            kind: 6,
+            color2: 0,
+            phase: grain,
+            _pad: 0,
+        }
+    }
+}
+
 pub fn pack(c: Color) -> u32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
     q(c[0]) | (q(c[1]) << 8) | (q(c[2]) << 16) | (q(c[3]) << 24)

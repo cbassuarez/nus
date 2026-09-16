@@ -39,6 +39,8 @@ pub struct Pip {
     pub last_frame: Instant,
     pub last_click: Instant,
     pub dragging: bool,
+    /// Left button is down (a drag starts once the cursor moves).
+    pub pressed: bool,
     /// Desktop work area (logical) for snapping.
     pub area: LRect,
 }
@@ -67,6 +69,7 @@ impl Pip {
             last_frame: Instant::now(),
             last_click: Instant::now() - Duration::from_secs(1),
             dragging: false,
+            pressed: false,
             area,
         }
     }
@@ -236,6 +239,7 @@ impl App {
             }
         }
         pip.scene.rect(Rect::new(0.0, 0.0, w, band), self.signal);
+        pip.scene.push(nus_render::Instance::grain(Rect::new(0.0, 0.0, w, h), [1.0, 1.0, 1.0, 0.07], 1.0 * scale));
         if pip.focused {
             let t = (m::FLOATING * scale).round();
             pip.scene.push(nus_render::Instance::stroke(Rect::new(0.0, 0.0, w, h), 0.0, t, theme.ink, None, 0.0));
@@ -307,10 +311,15 @@ impl App {
                     return;
                 }
                 pip.last_click = Instant::now();
-                pip.dragging = true;
-                let _ = pip.window.drag_window();
+                pip.focused = true;
+                pip.window.focus_window();
+                pip.pressed = true;
             }
             ElementState::Released => {
+                pip.pressed = false;
+                if !pip.dragging {
+                    return;
+                }
                 pip.dragging = false;
                 let pos = pip.window.outer_position().map(|p| (p.x as f64, p.y as f64)).unwrap_or((pip.cur.x, pip.cur.y));
                 let scale = pip.window.scale_factor();
@@ -319,6 +328,22 @@ impl App {
                 let center = (cur.x + cur.w / 2.0, cur.y + cur.h / 2.0);
                 let to = pip.snap_target(cur.w, cur.h, center);
                 pip.animate_to(to);
+            }
+        }
+    }
+
+    pub fn pip_cursor_entered(&mut self) {
+        if let Some(p) = self.pip.as_mut() {
+            p.window.focus_window();
+            p.focused = true;
+        }
+    }
+
+    pub fn pip_cursor_moved(&mut self) {
+        if let Some(p) = self.pip.as_mut() {
+            if p.pressed && !p.dragging {
+                p.dragging = true;
+                let _ = p.window.drag_window();
             }
         }
     }

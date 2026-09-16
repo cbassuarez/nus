@@ -68,6 +68,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if in.kind == 0u {
         return in.color;
     }
+    if in.kind == 6u {
+        // Paper grain: hashed speckle in screen space, alpha scaled by color.a.
+        let p = floor(in.clip.xy / max(in.phase, 1.0));
+        let n = fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+        return vec4(in.color.rgb, in.color.a * n);
+    }
     if in.kind == 1u {
         let s = textureSample(tex, tex_sampler, in.uv);
         return vec4(in.color.rgb, in.color.a * s.r);

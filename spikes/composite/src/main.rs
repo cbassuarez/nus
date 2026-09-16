@@ -81,6 +81,8 @@ impl ApplicationHandler<UserEvent> for Host {
                 WindowEvent::Moved(p) => a.pip_moved(p.x, p.y),
                 WindowEvent::KeyboardInput { event, .. } => a.pip_key(&event),
                 WindowEvent::MouseInput { state, button, .. } => a.pip_mouse(button, state),
+                WindowEvent::CursorEntered { .. } => a.pip_cursor_entered(),
+                WindowEvent::CursorMoved { .. } => a.pip_cursor_moved(),
                 WindowEvent::MouseWheel { delta, .. } => a.pip_wheel(delta),
                 WindowEvent::RedrawRequested => a.pip_frame(),
                 _ => {}
