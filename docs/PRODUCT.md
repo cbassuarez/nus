@@ -52,3 +52,47 @@ the v1 crates implement; change the doc when a decision changes.
 ## Ops
 - Self-update from GitHub Releases, offered in the top strip. No telemetry.
   Crashes write a local log only.
+
+## Navigation (settled 2026-09-16, second pass)
+
+**Modifier.** App chords are ⌘ on macOS and **Ctrl+Shift** on Windows/Linux, so
+they never reach the shell (Ctrl+T/K/L/W/D/R are shell keys). Ctrl+1–9 is the
+one plain-Ctrl chord: tab by position (shells don't use it).
+
+| chord (Win/Linux · mac) | action |
+|---|---|
+| Ctrl+Shift+T · ⌘T | new tab → palette in *new* mode |
+| Ctrl+Shift+K · ⌘K | palette in *go* mode |
+| Ctrl+Shift+L · ⌘L | palette in *url* mode (browser pane) |
+| Ctrl+Shift+W · ⌘W | close tab (closes every selected tab; asks first if a foreground process is running) |
+| Ctrl+Shift+Z · ⌘Z | reopen last closed tab (profile + cwd, or URL) |
+| Ctrl+Shift+D · ⌘D | toggle the browser split |
+| Ctrl+Shift+S · ⌘⇧S | sidebar |
+| Ctrl+1–9 · ⌘1–9 | tab N |
+| Ctrl+` · ⌃` | cycle tabs most-recently-used (Ctrl+Tab is left to the OS) |
+| Ctrl+PgUp/PgDn · ⌘⇧[ ] | previous / next tab in order |
+| Ctrl+Enter · ⌘↵ | open the detected localhost URL in the split; +Shift → new tab |
+
+**New tab** opens the palette (*new*): profile rows for a terminal, or type a
+URL / search terms for a browser tab. Empty Enter → default shell.
+
+**URL at a shell prompt.** If the entire line typed at a fresh prompt is a URL
+(scheme, `localhost[:port]`, or `host.tld[/path]` with a known TLD) and you
+press Enter, nus clears the line and opens the page in the split beside the
+terminal (Ctrl+Shift+Enter: new tab). A ruled hint appears as you type
+(`↵ opens in browser · Ctrl+↵ runs in shell`). Any editing key (arrows,
+history, Ctrl+…) disqualifies the line until the next Enter. Bare words never
+trigger. This is the browser-session-from-a-terminal feature.
+
+**Browser panes** mirror Chrome while focused: Ctrl+L url, Ctrl+R / F5
+reload, Alt+←/→ back/forward, Ctrl+plus/minus/0 zoom, Ctrl+F find, F12
+devtools. App chords stay Ctrl+Shift.
+
+**Palette.** *go*: tabs → actions → open-URL / search rows. URL vs search is
+auto-detected and both rows are always offered. *new*: profiles → browser
+row. *url*: navigate the browser pane.
+
+**Sidebar.** A pinned row on top (durable tabs: your shell, the dev server),
+then one list in creation order. Ctrl+click toggles selection, Shift+click
+selects a range; close acts on the selection. Pin/unpin via the palette or
+the tab's row menu.
