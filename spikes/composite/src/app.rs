@@ -131,7 +131,13 @@ pub struct WebPane {
     /// Reader mode over this page, and the pending extraction call.
     pub reader: Option<crate::reader::Reader>,
     pub reader_req: Option<i32>,
+    /// The favicon as a texture, keyed by its URL.
+    pub favicon: Option<(String, Arc<wgpu::BindGroup>)>,
+    /// Which DevTools panel: 0 console, 1 network, 2 elements.
+    pub dt_panel: usize,
 }
+
+pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::icons::CONSOLE), ("network", nus_render::text::icons::NETWORK), ("elements", nus_render::text::icons::CODE)];
 
 pub struct SettingsPane {
     pub rect: Rect,
@@ -511,6 +517,8 @@ impl App {
             boosted: String::new(),
             reader: None,
             reader_req: None,
+            favicon: None,
+            dt_panel: 0,
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             focus_devtools: false,
@@ -686,6 +694,7 @@ impl App {
         self.drain_popups();
         self.apply_boosts();
         self.poll_reader();
+        self.sync_favicons();
         // Links from outside.
         let handed: Vec<String> = self.urls_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
         for u in handed {
@@ -865,6 +874,45 @@ impl App {
 
     fn reader_fonts(&self) -> crate::reader::ReaderFonts {
         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+    }
+
+    /// Favicons that arrived since last frame become small textures.
+    fn sync_favicons(&mut self) {
+        let device = self.device.clone();
+        let queue = self.gpu.queue.clone();
+        let binder = self.bind_texture.clone();
+        let mut changed = false;
+        for tab in self.tabs.iter_mut() {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                let Pane::Web(w) = p else { continue };
+                let fav = w.tab.shared.borrow().favicon.clone();
+                let Some(f) = fav else { continue };
+                if w.favicon.as_ref().is_some_and(|(u, _)| *u == f.url) {
+                    continue;
+                }
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("favicon"),
+                    size: wgpu::Extent3d { width: f.w, height: f.h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &f.bgra,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(f.w * 4), rows_per_image: Some(f.h) },
+                    wgpu::Extent3d { width: f.w, height: f.h, depth_or_array_layers: 1 },
+                );
+                w.favicon = Some((f.url.clone(), binder(&tex)));
+                changed = true;
+            }
+        }
+        if changed {
+            self.dirty = true;
+        }
     }
 
     fn anims_active(&self) -> bool {
@@ -1214,19 +1262,45 @@ impl App {
             }
         };
         if focused_web {
-            // The crumb becomes the URL field while a browser pane is focused.
-            let field = Rect::new(x, strip.y + self.px(4.0), (strip.w * 0.42).min(self.px(640.0)), strip.h - self.px(8.0));
-            if is_local(&url) {
-                scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.surface.signal, ink, self.px(8.0)));
-            } else {
-                scene.outline(field, self.px(m::HAIRLINE), ink);
-            }
+            // The crumb is the site: favicon, title, host. Click to edit the URL.
+            let (title, fav) = {
+                let tab = &self.tabs[self.active];
+                let pane = if tab.focus_right && tab.right.is_some() { tab.right.as_ref().unwrap() } else { &tab.left };
+                match pane {
+                    Pane::Web(w) => (w.tab.shared.borrow().title.clone(), w.favicon.as_ref().map(|(_, b)| b.clone())),
+                    _ => (String::new(), None),
+                }
+            };
+            let host = url.split("//").nth(1).unwrap_or(&url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
             let ui = self.ui();
-            let small = Style { px: self.px(12.0), ..ui };
-            let shown = self.fit(small, url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'), field.w - self.px(16.0));
-            self.fonts.draw(&mut scene, small, field.x + self.px(8.0), lbase, &shown);
+            let dim_ui = Style { color: t.dim, ..ui };
+            let maxw = (strip.w * 0.42).min(self.px(640.0));
+            let start = x;
+            match fav {
+                Some(b) => {
+                    scene.texture(Rect::new(x, iy, ic, ic), b, None);
+                    scene.layer(None);
+                }
+                None => {
+                    self.fonts.draw_icon(&mut scene, nus_render::text::icons::GLOBE, ic, x, iy, ink);
+                }
+            }
+            x += ic + self.px(8.0);
+            let shown_title = if title.is_empty() { host.clone() } else { title.clone() };
+            let host_text = if title.is_empty() || host.is_empty() { String::new() } else { format!(" · {host}") };
+            let hw = self.fonts.measure(dim_ui, &host_text);
+            let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..ui };
+            let tfit = self.fit(fade, &shown_title, maxw - (x - start) - hw);
+            x += self.fonts.draw(&mut scene, fade, x, lbase, &tfit);
+            if !host_text.is_empty() {
+                x += self.fonts.draw(&mut scene, dim_ui, x, lbase, &host_text);
+            }
+            let field = Rect::new(start, strip.y, x - start + self.px(8.0), strip.h);
+            if is_local(&url) {
+                scene.hline(start, strip.bottom() - self.px(3.0), x - start, self.px(2.0), self.surface.signal);
+            }
             self.crumb_hits.push((field, CrumbHit::Url));
-            x = field.right() + self.px(18.0);
+            x += self.px(18.0);
         } else {
             let tab = &self.tabs[self.active];
             let (icon, title) = match &tab.left {
@@ -1664,7 +1738,18 @@ impl App {
                 Pane::Hints(_) => nus_render::text::icons::HOME,
             };
             let isz = self.px(14.0);
-            x += self.fonts.draw_icon(scene, icon, isz, x, base - isz + self.px(2.0), ink) + self.px(10.0);
+            let fav = match &tab.left {
+                Pane::Web(w) => w.favicon.as_ref().map(|(_, b)| b.clone()),
+                _ => None,
+            };
+            match fav {
+                Some(b) => {
+                    scene.texture(Rect::new(x, base - isz + self.px(2.0), isz, isz), b, None);
+                    scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
+                    x += isz + self.px(10.0);
+                }
+                None => x += self.fonts.draw_icon(scene, icon, isz, x, base - isz + self.px(2.0), ink) + self.px(10.0),
+            }
             let (title, detail) = tab.row_text();
             let tag = if waiting {
                 "WAITING".to_string()
@@ -2073,14 +2158,16 @@ impl App {
                 scene.hline(r.x, ty, r.w, self.px(m::HAIRLINE), ink);
                 let base = ty + self.px(8.0) + self.px(m::LABEL_PX);
                 let mut x = r.x + self.px(14.0);
-                for (i, s) in ["CONSOLE", "NETWORK", "ELEMENTS"].iter().enumerate() {
-                    let st = if i == 0 { strong } else { label };
-                    let w = self.fonts.draw(scene, st, x, base, s);
-                    if i == 0 {
-                        scene.hline(x, base + self.px(3.0), w, self.px(1.5), ink);
+                let tsz = self.px(15.0);
+                for (i, (_, icon)) in DT_PANELS.iter().enumerate() {
+                    let on = i == p.dt_panel && p.devtools.is_some();
+                    self.fonts.draw_icon(scene, *icon, tsz, x, base - tsz + self.px(3.0), if on { ink } else { t.dim });
+                    if on {
+                        scene.hline(x, base + self.px(5.0), tsz, self.px(1.5), ink);
                     }
-                    x += w + self.px(16.0);
+                    x += tsz + self.px(m::NAV_SLOT) - tsz + self.px(2.0);
                 }
+                let _ = (strong, label);
                 let isz = self.px(13.0);
                 let mut rx = r.right() - self.px(14.0);
                 if focused {
@@ -2809,6 +2896,20 @@ impl App {
         self.layout();
     }
 
+    /// Pick a DevTools panel; reopens the frontend on that panel.
+    fn switch_devtools_panel(&mut self, right: bool, k: usize) {
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+        if let Some(Pane::Web(w)) = pane {
+            w.dt_panel = k.min(DT_PANELS.len() - 1);
+            if w.devtools.is_some() {
+                w.tab.close_devtools();
+                w.devtools = None;
+            }
+            self.devtools_request = Some((self.active, right));
+        }
+    }
+
     /// Create a requested DevTools browser outside of event handling.
     pub fn process_requests(&mut self) {
         let Some((tab, right)) = self.devtools_request.take() else { return };
@@ -2818,7 +2919,8 @@ impl App {
         let Some(t) = self.tabs.get_mut(tab) else { return };
         let pane = if right { t.right.as_mut() } else { Some(&mut t.left) };
         if let Some(Pane::Web(w)) = pane {
-            w.devtools = w.tab.open_devtools(device, binder, scale);
+            let panel = DT_PANELS[w.dt_panel.min(DT_PANELS.len() - 1)].0;
+            w.devtools = w.tab.open_devtools(device, binder, scale, panel);
             w.focus_devtools = w.devtools.is_some();
             tracing::info!("devtools opened: {}", w.devtools.is_some());
         }
@@ -3186,6 +3288,7 @@ impl App {
         let mut open_url_palette = false;
         let mut toggle_devtools = false;
         let mut toggle_reader = false;
+        let mut switch_panel: Option<(bool, usize)> = None;
         let mut focus_dt: Option<(bool, bool)> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
             match p {
@@ -3210,9 +3313,23 @@ impl App {
                         continue;
                     }
                     let tools_row = Rect::new(w.rect.x, w.dt_rect.bottom().max(w.page.bottom()), w.rect.w, w.rect.bottom() - w.dt_rect.bottom().max(w.page.bottom()));
-                    if pressed && button == MouseButton::Left && tools_row.contains(x, y) && x > w.rect.right() - 160.0 * scale && w.devtools.is_some() {
-                        toggle_devtools = true;
-                        continue;
+                    if pressed && button == MouseButton::Left && tools_row.contains(x, y) {
+                        let nav_x = x - (w.rect.x + 14.0 * scale);
+                        let slot = (m::NAV_SLOT + 2.0) * scale;
+                        if nav_x >= 0.0 && nav_x < 3.0 * slot {
+                            let k = (nav_x / slot) as usize;
+                            // Same panel with DevTools open closes it; another switches.
+                            if w.devtools.is_some() && w.dt_panel == k {
+                                toggle_devtools = true;
+                            } else {
+                                switch_panel = Some((is_right, k));
+                            }
+                            continue;
+                        }
+                        if x > w.rect.right() - 160.0 * scale && w.devtools.is_some() {
+                            toggle_devtools = true;
+                            continue;
+                        }
                     }
                     if let Some(d) = &w.devtools {
                         if w.dt_rect.contains(x, y) {
@@ -3268,6 +3385,9 @@ impl App {
         }
         if toggle_devtools {
             self.toggle_devtools();
+        }
+        if let Some((right, k)) = switch_panel {
+            self.switch_devtools_panel(right, k);
         }
         if toggle_reader {
             self.toggle_reader();

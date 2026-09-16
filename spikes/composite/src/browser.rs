@@ -40,6 +40,17 @@ pub struct Shared {
     /// Results of CDP calls made with `devtools`, by message id; the app
     /// drains the ones it asked for.
     pub replies: Vec<(i32, serde_json::Value)>,
+    /// The page's favicon, straight-alpha BGRA, once downloaded.
+    pub favicon: Option<Favicon>,
+    pub favicon_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Favicon {
+    pub url: String,
+    pub w: u32,
+    pub h: u32,
+    pub bgra: Vec<u8>,
 }
 
 /// Instant with a Default, so Shared can derive it.
@@ -279,6 +290,36 @@ wrap_display_handler! {
             }
         }
 
+        fn on_favicon_urlchange(&self, browser: Option<&mut Browser>, icon_urls: Option<&mut CefStringList>) {
+            let Some(list) = icon_urls else { return };
+            let raw: *const cef::sys::_cef_string_list_t = (&*list).into();
+            let Some(raw) = (unsafe { raw.as_ref() }) else { return };
+            let raw = raw as *const _ as *mut cef::sys::_cef_string_list_t;
+            let mut first = None;
+            unsafe {
+                let n = cef::sys::cef_string_list_size(raw);
+                for i in 0..n {
+                    let mut v = std::mem::zeroed();
+                    if cef::sys::cef_string_list_value(raw, i, &mut v) > 0 {
+                        let s = CefString::from(std::ptr::from_ref(&v)).to_string();
+                        // Prefer a raster icon; SVG favicons don't rasterize here.
+                        if first.is_none() || (!s.ends_with(".svg") && first.as_deref().is_some_and(|f: &str| f.ends_with(".svg"))) {
+                            first = Some(s);
+                        }
+                    }
+                }
+            }
+            let Some(url) = first else { return };
+            if self.d.shared.borrow().favicon_url == url {
+                return;
+            }
+            self.d.shared.borrow_mut().favicon_url = url.clone();
+            if let Some(h) = browser.and_then(|b| b.host()) {
+                let mut cb = FaviconBuilder::new(FaviconSink { shared: self.d.shared.clone(), url: url.clone() });
+                h.download_image(Some(&url.as_str().into()), 1, 64, 0, Some(&mut cb));
+            }
+        }
+
         fn on_loading_progress_change(&self, _browser: Option<&mut Browser>, progress: f64) {
             let mut s = self.d.shared.borrow_mut();
             if progress >= 1.0 && s.loading {
@@ -286,6 +327,36 @@ wrap_display_handler! {
             }
             s.loading = progress < 1.0;
             s.progress = progress;
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct FaviconSink {
+    pub shared: SharedRef,
+    pub url: String,
+}
+
+wrap_download_image_callback! {
+    pub struct FaviconBuilder {
+        f: FaviconSink,
+    }
+
+    impl DownloadImageCallback {
+        fn on_download_image_finished(&self, _image_url: Option<&CefString>, http_status_code: ::std::os::raw::c_int, image: Option<&mut Image>) {
+            let Some(img) = image else { return };
+            if http_status_code >= 400 || img.is_empty() != 0 {
+                return;
+            }
+            let (mut w, mut h) = (0i32, 0i32);
+            let Some(bin) = img.as_bitmap(1.0, ColorType::BGRA_8888, AlphaType::POSTMULTIPLIED, Some(&mut w), Some(&mut h)) else { return };
+            let mut bytes = vec![0u8; bin.size()];
+            let n = bin.data(Some(&mut bytes), 0);
+            bytes.truncate(n);
+            if w <= 0 || h <= 0 || bytes.len() < (w * h * 4) as usize {
+                return;
+            }
+            self.f.shared.borrow_mut().favicon = Some(Favicon { url: self.f.url.clone(), w: w as u32, h: h as u32, bgra: bytes });
         }
     }
 }
@@ -538,9 +609,9 @@ impl BrowserTab {
 
     /// Open the DevTools frontend for this page as a browser we composite.
     /// (CEF refuses windowless DevTools windows in the Chrome runtime.)
-    pub fn open_devtools(&self, device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, scale: f32) -> Option<DevToolsView> {
+    pub fn open_devtools(&self, device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, scale: f32, panel: &str) -> Option<DevToolsView> {
         let target = self.shared.borrow().target_id.clone()?;
-        let url = format!("http://127.0.0.1:{DEVTOOLS_PORT}/devtools/inspector.html?ws=127.0.0.1:{DEVTOOLS_PORT}/devtools/page/{target}");
+        let url = format!("http://127.0.0.1:{DEVTOOLS_PORT}/devtools/inspector.html?ws=127.0.0.1:{DEVTOOLS_PORT}/devtools/page/{target}&panel={panel}");
         let shared: SharedRef = StdRc::new(RefCell::new(Shared { scale, size: (400.0, 300.0), ..Default::default() }));
         BrowserTab::create(&url, shared, device, bind_texture)
     }

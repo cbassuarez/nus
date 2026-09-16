@@ -377,6 +377,13 @@ pub mod icons {
     icon!(CIRCLE, "circle");
     icon!(BOOK, "book-open");
     icon!(BOOK_TEXT, "book-open-text");
+    icon!(CONSOLE, "terminal");
+    icon!(NETWORK, "network");
+    icon!(PLANET, "planet");
+    icon!(ROCKET, "rocket-launch");
+    icon!(HISTORY, "clock-counter-clockwise");
+    icon!(SPEAKER, "speaker-high");
+    icon!(SPEAKER_OFF, "speaker-slash");
 }
 
 impl FontSystem {
