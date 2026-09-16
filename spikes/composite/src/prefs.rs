@@ -18,6 +18,7 @@ pub struct Prefs {
     pub behavior: Option<Behavior>,
     pub sidebar_pinned: Option<bool>,
     pub sound: Option<crate::sound::SoundPrefs>,
+    pub window_rect: Option<(i32, i32, u32, u32)>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -53,6 +54,7 @@ impl App {
         if let Some(s) = p.sound {
             self.sound.prefs = s;
         }
+        self.window_rect = p.window_rect;
     }
 
     pub(crate) fn save_prefs(&self) {
@@ -64,6 +66,7 @@ impl App {
             behavior: Some(self.behavior.clone()),
             sidebar_pinned: Some(self.sidebar),
             sound: Some(self.sound.prefs.clone()),
+            window_rect: self.window_rect,
         };
         let _ = std::fs::create_dir_all(path().parent().unwrap());
         let _ = std::fs::write(path(), serde_json::to_string_pretty(&p).unwrap_or_default());

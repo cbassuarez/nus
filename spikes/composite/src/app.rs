@@ -311,6 +311,14 @@ pub struct App {
     /// URLs handed over by later launches (see little::claim).
     pub urls_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub register_note: String,
+    pub login_note: String,
+    /// The launch sequence's "then" has run.
+    pub then_done: bool,
+    pub window_rect: Option<(i32, i32, u32, u32)>,
+    /// A row was picked in a persistent Atlas, so Esc may close it now.
+    pub atlas_used: bool,
+    /// Save the rect a beat after the last move, not on every pixel.
+    pub window_rect_dirty: Option<Instant>,
     /// Surface page state: which preset is on, which stop is selected.
     pub preset_name: String,
     pub stop_sel: usize,
@@ -444,6 +452,11 @@ impl App {
             little_pos: (0.0, 0.0),
             urls_rx: None,
             register_note: String::new(),
+            login_note: String::new(),
+            then_done: false,
+            window_rect: None,
+            atlas_used: false,
+            window_rect_dirty: None,
             preset_name: "broadsheet".into(),
             stop_sel: 0,
             settings_reach: 0.0,
@@ -750,6 +763,7 @@ impl App {
 
     pub fn resize(&mut self, w: u32, h: u32) {
         self.target.resize(&self.gpu.device, w, h);
+        self.remember_window();
         self.layout();
         self.resize_due = Some(Instant::now() + std::time::Duration::from_millis(80));
     }
@@ -760,14 +774,30 @@ impl App {
         self.apply_boosts();
         self.poll_reader();
         self.sync_favicons();
-        // The Start modal greets the second frame (the first is the window).
+        // Once the splash has gone: the "then" step, then Atlas if asked.
         if !self.start_shown && self.splash.is_none() {
             self.start_shown = true;
-            if self.behavior.start_on_launch {
+            if !self.then_done {
+                self.then_done = true;
+                match self.behavior.then {
+                    crate::settings::Then::Restore => self.restore_session_pub(),
+                    crate::settings::Then::LastPage => {
+                        if let Some(crate::start::Saved::Page { url, .. }) = self.recent.iter().find(|r| matches!(r.item, crate::start::Saved::Page { .. })).map(|r| r.item.clone()) {
+                            self.open_url(&url, true);
+                        }
+                    }
+                    crate::settings::Then::Shell => {}
+                }
+            }
+            if self.behavior.atlas != crate::settings::AtlasMode::Planet {
                 self.open_start();
             }
         }
         self.track_session();
+        if self.window_rect_dirty.is_some_and(|t| t.elapsed().as_millis() > 500) {
+            self.window_rect_dirty = None;
+            self.save_prefs();
+        }
         // Links from outside.
         let handed: Vec<String> = self.urls_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
         for u in handed {
@@ -3646,7 +3676,22 @@ impl App {
         }
     }
 
+    /// The window's outer rect, remembered for "last size & place".
+    pub(crate) fn remember_window(&mut self) {
+        if self.fullscreen || self.window.is_maximized() {
+            return;
+        }
+        if let (Ok(p), s) = (self.window.outer_position(), self.window.inner_size()) {
+            let r = (p.x, p.y, s.width, s.height);
+            if self.window_rect != Some(r) && s.width > 200 && s.height > 200 {
+                self.window_rect = Some(r);
+                self.window_rect_dirty = Some(Instant::now());
+            }
+        }
+    }
+
     pub fn window_moved(&mut self, x: i32, y: i32) {
+        self.remember_window();
         for tab in &self.tabs {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                 if let Pane::Web(w) = p {

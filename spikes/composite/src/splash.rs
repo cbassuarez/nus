@@ -21,7 +21,6 @@ pub struct Splash {
 /// Seconds the swoosh takes to draw (before the motion register).
 const DRAW: f32 = 0.7;
 /// Never shorter than this; never longer than the max, ready or not.
-const MIN: f32 = 1.0;
 const MAX: f32 = 2.6;
 const SIZE: u32 = 256;
 
@@ -47,7 +46,11 @@ impl App {
         let Some(sp) = self.splash.as_mut() else { return };
         let elapsed = sp.started.elapsed().as_secs_f32();
         let k = 0.45 + (2.2 - 0.45) * self.motion.register.clamp(0.0, 1.0);
-        let draw_secs = if self.motion.reduced() { 0.0 } else { DRAW * k };
+        let draw_secs = if self.motion.reduced() || self.behavior.splash != crate::settings::SplashMode::Draw { 0.0 } else { DRAW * k };
+        if self.behavior.splash == crate::settings::SplashMode::None {
+            self.splash = None;
+            return;
+        }
         let progress = if draw_secs <= 0.0 { 1.0 } else { (elapsed / draw_secs).clamp(0.0, 1.0) };
         // Render the icon at this progress (a 256² CPU raster; ~40 frames).
         let need = sp.tex.as_ref().map(|(p, _)| (*p - progress).abs() > 0.004).unwrap_or(true);
@@ -79,8 +82,9 @@ impl App {
         let ready = self.splash_ready();
         let paper = self.paper();
         let reduced = self.motion.reduced();
+        let hold = self.behavior.splash_hold.max(0.2);
         let Some(sp) = self.splash.as_mut() else { return };
-        if !sp.leaving && elapsed >= MIN.max(draw_secs) && (ready || elapsed >= MAX) {
+        if !sp.leaving && elapsed >= hold.max(draw_secs) && (ready || elapsed >= MAX.max(hold)) {
             sp.leaving = true;
             let out = if reduced { 0.0 } else { 0.26 * k };
             sp.fade.replay(1.0, 0.0, out);

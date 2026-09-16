@@ -27,6 +27,43 @@ pub enum PromptUrl {
     NewTab,
 }
 
+/// How the window comes up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum WindowStart {
+    Last,
+    Maximized,
+    Fullscreen,
+    Centered,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum SplashMode {
+    Draw,
+    Still,
+    None,
+}
+
+/// What happens once the splash has gone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Then {
+    Restore,
+    Shell,
+    LastPage,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum AtlasMode {
+    Planet,
+    AtLaunch,
+    Persistent,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Outside {
+    Little,
+    NewTab,
+}
+
 /// Tab and terminal behaviour the settings page edits.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Behavior {
@@ -39,11 +76,57 @@ pub struct Behavior {
     /// The Start modal at launch, and its chime.
     pub start_on_launch: bool,
     pub startup_sound: bool,
+    #[serde(default = "default_window_start")]
+    pub window_start: WindowStart,
+    #[serde(default = "default_splash")]
+    pub splash: SplashMode,
+    /// Seconds the splash holds at least.
+    #[serde(default = "default_splash_hold")]
+    pub splash_hold: f32,
+    #[serde(default = "default_then")]
+    pub then: Then,
+    #[serde(default = "default_atlas")]
+    pub atlas: AtlasMode,
+    #[serde(default = "default_outside")]
+    pub outside: Outside,
+}
+
+fn default_window_start() -> WindowStart {
+    WindowStart::Last
+}
+fn default_splash() -> SplashMode {
+    SplashMode::Draw
+}
+fn default_splash_hold() -> f32 {
+    1.0
+}
+fn default_then() -> Then {
+    Then::Shell
+}
+fn default_atlas() -> AtlasMode {
+    AtlasMode::Planet
+}
+fn default_outside() -> Outside {
+    Outside::Little
 }
 
 impl Default for Behavior {
     fn default() -> Self {
-        Behavior { links: Links::Stack, prompt_url: PromptUrl::Split, close_asks: true, default_profile: 0, follow_os_theme: true, start_on_launch: false, startup_sound: false }
+        Behavior {
+            links: Links::Stack,
+            prompt_url: PromptUrl::Split,
+            close_asks: true,
+            default_profile: 0,
+            follow_os_theme: true,
+            start_on_launch: false,
+            startup_sound: false,
+            window_start: WindowStart::Last,
+            splash: SplashMode::Draw,
+            splash_hold: 1.0,
+            then: Then::Shell,
+            atlas: AtlasMode::Planet,
+            outside: Outside::Little,
+        }
     }
 }
 
@@ -63,6 +146,7 @@ pub enum Slider {
     Drift,
     Breath,
     Volume,
+    SplashHold,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -108,6 +192,12 @@ pub enum Hit {
     TexKind(TextureKind),
     TexOn(TextureOn),
     TexMotion(bool),
+    WindowStart(WindowStart),
+    Splash(SplashMode),
+    Then(Then),
+    Atlas(AtlasMode),
+    Outside(Outside),
+    LoginItem(bool),
     SoundOn(bool),
     /// Play a cue by index into sound::NAMES.
     Play(usize),
@@ -116,10 +206,11 @@ pub enum Hit {
     EventNext(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 11] = [
+pub const SECTIONS: [(&str, (&str, &str)); 12] = [
     ("APPEARANCE", icons::BRUSH),
     ("SURFACE", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
+    ("STARTUP", icons::ROCKET),
     ("SIDEBAR", icons::SIDEBAR),
     ("TABS", icons::SQUARES),
     ("TERMINAL", icons::TERMINAL),
@@ -131,9 +222,10 @@ pub const SECTIONS: [(&str, (&str, &str)); 11] = [
 ];
 
 pub const SEC_SOUND: usize = 2;
-pub const SEC_TERMINAL: usize = 5;
-pub const SEC_BROWSER: usize = 6;
-pub const RULES: usize = 8;
+pub const SEC_STARTUP: usize = 3;
+pub const SEC_TERMINAL: usize = 6;
+pub const SEC_BROWSER: usize = 7;
+pub const RULES: usize = 9;
 
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
@@ -169,6 +261,7 @@ impl App {
             Slider::Drift => self.surface.drift / 0.5,
             Slider::Breath => self.surface.breath,
             Slider::Volume => self.sound.prefs.volume,
+            Slider::SplashHold => (self.behavior.splash_hold - 0.4) / 2.2,
         }
     }
 
@@ -192,6 +285,7 @@ impl App {
                 self.sound.prefs.volume = (v * 20.0).round() / 20.0;
                 self.sound.cue("tick");
             }
+            Slider::SplashHold => self.behavior.splash_hold = (0.4 + v * 2.2 * 10.0).round() / 10.0,
         }
         self.layout();
     }
@@ -261,6 +355,12 @@ impl App {
             Hit::StopAdd => "add a stop".into(),
             Hit::StopRemove => "remove a stop".into(),
             Hit::StopColor(c) => format!("stop colour {}", surface::hex(c)),
+            Hit::WindowStart(w) => format!("window {:?}", w).to_lowercase(),
+            Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
+            Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
+            Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
+            Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
+            Hit::LoginItem(on) => if on { "start with the system".into() } else { "do not start with the system".into() },
             Hit::SoundOn(b) => if b { "sound on".into() } else { "sound off".into() },
             Hit::Play(i) => format!("play {}", crate::sound::NAMES.get(i).copied().unwrap_or("")),
             Hit::EventCue(e, c) => format!("{} → {}", crate::sound::EVENTS[e].0, if c == usize::MAX { "quiet" } else { crate::sound::NAMES[c] }),
@@ -429,6 +529,20 @@ impl App {
                 let i = self.stop_sel.min(self.surface.stops.len() - 1);
                 self.surface.stops[i] = c;
             }
+            Hit::WindowStart(w) => self.behavior.window_start = w,
+            Hit::Splash(m) => self.behavior.splash = m,
+            Hit::Then(t) => self.behavior.then = t,
+            Hit::Atlas(a) => {
+                self.behavior.atlas = a;
+                self.behavior.start_on_launch = a != AtlasMode::Planet;
+            }
+            Hit::Outside(o) => self.behavior.outside = o,
+            Hit::LoginItem(on) => {
+                self.login_note = match crate::little::login_item(on) {
+                    Ok(()) => if on { "registered · nus starts with the system".into() } else { "removed".into() },
+                    Err(e) => e,
+                };
+            }
             Hit::SoundOn(b) => {
                 self.sound.prefs.enabled = b;
                 if b {
@@ -445,6 +559,9 @@ impl App {
                 let cue = if c == usize::MAX { String::new() } else { crate::sound::NAMES[c].to_string() };
                 if !cue.is_empty() {
                     self.sound.cue(&cue);
+                }
+                if ev == "launch" {
+                    self.behavior.startup_sound = !cue.is_empty();
                 }
                 self.sound.prefs.map.insert(ev, cue);
             }
@@ -525,20 +642,6 @@ impl App {
                         (format!("FOLLOW OS · {}", if crate::anim::os_reduce_motion() { "ON" } else { "OFF" }), Hit::Reduce(None), self.motion.reduce.is_none()),
                         ("OFF".into(), Hit::Reduce(Some(false)), self.motion.reduce == Some(false)),
                         ("ON".into(), Hit::Reduce(Some(true)), self.motion.reduce == Some(true)),
-                    ]),
-                ),
-                (
-                    "ATLAS".into(),
-                    Choice(vec![
-                        ("FROM THE PLANET".into(), Hit::StartOnLaunch(false), !self.behavior.start_on_launch),
-                        ("ALSO AT LAUNCH".into(), Hit::StartOnLaunch(true), self.behavior.start_on_launch),
-                    ]),
-                ),
-                (
-                    "STARTUP SOUND".into(),
-                    Choice(vec![
-                        ("OFF".into(), Hit::StartupSound(false), !self.behavior.startup_sound),
-                        ("ON · THE LAUNCH CUE".into(), Hit::StartupSound(true), self.behavior.startup_sound),
                     ]),
                 ),
                 ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
@@ -705,7 +808,75 @@ impl App {
                 rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
                 rows
             }
-            3 => vec![
+            3 => {
+                let b = &self.behavior;
+                let launch_cue = self.sound.prefs.cue_for("launch");
+                let sound_chips: Vec<(String, Hit, bool)> = {
+                    let ev = crate::sound::EVENTS.iter().position(|(e, _, _)| *e == "launch").unwrap_or(0);
+                    let mut v = vec![("OFF".into(), Hit::EventCue(ev, usize::MAX), launch_cue.is_none() || !b.startup_sound)];
+                    for name in ["arrival", "chime", "bloom", "ready"] {
+                        let ci = crate::sound::NAMES.iter().position(|n| *n == name).unwrap_or(0);
+                        v.push((name.to_uppercase(), Hit::EventCue(ev, ci), b.startup_sound && launch_cue.as_deref() == Some(name)));
+                    }
+                    v
+                };
+                vec![
+                    (
+                        "WINDOW".into(),
+                        Choice(vec![
+                            ("LAST SIZE & PLACE".into(), Hit::WindowStart(WindowStart::Last), b.window_start == WindowStart::Last),
+                            ("MAXIMIZED".into(), Hit::WindowStart(WindowStart::Maximized), b.window_start == WindowStart::Maximized),
+                            ("FULLSCREEN".into(), Hit::WindowStart(WindowStart::Fullscreen), b.window_start == WindowStart::Fullscreen),
+                            ("CENTERED 1440×900".into(), Hit::WindowStart(WindowStart::Centered), b.window_start == WindowStart::Centered),
+                        ]),
+                    ),
+                    (
+                        "SPLASH".into(),
+                        Choice(vec![
+                            ("ICON · DRAWS IN".into(), Hit::Splash(SplashMode::Draw), b.splash == SplashMode::Draw),
+                            ("ICON · STILL".into(), Hit::Splash(SplashMode::Still), b.splash == SplashMode::Still),
+                            ("NONE".into(), Hit::Splash(SplashMode::None), b.splash == SplashMode::None),
+                        ]),
+                    ),
+                    (
+                        "HOLD".into(),
+                        Slider(self::Slider::SplashHold, self.slider_value(self::Slider::SplashHold), format!("{:.1}s at least · until the first tab is ready", b.splash_hold)),
+                    ),
+                    (
+                        "THEN".into(),
+                        Choice(vec![
+                            ("RESTORE LAST SESSION".into(), Hit::Then(Then::Restore), b.then == Then::Restore),
+                            ("A NEW SHELL".into(), Hit::Then(Then::Shell), b.then == Then::Shell),
+                            ("THE LAST PAGE".into(), Hit::Then(Then::LastPage), b.then == Then::LastPage),
+                        ]),
+                    ),
+                    (
+                        "ATLAS".into(),
+                        Choice(vec![
+                            ("FROM THE PLANET".into(), Hit::Atlas(AtlasMode::Planet), b.atlas == AtlasMode::Planet),
+                            ("ALSO AT LAUNCH".into(), Hit::Atlas(AtlasMode::AtLaunch), b.atlas == AtlasMode::AtLaunch),
+                            ("AT LAUNCH · UNTIL YOU PICK".into(), Hit::Atlas(AtlasMode::Persistent), b.atlas == AtlasMode::Persistent),
+                        ]),
+                    ),
+                    ("SOUND".into(), Choice(sound_chips)),
+                    (
+                        "LINKS FROM OUTSIDE".into(),
+                        Choice(vec![
+                            ("LITTLE WINDOW".into(), Hit::Outside(Outside::Little), b.outside == Outside::Little),
+                            ("NEW TAB HERE".into(), Hit::Outside(Outside::NewTab), b.outside == Outside::NewTab),
+                        ]),
+                    ),
+                    (
+                        "AT LOGIN".into(),
+                        Choice(vec![
+                            ("START WITH THE SYSTEM".into(), Hit::LoginItem(true), crate::little::login_item_registered()),
+                            ("NO".into(), Hit::LoginItem(false), !crate::little::login_item_registered()),
+                        ]),
+                    ),
+                    ("".into(), Info(if self.login_note.is_empty() { "a shortcut in the Startup folder · reversible".into() } else { self.login_note.clone() })),
+                ]
+            }
+            4 => vec![
                 (
                     "SIDE".into(),
                     Choice(vec![
@@ -741,7 +912,7 @@ impl App {
                 ),
                 ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
             ],
-            4 => vec![
+            5 => vec![
                 (
                     "LINKS FROM PAGES".into(),
                     Choice(vec![
@@ -768,7 +939,7 @@ impl App {
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
                 ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
             ],
-            5 => {
+            6 => {
                 let mut v: Vec<(String, Control)> = vec![(
                     "DEFAULT SHELL".into(),
                     Choice(
@@ -792,7 +963,7 @@ impl App {
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
                 v
             }
-            6 => vec![
+            7 => vec![
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
@@ -832,7 +1003,7 @@ impl App {
                 ("PASSWORDS".into(), Info("1Password via op (v1)".into())),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
-            7 => {
+            8 => {
                 let mut v: Vec<(String, Control)> =
                     self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))).collect();
                 if v.is_empty() {
@@ -842,7 +1013,7 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            8 => vec![
+            9 => vec![
                 ("FILE".into(), Info(self.rules.path.to_string_lossy().to_string())),
                 ("STATUS".into(), Info(self.rules.status.clone())),
                 (
@@ -854,7 +1025,7 @@ impl App {
                     ]),
                 ),
             ],
-            9 => vec![
+            10 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
                 ("URL".into(), Info(key("L", true))),
@@ -883,13 +1054,14 @@ impl App {
             0 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.motion.name()),
             1 => format!("{} · {}", surface::hex(self.surface.signal), self.surface.shell.name()),
             2 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
-            3 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
-            4 => format!("links → {:?}", self.behavior.links).to_lowercase(),
-            5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
-            6 => format!("{} bar · google", self.load_bar.style.name()),
-            7 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
-            8 => self.rules.status.clone(),
-            9 => "chords".into(),
+            3 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
+            4 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
+            5 => format!("links → {:?}", self.behavior.links).to_lowercase(),
+            6 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
+            7 => format!("{} bar · google", self.load_bar.style.name()),
+            8 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            9 => self.rules.status.clone(),
+            10 => "chords".into(),
             _ => "github releases".into(),
         }
     }

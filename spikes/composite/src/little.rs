@@ -108,6 +108,11 @@ impl App {
             self.window.focus_window();
             return;
         }
+        if self.behavior.outside == crate::settings::Outside::NewTab {
+            self.open_url(url, true);
+            self.window.focus_window();
+            return;
+        }
         // Reuse the little window if it is up; else ask the host for one.
         if let Some(l) = self.little.as_mut() {
             l.pane.tab.load(url);
@@ -329,6 +334,42 @@ impl App {
         let scale = l.window.scale_factor() as f32;
         let (lx, ly) = ((pos.0 - l.pane.page.x) / scale, (pos.1 - l.pane.page.y) / scale);
         l.pane.tab.wheel(lx as i32, ly as i32, crate::app::cef_mods(l.mods), dx, dy);
+    }
+}
+
+// ── Login item ───────────────────────────────────────────────────────────
+
+fn startup_link() -> Option<std::path::PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    Some(std::path::PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup\nus.lnk"))
+}
+
+pub fn login_item_registered() -> bool {
+    cfg!(target_os = "windows") && startup_link().is_some_and(|p| p.exists())
+}
+
+/// A shortcut in the Startup folder (Windows). Reversible; other OSes are v1.
+pub fn login_item(on: bool) -> Result<(), String> {
+    if !cfg!(target_os = "windows") {
+        return Err("login items need a LaunchAgent (macOS) or autostart .desktop (Linux) — v1".into());
+    }
+    let Some(link) = startup_link() else { return Err("no APPDATA".into()) };
+    if !on {
+        let _ = std::fs::remove_file(&link);
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let script = format!(
+        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath = '{}'; $s.WorkingDirectory = '{}'; $s.Save()",
+        link.display(),
+        exe.display(),
+        exe.parent().map(|p| p.display().to_string()).unwrap_or_default()
+    );
+    let out = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
 }
 

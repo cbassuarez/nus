@@ -220,6 +220,10 @@ impl App {
         self.dirty = true;
     }
 
+    pub(crate) fn restore_session_pub(&mut self) {
+        self.restore_session();
+    }
+
     /// Bring the saved tabs back: shells restart on their profile, pages
     /// reload, stacks and pins are kept. Scrollback restore is v1.
     fn restore_session(&mut self) {
@@ -305,8 +309,18 @@ impl App {
             return true;
         }
         match &ev.logical_key {
-            WKey::Named(NamedKey::Escape) => self.start = None,
-            WKey::Named(NamedKey::Enter) => self.start_commit(),
+            WKey::Named(NamedKey::Escape) => {
+                // Persistent at launch: Esc only clears the filter.
+                if self.behavior.atlas == crate::settings::AtlasMode::Persistent && !self.atlas_used {
+                    s.input.clear();
+                } else {
+                    self.start = None;
+                }
+            }
+            WKey::Named(NamedKey::Enter) => {
+                self.atlas_used = true;
+                self.start_commit()
+            }
             WKey::Named(NamedKey::Backspace) => {
                 s.input.pop();
                 s.sel = 0;
@@ -438,7 +452,11 @@ impl App {
             x += self.fonts.draw(scene, strong, x, fb, k) + self.px(6.0);
             x += self.fonts.draw(scene, dim, x, fb, v) + self.px(16.0);
         }
-        let note = if self.behavior.start_on_launch { "AT LAUNCH · OFF IN SETTINGS" } else { "THE PLANET BRINGS IT BACK" };
+        let note = match self.behavior.atlas {
+            crate::settings::AtlasMode::Planet => "THE PLANET BRINGS IT BACK",
+            crate::settings::AtlasMode::AtLaunch => "AT LAUNCH · OFF IN STARTUP",
+            crate::settings::AtlasMode::Persistent => "PICK ONE TO CONTINUE",
+        };
         let nw = self.fonts.measure(dim, note);
         self.fonts.draw(scene, dim, r.right() - self.px(18.0) - nw, fb, note);
         if let Some(st) = self.start.as_mut() {

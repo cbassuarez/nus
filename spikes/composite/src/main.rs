@@ -55,18 +55,35 @@ impl ApplicationHandler<UserEvent> for Host {
         if self.app.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
+        // The window comes up as the prefs say: last place, maximized,
+        // fullscreen, or centred at 1440×900.
+        let prefs = prefs::Prefs::load();
+        let start = prefs.behavior.as_ref().map(|b| b.window_start).unwrap_or(settings::WindowStart::Last);
+        let mut attrs = Window::default_attributes()
             .with_title("nus")
             .with_decorations(false)
             .with_transparent(true)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
+        match start {
+            settings::WindowStart::Last => {
+                if let Some((x, y, w, h)) = prefs.window_rect {
+                    attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y)).with_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                }
+            }
+            settings::WindowStart::Maximized => attrs = attrs.with_maximized(true),
+            settings::WindowStart::Fullscreen => attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
+            settings::WindowStart::Centered => {}
+        }
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         // The adapter must exist before the window is first shown.
         self.access = Some(accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
         window.set_visible(true);
         match App::new(window, self.proxy.clone()) {
-            Ok(a) => self.app = Some(a),
+            Ok(mut a) => {
+                a.fullscreen = start == settings::WindowStart::Fullscreen;
+                self.app = Some(a)
+            }
             Err(e) => {
                 tracing::error!("init: {e:#}");
                 event_loop.exit();
