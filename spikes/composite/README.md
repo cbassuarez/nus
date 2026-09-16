@@ -65,6 +65,16 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
   tree never called `save_prefs`; fixed. Test settings through UIA, not
   only the mouse.
 
+- **Chromium's process singleton.** A second process with the same
+  `root_cache_path` prints "Opening in existing browser session" and
+  `initialize` returns 0 — so a second window is a second process with
+  its own root cache (own cookies). Windows must be in-process for v1.
+- **Glyph rotation is a vertex-shader matter.** Kind-1 instances spin
+  about their centre by `phase`; no atlas re-raster. Symmetric glyphs
+  (plus at 90°, an 8-tooth gear at 45°) look unmoved — pick angles that read.
+- **SetCursorPos alone yields no CursorMoved** in winit; hover tests need
+  relative `mouse_event` deltas (`$TEMP/hover2.ps1`).
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - CEF popup surfaces (`<select>` dropdowns) are not composited.
@@ -72,4 +82,5 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - Space-owned browser profiles (one request context per Space; the spike uses the global one).
 - Window transparency on Windows (needs a DirectComposition swapchain).
 - Single instance over a named pipe / unix socket (loopback TCP here).
+- Windows in one process sharing the Chromium profile (one process per window here).
 - Reader mode images (captions only here) and link following.

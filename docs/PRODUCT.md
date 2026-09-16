@@ -312,3 +312,34 @@ signal dot), hide the pointer while typing.
 **Width rule for all of it.** Every page is the same ruled two-column
 form; under 900px it becomes tiles that drill in. Settings changed by
 assistive tech persist like clicks.
+
+## Windows, the sidebar header, hover (settled 2026-09-16, ninth pass)
+
+**Windows, not Spaces.** A window owns its tabs; everyone knows what a
+window is. Auto-named from the git root it was launched in, else the
+dominant host, else *nus*; duplicates number themselves; F2 (or the
+list) renames through the palette; the name shows in the sidebar, the
+list, the OS title bar and Alt-Tab. Switching is the OS's job plus the
+header's list; new window is Ctrl N. (Spike: one process per window,
+each with its own Chromium cache — the process singleton forbids sharing
+one; v1 moves windows in-process so they share the profile.)
+
+**Header styles, named for what they do.** BAR: the window's name and
+NEW TAB in one ruled row, a split caret for the kinds. RAIL: every
+window as its square along the sidebar's edge, the name above the tabs.
+Bools for the variants: masthead title (Newsreader) or caps, dateline
+(where · tabs · ports), NEW TAB in the header and/or as the next ruled
+row (a ghost plus where the tab will appear), window cell with or
+without the name, kinds caret, rail always or on hover, press flash.
+
+**NEW TAB** is the button hit most: click for a shell in the default
+profile (rules colour it, the band flashes through the signal); hold
+240ms, right-click, or the caret fans the kinds out (profiles as their
+squares, page).
+
+**Hover.** Every icon button gets a soft rounded ink overlay under the
+pointer; the important ones move on the motion register — pop, spin,
+bob, swing. No icon is ever a bare glyph you have to guess at.
+
+**Look chip.** Paper · ink · signal in the footer, fanned on hover;
+opens the look pages. Settings are grouped LOOK · FEEL · WORK · SYSTEM.
