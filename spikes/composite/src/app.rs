@@ -129,7 +129,21 @@ pub struct WebPane {
 pub struct SettingsPane {
     pub rect: Rect,
     pub section: usize,
+    /// Narrow layout: tiles first, then one section with a back crumb.
+    pub drill: bool,
 }
+
+/// Layout class by window width (logical px). Wide has everything;
+/// Standard drops the pinned sidebar; Narrow drops the split too.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Width {
+    Wide,
+    Standard,
+    Narrow,
+}
+
+pub const NARROW: f32 = 900.0;
+pub const WIDE: f32 = 1200.0;
 
 /// First-run panel beside the first shell: five things to try, ticked off
 /// as they happen. Lives in `App::hints`; this is just its rect.
@@ -489,8 +503,22 @@ impl App {
         Rect::new(left, top, self.target.size.0 as f32 - left - right, self.px(m::TOP_STRIP))
     }
 
-    /// Pinned open: the user's pin, or the fullscreen rule.
+    pub fn width_class(&self) -> Width {
+        let w = self.target.size.0 as f32 / self.scale.max(0.1);
+        if w >= WIDE {
+            Width::Wide
+        } else if w >= NARROW {
+            Width::Standard
+        } else {
+            Width::Narrow
+        }
+    }
+
+    /// Pinned open: the user's pin, or the fullscreen rule. Never below Wide.
     pub fn sidebar_pinned(&self) -> bool {
+        if self.width_class() != Width::Wide {
+            return false;
+        }
         if self.fullscreen {
             return match self.sidebar_rules.fullscreen {
                 Fullscreen::Pinned => true,
@@ -558,8 +586,18 @@ impl App {
         let pad_x = self.px(18.0);
         let pad_y = self.px(16.0);
         let scale = self.scale;
+        let narrow = self.width_class() == Width::Narrow;
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        let (left_rect, right_rect) = if tab.right.is_some() {
+        let off = Rect::new(-4.0 * c.w - c.x, c.y, c.w, c.h);
+        let (left_rect, right_rect) = if tab.right.is_some() && narrow {
+            // No split below 900px: the focused pane takes the content, the
+            // other keeps its size off screen so it never reflows.
+            if tab.focus_right {
+                (off, Some(c))
+            } else {
+                (c, Some(off))
+            }
+        } else if tab.right.is_some() {
             (
                 Rect::new(c.x, c.y, c.w - split_w - rule, c.h),
                 Some(Rect::new(c.right() - split_w, c.y, split_w, c.h)),
@@ -1106,9 +1144,14 @@ impl App {
         self.fonts.draw_icon(&mut scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink);
         self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), CrumbHit::Search));
         rx -= gap;
-        // status cluster: waiting · pip · assistant · ports
+        // status cluster: waiting · pip · assistant · ports (one icon when narrow)
         let waiting = self.tabs.iter().filter(|t| t.waiting()).count();
         let mut cluster: Vec<((&'static str, &'static str), String, CrumbHit, bool)> = Vec::new();
+        if self.width_class() == Width::Narrow {
+            let lit = waiting > 0 || self.pip.is_some();
+            let count = if waiting > 0 { waiting.to_string() } else { String::new() };
+            cluster.push((nus_render::text::icons::MORE, count, CrumbHit::Waiting, lit));
+        } else {
         if !self.ports.is_empty() || true {
             cluster.push((nus_render::text::icons::PORTS, if self.ports.is_empty() { String::new() } else { self.ports.len().to_string() }, CrumbHit::Ports, !self.ports.is_empty()));
         }
@@ -1117,6 +1160,7 @@ impl App {
             cluster.push((nus_render::text::icons::PIP, String::new(), CrumbHit::Pip, true));
         }
         cluster.push((if waiting > 0 { nus_render::text::icons::BELL_BOLD } else { nus_render::text::icons::BELL }, if waiting > 0 { waiting.to_string() } else { String::new() }, CrumbHit::Waiting, waiting > 0));
+        }
         for (icon, count, hit, lit) in cluster {
             let color = if lit { ink } else { t.dim };
             if !count.is_empty() {
@@ -1149,7 +1193,8 @@ impl App {
         let focus_right = self.tabs[active].focus_right;
         let has_right = self.tabs[active].right.is_some();
         // Split rule.
-        if has_right {
+        let narrow = self.width_class() == Width::Narrow;
+        if has_right && !narrow {
             let r = match &self.tabs[active].right {
                 Some(Pane::Term(p)) => p.rect,
                 Some(Pane::Web(p)) => p.rect,
@@ -1165,9 +1210,13 @@ impl App {
         {
             let tab = &mut tabs[active];
             let left_focused = !(focus_right && has_right);
-            self.draw_pane(&mut scene, &mut tab.left, &n, left_focused, &look);
+            if !(narrow && has_right && !left_focused) {
+                self.draw_pane(&mut scene, &mut tab.left, &n, left_focused, &look);
+            }
             if let Some(r) = tab.right.as_mut() {
-                self.draw_pane(&mut scene, r, &n, !left_focused, &look);
+                if !(narrow && left_focused) {
+                    self.draw_pane(&mut scene, r, &n, !left_focused, &look);
+                }
             }
         }
         self.tabs = tabs;
@@ -1248,9 +1297,9 @@ impl App {
             scene.layer(None);
             let rise = self.palette_anim.value();
             scene.rect(Rect::new(0.0, 0.0, w, h), Theme::with_alpha(t.scrim, t.scrim[3] * rise));
-            let pw = self.px(m::PALETTE);
+            let pw = self.px(m::PALETTE).min(w - 2.0 * self.px(16.0));
             let bx = ((w - pw) / 2.0).round();
-            let by = self.px(220.0) + (1.0 - rise) * self.px(10.0);
+            let by = self.px(220.0).min(h * 0.12) + (1.0 - rise) * self.px(10.0);
             let rows = self.palette_rows(mode, &input);
             let row_h = self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
             let head_h = self.px(14.0) * 2.0 + self.px(16.0) + self.px(2.0);
@@ -1635,7 +1684,7 @@ impl App {
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
             return self.activate(i);
         }
-        let tab = self.make_tab(Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0 }), None);
+        let tab = self.make_tab(Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0, drill: false }), None);
         self.tabs.push(tab);
         self.activate(self.tabs.len() - 1);
     }
@@ -1772,7 +1821,7 @@ impl App {
         let strong = self.label_strong();
         match pane {
             Pane::Settings(p) => {
-                let p = SettingsPane { rect: p.rect, section: p.section };
+                let p = SettingsPane { rect: p.rect, section: p.section, drill: p.drill };
                 self.draw_settings(scene, &p);
             }
             Pane::Hints(p) => {

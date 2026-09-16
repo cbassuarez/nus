@@ -80,6 +80,9 @@ pub enum Hit {
     Reduce(Option<bool>),
     BarStyle(BarStyle),
     BarColor(BarColor),
+    /// Tile grid → section, and back.
+    Tile(usize),
+    Back,
 }
 
 pub const SECTIONS: [(&str, (&str, &str)); 10] = [
@@ -216,6 +219,17 @@ impl App {
             Hit::ResetRules => {
                 let _ = std::fs::write(&self.rules.path, surface::DEFAULT_RULES);
                 self.rules.reload();
+            }
+            Hit::Tile(k) => {
+                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    s.section = k;
+                    s.drill = true;
+                }
+            }
+            Hit::Back => {
+                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    s.drill = false;
+                }
             }
             Hit::Reduce(r) => self.motion.reduce = r,
             Hit::BarStyle(b) => self.load_bar.style = b,
@@ -472,6 +486,56 @@ impl App {
         }
     }
 
+    /// One-line hint under each tile.
+    fn tile_hint(&self, k: usize) -> String {
+        match k {
+            0 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.motion.name()),
+            1 => format!("{} · {}", surface::hex(self.surface.signal), self.surface.shell.name()),
+            2 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
+            3 => format!("links → {:?}", self.behavior.links).to_lowercase(),
+            4 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
+            5 => format!("{} bar · google", self.load_bar.style.name()),
+            6 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            7 => self.rules.status.clone(),
+            8 => "chords".into(),
+            _ => "github releases".into(),
+        }
+    }
+
+    /// The tile grid: icon, name, a one-line state; 44px+ targets.
+    fn draw_tiles(&mut self, scene: &mut Scene, r: Rect) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let label = self.label();
+        let strong = self.label_strong();
+        let dim = Style { color: t.dim, ..label };
+        let pad = self.px(18.0);
+        let mut y = r.y + self.px(28.0);
+        let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
+        self.fonts.draw(scene, wm, r.x + pad, y + self.px(30.0), "settings");
+        y += self.px(58.0);
+        let cols = if r.w / self.scale < 560.0 { 2 } else { 3 };
+        let gap = self.px(12.0);
+        let tw = ((r.w - 2.0 * pad - gap * (cols as f32 - 1.0)) / cols as f32).floor();
+        let th = self.px(96.0);
+        let isz = self.px(22.0);
+        for (k, (name, icon)) in SECTIONS.iter().enumerate() {
+            let col = k % cols;
+            let row = k / cols;
+            let tile = Rect::new(r.x + pad + col as f32 * (tw + gap), y + row as f32 * (th + gap), tw, th);
+            if tile.bottom() > r.bottom() {
+                break;
+            }
+            scene.outline(tile, self.px(m::HAIRLINE), ink);
+            self.fonts.draw_icon(scene, *icon, isz, tile.x + self.px(16.0), tile.y + self.px(16.0), ink);
+            let base = tile.y + self.px(16.0) + isz + self.px(22.0);
+            self.fonts.draw(scene, strong, tile.x + self.px(16.0), base, name);
+            let hint = self.fit(dim, &self.tile_hint(k), tw - self.px(32.0));
+            self.fonts.draw(scene, dim, tile.x + self.px(16.0), base + self.px(18.0), &hint);
+            self.settings_hits.push((tile, Hit::Tile(k)));
+        }
+    }
+
     pub(crate) fn draw_settings(&mut self, scene: &mut Scene, p: &SettingsPane) {
         let t = self.theme.clone();
         let ink = t.ink;
@@ -482,12 +546,31 @@ impl App {
         let r = p.rect;
         self.settings_hits.clear();
 
-        // Nav.
-        let nav_w = self.px(220.0);
-        scene.vline(r.x + nav_w, r.y, r.h, self.px(m::STRUCTURE), ink);
+        // Narrow panes get tiles instead of a nav: a grid first, then one
+        // section under a back crumb. Width decides; there is no manual mode.
+        let tiles = r.w / self.scale < crate::app::NARROW;
+        if tiles && !p.drill {
+            return self.draw_tiles(scene, r);
+        }
+
+        // Nav (or, drilled in, a back crumb).
+        let nav_w = if tiles { 0.0 } else { self.px(220.0) };
+        let mut top = r.y;
+        if tiles {
+            let bh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
+            let isz = self.px(14.0);
+            let base = r.y + self.px(12.0) + self.px(m::LABEL_PX) - self.px(2.0);
+            self.fonts.draw_icon(scene, icons::BACK, isz, r.x + self.px(18.0), base - isz + self.px(2.0), ink);
+            self.fonts.draw(scene, label, r.x + self.px(18.0) + isz + self.px(10.0), base, "SETTINGS");
+            scene.hline(r.x, r.y + bh - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
+            self.settings_hits.push((Rect::new(r.x, r.y, r.w, bh), Hit::Back));
+            top += bh;
+        } else {
+            scene.vline(r.x + nav_w, r.y, r.h, self.px(m::STRUCTURE), ink);
+        }
         let sh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
         let isz = self.px(14.0);
-        for (i, (name, icon)) in SECTIONS.iter().enumerate() {
+        for (i, (name, icon)) in SECTIONS.iter().enumerate().filter(|_| !tiles) {
             let y = r.y + i as f32 * sh;
             let sel = i == p.section;
             let row = Rect::new(r.x, y, nav_w, sh);
@@ -501,17 +584,19 @@ impl App {
             scene.hline(r.x, y + sh - self.px(m::HAIRLINE), nav_w, self.px(m::HAIRLINE), ink);
             self.settings_hits.push((row, Hit::Section(i)));
         }
-        let cfg = "~/.config/nus/init.luau";
-        self.fonts.draw(scene, dim, r.x + self.px(18.0), r.bottom() - self.px(14.0), cfg);
+        if !tiles {
+            let cfg = "~/.config/nus/init.luau";
+            self.fonts.draw(scene, dim, r.x + self.px(18.0), r.bottom() - self.px(14.0), cfg);
+        }
 
         // Content.
-        let cx = r.x + nav_w + self.px(40.0);
-        let mut y = r.y + self.px(28.0);
+        let cx = r.x + nav_w + if tiles { self.px(18.0) } else { self.px(40.0) };
+        let mut y = top + self.px(28.0);
         let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
         self.fonts.draw(scene, wm, cx, y + self.px(30.0), &SECTIONS[p.section].0.to_lowercase());
         y += self.px(58.0);
-        let maxw = (r.w - nav_w - self.px(80.0)).min(self.px(760.0));
-        let label_w = self.px(200.0);
+        let maxw = (r.w - nav_w - if tiles { self.px(36.0) } else { self.px(80.0) }).min(self.px(760.0));
+        let label_w = if tiles { self.px(140.0) } else { self.px(200.0) };
         let rows = self.rows_for(p.section);
         for (k, control) in rows {
             let rh = match &control {

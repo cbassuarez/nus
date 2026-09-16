@@ -376,7 +376,10 @@ impl Gpu {
 
 impl Target {
     pub fn resize(&mut self, device: &wgpu::Device, w: u32, h: u32) {
-        if w == 0 || h == 0 || (w, h) == self.size {
+        // Windows reports transient nonsense (0, or 32767) mid-move; the
+        // swapchain must stay within the device's texture limit.
+        let max = device.limits().max_texture_dimension_2d;
+        if w == 0 || h == 0 || w > max || h > max || (w, h) == self.size {
             return;
         }
         self.size = (w, h);
