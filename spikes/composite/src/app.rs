@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nus_render::theme::{metric as m, signal};
+use nus_render::theme::metric as m;
 use nus_render::{FontId, FontSystem, Gpu, GridRenderer, Rect, Scene, Style, Theme};
 use nus_vt::input::{self, Key, KeyAction, Mods};
 use nus_vt::Term;
@@ -149,6 +149,8 @@ pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::
 pub struct SettingsPane {
     pub rect: Rect,
     pub section: usize,
+    /// Content scroll, physical px.
+    pub scroll: f32,
     /// Narrow layout: tiles first, then one section with a back crumb.
     pub drill: bool,
 }
@@ -307,6 +309,11 @@ pub struct App {
     /// URLs handed over by later launches (see little::claim).
     pub urls_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub register_note: String,
+    /// Surface page state: which preset is on, which stop is selected.
+    pub preset_name: String,
+    pub stop_sel: usize,
+    /// How tall the settings column's content was last frame.
+    pub settings_reach: f32,
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
     pub splash: Option<crate::splash::Splash>,
@@ -433,6 +440,9 @@ impl App {
             little_pos: (0.0, 0.0),
             urls_rx: None,
             register_note: String::new(),
+            preset_name: "broadsheet".into(),
+            stop_sel: 0,
+            settings_reach: 0.0,
             start: None,
             splash: Some(crate::splash::Splash::new()),
             start_shown: false,
@@ -762,7 +772,8 @@ impl App {
             self.dirty = true;
         }
         if self.surface.shell == Shell::Aurora {
-            self.shell_phase = (self.shell_phase + 0.0015) % 1.0;
+            // Drift is turns per second; the loop runs at ~60 frames.
+            self.shell_phase = (self.shell_phase + self.surface.drift / 60.0) % 1.0;
             self.dirty = true;
         }
         if let Some(t) = self.sidebar_leave {
@@ -1334,6 +1345,11 @@ impl App {
             // The paper is a rounded card; the corners outside it show the clear color.
             scene.push(nus_render::Instance::rounded(win, radius, self.paper()));
         }
+        let stops = self.surface.ramp(ink);
+        let angle = self.surface.angle;
+        // Aurora breathes: the stroke swells and thins with the drift.
+        let breath = 1.0 + self.surface.breath * 0.6 * (self.shell_phase * std::f32::consts::TAU * 2.0).sin();
+        let sw_live = if self.surface.shell == Shell::Aurora { (sw * breath).max(1.0) } else { sw };
         match self.surface.shell {
             Shell::Band => {
                 if radius > 0.0 {
@@ -1345,19 +1361,37 @@ impl App {
                 }
             }
             Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, None, 0.0)),
-            Shell::Gradient => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, Some(ink), 0.0)),
-            Shell::Aurora => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, Some(signal::VIOLET), self.shell_phase)),
+            Shell::Gradient => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &stops, angle, 0.0, false)),
+            Shell::Aurora => scene.push(nus_render::Instance::stroke_stops(win, radius, sw_live, &stops, angle, self.shell_phase, true)),
         }
-        // Texture lives on the carapace, never on content.
-        if self.surface.texture > 0.0 {
-            let g = [1.0, 1.0, 1.0, self.surface.texture];
-            let frame = if self.surface.shell == Shell::Band {
-                vec![Rect::new(0.0, 0.0, w, sw)]
-            } else {
-                vec![Rect::new(0.0, 0.0, w, sw), Rect::new(0.0, h - sw, w, sw), Rect::new(0.0, 0.0, sw, h), Rect::new(w - sw, 0.0, sw, h)]
-            };
-            for r in frame {
-                scene.push(nus_render::Instance::grain(r, g, self.scale));
+        // Texture: on the carapace, the chrome, or the panes — never on a page or a video.
+        if let Some(kind) = self.surface.texture_kind.shader_kind() {
+            if self.surface.texture > 0.0 {
+                let g = [1.0, 1.0, 1.0, self.surface.texture];
+                let pitch = self.px(self.surface.texture_scale);
+                let rects: Vec<Rect> = match self.surface.texture_on {
+                    crate::surface::TextureOn::Carapace => {
+                        if self.surface.shell == Shell::Band {
+                            vec![Rect::new(0.0, 0.0, w, sw)]
+                        } else {
+                            vec![Rect::new(0.0, 0.0, w, sw), Rect::new(0.0, h - sw, w, sw), Rect::new(0.0, 0.0, sw, h), Rect::new(w - sw, 0.0, sw, h)]
+                        }
+                    }
+                    crate::surface::TextureOn::Chrome => {
+                        let c = self.content_rect();
+                        let st = self.strip_rect();
+                        let mut v = vec![st];
+                        if self.sidebar_pinned() {
+                            v.push(self.sidebar_rect());
+                        }
+                        let _ = c;
+                        v
+                    }
+                    crate::surface::TextureOn::Panes => vec![self.content_rect()],
+                };
+                for r in rects {
+                    scene.push(nus_render::Instance::texture_kind(r, kind, g, pitch));
+                }
             }
         }
         let strip = self.strip_rect();
@@ -1972,7 +2006,7 @@ impl App {
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
             return self.activate(i);
         }
-        let tab = self.make_tab(Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0, drill: false }), None);
+        let tab = self.make_tab(Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0, scroll: 0.0, drill: false }), None);
         self.tabs.push(tab);
         self.activate(self.tabs.len() - 1);
     }
@@ -2109,7 +2143,7 @@ impl App {
         let strong = self.label_strong();
         match pane {
             Pane::Settings(p) => {
-                let p = SettingsPane { rect: p.rect, section: p.section, drill: p.drill };
+                let p = SettingsPane { rect: p.rect, section: p.section, scroll: p.scroll, drill: p.drill };
                 self.draw_settings(scene, &p);
             }
             Pane::Hints(p) => {
@@ -3534,6 +3568,15 @@ impl App {
                     };
                     let (lx, ly) = ((x - w.dt_rect.x) / self.scale, (y - w.dt_rect.y) / self.scale);
                     w.devtools.as_ref().unwrap().wheel(lx as i32, ly as i32, cef_mods(self.mods), dx, dy);
+                }
+                Pane::Settings(s) if s.rect.contains(x, y) => {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y * 60.0 * self.scale,
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                    let max = (self.settings_reach - s.rect.h).max(0.0);
+                    s.scroll = (s.scroll - dy).clamp(0.0, max);
+                    self.dirty = true;
                 }
                 Pane::Web(w) if w.page.contains(x, y) && w.reader.is_some() => {
                     let dy = match delta {

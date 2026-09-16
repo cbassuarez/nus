@@ -6,7 +6,7 @@
 
 use crate::app::{App, Pane, SettingsPane};
 use crate::anim::{BarColor, BarStyle};
-use crate::surface::{self, Fullscreen, HoverFrom, Shell, Side, SWATCHES};
+use crate::surface::{self, Fullscreen, HoverFrom, OpacityOn, Shell, Side, TextureKind, TextureOn, SWATCHES};
 use nus_render::text::icons;
 use nus_render::Style;
 use nus_render::theme::metric as m;
@@ -58,6 +58,10 @@ pub enum Slider {
     Motion,
     BarThickness,
     BarChase,
+    TexScale,
+    Angle,
+    Drift,
+    Breath,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -92,6 +96,16 @@ pub enum Hit {
     StartupSound(bool),
     ReloadAvatar,
     OpenProfileDir,
+    Preset(usize),
+    SavePreset,
+    OpenPresets,
+    StopSel(usize),
+    StopAdd,
+    StopRemove,
+    StopColor(Color),
+    OpacityOn(OpacityOn),
+    TexKind(TextureKind),
+    TexOn(TextureOn),
 }
 
 pub const SECTIONS: [(&str, (&str, &str)); 10] = [
@@ -138,6 +152,10 @@ impl App {
             Slider::Motion => self.motion.register,
             Slider::BarThickness => (self.load_bar.thickness - 1.0) / 5.0,
             Slider::BarChase => (self.load_bar.chase - 2.0) / 14.0,
+            Slider::TexScale => (self.surface.texture_scale - 1.0) / 9.0,
+            Slider::Angle => self.surface.angle / 360.0,
+            Slider::Drift => self.surface.drift / 0.5,
+            Slider::Breath => self.surface.breath,
         }
     }
 
@@ -153,6 +171,10 @@ impl App {
             Slider::Motion => self.motion.register = v,
             Slider::BarThickness => self.load_bar.thickness = (1.0 + v * 5.0).round(),
             Slider::BarChase => self.load_bar.chase = (2.0 + v * 14.0).round(),
+            Slider::TexScale => self.surface.texture_scale = (1.0 + v * 9.0 * 2.0).round() / 2.0,
+            Slider::Angle => self.surface.angle = (v * 360.0 / 15.0).round() * 15.0 % 360.0,
+            Slider::Drift => self.surface.drift = (v * 0.5 * 100.0).round() / 100.0,
+            Slider::Breath => self.surface.breath = (v * 20.0).round() / 20.0,
         }
         self.layout();
     }
@@ -208,6 +230,16 @@ impl App {
             Hit::ResetRules => "reset rules to default".into(),
             Hit::Reduce(None) => "reduce motion follows the OS".into(),
             Hit::Reduce(Some(r)) => format!("reduce motion {}", if r { "on" } else { "off" }),
+            Hit::Preset(k) => format!("preset {}", surface::presets().get(k).map(|p| p.name.clone()).unwrap_or_default()),
+            Hit::SavePreset => "save this surface as a preset".into(),
+            Hit::OpenPresets => "open the presets folder".into(),
+            Hit::StopSel(i) => format!("stop {}", i + 1),
+            Hit::StopAdd => "add a stop".into(),
+            Hit::StopRemove => "remove a stop".into(),
+            Hit::StopColor(c) => format!("stop colour {}", surface::hex(c)),
+            Hit::OpacityOn(o) => format!("opacity on {:?}", o).to_lowercase(),
+            Hit::TexKind(k) => format!("texture {}", k.name()),
+            Hit::TexOn(o) => format!("texture on {:?}", o).to_lowercase(),
             Hit::ReloadAvatar => "reload avatar".into(),
             Hit::OpenProfileDir => "open the profile folder".into(),
             Hit::StartOnLaunch(b) => if b { "atlas also at launch".into() } else { "atlas from the planet".into() },
@@ -224,6 +256,7 @@ impl App {
             Hit::Section(k) => {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.section = k;
+                    s.scroll = 0.0;
                 }
                 if k == 5 {
                     self.refresh_register_note();
@@ -311,6 +344,70 @@ impl App {
                 let _ = crate::little::unregister();
                 self.register_note = "unregistered".into();
             }
+            Hit::Preset(k) => {
+                if let Some(p) = surface::presets().get(k) {
+                    self.surface = p.surface.clone();
+                    self.preset_name = p.name.clone();
+                    self.refresh_icon();
+                    self.layout();
+                }
+            }
+            Hit::SavePreset => {
+                let n = surface::presets().len() + 1;
+                let name = format!("mine-{n}");
+                let p = surface::Preset { name: name.clone(), surface: self.surface.clone() };
+                if surface::save_preset(&p).is_ok() {
+                    self.preset_name = name;
+                }
+            }
+            Hit::OpenPresets => {
+                let dir = std::env::current_dir().unwrap_or_default().join("profile").join("surfaces");
+                let _ = std::fs::create_dir_all(&dir);
+                let cmd = if cfg!(target_os = "windows") {
+                    format!("start \"\" \"{}\"", dir.display())
+                } else if cfg!(target_os = "macos") {
+                    format!("open \"{}\"", dir.display())
+                } else {
+                    format!("xdg-open \"{}\"", dir.display())
+                };
+                self.run_in_shell(&cmd);
+            }
+            Hit::StopSel(i) => self.stop_sel = i,
+            Hit::StopAdd => {
+                if self.surface.stops.len() < 4 {
+                    let ink = self.theme.ink;
+                    let mut stops = self.surface.ramp(ink);
+                    let last = *stops.last().unwrap();
+                    stops.push(surface::rotate_hue(last, 0.12));
+                    self.surface.stops = stops;
+                    self.stop_sel = self.surface.stops.len() - 1;
+                }
+            }
+            Hit::StopRemove => {
+                if self.surface.stops.len() > 2 {
+                    self.surface.stops.pop();
+                    self.stop_sel = self.stop_sel.min(self.surface.stops.len() - 1);
+                } else {
+                    self.surface.stops.clear();
+                    self.stop_sel = 0;
+                }
+            }
+            Hit::StopColor(c) => {
+                let ink = self.theme.ink;
+                if self.surface.stops.len() < 2 {
+                    self.surface.stops = self.surface.ramp(ink);
+                }
+                let i = self.stop_sel.min(self.surface.stops.len() - 1);
+                self.surface.stops[i] = c;
+            }
+            Hit::OpacityOn(o) => self.surface.opacity_on = o,
+            Hit::TexKind(k) => {
+                self.surface.texture_kind = k;
+                if k != TextureKind::None && self.surface.texture == 0.0 {
+                    self.surface.texture = 0.08;
+                }
+            }
+            Hit::TexOn(o) => self.surface.texture_on = o,
             Hit::ReloadAvatar => self.load_avatar(),
             Hit::OpenProfileDir => {
                 let dir = std::env::current_dir().unwrap_or_default().join("profile");
@@ -386,14 +483,39 @@ impl App {
                 ("CURSOR".into(), Info("block · no blink".into())),
             ],
             1 => {
+                let ink = self.theme.ink;
+                let presets = surface::presets();
+                let mut preset_chips: Vec<(String, Hit, bool)> =
+                    presets.iter().enumerate().map(|(k, p)| (p.name.to_uppercase(), Hit::Preset(k), p.name == self.preset_name)).collect();
+                preset_chips.push(("+ SAVE AS…".into(), Hit::SavePreset, false));
                 let sig: Vec<(Option<Color>, Hit, bool)> =
                     SWATCHES[..6].iter().map(|&(_, c)| (Some(c), Hit::Signal(c), c == self.surface.signal)).collect();
+                let fam: Vec<(Option<Color>, Hit, bool)> = surface::family(self.surface.signal).iter().map(|&c| (Some(c), Hit::Signal(c), false)).collect();
+                let ramp = self.surface.ramp(ink);
+                let stop_sel = self.stop_sel.min(ramp.len() - 1);
+                let mut stops: Vec<(Option<Color>, Hit, bool)> = ramp.iter().enumerate().map(|(i, &c)| (Some(c), Hit::StopSel(i), i == stop_sel)).collect();
+                stops.push((None, Hit::StopAdd, false));
+                let mut stop_colors: Vec<(Option<Color>, Hit, bool)> =
+                    SWATCHES.iter().map(|&(_, c)| (Some(c), Hit::StopColor(c), ramp.get(stop_sel) == Some(&c))).collect();
+                stop_colors.extend(surface::family(self.surface.signal).iter().map(|&c| (Some(c), Hit::StopColor(c), false)));
                 let mut base: Vec<(Option<Color>, Hit, bool)> = vec![(None, Hit::Base(None), self.surface.base.is_none())];
                 base.extend(SWATCHES.iter().map(|&(_, c)| (Some(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
                 let translucent = self.target.translucent();
                 vec![
+                    ("PRESET".into(), Choice(preset_chips)),
+                    ("".into(), Buttons(vec![("OPEN PRESETS FOLDER".into(), icons::FOLDER, Hit::OpenPresets)])),
                     ("SIGNAL".into(), Swatches(sig)),
-                    ("SIGNAL HEX".into(), Info(format!("{} · carapace, Space square, ticks, progress", hex(self.surface.signal)))),
+                    ("FAMILY".into(), Swatches(fam)),
+                    ("SIGNAL HEX".into(), Info(format!("{} · carapace, Space square, ticks, progress · family: tints and shades", hex(self.surface.signal)))),
+                    ("STOPS".into(), Swatches(stops)),
+                    (
+                        format!("STOP {} COLOUR", stop_sel + 1),
+                        Swatches(stop_colors),
+                    ),
+                    (
+                        "".into(),
+                        Buttons(vec![("REMOVE LAST STOP".into(), icons::MINIMIZE, Hit::StopRemove)]),
+                    ),
                     ("BASE".into(), Swatches(base)),
                     (
                         "TINT".into(),
@@ -407,24 +529,44 @@ impl App {
                         ),
                     ),
                     (
-                        "TEXTURE".into(),
-                        Slider(
-                            self::Slider::Texture,
-                            self.slider_value(self::Slider::Texture),
-                            format!("grain {}% · on the carapace only", (self.surface.texture * 100.0).round()),
-                        ),
-                    ),
-                    (
                         "OPACITY".into(),
                         Slider(
                             self::Slider::Opacity,
                             self.slider_value(self::Slider::Opacity),
                             if translucent {
-                                format!("{}% · terminal panes show the desktop through", (self.surface.opacity * 100.0).round())
+                                format!("{}%", (self.surface.opacity * 100.0).round())
                             } else {
-                                "this compositor gives an opaque swapchain · set in v1".into()
+                                "opaque swapchain on this compositor · v1".into()
                             },
                         ),
+                    ),
+                    (
+                        "".into(),
+                        Choice(vec![
+                            ("PANES".into(), Hit::OpacityOn(OpacityOn::Panes), self.surface.opacity_on == OpacityOn::Panes),
+                            ("CHROME TOO".into(), Hit::OpacityOn(OpacityOn::Chrome), self.surface.opacity_on == OpacityOn::Chrome),
+                            ("WHOLE WINDOW".into(), Hit::OpacityOn(OpacityOn::Window), self.surface.opacity_on == OpacityOn::Window),
+                        ]),
+                    ),
+                    (
+                        "TEXTURE".into(),
+                        Choice(TextureKind::ALL.iter().map(|&k| (k.name().to_uppercase(), Hit::TexKind(k), k == self.surface.texture_kind)).collect()),
+                    ),
+                    (
+                        "STRENGTH".into(),
+                        Slider(self::Slider::Texture, self.slider_value(self::Slider::Texture), format!("{}%", (self.surface.texture * 100.0).round())),
+                    ),
+                    (
+                        "SCALE".into(),
+                        Slider(self::Slider::TexScale, self.slider_value(self::Slider::TexScale), format!("{}px pitch", self.surface.texture_scale)),
+                    ),
+                    (
+                        "ON".into(),
+                        Choice(vec![
+                            ("CARAPACE".into(), Hit::TexOn(TextureOn::Carapace), self.surface.texture_on == TextureOn::Carapace),
+                            ("CHROME".into(), Hit::TexOn(TextureOn::Chrome), self.surface.texture_on == TextureOn::Chrome),
+                            ("PANES".into(), Hit::TexOn(TextureOn::Panes), self.surface.texture_on == TextureOn::Panes),
+                        ]),
                     ),
                     (
                         "CARAPACE".into(),
@@ -437,6 +579,18 @@ impl App {
                     (
                         "RADIUS".into(),
                         Slider(self::Slider::Radius, self.slider_value(self::Slider::Radius), format!("{}px corners", self.surface.shell_radius)),
+                    ),
+                    (
+                        "ANGLE".into(),
+                        Slider(self::Slider::Angle, self.slider_value(self::Slider::Angle), format!("{}° · gradient and aurora", self.surface.angle)),
+                    ),
+                    (
+                        "DRIFT".into(),
+                        Slider(self::Slider::Drift, self.slider_value(self::Slider::Drift), format!("{} turns/s · aurora", self.surface.drift)),
+                    ),
+                    (
+                        "BREATH".into(),
+                        Slider(self::Slider::Breath, self.slider_value(self::Slider::Breath), format!("{}% · the aurora stroke swells", (self.surface.breath * 100.0).round())),
                     ),
                 ]
             }
@@ -715,9 +869,12 @@ impl App {
             self.fonts.draw(scene, dim, r.x + self.px(18.0), r.bottom() - self.px(14.0), cfg);
         }
 
-        // Content.
+        // Content, scrolling within its column.
         let cx = r.x + nav_w + if tiles { self.px(18.0) } else { self.px(40.0) };
-        let mut y = top + self.px(28.0);
+        let content = Rect::new(r.x + nav_w, top, r.w - nav_w, r.bottom() - top);
+        let scroll = p.scroll.max(0.0);
+        scene.layer(Some(content));
+        let mut y = top + self.px(28.0) - scroll;
         let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
         self.fonts.draw(scene, wm, cx, y + self.px(30.0), &SECTIONS[p.section].0.to_lowercase());
         y += self.px(58.0);
@@ -804,6 +961,11 @@ impl App {
             scene.hline(cx, y + rh - self.px(m::HAIRLINE), maxw, self.px(m::HAIRLINE), t.tint);
             y += rh;
         }
+        // Remember the reach so the wheel can clamp.
+        self.settings_reach = (y + scroll - top + self.px(40.0)).max(0.0);
+        scene.layer(None);
+        // Hits above or below the column are unreachable.
+        self.settings_hits.retain(|(hr, h)| matches!(h, Hit::Section(_) | Hit::Back | Hit::Tile(_)) || (hr.bottom() > content.y && hr.y < content.bottom()));
 
         // RULES: the file itself, as far as it fits.
         if p.section == RULES {

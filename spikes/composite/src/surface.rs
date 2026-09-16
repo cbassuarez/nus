@@ -89,33 +89,235 @@ pub const SWATCHES: [(&str, Color); 8] = [
     ("ink", [0.078, 0.078, 0.078, 1.0]),
 ];
 
+/// Which surfaces the window opacity thins.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum OpacityOn {
+    Panes,
+    Chrome,
+    Window,
+}
+
+/// The texture family. Grain is speckle; the rest are patterns.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum TextureKind {
+    None,
+    Grain,
+    Stipple,
+    Stitch,
+    Linen,
+    Halftone,
+}
+
+impl TextureKind {
+    pub const ALL: [TextureKind; 6] = [TextureKind::None, TextureKind::Grain, TextureKind::Stipple, TextureKind::Stitch, TextureKind::Linen, TextureKind::Halftone];
+    pub fn name(self) -> &'static str {
+        match self {
+            TextureKind::None => "none",
+            TextureKind::Grain => "grain",
+            TextureKind::Stipple => "stipple",
+            TextureKind::Stitch => "stitch",
+            TextureKind::Linen => "linen",
+            TextureKind::Halftone => "halftone",
+        }
+    }
+    /// The quad-shader kind, or None for no texture.
+    pub fn shader_kind(self) -> Option<u32> {
+        match self {
+            TextureKind::None => None,
+            TextureKind::Grain => Some(6),
+            TextureKind::Stipple => Some(7),
+            TextureKind::Stitch => Some(8),
+            TextureKind::Linen => Some(9),
+            TextureKind::Halftone => Some(10),
+        }
+    }
+}
+
+/// Where a texture is laid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum TextureOn {
+    Carapace,
+    Chrome,
+    Panes,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Surface {
     /// The signal colour: carapace, Space square, ticks, progress.
     pub signal: Color,
+    /// Ordered stops the gradient and aurora carapaces run through. Empty
+    /// means "signal → ink" as before.
+    #[serde(default)]
+    pub stops: Vec<Color>,
     /// Optional base the paper is tinted toward, and how far (0 = pure paper).
     pub base: Option<Color>,
     pub tint: f32,
-    /// Grain strength on the carapace and stroke; 0 = none. Never on content.
+    /// Texture strength 0..0.3; 0 = none.
     pub texture: f32,
+    #[serde(default = "default_texture_kind")]
+    pub texture_kind: TextureKind,
+    /// Pattern pitch in logical px.
+    #[serde(default = "default_texture_scale")]
+    pub texture_scale: f32,
+    #[serde(default = "default_texture_on")]
+    pub texture_on: TextureOn,
     /// Window opacity 0.5..1. Below 1 the panes show the desktop through.
     pub opacity: f32,
+    #[serde(default = "default_opacity_on")]
+    pub opacity_on: OpacityOn,
     pub shell: Shell,
     pub shell_width: f32,
     pub shell_radius: f32,
+    /// Gradient direction in degrees (0 = left→right).
+    #[serde(default = "default_angle")]
+    pub angle: f32,
+    /// Aurora: how fast the ramp drifts (turns per second) and how much the
+    /// stroke breathes (0..1 of its width).
+    #[serde(default = "default_drift")]
+    pub drift: f32,
+    #[serde(default)]
+    pub breath: f32,
+}
+
+fn default_texture_kind() -> TextureKind {
+    TextureKind::Grain
+}
+fn default_texture_scale() -> f32 {
+    1.0
+}
+fn default_texture_on() -> TextureOn {
+    TextureOn::Carapace
+}
+fn default_opacity_on() -> OpacityOn {
+    OpacityOn::Panes
+}
+fn default_angle() -> f32 {
+    30.0
+}
+fn default_drift() -> f32 {
+    0.09
 }
 
 impl Default for Surface {
     fn default() -> Self {
         Surface {
             signal: nus_render::theme::signal::RED,
+            stops: Vec::new(),
             base: None,
             tint: 0.0,
             texture: 0.08,
+            texture_kind: TextureKind::Grain,
+            texture_scale: 1.0,
+            texture_on: TextureOn::Carapace,
             opacity: 1.0,
+            opacity_on: OpacityOn::Panes,
             shell: Shell::Band,
             shell_width: nus_render::theme::metric::BAND,
             shell_radius: 0.0,
+            angle: 30.0,
+            drift: 0.09,
+            breath: 0.0,
+        }
+    }
+}
+
+/// A saved surface: the card as a file under profile/surfaces.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Preset {
+    pub name: String,
+    pub surface: Surface,
+}
+
+fn presets_dir() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_default().join("profile").join("surfaces")
+}
+
+/// Built-in presets, then the saved ones (files win on a name clash).
+pub fn presets() -> Vec<Preset> {
+    use nus_render::theme::signal;
+    let mut v = vec![
+        Preset { name: "broadsheet".into(), surface: Surface::default() },
+        Preset {
+            name: "midnight".into(),
+            surface: Surface {
+                signal: signal::BLUE,
+                stops: vec![signal::BLUE, signal::VIOLET, signal::TEAL],
+                base: Some(signal::BLUE),
+                tint: 0.22,
+                shell: Shell::Aurora,
+                shell_width: 4.0,
+                shell_radius: 12.0,
+                texture: 0.05,
+                texture_kind: TextureKind::Linen,
+                texture_on: TextureOn::Chrome,
+                ..Surface::default()
+            },
+        },
+        Preset {
+            name: "ledger".into(),
+            surface: Surface {
+                signal: signal::GREEN,
+                stops: vec![signal::GREEN, signal::GOLD],
+                shell: Shell::Stroke,
+                shell_width: 3.0,
+                texture: 0.12,
+                texture_kind: TextureKind::Stitch,
+                texture_scale: 6.0,
+                texture_on: TextureOn::Carapace,
+                ..Surface::default()
+            },
+        },
+        Preset {
+            name: "darkroom".into(),
+            surface: Surface {
+                signal: signal::RED,
+                stops: vec![signal::RED, [0.55, 0.05, 0.12, 1.0], signal::VIOLET],
+                shell: Shell::Gradient,
+                shell_width: 8.0,
+                angle: 90.0,
+                texture: 0.16,
+                texture_kind: TextureKind::Halftone,
+                texture_scale: 5.0,
+                texture_on: TextureOn::Panes,
+                ..Surface::default()
+            },
+        },
+    ];
+    if let Ok(rd) = std::fs::read_dir(presets_dir()) {
+        let mut files: Vec<_> = rd.flatten().collect();
+        files.sort_by_key(|e| e.file_name());
+        for e in files {
+            if let Ok(text) = std::fs::read_to_string(e.path()) {
+                if let Ok(p) = serde_json::from_str::<Preset>(&text) {
+                    v.retain(|q| q.name != p.name);
+                    v.push(p);
+                }
+            }
+        }
+    }
+    v
+}
+
+pub fn save_preset(p: &Preset) -> std::io::Result<()> {
+    std::fs::create_dir_all(presets_dir())?;
+    let safe: String = p.name.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' }).collect();
+    std::fs::write(presets_dir().join(format!("{safe}.json")), serde_json::to_string_pretty(p).unwrap_or_default())
+}
+
+/// Five steps of a colour: two tints, itself, two shades.
+pub fn family(c: Color) -> [Color; 5] {
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let black = [0.0, 0.0, 0.0, 1.0];
+    [mix(c, white, 0.72), mix(c, white, 0.38), c, mix(c, black, 0.32), mix(c, black, 0.62)]
+}
+
+impl Surface {
+    /// The stops the ramp carapaces use: the user's, or signal → ink.
+    pub fn ramp(&self, ink: Color) -> Vec<Color> {
+        if self.stops.len() >= 2 {
+            self.stops.iter().take(4).copied().collect()
+        } else {
+            vec![self.signal, ink]
         }
     }
 }
@@ -243,7 +445,8 @@ pub const DEFAULT_RULES: &str = r##"-- nus rules · Luau, sandboxed. Edit, save,
 --   parent    { bg = "#..", signal = "#.." } when the tab joins a stack
 -- Return { bg = "#rrggbb", signal = "#rrggbb" } (either key optional) or nil.
 --
--- Helpers: hue(hex, turns) rotates hue; mix(a, b, t) blends; hsl(h, s, l).
+-- Helpers: hue(hex, turns) rotates hue; mix(a, b, t) blends; hsl(h, s, l);
+-- family(hex, 1..5) picks a tint (1–2), the colour (3) or a shade (4–5).
 
 -- Example: every new terminal gets its own background hue, and pages opened
 -- from it (its stack) stay in the same family, a touch lighter.
@@ -328,6 +531,10 @@ impl Rules {
                 })
             })
             .unwrap(),
+        );
+        let _ = g.set(
+            "family",
+            lua.create_function(|_, (h, i): (String, i64)| Ok(parse_hex(&h).map(|c| hex(family(c)[(i.clamp(1, 5) - 1) as usize])))).unwrap(),
         );
         let _ = g.set(
             "hsl",

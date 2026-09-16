@@ -42,9 +42,12 @@ pub struct Instance {
     pub kind: u32,
     /// Second color, packed RGBA8 (kinds 3/4); 0 = none.
     pub color2: u32,
-    /// Gradient phase in turns (kinds 3/4).
+    /// Gradient phase in turns (kinds 3/4); texture scale (kinds 6–10).
     pub phase: f32,
-    pub _pad: u32,
+    /// Kinds 3/4: gradient stops beyond two — bits 0–7 stop count (0 = the
+    /// legacy two-colour diagonal), bits 8–17 angle in degrees, bit 18 loop
+    /// (aurora); stops 3 and 4 ride packed in `uv.z` / `uv.w`.
+    pub extra: u32,
 }
 
 impl Instance {
@@ -57,7 +60,7 @@ impl Instance {
             kind: 0,
             color2: 0,
             phase: 0.0,
-            _pad: 0,
+            extra: 0,
         }
     }
     pub fn glyph(x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], color: Color) -> Instance {
@@ -69,7 +72,7 @@ impl Instance {
             kind: 1,
             color2: 0,
             phase: 0.0,
-            _pad: 0,
+            extra: 0,
         }
     }
     pub fn textured(r: Rect, alpha: f32) -> Instance {
@@ -81,7 +84,7 @@ impl Instance {
             kind: 2,
             color2: 0,
             phase: 0.0,
-            _pad: 0,
+            extra: 0,
         }
     }
     /// Rounded fill.
@@ -94,7 +97,7 @@ impl Instance {
             kind: 3,
             color2: 0,
             phase: 0.0,
-            _pad: 0,
+            extra: 0,
         }
     }
     /// Rounded stroke of `thickness` inside `r`; optional gradient toward
@@ -115,7 +118,7 @@ impl Instance {
             kind: 4,
             color2: color2.map(pack).unwrap_or(0),
             phase,
-            _pad: 0,
+            extra: 0,
         }
     }
 }
@@ -131,7 +134,7 @@ impl Instance {
             kind: 5,
             color2: pack(b),
             phase: period,
-            _pad: 0,
+            extra: 0,
         }
     }
 }
@@ -147,8 +150,65 @@ impl Instance {
             kind: 6,
             color2: 0,
             phase: grain,
-            _pad: 0,
+            extra: 0,
         }
+    }
+}
+
+impl Instance {
+    /// Rounded stroke through up to four `stops`, running at `angle`
+    /// degrees (0 = left→right, 90 = top→bottom); `looping` wraps the
+    /// ramp so `phase` can drift it forever (aurora).
+    pub fn stroke_stops(
+        r: Rect,
+        radius: f32,
+        thickness: f32,
+        stops: &[Color],
+        angle: f32,
+        phase: f32,
+        looping: bool,
+    ) -> Instance {
+        let mut i = Instance::stroke(r, radius, thickness, stops[0], stops.get(1).copied(), phase);
+        i.set_stops(stops, angle, looping);
+        i
+    }
+
+    /// Rounded fill through up to four stops (see `stroke_stops`).
+    pub fn rounded_stops(
+        r: Rect,
+        radius: f32,
+        stops: &[Color],
+        angle: f32,
+        phase: f32,
+        looping: bool,
+    ) -> Instance {
+        let mut i = Instance::rounded(r, radius, stops[0]);
+        i.phase = phase;
+        i.set_stops(stops, angle, looping);
+        i
+    }
+
+    fn set_stops(&mut self, stops: &[Color], angle: f32, looping: bool) {
+        let n = stops.len().clamp(1, 4) as u32;
+        if n >= 2 {
+            self.color2 = pack(stops[1]);
+        }
+        if n >= 3 {
+            self.uv[2] = f32::from_bits(pack(stops[2]));
+        }
+        if n >= 4 {
+            self.uv[3] = f32::from_bits(pack(stops[3]));
+        }
+        let a = (angle.rem_euclid(360.0)) as u32;
+        self.extra = n | (a << 8) | ((looping as u32) << 18);
+    }
+
+    /// Texture overlay: `kind` 6 grain, 7 stipple, 8 stitch, 9 linen,
+    /// 10 halftone; `color.a` is the strength, `scale` the pattern pitch.
+    pub fn texture_kind(r: Rect, kind: u32, color: Color, scale: f32) -> Instance {
+        let mut i = Instance::grain(r, color, scale);
+        i.kind = kind;
+        i
     }
 }
 
