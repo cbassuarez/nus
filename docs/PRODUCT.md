@@ -176,3 +176,37 @@ args vs stdin, web fallbacks).
 **Onboarding.** First launch opens a real shell with a ruled panel beside
 it: five things to try (⌘K, ⌘T + URL, a URL at the prompt, hover the edge,
 ⌥⌘T), each ticked off as you do it. No wizard, no modal.
+
+## Surface, rules, sidebar rules (settled 2026-09-16, sixth pass)
+
+**Texture stays on the carapace.** Grain goes on the band or stroke, never
+on content and never on the PiP video.
+
+**Surface picker.** Beyond the fixed Broadsheet tokens, the surface is the
+user's: a signal colour (carapace, Space square, ticks, progress), an
+optional base the paper is tinted toward (with a tint amount), texture
+strength, window opacity (terminal panes show the desktop through; the
+chrome stays paper), carapace style, width and corner radius. Every control
+is native chrome — swatches, chips, sliders — and the window is its own
+live preview.
+
+**Rules.** `rules.luau` (sandboxed Luau; `~/.config/nus/rules.luau` in v1)
+decides what a new tab or Space looks like. `new_tab(ctx)` gets kind,
+index, profile, Space, signal, theme and — when the tab joins a stack — the
+parent's colours, and returns `{ bg, signal }`. The default rule gives each
+terminal its own hue and keeps a stack in the parent's family. The RULES
+section of settings shows the file, reloads it, resets it, opens it in the
+editor. Helpers: `hue`, `mix`, `hsl`.
+
+**Sidebar rules.** Side: left or right. Reveal: from the screen edge (a
+flick from the desktop works) or only when the pointer travels from inside
+the window. Grace: how long it stays after the pointer leaves. Fullscreen:
+hover, hidden, or pinned. F11 toggles fullscreen.
+
+**Tab behaviour.** Links a page opens go to the stack, the split, or a new
+tab. A URL at a prompt opens beside or in a new tab. Closing asks when a
+process is running, or never. Default shell profile.
+
+**Onboarding, as built.** The fifth chord in the panel is Ctrl+` (last tab)
+until the quick terminal exists. Ticks persist across launches; SKIP THE
+TOUR is remembered.
