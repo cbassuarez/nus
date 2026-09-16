@@ -76,16 +76,16 @@ pub enum Hit {
 }
 
 pub const SECTIONS: [(&str, (&str, &str)); 10] = [
-    ("APPEARANCE", icons::HOME),
-    ("SURFACE", icons::STACK),
+    ("APPEARANCE", icons::BRUSH),
+    ("SURFACE", icons::PALETTE),
     ("SIDEBAR", icons::SIDEBAR),
-    ("TABS", icons::COPY),
+    ("TABS", icons::SQUARES),
     ("TERMINAL", icons::TERMINAL),
     ("BROWSER", icons::GLOBE),
     ("ASSISTANTS", icons::ASSISTANT),
-    ("RULES", icons::COMMAND),
-    ("KEYS", icons::ENTER),
-    ("UPDATES", icons::RELOAD),
+    ("RULES", icons::CODE),
+    ("KEYS", icons::KEYBOARD),
+    ("UPDATES", icons::DOWNLOAD),
 ];
 
 pub const RULES: usize = 7;
@@ -104,7 +104,7 @@ enum Control {
     Choice(Vec<(String, Hit, bool)>),
     Slider(Slider, f32, String),
     Swatches(Vec<(Option<Color>, Hit, bool)>),
-    Buttons(Vec<(String, Hit)>),
+    Buttons(Vec<(String, (&'static str, &'static str), Hit)>),
 }
 
 impl App {
@@ -386,7 +386,11 @@ impl App {
                 ("STATUS".into(), Info(self.rules.status.clone())),
                 (
                     "".into(),
-                    Buttons(vec![("RELOAD".into(), Hit::ReloadRules), ("OPEN IN EDITOR".into(), Hit::OpenRules), ("RESET TO DEFAULT".into(), Hit::ResetRules)]),
+                    Buttons(vec![
+                        ("RELOAD".into(), icons::RELOAD, Hit::ReloadRules),
+                        ("OPEN IN EDITOR".into(), icons::OPEN_EXTERNAL, Hit::OpenRules),
+                        ("RESET TO DEFAULT".into(), icons::WARNING, Hit::ResetRules),
+                    ]),
                 ),
             ],
             8 => vec![
@@ -516,13 +520,15 @@ impl App {
                 }
                 Control::Buttons(items) => {
                     let mut x = vx;
-                    for (text, hit) in items {
-                        let w = self.fonts.measure(strong, &text) + self.px(24.0);
+                    for (text, icon, hit) in items {
+                        let isz = self.px(13.0);
+                        let w = self.fonts.measure(strong, &text) + self.px(24.0) + isz + self.px(8.0);
                         let b = Rect::new(x, base - self.px(m::LABEL_PX) - self.px(8.0), w, self.px(m::LABEL_PX) + self.px(16.0));
                         scene.rect(Rect::new(b.x + self.px(3.0), b.y + self.px(3.0), b.w, b.h), ink);
                         scene.rect(b, t.paper);
                         scene.outline(b, self.px(m::STRUCTURE), ink);
-                        self.fonts.draw(scene, strong, x + self.px(12.0), base, &text);
+                        self.fonts.draw_icon(scene, icon, isz, x + self.px(12.0), base - isz + self.px(2.0), ink);
+                        self.fonts.draw(scene, strong, x + self.px(12.0) + isz + self.px(8.0), base, &text);
                         self.settings_hits.push((b, hit));
                         x += w + self.px(14.0);
                     }

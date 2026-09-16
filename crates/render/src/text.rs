@@ -356,6 +356,24 @@ pub mod icons {
     icon!(GLOBE_BOLD, "globe-bold");
     icon!(TERMINAL_BOLD, "terminal-window-bold");
     icon!(BELL_BOLD, "bell-bold");
+    icon!(BUG, "bug");
+    icon!(BROADCAST, "broadcast");
+    icon!(KEYBOARD, "keyboard");
+    icon!(PALETTE, "palette");
+    icon!(SQUARES, "squares-four");
+    icon!(BRUSH, "paint-brush");
+    icon!(CODE, "code");
+    icon!(CURSOR, "cursor-click");
+    icon!(EXPAND, "arrows-out-simple");
+    icon!(USER, "user-circle");
+    icon!(CHAT, "chat-circle-dots");
+    icon!(COOKIE, "cookie");
+    icon!(FOLDER, "folder-open");
+    icon!(SHIELD, "shield-check");
+    icon!(DOWNLOAD, "download-simple");
+    icon!(OPEN_EXTERNAL, "arrow-square-out");
+    icon!(SLIDERS, "sliders-horizontal");
+    icon!(CIRCLE, "circle");
 }
 
 impl FontSystem {

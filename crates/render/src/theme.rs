@@ -70,6 +70,8 @@ pub mod metric {
     pub const HEADER_PAD_Y: f32 = 9.0;
     pub const HEADER_PAD_X: f32 = 18.0;
     pub const PREVIEW_H: f32 = 52.0;
+    /// Width of one nav icon slot (back / forward / reload) in the URL row.
+    pub const NAV_SLOT: f32 = 26.0;
     pub const UI_PX: f32 = 13.0;
     pub const LABEL_PX: f32 = 11.0;
     pub const LABEL_TRACKING: f32 = 0.08;

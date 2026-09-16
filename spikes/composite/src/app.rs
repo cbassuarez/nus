@@ -1236,7 +1236,12 @@ impl App {
         let sel = Style { color: t.paper, ..label };
         self.fonts.draw(scene, sel, sb.x + self.px(28.0), sb.y + self.px(19.0), &self.space_name.to_uppercase());
         scene.vline(sb.x + cell_w, sb.y, row_h, self.px(m::HAIRLINE), ink);
-        self.fonts.draw(scene, dim, sb.x + cell_w + self.px(10.0), sb.y + self.px(19.0), "+ SPACE");
+        {
+            let isz = self.px(12.0);
+            let x = sb.x + cell_w + self.px(10.0);
+            self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x, sb.y + self.px(19.0) - isz + self.px(2.0), t.dim);
+            self.fonts.draw(scene, dim, x + isz + self.px(6.0), sb.y + self.px(19.0), "SPACE");
+        }
         scene.hline(sb.x, sb.y + row_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
 
         let g = self.sidebar_geometry();
@@ -1256,7 +1261,10 @@ impl App {
                 let st = Style { color: if active { t.paper } else { ink }, ..ui_strong };
                 let base = py + self.px(8.0) + self.px(m::UI_PX) - self.px(3.0);
                 let mut x = cx + self.px(10.0);
-                x += self.fonts.draw(scene, st, x, base, &format!("P{}", k + 1)) + self.px(8.0);
+                let isz = self.px(12.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::PIN, isz, x, base - isz + self.px(2.0), st.color);
+                x += isz + self.px(8.0);
+                let _ = k;
                 let title = self.fit(st, &tabs[i].title(), cell_w - (x - cx) - self.px(10.0));
                 self.fonts.draw(scene, Style { font: self.f.ui, ..st }, x, base, &title);
                 if self.selected.contains(&i) {
@@ -1376,10 +1384,16 @@ impl App {
         self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..ui_strong }, av.x + (av.w - iw) / 2.0, av.y + self.px(16.0), &initial);
         let tx = av.right() + self.px(10.0);
         self.fonts.draw(scene, ui_strong, tx, y + self.px(10.0) + self.px(11.0), &self.space_name);
-        self.fonts.draw(scene, dim, tx, y + self.px(10.0) + self.px(24.0), &format!("{} · {} COOKIES", self.user_name.to_uppercase(), self.space_name.to_uppercase()));
-        let dots = "...";
-        let dw = self.fonts.measure(label, dots);
-        self.fonts.draw(scene, label, sb.right() - pad_x - dw, y + self.px(10.0) + self.px(14.0), dots);
+        {
+            let by = y + self.px(10.0) + self.px(24.0);
+            let mut x = tx;
+            x += self.fonts.draw(scene, dim, x, by, &format!("{} ·", self.user_name.to_uppercase())) + self.px(6.0);
+            let isz = self.px(11.0);
+            self.fonts.draw_icon(scene, nus_render::text::icons::COOKIE, isz, x, by - isz + self.px(2.0), t.dim);
+            self.fonts.draw(scene, dim, x + isz + self.px(4.0), by, &self.space_name.to_uppercase());
+        }
+        let isz = self.px(16.0);
+        self.fonts.draw_icon(scene, nus_render::text::icons::MORE, isz, sb.right() - pad_x - isz, y + self.px(10.0) + self.px(3.0), ink);
         y += id_h;
         scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
         y += self.px(m::HAIRLINE);
@@ -1387,7 +1401,11 @@ impl App {
         let lr = self.px(8.0) * 2.0 + self.px(m::LABEL_PX);
         let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
         let mut x = sb.x + pad_x;
-        x += self.fonts.draw(scene, dim, x, base, "SHELL") + self.px(10.0);
+        {
+            let isz = self.px(12.0);
+            self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, isz, x, base - isz + self.px(2.0), t.dim);
+            x += isz + self.px(10.0);
+        }
         let default = self.profiles.first().map(|p| p.name.clone()).unwrap_or_default();
         x += self.fonts.draw(scene, strong, x, base, &default.to_uppercase()) + self.px(10.0);
         let others: Vec<String> = self.profiles.iter().skip(1).map(|p| p.name.to_uppercase()).collect();
@@ -1401,7 +1419,11 @@ impl App {
         // assistants row
         let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
         let mut x = sb.x + pad_x;
-        x += self.fonts.draw(scene, dim, x, base, "ASK") + self.px(10.0);
+        {
+            let isz = self.px(12.0);
+            self.fonts.draw_icon(scene, nus_render::text::icons::ASSISTANT, isz, x, base - isz + self.px(2.0), t.dim);
+            x += isz + self.px(10.0);
+        }
         let mut names: Vec<String> = self.llm_tools.iter().map(|(n, _)| n.to_uppercase()).collect();
         names.push("CHATGPT".into());
         names.push("CLAUDE.AI".into());
@@ -1580,10 +1602,15 @@ impl App {
                 let hh = self.header_h();
                 let base = r.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
                 let mut x = r.x + self.px(m::HEADER_PAD_X);
+                let isz = self.px(13.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, isz, x, base - isz + self.px(2.0), ink);
+                x += isz + self.px(8.0);
                 x += self.fonts.draw(scene, strong, x, base, &format!("{} · {}", n, p.title).to_uppercase()) + self.px(14.0);
                 let dims = format!("{}×{}", p.term.cols(), p.term.rows());
                 let dw = self.fonts.measure(label, &dims);
-                self.fonts.draw(scene, label, r.right() - self.px(m::HEADER_PAD_X) - dw, base, &dims);
+                let dx = r.right() - self.px(m::HEADER_PAD_X) - dw;
+                self.fonts.draw(scene, label, dx, base, &dims);
+                self.fonts.draw_icon(scene, nus_render::text::icons::EXPAND, isz, dx - isz - self.px(6.0), base - isz + self.px(2.0), t.dim);
                 let _ = x;
                 scene.hline(r.x, r.y + hh - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
                 if let Some(proc_name) = p.confirm_close.clone() {
@@ -1618,12 +1645,24 @@ impl App {
                 // URL row.
                 let base = r.y + self.px(6.0) + self.px(22.0) - self.px(6.0);
                 let mut x = r.x + self.px(14.0);
-                let ui_strong = self.ui_strong();
                 let ui = self.ui();
-                x += self.fonts.draw(scene, ui_strong, x, base, "←") + self.px(14.0);
-                let dt = if p.devtools.is_some() { "DEVTOOLS ·  CLOSE" } else { "DEVTOOLS" };
-                let dw = self.fonts.measure(label, dt);
-                let field = Rect::new(x, r.y + self.px(6.0), r.right() - self.px(14.0) - dw - self.px(14.0) - x, self.px(22.0));
+                let isz = self.px(15.0);
+                let iy = base - isz + self.px(2.0);
+                for icon in [nus_render::text::icons::BACK, nus_render::text::icons::FORWARD, nus_render::text::icons::RELOAD] {
+                    self.fonts.draw_icon(scene, icon, isz, x, iy, ink);
+                    x += self.px(m::NAV_SLOT);
+                }
+                x += self.px(4.0);
+                // DevTools: the bug, lit while open.
+                let dw = isz;
+                let bug_x = r.right() - self.px(14.0) - isz;
+                if p.devtools.is_some() {
+                    scene.rect(Rect::new(bug_x - self.px(6.0), r.y + self.px(6.0), isz + self.px(12.0), self.px(22.0)), ink);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::BUG, isz, bug_x, iy, t.paper);
+                } else {
+                    self.fonts.draw_icon(scene, nus_render::text::icons::BUG, isz, bug_x, iy, ink);
+                }
+                let field = Rect::new(x, r.y + self.px(6.0), r.right() - self.px(14.0) - dw - self.px(18.0) - x, self.px(22.0));
                 let local = is_local(&url);
                 if local {
                     scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.surface.signal, ink, self.px(8.0)));
@@ -1633,7 +1672,6 @@ impl App {
                 let shown = self.fit(ui, url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'), field.w - self.px(16.0));
                 let small = Style { px: self.px(12.0), ..ui };
                 self.fonts.draw(scene, small, field.x + self.px(8.0), base, &shown);
-                self.fonts.draw(scene, label, r.right() - self.px(14.0) - dw, base - self.px(1.0), dt);
                 scene.hline(r.x, p.page.y - 1.0, r.w, self.px(m::HAIRLINE), ink);
                 // Page.
                 scene.rect(p.page, t.page);
@@ -1674,14 +1712,19 @@ impl App {
                     }
                     x += w + self.px(16.0);
                 }
-                let live = match (local, focused) {
-                    (true, true) => "LOCAL · FOCUSED",
-                    (true, false) => "LOCAL",
-                    (false, true) => "■ LIVE · FOCUSED",
-                    (false, false) => "■ LIVE",
-                };
-                let lw = self.fonts.measure(label, live);
-                self.fonts.draw(scene, label, r.right() - self.px(14.0) - lw, base, live);
+                let isz = self.px(13.0);
+                let mut rx = r.right() - self.px(14.0);
+                if focused {
+                    rx -= isz;
+                    self.fonts.draw_icon(scene, nus_render::text::icons::CURSOR, isz, rx, base - isz + self.px(2.0), ink);
+                    rx -= self.px(12.0);
+                }
+                let (icon, word) = if local { (nus_render::text::icons::HARD_HAT, "LOCAL") } else { (nus_render::text::icons::BROADCAST, "LIVE") };
+                let lw = self.fonts.measure(label, word);
+                rx -= lw;
+                self.fonts.draw(scene, label, rx, base, word);
+                rx -= isz + self.px(6.0);
+                self.fonts.draw_icon(scene, icon, isz, rx, base - isz + self.px(2.0), if local { self.surface.signal } else { ink });
             }
         }
     }
@@ -2770,7 +2813,6 @@ impl App {
         }
         let focus_right = tab.focus_right;
         let scale = self.scale;
-        let back_w = 40.0 * scale;
         let mods = cef_mods(self.mods);
         let mut down_in_web = self.mouse_down_in_web;
         let mut open_url_palette = false;
@@ -2781,9 +2823,15 @@ impl App {
                 Pane::Web(w) => {
                     let url_row = Rect::new(w.rect.x, w.rect.y, w.rect.w, w.page.y - w.rect.y);
                     if pressed && button == MouseButton::Left && url_row.contains(x, y) {
-                        if x < w.rect.x + back_w {
-                            w.tab.back();
-                        } else if x > w.rect.right() - 120.0 * scale {
+                        let slot = m::NAV_SLOT * scale;
+                        let nav_x = x - (w.rect.x + 14.0 * scale);
+                        if nav_x < 3.0 * slot {
+                            match (nav_x / slot) as usize {
+                                0 => w.tab.back(),
+                                1 => w.tab.forward(),
+                                _ => w.tab.reload(),
+                            }
+                        } else if x > w.rect.right() - 44.0 * scale {
                             toggle_devtools = true;
                         } else {
                             open_url_palette = true;
