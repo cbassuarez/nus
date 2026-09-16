@@ -330,3 +330,126 @@ fn child_process_name(parent: u32) -> Option<String> {
         .and_then(|l| l.split_whitespace().nth(1))
         .map(|s| s.to_string())
 }
+
+/// A TCP port something on this machine is listening on, with its process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListeningPort {
+    pub port: u16,
+    pub pid: u32,
+    pub process: String,
+}
+
+/// Listening TCP ports (loopback and all-interfaces), deduplicated by port.
+pub fn listening_ports() -> Vec<ListeningPort> {
+    let mut out: Vec<ListeningPort> = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Ok(o) = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "tcp"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                let f: Vec<&str> = line.split_whitespace().collect();
+                if f.len() >= 5 && f[0] == "TCP" && f[3] == "LISTENING" {
+                    let port = f[1].rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+                    let pid = f[4].parse::<u32>().ok();
+                    if let (Some(port), Some(pid)) = (port, pid) {
+                        if !out.iter().any(|p| p.port == port) {
+                            out.push(ListeningPort {
+                                port,
+                                pid,
+                                process: String::new(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        let names = process_names();
+        for p in out.iter_mut() {
+            p.process = names.get(&p.pid).cloned().unwrap_or_default();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // ss (Linux) then lsof (macOS); both print "pid=" / "(PID)" forms we can mine.
+        let text = std::process::Command::new("ss")
+            .args(["-ltnp"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .or_else(|| {
+                std::process::Command::new("lsof")
+                    .args(["-iTCP", "-sTCP:LISTEN", "-P", "-n"])
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            })
+            .unwrap_or_default();
+        for line in text.lines() {
+            let port = line.split_whitespace().find_map(|tok| {
+                tok.rsplit(':')
+                    .next()
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .filter(|_| tok.contains(':'))
+            });
+            let name = line
+                .split("users:((\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .map(|s| s.to_string())
+                .or_else(|| line.split_whitespace().next().map(|s| s.to_string()));
+            let pid = line
+                .split("pid=")
+                .nth(1)
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if let Some(port) = port {
+                if !out.iter().any(|p| p.port == port) {
+                    out.push(ListeningPort {
+                        port,
+                        pid,
+                        process: name.unwrap_or_default(),
+                    });
+                }
+            }
+        }
+    }
+    out.sort_by_key(|p| p.port);
+    out
+}
+
+#[cfg(windows)]
+fn process_names() -> std::collections::HashMap<u32, String> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut map = std::collections::HashMap::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return map;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+                let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                map.insert(
+                    entry.th32ProcessID,
+                    name.trim_end_matches(".exe").to_string(),
+                );
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snap);
+    }
+    map
+}

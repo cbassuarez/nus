@@ -120,6 +120,22 @@ impl Instance {
     }
 }
 
+impl Instance {
+    /// Diagonal hazard tape as a stroke of `thickness` inside `r`.
+    pub fn hazard(r: Rect, thickness: f32, a: Color, b: Color, period: f32) -> Instance {
+        Instance {
+            pos: [r.x, r.y],
+            size: [r.w, r.h],
+            uv: [0.0, thickness, 0.0, 0.0],
+            color: a,
+            kind: 5,
+            color2: pack(b),
+            phase: period,
+            _pad: 0,
+        }
+    }
+}
+
 pub fn pack(c: Color) -> u32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
     q(c[0]) | (q(c[1]) << 8) | (q(c[2]) << 16) | (q(c[3]) << 24)

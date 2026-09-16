@@ -80,11 +80,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let p = in.local - half;
     let d = sd_box(p, half, in.params.x);
     var cov = 1.0 - smoothstep(-0.75, 0.75, d);
-    if in.kind == 4u {
+    if in.kind == 4u || in.kind == 5u {
         let inner = sd_box(p, half - vec2(in.params.y, in.params.y), max(in.params.x - in.params.y, 0.0));
         cov = cov * smoothstep(-0.75, 0.75, inner);
     }
     var color = in.color;
+    if in.kind == 5u {
+        // Hazard tape: diagonal stripes of color / color2, `phase` px per stripe.
+        let s = (in.local.x + in.local.y) / max(in.phase, 1.0);
+        if fract(s * 0.5) >= 0.5 {
+            color = in.color2;
+        }
+        return vec4(color.rgb, color.a * cov);
+    }
     if in.color2.a > 0.0 {
         let t = (in.local.x + in.local.y) / (in.size.x + in.size.y);
         let g = 0.5 + 0.5 * sin(6.2831853 * (t + in.phase));

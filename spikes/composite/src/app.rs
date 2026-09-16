@@ -224,6 +224,8 @@ pub struct App {
     pub closed: Vec<Closed>,
     /// Local assistants on PATH: (name, command template with {q}).
     pub llm_tools: Vec<(String, String)>,
+    /// Listening ports, refreshed when the palette opens.
+    pub ports: Vec<nus_pty::ListeningPort>,
 
     pub mods: ModifiersState,
     pub mouse: (f32, f32),
@@ -298,6 +300,7 @@ impl App {
             selected: Default::default(),
             closed: Vec::new(),
             llm_tools: discover_llm_tools(),
+            ports: Vec::new(),
             mods: ModifiersState::empty(),
             mouse: (0.0, 0.0),
             mouse_down_in_web: false,
@@ -1291,7 +1294,12 @@ impl App {
                 let dt = "DEVTOOLS";
                 let dw = self.fonts.measure(label, dt);
                 let field = Rect::new(x, r.y + self.px(6.0), r.right() - self.px(14.0) - dw - self.px(14.0) - x, self.px(22.0));
-                scene.outline(field, self.px(m::HAIRLINE), ink);
+                let local = is_local(&url);
+                if local {
+                    scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.signal, ink, self.px(8.0)));
+                } else {
+                    scene.outline(field, self.px(m::HAIRLINE), ink);
+                }
                 let shown = self.fit(ui, url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'), field.w - self.px(16.0));
                 let small = Style { px: self.px(12.0), ..ui };
                 self.fonts.draw(scene, small, field.x + self.px(8.0), base, &shown);
@@ -1302,6 +1310,9 @@ impl App {
                 if let Some(bind) = bind {
                     scene.texture(p.page, bind, Some(p.page));
                     scene.layer(None);
+                }
+                if local {
+                    scene.push(nus_render::Instance::hazard(p.page, self.px(5.0), self.signal, ink, self.px(10.0)));
                 }
                 if loading {
                     scene.rect(Rect::new(p.page.x, p.page.y, p.page.w * 0.5, self.px(2.0)), self.signal);
@@ -1319,7 +1330,12 @@ impl App {
                     }
                     x += w + self.px(16.0);
                 }
-                let live = if focused { "■ LIVE · FOCUSED" } else { "■ LIVE" };
+                let live = match (local, focused) {
+                    (true, true) => "LOCAL · FOCUSED",
+                    (true, false) => "LOCAL",
+                    (false, true) => "■ LIVE · FOCUSED",
+                    (false, false) => "■ LIVE",
+                };
                 let lw = self.fonts.measure(label, live);
                 self.fonts.draw(scene, label, r.right() - self.px(14.0) - lw, base, live);
             }
@@ -1363,6 +1379,12 @@ impl App {
                         rows.push(row(&format!("{:02}", i + 1), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
                     }
                 }
+                for p in &self.ports {
+                    let label = format!("port {} · {}", p.port, if p.process.is_empty() { "?" } else { &p.process });
+                    if q.is_empty() || hit(&label) || q == "local" || q == "ports" {
+                        rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
+                    }
+                }
                 let actions: [(String, Action); 11] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(0)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
@@ -1392,6 +1414,12 @@ impl App {
                 for (i, p) in self.profiles.iter().enumerate() {
                     if hit(&p.name) {
                         rows.push(row(">", format!("terminal · {}", p.name), Action::NewTerminal(i)));
+                    }
+                }
+                for p in &self.ports {
+                    let label = format!("port {} · {}", p.port, if p.process.is_empty() { "?" } else { &p.process });
+                    if q.is_empty() || hit(&label) {
+                        rows.push(row("::", format!("{label} → localhost:{}", p.port), Action::NewBrowser(format!("http://localhost:{}/", p.port))));
                     }
                 }
                 if q.is_empty() {
@@ -1449,6 +1477,12 @@ impl App {
     }
 
     fn open_palette(&mut self, mode: PaletteMode) {
+        if matches!(mode, PaletteMode::Go | PaletteMode::New) {
+            self.ports = nus_pty::listening_ports()
+                .into_iter()
+                .filter(|p| p.port >= 1024 && !SYSTEM_PROCS.contains(&p.process.to_lowercase().as_str()))
+                .collect();
+        }
         self.palette = Some((mode, String::new()));
         self.palette_sel = 0;
         self.dirty = true;
@@ -2219,6 +2253,19 @@ fn discover_llm_tools() -> Vec<(String, String)> {
         v.push(("ollama".to_string(), "ollama run llama3.2 \"{q}\"".to_string()));
     }
     v
+}
+
+const SYSTEM_PROCS: &[&str] = &["system", "svchost", "lsass", "wininit", "services", "spoolsv", "dns", "rpcbind", "systemd", "cupsd", "launchd", "rapportd", "controlce", "sharingd"];
+
+/// Local/private destinations get the safety tape.
+fn is_local(url: &str) -> bool {
+    let host = url.split("//").nth(1).unwrap_or(url).split('/').next().unwrap_or("");
+    let host = host.trim_start_matches('[').split([']', ':']).next().unwrap_or("");
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" || host.ends_with(".local") || host.ends_with(".localhost") {
+        return true;
+    }
+    let oct: Vec<u8> = host.split('.').filter_map(|o| o.parse().ok()).collect();
+    oct.len() == 4 && (oct[0] == 10 || (oct[0] == 192 && oct[1] == 168) || (oct[0] == 172 && (16..=31).contains(&oct[1])))
 }
 
 fn short_title(t: &str) -> String {
