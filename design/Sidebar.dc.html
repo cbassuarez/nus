@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #b3261e; } a:hover { color: #7a1a14; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  </style>
+</helmet>
+<!-- Sidebar, revealed over a chromeless terminal. Compact rows; previews under the hovered row (03) and the waiting tab (02). Footer carries Space identity, profiles, assistants, settings. -->
+<div style="position: relative; width: 900px; height: 900px; overflow: hidden; background: {{t.paper}}; color: {{t.ink}}; font-size: 13px; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid {{t.ink}}; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; font-style: italic; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div>
+    <div>nus · 01 powershell · ~/nus</div>
+    <div style="flex-grow: 1;"></div>
+    <div>ctrl+shift+k</div>
+  </div>
+
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0; position: relative;">
+    <!-- the terminal underneath -->
+    <div style="flex-grow: 1; padding: 18px 24px; font-size: 13px; line-height: 1.55; white-space: pre; opacity: 0.55;"><span style="color: #c8102e;">❯</span> cargo test -p nus-vt
+running 18 tests
+test result: ok. 18 passed; 0 failed
+
+<span style="color: #c8102e;">❯</span> <span style="background: {{t.ink}}; color: {{t.paper}};">&nbsp;</span></div>
+
+    <!-- the sidebar, slid over the content with a hard shadow -->
+    <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 272px; display: flex; flex-direction: column; background: {{t.paper}}; border-right: 1.5px solid {{t.ink}}; box-shadow: 8px 0 0 {{t.shadow}};">
+      <!-- Space row = window switcher -->
+      <div style="display: flex; flex-direction: row; border-bottom: 1.5px solid {{t.ink}};">
+        <div class="cap" style="flex-grow: 1; padding: 9px 10px; border-right: 1px solid {{t.ink}}; display: flex; flex-direction: row; gap: 8px; align-items: center;"><div style="width: 10px; height: 10px; background: #1f5fbf;"></div>work</div>
+        <div class="cap" style="flex-grow: 1; padding: 9px 10px; border-right: 1px solid {{t.ink}}; background: {{t.ink}}; color: {{t.paper}}; display: flex; flex-direction: row; gap: 8px; align-items: center;"><div style="width: 10px; height: 10px; background: #c8102e;"></div>nus</div>
+        <div class="cap" style="flex-grow: 1; padding: 9px 10px; display: flex; flex-direction: row; gap: 8px; align-items: center; opacity: 0.6;">+ space</div>
+      </div>
+      <!-- pinned row -->
+      <div style="display: flex; flex-direction: row; border-bottom: 1.5px solid {{t.ink}};">
+        <div style="flex-grow: 1; padding: 8px 10px; border-right: 1px solid {{t.ink}}; display: flex; flex-direction: row; gap: 8px; align-items: baseline; font-weight: 600;"><span>P1</span><span style="font-weight: 400;">shell · ~/nus</span></div>
+        <div style="flex-grow: 1; padding: 8px 10px; display: flex; flex-direction: row; gap: 8px; align-items: baseline; font-weight: 600;"><span>P2</span><span style="font-weight: 400;">vite · :5173</span></div>
+      </div>
+
+      <!-- compact rows -->
+      <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline; padding: 9px 14px; border-bottom: 1px solid {{t.ink}}; background: {{t.tint}};">
+          <div style="font-weight: 600;">01</div><div style="width: 12px; text-align: center;">›</div>
+          <div style="font-weight: 600; flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">powershell</div>
+          <div class="cap" style="opacity: 0.7;">~/nus</div>
+        </div>
+        <!-- waiting: preview always shown -->
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 9px 14px 12px; border-bottom: 1px solid {{t.ink}};">
+          <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline;">
+            <div style="font-weight: 600;">02</div><div style="width: 12px; text-align: center;">›</div>
+            <div style="font-weight: 600; flex-grow: 1;">claude</div>
+            <div class="cap" style="padding: 1px 6px; background: #c8102e; color: #ffffff;">waiting</div>
+          </div>
+          <div style="height: 52px; padding: 6px 8px; border: 1px solid {{t.ink}}; font-size: 7.5px; line-height: 1.5; overflow: hidden; white-space: pre;">Spike 4 findings recorded.
+Proceed with spike 5? (y/n)
+▌</div>
+        </div>
+        <!-- hovered: preview expands -->
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 9px 14px 12px; border-bottom: 1px solid {{t.ink}}; outline: 1px solid {{t.ink}}; outline-offset: -1px;">
+          <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline;">
+            <div style="font-weight: 600;">03</div><div style="width: 12px; text-align: center;">◎</div>
+            <div style="font-weight: 600; flex-grow: 1;">Surface in wgpu — Rust</div>
+            <div class="cap" style="opacity: 0.7;">docs.rs</div>
+          </div>
+          <div style="height: 52px; border: 1px solid {{t.ink}}; background: #ffffff; display: flex; flex-direction: column; gap: 4px; padding: 6px 8px;">
+            <div style="width: 60px; height: 6px; background: #141414;"></div>
+            <div style="width: 110px; height: 4px; background: #141414; opacity: 0.3;"></div>
+            <div style="width: 90px; height: 4px; background: #141414; opacity: 0.3;"></div>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline; padding: 9px 14px; border-bottom: 1px solid {{t.ink}};">
+          <div style="font-weight: 600;">04</div><div style="width: 12px; text-align: center;">›</div>
+          <div style="flex-grow: 1;">ssh:build-box</div>
+          <div class="cap" style="opacity: 0.7;">~/src</div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline; padding: 9px 14px; border-bottom: 1px solid {{t.ink}}; opacity: 0.6;">
+          <div style="font-weight: 600;">05</div><div style="width: 12px; text-align: center;">◎</div>
+          <div style="flex-grow: 1;">wgpu surface docs — Google</div>
+        </div>
+      </div>
+      <div style="flex-grow: 1;"></div>
+
+      <!-- footer: Space identity, profiles, assistants, settings -->
+      <div style="display: flex; flex-direction: column; border-top: 1.5px solid {{t.ink}};">
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid {{t.ink}};">
+          <div style="width: 22px; height: 22px; background: #c8102e; color: #ffffff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12px;">S</div>
+          <div style="display: flex; flex-direction: column; flex-grow: 1;">
+            <div style="font-weight: 600;">nus</div>
+            <div class="cap" style="opacity: 0.7;">seb · work cookies</div>
+          </div>
+          <div class="cap">⋯</div>
+        </div>
+        <div class="cap" style="display: flex; flex-direction: row; gap: 10px; align-items: baseline; padding: 8px 14px; border-bottom: 1px solid {{t.ink}};">
+          <div style="opacity: 0.7;">shell</div><div style="font-weight: 600;">powershell</div><div style="opacity: 0.7;">· wsl:ubuntu · ssh:build-box</div>
+        </div>
+        <div class="cap" style="display: flex; flex-direction: row; gap: 10px; align-items: baseline; padding: 8px 14px; border-bottom: 1px solid {{t.ink}};">
+          <div style="opacity: 0.7;">ask</div><div style="font-weight: 600;">claude</div><div style="opacity: 0.7;">· codex · ollama · chatgpt</div>
+        </div>
+        <div class="cap" style="display: flex; flex-direction: row; gap: 10px; padding: 12px 14px;">
+          <div>+ new tab</div><div style="flex-grow: 1;"></div><div>settings ctrl+,</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":900,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = this.props.dark ?? true;
+    const t = dark
+      ? { paper: '#141414', ink: '#ece7da', tint: 'rgba(236,231,218,0.07)', shadow: 'rgba(236,231,218,0.18)' }
+      : { paper: '#f4f1ea', ink: '#141414', tint: 'rgba(20,20,20,0.06)', shadow: 'rgba(20,20,20,0.18)' };
+    return { t };
+  }
+}
+</script>
+</body>
+</html>

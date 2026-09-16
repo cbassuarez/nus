@@ -84,6 +84,8 @@ pub struct TermPane {
     pub line_ok: bool,
     /// Name of the running process when a close is awaiting confirmation.
     pub confirm_close: Option<String>,
+    /// Rang the bell while not being looked at.
+    pub waiting: bool,
 }
 
 pub struct WebPane {
@@ -93,9 +95,23 @@ pub struct WebPane {
     pub seen_paints: u64,
 }
 
+pub struct SettingsPane {
+    pub rect: Rect,
+    pub section: usize,
+}
+
 pub enum Pane {
     Term(TermPane),
     Web(WebPane),
+    Settings(SettingsPane),
+}
+
+pub struct SidebarGeom {
+    pub pinned: Vec<usize>,
+    pub pinned_h: f32,
+    /// (tab index, y, height) for each listed row.
+    pub rows: Vec<(usize, f32, f32)>,
+    pub foot_y: f32,
 }
 
 pub struct Tab {
@@ -106,6 +122,26 @@ pub struct Tab {
 }
 
 impl Tab {
+    fn waiting(&self) -> bool {
+        let w = |p: &Pane| matches!(p, Pane::Term(t) if t.waiting);
+        w(&self.left) || self.right.as_ref().is_some_and(w)
+    }
+
+    /// (title, detail) for a compact sidebar row: detail is cwd/host for a
+    /// shell, the site for a page.
+    fn row_text(&self) -> (String, String) {
+        match &self.left {
+            Pane::Term(t) => (t.title.clone(), String::new()),
+            Pane::Web(w) => {
+                let s = w.tab.shared.borrow();
+                let host = s.url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
+                let title = if s.title.is_empty() { host.clone() } else { s.title.clone() };
+                (title, host)
+            }
+            Pane::Settings(_) => ("settings".into(), String::new()),
+        }
+    }
+
     fn focused(&mut self) -> &mut Pane {
         if self.focus_right && self.right.is_some() {
             self.right.as_mut().unwrap()
@@ -124,6 +160,7 @@ impl Tab {
                     s.title.clone()
                 }
             }
+            Pane::Settings(_) => "settings".into(),
         };
         match &self.right {
             Some(r) => format!("{} | {}", name(&self.left), name(r)),
@@ -151,6 +188,9 @@ pub struct App {
     /// Sidebar pinned open (Ctrl+Shift+S). Otherwise it slides in on hover.
     pub sidebar: bool,
     pub sidebar_hover: bool,
+    pub sidebar_leave: Option<Instant>,
+    pub hover_row: Option<usize>,
+    pub user_name: String,
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
     pub profiles: Vec<nus_pty::Profile>,
@@ -216,6 +256,9 @@ impl App {
             active: 0,
             sidebar: false,
             sidebar_hover: false,
+            sidebar_leave: None,
+            hover_row: None,
+            user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
             palette_sel: 0,
             profiles: nus_pty::Profile::discover(),
@@ -284,6 +327,7 @@ impl App {
             line: String::new(),
             line_ok: true,
             confirm_close: None,
+            waiting: false,
         })
     }
 
@@ -355,6 +399,7 @@ impl App {
                 t.origin = (area.x, area.y);
                 let _ = area; // terminal size is applied by `apply_term_resizes`
             }
+            Pane::Settings(s) => s.rect = r,
             Pane::Web(w) => {
                 w.rect = r;
                 let url_row = (6.0 * 2.0 + 22.0) * scale;
@@ -379,6 +424,18 @@ impl App {
         self.gpu.resize(w, h);
         self.layout();
         self.resize_due = Some(Instant::now() + std::time::Duration::from_millis(80));
+    }
+
+    /// Time-based housekeeping, once per loop iteration.
+    pub fn tick(&mut self) {
+        if let Some(t) = self.sidebar_leave {
+            if Instant::now() >= t {
+                self.sidebar_leave = None;
+                self.sidebar_hover = false;
+                self.hover_row = None;
+                self.dirty = true;
+            }
+        }
     }
 
     /// Resize terminals to their panes once the window has settled.
@@ -465,9 +522,18 @@ impl App {
                         let _ = t.pty.write(&r);
                     }
                     for ev in t.term.take_events() {
-                        if let nus_vt::Event::Title(title) = ev {
-                            t.title = short_title(&title);
-                            changed = true;
+                        match ev {
+                            nus_vt::Event::Title(title) => {
+                                t.title = short_title(&title);
+                                changed = true;
+                            }
+                            nus_vt::Event::Bell => {
+                                if i != self.active || !self.window.has_focus() {
+                                    t.waiting = true;
+                                    changed = true;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     if t.term.grid().is_damaged() {
@@ -585,7 +651,7 @@ impl App {
             let tab = &self.tabs[self.active];
             let cwd = match &tab.left {
                 Pane::Term(t) => t.title.clone(),
-                Pane::Web(_) => String::new(),
+                Pane::Web(_) | Pane::Settings(_) => String::new(),
             };
             format!("{} · {:02} {} · {}", self.space_name, self.active + 1, tab.title(), cwd)
         };
@@ -623,6 +689,7 @@ impl App {
             let r = match &self.tabs[active].right {
                 Some(Pane::Term(p)) => p.rect,
                 Some(Pane::Web(p)) => p.rect,
+                Some(Pane::Settings(p)) => p.rect,
                 None => unreachable!(),
             };
             scene.vline(r.x - self.px(m::STRUCTURE), r.y, r.h, self.px(m::STRUCTURE), ink);
@@ -771,15 +838,31 @@ impl App {
         }
     }
 
-    /// Sidebar rows: (pinned tab indices, listed tab indices, pinned row height, list row height, list top y).
-    fn sidebar_geometry(&self) -> (Vec<usize>, Vec<usize>, f32, f32, f32) {
+    /// Sidebar layout: the pinned row, then one entry per listed tab with its
+    /// y and height (previews expand under the hovered row and waiting tabs).
+    fn sidebar_geometry(&self) -> SidebarGeom {
         let sb = self.sidebar_rect();
         let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
         let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned).collect();
-        let listed: Vec<usize> = (0..self.tabs.len()).filter(|&i| !self.tabs[i].pinned).collect();
-        let pinned_h = if pinned.is_empty() { 0.0 } else { self.px(9.0) * 2.0 + self.px(m::UI_PX) + self.px(m::STRUCTURE) };
-        let row_h = self.px(m::ROW_PAD_Y) * 2.0 + self.px(m::UI_PX) + self.px(8.0) + self.px(m::PREVIEW_H) + self.px(m::HAIRLINE);
-        (pinned, listed, pinned_h, row_h, sb.y + space_row + pinned_h)
+        let pinned_h = if pinned.is_empty() { 0.0 } else { self.px(8.0) * 2.0 + self.px(m::UI_PX) + self.px(m::STRUCTURE) };
+        let compact = self.px(9.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
+        let expanded = compact + self.px(8.0) + self.px(m::PREVIEW_H) + self.px(3.0);
+        let mut y = sb.y + space_row + pinned_h;
+        let mut rows = Vec::new();
+        for i in 0..self.tabs.len() {
+            if self.tabs[i].pinned {
+                continue;
+            }
+            let waiting = self.tabs[i].waiting();
+            let h = if self.hover_row == Some(i) || waiting { expanded } else { compact };
+            rows.push((i, y, h));
+            y += h;
+        }
+        let foot_rows = 4.0;
+        let foot_h = self.px(10.0) * 2.0 + self.px(22.0) + self.px(m::HAIRLINE)
+            + (foot_rows - 1.0) * (self.px(8.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE))
+            + self.px(m::STRUCTURE);
+        SidebarGeom { pinned, pinned_h, rows, foot_y: sb.bottom() - foot_h }
     }
 
     fn draw_sidebar(&mut self, scene: &mut Scene) {
@@ -788,7 +871,11 @@ impl App {
         let sb = self.sidebar_rect();
         let label = self.label();
         let strong = self.label_strong();
-        // Space row (one real Space; "+" cell for the next).
+        let ui = self.ui();
+        let ui_strong = self.ui_strong();
+        let dim = Style { color: t.dim, ..label };
+
+        // Space row: a window switcher (Spaces are windows).
         let row_h = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
         let cell_w = (sb.w / 3.0).floor();
         scene.rect(Rect::new(sb.x, sb.y, cell_w, row_h - self.px(m::STRUCTURE)), ink);
@@ -796,110 +883,275 @@ impl App {
         let sel = Style { color: t.paper, ..label };
         self.fonts.draw(scene, sel, sb.x + self.px(28.0), sb.y + self.px(19.0), &self.space_name.to_uppercase());
         scene.vline(sb.x + cell_w, sb.y, row_h, self.px(m::HAIRLINE), ink);
-        let dimmed = Style { color: t.dim, ..label };
-        self.fonts.draw(scene, dimmed, sb.x + cell_w + self.px(10.0), sb.y + self.px(19.0), "+ SPACE");
+        self.fonts.draw(scene, dim, sb.x + cell_w + self.px(10.0), sb.y + self.px(19.0), "+ SPACE");
         scene.hline(sb.x, sb.y + row_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
 
-        // Pinned row: compact cells, one per pinned tab.
-        let (pinned, listed, pinned_h, row_h, list_y) = self.sidebar_geometry();
-        let pad_x = self.px(m::ROW_PAD_X);
-        let pad_y = self.px(m::ROW_PAD_Y);
-        let preview_h = self.px(m::PREVIEW_H);
-        let ui = self.ui();
-        let ui_strong = self.ui_strong();
+        let g = self.sidebar_geometry();
         let tabs = std::mem::take(&mut self.tabs);
-        if !pinned.is_empty() {
+
+        // Pinned row.
+        if !g.pinned.is_empty() {
             let py = sb.y + row_h;
-            let cell_w = (sb.w / pinned.len() as f32).floor();
-            for (k, &i) in pinned.iter().enumerate() {
+            let cell_w = (sb.w / g.pinned.len() as f32).floor();
+            for (k, &i) in g.pinned.iter().enumerate() {
                 let cx = sb.x + k as f32 * cell_w;
-                let cell = Rect::new(cx, py, cell_w, pinned_h - self.px(m::STRUCTURE));
-                let sel_fill = i == self.active;
-                if sel_fill {
+                let cell = Rect::new(cx, py, cell_w, g.pinned_h - self.px(m::STRUCTURE));
+                let active = i == self.active;
+                if active {
                     scene.rect(cell, ink);
                 }
-                let st = Style { color: if sel_fill { t.paper } else { ink }, ..ui_strong };
-                let title = self.fit(st, &tabs[i].title(), cell_w - self.px(20.0) - self.px(28.0));
-                let base = py + self.px(9.0) + self.px(m::UI_PX) - self.px(3.0);
+                let st = Style { color: if active { t.paper } else { ink }, ..ui_strong };
+                let base = py + self.px(8.0) + self.px(m::UI_PX) - self.px(3.0);
                 let mut x = cx + self.px(10.0);
-                x += self.fonts.draw(scene, st, x, base, &format!("{:02}", i + 1)) + self.px(8.0);
-                self.fonts.draw(scene, st, x, base, &title);
+                x += self.fonts.draw(scene, st, x, base, &format!("P{}", k + 1)) + self.px(8.0);
+                let title = self.fit(st, &tabs[i].title(), cell_w - (x - cx) - self.px(10.0));
+                self.fonts.draw(scene, Style { font: self.f.ui, ..st }, x, base, &title);
                 if self.selected.contains(&i) {
                     scene.outline(cell, self.px(m::STRUCTURE), ink);
                 }
-                if k + 1 < pinned.len() {
-                    scene.vline(cx + cell_w, py, pinned_h, self.px(m::HAIRLINE), ink);
+                if k + 1 < g.pinned.len() {
+                    scene.vline(cx + cell_w, py, g.pinned_h, self.px(m::HAIRLINE), ink);
                 }
             }
-            scene.hline(sb.x, py + pinned_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
+            scene.hline(sb.x, py + g.pinned_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
         }
+
         // Tab rows.
-        let mut y = list_y;
-        for &i in &listed {
+        let pad_x = self.px(m::ROW_PAD_X);
+        for &(i, y, h) in &g.rows {
             let tab = &tabs[i];
+            let waiting = tab.waiting();
             if i == self.active {
-                scene.rect(Rect::new(sb.x, y, sb.w, row_h), t.tint);
+                scene.rect(Rect::new(sb.x, y, sb.w, h), t.tint);
             }
             if self.selected.contains(&i) {
-                scene.outline(Rect::new(sb.x, y, sb.w, row_h - self.px(m::HAIRLINE)), self.px(m::STRUCTURE), ink);
+                scene.outline(Rect::new(sb.x, y, sb.w, h - self.px(m::HAIRLINE)), self.px(m::STRUCTURE), ink);
             }
-            let base = y + pad_y + self.px(m::UI_PX) - self.px(3.0);
+            let base = y + self.px(9.0) + self.px(m::UI_PX) - self.px(3.0);
             let mut x = sb.x + pad_x;
             x += self.fonts.draw(scene, ui_strong, x, base, &format!("{:02}", i + 1)) + self.px(10.0);
-            let title = tab.title();
-            let max_w = sb.w - (x - sb.x) - pad_x - self.px(60.0);
-            let title = self.fit(ui_strong, &title, max_w);
-            self.fonts.draw(scene, ui_strong, x, base, &title);
-            let tag = if tab.right.is_some() { "SPLIT →" } else { "" };
-            if !tag.is_empty() {
-                let tw = self.fonts.measure(label, tag);
-                self.fonts.draw(scene, label, sb.right() - pad_x - tw, base, tag);
+            let glyph = match &tab.left {
+                Pane::Term(_) => ">",
+                Pane::Web(_) => "°",
+                Pane::Settings(_) => "=",
+            };
+            x += self.fonts.draw(scene, ui, x, base, glyph) + self.px(10.0);
+            let (title, detail) = tab.row_text();
+            let tag = if waiting { "WAITING".to_string() } else { detail.to_uppercase() };
+            let tag_w = if tag.is_empty() { 0.0 } else { self.fonts.measure(label, &tag) + self.px(12.0) };
+            let st = if i == self.active { ui_strong } else { ui };
+            let title = self.fit(st, &title, sb.w - (x - sb.x) - pad_x - tag_w);
+            self.fonts.draw(scene, st, x, base, &title);
+            if waiting {
+                let w = self.fonts.measure(strong, &tag) + self.px(12.0);
+                let r = Rect::new(sb.right() - pad_x - w, base - self.px(m::LABEL_PX) - self.px(1.0), w, self.px(m::LABEL_PX) + self.px(4.0));
+                scene.rect(r, self.signal);
+                self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, r.x + self.px(6.0), base, &tag);
+            } else if !tag.is_empty() {
+                self.fonts.draw(scene, dim, sb.right() - pad_x - tag_w + self.px(12.0), base, &tag);
             }
-            // Preview box.
-            let pr = Rect::new(sb.x + pad_x, base + self.px(8.0), sb.w - 2.0 * pad_x, preview_h);
-            scene.outline(pr, self.px(m::HAIRLINE), ink);
-            match &tab.left {
-                Pane::Term(tp) => {
-                    let small = Style {
-                        font: self.f.ui,
-                        px: self.px(7.5),
-                        color: ink,
-                        tracking: 0.0,
-                    };
-                    let lines = last_lines(&tp.term, 4);
-                    let lh = self.px(7.5 * 1.5);
-                    let mut ly = pr.y + self.px(6.0) + self.px(7.5);
-                    scene.layer(Some(pr.inset(1.0)));
-                    for l in lines {
-                        self.fonts.draw(scene, small, pr.x + self.px(8.0), ly, &l);
-                        ly += lh;
-                    }
-                    scene.layer(None);
-                }
-                Pane::Web(wp) => {
-                    if let Some(bind) = wp.tab.shared.borrow().bind.clone() {
-                        let inner = pr.inset(1.0);
-                        let aspect = wp.page.w / wp.page.h.max(1.0);
-                        let tw = (inner.h * aspect).min(inner.w);
-                        scene.texture(Rect::new(inner.x, inner.y, tw, inner.h), bind, Some(inner));
+            // Preview, when expanded.
+            if h > self.px(40.0) {
+                let pr = Rect::new(sb.x + pad_x, base + self.px(8.0), sb.w - 2.0 * pad_x, self.px(m::PREVIEW_H));
+                scene.outline(pr, self.px(m::HAIRLINE), ink);
+                match &tab.left {
+                    Pane::Term(tp) => {
+                        let small = Style { font: self.f.ui, px: self.px(7.5), color: ink, tracking: 0.0 };
+                        let lines = last_lines(&tp.term, 4);
+                        let lh = self.px(7.5 * 1.5);
+                        let mut ly = pr.y + self.px(6.0) + self.px(7.5);
+                        scene.layer(Some(pr.inset(1.0)));
+                        for l in lines {
+                            self.fonts.draw(scene, small, pr.x + self.px(8.0), ly, &l);
+                            ly += lh;
+                        }
                         scene.layer(None);
                     }
+                    Pane::Web(wp) => {
+                        if let Some(bind) = wp.tab.shared.borrow().bind.clone() {
+                            let inner = pr.inset(1.0);
+                            let aspect = wp.page.w / wp.page.h.max(1.0);
+                            let tw = (inner.h * aspect).min(inner.w);
+                            scene.texture(Rect::new(inner.x, inner.y, tw, inner.h), bind, Some(inner));
+                            scene.layer(None);
+                        }
+                    }
+                    Pane::Settings(_) => {}
                 }
             }
-            y += row_h;
-            scene.hline(sb.x, y - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), ink);
+            scene.hline(sb.x, y + h - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), ink);
         }
         self.tabs = tabs;
-        // + new tab, pinned to bottom.
-        let foot_h = pad_y * 2.0 + self.px(m::LABEL_PX);
-        let fy = sb.bottom() - foot_h;
+
+        // Footer: identity, shell, assistants, new tab / settings.
+        let fy = g.foot_y;
         scene.hline(sb.x, fy, sb.w, self.px(m::STRUCTURE), ink);
-        let base = fy + pad_y + self.px(m::LABEL_PX) - self.px(2.0);
+        let mut y = fy + self.px(m::STRUCTURE);
+        // identity
+        let id_h = self.px(10.0) * 2.0 + self.px(22.0);
+        let av = Rect::new(sb.x + pad_x, y + self.px(10.0), self.px(22.0), self.px(22.0));
+        scene.rect(av, self.signal);
+        let initial = self.user_initial();
+        let iw = self.fonts.measure(ui_strong, &initial);
+        self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..ui_strong }, av.x + (av.w - iw) / 2.0, av.y + self.px(16.0), &initial);
+        let tx = av.right() + self.px(10.0);
+        self.fonts.draw(scene, ui_strong, tx, y + self.px(10.0) + self.px(11.0), &self.space_name);
+        self.fonts.draw(scene, dim, tx, y + self.px(10.0) + self.px(24.0), &format!("{} · {} COOKIES", self.user_name.to_uppercase(), self.space_name.to_uppercase()));
+        let dots = "...";
+        let dw = self.fonts.measure(label, dots);
+        self.fonts.draw(scene, label, sb.right() - pad_x - dw, y + self.px(10.0) + self.px(14.0), dots);
+        y += id_h;
+        scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
+        y += self.px(m::HAIRLINE);
+        // shell row
+        let lr = self.px(8.0) * 2.0 + self.px(m::LABEL_PX);
+        let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
+        let mut x = sb.x + pad_x;
+        x += self.fonts.draw(scene, dim, x, base, "SHELL") + self.px(10.0);
+        let default = self.profiles.first().map(|p| p.name.clone()).unwrap_or_default();
+        x += self.fonts.draw(scene, strong, x, base, &default.to_uppercase()) + self.px(10.0);
+        let others: Vec<String> = self.profiles.iter().skip(1).map(|p| p.name.to_uppercase()).collect();
+        if !others.is_empty() {
+            let s = self.fit(dim, &format!("· {}", others.join(" · ")), sb.right() - pad_x - x);
+            self.fonts.draw(scene, dim, x, base, &s);
+        }
+        y += lr;
+        scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
+        y += self.px(m::HAIRLINE);
+        // assistants row
+        let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
+        let mut x = sb.x + pad_x;
+        x += self.fonts.draw(scene, dim, x, base, "ASK") + self.px(10.0);
+        let mut names: Vec<String> = self.llm_tools.iter().map(|(n, _)| n.to_uppercase()).collect();
+        names.push("CHATGPT".into());
+        names.push("CLAUDE.AI".into());
+        x += self.fonts.draw(scene, strong, x, base, &names[0]) + self.px(10.0);
+        let s = self.fit(dim, &format!("· {}", names[1..].join(" · ")), sb.right() - pad_x - x);
+        self.fonts.draw(scene, dim, x, base, &s);
+        y += lr;
+        scene.hline(sb.x, y, sb.w, self.px(m::HAIRLINE), ink);
+        y += self.px(m::HAIRLINE);
+        // new tab / settings
+        let base = y + self.px(8.0) + self.px(m::LABEL_PX) - self.px(2.0);
         self.fonts.draw(scene, label, sb.x + pad_x, base, "+ NEW TAB");
-        let kt = key("T", true);
-        let kw = self.fonts.measure(strong, &kt);
-        self.fonts.draw(scene, strong, sb.right() - pad_x - kw, base, &kt);
-        let _ = ui;
+        let ks = format!("SETTINGS {}", key(",", false));
+        let kw = self.fonts.measure(label, &ks);
+        self.fonts.draw(scene, label, sb.right() - pad_x - kw, base, &ks);
+    }
+
+    fn user_initial(&self) -> String {
+        self.user_name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into())
+    }
+
+    /// Ctrl+, — open (or switch to) the settings tab.
+    fn open_settings(&mut self) {
+        if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
+            return self.activate(i);
+        }
+        self.tabs.push(Tab {
+            left: Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0 }),
+            right: None,
+            focus_right: false,
+            pinned: false,
+        });
+        self.activate(self.tabs.len() - 1);
+    }
+
+    fn draw_settings(&mut self, scene: &mut Scene, p: &SettingsPane) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let label = self.label();
+        let strong = self.label_strong();
+        let ui = self.ui();
+        let dim = Style { color: t.dim, ..label };
+        let r = p.rect;
+        let nav_w = self.px(220.0);
+        scene.vline(r.x + nav_w, r.y, r.h, self.px(m::STRUCTURE), ink);
+        let sections = ["APPEARANCE", "SPACES & PROFILES", "BROWSER", "ASSISTANTS", "KEYS", "UPDATES"];
+        let sh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
+        for (i, s) in sections.iter().enumerate() {
+            let y = r.y + i as f32 * sh;
+            let sel = i == p.section;
+            if sel {
+                scene.rect(Rect::new(r.x, y, nav_w, sh - self.px(m::HAIRLINE)), ink);
+            }
+            let st = Style { color: if sel { t.paper } else { ink }, ..label };
+            self.fonts.draw(scene, st, r.x + self.px(18.0), y + self.px(12.0) + self.px(m::LABEL_PX) - self.px(2.0), s);
+            scene.hline(r.x, y + sh - self.px(m::HAIRLINE), nav_w, self.px(m::HAIRLINE), ink);
+        }
+        let cfg = "~/.config/nus/init.luau";
+        self.fonts.draw(scene, dim, r.x + self.px(18.0), r.bottom() - self.px(14.0), cfg);
+
+        // Content.
+        let cx = r.x + nav_w + self.px(40.0);
+        let mut y = r.y + self.px(28.0);
+        let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
+        self.fonts.draw(scene, wm, cx, y + self.px(30.0), &sections[p.section].to_lowercase());
+        y += self.px(58.0);
+        let rows: Vec<(String, String)> = match p.section {
+            0 => vec![
+                ("THEME".into(), format!("{} · follows the OS", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" })),
+                ("UI FONT".into(), "IBM Plex Mono · 13 / 1.5".into()),
+                ("TERMINAL FONT".into(), "IBM Plex Mono · 13pt · ligatures on".into()),
+                ("CURSOR".into(), "block · no blink".into()),
+                ("SIDEBAR".into(), if self.sidebar { "pinned".into() } else { "hover edge · Ctrl+Shift+S pins".into() }),
+                ("QUICK TERMINAL".into(), "global hotkey (not wired in this spike)".into()),
+            ],
+            1 => {
+                let mut v = vec![("SPACE".into(), format!("{} · signal red · {} cookies", self.space_name, self.space_name))];
+                for (i, pr) in self.profiles.iter().enumerate() {
+                    v.push((if i == 0 { "DEFAULT SHELL".into() } else { "PROFILE".into() }, format!("{} · {} {}", pr.name, pr.program, pr.args.join(" "))));
+                }
+                v
+            }
+            2 => vec![
+                ("SEARCH".into(), "google · configurable".into()),
+                ("NEW TAB".into(), "opens the palette; no new-tab page".into()),
+                ("THIRD-PARTY COOKIES".into(), "blocked (v1)".into()),
+                ("DOWNLOADS".into(), "~/Downloads · silent · ruled toast (v1)".into()),
+                ("PASSWORDS".into(), "1Password via op (v1)".into()),
+                ("ENGINE".into(), format!("Chromium {}", crate::chromium_version())),
+            ],
+            3 => {
+                let mut v: Vec<(String, String)> = self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), c.clone())).collect();
+                if v.is_empty() {
+                    v.push(("LOCAL".into(), "none on PATH (claude, codex, ollama are detected)".into()));
+                }
+                v.push(("WEB · CHATGPT".into(), "https://chatgpt.com/?q=…".into()));
+                v.push(("WEB · CLAUDE".into(), "https://claude.ai/new?q=…".into()));
+                v.push(("DEFAULT".into(), self.llm_tools.first().map(|(n, _)| n.clone()).unwrap_or_else(|| "claude (web)".into())));
+                v
+            }
+            4 => vec![
+                ("NEW TAB".into(), key("T", true)),
+                ("GO".into(), key("K", true)),
+                ("URL".into(), key("L", true)),
+                ("CLOSE".into(), key("W", true)),
+                ("REOPEN CLOSED".into(), key("Z", true)),
+                ("SPLIT".into(), key("D", true)),
+                ("SIDEBAR".into(), key("S", true)),
+                ("TAB N".into(), key("1–9", false)),
+                ("MRU".into(), key("`", false)),
+                ("PREV / NEXT".into(), key("PGUP / PGDN", false)),
+                ("SETTINGS".into(), key(",", false)),
+            ],
+            _ => vec![
+                ("CHANNEL".into(), "GitHub Releases · self-update (v1)".into()),
+                ("TELEMETRY".into(), "none".into()),
+                ("VERSION".into(), format!("nus spike 4 · CEF {}", crate::chromium_version())),
+            ],
+        };
+        let rh = self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
+        let maxw = (r.w - nav_w - self.px(80.0)).min(self.px(760.0));
+        for (k, v) in rows {
+            let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);
+            self.fonts.draw(scene, dim, cx, base, &k);
+            let vs = self.fit(ui, &v, maxw - self.px(200.0));
+            self.fonts.draw(scene, ui, cx + self.px(200.0), base, &vs);
+            scene.hline(cx, y + rh - self.px(m::HAIRLINE), maxw, self.px(m::HAIRLINE), t.tint);
+            y += rh;
+        }
+        let _ = strong;
     }
 
     fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: usize, focused: bool) {
@@ -908,6 +1160,10 @@ impl App {
         let label = self.label();
         let strong = self.label_strong();
         match pane {
+            Pane::Settings(p) => {
+                let p = SettingsPane { rect: p.rect, section: p.section };
+                self.draw_settings(scene, &p);
+            }
             Pane::Term(p) => {
                 let r = p.rect;
                 let hh = self.header_h();
@@ -1192,21 +1448,25 @@ impl App {
             }
         }
 
+        // Chords match the physical key: with Ctrl held, Windows reports no
+        // character for many keys, so the logical key is unreliable here.
+        let code = match ev.physical_key {
+            PhysicalKey::Code(c) => Some(c),
+            _ => None,
+        };
         if pressed && app {
-            if let WKey::Character(c) = &ev.logical_key {
-                match c.to_lowercase().as_str() {
-                    "t" => return self.open_palette(PaletteMode::New),
-                    "k" => return self.open_palette(PaletteMode::Go),
-                    "l" => return self.open_palette(PaletteMode::Url),
-                    "w" => return self.close_tabs(false),
-                    "z" => return self.reopen_closed(),
-                    "d" => return self.toggle_split(),
-                    "s" => {
-                        self.sidebar = !self.sidebar;
-                        return self.layout();
-                    }
-                    _ => {}
+            match code {
+                Some(KeyCode::KeyT) => return self.open_palette(PaletteMode::New),
+                Some(KeyCode::KeyK) => return self.open_palette(PaletteMode::Go),
+                Some(KeyCode::KeyL) => return self.open_palette(PaletteMode::Url),
+                Some(KeyCode::KeyW) => return self.close_tabs(false),
+                Some(KeyCode::KeyZ) => return self.reopen_closed(),
+                Some(KeyCode::KeyD) => return self.toggle_split(),
+                Some(KeyCode::KeyS) => {
+                    self.sidebar = !self.sidebar;
+                    return self.layout();
                 }
+                _ => {}
             }
             if let WKey::Named(NamedKey::Enter) = ev.logical_key {
                 if let Some((_, _, url)) = self.detected.clone() {
@@ -1219,20 +1479,35 @@ impl App {
         // Plain Ctrl chords shells don't use: tab by number, MRU, prev/next.
         let tab_mod = if cfg!(target_os = "macos") { sup } else { ctrl && !shift };
         if pressed && tab_mod {
-            match &ev.logical_key {
-                WKey::Character(d) if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
-                    let n = (d.as_bytes()[0] - b'1') as usize;
-                    if n < self.tabs.len() {
-                        self.activate(n);
-                    }
-                    return;
+            let digit = match code {
+                Some(KeyCode::Digit1) => Some(0),
+                Some(KeyCode::Digit2) => Some(1),
+                Some(KeyCode::Digit3) => Some(2),
+                Some(KeyCode::Digit4) => Some(3),
+                Some(KeyCode::Digit5) => Some(4),
+                Some(KeyCode::Digit6) => Some(5),
+                Some(KeyCode::Digit7) => Some(6),
+                Some(KeyCode::Digit8) => Some(7),
+                Some(KeyCode::Digit9) => Some(8),
+                _ => None,
+            };
+            if let Some(n) = digit {
+                if n < self.tabs.len() {
+                    self.activate(n);
                 }
-                WKey::Character(c) if c == "`" => {
+                return;
+            }
+            match code {
+                Some(KeyCode::Comma) => return self.open_settings(),
+                Some(KeyCode::Backquote) => {
                     if let Some(&prev) = self.mru.get(1) {
                         self.activate(prev);
                     }
                     return;
                 }
+                _ => {}
+            }
+            match &ev.logical_key {
                 WKey::Named(NamedKey::PageUp) => {
                     let n = self.tabs.len();
                     return self.activate((self.active + n - 1) % n);
@@ -1255,6 +1530,7 @@ impl App {
         // Route to the focused pane.
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
+            Pane::Settings(_) => {}
             Pane::Term(t) => {
                 let action = match (ev.state, ev.repeat) {
                     (ElementState::Released, _) => KeyAction::Release,
@@ -1388,6 +1664,12 @@ impl App {
             return;
         }
         self.active = i;
+        let tab = &mut self.tabs[i];
+        for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            if let Pane::Term(t) = p {
+                t.waiting = false;
+            }
+        }
         self.mru.retain(|&t| t != i);
         self.mru.insert(0, i);
         self.layout();
@@ -1499,6 +1781,10 @@ impl App {
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
                 Pane::Web(w) => Closed::Web(w.tab.shared.borrow().url.clone()),
+                Pane::Settings(_) => {
+                    self.tab_removed(i);
+                    continue;
+                }
             });
             self.tab_removed(i);
         }
@@ -1537,11 +1823,28 @@ impl App {
         if !self.sidebar {
             let c = self.content_rect();
             let sb = self.sidebar_rect();
-            let want = if self.sidebar_hover { sb.contains(x, y) } else { x < self.px(6.0) && y >= c.y };
-            if want != self.sidebar_hover {
-                self.sidebar_hover = want;
+            let inside = sb.contains(x, y);
+            if !self.sidebar_hover && x < self.px(6.0) && y >= c.y {
+                self.sidebar_hover = true;
+                self.sidebar_leave = None;
+                self.dirty = true;
+            } else if self.sidebar_hover {
+                if inside {
+                    self.sidebar_leave = None;
+                } else if self.sidebar_leave.is_none() {
+                    self.sidebar_leave = Some(Instant::now() + std::time::Duration::from_millis(300));
+                }
+            }
+        }
+        if self.sidebar_visible() {
+            let g = self.sidebar_geometry();
+            let row = g.rows.iter().find(|&&(_, ry, rh)| self.sidebar_rect().contains(x, y) && y >= ry && y < ry + rh).map(|&(i, _, _)| i);
+            if row != self.hover_row {
+                self.hover_row = row;
                 self.dirty = true;
             }
+        } else if self.hover_row.is_some() {
+            self.hover_row = None;
         }
         let flags = cef_mods(self.mods) | if self.mouse_down_in_web { 16 } else { 0 };
         if let Some(tab) = self.tabs.get(self.active) {
@@ -1588,19 +1891,26 @@ impl App {
         // Sidebar: pinned cells, tab rows, footer. Ctrl-click selects, Shift-click ranges.
         if pressed && button == MouseButton::Left && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             let sb = self.sidebar_rect();
-            let (pinned, listed, pinned_h, row_h, list_y) = self.sidebar_geometry();
-            let foot = self.px(m::ROW_PAD_Y) * 2.0 + self.px(m::LABEL_PX);
-            if y > sb.bottom() - foot {
-                self.open_palette(PaletteMode::New);
+            let g = self.sidebar_geometry();
+            let foot_row = self.px(8.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
+            if y > sb.bottom() - foot_row {
+                if x > sb.x + sb.w / 2.0 {
+                    self.open_settings();
+                } else {
+                    self.open_palette(PaletteMode::New);
+                }
                 return;
             }
-            let hit = if !pinned.is_empty() && y >= list_y - pinned_h && y < list_y {
-                let k = ((x - sb.x) / (sb.w / pinned.len() as f32).floor()) as usize;
-                pinned.get(k).copied()
-            } else if y >= list_y {
-                listed.get(((y - list_y) / row_h) as usize).copied()
+            if y > g.foot_y {
+                return;
+            }
+            let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
+            let pinned_y = sb.y + space_row;
+            let hit = if !g.pinned.is_empty() && y >= pinned_y && y < pinned_y + g.pinned_h {
+                let k = ((x - sb.x) / (sb.w / g.pinned.len() as f32).floor()) as usize;
+                g.pinned.get(k).copied()
             } else {
-                None
+                g.rows.iter().find(|&&(_, ry, rh)| y >= ry && y < ry + rh).map(|&(i, _, _)| i)
             };
             if let Some(i) = hit {
                 if self.mods.control_key() || self.mods.super_key() {
@@ -1625,11 +1935,28 @@ impl App {
         let in_left = match &tab.left {
             Pane::Term(t) => t.rect.contains(x, y),
             Pane::Web(w) => w.rect.contains(x, y),
+            Pane::Settings(s) => s.rect.contains(x, y),
         };
+        // Settings: clicking a section selects it.
+        let scale = self.scale;
+        let sh = (12.0 * 2.0 + m::LABEL_PX + m::HAIRLINE) * scale;
+        if pressed && button == MouseButton::Left {
+            if let Pane::Settings(s) = &mut tab.left {
+                if s.rect.contains(x, y) && x < s.rect.x + 220.0 * scale {
+                    let k = ((y - s.rect.y) / sh) as usize;
+                    if k < 6 {
+                        s.section = k;
+                    }
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
         if let Some(r) = &tab.right {
             let hit = match r {
                 Pane::Term(t) => t.rect.contains(x, y),
                 Pane::Web(w) => w.rect.contains(x, y),
+                Pane::Settings(s) => s.rect.contains(x, y),
             };
             if hit {
                 hit_right = Some(true);
@@ -1678,7 +2005,7 @@ impl App {
                     }
                     w.tab.focus(is_right == focus_right);
                 }
-                Pane::Term(_) => {}
+                Pane::Term(_) | Pane::Settings(_) => {}
             }
         }
         self.mouse_down_in_web = down_in_web;

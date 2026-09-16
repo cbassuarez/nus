@@ -137,6 +137,7 @@ fn main() -> ExitCode {
             break code;
         }
         if let Some(a) = host.app.as_mut() {
+            a.tick();
             a.apply_term_resizes(false);
             a.begin_frames();
             if a.dirty || a.pump() {
