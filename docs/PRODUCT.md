@@ -96,3 +96,24 @@ row. *url*: navigate the browser pane.
 then one list in creation order. Ctrl+click toggles selection, Shift+click
 selects a range; close acts on the selection. Pin/unpin via the palette or
 the tab's row menu.
+
+## Sidebar and settings (settled 2026-09-16, third pass)
+
+- **Reveal:** hidden by default; hovering the 6px hot edge slides it over the
+  content; it hides ~300 ms after the mouse leaves. Ctrl+Shift+S pins it.
+- **Rows:** one line per tab — number, kind glyph, title, cwd/host. The 52px
+  live preview expands only under the hovered row and under any tab that is
+  *waiting*. Pinned row on top (compact cells).
+- **Footer:** Space identity and controls — Space color + name, browser
+  identity (cookie jar) and default shell profile for new tabs, assistant
+  router status (which of claude / codex / ollama / chatgpt are wired, and the
+  default), gear → settings tab, `+ new tab`.
+- **Settings:** Ctrl+, opens a native settings tab (Broadsheet styled):
+  fonts, theme, Space profiles, browser (search engine, cookies, downloads),
+  assistants (router), keys. Every edit writes `~/.config/nus/init.luau`; the
+  file is the source of truth and hot-reloads.
+- **Assistants:** the palette offers *search*, *ask chatgpt*, *ask claude*
+  (web, `?q=`) and *ask <tool> in this shell* for local CLIs on PATH
+  (`claude "…"`, `codex "…"`, `ollama run <model> "…"`), which types the
+  command into the focused terminal. The router (which tool, which model,
+  args vs stdin) is a config table.
