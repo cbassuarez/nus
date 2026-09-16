@@ -81,6 +81,17 @@ impl ApplicationHandler<UserEvent> for Host {
     }
 }
 
+/// The Chromium version of the bundled CEF, from cef_version_info.
+fn chromium_version() -> String {
+    format!(
+        "{}.{}.{}.{}",
+        cef::sys::CHROME_VERSION_MAJOR,
+        cef::sys::CHROME_VERSION_MINOR,
+        cef::sys::CHROME_VERSION_BUILD,
+        cef::sys::CHROME_VERSION_PATCH
+    )
+}
+
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -104,6 +115,8 @@ fn main() -> ExitCode {
     let settings = Settings {
         windowless_rendering_enabled: 1,
         external_message_pump: 1,
+        // Brands "Google Chrome" in Sec-CH-UA; sites treat bare "Chromium" as a bot.
+        user_agent_product: format!("Chrome/{}", chromium_version()).as_str().into(),
         root_cache_path: profile.to_string_lossy().as_ref().into(),
         cache_path: profile.to_string_lossy().as_ref().into(),
         ..Default::default()

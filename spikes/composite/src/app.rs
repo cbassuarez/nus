@@ -43,6 +43,8 @@ pub enum Action {
     NewTerminal(usize),
     NewBrowser(String),
     OpenInPane(String),
+    /// Type a command into the focused (or a new) terminal and run it.
+    RunInShell(String),
     ToggleSplit,
     CloseTab,
     ToggleSidebar,
@@ -88,6 +90,7 @@ pub struct WebPane {
     pub tab: BrowserTab,
     pub page: Rect,
     pub rect: Rect,
+    pub seen_paints: u64,
 }
 
 pub enum Pane {
@@ -145,7 +148,9 @@ pub struct App {
     pub signal: nus_render::Color,
     pub tabs: Vec<Tab>,
     pub active: usize,
+    /// Sidebar pinned open (Ctrl+Shift+S). Otherwise it slides in on hover.
     pub sidebar: bool,
+    pub sidebar_hover: bool,
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
     pub profiles: Vec<nus_pty::Profile>,
@@ -153,6 +158,8 @@ pub struct App {
     pub mru: Vec<usize>,
     pub selected: std::collections::HashSet<usize>,
     pub closed: Vec<Closed>,
+    /// Local assistants on PATH: (name, command template with {q}).
+    pub llm_tools: Vec<(String, String)>,
 
     pub mods: ModifiersState,
     pub mouse: (f32, f32),
@@ -207,13 +214,15 @@ impl App {
             signal: signal::RED,
             tabs: Vec::new(),
             active: 0,
-            sidebar: true,
+            sidebar: false,
+            sidebar_hover: false,
             palette: None,
             palette_sel: 0,
             profiles: nus_pty::Profile::discover(),
             mru: vec![0],
             selected: Default::default(),
             closed: Vec::new(),
+            llm_tools: discover_llm_tools(),
             mods: ModifiersState::empty(),
             mouse: (0.0, 0.0),
             mouse_down_in_web: false,
@@ -289,6 +298,7 @@ impl App {
             tab,
             page: Rect::new(0.0, 0.0, 1.0, 1.0),
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+            seen_paints: 0,
         })
     }
 
@@ -311,6 +321,10 @@ impl App {
     fn sidebar_rect(&self) -> Rect {
         let c = self.content_rect();
         Rect::new(0.0, c.y, self.px(m::SIDEBAR), c.h)
+    }
+
+    fn sidebar_visible(&self) -> bool {
+        self.sidebar || self.sidebar_hover
     }
 
     fn header_h(&self) -> f32 {
@@ -465,6 +479,17 @@ impl App {
                 }
             }
         }
+        for tab in self.tabs.iter_mut() {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Web(w) = p {
+                    let paints = w.tab.shared.borrow().paints;
+                    if paints != w.seen_paints {
+                        w.seen_paints = paints;
+                        changed = true;
+                    }
+                }
+            }
+        }
         if detected != self.detected {
             self.detected = detected;
             changed = true;
@@ -585,7 +610,7 @@ impl App {
         if self.sidebar {
             self.draw_sidebar(&mut scene);
             scene.vline(c.x - self.px(m::STRUCTURE), c.y, c.h, self.px(m::STRUCTURE), ink);
-        } else {
+        } else if !self.sidebar_hover {
             scene.rect(Rect::new(0.0, c.y, self.px(4.0), c.h), t.hot);
         }
 
@@ -646,6 +671,17 @@ impl App {
                 ];
                 self.chip(&mut scene, x, y, &parts);
             }
+        }
+
+        // Hover-revealed sidebar slides over the content.
+        if self.sidebar_hover && !self.sidebar {
+            let sb = self.sidebar_rect();
+            scene.layer(None);
+            scene.rect(Rect::new(sb.x + self.px(8.0), sb.y, sb.w, sb.h), Theme::with_alpha(ink, 0.18));
+            scene.rect(sb, t.paper);
+            self.draw_sidebar(&mut scene);
+            scene.layer(None);
+            scene.vline(sb.right(), sb.y, sb.h, self.px(m::STRUCTURE), ink);
         }
 
         // Palette.
@@ -1005,8 +1041,7 @@ impl App {
                     }
                 }
                 if !q.is_empty() {
-                    let (url, text) = Self::url_or_search(input);
-                    rows.push(row("→", format!("{text} · in the browser pane"), Action::OpenInPane(url)));
+                    self.query_rows(input, &mut rows, false);
                 }
             }
             PaletteMode::New => {
@@ -1018,18 +1053,55 @@ impl App {
                 if q.is_empty() {
                     rows.push(row("→", "browser · type a URL or search terms".into(), Action::NewBrowser(String::new())));
                 } else {
-                    let (url, text) = Self::url_or_search(input);
-                    rows.push(row("→", format!("browser · {text}"), Action::NewBrowser(url)));
+                    self.query_rows(input, &mut rows, true);
                 }
             }
             PaletteMode::Url => {
                 if !q.is_empty() {
-                    let (url, text) = Self::url_or_search(input);
-                    rows.push(row("→", text, Action::OpenInPane(url)));
+                    self.query_rows(input, &mut rows, false);
                 }
             }
         }
         rows
+    }
+
+    /// What typed text can become: a page, a search, a question to a web
+    /// assistant, or a question to a local CLI run in the shell.
+    fn query_rows(&self, input: &str, rows: &mut Vec<PaletteRow>, new_tab: bool) {
+        let q = input.trim();
+        let open = |url: String| if new_tab { Action::NewBrowser(url) } else { Action::OpenInPane(url) };
+        let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
+        let enc = |s: &str| s.replace(' ', "+").replace('&', "%26").replace('#', "%23");
+        let is_url = strict_url(q).is_some() || q.contains("://");
+        let (url, text) = Self::url_or_search(q);
+        if is_url {
+            rows.push(row("→", text, open(url)));
+            rows.push(row("?", format!("search “{q}”"), open(format!("https://www.google.com/search?q={}", enc(q)))));
+        } else {
+            rows.push(row("?", text, open(url)));
+        }
+        rows.push(row("?", format!("ask chatgpt “{q}”"), open(format!("https://chatgpt.com/?q={}", enc(q)))));
+        rows.push(row("?", format!("ask claude “{q}”"), open(format!("https://claude.ai/new?q={}", enc(q)))));
+        for (name, template) in &self.llm_tools {
+            let cmd = template.replace("{q}", &q.replace('"', "\\\""));
+            rows.push(row(">", format!("ask {name} in this shell · {cmd}"), Action::RunInShell(cmd)));
+        }
+    }
+
+    /// Type `cmd` + Enter into the focused terminal, or a fresh one.
+    fn run_in_shell(&mut self, cmd: &str) {
+        let has_term = self.tabs.get_mut(self.active).is_some_and(|t| matches!(t.focused(), Pane::Term(_)) || matches!(t.left, Pane::Term(_)));
+        if !has_term {
+            self.new_tab(0);
+        }
+        let tab = &mut self.tabs[self.active];
+        let pane = if matches!(tab.focused(), Pane::Term(_)) { tab.focused() } else { &mut tab.left };
+        if let Pane::Term(t) = pane {
+            let _ = t.pty.write(format!("{cmd}\r").as_bytes());
+            t.line.clear();
+            t.line_ok = true;
+        }
+        tab.focus_right = false;
     }
 
     fn open_palette(&mut self, mode: PaletteMode) {
@@ -1045,6 +1117,7 @@ impl App {
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
             Action::NewBrowser(url) => self.open_url(&url, true),
             Action::OpenInPane(url) => self.open_url(&url, false),
+            Action::RunInShell(cmd) => self.run_in_shell(&cmd),
             Action::ToggleSplit => self.toggle_split(),
             Action::CloseTab => self.close_tabs(false),
             Action::TogglePin => {
@@ -1461,6 +1534,15 @@ impl App {
 
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
         self.mouse = (x, y);
+        if !self.sidebar {
+            let c = self.content_rect();
+            let sb = self.sidebar_rect();
+            let want = if self.sidebar_hover { sb.contains(x, y) } else { x < self.px(6.0) && y >= c.y };
+            if want != self.sidebar_hover {
+                self.sidebar_hover = want;
+                self.dirty = true;
+            }
+        }
         let flags = cef_mods(self.mods) | if self.mouse_down_in_web { 16 } else { 0 };
         if let Some(tab) = self.tabs.get(self.active) {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
@@ -1504,7 +1586,7 @@ impl App {
         }
 
         // Sidebar: pinned cells, tab rows, footer. Ctrl-click selects, Shift-click ranges.
-        if pressed && button == MouseButton::Left && self.sidebar && self.sidebar_rect().contains(x, y) {
+        if pressed && button == MouseButton::Left && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             let sb = self.sidebar_rect();
             let (pinned, listed, pinned_h, row_h, list_y) = self.sidebar_geometry();
             let foot = self.px(m::ROW_PAD_Y) * 2.0 + self.px(m::LABEL_PX);
@@ -1640,6 +1722,32 @@ impl App {
             }
         }
     }
+}
+
+fn on_path(exe: &str) -> bool {
+    let names: Vec<String> = if cfg!(windows) {
+        vec![format!("{exe}.exe"), format!("{exe}.cmd"), format!("{exe}.bat")]
+    } else {
+        vec![exe.to_string()]
+    };
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| names.iter().any(|n| d.join(n).is_file())))
+        .unwrap_or(false)
+}
+
+/// Local CLIs that take a prompt as an argument. The router is config later.
+fn discover_llm_tools() -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    if on_path("claude") {
+        v.push(("claude".to_string(), "claude \"{q}\"".to_string()));
+    }
+    if on_path("codex") {
+        v.push(("codex".to_string(), "codex \"{q}\"".to_string()));
+    }
+    if on_path("ollama") {
+        v.push(("ollama".to_string(), "ollama run llama3.2 \"{q}\"".to_string()));
+    }
+    v
 }
 
 fn short_title(t: &str) -> String {

@@ -16,6 +16,8 @@ pub struct Shared {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    /// Bumped on every accelerated paint; the app redraws when it changes.
+    pub paints: u64,
     /// Logical size CEF should render at; app sets it, view_rect reads it.
     pub size: (f32, f32),
     pub scale: f32,
@@ -46,7 +48,9 @@ wrap_app! {
             cl.append_switch(Some(&"noerrdialogs".into()));
             cl.append_switch(Some(&"hide-crash-restore-bubble".into()));
             cl.append_switch(Some(&"use-mock-keychain".into()));
-            cl.append_switch_with_value(Some(&"remote-debugging-port".into()), Some(&"9229".into()));
+            if std::env::var_os("NUS_DEVTOOLS_PORT").is_some() {
+                cl.append_switch_with_value(Some(&"remote-debugging-port".into()), Some(&"9229".into()));
+            }
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -138,7 +142,9 @@ wrap_render_handler! {
             match handle.import_texture(&self.osr.device) {
                 Ok(texture) => {
                     let bind = (self.osr.bind_texture)(&texture);
-                    self.osr.shared.borrow_mut().bind = Some(bind);
+                    let mut s = self.osr.shared.borrow_mut();
+                    s.bind = Some(bind);
+                    s.paints += 1;
                 }
                 Err(e) => tracing::warn!("texture import: {e:?}"),
             }
