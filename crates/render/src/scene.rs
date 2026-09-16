@@ -40,7 +40,11 @@ pub struct Instance {
     pub uv: [f32; 4],
     pub color: [f32; 4],
     pub kind: u32,
-    pub _pad: [u32; 3],
+    /// Second color, packed RGBA8 (kinds 3/4); 0 = none.
+    pub color2: u32,
+    /// Gradient phase in turns (kinds 3/4).
+    pub phase: f32,
+    pub _pad: u32,
 }
 
 impl Instance {
@@ -51,7 +55,9 @@ impl Instance {
             uv: [0.0; 4],
             color,
             kind: 0,
-            _pad: [0; 3],
+            color2: 0,
+            phase: 0.0,
+            _pad: 0,
         }
     }
     pub fn glyph(x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], color: Color) -> Instance {
@@ -61,7 +67,9 @@ impl Instance {
             uv,
             color,
             kind: 1,
-            _pad: [0; 3],
+            color2: 0,
+            phase: 0.0,
+            _pad: 0,
         }
     }
     pub fn textured(r: Rect, alpha: f32) -> Instance {
@@ -71,9 +79,50 @@ impl Instance {
             uv: [0.0, 0.0, 1.0, 1.0],
             color: [1.0, 1.0, 1.0, alpha],
             kind: 2,
-            _pad: [0; 3],
+            color2: 0,
+            phase: 0.0,
+            _pad: 0,
         }
     }
+    /// Rounded fill.
+    pub fn rounded(r: Rect, radius: f32, color: Color) -> Instance {
+        Instance {
+            pos: [r.x, r.y],
+            size: [r.w, r.h],
+            uv: [radius, 0.0, 0.0, 0.0],
+            color,
+            kind: 3,
+            color2: 0,
+            phase: 0.0,
+            _pad: 0,
+        }
+    }
+    /// Rounded stroke of `thickness` inside `r`; optional gradient toward
+    /// `color2`, shifted by `phase` turns.
+    pub fn stroke(
+        r: Rect,
+        radius: f32,
+        thickness: f32,
+        color: Color,
+        color2: Option<Color>,
+        phase: f32,
+    ) -> Instance {
+        Instance {
+            pos: [r.x, r.y],
+            size: [r.w, r.h],
+            uv: [radius, thickness, 0.0, 0.0],
+            color,
+            kind: 4,
+            color2: color2.map(pack).unwrap_or(0),
+            phase,
+            _pad: 0,
+        }
+    }
+}
+
+pub fn pack(c: Color) -> u32 {
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    q(c[0]) | (q(c[1]) << 8) | (q(c[2]) << 16) | (q(c[3]) << 24)
 }
 
 pub enum Bind {

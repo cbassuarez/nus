@@ -50,6 +50,21 @@ pub enum Action {
     ToggleSidebar,
     TogglePin,
     Reopen,
+    ShellStyle,
+    ShellRadius(f32),
+}
+
+/// The Space color as a physical shell around the window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shell {
+    /// A band along the top edge (Broadsheet default).
+    Band,
+    /// A stroke around all four edges.
+    Stroke,
+    /// A stroke fading signal → ink along the diagonal.
+    Gradient,
+    /// A slowly moving two-signal gradient.
+    Aurora,
 }
 
 pub enum Closed {
@@ -191,6 +206,10 @@ pub struct App {
     pub sidebar_leave: Option<Instant>,
     pub hover_row: Option<usize>,
     pub user_name: String,
+    pub shell: Shell,
+    pub shell_width: f32,
+    pub shell_radius: f32,
+    pub shell_phase: f32,
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
     pub profiles: Vec<nus_pty::Profile>,
@@ -258,6 +277,10 @@ impl App {
             sidebar_hover: false,
             sidebar_leave: None,
             hover_row: None,
+            shell: Shell::Band,
+            shell_width: m::BAND,
+            shell_radius: 0.0,
+            shell_phase: 0.0,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
             palette_sel: 0,
@@ -348,23 +371,35 @@ impl App {
 
     // --- layout ----------------------------------------------------------
 
+    /// (top, right, bottom, left) physical px the shell takes from the window.
+    fn shell_insets(&self) -> (f32, f32, f32, f32) {
+        let w = self.px(self.shell_width);
+        match self.shell {
+            Shell::Band => (w, 0.0, 0.0, 0.0),
+            _ => (w, w, w, w),
+        }
+    }
+
     pub fn strip_rect(&self) -> Rect {
-        Rect::new(0.0, self.px(m::BAND), self.gpu.size.0 as f32, self.px(m::TOP_STRIP))
+        let (top, right, _, left) = self.shell_insets();
+        Rect::new(left, top, self.gpu.size.0 as f32 - left - right, self.px(m::TOP_STRIP))
     }
 
     fn content_rect(&self) -> Rect {
-        let top = self.px(m::BAND) + self.px(m::TOP_STRIP) + self.px(m::STRUCTURE);
-        let left = if self.sidebar {
+        let (st, sr, sb, sl) = self.shell_insets();
+        let top = st + self.px(m::TOP_STRIP) + self.px(m::STRUCTURE);
+        let left = sl + if self.sidebar {
             self.px(m::SIDEBAR) + self.px(m::STRUCTURE)
         } else {
             self.px(4.0)
         };
-        Rect::new(left, top, self.gpu.size.0 as f32 - left, self.gpu.size.1 as f32 - top)
+        Rect::new(left, top, self.gpu.size.0 as f32 - left - sr, self.gpu.size.1 as f32 - top - sb)
     }
 
     fn sidebar_rect(&self) -> Rect {
         let c = self.content_rect();
-        Rect::new(0.0, c.y, self.px(m::SIDEBAR), c.h)
+        let (_, _, _, sl) = self.shell_insets();
+        Rect::new(sl, c.y, self.px(m::SIDEBAR), c.h)
     }
 
     fn sidebar_visible(&self) -> bool {
@@ -428,6 +463,10 @@ impl App {
 
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
+        if self.shell == Shell::Aurora {
+            self.shell_phase = (self.shell_phase + 0.0015) % 1.0;
+            self.dirty = true;
+        }
         if let Some(t) = self.sidebar_leave {
             if Instant::now() >= t {
                 self.sidebar_leave = None;
@@ -589,7 +628,13 @@ impl App {
             self.gpu.upload_glyph(x, y, w, h, &data);
         }
         self.window.pre_present_notify();
-        let clear = self.theme.paper;
+        // Outside a rounded shell: the opposite theme's paper until the window
+        // itself is transparent (v1).
+        let clear = if self.shell_radius > 0.0 {
+            if self.theme.mode == nus_render::Mode::Ink { Theme::paper().paper } else { Theme::ink().paper }
+        } else {
+            self.theme.paper
+        };
         self.gpu.render(&self.scene, clear);
         self.frames += 1;
     }
@@ -633,12 +678,32 @@ impl App {
         let w = self.gpu.size.0 as f32;
         let h = self.gpu.size.1 as f32;
 
-        // Signal band + top strip.
+        // Shell + top strip.
         scene.layer(None);
-        scene.rect(Rect::new(0.0, 0.0, w, self.px(m::BAND)), self.signal);
+        let win = Rect::new(0.0, 0.0, w, h);
+        let radius = self.px(self.shell_radius);
+        let sw = self.px(self.shell_width);
+        if radius > 0.0 {
+            // The paper is a rounded card; the corners outside it show the clear color.
+            scene.push(nus_render::Instance::rounded(win, radius, t.paper));
+        }
+        match self.shell {
+            Shell::Band => {
+                if radius > 0.0 {
+                    scene.layer(Some(Rect::new(0.0, 0.0, w, sw)));
+                    scene.push(nus_render::Instance::rounded(win, radius, self.signal));
+                    scene.layer(None);
+                } else {
+                    scene.rect(Rect::new(0.0, 0.0, w, sw), self.signal);
+                }
+            }
+            Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.signal, None, 0.0)),
+            Shell::Gradient => scene.push(nus_render::Instance::stroke(win, radius, sw, self.signal, Some(ink), 0.0)),
+            Shell::Aurora => scene.push(nus_render::Instance::stroke(win, radius, sw, self.signal, Some(signal::VIOLET), self.shell_phase)),
+        }
         let strip = self.strip_rect();
-        scene.hline(0.0, strip.bottom(), w, self.px(m::STRUCTURE), ink);
-        let mut x = self.px(18.0);
+        scene.hline(strip.x, strip.bottom(), strip.w, self.px(m::STRUCTURE), ink);
+        let mut x = strip.x + self.px(18.0);
         let base = strip.y + self.px(21.0);
         let wm = Style {
             font: self.f.wordmark,
@@ -659,7 +724,7 @@ impl App {
         self.fonts.draw(&mut scene, label, x, strip.y + self.px(19.0), &crumb.to_uppercase(), );
         // Right side: ⌘K and window controls.
         let ui = self.ui();
-        let mut rx = w - self.px(18.0);
+        let mut rx = strip.right() - self.px(18.0);
         for glyph in ["✕", "▢", "—"] {
             let gw = self.fonts.measure(ui, glyph);
             rx -= gw;
@@ -677,7 +742,7 @@ impl App {
             self.draw_sidebar(&mut scene);
             scene.vline(c.x - self.px(m::STRUCTURE), c.y, c.h, self.px(m::STRUCTURE), ink);
         } else if !self.sidebar_hover {
-            scene.rect(Rect::new(0.0, c.y, self.px(4.0), c.h), t.hot);
+            scene.rect(Rect::new(c.x - self.px(4.0), c.y, self.px(4.0), c.h), t.hot);
         }
 
         // Panes.
@@ -1095,6 +1160,7 @@ impl App {
                 ("TERMINAL FONT".into(), "IBM Plex Mono · 13pt · ligatures on".into()),
                 ("CURSOR".into(), "block · no blink".into()),
                 ("SIDEBAR".into(), if self.sidebar { "pinned".into() } else { "hover edge · Ctrl+Shift+S pins".into() }),
+                ("SHELL".into(), format!("{:?} · {}px · radius {}", self.shell, self.shell_width, self.shell_radius).to_lowercase()),
                 ("QUICK TERMINAL".into(), "global hotkey (not wired in this spike)".into()),
             ],
             1 => {
@@ -1279,7 +1345,7 @@ impl App {
                         rows.push(row(&format!("{:02}", i + 1), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
                     }
                 }
-                let actions: [(String, Action); 7] = [
+                let actions: [(String, Action); 10] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(0)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
@@ -1290,6 +1356,9 @@ impl App {
                         Action::TogglePin,
                     ),
                     (format!("reopen closed tab · {}", key("Z", true)), Action::Reopen),
+                    (format!("carapace · {:?} → next", self.shell).to_lowercase(), Action::ShellStyle),
+                    (format!("corner radius {} → +2", self.shell_radius), Action::ShellRadius(2.0)),
+                    (format!("corner radius {} → −2", self.shell_radius), Action::ShellRadius(-2.0)),
                 ];
                 for (label, a) in actions {
                     if hit(&label) {
@@ -1381,6 +1450,19 @@ impl App {
                 t.pinned = !t.pinned;
             }
             Action::Reopen => self.reopen_closed(),
+            Action::ShellStyle => {
+                self.shell = match self.shell {
+                    Shell::Band => Shell::Stroke,
+                    Shell::Stroke => Shell::Gradient,
+                    Shell::Gradient => Shell::Aurora,
+                    Shell::Aurora => Shell::Band,
+                };
+                self.layout();
+            }
+            Action::ShellRadius(d) => {
+                self.shell_radius = (self.shell_radius + d).clamp(0.0, 24.0);
+                self.layout();
+            }
             Action::ToggleSidebar => {
                 self.sidebar = !self.sidebar;
                 self.layout();
