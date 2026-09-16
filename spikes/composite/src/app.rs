@@ -134,6 +134,15 @@ pub struct TermPane {
     pub done: Option<(Option<i32>, Instant)>,
     /// A paste waiting for a yes (many lines, or control characters).
     pub confirm_paste: Option<String>,
+    /// Interaction layer (termui): selection, search, hints, scrollbar, block chips.
+    pub sel: Option<crate::termui::Selection>,
+    pub search: Option<crate::termui::Search>,
+    pub hints: Option<crate::termui::Hints>,
+    pub clicks: Option<crate::termui::Clicks>,
+    pub scrollbar: Option<Rect>,
+    pub scroll_drag: bool,
+    pub chip_hits: Vec<(Rect, usize)>,
+    pub hover_block: u64,
     /// Name of the running process when a close is awaiting confirmation.
     pub confirm_close: Option<String>,
     /// Rang the bell while not being looked at.
@@ -335,7 +344,7 @@ impl Tab {
         }
     }
 
-    fn focused(&mut self) -> &mut Pane {
+    pub(crate) fn focused(&mut self) -> &mut Pane {
         if self.focus_right && self.right.is_some() {
             self.right.as_mut().unwrap()
         } else {
@@ -426,6 +435,10 @@ pub struct App {
     pub rail_anim: Anim,
     pub next_row_hot: bool,
     pub registered_tabs: usize,
+    /// A right-click asked for a paste; answered in tick.
+    pub paste_request: bool,
+    /// When the window was last resized, for the cols × rows overlay.
+    pub resized_at: Option<Instant>,
     pub hovers: std::collections::HashMap<u64, Hover>,
     pub look_tab: usize,
     pub look_menu: bool,
@@ -598,6 +611,8 @@ impl App {
             rail_anim: Anim::at(0.0),
             next_row_hot: false,
             registered_tabs: usize::MAX,
+            paste_request: false,
+            resized_at: None,
             hovers: std::collections::HashMap::new(),
             look_tab: 0,
             look_menu: false,
@@ -752,6 +767,14 @@ impl App {
             last_exit: None,
             done: None,
             confirm_paste: None,
+            sel: None,
+            search: None,
+            hints: None,
+            clicks: None,
+            scrollbar: None,
+            scroll_drag: false,
+            chip_hits: Vec::new(),
+            hover_block: 0,
             line: String::new(),
             line_ok: true,
             confirm_close: None,
@@ -951,6 +974,9 @@ impl App {
     }
 
     pub fn resize(&mut self, w: u32, h: u32) {
+        if self.target.size != (w, h) {
+            self.resized_at = Some(Instant::now());
+        }
         self.target.resize(&self.gpu.device, w, h);
         self.remember_window();
         self.layout();
@@ -1002,6 +1028,10 @@ impl App {
         }
         if self.registered_tabs != usize::MAX && self.registered_tabs != self.tabs.len() {
             self.register_window();
+        }
+        if self.paste_request {
+            self.paste_request = false;
+            self.paste_into_shell();
         }
         // A held NEW TAB fans the kinds out.
         if let Some((at, SideHit::NewShell)) = self.press {
@@ -1396,6 +1426,24 @@ impl App {
         } else if dir > 0 {
             t.term.grid_mut().scroll_to_abs(u64::MAX);
             self.dirty = true;
+        }
+    }
+
+    /// Ctrl+Shift+C: the selection if there is one, else the last output.
+    pub(crate) fn copy_selection_or_output(&mut self) {
+        let text = self.focused_term().filter(|t| t.sel.is_some()).map(|t| t.selection_text());
+        match text {
+            Some(text) if !text.is_empty() => {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(text);
+                }
+                if let Some(t) = self.focused_term() {
+                    t.sel = None;
+                }
+                self.play_event("toggle");
+                self.dirty = true;
+            }
+            _ => self.copy_last_output(),
         }
     }
 
@@ -2201,6 +2249,7 @@ impl App {
         }
         let _ = dim;
 
+        self.draw_resize_overlay(&mut scene);
         // Sidebar or hot edge.
         let c = self.content_rect();
         let right_side = self.sidebar_right();
@@ -2236,11 +2285,12 @@ impl App {
             let tab = &mut tabs[active];
             let left_focused = !(focus_right && has_right);
             if !(narrow && has_right && !left_focused) {
-                self.draw_pane(&mut scene, &mut tab.left, &n, left_focused, &look);
+                let split = tab.right.is_some();
+                self.draw_pane(&mut scene, &mut tab.left, &n, left_focused, &look, split);
             }
             if let Some(r) = tab.right.as_mut() {
                 if !(narrow && left_focused) {
-                    self.draw_pane(&mut scene, r, &n, !left_focused, &look);
+                    self.draw_pane(&mut scene, r, &n, !left_focused, &look, true);
                 }
             }
         }
@@ -3573,7 +3623,7 @@ impl App {
         }
     }
 
-    fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides) {
+    fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides, split: bool) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
@@ -3641,6 +3691,7 @@ impl App {
                     self.draw_moving_cursor(scene, p, look);
                 }
                 self.draw_blocks(scene, p, r, hh);
+                self.draw_term_overlays(scene, p, r, hh, focused, split);
                 let _ = p.term.grid_mut().take_damage();
                 scene.layer(None);
             }
@@ -4040,6 +4091,10 @@ impl App {
         if self.start_key(ev) {
             return;
         }
+        // Find and hints take the keys while they're up.
+        if self.term_mode_key(ev) {
+            return;
+        }
         if let Some((_, input)) = self.palette.as_mut() {
             if !pressed {
                 return;
@@ -4124,7 +4179,9 @@ impl App {
             match code {
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
-                Some(KeyCode::KeyC) => return self.copy_last_output(),
+                Some(KeyCode::KeyF) => return self.term_search_open(),
+                Some(KeyCode::KeyO) => return self.term_hints_open(),
+                Some(KeyCode::KeyC) => return self.copy_selection_or_output(),
                 Some(KeyCode::KeyV) => return self.paste_into_shell(),
                 Some(KeyCode::KeyT) => return self.open_palette(PaletteMode::New),
                 Some(KeyCode::KeyK) => return self.open_palette(PaletteMode::Go),
@@ -4233,6 +4290,9 @@ impl App {
                     return;
                 };
 
+                if pressed && t.sel.is_some() {
+                    t.sel = None;
+                }
                 // A paste is waiting: Enter sends it, Esc drops it.
                 if t.confirm_paste.is_some() && pressed {
                     match key {
@@ -4793,6 +4853,7 @@ impl App {
             self.window.set_cursor_visible(true);
             self.pointer_hidden = false;
         }
+        self.term_drag(x, y);
         if !self.sidebar_pinned() && self.sidebar_hoverable() {
             let c = self.content_rect();
             let sb = self.sidebar_rect();
@@ -5027,6 +5088,13 @@ impl App {
             }
         }
         let focus_right = tab.focus_right;
+        if !pressed && button == MouseButton::Left {
+            self.term_release_scroll();
+        }
+        if self.term_mouse(button, state, x, y) {
+            return;
+        }
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let scale = self.scale;
         let mods = cef_mods(self.mods);
         let mut down_in_web = self.mouse_down_in_web;

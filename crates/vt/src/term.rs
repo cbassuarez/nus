@@ -324,6 +324,99 @@ impl Term {
         lines.join("\n")
     }
 
+    /// Text between two absolute positions (inclusive), joining wrapped rows
+    /// without a newline. Positions are (line, col); order doesn't matter.
+    pub fn text_range(&self, a: (u64, usize), b: (u64, usize)) -> String {
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let grid = &self.primary;
+        let mut out = String::new();
+        let mut line = start.0;
+        while line <= end.0 {
+            let Some(row) = grid.row_abs(line) else {
+                line += 1;
+                continue;
+            };
+            let chars: Vec<char> = row.cells.iter().filter(|c| !c.flags.contains(crate::cell::Flags::WIDE_SPACER)).map(|c| c.ch).collect();
+            let from = if line == start.0 { start.1 } else { 0 };
+            let to = if line == end.0 { (end.1 + 1).min(chars.len()) } else { chars.len() };
+            let piece: String = chars.get(from.min(chars.len())..to.max(from.min(chars.len()))).unwrap_or(&[]).iter().collect();
+            if line == end.0 || row.wrapped {
+                out.push_str(&piece);
+            } else {
+                out.push_str(piece.trim_end());
+                out.push('\n');
+            }
+            line += 1;
+        }
+        out
+    }
+
+    /// The word around a cell: letters, digits and path-ish punctuation.
+    pub fn word_at(&self, line: u64, col: usize) -> Option<(usize, usize)> {
+        let row = self.primary.row_abs(line)?;
+        let is_word = |c: char| c.is_alphanumeric() || "_-./\\:~@+=%".contains(c);
+        let chars: Vec<char> = row.cells.iter().map(|c| c.ch).collect();
+        let c = chars.get(col).copied()?;
+        if !is_word(c) {
+            return Some((col, col));
+        }
+        let mut a = col;
+        while a > 0 && is_word(chars[a - 1]) {
+            a -= 1;
+        }
+        let mut b = col;
+        while b + 1 < chars.len() && is_word(chars[b + 1]) {
+            b += 1;
+        }
+        Some((a, b))
+    }
+
+    /// The last non-blank column of a line (for line selection).
+    pub fn line_end(&self, line: u64) -> usize {
+        self.primary.row_abs(line).map(|r| r.text().chars().count().saturating_sub(1)).unwrap_or(0)
+    }
+
+    /// Case-insensitive matches of `q` in history and the screen: (line, col, len).
+    pub fn search(&self, q: &str) -> Vec<(u64, usize, usize)> {
+        let q: Vec<char> = q.to_lowercase().chars().collect();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let grid = &self.primary;
+        let mut out = Vec::new();
+        let mut line = grid.oldest_abs();
+        let last = grid.abs_row(grid.rows() - 1);
+        while line <= last {
+            if let Some(row) = grid.row_abs(line) {
+                let chars: Vec<char> = row.cells.iter().map(|c| c.ch.to_lowercase().next().unwrap_or(c.ch)).collect();
+                if chars.len() >= q.len() {
+                    let mut i = 0;
+                    while i + q.len() <= chars.len() {
+                        if chars[i..i + q.len()] == q[..] {
+                            out.push((line, i, q.len()));
+                            i += q.len();
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            line += 1;
+        }
+        out
+    }
+
+    /// The block a line belongs to: (prompt line, command text, exit) from marks.
+    pub fn block_at(&self, line: u64) -> Option<(u64, u64, String, Option<i32>)> {
+        let starts: Vec<usize> = self.marks.iter().enumerate().filter(|(_, m)| m.kind == MarkKind::PromptStart).map(|(i, _)| i).collect();
+        let idx = starts.iter().rposition(|&i| self.marks[i].line <= line)?;
+        let start = self.marks[starts[idx]].line;
+        let end = starts.get(idx + 1).map(|&i| self.marks[i].line).unwrap_or(self.primary.abs_row(self.primary.rows() - 1) + 1);
+        let cmd = self.marks[starts[idx]..].iter().find(|m| m.kind == MarkKind::CommandStart).map(|b| self.command_text(b)).unwrap_or_default();
+        let exit = self.marks[starts[idx]..].iter().take_while(|m| m.line < end || m.kind != MarkKind::PromptStart).find_map(|m| match m.kind { MarkKind::CommandEnd(e) => Some(e), _ => None }).flatten();
+        Some((start, end, cmd, exit))
+    }
+
     /// Is the shell sitting at a prompt (the last mark is A or B)?
     pub fn at_prompt(&self) -> bool {
         matches!(self.marks.last().map(|m| m.kind), Some(MarkKind::PromptStart | MarkKind::CommandStart))
