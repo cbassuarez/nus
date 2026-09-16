@@ -312,6 +312,8 @@ pub struct App {
     pub urls_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub register_note: String,
     pub login_note: String,
+    pub theme_edit: crate::theme_edit::ThemeEdit,
+    pub ansi_sel: usize,
     /// The launch sequence's "then" has run.
     pub then_done: bool,
     pub window_rect: Option<(i32, i32, u32, u32)>,
@@ -453,6 +455,8 @@ impl App {
             urls_rx: None,
             register_note: String::new(),
             login_note: String::new(),
+            theme_edit: crate::theme_edit::ThemeEdit::default(),
+            ansi_sel: 1,
             then_done: false,
             window_rect: None,
             atlas_used: false,
@@ -519,6 +523,8 @@ impl App {
         let first = app.make_tab(Pane::Term(term), right);
         app.tabs.push(first);
         app.apply_prefs(crate::prefs::Prefs::load());
+        let mode = app.theme.mode;
+        app.set_mode(mode);
         app.layout();
         app.apply_term_resizes(true);
         app.refresh_icon();
@@ -985,6 +991,19 @@ impl App {
 
     fn reader_fonts(&self) -> crate::reader::ReaderFonts {
         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+    }
+
+    /// Rebuild the theme for a mode from Broadsheet plus the user's edits.
+    pub(crate) fn set_mode(&mut self, mode: nus_render::Mode) {
+        let t = self.theme_edit.build(mode, self.surface.signal);
+        self.set_theme(t);
+    }
+
+    /// Re-apply the current mode (after an edit, a family change, a signal).
+    pub(crate) fn rebuild_theme(&mut self) {
+        let mode = self.theme.mode;
+        self.set_mode(mode);
+        self.refresh_icon();
     }
 
     /// A sound for something that happened, after rules.luau has had its say.

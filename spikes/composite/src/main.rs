@@ -14,6 +14,7 @@ mod sound;
 mod splash;
 mod start;
 mod surface;
+mod theme_edit;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -184,10 +185,11 @@ impl ApplicationHandler<UserEvent> for Host {
             WindowEvent::Moved(p) => a.window_moved(p.x, p.y),
             WindowEvent::ThemeChanged(t) => {
                 if a.behavior.follow_os_theme {
-                    a.set_theme(match t {
-                        winit::window::Theme::Light => nus_render::Theme::paper(),
-                        winit::window::Theme::Dark => nus_render::Theme::ink(),
-                    })
+                    let mode = match t {
+                        winit::window::Theme::Light => nus_render::Mode::Paper,
+                        winit::window::Theme::Dark => nus_render::Mode::Ink,
+                    };
+                    a.set_mode(mode);
                 }
             }
             WindowEvent::Focused(f) => a.focus_changed(f),

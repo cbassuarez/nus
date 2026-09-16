@@ -147,6 +147,7 @@ pub enum Slider {
     Breath,
     Volume,
     SplashHold,
+    Saturation,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -192,6 +193,15 @@ pub enum Hit {
     TexKind(TextureKind),
     TexOn(TextureOn),
     TexMotion(bool),
+    TokPaper(Color),
+    TokInk(Color),
+    TokPage(Color),
+    TokReset,
+    AnsiSel(usize),
+    AnsiSet(Color),
+    Family(crate::theme_edit::Family),
+    Import(usize),
+    OpenThemes,
     WindowStart(WindowStart),
     Splash(SplashMode),
     Then(Then),
@@ -206,9 +216,10 @@ pub enum Hit {
     EventNext(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 12] = [
+pub const SECTIONS: [(&str, (&str, &str)); 13] = [
     ("APPEARANCE", icons::BRUSH),
     ("SURFACE", icons::PALETTE),
+    ("THEME", icons::SQUARES),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
     ("SIDEBAR", icons::SIDEBAR),
@@ -221,11 +232,12 @@ pub const SECTIONS: [(&str, (&str, &str)); 12] = [
     ("UPDATES", icons::DOWNLOAD),
 ];
 
-pub const SEC_SOUND: usize = 2;
-pub const SEC_STARTUP: usize = 3;
-pub const SEC_TERMINAL: usize = 6;
-pub const SEC_BROWSER: usize = 7;
-pub const RULES: usize = 9;
+pub const SEC_THEME: usize = 2;
+pub const SEC_SOUND: usize = 3;
+pub const SEC_STARTUP: usize = 4;
+pub const SEC_TERMINAL: usize = 7;
+pub const SEC_BROWSER: usize = 8;
+pub const RULES: usize = 10;
 
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
@@ -242,6 +254,8 @@ enum Control {
     Slider(Slider, f32, String),
     Swatches(Vec<(Option<Color>, Hit, bool)>),
     Buttons(Vec<(String, (&'static str, &'static str), Hit)>),
+    /// Coloured runs of text, as proof.
+    Proof(Vec<(Color, String)>),
 }
 
 impl App {
@@ -262,6 +276,7 @@ impl App {
             Slider::Breath => self.surface.breath,
             Slider::Volume => self.sound.prefs.volume,
             Slider::SplashHold => (self.behavior.splash_hold - 0.4) / 2.2,
+            Slider::Saturation => (self.theme_edit.saturation - 0.5) / 1.0,
         }
     }
 
@@ -286,6 +301,10 @@ impl App {
                 self.sound.cue("tick");
             }
             Slider::SplashHold => self.behavior.splash_hold = (0.4 + v * 2.2 * 10.0).round() / 10.0,
+            Slider::Saturation => {
+                self.theme_edit.saturation = (0.5 + v * 20.0).round() / 20.0;
+                self.rebuild_theme();
+            }
         }
         self.layout();
     }
@@ -355,6 +374,15 @@ impl App {
             Hit::StopAdd => "add a stop".into(),
             Hit::StopRemove => "remove a stop".into(),
             Hit::StopColor(c) => format!("stop colour {}", surface::hex(c)),
+            Hit::TokPaper(c) => format!("paper {}", surface::hex(c)),
+            Hit::TokInk(c) => format!("ink {}", surface::hex(c)),
+            Hit::TokPage(c) => format!("page {}", surface::hex(c)),
+            Hit::TokReset => "reset this mode's tokens".into(),
+            Hit::AnsiSel(i) => format!("ansi {i}"),
+            Hit::AnsiSet(c) => format!("set to {}", surface::hex(c)),
+            Hit::Family(f) => format!("family {}", f.name()),
+            Hit::Import(k) => format!("import {}", crate::theme_edit::imports().get(k).map(|t| t.name.clone()).unwrap_or_default()),
+            Hit::OpenThemes => "open the themes folder".into(),
             Hit::WindowStart(w) => format!("window {:?}", w).to_lowercase(),
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
@@ -394,11 +422,14 @@ impl App {
             Hit::Theme(None) => self.behavior.follow_os_theme = true,
             Hit::Theme(Some(ink)) => {
                 self.behavior.follow_os_theme = false;
-                self.set_theme(if ink { nus_render::Theme::ink() } else { nus_render::Theme::paper() });
+                self.set_mode(if ink { nus_render::Mode::Ink } else { nus_render::Mode::Paper });
                 self.refresh_icon();
             }
             Hit::Signal(c) => {
                 self.surface.signal = c;
+                if self.theme_edit.family == crate::theme_edit::Family::FromSignal {
+                    self.rebuild_theme();
+                }
                 self.refresh_icon();
             }
             Hit::Base(b) => {
@@ -528,6 +559,74 @@ impl App {
                 }
                 let i = self.stop_sel.min(self.surface.stops.len() - 1);
                 self.surface.stops[i] = c;
+            }
+            Hit::TokPaper(c) => {
+                let mode = self.theme.mode;
+                self.theme_edit.edit_mut(mode).paper = Some(c);
+                self.rebuild_theme();
+            }
+            Hit::TokInk(c) => {
+                let mode = self.theme.mode;
+                self.theme_edit.edit_mut(mode).ink = Some(c);
+                self.rebuild_theme();
+            }
+            Hit::TokPage(c) => {
+                let mode = self.theme.mode;
+                self.theme_edit.edit_mut(mode).page = Some(c);
+                self.rebuild_theme();
+            }
+            Hit::TokReset => {
+                let mode = self.theme.mode;
+                *self.theme_edit.edit_mut(mode) = Default::default();
+                self.theme_edit.family = crate::theme_edit::Family::Broadsheet;
+                self.theme_edit.saturation = 1.0;
+                self.rebuild_theme();
+            }
+            Hit::AnsiSel(i) => self.ansi_sel = i.min(15),
+            Hit::AnsiSet(c) => {
+                let mode = self.theme.mode;
+                let current: [Color; 16] = std::array::from_fn(|i| crate::theme_edit::from_rgb(self.theme.ansi[i]));
+                let e = self.theme_edit.edit_mut(mode);
+                let mut a = e.ansi.unwrap_or(current);
+                a[self.ansi_sel.min(15)] = c;
+                e.ansi = Some(a);
+                self.theme_edit.family = crate::theme_edit::Family::Imported;
+                self.rebuild_theme();
+            }
+            Hit::Family(f) => {
+                self.theme_edit.family = f;
+                if f == crate::theme_edit::Family::Broadsheet {
+                    let mode = self.theme.mode;
+                    self.theme_edit.edit_mut(mode).ansi = None;
+                }
+                self.rebuild_theme();
+            }
+            Hit::Import(k) => {
+                if let Some(t) = crate::theme_edit::imports().get(k) {
+                    let mode = self.theme.mode;
+                    let e = self.theme_edit.edit_mut(mode);
+                    e.ansi = t.ansi;
+                    if let Some(p) = t.paper {
+                        e.paper = Some(p);
+                    }
+                    if let Some(i) = t.ink {
+                        e.ink = Some(i);
+                    }
+                    self.theme_edit.family = crate::theme_edit::Family::Imported;
+                    self.rebuild_theme();
+                }
+            }
+            Hit::OpenThemes => {
+                let dir = crate::theme_edit::themes_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let cmd = if cfg!(target_os = "windows") {
+                    format!("start \"\" \"{}\"", dir.display())
+                } else if cfg!(target_os = "macos") {
+                    format!("open \"{}\"", dir.display())
+                } else {
+                    format!("xdg-open \"{}\"", dir.display())
+                };
+                self.run_in_shell(&cmd);
             }
             Hit::WindowStart(w) => self.behavior.window_start = w,
             Hit::Splash(m) => self.behavior.splash = m,
@@ -769,6 +868,59 @@ impl App {
                 ]
             }
             2 => {
+                use crate::theme_edit::{contrast, grade, Family};
+                let t = self.theme.clone();
+                let ink_mode = t.mode == nus_render::Mode::Ink;
+                let papers: &[u32] = if ink_mode { &[0x141414, 0x0f0f0f, 0x1b1a1a, 0x1c1b19, 0x1e2126, 0x16253a, 0x201c1c, 0x0d1117] } else { &[0xf4f1ea, 0xfffdf7, 0xf7f3e8, 0xece7da, 0xe8e4d8, 0xfbf1c7, 0xfdf6e3, 0xffffff] };
+                let inks: &[u32] = if ink_mode { &[0xece7da, 0xf4f1ea, 0xffffff, 0xd8d2c4, 0xe6e1d3, 0xcdd6f4, 0xa89984, 0x93a1a1] } else { &[0x141414, 0x000000, 0x2b2a27, 0x3c3836, 0x073642, 0x1c1b19, 0x3b4252, 0x4a4740] };
+                let pages: &[u32] = &[0xffffff, 0xf4f1ea, 0xfdf6e3, 0x141414, 0x1b1a1a, 0x0f0f0f];
+                let sw = |list: &[u32], cur: Color, mk: fn(Color) -> Hit| -> Vec<(Option<Color>, Hit, bool)> {
+                    list.iter().map(|&v| { let c = nus_render::theme::hex(v); (Some(c), mk(c), (c[0] - cur[0]).abs() < 0.004 && (c[1] - cur[1]).abs() < 0.004 && (c[2] - cur[2]).abs() < 0.004) }).collect()
+                };
+                let ansi: Vec<Color> = (0..16).map(|i| crate::theme_edit::from_rgb(t.ansi[i])).collect();
+                let sel = self.ansi_sel.min(15);
+                let row = |from: usize| -> Vec<(Option<Color>, Hit, bool)> { (from..from + 8).map(|i| (Some(ansi[i]), Hit::AnsiSel(i), i == sel)).collect() };
+                let mut cands: Vec<(Option<Color>, Hit, bool)> = Vec::new();
+                for c in nus_render::theme::signal::ALL {
+                    for f in surface::family(c) {
+                        cands.push((Some(f), Hit::AnsiSet(f), false));
+                    }
+                }
+                cands.truncate(24);
+                let c_ink = contrast(t.ink, t.paper);
+                let c_dim = contrast(t.dim, t.paper);
+                let c_sig = contrast(self.surface.signal, t.paper);
+                let imports = crate::theme_edit::imports();
+                let mut import_chips: Vec<(String, Hit, bool)> = imports.iter().enumerate().map(|(k, i)| (format!("{} · {}", i.name, i.format).to_uppercase(), Hit::Import(k), false)).collect();
+                if import_chips.is_empty() {
+                    import_chips.push(("DROP GHOSTTY · WINDOWS TERMINAL · VS CODE · BASE16 FILES INTO PROFILE/THEMES".into(), Hit::OpenThemes, false));
+                }
+                let proof: Vec<(Color, String)> = vec![
+                    (ansi[2], "seb@nus".into()), (t.ink, ":".into()), (ansi[4], "~/nus".into()), (t.ink, "$ cargo test  ".into()),
+                    (ansi[3], "warning".into()), (t.ink, ": unused  ".into()), (ansi[2], "ok".into()), (t.ink, " 18 passed ".into()),
+                    (ansi[1], "0 failed  ".into()), (ansi[5], "➜ ".into()), (ansi[6], "git".into()), (t.ink, " log  ".into()), (t.dim, "9058fca".into()),
+                ];
+                let brights: Vec<(Color, String)> = (8..16).map(|i| (ansi[i], format!("{i} "))).collect();
+                vec![
+                    ("EDITING".into(), Info(format!("the {} theme · switch with THEME under APPEARANCE", if ink_mode { "ink" } else { "paper" }))),
+                    ("PAPER".into(), Swatches(sw(papers, t.paper, Hit::TokPaper))),
+                    ("INK".into(), Swatches(sw(inks, t.ink, Hit::TokInk))),
+                    ("PAGE".into(), Swatches(sw(pages, t.page, Hit::TokPage))),
+                    ("DERIVED".into(), Info(format!("dim {} · tint ink 7% · hot ink 14% · follow paper and ink", surface::hex(t.dim)))),
+                    ("CONTRAST".into(), Info(format!("ink on paper {:.1}:1 {} · dim {:.1}:1 {} · signal {:.1}:1 {}", c_ink, grade(c_ink), c_dim, grade(c_dim), c_sig, grade(c_sig)))),
+                    ("".into(), Buttons(vec![("RESET TOKENS".into(), icons::WARNING, Hit::TokReset)])),
+                    ("ANSI 0–7".into(), Swatches(row(0))),
+                    ("ANSI 8–15".into(), Swatches(row(8))),
+                    (format!("ANSI {sel} COLOUR"), Swatches(cands)),
+                    ("FAMILY".into(), Choice(Family::ALL.iter().map(|&f| (f.name().to_uppercase(), Hit::Family(f), f == self.theme_edit.family)).chain(std::iter::once(("IMPORTED".to_string(), Hit::Family(Family::Imported), self.theme_edit.family == Family::Imported))).collect())),
+                    ("SATURATION".into(), Slider(self::Slider::Saturation, self.slider_value(self::Slider::Saturation), format!("{}%", (self.theme_edit.saturation * 100.0).round()))),
+                    ("PROOF".into(), Proof(proof)),
+                    ("BRIGHTS".into(), Proof(brights)),
+                    ("IMPORT".into(), Choice(import_chips)),
+                    ("".into(), Buttons(vec![("OPEN THEMES FOLDER".into(), icons::FOLDER, Hit::OpenThemes)])),
+                ]
+            }
+            3 => {
                 let on = self.sound.prefs.enabled;
                 let mut rows: Vec<(String, Control)> = vec![
                     (
@@ -808,7 +960,7 @@ impl App {
                 rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
                 rows
             }
-            3 => {
+            4 => {
                 let b = &self.behavior;
                 let launch_cue = self.sound.prefs.cue_for("launch");
                 let sound_chips: Vec<(String, Hit, bool)> = {
@@ -876,7 +1028,7 @@ impl App {
                     ("".into(), Info(if self.login_note.is_empty() { "a shortcut in the Startup folder · reversible".into() } else { self.login_note.clone() })),
                 ]
             }
-            4 => vec![
+            5 => vec![
                 (
                     "SIDE".into(),
                     Choice(vec![
@@ -912,7 +1064,7 @@ impl App {
                 ),
                 ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
             ],
-            5 => vec![
+            6 => vec![
                 (
                     "LINKS FROM PAGES".into(),
                     Choice(vec![
@@ -939,7 +1091,7 @@ impl App {
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
                 ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
             ],
-            6 => {
+            7 => {
                 let mut v: Vec<(String, Control)> = vec![(
                     "DEFAULT SHELL".into(),
                     Choice(
@@ -963,7 +1115,7 @@ impl App {
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
                 v
             }
-            7 => vec![
+            8 => vec![
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
@@ -1003,7 +1155,7 @@ impl App {
                 ("PASSWORDS".into(), Info("1Password via op (v1)".into())),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
-            8 => {
+            9 => {
                 let mut v: Vec<(String, Control)> =
                     self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))).collect();
                 if v.is_empty() {
@@ -1013,7 +1165,7 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            9 => vec![
+            10 => vec![
                 ("FILE".into(), Info(self.rules.path.to_string_lossy().to_string())),
                 ("STATUS".into(), Info(self.rules.status.clone())),
                 (
@@ -1025,7 +1177,7 @@ impl App {
                     ]),
                 ),
             ],
-            10 => vec![
+            11 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
                 ("URL".into(), Info(key("L", true))),
@@ -1053,15 +1205,16 @@ impl App {
         match k {
             0 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.motion.name()),
             1 => format!("{} · {}", surface::hex(self.surface.signal), self.surface.shell.name()),
-            2 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
-            3 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
-            4 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
-            5 => format!("links → {:?}", self.behavior.links).to_lowercase(),
-            6 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
-            7 => format!("{} bar · google", self.load_bar.style.name()),
-            8 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
-            9 => self.rules.status.clone(),
-            10 => "chords".into(),
+            2 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.theme_edit.family.name()),
+            3 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
+            4 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
+            5 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
+            6 => format!("links → {:?}", self.behavior.links).to_lowercase(),
+            7 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
+            8 => format!("{} bar · google", self.load_bar.style.name()),
+            9 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            10 => self.rules.status.clone(),
+            11 => "chords".into(),
             _ => "github releases".into(),
         }
     }
@@ -1177,6 +1330,13 @@ impl App {
                 Control::Info(v) => {
                     let vs = self.fit(ui, &v, maxw - label_w);
                     self.fonts.draw(scene, ui, vx, base, &vs);
+                }
+                Control::Proof(runs) => {
+                    let mut x = vx;
+                    for (c, text) in runs {
+                        let st = Style { color: c, ..ui };
+                        x += self.fonts.draw(scene, st, x, base, &text);
+                    }
                 }
                 Control::Choice(opts) => {
                     let mut x = vx;
