@@ -18,6 +18,9 @@ pub struct Shared {
     pub loading: bool,
     /// Bumped on every accelerated paint; the app redraws when it changes.
     pub paints: u64,
+    /// The page's dominant <video>, reported by the injected tracker.
+    pub video: Option<Video>,
+    pub next_msg: i32,
     /// Logical size CEF should render at; app sets it, view_rect reads it.
     pub size: (f32, f32),
     pub scale: f32,
@@ -27,7 +30,60 @@ pub struct Shared {
     pub window_pos: (i32, i32),
 }
 
+/// A video's state in CSS px relative to the viewport.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Video {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub vw: f32,
+    pub vh: f32,
+    pub paused: bool,
+    pub ended: bool,
+    pub muted: bool,
+    pub t: f64,
+    pub dur: f64,
+}
+
 pub type SharedRef = StdRc<RefCell<Shared>>;
+
+/// Injected into every document: tracks the largest playing <video>, reports
+/// it through the `nusVideo` binding, and exposes transport on `__nus`.
+pub const VIDEO_JS: &str = r#"(() => {
+  if (window.__nus) return;
+  const st = { best: null };
+  function pick() {
+    let best = null, area = 0;
+    for (const v of document.querySelectorAll('video')) {
+      const r = v.getBoundingClientRect();
+      const a = r.width * r.height;
+      if (a > area && v.readyState > 0 && r.width > 80) { area = a; best = v; }
+    }
+    return best;
+  }
+  function report() {
+    const v = pick(); st.best = v;
+    let p = null;
+    if (v) {
+      const r = v.getBoundingClientRect();
+      p = { x: r.left, y: r.top, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight,
+            paused: v.paused, ended: v.ended, muted: v.muted, t: v.currentTime, dur: v.duration || 0 };
+    }
+    if (window.nusVideo) window.nusVideo(JSON.stringify(p));
+  }
+  const V = () => st.best;
+  window.__nus = {
+    report,
+    seek(d) { const v = V(); if (v) v.currentTime = Math.max(0, Math.min(v.duration || 1e9, v.currentTime + d)); },
+    toggle() { const v = V(); if (v) { if (v.paused) v.play(); else v.pause(); } },
+    vol(d) { const v = V(); if (v) v.volume = Math.max(0, Math.min(1, v.volume + d)); },
+    mute() { const v = V(); if (v) v.muted = !v.muted; },
+    step(f) { const v = V(); if (v) { v.pause(); v.currentTime += f / 30; } },
+    reveal() { const v = V(); if (v) v.scrollIntoView({ block: 'center', inline: 'center' }); },
+  };
+  setInterval(report, 100);
+})();"#;
 
 #[derive(Clone)]
 pub struct AppHandler;
@@ -48,6 +104,9 @@ wrap_app! {
             cl.append_switch(Some(&"noerrdialogs".into()));
             cl.append_switch(Some(&"hide-crash-restore-bubble".into()));
             cl.append_switch(Some(&"use-mock-keychain".into()));
+            if std::env::var_os("NUS_AUTOPLAY").is_some() {
+                cl.append_switch_with_value(Some(&"autoplay-policy".into()), Some(&"no-user-gesture-required".into()));
+            }
             if std::env::var_os("NUS_DEVTOOLS_PORT").is_some() {
                 cl.append_switch_with_value(Some(&"remote-debugging-port".into()), Some(&"9229".into()));
             }
@@ -194,6 +253,53 @@ wrap_display_handler! {
     }
 }
 
+#[derive(Clone)]
+pub struct Observer {
+    pub shared: SharedRef,
+}
+
+wrap_dev_tools_message_observer! {
+    pub struct ObserverBuilder {
+        o: Observer,
+    }
+
+    impl DevToolsMessageObserver {
+        fn on_dev_tools_event(&self, _browser: Option<&mut Browser>, method: Option<&CefString>, params: Option<&[u8]>) {
+            let Some(method) = method else { return };
+            if method.to_string() != "Runtime.bindingCalled" {
+                return;
+            }
+            let Some(params) = params else { return };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(params) else { return };
+            if v.get("name").and_then(|n| n.as_str()) != Some("nusVideo") {
+                return;
+            }
+            let payload = v.get("payload").and_then(|p| p.as_str()).unwrap_or("null");
+            let video = serde_json::from_str::<serde_json::Value>(payload).ok().and_then(|p| {
+                let f = |k: &str| p.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let b = |k: &str| p.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+                if p.is_null() {
+                    return None;
+                }
+                Some(Video {
+                    x: f("x") as f32,
+                    y: f("y") as f32,
+                    w: f("w") as f32,
+                    h: f("h") as f32,
+                    vw: f("vw") as f32,
+                    vh: f("vh") as f32,
+                    paused: b("paused"),
+                    ended: b("ended"),
+                    muted: b("muted"),
+                    t: f("t"),
+                    dur: f("dur"),
+                })
+            });
+            self.o.shared.borrow_mut().video = video;
+        }
+    }
+}
+
 wrap_life_span_handler! {
     pub struct LifeBuilder {
         _unit: (),
@@ -250,6 +356,7 @@ wrap_client! {
 pub struct BrowserTab {
     pub browser: Browser,
     pub shared: SharedRef,
+    _observer: Option<Registration>,
 }
 
 impl BrowserTab {
@@ -293,11 +400,42 @@ impl BrowserTab {
             None,
             context.as_mut(),
         )?;
-        Some(BrowserTab { browser, shared })
+        let mut observer = ObserverBuilder::new(Observer { shared: shared.clone() });
+        let registration = browser.host().and_then(|h| h.add_dev_tools_message_observer(Some(&mut observer)));
+        let tab = BrowserTab { browser, shared, _observer: registration };
+        tab.devtools("Runtime.enable", serde_json::json!({}));
+        tab.devtools("Page.enable", serde_json::json!({}));
+        tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusVideo" }));
+        tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
+        tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));
+        Some(tab)
     }
 
     pub fn host(&self) -> Option<BrowserHost> {
         self.browser.host()
+    }
+
+    /// Send a DevTools protocol command; returns its message id.
+    pub fn devtools(&self, method: &str, params: serde_json::Value) -> i32 {
+        let id = {
+            let mut s = self.shared.borrow_mut();
+            s.next_msg += 1;
+            s.next_msg
+        };
+        let msg = serde_json::json!({ "id": id, "method": method, "params": params }).to_string();
+        if let Some(h) = self.host() {
+            h.send_dev_tools_message(Some(msg.as_bytes()));
+        }
+        id
+    }
+
+    /// Run JS in the page (fire and forget).
+    pub fn eval(&self, expr: &str) {
+        self.devtools("Runtime.evaluate", serde_json::json!({ "expression": expr, "userGesture": true }));
+    }
+
+    pub fn video(&self) -> Option<Video> {
+        self.shared.borrow().video.clone()
     }
 
     pub fn load(&self, url: &str) {

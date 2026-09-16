@@ -52,6 +52,7 @@ pub enum Action {
     Reopen,
     ShellStyle,
     ShellRadius(f32),
+    Pip,
 }
 
 /// The Space color as a physical shell around the window.
@@ -211,6 +212,9 @@ pub struct App {
     pub shell_width: f32,
     pub shell_radius: f32,
     pub shell_phase: f32,
+    pub pip: Option<crate::pip::Pip>,
+    pub pip_request: Option<(usize, bool)>,
+    pub window_focused: bool,
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
     pub profiles: Vec<nus_pty::Profile>,
@@ -283,6 +287,9 @@ impl App {
             shell_width: m::BAND,
             shell_radius: 0.0,
             shell_phase: 0.0,
+            pip: None,
+            pip_request: None,
+            window_focused: true,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
             palette_sel: 0,
@@ -609,6 +616,15 @@ impl App {
             return;
         }
         self.last_begin_frame = Instant::now();
+        if let Some(p) = &self.pip {
+            if let Some(tab) = self.tabs.get(p.tab) {
+                for pane in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                    if let Pane::Web(w) = pane {
+                        w.tab.begin_frame();
+                    }
+                }
+            }
+        }
         if let Some(tab) = self.tabs.get(self.active) {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                 if let Pane::Web(w) = p {
@@ -1347,7 +1363,7 @@ impl App {
                         rows.push(row(&format!("{:02}", i + 1), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
                     }
                 }
-                let actions: [(String, Action); 10] = [
+                let actions: [(String, Action); 11] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(0)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
@@ -1361,6 +1377,7 @@ impl App {
                     (format!("carapace · {:?} → next", self.shell).to_lowercase(), Action::ShellStyle),
                     (format!("corner radius {} → +2", self.shell_radius), Action::ShellRadius(2.0)),
                     (format!("corner radius {} → −2", self.shell_radius), Action::ShellRadius(-2.0)),
+                    ("picture in picture · this tab's video".into(), Action::Pip),
                 ];
                 for (label, a) in actions {
                     if hit(&label) {
@@ -1460,6 +1477,17 @@ impl App {
                     Shell::Aurora => Shell::Band,
                 };
                 self.layout();
+            }
+            Action::Pip => {
+                let tab = self.active;
+                let right = match (&self.tabs[tab].left, &self.tabs[tab].right) {
+                    (Pane::Web(_), _) => Some(false),
+                    (_, Some(Pane::Web(_))) => Some(true),
+                    _ => None,
+                };
+                if let Some(right) = right {
+                    self.request_pip(tab, right);
+                }
             }
             Action::ShellRadius(d) => {
                 self.shell_radius = (self.shell_radius + d).clamp(0.0, 24.0);
@@ -1743,9 +1771,20 @@ impl App {
     }
 
     /// Make tab `i` active and record it as most recently used.
-    fn activate(&mut self, i: usize) {
+    pub fn activate(&mut self, i: usize) {
         if i >= self.tabs.len() {
             return;
+        }
+        let prev = self.active;
+        if let Some(p) = &self.pip {
+            if p.tab == i {
+                self.pip = None;
+            }
+        }
+        if prev != i && self.pip.is_none() {
+            if let Some(right) = self.playing_video(prev) {
+                self.request_pip(prev, right);
+            }
         }
         self.active = i;
         let tab = &mut self.tabs[i];
@@ -1761,6 +1800,13 @@ impl App {
 
     /// Keep `mru`/`selected` valid after `tabs[i]` was removed.
     fn tab_removed(&mut self, i: usize) {
+        if let Some(p) = self.pip.as_mut() {
+            if p.tab == i {
+                self.pip = None;
+            } else if p.tab > i {
+                p.tab -= 1;
+            }
+        }
         self.mru.retain(|&t| t != i);
         for t in self.mru.iter_mut() {
             if *t > i {
@@ -1896,6 +1942,20 @@ impl App {
             tab.focus_right = true;
         }
         self.layout();
+    }
+
+    pub fn focus_changed(&mut self, focused: bool) {
+        self.window_focused = focused;
+        if !focused {
+            if self.pip.is_none() {
+                if let Some(right) = self.playing_video(self.active) {
+                    self.request_pip(self.active, right);
+                }
+            }
+        } else if self.pip.as_ref().is_some_and(|p| p.tab == self.active) {
+            self.pip = None;
+        }
+        self.dirty = true;
     }
 
     pub fn modifiers(&mut self, m: ModifiersState) {

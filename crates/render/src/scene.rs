@@ -177,9 +177,22 @@ impl Scene {
 
     /// Draw an external texture into `rect`, as its own layer.
     pub fn texture(&mut self, rect: Rect, bind: Arc<wgpu::BindGroup>, clip: Option<Rect>) {
+        self.texture_uv(rect, [0.0, 0.0, 1.0, 1.0], bind, clip);
+    }
+
+    /// Draw a sub-rectangle (`uv` = u0, v0, u1, v1) of an external texture.
+    pub fn texture_uv(
+        &mut self,
+        rect: Rect,
+        uv: [f32; 4],
+        bind: Arc<wgpu::BindGroup>,
+        clip: Option<Rect>,
+    ) {
         self.close();
         let start = self.instances.len();
-        self.instances.push(Instance::textured(rect, 1.0));
+        let mut i = Instance::textured(rect, 1.0);
+        i.uv = uv;
+        self.instances.push(i);
         self.layers.push(Layer {
             range: start..start + 1,
             clip,

@@ -18,6 +18,7 @@ cef = { path = "../../vendor/cef-rs/cef", default-features = false, features = [
 wgpu = "30"
 winit = "0.30"
 anyhow = "1"
+serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

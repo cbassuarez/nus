@@ -3,6 +3,7 @@
 
 mod app;
 mod browser;
+mod pip;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -53,8 +54,39 @@ impl ApplicationHandler<UserEvent> for Host {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(a) = self.app.as_mut() else { return };
+        if let Some((tab, right)) = a.pip_request.take() {
+            let attrs = Window::default_attributes()
+                .with_title("nus · pip")
+                .with_decorations(false)
+                .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+                .with_resizable(false)
+                .with_visible(false)
+                .with_inner_size(winit::dpi::LogicalSize::new(240.0, 135.0));
+            match event_loop.create_window(attrs) {
+                Ok(w) => a.attach_pip(Arc::new(w), tab, right),
+                Err(e) => tracing::warn!("pip window: {e}"),
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let Some(a) = self.app.as_mut() else { return };
+        if a.pip.as_ref().is_some_and(|p| p.window.id() == id) {
+            match event {
+                WindowEvent::CloseRequested => a.close_pip(),
+                WindowEvent::Focused(f) => a.pip_focus(f),
+                WindowEvent::Resized(s) => a.pip_resized(s.width, s.height),
+                WindowEvent::Moved(p) => a.pip_moved(p.x, p.y),
+                WindowEvent::KeyboardInput { event, .. } => a.pip_key(&event),
+                WindowEvent::MouseInput { state, button, .. } => a.pip_mouse(button, state),
+                WindowEvent::MouseWheel { delta, .. } => a.pip_wheel(delta),
+                WindowEvent::RedrawRequested => a.pip_frame(),
+                _ => {}
+            }
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(s) => a.resize(s.width, s.height),
@@ -64,6 +96,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 winit::window::Theme::Light => nus_render::Theme::paper(),
                 winit::window::Theme::Dark => nus_render::Theme::ink(),
             }),
+            WindowEvent::Focused(f) => a.focus_changed(f),
             WindowEvent::ModifiersChanged(m) => a.modifiers(m.state()),
             WindowEvent::KeyboardInput { event, .. } => {
                 a.key(&event);
@@ -140,6 +173,7 @@ fn main() -> ExitCode {
             a.tick();
             a.apply_term_resizes(false);
             a.begin_frames();
+            a.pip_frame();
             if a.dirty || a.pump() {
                 a.redraw();
             }
