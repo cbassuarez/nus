@@ -21,6 +21,9 @@ pub struct Shared {
     /// The page's dominant <video>, reported by the injected tracker.
     pub video: Option<Video>,
     pub next_msg: i32,
+    /// CDP target id of this page (for the DevTools frontend URL).
+    pub target_id: Option<String>,
+    pub target_msg: i32,
     /// Logical size CEF should render at; app sets it, view_rect reads it.
     pub size: (f32, f32),
     pub scale: f32,
@@ -45,6 +48,8 @@ pub struct Video {
     pub t: f64,
     pub dur: f64,
 }
+
+pub const DEVTOOLS_PORT: u16 = 9229;
 
 pub type SharedRef = StdRc<RefCell<Shared>>;
 
@@ -107,9 +112,9 @@ wrap_app! {
             if std::env::var_os("NUS_AUTOPLAY").is_some() {
                 cl.append_switch_with_value(Some(&"autoplay-policy".into()), Some(&"no-user-gesture-required".into()));
             }
-            if std::env::var_os("NUS_DEVTOOLS_PORT").is_some() {
-                cl.append_switch_with_value(Some(&"remote-debugging-port".into()), Some(&"9229".into()));
-            }
+            // Loopback-only; our DevTools pane is the frontend attached through it.
+            cl.append_switch_with_value(Some(&"remote-debugging-port".into()), Some(&DEVTOOLS_PORT.to_string().as_str().into()));
+            cl.append_switch_with_value(Some(&"remote-allow-origins".into()), Some(&format!("http://127.0.0.1:{DEVTOOLS_PORT},devtools://devtools").as_str().into()));
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -264,6 +269,20 @@ wrap_dev_tools_message_observer! {
     }
 
     impl DevToolsMessageObserver {
+        fn on_dev_tools_method_result(&self, _browser: Option<&mut Browser>, message_id: ::std::os::raw::c_int, success: ::std::os::raw::c_int, result: Option<&[u8]>) {
+            tracing::debug!("cdp result id={message_id} ok={success} {}", result.map(|r| String::from_utf8_lossy(r).chars().take(160).collect::<String>()).unwrap_or_default());
+            let _ = message_id;
+            if success == 0 {
+                return;
+            }
+            let Some(result) = result else { return };
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(result) {
+                if let Some(id) = v.pointer("/targetInfo/targetId").and_then(|t| t.as_str()) {
+                    self.o.shared.borrow_mut().target_id = Some(id.to_string());
+                }
+            }
+        }
+
         fn on_dev_tools_event(&self, _browser: Option<&mut Browser>, method: Option<&CefString>, params: Option<&[u8]>) {
             let Some(method) = method else { return };
             if method.to_string() != "Runtime.bindingCalled" {
@@ -332,6 +351,33 @@ wrap_life_span_handler! {
         }
     }
 }
+
+pub type BrowserSlot = StdRc<RefCell<Option<Browser>>>;
+
+#[derive(Clone)]
+pub struct Capture {
+    pub slot: BrowserSlot,
+}
+
+wrap_life_span_handler! {
+    pub struct CaptureBuilder {
+        c: Capture,
+    }
+
+    impl LifeSpanHandler {
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            if let Some(b) = browser {
+                *self.c.slot.borrow_mut() = Some(b.clone());
+            }
+        }
+        fn on_before_close(&self, _browser: Option<&mut Browser>) {
+            *self.c.slot.borrow_mut() = None;
+        }
+    }
+}
+
+/// The DevTools frontend for a page, in a windowless browser of our own.
+pub type DevToolsView = BrowserTab;
 
 wrap_client! {
     pub struct ClientBuilder {
@@ -408,6 +454,8 @@ impl BrowserTab {
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusVideo" }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));
+        let id = tab.devtools("Target.getTargetInfo", serde_json::json!({}));
+        tab.shared.borrow_mut().target_msg = id;
         Some(tab)
     }
 
@@ -437,6 +485,17 @@ impl BrowserTab {
     pub fn video(&self) -> Option<Video> {
         self.shared.borrow().video.clone()
     }
+
+    /// Open the DevTools frontend for this page as a browser we composite.
+    /// (CEF refuses windowless DevTools windows in the Chrome runtime.)
+    pub fn open_devtools(&self, device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, scale: f32) -> Option<DevToolsView> {
+        let target = self.shared.borrow().target_id.clone()?;
+        let url = format!("http://127.0.0.1:{DEVTOOLS_PORT}/devtools/inspector.html?ws=127.0.0.1:{DEVTOOLS_PORT}/devtools/page/{target}");
+        let shared: SharedRef = StdRc::new(RefCell::new(Shared { scale, size: (400.0, 300.0), ..Default::default() }));
+        BrowserTab::create(&url, shared, device, bind_texture)
+    }
+
+    pub fn close_devtools(&self) {}
 
     pub fn load(&self, url: &str) {
         if let Some(f) = self.browser.main_frame() {

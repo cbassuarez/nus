@@ -171,6 +171,7 @@ fn main() -> ExitCode {
         }
         if let Some(a) = host.app.as_mut() {
             a.tick();
+            a.process_requests();
             a.apply_term_resizes(false);
             a.begin_frames();
             a.pip_frame();

@@ -109,6 +109,10 @@ pub struct WebPane {
     pub page: Rect,
     pub rect: Rect,
     pub seen_paints: u64,
+    pub devtools: Option<crate::browser::DevToolsView>,
+    /// DevTools pane rect (below the page) when open.
+    pub dt_rect: Rect,
+    pub focus_devtools: bool,
 }
 
 pub struct SettingsPane {
@@ -214,6 +218,8 @@ pub struct App {
     pub shell_phase: f32,
     pub pip: Option<crate::pip::Pip>,
     pub pip_request: Option<(usize, bool)>,
+    /// Deferred DevTools open (tab, right pane), created from the main loop.
+    pub devtools_request: Option<(usize, bool)>,
     pub window_focused: bool,
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
@@ -291,6 +297,7 @@ impl App {
             shell_phase: 0.0,
             pip: None,
             pip_request: None,
+            devtools_request: None,
             window_focused: true,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
@@ -378,6 +385,9 @@ impl App {
             page: Rect::new(0.0, 0.0, 1.0, 1.0),
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             seen_paints: 0,
+            devtools: None,
+            dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+            focus_devtools: false,
         })
     }
 
@@ -451,13 +461,24 @@ impl App {
                 w.rect = r;
                 let url_row = (6.0 * 2.0 + 22.0) * scale;
                 let tools_row = (8.0 * 2.0 + 13.0 + 1.0) * scale;
-                w.page = Rect::new(r.x, r.y + url_row.round() + 1.0, r.w, r.h - url_row.round() - 1.0 - tools_row.round());
+                let avail = r.h - url_row.round() - 1.0 - tools_row.round();
+                let dt_h = if w.devtools.is_some() { (avail * 0.42).round() } else { 0.0 };
+                w.page = Rect::new(r.x, r.y + url_row.round() + 1.0, r.w, avail - dt_h);
+                w.dt_rect = Rect::new(r.x, w.page.bottom() + 1.0, r.w, dt_h - 1.0);
                 {
                     let mut s = w.tab.shared.borrow_mut();
                     s.origin = (w.page.x, w.page.y);
                     s.scale = scale;
                 }
                 w.tab.resized((w.page.w / scale).floor(), (w.page.h / scale).floor());
+                if let Some(d) = &w.devtools {
+                    {
+                        let mut s = d.shared.borrow_mut();
+                        s.origin = (w.dt_rect.x, w.dt_rect.y);
+                        s.scale = scale;
+                    }
+                    d.resized((w.dt_rect.w / scale).floor(), (w.dt_rect.h.max(1.0) / scale).floor());
+                }
             }
         };
         place(&mut tab.left, left_rect);
@@ -599,7 +620,7 @@ impl App {
         for tab in self.tabs.iter_mut() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
-                    let paints = w.tab.shared.borrow().paints;
+                    let paints = w.tab.shared.borrow().paints + w.devtools.as_ref().map(|d| d.shared.borrow().paints).unwrap_or(0);
                     if paints != w.seen_paints {
                         w.seen_paints = paints;
                         changed = true;
@@ -624,6 +645,9 @@ impl App {
                 for pane in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                     if let Pane::Web(w) = pane {
                         w.tab.begin_frame();
+                        if let Some(d) = &w.devtools {
+                            d.begin_frame();
+                        }
                     }
                 }
             }
@@ -632,6 +656,9 @@ impl App {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                 if let Pane::Web(w) = p {
                     w.tab.begin_frame();
+                    if let Some(d) = &w.devtools {
+                        d.begin_frame();
+                    }
                 }
             }
         }
@@ -1291,7 +1318,7 @@ impl App {
                 let ui_strong = self.ui_strong();
                 let ui = self.ui();
                 x += self.fonts.draw(scene, ui_strong, x, base, "←") + self.px(14.0);
-                let dt = "DEVTOOLS";
+                let dt = if p.devtools.is_some() { "DEVTOOLS ·  CLOSE" } else { "DEVTOOLS" };
                 let dw = self.fonts.measure(label, dt);
                 let field = Rect::new(x, r.y + self.px(6.0), r.right() - self.px(14.0) - dw - self.px(14.0) - x, self.px(22.0));
                 let local = is_local(&url);
@@ -1317,8 +1344,22 @@ impl App {
                 if loading {
                     scene.rect(Rect::new(p.page.x, p.page.y, p.page.w * 0.5, self.px(2.0)), self.signal);
                 }
+                if let Some(d) = &p.devtools {
+                    {
+                        let s = d.shared.borrow();
+                        if s.paints < 3 || s.paints % 300 == 0 {
+                            tracing::info!("devtools view: paints={} bind={} size={:?} url={} title={}", s.paints, s.bind.is_some(), s.size, s.url, s.title);
+                        }
+                    }
+                    scene.hline(r.x, p.page.bottom(), r.w, self.px(m::STRUCTURE), ink);
+                    scene.rect(p.dt_rect, t.page);
+                    if let Some(b) = d.shared.borrow().bind.clone() {
+                        scene.texture(p.dt_rect, b, Some(p.dt_rect));
+                        scene.layer(None);
+                    }
+                }
                 // Devtools row.
-                let ty = p.page.bottom();
+                let ty = p.dt_rect.bottom().max(p.page.bottom());
                 scene.hline(r.x, ty, r.w, self.px(m::HAIRLINE), ink);
                 let base = ty + self.px(8.0) + self.px(m::LABEL_PX);
                 let mut x = r.x + self.px(14.0);
@@ -1750,6 +1791,34 @@ impl App {
                 }
                 let _ = t.pty.write(&bytes);
             }
+            Pane::Web(w) if w.focus_devtools && w.devtools.is_some() => {
+                if pressed && matches!(ev.logical_key, WKey::Named(NamedKey::F12)) {
+                    return self.toggle_devtools();
+                }
+                let flags = cef_mods(self.mods);
+                let vk = vk_code(&ev.physical_key, &ev.logical_key);
+                let d = w.devtools.as_ref().unwrap();
+                let mut e = cef::KeyEvent { windows_key_code: vk, native_key_code: vk, modifiers: flags, ..Default::default() };
+                if pressed {
+                    e.type_ = cef::KeyEventType::RAWKEYDOWN;
+                    d.key(&e);
+                    if let Some(text) = &ev.text {
+                        if !ctrl || alt {
+                            for ch in text.encode_utf16() {
+                                let mut c = cef::KeyEvent { ..e };
+                                c.type_ = cef::KeyEventType::CHAR;
+                                c.character = ch;
+                                c.unmodified_character = ch;
+                                c.windows_key_code = ch as i32;
+                                d.key(&c);
+                            }
+                        }
+                    }
+                } else {
+                    e.type_ = cef::KeyEventType::KEYUP;
+                    d.key(&e);
+                }
+            }
             Pane::Web(w) => {
                 // Chrome-compatible keys while a browser pane is focused.
                 if pressed {
@@ -1765,7 +1834,7 @@ impl App {
                         (WKey::Character(c), true, false) if c == "-" => return w.tab.zoom(-1),
                         (WKey::Character(c), true, false) if c == "0" => return w.tab.zoom(0),
                         (WKey::Named(NamedKey::F12), _, _) => {
-                            tracing::info!("devtools: not composited in this spike (see README)");
+                            self.toggle_devtools();
                             return;
                         }
                         _ => {}
@@ -1853,6 +1922,51 @@ impl App {
             .filter(|&&t| t != i)
             .map(|&t| if t > i { t - 1 } else { t })
             .collect();
+    }
+
+    /// Open or close DevTools for the focused browser pane.
+    fn toggle_devtools(&mut self) {
+        let device = self.device.clone();
+        let binder = self.bind_texture.clone();
+        let scale = self.scale;
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let pane = match (&tab.left, tab.focus_right) {
+            (_, true) if tab.right.is_some() => tab.right.as_mut().unwrap(),
+            (Pane::Web(_), _) => &mut tab.left,
+            _ => match tab.right.as_mut() {
+                Some(r) => r,
+                None => return,
+            },
+        };
+        if let Pane::Web(w) = pane {
+            if w.devtools.is_some() {
+                w.tab.close_devtools();
+                w.devtools = None;
+                w.focus_devtools = false;
+            } else {
+                let right = tab.focus_right && tab.right.is_some();
+                let _ = (device, binder, scale);
+                self.devtools_request = Some((self.active, right));
+                return;
+            }
+        }
+        self.layout();
+    }
+
+    /// Create a requested DevTools browser outside of event handling.
+    pub fn process_requests(&mut self) {
+        let Some((tab, right)) = self.devtools_request.take() else { return };
+        let device = self.device.clone();
+        let binder = self.bind_texture.clone();
+        let scale = self.scale;
+        let Some(t) = self.tabs.get_mut(tab) else { return };
+        let pane = if right { t.right.as_mut() } else { Some(&mut t.left) };
+        if let Some(Pane::Web(w)) = pane {
+            w.devtools = w.tab.open_devtools(device, binder, scale);
+            w.focus_devtools = w.devtools.is_some();
+            tracing::info!("devtools opened: {}", w.devtools.is_some());
+        }
+        self.layout();
     }
 
     fn palette_commit(&mut self) {
@@ -2032,6 +2146,12 @@ impl App {
                         let (lx, ly) = ((x - w.page.x) / self.scale, (y - w.page.y) / self.scale);
                         w.tab.mouse_move(lx as i32, ly as i32, flags, false);
                     }
+                    if let Some(d) = &w.devtools {
+                        if w.dt_rect.contains(x, y) {
+                            let (lx, ly) = ((x - w.dt_rect.x) / self.scale, (y - w.dt_rect.y) / self.scale);
+                            d.mouse_move(lx as i32, ly as i32, flags, false);
+                        }
+                    }
                 }
             }
         }
@@ -2155,6 +2275,8 @@ impl App {
         let mods = cef_mods(self.mods);
         let mut down_in_web = self.mouse_down_in_web;
         let mut open_url_palette = false;
+        let mut toggle_devtools = false;
+        let mut focus_dt: Option<(bool, bool)> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
             match p {
                 Pane::Web(w) => {
@@ -2162,10 +2284,33 @@ impl App {
                     if pressed && button == MouseButton::Left && url_row.contains(x, y) {
                         if x < w.rect.x + back_w {
                             w.tab.back();
+                        } else if x > w.rect.right() - 120.0 * scale {
+                            toggle_devtools = true;
                         } else {
                             open_url_palette = true;
                         }
                         continue;
+                    }
+                    let tools_row = Rect::new(w.rect.x, w.dt_rect.bottom().max(w.page.bottom()), w.rect.w, w.rect.bottom() - w.dt_rect.bottom().max(w.page.bottom()));
+                    if pressed && button == MouseButton::Left && tools_row.contains(x, y) && x > w.rect.right() - 160.0 * scale && w.devtools.is_some() {
+                        toggle_devtools = true;
+                        continue;
+                    }
+                    if let Some(d) = &w.devtools {
+                        if w.dt_rect.contains(x, y) {
+                            let (lx, ly) = ((x - w.dt_rect.x) / scale, (y - w.dt_rect.y) / scale);
+                            let b = match button {
+                                MouseButton::Left => cef::MouseButtonType::LEFT,
+                                MouseButton::Right => cef::MouseButtonType::RIGHT,
+                                MouseButton::Middle => cef::MouseButtonType::MIDDLE,
+                                _ => continue,
+                            };
+                            d.mouse_click(lx as i32, ly as i32, mods, b, !pressed, 1);
+                            d.focus(true);
+                            w.tab.focus(false);
+                            focus_dt = Some((is_right, true));
+                            continue;
+                        }
                     }
                     let inside = w.page.contains(x, y);
                     if inside || (!pressed && down_in_web) {
@@ -2187,6 +2332,25 @@ impl App {
             }
         }
         self.mouse_down_in_web = down_in_web;
+        if let Some((is_right, on)) = focus_dt {
+            let tab = &mut self.tabs[self.active];
+            let pane = if is_right { tab.right.as_mut() } else { Some(&mut tab.left) };
+            if let Some(Pane::Web(w)) = pane {
+                w.focus_devtools = on;
+            }
+        } else if pressed && button == MouseButton::Left {
+            let tab = &mut self.tabs[self.active];
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Web(w) = p {
+                    if w.page.contains(x, y) {
+                        w.focus_devtools = false;
+                    }
+                }
+            }
+        }
+        if toggle_devtools {
+            self.toggle_devtools();
+        }
         if open_url_palette {
             self.open_palette(PaletteMode::Url);
         }
@@ -2204,6 +2368,14 @@ impl App {
                     };
                     t.term.grid_mut().scroll_display(lines);
                     self.dirty = true;
+                }
+                Pane::Web(w) if w.devtools.is_some() && w.dt_rect.contains(x, y) => {
+                    let (dx, dy) = match delta {
+                        MouseScrollDelta::LineDelta(x, y) => ((x * 40.0) as i32, (y * 40.0) as i32),
+                        MouseScrollDelta::PixelDelta(p) => (p.x as i32, p.y as i32),
+                    };
+                    let (lx, ly) = ((x - w.dt_rect.x) / self.scale, (y - w.dt_rect.y) / self.scale);
+                    w.devtools.as_ref().unwrap().wheel(lx as i32, ly as i32, cef_mods(self.mods), dx, dy);
                 }
                 Pane::Web(w) if w.page.contains(x, y) => {
                     let (dx, dy) = match delta {
