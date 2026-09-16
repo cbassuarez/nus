@@ -187,6 +187,7 @@ impl Tab {
 pub struct App {
     pub window: Arc<Window>,
     pub gpu: Gpu,
+    pub target: nus_render::Target,
     pub fonts: FontSystem,
     pub f: Fonts,
     pub scene: Scene,
@@ -235,7 +236,7 @@ pub struct App {
 
 impl App {
     pub fn new(window: Arc<Window>, proxy: EventLoopProxy<UserEvent>) -> anyhow::Result<App> {
-        let gpu = Gpu::new(window.clone())?;
+        let (gpu, target) = Gpu::new(window.clone())?;
         let scale = window.scale_factor() as f32;
         let mut fonts = FontSystem::new();
         let ui = fonts.load_bytes(nus_render::text::bundled::PLEX_MONO, 0)?;
@@ -256,6 +257,7 @@ impl App {
         let mut app = App {
             window,
             gpu,
+            target,
             fonts,
             f: Fonts {
                 ui,
@@ -382,7 +384,7 @@ impl App {
 
     pub fn strip_rect(&self) -> Rect {
         let (top, right, _, left) = self.shell_insets();
-        Rect::new(left, top, self.gpu.size.0 as f32 - left - right, self.px(m::TOP_STRIP))
+        Rect::new(left, top, self.target.size.0 as f32 - left - right, self.px(m::TOP_STRIP))
     }
 
     fn content_rect(&self) -> Rect {
@@ -393,7 +395,7 @@ impl App {
         } else {
             self.px(4.0)
         };
-        Rect::new(left, top, self.gpu.size.0 as f32 - left - sr, self.gpu.size.1 as f32 - top - sb)
+        Rect::new(left, top, self.target.size.0 as f32 - left - sr, self.target.size.1 as f32 - top - sb)
     }
 
     fn sidebar_rect(&self) -> Rect {
@@ -456,7 +458,7 @@ impl App {
     }
 
     pub fn resize(&mut self, w: u32, h: u32) {
-        self.gpu.resize(w, h);
+        self.target.resize(&self.gpu.device, w, h);
         self.layout();
         self.resize_due = Some(Instant::now() + std::time::Duration::from_millis(80));
     }
@@ -635,7 +637,7 @@ impl App {
         } else {
             self.theme.paper
         };
-        self.gpu.render(&self.scene, clear);
+        self.gpu.render(&mut self.target, &self.scene, clear);
         self.frames += 1;
     }
 
@@ -675,8 +677,8 @@ impl App {
         scene.clear();
         let t = self.theme.clone();
         let ink = t.ink;
-        let w = self.gpu.size.0 as f32;
-        let h = self.gpu.size.1 as f32;
+        let w = self.target.size.0 as f32;
+        let h = self.target.size.1 as f32;
 
         // Shell + top strip.
         scene.layer(None);
@@ -1954,7 +1956,7 @@ impl App {
 
         // Top strip: window controls, else drag.
         if pressed && button == MouseButton::Left && strip.contains(x, y) {
-            let w = self.gpu.size.0 as f32;
+            let w = self.target.size.0 as f32;
             let right = w - self.px(18.0);
             let btn_w = self.px(28.0);
             if x > right - btn_w {

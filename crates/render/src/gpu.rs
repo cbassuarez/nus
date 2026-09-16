@@ -1,6 +1,6 @@
-//! wgpu device, surface and the two ways we draw: instanced quads (solid
-//! rects and atlas glyphs) and the same quads sampling an external RGBA
-//! texture (browser tabs, previews).
+//! wgpu device plus the one quad pipeline, and per-window `Target`s. Screen
+//! size travels as an immediate, so bind groups are window-independent and
+//! one `Gpu` can drive the main window, PiP, and the quick terminal.
 
 use std::sync::Arc;
 
@@ -10,32 +10,30 @@ use winit::window::Window;
 use crate::scene::{Bind, Instance, Scene};
 use crate::text::ATLAS_SIZE;
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Globals {
-    screen: [f32; 2],
-    _pad: [f32; 2],
-}
-
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
+    instance: wgpu::Instance,
     format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
-    globals: wgpu::Buffer,
     sampler: wgpu::Sampler,
     atlas: wgpu::Texture,
     atlas_bind: wgpu::BindGroup,
     instances: wgpu::Buffer,
     instance_cap: usize,
+}
+
+/// A window's surface.
+pub struct Target {
+    surface: wgpu::Surface<'static>,
     /// Physical pixels.
     pub size: (u32, u32),
+    format: wgpu::TextureFormat,
 }
 
 impl Gpu {
-    pub fn new(window: Arc<Window>) -> Result<Gpu> {
+    pub fn new(window: Arc<Window>) -> Result<(Gpu, Target)> {
         // Shared-texture import from CEF needs DX12 on Windows (D3D11 handles),
         // Metal on macOS (IOSurface) and Vulkan on Linux (dmabuf).
         let backends = if cfg!(target_os = "windows") {
@@ -61,7 +59,14 @@ impl Gpu {
             adapter.get_info().backend
         );
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                required_features: wgpu::Features::IMMEDIATES,
+                required_limits: wgpu::Limits {
+                    max_immediate_size: 16,
+                    ..wgpu::Limits::default()
+                },
+                ..Default::default()
+            }))?;
         let format = wgpu::TextureFormat::Bgra8Unorm;
 
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
@@ -83,27 +88,11 @@ impl Gpu {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let globals = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("globals"),
-            size: std::mem::size_of::<Globals>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("quad bgl"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
@@ -113,7 +102,7 @@ impl Gpu {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -121,7 +110,7 @@ impl Gpu {
             ],
         });
         let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-        let atlas_bind = Self::make_bind(&device, &bgl, &globals, &atlas_view, &sampler);
+        let atlas_bind = Self::make_bind(&device, &bgl, &atlas_view, &sampler);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("quad"),
@@ -130,7 +119,7 @@ impl Gpu {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("quad pl"),
             bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
+            immediate_size: 8,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("quad"),
@@ -171,29 +160,44 @@ impl Gpu {
             mapped_at_creation: false,
         });
         let size = window.inner_size();
-        let mut gpu = Gpu {
+        let gpu = Gpu {
             device,
             queue,
-            surface,
+            instance,
             format,
             pipeline,
             bgl,
-            globals,
             sampler,
             atlas,
             atlas_bind,
             instances,
             instance_cap,
-            size: (size.width.max(1), size.height.max(1)),
         };
-        gpu.configure();
-        Ok(gpu)
+        let mut target = Target {
+            surface,
+            size: (size.width.max(1), size.height.max(1)),
+            format,
+        };
+        target.configure(&gpu.device);
+        Ok((gpu, target))
+    }
+
+    /// A surface for another window (PiP, quick terminal).
+    pub fn target(&self, window: Arc<Window>) -> Result<Target> {
+        let surface = self.instance.create_surface(window.clone())?;
+        let size = window.inner_size();
+        let mut t = Target {
+            surface,
+            size: (size.width.max(1), size.height.max(1)),
+            format: self.format,
+        };
+        t.configure(&self.device);
+        Ok(t)
     }
 
     fn make_bind(
         device: &wgpu::Device,
         bgl: &wgpu::BindGroupLayout,
-        globals: &wgpu::Buffer,
         view: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
@@ -203,64 +207,27 @@ impl Gpu {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: globals.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
                     resource: wgpu::BindingResource::TextureView(view),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 2,
+                    binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         })
     }
 
-    /// A bind group for an external RGBA texture (e.g. a CEF paint), for
-    /// use as [`Bind::External`] in a scene layer.
+    /// A bind group for an external RGBA texture (e.g. a CEF paint).
     pub fn bind_texture(&self, texture: &wgpu::Texture) -> Arc<wgpu::BindGroup> {
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Arc::new(Self::make_bind(
-            &self.device,
-            &self.bgl,
-            &self.globals,
-            &view,
-            &self.sampler,
-        ))
+        self.texture_binder().bind(texture)
     }
 
-    pub fn resize(&mut self, w: u32, h: u32) {
-        if w == 0 || h == 0 || (w, h) == self.size {
-            return;
+    pub fn texture_binder(&self) -> TextureBinder {
+        TextureBinder {
+            device: self.device.clone(),
+            bgl: self.bgl.clone(),
+            sampler: self.sampler.clone(),
         }
-        self.size = (w, h);
-        self.configure();
-    }
-
-    fn configure(&mut self) {
-        self.surface.configure(
-            &self.device,
-            &wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: self.format,
-                color_space: wgpu::SurfaceColorSpace::Auto,
-                view_formats: vec![self.format],
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                width: self.size.0,
-                height: self.size.1,
-                desired_maximum_frame_latency: 1,
-                present_mode: wgpu::PresentMode::AutoVsync,
-            },
-        );
-        self.queue.write_buffer(
-            &self.globals,
-            0,
-            bytemuck::bytes_of(&Globals {
-                screen: [self.size.0 as f32, self.size.1 as f32],
-                _pad: [0.0; 2],
-            }),
-        );
     }
 
     pub fn upload_glyph(&self, x: u32, y: u32, w: u32, h: u32, data: &[u8]) {
@@ -285,8 +252,8 @@ impl Gpu {
         );
     }
 
-    /// Draw a scene. Returns false if the surface wasn't available.
-    pub fn render(&mut self, scene: &Scene, clear: [f32; 4]) -> bool {
+    /// Draw a scene into `target`. Returns false if the surface wasn't available.
+    pub fn render(&mut self, target: &mut Target, scene: &Scene, clear: [f32; 4]) -> bool {
         let all = scene.instances();
         if all.len() > self.instance_cap {
             self.instance_cap = all.len().next_power_of_two();
@@ -301,10 +268,10 @@ impl Gpu {
             self.queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(all));
         }
-        let frame = match self.surface.get_current_texture() {
+        let frame = match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
-                self.configure();
+                target.configure(&self.device);
                 f
             }
             _ => return false,
@@ -326,7 +293,7 @@ impl Gpu {
                             r: clear[0] as f64,
                             g: clear[1] as f64,
                             b: clear[2] as f64,
-                            a: 1.0,
+                            a: clear[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -335,8 +302,9 @@ impl Gpu {
                 ..Default::default()
             });
             pass.set_pipeline(&self.pipeline);
+            let (sw, sh) = target.size;
+            pass.set_immediates(0, bytemuck::cast_slice(&[sw as f32, sh as f32]));
             pass.set_vertex_buffer(0, self.instances.slice(..));
-            let (sw, sh) = self.size;
             for layer in scene.layers() {
                 if layer.range.is_empty() {
                     continue;
@@ -368,13 +336,39 @@ impl Gpu {
     }
 }
 
+impl Target {
+    pub fn resize(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        if w == 0 || h == 0 || (w, h) == self.size {
+            return;
+        }
+        self.size = (w, h);
+        self.configure(device);
+    }
+
+    fn configure(&mut self, device: &wgpu::Device) {
+        self.surface.configure(
+            device,
+            &wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: self.format,
+                color_space: wgpu::SurfaceColorSpace::Auto,
+                view_formats: vec![self.format],
+                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                width: self.size.0,
+                height: self.size.1,
+                desired_maximum_frame_latency: 1,
+                present_mode: wgpu::PresentMode::AutoVsync,
+            },
+        );
+    }
+}
+
 /// A cloneable handle that can bind external textures without borrowing
 /// the whole [`Gpu`] — CEF paint callbacks hold one.
 #[derive(Clone)]
 pub struct TextureBinder {
     device: wgpu::Device,
     bgl: wgpu::BindGroupLayout,
-    globals: wgpu::Buffer,
     sampler: wgpu::Sampler,
 }
 
@@ -384,20 +378,8 @@ impl TextureBinder {
         Arc::new(Gpu::make_bind(
             &self.device,
             &self.bgl,
-            &self.globals,
             &view,
             &self.sampler,
         ))
-    }
-}
-
-impl Gpu {
-    pub fn texture_binder(&self) -> TextureBinder {
-        TextureBinder {
-            device: self.device.clone(),
-            bgl: self.bgl.clone(),
-            globals: self.globals.clone(),
-            sampler: self.sampler.clone(),
-        }
     }
 }

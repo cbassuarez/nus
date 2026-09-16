@@ -8,7 +8,7 @@ pub mod scene;
 pub mod text;
 pub mod theme;
 
-pub use gpu::{Gpu, TextureBinder};
+pub use gpu::{Gpu, Target, TextureBinder};
 pub use grid::GridRenderer;
 pub use scene::{Bind, Color, Instance, Layer, Rect, Scene};
 pub use text::{FontId, FontSystem, Metrics, Style};

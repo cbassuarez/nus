@@ -1,10 +1,9 @@
 struct Globals {
     screen: vec2<f32>,
-    _pad: vec2<f32>,
 };
-@group(0) @binding(0) var<uniform> globals: Globals;
-@group(0) @binding(1) var tex: texture_2d<f32>;
-@group(0) @binding(2) var tex_sampler: sampler;
+var<immediate> globals: Globals;
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var tex_sampler: sampler;
 
 struct Instance {
     @location(0) pos: vec2<f32>,
