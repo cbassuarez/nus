@@ -161,6 +161,9 @@ pub struct Surface {
     pub texture_scale: f32,
     #[serde(default = "default_texture_on")]
     pub texture_on: TextureOn,
+    /// Animated: grain flickers like film, patterns drift.
+    #[serde(default)]
+    pub texture_motion: bool,
     /// Window opacity 0.5..1. Below 1 the panes show the desktop through.
     pub opacity: f32,
     #[serde(default = "default_opacity_on")]
@@ -209,6 +212,7 @@ impl Default for Surface {
             texture_kind: TextureKind::Grain,
             texture_scale: 1.0,
             texture_on: TextureOn::Carapace,
+            texture_motion: false,
             opacity: 1.0,
             opacity_on: OpacityOn::Panes,
             shell: Shell::Band,
@@ -249,7 +253,7 @@ pub fn presets() -> Vec<Preset> {
                 shell_radius: 12.0,
                 texture: 0.05,
                 texture_kind: TextureKind::Linen,
-                texture_on: TextureOn::Chrome,
+                texture_on: TextureOn::Carapace,
                 ..Surface::default()
             },
         },
@@ -277,8 +281,9 @@ pub fn presets() -> Vec<Preset> {
                 angle: 90.0,
                 texture: 0.16,
                 texture_kind: TextureKind::Halftone,
-                texture_scale: 5.0,
-                texture_on: TextureOn::Panes,
+                texture_scale: 4.0,
+                texture_on: TextureOn::Carapace,
+                texture_motion: true,
                 ..Surface::default()
             },
         },

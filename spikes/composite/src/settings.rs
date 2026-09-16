@@ -107,6 +107,7 @@ pub enum Hit {
     OpacityOn(OpacityOn),
     TexKind(TextureKind),
     TexOn(TextureOn),
+    TexMotion(bool),
     SoundOn(bool),
     /// Play a cue by index into sound::NAMES.
     Play(usize),
@@ -267,6 +268,7 @@ impl App {
             Hit::OpacityOn(o) => format!("opacity on {:?}", o).to_lowercase(),
             Hit::TexKind(k) => format!("texture {}", k.name()),
             Hit::TexOn(o) => format!("texture on {:?}", o).to_lowercase(),
+            Hit::TexMotion(b) => if b { "texture animated".into() } else { "texture still".into() },
             Hit::ReloadAvatar => "reload avatar".into(),
             Hit::OpenProfileDir => "open the profile folder".into(),
             Hit::StartOnLaunch(b) => if b { "atlas also at launch".into() } else { "atlas from the planet".into() },
@@ -469,6 +471,7 @@ impl App {
                 }
             }
             Hit::TexOn(o) => self.surface.texture_on = o,
+            Hit::TexMotion(b) => self.surface.texture_motion = b,
             Hit::ReloadAvatar => self.load_avatar(),
             Hit::OpenProfileDir => {
                 let dir = std::env::current_dir().unwrap_or_default().join("profile");
@@ -627,6 +630,13 @@ impl App {
                             ("CARAPACE".into(), Hit::TexOn(TextureOn::Carapace), self.surface.texture_on == TextureOn::Carapace),
                             ("CHROME".into(), Hit::TexOn(TextureOn::Chrome), self.surface.texture_on == TextureOn::Chrome),
                             ("PANES".into(), Hit::TexOn(TextureOn::Panes), self.surface.texture_on == TextureOn::Panes),
+                        ]),
+                    ),
+                    (
+                        "MOTION".into(),
+                        Choice(vec![
+                            ("STILL".into(), Hit::TexMotion(false), !self.surface.texture_motion),
+                            ("ANIMATED · GRAIN FLICKERS, PATTERNS DRIFT".into(), Hit::TexMotion(true), self.surface.texture_motion),
                         ]),
                     ),
                     (

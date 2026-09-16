@@ -204,10 +204,12 @@ impl Instance {
     }
 
     /// Texture overlay: `kind` 6 grain, 7 stipple, 8 stitch, 9 linen,
-    /// 10 halftone; `color.a` is the strength, `scale` the pattern pitch.
-    pub fn texture_kind(r: Rect, kind: u32, color: Color, scale: f32) -> Instance {
+    /// 10 halftone; `color.a` is the strength, `scale` the pattern pitch,
+    /// `time` (seconds, 0 = still) animates it.
+    pub fn texture_kind(r: Rect, kind: u32, color: Color, scale: f32, time: f32) -> Instance {
         let mut i = Instance::grain(r, color, scale);
         i.kind = kind;
+        i.extra = (time * 1000.0) as u32;
         i
     }
 }

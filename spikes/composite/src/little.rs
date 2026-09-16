@@ -182,7 +182,7 @@ impl App {
         l.scene.layer(None);
         l.scene.rect(Rect::new(0.0, 0.0, w, band), self.surface.signal);
         if let (Some(kind), true) = (self.surface.texture_kind.shader_kind(), self.surface.texture > 0.0) {
-            l.scene.push(nus_render::Instance::texture_kind(Rect::new(0.0, 0.0, w, band), kind, [1.0, 1.0, 1.0, self.surface.texture], self.surface.texture_scale * scale));
+            l.scene.push(nus_render::Instance::texture_kind(Rect::new(0.0, 0.0, w, band), kind, [1.0, 1.0, 1.0, self.surface.texture], self.surface.texture_scale * scale, 0.0));
         }
         let (title, url, bind) = {
             let s = l.pane.tab.shared.borrow();

@@ -98,19 +98,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if in.kind == 0u {
         return in.color;
     }
+    // Textures: `extra` is time in ms (0 = still). Grain reseeds like film;
+    // the patterns drift slowly.
+    let tm = f32(in.extra) / 1000.0;
+    let drift = vec2(tm * 6.0, tm * 2.5);
     if in.kind == 6u {
         // Paper grain: hashed speckle in screen space, alpha scaled by color.a.
-        let p = floor(in.clip.xy / max(in.phase, 1.0));
+        let p = floor(in.clip.xy / max(in.phase, 1.0)) + floor(tm * 24.0) * vec2(17.0, 31.0);
         let n = fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
         return vec4(in.color.rgb, in.color.a * n);
     }
     if in.kind == 7u {
         // Stipple: dots on a jittered grid, `phase` px apart.
         let pitch = max(in.phase, 2.0);
-        let cell = floor(in.clip.xy / pitch);
+        let cell = floor((in.clip.xy + drift) / pitch);
         let j = vec2(hash(cell), hash(cell + vec2(7.0, 3.0))) * 0.5 - 0.25;
         let c = (cell + 0.5 + j) * pitch;
-        let d = length(in.clip.xy - c);
+        let d = length(in.clip.xy + drift - c);
         let r = pitch * 0.18;
         let cov = 1.0 - smoothstep(r - 0.6, r + 0.6, d);
         return vec4(in.color.rgb, in.color.a * cov);
@@ -118,7 +122,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if in.kind == 8u {
         // Stitch: a dashed cross-hatch, like thread — lines every `phase` px.
         let pitch = max(in.phase, 3.0);
-        let q = in.clip.xy / pitch;
+        let q = (in.clip.xy + drift) / pitch;
         let lx = abs(fract(q.x) - 0.5);
         let ly = abs(fract(q.y) - 0.5);
         let dash_x = step(0.5, fract(q.y * 2.0 + 0.25));
@@ -129,7 +133,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if in.kind == 9u {
         // Linen: two fine directions of slightly uneven threads.
         let pitch = max(in.phase, 1.5);
-        let q = in.clip.xy / pitch;
+        let q = (in.clip.xy + drift * 0.3) / pitch;
         let wx = 0.5 + 0.5 * sin(6.2831853 * q.x) * (0.8 + 0.2 * hash(floor(q.yx)));
         let wy = 0.5 + 0.5 * sin(6.2831853 * q.y) * (0.8 + 0.2 * hash(floor(q.xy)));
         let w = max(wx, wy) * 0.6 + 0.4 * wx * wy;
@@ -143,7 +147,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let cell = floor(rp / pitch);
         let c = (cell + 0.5) * pitch;
         let d = length(rp - c);
-        let field = 0.5 + 0.5 * sin(in.clip.x * 0.01) * sin(in.clip.y * 0.013);
+        let field = 0.5 + 0.5 * sin(in.clip.x * 0.01 + tm * 0.7) * sin(in.clip.y * 0.013 - tm * 0.5);
         let r = pitch * (0.12 + 0.28 * field);
         let cov = 1.0 - smoothstep(r - 0.6, r + 0.6, d);
         return vec4(in.color.rgb, in.color.a * cov);

@@ -316,6 +316,7 @@ pub struct App {
     pub stop_sel: usize,
     /// How tall the settings column's content was last frame.
     pub settings_reach: f32,
+    pub started: Instant,
     pub sound: crate::sound::Sound,
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
@@ -446,6 +447,7 @@ impl App {
             preset_name: "broadsheet".into(),
             stop_sel: 0,
             settings_reach: 0.0,
+            started: Instant::now(),
             sound: crate::sound::Sound::new(crate::sound::SoundPrefs::default()),
             start: None,
             splash: Some(crate::splash::Splash::new()),
@@ -774,6 +776,9 @@ impl App {
         }
         self.sync_anims();
         if self.anims_active() {
+            self.dirty = true;
+        }
+        if self.surface.texture_motion && self.surface.texture > 0.0 && self.surface.texture_kind != crate::surface::TextureKind::None {
             self.dirty = true;
         }
         if self.surface.shell == Shell::Aurora {
@@ -1417,8 +1422,9 @@ impl App {
                     }
                     crate::surface::TextureOn::Panes => vec![self.content_rect()],
                 };
+                let tm = if self.surface.texture_motion { self.started.elapsed().as_secs_f32() % 3600.0 } else { 0.0 };
                 for r in rects {
-                    scene.push(nus_render::Instance::texture_kind(r, kind, g, pitch));
+                    scene.push(nus_render::Instance::texture_kind(r, kind, g, pitch, tm));
                 }
             }
         }
