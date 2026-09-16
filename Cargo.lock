@@ -1315,6 +1315,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "tracing",
+ "windows",
 ]
 
 [[package]]

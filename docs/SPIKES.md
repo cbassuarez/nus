@@ -38,6 +38,10 @@ Run `vim`, `lazygit`, `claude` at 120 fps with ligatures on all three OSes.
 - Kitty keyboard protocol negotiated correctly.
 
 ## 4. `composite` — #1 + #3 in one window with a sidebar
+**Windows done 2026-09-16.** Compositor in `crates/render`; navigation model
+implemented; findings in `spikes/composite/README.md`. Next: move the glue into
+`crates/app`/`ui`/`browser` and delete the spikes.
+
 The skeleton of the real app. Two layers, a hand-rolled sidebar, keyboard focus
 routing between terminal and browser. When this works, the code moves into
 `crates/` and the spikes are deleted.

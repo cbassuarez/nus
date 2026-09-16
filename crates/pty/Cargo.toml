@@ -7,11 +7,14 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dev-dependencies]
-nus-vt = { path = "../vt" }
-
 [dependencies]
 portable-pty.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+
+[dev-dependencies]
+nus-vt = { path = "../vt" }

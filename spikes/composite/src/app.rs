@@ -46,6 +46,13 @@ pub enum Action {
     ToggleSplit,
     CloseTab,
     ToggleSidebar,
+    TogglePin,
+    Reopen,
+}
+
+pub enum Closed {
+    Term(usize),
+    Web(String),
 }
 
 pub struct PaletteRow {
@@ -66,8 +73,15 @@ pub struct TermPane {
     pub pty: nus_pty::Pty,
     pub grid: GridRenderer,
     pub title: String,
+    pub profile: usize,
     pub rect: Rect,
     pub origin: (f32, f32),
+    /// What has been typed at the current prompt, for the URL rule.
+    pub line: String,
+    /// False once an editing key made `line` unreliable; reset on Enter.
+    pub line_ok: bool,
+    /// Name of the running process when a close is awaiting confirmation.
+    pub confirm_close: Option<String>,
 }
 
 pub struct WebPane {
@@ -85,6 +99,7 @@ pub struct Tab {
     pub left: Pane,
     pub right: Option<Pane>,
     pub focus_right: bool,
+    pub pinned: bool,
 }
 
 impl Tab {
@@ -134,6 +149,10 @@ pub struct App {
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
     pub profiles: Vec<nus_pty::Profile>,
+    /// Tab indices, most recently used first.
+    pub mru: Vec<usize>,
+    pub selected: std::collections::HashSet<usize>,
+    pub closed: Vec<Closed>,
 
     pub mods: ModifiersState,
     pub mouse: (f32, f32),
@@ -192,6 +211,9 @@ impl App {
             palette: None,
             palette_sel: 0,
             profiles: nus_pty::Profile::discover(),
+            mru: vec![0],
+            selected: Default::default(),
+            closed: Vec::new(),
             mods: ModifiersState::empty(),
             mouse: (0.0, 0.0),
             mouse_down_in_web: false,
@@ -207,6 +229,7 @@ impl App {
             left: Pane::Term(term),
             right: web.map(Pane::Web),
             focus_right: false,
+            pinned: false,
         });
         app.layout();
         app.apply_term_resizes(true);
@@ -235,6 +258,7 @@ impl App {
         self.theme.apply(&mut term.palette);
         let (cw, ch) = grid.cell_size();
         term.cell_px = (cw as u16, ch as u16);
+        let profile_index = profile;
         let profile = self.profiles.get(profile).cloned().unwrap_or_else(nus_pty::Profile::default_shell);
         let proxy = self.proxy.clone();
         let pty = nus_pty::Pty::spawn(&profile, cols as u16, rows as u16, move || {
@@ -245,8 +269,12 @@ impl App {
             pty,
             grid,
             title: profile.name,
+            profile: profile_index,
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             origin: (0.0, 0.0),
+            line: String::new(),
+            line_ok: true,
+            confirm_close: None,
         })
     }
 
@@ -586,39 +614,37 @@ impl App {
         }
         self.tabs = tabs;
 
-        // localhost chip.
+        // localhost chip, anchored under the detected line.
         if let Some((row, col, url)) = self.detected.clone() {
-            let paper = t.paper;
             if let Pane::Term(t) = &self.tabs[active].left {
+                if row == t.term.cursor().row && t.line_ok && strict_url(&t.line).is_some() {
+                    // handled by the typed-line hint below
+                } else {
                 let (cw, ch) = t.grid.cell_size();
                 let x = t.origin.0 + col as f32 * cw;
                 let y = t.origin.1 + (row as f32 + 1.0) * ch + self.px(6.0);
-                scene.layer(None);
-                let label = self.label();
-                let strong = self.label_strong();
                 let (k1, k2) = (key("ENTER", false), key("ENTER", true));
-                let parts: [(&str, Style); 6] = [
-                    (url.trim_start_matches("http://"), strong),
-                    ("open split", label),
-                    (&k1, strong),
-                    ("·", label),
-                    ("new tab", label),
-                    (&k2, strong),
-                ];
-                let gap = self.px(14.0);
-                let padx = self.px(12.0);
-                let pady = self.px(8.0);
-                let text_w: f32 = parts.iter().map(|(s, st)| self.fonts.measure(*st, &s.to_uppercase())).sum::<f32>() + gap * 5.0;
-                let box_h = pady * 2.0 + self.px(m::LABEL_PX);
-                let r = Rect::new(x, y, text_w + padx * 2.0, box_h);
-                scene.rect(Rect::new(r.x + self.px(4.0), r.y + self.px(4.0), r.w, r.h), ink);
-                scene.rect(r, paper);
-                scene.outline(r, self.px(m::STRUCTURE), ink);
-                let mut px = r.x + padx;
-                let by = r.y + pady + self.px(m::LABEL_PX) - self.px(2.0);
-                for (s, st) in parts {
-                    px += self.fonts.draw(&mut scene, st, px, by, &s.to_uppercase()) + gap;
+                let short = url.trim_start_matches("http://").to_string();
+                let parts = [(short, true), ("open split".into(), false), (k1, true), ("·".into(), false), ("new tab".into(), false), (k2, true)];
+                self.chip(&mut scene, x, y, &parts);
                 }
+            }
+        }
+        // URL-at-a-prompt hint, under the cursor line.
+        if let Pane::Term(t) = &self.tabs[active].left {
+            if t.line_ok && strict_url(&t.line).is_some() && !(focus_right && has_right) {
+                let (cw, ch) = t.grid.cell_size();
+                let c = t.term.cursor();
+                let x = t.origin.0 + (c.col.saturating_sub(t.line.chars().count())) as f32 * cw;
+                let y = t.origin.1 + (c.row as f32 + 1.0) * ch + self.px(6.0);
+                let parts = [
+                    ("enter".into(), true),
+                    ("opens in browser".into(), false),
+                    ("·".into(), false),
+                    (key("ENTER", false), true),
+                    ("runs in shell".into(), false),
+                ];
+                self.chip(&mut scene, x, y, &parts);
             }
         }
 
@@ -683,6 +709,43 @@ impl App {
         self.scene = scene;
     }
 
+    /// A ruled caps chip with a hard 4px shadow. `parts`: (text, strong).
+    fn chip(&mut self, scene: &mut Scene, x: f32, y: f32, parts: &[(String, bool)]) {
+        let t = self.theme.clone();
+        let label = self.label();
+        let strong = self.label_strong();
+        let gap = self.px(14.0);
+        let padx = self.px(12.0);
+        let pady = self.px(8.0);
+        scene.layer(None);
+        let text_w: f32 = parts
+            .iter()
+            .map(|(s, b)| self.fonts.measure(if *b { strong } else { label }, &s.to_uppercase()))
+            .sum::<f32>()
+            + gap * (parts.len() as f32 - 1.0);
+        let box_h = pady * 2.0 + self.px(m::LABEL_PX);
+        let r = Rect::new(x, y, text_w + padx * 2.0, box_h);
+        scene.rect(Rect::new(r.x + self.px(4.0), r.y + self.px(4.0), r.w, r.h), t.ink);
+        scene.rect(r, t.paper);
+        scene.outline(r, self.px(m::STRUCTURE), t.ink);
+        let mut px = r.x + padx;
+        let by = r.y + pady + self.px(m::LABEL_PX) - self.px(2.0);
+        for (s, b) in parts {
+            px += self.fonts.draw(scene, if *b { strong } else { label }, px, by, &s.to_uppercase()) + gap;
+        }
+    }
+
+    /// Sidebar rows: (pinned tab indices, listed tab indices, pinned row height, list row height, list top y).
+    fn sidebar_geometry(&self) -> (Vec<usize>, Vec<usize>, f32, f32, f32) {
+        let sb = self.sidebar_rect();
+        let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
+        let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned).collect();
+        let listed: Vec<usize> = (0..self.tabs.len()).filter(|&i| !self.tabs[i].pinned).collect();
+        let pinned_h = if pinned.is_empty() { 0.0 } else { self.px(9.0) * 2.0 + self.px(m::UI_PX) + self.px(m::STRUCTURE) };
+        let row_h = self.px(m::ROW_PAD_Y) * 2.0 + self.px(m::UI_PX) + self.px(8.0) + self.px(m::PREVIEW_H) + self.px(m::HAIRLINE);
+        (pinned, listed, pinned_h, row_h, sb.y + space_row + pinned_h)
+    }
+
     fn draw_sidebar(&mut self, scene: &mut Scene) {
         let t = self.theme.clone();
         let ink = t.ink;
@@ -701,18 +764,48 @@ impl App {
         self.fonts.draw(scene, dimmed, sb.x + cell_w + self.px(10.0), sb.y + self.px(19.0), "+ SPACE");
         scene.hline(sb.x, sb.y + row_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
 
-        // Tab rows.
-        let mut y = sb.y + row_h;
+        // Pinned row: compact cells, one per pinned tab.
+        let (pinned, listed, pinned_h, row_h, list_y) = self.sidebar_geometry();
         let pad_x = self.px(m::ROW_PAD_X);
         let pad_y = self.px(m::ROW_PAD_Y);
         let preview_h = self.px(m::PREVIEW_H);
         let ui = self.ui();
         let ui_strong = self.ui_strong();
         let tabs = std::mem::take(&mut self.tabs);
-        for (i, tab) in tabs.iter().enumerate() {
-            let row_h = pad_y * 2.0 + self.px(m::UI_PX) + self.px(8.0) + preview_h + self.px(m::HAIRLINE);
+        if !pinned.is_empty() {
+            let py = sb.y + row_h;
+            let cell_w = (sb.w / pinned.len() as f32).floor();
+            for (k, &i) in pinned.iter().enumerate() {
+                let cx = sb.x + k as f32 * cell_w;
+                let cell = Rect::new(cx, py, cell_w, pinned_h - self.px(m::STRUCTURE));
+                let sel_fill = i == self.active;
+                if sel_fill {
+                    scene.rect(cell, ink);
+                }
+                let st = Style { color: if sel_fill { t.paper } else { ink }, ..ui_strong };
+                let title = self.fit(st, &tabs[i].title(), cell_w - self.px(20.0) - self.px(28.0));
+                let base = py + self.px(9.0) + self.px(m::UI_PX) - self.px(3.0);
+                let mut x = cx + self.px(10.0);
+                x += self.fonts.draw(scene, st, x, base, &format!("{:02}", i + 1)) + self.px(8.0);
+                self.fonts.draw(scene, st, x, base, &title);
+                if self.selected.contains(&i) {
+                    scene.outline(cell, self.px(m::STRUCTURE), ink);
+                }
+                if k + 1 < pinned.len() {
+                    scene.vline(cx + cell_w, py, pinned_h, self.px(m::HAIRLINE), ink);
+                }
+            }
+            scene.hline(sb.x, py + pinned_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
+        }
+        // Tab rows.
+        let mut y = list_y;
+        for &i in &listed {
+            let tab = &tabs[i];
             if i == self.active {
                 scene.rect(Rect::new(sb.x, y, sb.w, row_h), t.tint);
+            }
+            if self.selected.contains(&i) {
+                scene.outline(Rect::new(sb.x, y, sb.w, row_h - self.px(m::HAIRLINE)), self.px(m::STRUCTURE), ink);
             }
             let base = y + pad_y + self.px(m::UI_PX) - self.px(3.0);
             let mut x = sb.x + pad_x;
@@ -767,7 +860,7 @@ impl App {
         scene.hline(sb.x, fy, sb.w, self.px(m::STRUCTURE), ink);
         let base = fy + pad_y + self.px(m::LABEL_PX) - self.px(2.0);
         self.fonts.draw(scene, label, sb.x + pad_x, base, "+ NEW TAB");
-        let kt = key("T", false);
+        let kt = key("T", true);
         let kw = self.fonts.measure(strong, &kt);
         self.fonts.draw(scene, strong, sb.right() - pad_x - kw, base, &kt);
         let _ = ui;
@@ -790,6 +883,18 @@ impl App {
                 self.fonts.draw(scene, label, r.right() - self.px(m::HEADER_PAD_X) - dw, base, &dims);
                 let _ = x;
                 scene.hline(r.x, r.y + hh - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
+                if let Some(proc_name) = p.confirm_close.clone() {
+                    let cr = Rect::new(r.x, r.y + hh, r.w, hh);
+                    scene.rect(cr, ink);
+                    let inv = Style { color: t.paper, ..strong };
+                    let inv_l = Style { color: t.paper, ..label };
+                    let by = cr.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
+                    let mut x = cr.x + self.px(m::HEADER_PAD_X);
+                    x += self.fonts.draw(scene, inv, x, by, &format!("{} IS RUNNING", proc_name.to_uppercase())) + self.px(14.0);
+                    x += self.fonts.draw(scene, inv_l, x, by, "CLOSE ANYWAY?") + self.px(14.0);
+                    x += self.fonts.draw(scene, inv, x, by, "ENTER") + self.px(14.0);
+                    self.fonts.draw(scene, inv_l, x, by, "· ESC CANCELS");
+                }
                 let clip = Rect::new(r.x, r.y + hh, r.w, r.h - hh);
                 scene.layer(Some(clip));
                 p.grid.draw(scene, &mut self.fonts, &p.term, p.origin, focused);
@@ -882,12 +987,17 @@ impl App {
                         rows.push(row(&format!("{:02}", i + 1), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
                     }
                 }
-                let actions: [(String, Action); 5] = [
-                    (format!("new terminal tab · {}", key("T", false)), Action::NewTerminal(0)),
-                    (format!("new browser tab · {} then a URL", key("T", false)), Action::NewBrowser(String::new())),
+                let actions: [(String, Action); 7] = [
+                    (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(0)),
+                    (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
-                    (format!("close tab · {}", key("W", false)), Action::CloseTab),
+                    (format!("close tab · {}", key("W", true)), Action::CloseTab),
                     (format!("sidebar · {}", key("S", true)), Action::ToggleSidebar),
+                    (
+                        format!("{} this tab", if self.tabs.get(self.active).is_some_and(|t| t.pinned) { "unpin" } else { "pin" }),
+                        Action::TogglePin,
+                    ),
+                    (format!("reopen closed tab · {}", key("Z", true)), Action::Reopen),
                 ];
                 for (label, a) in actions {
                     if hit(&label) {
@@ -930,18 +1040,18 @@ impl App {
 
     fn run(&mut self, action: Action) {
         match action {
-            Action::SwitchTab(i) => {
-                if i < self.tabs.len() {
-                    self.active = i;
-                    self.layout();
-                }
-            }
+            Action::SwitchTab(i) => self.activate(i),
             Action::NewTerminal(p) => self.new_tab(p),
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
             Action::NewBrowser(url) => self.open_url(&url, true),
             Action::OpenInPane(url) => self.open_url(&url, false),
             Action::ToggleSplit => self.toggle_split(),
-            Action::CloseTab => self.close_tab(),
+            Action::CloseTab => self.close_tabs(false),
+            Action::TogglePin => {
+                let t = &mut self.tabs[self.active];
+                t.pinned = !t.pinned;
+            }
+            Action::Reopen => self.reopen_closed(),
             Action::ToggleSidebar => {
                 self.sidebar = !self.sidebar;
                 self.layout();
@@ -952,14 +1062,14 @@ impl App {
 
     // --- input -----------------------------------------------------------
 
-    fn ctrl(&self) -> bool {
-        self.mods.control_key() || self.mods.super_key()
-    }
-
     pub fn key(&mut self, ev: &WKeyEvent) {
         let pressed = ev.state == ElementState::Pressed;
-        let ctrl = self.ctrl();
+        let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
+        let alt = self.mods.alt_key();
+        let sup = self.mods.super_key();
+        // App chords: ⌘ on macOS, Ctrl+Shift elsewhere — never reaches the shell.
+        let app = if cfg!(target_os = "macos") { sup } else { ctrl && shift };
 
         // Palette owns the keyboard while open.
         if let Some((_, input)) = self.palette.as_mut() {
@@ -976,70 +1086,96 @@ impl App {
                 WKey::Named(NamedKey::ArrowDown) => self.palette_sel += 1,
                 WKey::Named(NamedKey::ArrowUp) => self.palette_sel = self.palette_sel.saturating_sub(1),
                 WKey::Named(NamedKey::Space) => input.push(' '),
-                WKey::Character(c) if !ctrl => {
+                WKey::Character(c) if app => {
+                    if c.eq_ignore_ascii_case("k") || c.eq_ignore_ascii_case("t") || c.eq_ignore_ascii_case("l") {
+                        self.palette = None;
+                    }
+                }
+                WKey::Character(c) if !ctrl && !sup => {
                     input.push_str(c);
                     self.palette_sel = 0;
                 }
-                WKey::Character(c) if ctrl && c.eq_ignore_ascii_case("k") => self.palette = None,
                 _ => {}
             }
             self.dirty = true;
             return;
         }
 
-        // App chords.
-        if pressed && ctrl {
-            if let WKey::Character(c) = &ev.logical_key {
-                let c = c.to_lowercase();
-                match c.as_str() {
-                    "k" => {
-                        self.open_palette(PaletteMode::Go);
-                        return;
-                    }
-                    "l" => {
-                        self.open_palette(PaletteMode::Url);
-                        return;
-                    }
-                    "s" if shift => {
-                        self.sidebar = !self.sidebar;
-                        self.layout();
-                        return;
-                    }
-                    "t" => {
-                        self.open_palette(PaletteMode::New);
-                        return;
-                    }
-                    "w" => {
-                        self.close_tab();
-                        return;
-                    }
-                    "d" if shift => {
-                        self.toggle_split();
-                        return;
-                    }
-                    d if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
-                        let n = (d.as_bytes()[0] - b'1') as usize;
-                        if n < self.tabs.len() {
-                            self.active = n;
-                            self.layout();
+        // A close confirmation owns Enter / Esc.
+        if pressed {
+            if let Some(Pane::Term(t)) = self.tabs.get_mut(self.active).map(|t| t.focused()) {
+                if t.confirm_close.is_some() {
+                    match ev.logical_key {
+                        WKey::Named(NamedKey::Enter) => {
+                            t.confirm_close = None;
+                            self.close_tabs(true);
                         }
-                        return;
+                        WKey::Named(NamedKey::Escape) => t.confirm_close = None,
+                        _ => {}
+                    }
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
+
+        if pressed && app {
+            if let WKey::Character(c) = &ev.logical_key {
+                match c.to_lowercase().as_str() {
+                    "t" => return self.open_palette(PaletteMode::New),
+                    "k" => return self.open_palette(PaletteMode::Go),
+                    "l" => return self.open_palette(PaletteMode::Url),
+                    "w" => return self.close_tabs(false),
+                    "z" => return self.reopen_closed(),
+                    "d" => return self.toggle_split(),
+                    "s" => {
+                        self.sidebar = !self.sidebar;
+                        return self.layout();
                     }
                     _ => {}
                 }
             }
             if let WKey::Named(NamedKey::Enter) = ev.logical_key {
                 if let Some((_, _, url)) = self.detected.clone() {
-                    self.open_url(&url, shift);
+                    self.open_url(&url, true);
                 }
                 return;
             }
-            if let WKey::Named(NamedKey::Tab) = ev.logical_key {
-                if !self.tabs.is_empty() {
-                    self.active = (self.active + 1) % self.tabs.len();
-                    self.layout();
+        }
+
+        // Plain Ctrl chords shells don't use: tab by number, MRU, prev/next.
+        let tab_mod = if cfg!(target_os = "macos") { sup } else { ctrl && !shift };
+        if pressed && tab_mod {
+            match &ev.logical_key {
+                WKey::Character(d) if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
+                    let n = (d.as_bytes()[0] - b'1') as usize;
+                    if n < self.tabs.len() {
+                        self.activate(n);
+                    }
+                    return;
                 }
-                return;
+                WKey::Character(c) if c == "`" => {
+                    if let Some(&prev) = self.mru.get(1) {
+                        self.activate(prev);
+                    }
+                    return;
+                }
+                WKey::Named(NamedKey::PageUp) => {
+                    let n = self.tabs.len();
+                    return self.activate((self.active + n - 1) % n);
+                }
+                WKey::Named(NamedKey::PageDown) => {
+                    let n = self.tabs.len();
+                    return self.activate((self.active + 1) % n);
+                }
+                WKey::Named(NamedKey::Enter) => {
+                    if let Some((_, _, url)) = self.detected.clone() {
+                        self.open_url(&url, false);
+                        return;
+                    }
+                    // Otherwise falls through: Ctrl+Enter at a URL line runs it in the shell.
+                }
+                _ => {}
             }
         }
 
@@ -1054,10 +1190,62 @@ impl App {
                 };
                 let mut mods = Mods::empty();
                 mods.set(Mods::SHIFT, shift);
-                mods.set(Mods::CTRL, self.mods.control_key());
-                mods.set(Mods::ALT, self.mods.alt_key());
-                mods.set(Mods::SUPER, self.mods.super_key());
-                let Some(key) = vt_key(&ev.logical_key) else { return };
+                mods.set(Mods::CTRL, ctrl);
+                mods.set(Mods::ALT, alt);
+                mods.set(Mods::SUPER, sup);
+                let Some(key) = vt_key(&ev.logical_key) else {
+                    // Modifier keys are not editing keys; anything else unknown is.
+                    let modifier = matches!(
+                        ev.logical_key,
+                        WKey::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::CapsLock | NamedKey::NumLock | NamedKey::ScrollLock | NamedKey::Fn)
+                    );
+                    if pressed && !modifier {
+                        t.line_ok = false;
+                    }
+                    return;
+                };
+
+                // The URL-at-a-prompt rule: a whole-line URL at a fresh prompt
+                // opens in the split instead of running. Ctrl+Enter runs it.
+                if pressed {
+                    match (key, ctrl || alt || sup) {
+                        (Key::Enter, false) => {
+                            if t.line_ok {
+                                if let Some(url) = strict_url(&t.line) {
+                                    let clear: &[u8] = if t.title.to_lowercase().contains("powershell")
+                                        || t.title.to_lowercase().contains("pwsh")
+                                        || t.title.to_lowercase() == "cmd"
+                                    {
+                                        b"\x1b"
+                                    } else {
+                                        b"\x15"
+                                    };
+                                    let _ = t.pty.write(clear);
+                                    t.line.clear();
+                                    t.line_ok = true;
+                                    self.open_url(&url, false);
+                                    return;
+                                }
+                            }
+                            t.line.clear();
+                            t.line_ok = true;
+                        }
+                        (Key::Enter, true) => {
+                            t.line.clear();
+                            t.line_ok = true;
+                        }
+                        (Key::Char(c), false) => t.line.push(c),
+                        (Key::Backspace, false) => {
+                            t.line.pop();
+                        }
+                        _ => t.line_ok = false,
+                    }
+                }
+                let mods = if key == Key::Enter && ctrl && strict_url(&t.line).is_some() {
+                    Mods::empty() // run the URL line in the shell as plain Enter
+                } else {
+                    mods
+                };
                 let bytes = input::encode(key, mods, action, t.term.modes(), t.term.keyboard_mode());
                 if bytes.is_empty() {
                     return;
@@ -1068,6 +1256,26 @@ impl App {
                 let _ = t.pty.write(&bytes);
             }
             Pane::Web(w) => {
+                // Chrome-compatible keys while a browser pane is focused.
+                if pressed {
+                    match (&ev.logical_key, ctrl, alt) {
+                        (WKey::Character(c), true, false) if c.eq_ignore_ascii_case("l") => {
+                            return self.open_palette(PaletteMode::Url);
+                        }
+                        (WKey::Character(c), true, false) if c.eq_ignore_ascii_case("r") => return w.tab.reload(),
+                        (WKey::Named(NamedKey::F5), _, _) => return w.tab.reload(),
+                        (WKey::Named(NamedKey::ArrowLeft), false, true) => return w.tab.back(),
+                        (WKey::Named(NamedKey::ArrowRight), false, true) => return w.tab.forward(),
+                        (WKey::Character(c), true, false) if c == "=" || c == "+" => return w.tab.zoom(1),
+                        (WKey::Character(c), true, false) if c == "-" => return w.tab.zoom(-1),
+                        (WKey::Character(c), true, false) if c == "0" => return w.tab.zoom(0),
+                        (WKey::Named(NamedKey::F12), _, _) => {
+                            tracing::info!("devtools: not composited in this spike (see README)");
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 let flags = cef_mods(self.mods);
                 let vk = vk_code(&ev.physical_key, &ev.logical_key);
                 let mut e = cef::KeyEvent {
@@ -1082,7 +1290,7 @@ impl App {
                     e.type_ = cef::KeyEventType::RAWKEYDOWN;
                     w.tab.key(&e);
                     if let Some(text) = &ev.text {
-                        if !ctrl || self.mods.alt_key() {
+                        if !ctrl || alt {
                             for ch in text.encode_utf16() {
                                 let mut c = cef::KeyEvent { ..e };
                                 c.type_ = cef::KeyEventType::CHAR;
@@ -1099,6 +1307,33 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Make tab `i` active and record it as most recently used.
+    fn activate(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        self.active = i;
+        self.mru.retain(|&t| t != i);
+        self.mru.insert(0, i);
+        self.layout();
+    }
+
+    /// Keep `mru`/`selected` valid after `tabs[i]` was removed.
+    fn tab_removed(&mut self, i: usize) {
+        self.mru.retain(|&t| t != i);
+        for t in self.mru.iter_mut() {
+            if *t > i {
+                *t -= 1;
+            }
+        }
+        self.selected = self
+            .selected
+            .iter()
+            .filter(|&&t| t != i)
+            .map(|&t| if t > i { t - 1 } else { t })
+            .collect();
     }
 
     fn palette_commit(&mut self) {
@@ -1119,8 +1354,9 @@ impl App {
                     left: Pane::Web(w),
                     right: None,
                     focus_right: false,
+                    pinned: false,
                 });
-                self.active = self.tabs.len() - 1;
+                self.activate(self.tabs.len() - 1);
             }
         } else {
             let tab = &mut self.tabs[self.active];
@@ -1144,19 +1380,66 @@ impl App {
                 left: Pane::Term(t),
                 right: None,
                 focus_right: false,
+                pinned: false,
             });
-            self.active = self.tabs.len() - 1;
-            self.layout();
+            self.activate(self.tabs.len() - 1);
         }
     }
 
-    fn close_tab(&mut self) {
-        if self.tabs.len() <= 1 {
-            return;
+    /// Close the selection (or the active tab). Unless `force`, a terminal
+    /// with a foreground process asks first.
+    fn close_tabs(&mut self, force: bool) {
+        let mut targets: Vec<usize> = if self.selected.is_empty() {
+            vec![self.active]
+        } else {
+            let mut v: Vec<usize> = self.selected.iter().copied().collect();
+            if !v.contains(&self.active) {
+                v.push(self.active);
+            }
+            v
+        };
+        targets.sort_unstable();
+        targets.dedup();
+        if targets.len() >= self.tabs.len() {
+            // Never close the last tab; keep one.
+            targets.retain(|&t| t != self.active);
+            if targets.is_empty() {
+                return;
+            }
         }
-        self.tabs.remove(self.active);
-        self.active = self.active.min(self.tabs.len() - 1);
-        self.layout();
+        if !force {
+            for &i in &targets {
+                if let Pane::Term(t) = &mut self.tabs[i].left {
+                    if let Some(p) = t.pty.foreground_process() {
+                        self.active = i;
+                        if let Pane::Term(t) = &mut self.tabs[i].left {
+                            t.confirm_close = Some(p);
+                        }
+                        self.dirty = true;
+                        return;
+                    }
+                }
+            }
+        }
+        for &i in targets.iter().rev() {
+            let tab = self.tabs.remove(i);
+            self.closed.push(match &tab.left {
+                Pane::Term(t) => Closed::Term(t.profile),
+                Pane::Web(w) => Closed::Web(w.tab.shared.borrow().url.clone()),
+            });
+            self.tab_removed(i);
+        }
+        self.selected.clear();
+        let next = self.mru.first().copied().unwrap_or(0).min(self.tabs.len() - 1);
+        self.activate(next);
+    }
+
+    fn reopen_closed(&mut self) {
+        match self.closed.pop() {
+            Some(Closed::Term(p)) => self.new_tab(p),
+            Some(Closed::Web(url)) => self.open_url(&url, true),
+            None => {}
+        }
     }
 
     fn toggle_split(&mut self) {
@@ -1220,22 +1503,36 @@ impl App {
             return;
         }
 
-        // Sidebar: tab rows.
+        // Sidebar: pinned cells, tab rows, footer. Ctrl-click selects, Shift-click ranges.
         if pressed && button == MouseButton::Left && self.sidebar && self.sidebar_rect().contains(x, y) {
             let sb = self.sidebar_rect();
-            let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
-            let row_h = self.px(m::ROW_PAD_Y) * 2.0 + self.px(m::UI_PX) + self.px(8.0) + self.px(m::PREVIEW_H) + self.px(m::HAIRLINE);
+            let (pinned, listed, pinned_h, row_h, list_y) = self.sidebar_geometry();
             let foot = self.px(m::ROW_PAD_Y) * 2.0 + self.px(m::LABEL_PX);
             if y > sb.bottom() - foot {
                 self.open_palette(PaletteMode::New);
                 return;
             }
-            if y > sb.y + space_row {
-                let i = ((y - sb.y - space_row) / row_h) as usize;
-                if i < self.tabs.len() {
-                    self.active = i;
-                    self.layout();
+            let hit = if !pinned.is_empty() && y >= list_y - pinned_h && y < list_y {
+                let k = ((x - sb.x) / (sb.w / pinned.len() as f32).floor()) as usize;
+                pinned.get(k).copied()
+            } else if y >= list_y {
+                listed.get(((y - list_y) / row_h) as usize).copied()
+            } else {
+                None
+            };
+            if let Some(i) = hit {
+                if self.mods.control_key() || self.mods.super_key() {
+                    if !self.selected.remove(&i) {
+                        self.selected.insert(i);
+                    }
+                } else if self.mods.shift_key() {
+                    let (a, b) = (self.active.min(i), self.active.max(i));
+                    self.selected.extend(a..=b);
+                } else {
+                    self.selected.clear();
+                    self.activate(i);
                 }
+                self.dirty = true;
             }
             return;
         }
@@ -1376,6 +1673,49 @@ fn detect_localhost(term: &Term) -> Option<(usize, usize, String)> {
         }
     }
     None
+}
+
+/// The whole line is a URL: a scheme, `localhost[:port]`, or `host.tld` with a
+/// known TLD. Bare words and anything with shell syntax never qualify.
+fn strict_url(line: &str) -> Option<String> {
+    let s = line.trim();
+    if s.is_empty() || s.contains(char::is_whitespace) || s.contains(|c| "|&;<>$`'\"()".contains(c)) {
+        return None;
+    }
+    let lower = s.to_lowercase();
+    if let Some(rest) = lower.split_once("://").map(|(scheme, rest)| (scheme, rest)) {
+        let (scheme, rest) = rest;
+        if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphabetic()) && !rest.is_empty() {
+            return Some(s.to_string());
+        }
+        return None;
+    }
+    let host = lower.split(['/', '?', '#']).next().unwrap_or("");
+    let (host, port) = match host.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (host, None),
+    };
+    if port.is_some_and(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    if host == "localhost" || host == "127.0.0.1" {
+        return Some(format!("http://{s}"));
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|l| l.is_empty() || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+        return None;
+    }
+    const TLDS: &[&str] = &[
+        "com", "org", "net", "io", "dev", "rs", "sh", "app", "ai", "co", "me", "gg", "tv", "edu", "gov",
+        "info", "xyz", "uk", "de", "fr", "ca", "us", "jp", "cn", "nl", "se", "no", "fi", "es", "it",
+        "ch", "at", "au", "nz", "br", "mx", "in", "ru", "pl", "cz", "eu", "fm", "to", "ly", "is", "so",
+        "cc", "ws", "page", "site", "tech", "cloud", "design", "studio", "zone", "run", "wiki", "news",
+    ];
+    let tld = labels.last().unwrap();
+    if !TLDS.contains(tld) && !(labels[0] == "www" && tld.len() >= 2) {
+        return None;
+    }
+    Some(format!("http://{s}"))
 }
 
 fn vt_key(k: &WKey) -> Option<Key> {

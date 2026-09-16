@@ -268,3 +268,65 @@ impl Profile {
         out
     }
 }
+
+impl Pty {
+    /// The shell's process id.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
+    /// Name of a process the shell is currently running (its first child),
+    /// if any — the signal that closing this tab would kill real work.
+    pub fn foreground_process(&self) -> Option<String> {
+        let pid = self.pid()?;
+        child_process_name(pid)
+    }
+}
+
+#[cfg(windows)]
+fn child_process_name(parent: u32) -> Option<String> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = None;
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                if entry.th32ParentProcessID == parent {
+                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+                    let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                    // conhost is ConPTY's own helper, not user work.
+                    if !name.eq_ignore_ascii_case("conhost.exe") {
+                        found = Some(name.trim_end_matches(".exe").to_string());
+                        break;
+                    }
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snap);
+        found
+    }
+}
+
+#[cfg(not(windows))]
+fn child_process_name(parent: u32) -> Option<String> {
+    // `pgrep -P` is on every Linux and macOS box; a proper /proc walk is v1.
+    let out = std::process::Command::new("pgrep")
+        .args(["-P", &parent.to_string(), "-l"])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .map(|s| s.to_string())
+}

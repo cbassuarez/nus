@@ -367,4 +367,23 @@ impl BrowserTab {
     pub fn back(&self) {
         self.browser.go_back();
     }
+
+    pub fn forward(&self) {
+        self.browser.go_forward();
+    }
+
+    pub fn reload(&self) {
+        self.browser.reload();
+    }
+
+    /// Zoom by `steps` (Chrome-style 0.5 zoom-level steps); 0 resets.
+    pub fn zoom(&self, steps: i32) {
+        if let Some(h) = self.host() {
+            if steps == 0 {
+                h.set_zoom_level(0.0);
+            } else {
+                h.set_zoom_level(h.zoom_level() + steps as f64 * 0.5);
+            }
+        }
+    }
 }
