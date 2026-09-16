@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #c8102e; } a:hover { color: #ece7da; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; font-style: italic; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .row { display: flex; flex-direction: row; gap: 18px; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .k { width: 150px; flex-shrink: 0; color: #8a857a; }
+    .v { flex-grow: 1; display: flex; flex-direction: row; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .chip { padding: 5px 10px; border: 1px solid #ece7da; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .chip.on { background: #ece7da; color: #141414; }
+    .nav { width: 220px; flex-shrink: 0; border-right: 1.5px solid #ece7da; display: flex; flex-direction: column; }
+    .nav > div { padding: 11px 18px; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .nav .grp { padding: 14px 18px 4px; color: #8a857a; border-bottom: none; font-size: 10px; }
+    .nav .on { background: #ece7da; color: #141414; }
+    .slider { width: 160px; height: 2px; background: rgba(236,231,218,0.18); position: relative; }
+    .slider > i { position: absolute; left: 0; top: 0; height: 2px; background: #c8102e; }
+    .slider > b { position: absolute; top: -4px; width: 10px; height: 10px; background: #ece7da; }
+    .sw { width: 22px; height: 22px; box-sizing: border-box; }
+    .sw.on { outline: 1.5px solid #ece7da; outline-offset: 3px; }
+    .term { font-size: 15px; line-height: 1.5; padding: 14px 16px; background: #1b1a1a; outline: 1px solid rgba(236,231,218,0.18); }
+  </style>
+</helmet>
+<!-- CURSOR — the terminal cursor and the pointer, each with a live line. -->
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: #141414; color: #ece7da; font-size: 13px; line-height: 1.5; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid #ece7da; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div><div>03 settings</div>
+  </div>
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0;">
+    <div class="nav cap">
+      <div class="grp">look</div><div>surface</div><div>theme</div><div>rules</div><div class="on">cursor</div>
+      <div class="grp">feel</div><div>motion</div><div>sound</div><div>startup</div>
+      <div class="grp">work</div><div>sidebar</div><div>tabs</div><div>terminal</div><div>browser</div><div>assistants</div><div>keys</div>
+      <div style="flex-grow: 1; border-bottom: none;"></div><div class="dim" style="border-top: 1.5px solid #ece7da;">~/.config/nus/init.luau</div>
+    </div>
+
+    <div style="flex-grow: 1; display: flex; flex-direction: row; min-width: 0;">
+      <div style="width: 680px; flex-shrink: 0; padding: 28px 40px; display: flex; flex-direction: column;">
+        <div style="display: flex; flex-direction: row; align-items: baseline; gap: 16px; margin-bottom: 14px;">
+          <div class="serif" style="font-size: 34px; line-height: 1;">cursor</div>
+          <div class="cap dim">in the shell, and the pointer over the chrome</div>
+        </div>
+        <div class="cap dim" style="padding: 6px 0;">terminal</div>
+        <div class="row"><div class="k cap">shape</div><div class="v"><div class="chip on">block</div><div class="chip">beam</div><div class="chip">underline</div><div class="chip">hollow when unfocused</div></div></div>
+        <div class="row"><div class="k cap">blink</div><div class="v"><div class="chip on">never</div><div class="chip">after 2s idle</div><div class="chip">always</div><div class="cap dim" style="margin-left: 8px;">period</div><div class="slider" style="width: 120px;"><i style="width: 50%;"></i><b style="left: 50%;"></b></div><div class="cap dim">530ms</div></div></div>
+        <div class="row"><div class="k cap">colour</div><div class="v"><div class="chip on">ink</div><div class="chip">signal</div><div class="chip">tab's own</div><div class="sw" style="background: #d9a400;"></div><div class="sw" style="background: #1a7f8a;"></div><div class="chip" style="padding: 4px 8px; letter-spacing: 0;">#…</div><div class="cap dim">text under a block cursor inverts</div></div></div>
+        <div class="row"><div class="k cap">motion</div><div class="v"><div class="chip on">jump</div><div class="chip">glide</div><div class="chip">comet</div><div class="cap dim" style="margin-left: 8px;">a short ink trail as it moves · follows the motion register</div></div></div>
+        <div class="row"><div class="k cap">width</div><div class="v"><div class="cap dim">beam · underline</div><div class="slider" style="width: 120px;"><i style="width: 25%;"></i><b style="left: 25%;"></b></div><div class="cap dim">2px</div></div></div>
+        <div class="cap dim" style="padding: 18px 0 6px;">pointer</div>
+        <div class="row"><div class="k cap">over the chrome</div><div class="v"><div class="chip on">system</div><div class="chip">ink arrow</div><div class="chip">signal dot</div><div class="cap dim" style="margin-left: 8px;">pages and shells keep the system pointer</div></div></div>
+        <div class="row" style="border-bottom: none;"><div class="k cap">hide while typing</div><div class="v"><div class="chip on">yes</div><div class="chip">no</div></div></div>
+      </div>
+      <div style="flex-grow: 1; border-left: 1px solid rgba(236,231,218,0.18); padding: 28px 32px; display: flex; flex-direction: column; gap: 14px;">
+        <div class="cap dim">live</div>
+        <div class="term">PS C:\Users\seb&gt; cargo test -p nus-vt<span style="display: inline-block; width: 9px; height: 18px; background: #ece7da; vertical-align: -3px; margin-left: 1px;"></span></div>
+        <div class="term" style="opacity: 0.7;">seb@ubuntu:~$ vim notes.md<span style="display: inline-block; width: 9px; height: 18px; outline: 1px solid #ece7da; vertical-align: -3px; margin-left: 1px;"></span> <span class="cap dim">← unfocused</span></div>
+        <div class="term">$ git commit -m "<span style="display: inline-block; width: 2px; height: 18px; background: #c8102e; vertical-align: -3px;"></span> <span class="cap dim">← beam · signal</span></div>
+        <div class="cap dim" style="margin-top: auto;">the cursor is drawn by nus, not the shell: shape and colour never wait on the program, and the trail is ours.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

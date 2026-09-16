@@ -1,0 +1,106 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #c8102e; } a:hover { color: #ece7da; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; font-style: italic; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .chip { padding: 5px 10px; border: 1px solid #ece7da; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .chip.on { background: #ece7da; color: #141414; }
+    .nav { width: 220px; flex-shrink: 0; border-right: 1.5px solid #ece7da; display: flex; flex-direction: column; }
+    .nav > div { padding: 11px 18px; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .nav .grp { padding: 14px 18px 4px; color: #8a857a; border-bottom: none; font-size: 10px; }
+    .nav .on { background: #ece7da; color: #141414; }
+    .cue { border: 1px solid rgba(236,231,218,0.18); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+    .cue .n { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; display: flex; justify-content: space-between; }
+    .cue svg { width: 100%; height: 26px; }
+    .ev { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(236,231,218,0.12); }
+    .ev .k { width: 170px; color: #8a857a; }
+    .slider { width: 160px; height: 2px; background: rgba(236,231,218,0.18); position: relative; }
+    .slider > i { position: absolute; left: 0; top: 0; height: 2px; background: #c8102e; }
+    .slider > b { position: absolute; top: -4px; width: 10px; height: 10px; background: #ece7da; }
+  </style>
+</helmet>
+<!-- SOUND — cuelume's seventeen cues, synthesized in the app (no files), each drawn as
+     the shape it is. Events on the right pick a cue or stay quiet; rules.luau can
+     override any of it with on_event. -->
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: #141414; color: #ece7da; font-size: 13px; line-height: 1.5; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid #ece7da; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div><div>03 settings</div>
+  </div>
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0;">
+    <div class="nav cap">
+      <div class="grp">look</div><div>surface</div><div>theme</div><div>rules</div><div>cursor</div>
+      <div class="grp">feel</div><div>motion</div><div class="on">sound</div><div>startup</div>
+      <div class="grp">work</div><div>sidebar</div><div>tabs</div><div>terminal</div><div>browser</div><div>assistants</div><div>keys</div>
+      <div style="flex-grow: 1; border-bottom: none;"></div><div class="dim" style="border-top: 1.5px solid #ece7da;">~/.config/nus/sound.luau</div>
+    </div>
+
+    <div style="flex-grow: 1; display: flex; flex-direction: row; min-width: 0;">
+      <div style="width: 640px; flex-shrink: 0; padding: 28px 32px 0 40px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; flex-direction: row; align-items: baseline; gap: 16px;">
+          <div class="serif" style="font-size: 34px; line-height: 1;">sound</div>
+          <div class="cap dim">seventeen cues · cuelume, synthesized in the app</div>
+        </div>
+        <div style="display: flex; gap: 18px; align-items: center;">
+          <div class="chip on">on</div><div class="chip">off</div>
+          <div class="cap dim">volume</div><div class="slider"><i style="width: 60%;"></i><b style="left: 60%;"></b></div>
+          <div class="cap dim">quiet after</div><div class="chip">22:00</div>
+        </div>
+        <div class="cap dim">the palette · click to hear</div>
+        <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;">
+          <div class="cue"><div class="n"><span>chime</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M2 20 Q10 4 18 20 T34 20 M40 22 Q52 2 64 22 T88 22" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">soft two-note bell</div></div>
+          <div class="cue"><div class="n"><span>sparkle</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M4 22l6-16 6 16M28 22l5-18 5 18M52 22l4-20 4 20M76 22l3-22 3 22" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">four-note twinkle</div></div>
+          <div class="cue"><div class="n"><span>droplet</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M4 4 C30 4 50 22 96 22" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">glides down</div></div>
+          <div class="cue"><div class="n"><span>bloom</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M2 22 C30 22 40 4 50 4 S70 22 98 22" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">warm swell</div></div>
+          <div class="cue"><div class="n"><span>whisper</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M2 14 q4-6 8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0" fill="none" stroke="#8a857a" stroke-width="1"/></svg><div class="dim" style="font-size: 10px;">hush, falling</div></div>
+          <div class="cue"><div class="n"><span>tick</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M46 22V4M50 22V8" stroke="#ece7da" stroke-width="1.6"/></svg><div class="dim" style="font-size: 10px;">crisp, instant</div></div>
+          <div class="cue"><div class="n"><span>press</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M40 22V10h12v12" fill="none" stroke="#ece7da" stroke-width="1.6"/></svg><div class="dim" style="font-size: 10px;">muted knock</div></div>
+          <div class="cue"><div class="n"><span>release</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M44 22V4l8 6" fill="none" stroke="#ece7da" stroke-width="1.6"/></svg><div class="dim" style="font-size: 10px;">springy tick</div></div>
+          <div class="cue"><div class="n"><span>toggle</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M36 22V6M40 22V12M58 22V8M62 22V14" stroke="#ece7da" stroke-width="1.6"/></svg><div class="dim" style="font-size: 10px;">click-clack</div></div>
+          <div class="cue"><div class="n"><span>success</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M10 20 Q22 6 34 20 M38 18 Q50 2 62 18 M66 16 Q78 0 90 16" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">warm confirmation</div></div>
+          <div class="cue"><div class="n"><span>error</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M20 22V12h8v10M40 6 C60 6 70 22 96 22" fill="none" stroke="#c8102e" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">knock, refusal</div></div>
+          <div class="cue"><div class="n"><span>page</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M4 14 q6-8 12 0 t12 0 t12 0 t12 0 M70 22V4" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">papery flick</div></div>
+          <div class="cue"><div class="n"><span>loading</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M4 22 C40 22 60 4 96 4" fill="none" stroke="#8a857a" stroke-width="1.2" stroke-dasharray="3 3"/></svg><div class="dim" style="font-size: 10px;">rising, unresolved</div></div>
+          <div class="cue"><div class="n"><span>ready</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M4 22 C40 22 60 6 80 6 h16" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">lock-on, resolve</div></div>
+          <div class="cue"><div class="n"><span>pulse</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M30 14h10l4-10 6 20 4-10h16" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">compact chirp</div></div>
+          <div class="cue"><div class="n"><span>scan</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M20 22V12M40 22V8M60 22V4" stroke="#ece7da" stroke-width="1.6"/></svg><div class="dim" style="font-size: 10px;">three-step locator</div></div>
+          <div class="cue"><div class="n"><span>arrival</span><span class="dim">▷</span></div><svg viewBox="0 0 100 26"><path d="M4 22 Q50 22 50 4 Q50 22 96 22" fill="none" stroke="#ece7da" stroke-width="1.2"/></svg><div class="dim" style="font-size: 10px;">rising portal</div></div>
+          <div class="cue" style="border-style: dashed;"><div class="n"><span class="dim">+ your own</span></div><div class="dim" style="font-size: 10px;">a recipe in sound.luau: tone, noise, glide, shimmer</div></div>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1; border-left: 1px solid rgba(236,231,218,0.18); padding: 28px 32px; display: flex; flex-direction: column; gap: 4px; font-size: 12px;">
+        <div class="cap dim" style="margin-bottom: 8px;">what plays when · or quiet</div>
+        <div class="ev"><div class="k cap">launch</div><div class="chip on">arrival</div><div class="cap dim">with the splash</div></div>
+        <div class="ev"><div class="k cap">tab switch</div><div class="chip on">page</div></div>
+        <div class="ev"><div class="k cap">tab close</div><div class="chip on">droplet</div></div>
+        <div class="ev"><div class="k cap">sidebar reveal</div><div class="chip on">bloom</div><div class="cap dim">once per reveal</div></div>
+        <div class="ev"><div class="k cap">palette open</div><div class="chip on">scan</div></div>
+        <div class="ev"><div class="k cap">palette move</div><div class="chip on">tick</div></div>
+        <div class="ev"><div class="k cap">chip · button</div><div class="chip on">press</div><div class="chip on">release</div></div>
+        <div class="ev"><div class="k cap">toggle</div><div class="chip on">toggle</div></div>
+        <div class="ev"><div class="k cap">page loading</div><div class="chip">loading</div><div class="chip on" style="background: none; color: #8a857a; border-color: #8a857a;">quiet</div></div>
+        <div class="ev"><div class="k cap">page ready</div><div class="chip on">ready</div><div class="cap dim">only if it took &gt; 1s</div></div>
+        <div class="ev"><div class="k cap">copied</div><div class="chip on">success</div></div>
+        <div class="ev"><div class="k cap">bell · error</div><div class="chip on">error</div><div class="cap dim">inactive tabs only</div></div>
+        <div class="ev"><div class="k cap">onboarding tick</div><div class="chip on">sparkle</div></div>
+        <div class="ev" style="border-bottom: none;"><div class="k cap">hover</div><div class="chip on" style="background: none; color: #8a857a; border-color: #8a857a;">quiet</div><div class="cap dim">150ms throttle if on</div></div>
+        <div class="cap dim" style="margin-top: auto;">a cue is a recipe: layers of tone or filtered noise with an envelope, optional glide and shimmer. rendered once, cached, mixed through one output. mit · daniel belyi.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

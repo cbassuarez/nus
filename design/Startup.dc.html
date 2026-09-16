@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #c8102e; } a:hover { color: #ece7da; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; font-style: italic; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .row { display: flex; flex-direction: row; gap: 18px; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .k { width: 150px; flex-shrink: 0; color: #8a857a; }
+    .v { flex-grow: 1; display: flex; flex-direction: row; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .chip { padding: 5px 10px; border: 1px solid #ece7da; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .chip.on { background: #ece7da; color: #141414; }
+    .nav { width: 220px; flex-shrink: 0; border-right: 1.5px solid #ece7da; display: flex; flex-direction: column; }
+    .nav > div { padding: 11px 18px; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .nav .grp { padding: 14px 18px 4px; color: #8a857a; border-bottom: none; font-size: 10px; }
+    .nav .on { background: #ece7da; color: #141414; }
+    .slider { width: 160px; height: 2px; background: rgba(236,231,218,0.18); position: relative; }
+    .slider > i { position: absolute; left: 0; top: 0; height: 2px; background: #c8102e; }
+    .slider > b { position: absolute; top: -4px; width: 10px; height: 10px; background: #ece7da; }
+    .step { display: flex; flex-direction: column; gap: 6px; width: 150px; }
+    .step .box { height: 90px; border: 1px solid rgba(236,231,218,0.35); background: #1b1a1a; display: flex; align-items: center; justify-content: center; }
+  </style>
+</helmet>
+<!-- STARTUP — the launch as a sequence: window · splash · then what · then where. -->
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: #141414; color: #ece7da; font-size: 13px; line-height: 1.5; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid #ece7da; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div><div>03 settings</div>
+  </div>
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0;">
+    <div class="nav cap">
+      <div class="grp">look</div><div>surface</div><div>theme</div><div>rules</div><div>cursor</div>
+      <div class="grp">feel</div><div>motion</div><div>sound</div><div class="on">startup</div>
+      <div class="grp">work</div><div>sidebar</div><div>tabs</div><div>terminal</div><div>browser</div><div>assistants</div><div>keys</div>
+      <div style="flex-grow: 1; border-bottom: none;"></div><div class="dim" style="border-top: 1.5px solid #ece7da;">~/.config/nus/init.luau</div>
+    </div>
+
+    <div style="flex-grow: 1; padding: 28px 40px; display: flex; flex-direction: column; gap: 6px; max-width: 900px;">
+      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 16px; margin-bottom: 14px;">
+        <div class="serif" style="font-size: 34px; line-height: 1;">startup</div>
+        <div class="cap dim">the launch, in order</div>
+      </div>
+
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: flex-start; margin-bottom: 18px;">
+        <div class="step"><div class="cap dim">1 · window</div><div class="box"><div style="width: 80px; height: 50px; outline: 1px solid #ece7da;"></div></div><div class="cap">last size</div></div>
+        <div class="dim" style="padding-top: 50px;">→</div>
+        <div class="step"><div class="cap dim">2 · splash</div><div class="box"><div class="serif" style="font-size: 34px; position: relative;">n<svg style="position: absolute; left: -22px; top: 8px;" width="64" height="30" viewBox="0 0 64 30" fill="none"><path d="M6 24 C10 8 52 2 58 12 C62 20 30 30 10 26" stroke="#c8102e" stroke-width="2.5" stroke-linecap="round"/></svg></div></div><div class="cap">draws in · 0.7s</div></div>
+        <div class="dim" style="padding-top: 50px;">→</div>
+        <div class="step"><div class="cap dim">3 · then</div><div class="box" style="font-size: 10px; letter-spacing: 0.08em;">RESTORE 2 SHELLS · 1 PAGE</div><div class="cap">last session</div></div>
+        <div class="dim" style="padding-top: 50px;">→</div>
+        <div class="step"><div class="cap dim">4 · atlas</div><div class="box" style="opacity: 0.4;"><div style="width: 90px; height: 40px; border: 1px solid #ece7da;"></div></div><div class="cap">off</div></div>
+      </div>
+
+      <div class="row"><div class="k cap">window</div><div class="v"><div class="chip on">last size &amp; place</div><div class="chip">maximized</div><div class="chip">fullscreen</div><div class="chip">centered 1440×900</div></div></div>
+      <div class="row"><div class="k cap">splash</div><div class="v"><div class="chip on">icon · draws in</div><div class="chip">icon · still</div><div class="chip">none</div><div class="cap dim" style="margin-left: 8px;">hold</div><div class="slider" style="width: 120px;"><i style="width: 30%;"></i><b style="left: 30%;"></b></div><div class="cap dim">1.0s min · 2.6s max</div></div></div>
+      <div class="row"><div class="k cap">then</div><div class="v"><div class="chip on">restore last session</div><div class="chip">a new shell</div><div class="chip">a page</div><div class="chip">nothing</div><div style="width: 100%; display: flex; gap: 8px; align-items: center; margin-top: 6px;"><div class="cap dim">page</div><div style="padding: 4px 8px; border: 1px solid rgba(236,231,218,0.35); min-width: 240px; color: #8a857a;">https://</div><div class="cap dim">shell</div><div class="chip">powershell</div><div class="chip">wsl · ubuntu</div></div></div></div>
+      <div class="row"><div class="k cap">atlas</div><div class="v"><div class="chip on">from the planet</div><div class="chip">also at launch</div><div class="chip">at launch, persistent until dismissed</div></div></div>
+      <div class="row"><div class="k cap">sound</div><div class="v"><div class="chip on">off</div><div class="chip">arrival</div><div class="chip">chime</div><div class="chip">bloom</div><div class="cap dim" style="margin-left: 8px;">plays with the splash</div></div></div>
+      <div class="row"><div class="k cap">links from outside</div><div class="v"><div class="chip on">little window</div><div class="chip">new tab here</div><div class="chip">ask each time</div></div></div>
+      <div class="row" style="border-bottom: none;"><div class="k cap">at login</div><div class="v"><div class="chip">start with the system</div><div class="chip on">no</div><div class="cap dim" style="margin-left: 8px;">registers a login item · reversible</div></div></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

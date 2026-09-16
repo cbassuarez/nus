@@ -1,0 +1,106 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #c8102e; } a:hover { color: #ece7da; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; font-style: italic; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .chip { padding: 5px 10px; border: 1px solid #ece7da; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .chip.on { background: #ece7da; color: #141414; }
+    .nav { width: 220px; flex-shrink: 0; border-right: 1.5px solid #ece7da; display: flex; flex-direction: column; }
+    .nav > div { padding: 11px 18px; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .nav .grp { padding: 14px 18px 4px; color: #8a857a; border-bottom: none; font-size: 10px; }
+    .nav .on { background: #ece7da; color: #141414; }
+    .kw { color: #6ea1f0; } .fn { color: #e6b323; } .str { color: #6fc274; } .cm { color: #8a857a; } .num { color: #d07ad0; }
+    .ln { color: #4a4740; display: inline-block; width: 26px; text-align: right; margin-right: 12px; }
+    .trow { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; font-size: 11px; border-bottom: 1px solid rgba(236,231,218,0.12); }
+  </style>
+</helmet>
+<!-- RULES — the file is the page. Left: rules.luau with the three hooks. Right: what
+     the rules would do to the sidebar right now, and a scratch call to try one. -->
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: #141414; color: #ece7da; font-size: 13px; line-height: 1.5; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid #ece7da; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div><div>03 settings</div>
+  </div>
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0;">
+    <div class="nav cap">
+      <div class="grp">look</div><div>surface</div><div>theme</div><div class="on">rules</div><div>cursor</div>
+      <div class="grp">feel</div><div>motion</div><div>sound</div><div>startup</div>
+      <div class="grp">work</div><div>sidebar</div><div>tabs</div><div>terminal</div><div>browser</div><div>assistants</div><div>keys</div>
+      <div style="flex-grow: 1; border-bottom: none;"></div><div class="dim" style="border-top: 1.5px solid #ece7da;">~/.config/nus/rules.luau</div>
+    </div>
+
+    <div style="flex-grow: 1; display: flex; flex-direction: row; min-width: 0;">
+      <div style="width: 700px; flex-shrink: 0; padding: 28px 0 0 40px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; flex-direction: row; align-items: baseline; gap: 16px; padding-right: 32px;">
+          <div class="serif" style="font-size: 34px; line-height: 1;">rules</div>
+          <div class="cap dim">luau · sandboxed · ok · new_tab new_space on_page</div>
+          <div style="flex-grow: 1;"></div>
+          <div class="chip">reload</div><div class="chip">open in editor</div>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <div class="cap dim" style="align-self: center;">start from</div><div class="chip on">hue per tab</div><div class="chip">family per stack</div><div class="chip">by host</div><div class="chip">monochrome</div><div class="chip">time of day</div>
+        </div>
+        <pre style="margin: 0; font-size: 12px; line-height: 1.7; padding: 14px 0 14px 0; border-top: 1px solid rgba(236,231,218,0.18); flex-grow: 1; overflow: hidden;"><span class="ln">1</span><span class="cm">-- every new terminal gets its own hue; pages opened</span>
+<span class="ln">2</span><span class="cm">-- from it stay in the family, a touch lighter.</span>
+<span class="ln">3</span><span class="kw">function</span> <span class="fn">new_tab</span>(ctx)
+<span class="ln">4</span>  <span class="kw">if</span> ctx.parent <span class="kw">then</span>
+<span class="ln">5</span>    <span class="kw">return</span> { bg = <span class="fn">mix</span>(ctx.parent.bg, <span class="str">"#ffffff"</span>, <span class="num">0.06</span>),
+<span class="ln">6</span>             signal = ctx.parent.signal }
+<span class="ln">7</span>  <span class="kw">end</span>
+<span class="ln">8</span>  <span class="kw">if</span> ctx.kind == <span class="str">"terminal"</span> <span class="kw">then</span>
+<span class="ln">9</span>    <span class="kw">local</span> turn = (ctx.index - <span class="num">1</span>) * <span class="num">0.11</span>
+<span class="ln">10</span>    <span class="kw">local</span> light = ctx.theme == <span class="str">"ink"</span> <span class="kw">and</span> <span class="num">0.11</span> <span class="kw">or</span> <span class="num">0.93</span>
+<span class="ln">11</span>    <span class="kw">return</span> { bg = <span class="fn">hsl</span>(turn, <span class="num">0.18</span>, light), signal = <span class="fn">hue</span>(ctx.signal, turn) }
+<span class="ln">12</span>  <span class="kw">end</span>
+<span class="ln">13</span><span class="kw">end</span>
+<span class="ln">14</span>
+<span class="ln">15</span><span class="kw">function</span> <span class="fn">new_space</span>(ctx)
+<span class="ln">16</span>  <span class="kw">return</span> { signal = <span class="fn">hue</span>(<span class="str">"#c8102e"</span>, (ctx.index - <span class="num">1</span>) * <span class="num">0.17</span>) }
+<span class="ln">17</span><span class="kw">end</span>
+<span class="ln">18</span>
+<span class="ln">19</span><span class="cm">-- boosts: css and js a site gets, every visit</span>
+<span class="ln">20</span><span class="kw">function</span> <span class="fn">on_page</span>(ctx)
+<span class="ln">21</span>  <span class="kw">if</span> ctx.host == <span class="str">"github.com"</span> <span class="kw">then</span>
+<span class="ln">22</span>    <span class="kw">return</span> { css = <span class="str">"body{font-family:'IBM Plex Mono'}"</span> }
+<span class="ln">23</span>  <span class="kw">end</span>
+<span class="ln">24</span><span class="kw">end</span>
+<span class="ln">25</span>
+<span class="ln">26</span><span class="cm">-- sounds: which cue an event plays (nil = quiet)</span>
+<span class="ln">27</span><span class="kw">function</span> <span class="fn">on_event</span>(ev)
+<span class="ln">28</span>  <span class="kw">if</span> ev.name == <span class="str">"tab.close"</span> <span class="kw">then</span> <span class="kw">return</span> <span class="str">"droplet"</span> <span class="kw">end</span>
+<span class="ln">29</span><span class="kw">end</span></pre>
+      </div>
+
+      <div style="flex-grow: 1; border-left: 1px solid rgba(236,231,218,0.18); padding: 28px 32px; display: flex; flex-direction: column; gap: 14px;">
+        <div class="cap dim">what these rules do to the sidebar, now</div>
+        <div style="width: 248px; background: #141414; outline: 1px solid rgba(236,231,218,0.18);">
+          <div class="trow" style="background: rgba(236,231,218,0.07); border-left: 2px solid #c8102e;"><span style="color: #c8102e; width: 10px;">1</span><span>▣</span><span>powershell</span></div>
+          <div class="trow" style="background: #2b1f1f;"><span style="color: #c85a10; width: 10px;">2</span><span>▣</span><span>powershell</span></div>
+          <div class="trow" style="background: #2b2a1f; padding-left: 28px; border-left: 1px solid #4a4740;"><span style="color: #c85a10;">◦</span><span class="dim">docs.rs</span></div>
+          <div class="trow" style="background: #232b1f;"><span style="color: #8ac810; width: 10px;">3</span><span>▣</span><span>wsl · ubuntu</span></div>
+          <div class="trow"><span style="width: 10px;"></span><span>◎</span><span>github</span></div>
+        </div>
+        <div style="border-top: 1px solid rgba(236,231,218,0.18); padding-top: 14px; display: flex; flex-direction: column; gap: 8px;">
+          <div class="cap dim">try one</div>
+          <div style="padding: 6px 10px; border: 1px solid #ece7da; font-size: 12px;">new_tab { kind = "terminal", index = 4, theme = "ink" }</div>
+          <div style="display: flex; gap: 8px; align-items: center;"><div class="cap dim">→</div><div style="width: 22px; height: 22px; background: #1f2b2a;"></div><div class="cap">bg #1f2b2a</div><div style="width: 22px; height: 22px; background: #10c8a0;"></div><div class="cap">signal #10c8a0</div></div>
+        </div>
+        <div class="cap dim" style="margin-top: auto;">hooks: new_tab · new_space · on_page · on_event<br>helpers: hue · mix · hsl · family · sound</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #c8102e; } a:hover { color: #ece7da; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; font-style: italic; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .chip { padding: 5px 10px; border: 1px solid #ece7da; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .chip.on { background: #ece7da; color: #141414; }
+    .nav { width: 220px; flex-shrink: 0; border-right: 1.5px solid #ece7da; display: flex; flex-direction: column; }
+    .nav > div { padding: 11px 18px; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .nav .grp { padding: 14px 18px 4px; color: #8a857a; border-bottom: none; font-size: 10px; }
+    .nav .on { background: #ece7da; color: #141414; }
+    .tok { width: 92px; height: 64px; box-sizing: border-box; padding: 6px; display: flex; flex-direction: column; justify-content: flex-end; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid rgba(236,231,218,0.18); }
+    .tok b { font-weight: 500; font-size: 10px; }
+    .ansi { width: 44px; height: 44px; box-sizing: border-box; padding: 3px; display: flex; align-items: flex-end; font-size: 8px; }
+  </style>
+</helmet>
+<!-- THEME — the two papers and the sixteen ANSI colours, editable, with the contrast
+     the pair actually gives. Families derive from a token; import from Ghostty,
+     iTerm or VS Code; ship as a file. -->
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: #141414; color: #ece7da; font-size: 13px; line-height: 1.5; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid #ece7da; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div><div>03 settings</div>
+  </div>
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0;">
+    <div class="nav cap">
+      <div class="grp">look</div><div>surface</div><div class="on">theme</div><div>rules</div><div>cursor</div>
+      <div class="grp">feel</div><div>motion</div><div>sound</div><div>startup</div>
+      <div class="grp">work</div><div>sidebar</div><div>tabs</div><div>terminal</div><div>browser</div><div>assistants</div><div>keys</div>
+      <div style="flex-grow: 1; border-bottom: none;"></div><div class="dim" style="border-top: 1.5px solid #ece7da;">~/.config/nus/theme.luau</div>
+    </div>
+
+    <div style="flex-grow: 1; padding: 28px 40px; display: flex; flex-direction: column; gap: 22px; min-width: 0;">
+      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 16px;">
+        <div class="serif" style="font-size: 34px; line-height: 1;">theme</div>
+        <div class="cap dim">paper and ink, both ways · the sixteen</div>
+        <div style="flex-grow: 1;"></div>
+        <div class="chip on">ink</div><div class="chip">paper</div><div class="chip dim" style="border-color: #8a857a;">follow os</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div class="cap dim">tokens · click one to edit · derived ones follow unless pinned</div>
+        <div style="display: flex; flex-direction: row; gap: 8px;">
+          <div class="tok" style="background: #141414;"><b>paper</b>#141414</div>
+          <div class="tok" style="background: #ece7da; color: #141414;"><b>ink</b>#ece7da</div>
+          <div class="tok" style="background: #8a857a; color: #141414;"><b>dim</b>#8a857a · derived</div>
+          <div class="tok" style="background: rgba(236,231,218,0.07);"><b>tint</b>ink 7% · derived</div>
+          <div class="tok" style="background: rgba(236,231,218,0.14);"><b>hot</b>ink 14% · derived</div>
+          <div class="tok" style="background: #ffffff; color: #141414;"><b>page</b>#ffffff</div>
+          <div class="tok" style="background: rgba(0,0,0,0.5); outline: 1px dashed #8a857a;"><b>scrim</b>black 50%</div>
+        </div>
+        <div style="display: flex; gap: 18px; align-items: center;">
+          <div class="cap dim">contrast ink on paper</div><div class="chip" style="border-color: #2e7d32; color: #2e7d32;">14.9 : 1 · aaa</div>
+          <div class="cap dim">dim on paper</div><div class="chip" style="border-color: #d9a400; color: #d9a400;">4.6 : 1 · aa</div>
+          <div class="cap dim">signal on paper</div><div class="chip" style="border-color: #c8102e; color: #c8102e;">3.9 : 1 · large only</div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgba(236,231,218,0.18); padding-top: 16px;">
+        <div class="cap dim">ansi 0–15 · terminal only · each editable, or derived from a family</div>
+        <div style="display: flex; flex-direction: row; gap: 4px;">
+          <div class="ansi" style="background: #1f1d1b; color: #ece7da;">0</div><div class="ansi" style="background: #d63a2f; color: #fff;">1</div><div class="ansi" style="background: #3f9a45; color: #fff;">2</div><div class="ansi" style="background: #c48a00; color: #141414;">3</div><div class="ansi" style="background: #3b7ee0; color: #fff;">4</div><div class="ansi" style="background: #b04eb0; color: #fff;">5</div><div class="ansi" style="background: #22a3b0; color: #fff;">6</div><div class="ansi" style="background: #bcb6a8; color: #141414;">7</div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 4px;">
+          <div class="ansi" style="background: #4a4740; color: #ece7da;">8</div><div class="ansi" style="background: #ef6a5e; color: #141414;">9</div><div class="ansi" style="background: #6fc274; color: #141414;">10</div><div class="ansi" style="background: #e6b323; color: #141414;">11</div><div class="ansi" style="background: #6ea1f0; color: #141414;">12</div><div class="ansi" style="background: #d07ad0; color: #141414;">13</div><div class="ansi" style="background: #5cc6d1; color: #141414;">14</div><div class="ansi" style="background: #ece7da; color: #141414;">15</div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
+          <div class="cap dim">family</div><div class="chip on">broadsheet</div><div class="chip">solarized</div><div class="chip">gruvbox</div><div class="chip">from signal</div>
+          <div class="cap dim" style="margin-left: 12px;">saturation</div><div style="width: 120px; height: 2px; background: rgba(236,231,218,0.18); position: relative;"><i style="position: absolute; left: 0; top: 0; height: 2px; width: 55%; background: #c8102e;"></i><b style="position: absolute; top: -4px; left: 55%; width: 10px; height: 10px; background: #ece7da;"></b></div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: row; gap: 32px; border-top: 1px solid rgba(236,231,218,0.18); padding-top: 16px;">
+        <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 8px;">
+          <div class="cap dim">proof · the sixteen in a shell</div>
+          <pre style="margin: 0; font-size: 12px; line-height: 1.55; padding: 12px 14px; background: #1b1a1a; outline: 1px solid rgba(236,231,218,0.18);"><span style="color: #3f9a45;">seb@nus</span>:<span style="color: #3b7ee0;">~/nus</span>$ cargo test -p nus-vt
+<span style="color: #c48a00;">warning</span>: unused variable `x`
+<span style="color: #3f9a45;">test result: ok.</span> 18 passed; <span style="color: #d63a2f;">0 failed</span>
+<span style="color: #b04eb0;">➜</span> <span style="color: #22a3b0;">git</span> log --oneline -1
+<span style="color: #8a857a;">9058fca</span> Pane strips only when split</pre>
+        </div>
+        <div style="width: 300px; display: flex; flex-direction: column; gap: 10px;">
+          <div class="cap dim">import · export</div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;"><div class="chip">ghostty</div><div class="chip">iterm2</div><div class="chip">vs code</div><div class="chip">windows terminal</div><div class="chip">base16</div></div>
+          <div class="cap dim" style="margin-top: 6px;">drop a theme file on this page, or paste. export writes theme.luau · share a link.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

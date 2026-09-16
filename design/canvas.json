@@ -1,14 +1,4 @@
 {
-  "pages": [
-    {
-      "id": "page-1",
-      "name": "Broadsheet"
-    },
-    {
-      "id": "page-2",
-      "name": "Directions (record)"
-    }
-  ],
   "artboards": [
     {
       "file": "Main.dc.html",
@@ -16,7 +6,7 @@
       "y": 0,
       "w": 1440,
       "h": 900,
-      "title": "Main · paper",
+      "title": "Main \u00c2\u00b7 paper",
       "page": "page-1"
     },
     {
@@ -25,7 +15,7 @@
       "y": 0,
       "w": 1440,
       "h": 900,
-      "title": "Main · ink",
+      "title": "Main \u00c2\u00b7 ink",
       "page": "page-1"
     },
     {
@@ -108,6 +98,60 @@
       "h": 900,
       "title": "Settings tab",
       "page": "page-1"
+    },
+    {
+      "file": "Surface.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Surface",
+      "page": "page-3"
+    },
+    {
+      "file": "Theme.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Theme",
+      "page": "page-3"
+    },
+    {
+      "file": "Rules.dc.html",
+      "x": 0,
+      "y": 1060,
+      "w": 1440,
+      "h": 900,
+      "title": "Rules",
+      "page": "page-3"
+    },
+    {
+      "file": "Sound.dc.html",
+      "x": 1560,
+      "y": 1060,
+      "w": 1440,
+      "h": 900,
+      "title": "Sound",
+      "page": "page-3"
+    },
+    {
+      "file": "Startup.dc.html",
+      "x": 0,
+      "y": 2120,
+      "w": 1440,
+      "h": 900,
+      "title": "Startup",
+      "page": "page-3"
+    },
+    {
+      "file": "Cursor.dc.html",
+      "x": 1560,
+      "y": 2120,
+      "w": 1440,
+      "h": 900,
+      "title": "Cursor",
+      "page": "page-3"
     }
   ],
   "annotations": [
@@ -117,7 +161,7 @@
       "y": -150,
       "w": 560,
       "page": "page-1",
-      "text": "BROADSHEET — chosen 2026-09-16.\nSidebar revealed (⌘⇧S), terminal | browser split, ⌘K open. The 30px top strip keeps identity and window controls when the sidebar is hidden.\nSpaces are windows: the Space row at the top of the sidebar is a window switcher (⌘⌥1–9); the tab list is this Space only.\nWordmark: Newsreader Italic. UI face and terminal face are both config keys (default IBM Plex Mono)."
+      "text": "BROADSHEET \u00e2\u20ac\u201d chosen 2026-09-16.\nSidebar revealed (\u00e2\u0152\u02dc\u00e2\u2021\u00a7S), terminal | browser split, \u00e2\u0152\u02dcK open. The 30px top strip keeps identity and window controls when the sidebar is hidden.\nSpaces are windows: the Space row at the top of the sidebar is a window switcher (\u00e2\u0152\u02dc\u00e2\u0152\u00a51\u00e2\u20ac\u201c9); the tab list is this Space only.\nWordmark: Newsreader Italic. UI face and terminal face are both config keys (default IBM Plex Mono)."
     },
     {
       "id": "n-chromeless",
@@ -125,7 +169,7 @@
       "y": 960,
       "w": 560,
       "page": "page-1",
-      "text": "CHROMELESS — the default. Full-bleed terminal, a 4px hot edge where the sidebar hides. The localhost hook is a ruled chip anchored to the detected line (⌘↵ split, ⌘⇧↵ new tab). Attention state surfaces in the top strip, not as a popup."
+      "text": "CHROMELESS \u00e2\u20ac\u201d the default. Full-bleed terminal, a 4px hot edge where the sidebar hides. The localhost hook is a ruled chip anchored to the detected line (\u00e2\u0152\u02dc\u00e2\u2020\u00b5 split, \u00e2\u0152\u02dc\u00e2\u2021\u00a7\u00e2\u2020\u00b5 new tab). Attention state surfaces in the top strip, not as a popup."
     },
     {
       "id": "n-quick",
@@ -133,7 +177,7 @@
       "y": 960,
       "w": 560,
       "page": "page-1",
-      "text": "QUICK TERMINAL — ⌥⌘T drops a sheet from the top edge over whatever is focused (here a browser tab in the blue 'work' Space). Same 2px edge + hard shadow as the palette."
+      "text": "QUICK TERMINAL \u00e2\u20ac\u201d \u00e2\u0152\u00a5\u00e2\u0152\u02dcT drops a sheet from the top edge over whatever is focused (here a browser tab in the blue 'work' Space). Same 2px edge + hard shadow as the palette."
     },
     {
       "id": "n-pip",
@@ -141,7 +185,7 @@
       "y": 2020,
       "w": 560,
       "page": "page-1",
-      "text": "PIP — our own always-on-top window drawing a tab's texture: a video (left) or a terminal tab you're keeping an eye on (right). Signal band shows which Space it came from; ↗ returns it to its tab."
+      "text": "PIP \u00e2\u20ac\u201d our own always-on-top window drawing a tab's texture: a video (left) or a terminal tab you're keeping an eye on (right). Signal band shows which Space it came from; \u00e2\u2020\u2014 returns it to its tab."
     },
     {
       "id": "n-tokens",
@@ -149,7 +193,7 @@
       "y": 2020,
       "w": 560,
       "page": "page-1",
-      "text": "TOKENS — what spike 4 renders from: paper/ink for both themes, six Space signals, ANSI 0–15 per theme, type ramp (IBM Plex Mono + Instrument Serif wordmark), rule weights, spacing, states, keys, principles."
+      "text": "TOKENS \u00e2\u20ac\u201d what spike 4 renders from: paper/ink for both themes, six Space signals, ANSI 0\u00e2\u20ac\u201c15 per theme, type ramp (IBM Plex Mono + Instrument Serif wordmark), rule weights, spacing, states, keys, principles."
     },
     {
       "id": "n-record",
@@ -165,7 +209,7 @@
       "y": 2460,
       "w": 560,
       "page": "page-1",
-      "text": "SIDEBAR — third pass. Hover the left edge to reveal; hides ~300 ms after the mouse leaves; Ctrl+Shift+S pins.\nSpace row = window switcher. Pinned row. Compact rows (number · kind glyph · title · cwd/host); the 52px preview expands only under the hovered row (03) and under a waiting tab (02).\nFooter: Space avatar + name + browser identity, shell profile row, assistant router row, + new tab / settings."
+      "text": "SIDEBAR \u00e2\u20ac\u201d third pass. Hover the left edge to reveal; hides ~300 ms after the mouse leaves; Ctrl+Shift+S pins.\nSpace row = window switcher. Pinned row. Compact rows (number \u00c2\u00b7 kind glyph \u00c2\u00b7 title \u00c2\u00b7 cwd/host); the 52px preview expands only under the hovered row (03) and under a waiting tab (02).\nFooter: Space avatar + name + browser identity, shell profile row, assistant router row, + new tab / settings."
     },
     {
       "id": "n-settings",
@@ -173,11 +217,81 @@
       "y": 3080,
       "w": 560,
       "page": "page-1",
-      "text": "SETTINGS TAB — Ctrl+, opens a native tab. Sections left; key / control rows right (ruled segmented switches, boxed fields). Every change writes ~/.config/nus/init.luau, shown live at the bottom; the file stays the source of truth."
+      "text": "SETTINGS TAB \u00e2\u20ac\u201d Ctrl+, opens a native tab. Sections left; key / control rows right (ruled segmented switches, boxed fields). Every change writes ~/.config/nus/init.luau, shown live at the bottom; the file stays the source of truth."
+    },
+    {
+      "id": "n-lf",
+      "x": 0,
+      "y": -170,
+      "w": 640,
+      "page": "page-3",
+      "text": "LOOK & FEEL \u2014 settings, eighth pass (proposal).\nThe nav gains two groups: LOOK (surface \u00b7 theme \u00b7 rules \u00b7 cursor) and FEEL (motion \u00b7 sound \u00b7 startup). Every page: sections left, key / control rows right, a live proof on the far right, and the file it writes named at the bottom of the nav. Nothing here is a token change \u2014 Broadsheet stays fixed; these are the user's levers on top of it."
+    },
+    {
+      "id": "n-surface",
+      "x": 0,
+      "y": -60,
+      "w": 640,
+      "page": "page-3",
+      "text": "SURFACE \u2014 signal + ordered stops (gradient/aurora run through them), a family strip derived from the signal, base + tint, opacity (panes \u00b7 chrome \u00b7 window), texture (grain \u00b7 stipple \u00b7 stitch \u00b7 linen \u00b7 halftone; strength, scale, where), carapace style/width/radius/angle, aurora drift & breath. Presets save the whole card; surface.luau is the file."
+    },
+    {
+      "id": "n-theme",
+      "x": 1560,
+      "y": -60,
+      "w": 640,
+      "page": "page-3",
+      "text": "THEME \u2014 the two papers' tokens with derived ones following unless pinned; contrast read out live; ANSI 0\u201315 editable or from a family; proof in a shell; import from Ghostty / iTerm / VS Code / Windows Terminal / base16."
+    },
+    {
+      "id": "n-rules",
+      "x": 0,
+      "y": 1000,
+      "w": 640,
+      "page": "page-3",
+      "text": "RULES \u2014 the file is the page: syntax-coloured, a starter set (hue per tab \u00b7 family per stack \u00b7 by host \u00b7 monochrome \u00b7 time of day), a live sidebar showing what the rules do now, and a scratch call. A fourth hook, on_event, lets rules pick sounds."
+    },
+    {
+      "id": "n-sound",
+      "x": 1560,
+      "y": 1000,
+      "w": 640,
+      "page": "page-3",
+      "text": "SOUND \u2014 cuelume's seventeen cues, ported into the app as recipes (tone / noise layers, envelope, glide, shimmer) and synthesized natively; each drawn as its shape. Right: event \u2192 cue or quiet. Volume, quiet hours, your own recipes in sound.luau. MIT, credited."
+    },
+    {
+      "id": "n-startup",
+      "x": 0,
+      "y": 2060,
+      "w": 640,
+      "page": "page-3",
+      "text": "STARTUP \u2014 the launch as a sequence: window (last \u00b7 maximized \u00b7 fullscreen \u00b7 centered) \u2192 splash (draws in \u00b7 still \u00b7 none, hold min/max) \u2192 then (restore \u00b7 shell \u00b7 page \u00b7 nothing) \u2192 atlas (planet \u00b7 also at launch \u00b7 persistent). Sound with the splash; links from outside; start at login."
+    },
+    {
+      "id": "n-cursor",
+      "x": 1560,
+      "y": 2060,
+      "w": 640,
+      "page": "page-3",
+      "text": "CURSOR \u2014 shape, blink policy, colour (ink \u00b7 signal \u00b7 the tab's own \u00b7 custom), motion (jump \u00b7 glide \u00b7 comet trail on the motion register), beam width; the pointer over the chrome; hide while typing. Drawn by nus, not the shell."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-1"
-  }
+    "page": "page-3"
+  },
+  "pages": [
+    {
+      "id": "page-1",
+      "name": "Broadsheet"
+    },
+    {
+      "id": "page-2",
+      "name": "Directions (record)"
+    },
+    {
+      "id": "page-3",
+      "name": "Look & feel (settings)"
+    }
+  ]
 }
