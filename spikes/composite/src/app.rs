@@ -220,10 +220,42 @@ pub enum SideHit {
     NewWindow,
     /// A square on the rail.
     Rail(usize),
+    /// The look chip in the footer.
+    Look,
     RailNew,
     Closed,
     Downloads,
     Settings,
+}
+
+/// What an icon does when the pointer arrives.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum IconMotion {
+    /// Just the hover overlay.
+    Still,
+    /// Turns by this many degrees while hovered, back when left.
+    Spin(f32),
+    /// Rises and settles: a small pop in scale.
+    Pop,
+    /// Dips and returns, like a download landing.
+    Bob,
+    /// A bell's swing, decaying.
+    Swing,
+}
+
+/// One icon button's hover state.
+pub struct Hover {
+    pub alpha: Anim,
+    pub pulse: Anim,
+    pub hot: bool,
+}
+
+pub fn hover_key(name: &str, n: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut h);
+    n.hash(&mut h);
+    h.finish()
 }
 
 pub struct SidebarGeom {
@@ -358,6 +390,7 @@ pub struct App {
     pub rail_anim: Anim,
     pub next_row_hot: bool,
     pub registered_tabs: usize,
+    pub hovers: std::collections::HashMap<u64, Hover>,
     /// Last keystroke into a shell, for blink-after-idle and pointer hiding.
     pub last_key: Instant,
     pub pointer_hidden: bool,
@@ -520,6 +553,7 @@ impl App {
             rail_anim: Anim::at(0.0),
             next_row_hot: false,
             registered_tabs: usize::MAX,
+            hovers: std::collections::HashMap::new(),
             last_key: Instant::now(),
             pointer_hidden: false,
             pointer_request: None,
@@ -761,6 +795,9 @@ impl App {
 
     pub fn cursor_left(&mut self) {
         self.pointer_inside = false;
+        // Nothing is hovered once the pointer is gone.
+        self.mouse = (-1.0, -1.0);
+        self.dirty = true;
     }
 
     pub(crate) fn header_h(&self) -> f32 {
@@ -1814,21 +1851,26 @@ impl App {
                 (nus_render::text::icons::MINIMIZE, CrumbHit::Minimize),
             ] {
                 rx -= ic;
-                self.fonts.draw_icon(&mut scene, icon, ic, rx, iy, ink);
-                self.crumb_hits.push((Rect::new(rx - p6, strip.y, ic + p12, strip.h), hit));
+                let hr = Rect::new(rx - p6, strip.y, ic + p12, strip.h);
+                self.icon_button(&mut scene, icon, ic, rx, iy, ink, hr, hover_key("winctl", hit as usize), IconMotion::Still);
+                self.crumb_hits.push((hr, hit));
                 rx -= gap;
             }
             rx -= self.px(6.0);
         }
         rx -= ic;
-        self.fonts.draw_icon(&mut scene, nus_render::text::icons::SIDEBAR, ic, rx, iy, if self.sidebar { ink } else { t.dim });
-        self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), CrumbHit::Sidebar));
+        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+        self.icon_button(&mut scene, nus_render::text::icons::SIDEBAR, ic, rx, iy, if self.sidebar { ink } else { t.dim }, hr, hover_key("sidebar", 0), IconMotion::Pop);
+        self.crumb_hits.push((hr, CrumbHit::Sidebar));
         rx -= gap + ic;
-        self.fonts.draw_icon(&mut scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink);
-        self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), CrumbHit::Search));
+        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+        self.icon_button(&mut scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink, hr, hover_key("search", 0), IconMotion::Pop);
+        self.crumb_hits.push((hr, CrumbHit::Search));
         rx -= gap + ic;
-        self.fonts.draw_icon(&mut scene, nus_render::text::icons::PLANET, ic, rx, iy, if self.start.is_some() { self.surface.signal } else { ink });
-        self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), CrumbHit::Start));
+        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+        let pc = if self.start.is_some() { self.surface.signal } else { ink };
+        self.icon_button(&mut scene, nus_render::text::icons::PLANET, ic, rx, iy, pc, hr, hover_key("atlas", 0), IconMotion::Spin(-25.0));
+        self.crumb_hits.push((hr, CrumbHit::Start));
         rx -= gap;
         // status cluster: waiting · pip · assistant · ports (one icon when narrow)
         let waiting = self.tabs.iter().filter(|t| t.waiting()).count();
@@ -1856,8 +1898,15 @@ impl App {
                 rx -= self.px(4.0);
             }
             rx -= ic;
-            self.fonts.draw_icon(&mut scene, icon, ic, rx, iy, if hit == CrumbHit::Waiting && lit { self.surface.signal } else { color });
-            self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), hit));
+            let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+            let motion = match hit {
+                CrumbHit::Waiting => IconMotion::Swing,
+                CrumbHit::Assistant => IconMotion::Pop,
+                CrumbHit::Ports => IconMotion::Bob,
+                _ => IconMotion::Still,
+            };
+            self.icon_button(&mut scene, icon, ic, rx, iy, if hit == CrumbHit::Waiting && lit { self.surface.signal } else { color }, hr, hover_key("cluster", hit as usize), motion);
+            self.crumb_hits.push((hr, hit));
             rx -= gap;
         }
         let _ = dim;
@@ -2096,6 +2145,62 @@ impl App {
 
     /// Sidebar layout: the pinned row, then one entry per listed tab with its
     /// y and height (previews expand under the hovered row and waiting tabs).
+    /// Every icon button goes through here: a soft rounded overlay fades in
+    /// under the pointer (so a button reads as a button) and the important
+    /// ones move. `hit` is the button's click rect; `key` identifies it
+    /// across frames.
+    pub(crate) fn icon_button(
+        &mut self,
+        scene: &mut Scene,
+        icon: (&'static str, &'static str),
+        px: f32,
+        x: f32,
+        y: f32,
+        color: nus_render::Color,
+        hit: Rect,
+        key: u64,
+        motion: IconMotion,
+    ) {
+        let (mx, my) = self.mouse;
+        let hot = hit.contains(mx, my);
+        let dur_in = self.motion.dur(80.0);
+        let dur_out = self.motion.dur(140.0);
+        let pulse_dur = self.motion.dur(260.0);
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        if hot != h.hot {
+            h.hot = hot;
+            h.alpha.go(if hot { 1.0 } else { 0.0 }, if hot { dur_in } else { dur_out });
+            if hot {
+                h.pulse.replay(0.0, 1.0, pulse_dur);
+            }
+        }
+        let a = h.alpha.value();
+        let p = h.pulse.value();
+        if h.alpha.active() || h.pulse.active() {
+            self.dirty = true;
+        }
+        // The overlay: ink at a whisper, rounded, a little larger than the glyph.
+        if a > 0.005 {
+            let pad = self.px(5.0);
+            let r = Rect::new(x - pad, y - pad, px + pad * 2.0, px + pad * 2.0);
+            scene.push(nus_render::Instance::rounded(r, self.px(4.0), fade(self.theme.ink, 0.10 * a)));
+        }
+        // Motion: a bump that rises and settles over the pulse.
+        let bump = (p * std::f32::consts::PI).sin();
+        let (angle, scale, dy) = match motion {
+            IconMotion::Still => (0.0, 1.0, 0.0),
+            IconMotion::Spin(deg) => (deg.to_radians() * a, 1.0, 0.0),
+            IconMotion::Pop => (0.0, 1.0 + 0.16 * bump, -self.px(1.0) * bump),
+            IconMotion::Bob => (0.0, 1.0, self.px(2.5) * bump),
+            IconMotion::Swing => ((p * std::f32::consts::TAU * 1.5).sin() * (1.0 - p) * 0.28, 1.0, 0.0),
+        };
+        if self.motion.reduced() || (angle == 0.0 && scale == 1.0 && dy == 0.0) {
+            self.fonts.draw_icon(scene, icon, px, x, y, color);
+        } else {
+            self.fonts.draw_icon_moved(scene, icon, px, x, y + dy, color, angle, scale);
+        }
+    }
+
     /// The rail's width right now (0 when off or hidden).
     pub(crate) fn rail_w(&self) -> f32 {
         if self.header.style != crate::settings::HeaderStyle::Rail {
@@ -2408,24 +2513,72 @@ impl App {
         }
         self.side_hits.push((Rect::new(sb.x, fy, ar.right() + self.px(8.0) - sb.x, fh), SideHit::Profile));
         let mut x = ar.right() + self.px(14.0);
-        self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x, iy, ink);
-        self.side_hits.push((Rect::new(x - self.px(8.0), fy, isz + self.px(16.0), fh), SideHit::NewTab));
+        let hr = Rect::new(x - self.px(8.0), fy, isz + self.px(16.0), fh);
+        self.icon_button(scene, nus_render::text::icons::PLUS, isz, x, iy, ink, hr, hover_key("foot", 0), IconMotion::Pop);
+        self.side_hits.push((hr, SideHit::NewTab));
         x += isz + self.px(18.0);
-        let _ = x;
+        // The look chip: paper · ink · signal, fanned on hover; opens the look pages.
+        self.draw_look_chip(scene, x, fy, fh);
         // Right cluster.
         let mut rx = sb.right() - pad_x;
-        for (icon, hit, lit) in [
-            (nus_render::text::icons::SETTINGS, SideHit::Settings, true),
-            (nus_render::text::icons::DOWNLOAD, SideHit::Downloads, false),
-            (nus_render::text::icons::HISTORY, SideHit::Closed, !self.closed.is_empty()),
+        for (icon, hit, lit, motion, k) in [
+            (nus_render::text::icons::SETTINGS, SideHit::Settings, true, IconMotion::Spin(30.0), 1),
+            (nus_render::text::icons::DOWNLOAD, SideHit::Downloads, false, IconMotion::Bob, 2),
+            (nus_render::text::icons::HISTORY, SideHit::Closed, !self.closed.is_empty(), IconMotion::Spin(-40.0), 3),
         ] {
             rx -= isz;
-            self.fonts.draw_icon(scene, icon, isz, rx, iy, if lit { ink } else { t.dim });
-            self.side_hits.push((Rect::new(rx - self.px(8.0), fy, isz + self.px(16.0), fh), hit));
+            let hr = Rect::new(rx - self.px(8.0), fy, isz + self.px(16.0), fh);
+            self.icon_button(scene, icon, isz, rx, iy, if lit { ink } else { t.dim }, hr, hover_key("foot", k), motion);
+            self.side_hits.push((hr, hit));
             rx -= self.px(14.0);
         }
         let _ = (label, ui, dim);
         self.draw_sidebar_menus(scene, sb);
+    }
+
+    /// Three swatches — paper, ink, signal — stacked like a hand of cards.
+    /// On hover they fan out and the signal one lifts; click opens the look pages.
+    fn draw_look_chip(&mut self, scene: &mut Scene, x: f32, fy: f32, fh: f32) {
+        let sw = self.px(12.0);
+        let hit = Rect::new(x - self.px(6.0), fy, sw * 2.2 + self.px(12.0), fh);
+        let (mx, my) = self.mouse;
+        let hot = hit.contains(mx, my);
+        let key = hover_key("look", 0);
+        let dur_in = self.motion.dur(160.0);
+        let dur_out = self.motion.dur(200.0);
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        if hot != h.hot {
+            h.hot = hot;
+            h.alpha.go(if hot { 1.0 } else { 0.0 }, if hot { dur_in } else { dur_out });
+        }
+        let a = h.alpha.value();
+        if h.alpha.active() {
+            self.dirty = true;
+        }
+        let ink = self.theme.ink;
+        let paper = self.paper();
+        let signal = self.surface.signal;
+        let cy = fy + fh / 2.0;
+        // At rest: three squares overlapping by half, ink outline on the paper one.
+        // Hovered: they spread apart, tilt a little, and rise.
+        let step = sw * 0.5 + sw * 0.55 * a;
+        let rise = self.px(2.0) * a;
+        let radius = self.px(2.0);
+        let mut i = 0.0;
+        for (c, outline) in [(paper, true), (ink, false), (signal, false)] {
+            let tilt = (i - 1.0) * 0.18 * a;
+            let r = Rect::new(x + i * step, cy - sw / 2.0 - rise * (i * 0.5 + 0.5), sw, sw);
+            if outline {
+                scene.push(nus_render::Instance::rounded(r, radius, fade(ink, 0.55)));
+                let inner = Rect::new(r.x + self.px(1.0), r.y + self.px(1.0), r.w - self.px(2.0), r.h - self.px(2.0));
+                scene.push(nus_render::Instance::rounded(inner, radius - self.px(1.0), c));
+            } else {
+                scene.push(nus_render::Instance::rounded(r, radius, c));
+            }
+            let _ = tilt;
+            i += 1.0;
+        }
+        self.side_hits.push((hit, SideHit::Look));
     }
 
     /// The rail: every window as its square along the sidebar's outer edge.
@@ -4248,6 +4401,12 @@ impl App {
                     SideHit::Rename => {
                         self.close_menus();
                         self.open_palette(PaletteMode::Rename);
+                    }
+                    SideHit::Look => {
+                        self.open_settings();
+                        if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                            s.section = 1;
+                        }
                     }
                     SideHit::Closed => {
                         self.open_palette(PaletteMode::Go);

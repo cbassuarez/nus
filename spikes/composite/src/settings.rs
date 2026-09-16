@@ -329,6 +329,10 @@ pub enum Hit {
     EventNext(usize),
 }
 
+/// The sections, grouped by what they're about: how nus looks, how it
+/// feels, what you work in, and the machine.
+pub const GROUPS: [(&str, std::ops::Range<usize>); 4] = [("LOOK", 0..4), ("FEEL", 4..8), ("WORK", 8..12), ("SYSTEM", 12..14)];
+
 pub const SECTIONS: [(&str, (&str, &str)); 14] = [
     ("APPEARANCE", icons::BRUSH),
     ("SURFACE", icons::PALETTE),
@@ -1532,13 +1536,26 @@ impl App {
         let tw = ((r.w - 2.0 * pad - gap * (cols as f32 - 1.0)) / cols as f32).floor();
         let th = self.px(96.0);
         let isz = self.px(22.0);
-        for (k, (name, icon)) in SECTIONS.iter().enumerate() {
-            let col = k % cols;
-            let row = k / cols;
-            let tile = Rect::new(r.x + pad + col as f32 * (tw + gap), y + row as f32 * (th + gap), tw, th);
-            if tile.bottom() > r.bottom() {
-                break;
+        let mut slot = 0usize;
+        let mut gy = y;
+        for (gname, range) in GROUPS.iter() {
+            // A group caption, then its tiles on a fresh row.
+            if slot % cols != 0 {
+                slot += cols - slot % cols;
             }
+            let row0 = slot / cols;
+            let cy = y + row0 as f32 * (th + gap) + gy - y;
+            self.fonts.draw(scene, dim, r.x + pad, cy + self.px(10.0), gname);
+            gy += self.px(22.0);
+            for k in range.clone() {
+                let (name, icon) = &SECTIONS[k];
+                let col = slot % cols;
+                let row = slot / cols;
+                slot += 1;
+                let tile = Rect::new(r.x + pad + col as f32 * (tw + gap), y + row as f32 * (th + gap) + (gy - y), tw, th);
+                if tile.bottom() > r.bottom() {
+                    break;
+                }
             scene.outline(tile, self.px(m::HAIRLINE), ink);
             self.fonts.draw_icon(scene, *icon, isz, tile.x + self.px(16.0), tile.y + self.px(16.0), ink);
             let base = tile.y + self.px(16.0) + isz + self.px(22.0);
@@ -1546,6 +1563,7 @@ impl App {
             let hint = self.fit(dim, &self.tile_hint(k), tw - self.px(32.0));
             self.fonts.draw(scene, dim, tile.x + self.px(16.0), base + self.px(18.0), &hint);
             self.settings_hits.push((tile, Hit::Tile(k)));
+            }
         }
     }
 
@@ -1583,12 +1601,25 @@ impl App {
         }
         let sh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
         let isz = self.px(14.0);
-        for (i, (name, icon)) in SECTIONS.iter().enumerate().filter(|_| !tiles) {
-            let y = r.y + i as f32 * sh;
+        let gh = self.px(24.0);
+        let (mx, my) = self.mouse;
+        let mut y = r.y;
+        for (gi, (gname, range)) in GROUPS.iter().enumerate().filter(|_| !tiles) {
+            // Group caption: small, dim, no rule of its own.
+            if gi > 0 {
+                y += self.px(6.0);
+            }
+            let cap = Style { color: t.dim, px: self.px(10.0), ..label };
+            self.fonts.draw(scene, cap, r.x + self.px(18.0), y + self.px(16.0), gname);
+            y += gh;
+            for i in range.clone() {
+            let (name, icon) = &SECTIONS[i];
             let sel = i == p.section;
             let row = Rect::new(r.x, y, nav_w, sh);
             if sel {
                 scene.rect(Rect::new(r.x, y, nav_w, sh - self.px(m::HAIRLINE)), ink);
+            } else if row.contains(mx, my) {
+                scene.rect(Rect::new(r.x, y, nav_w, sh - self.px(m::HAIRLINE)), t.tint);
             }
             let col = if sel { t.paper } else { ink };
             let base = y + self.px(12.0) + self.px(m::LABEL_PX) - self.px(2.0);
@@ -1596,6 +1627,8 @@ impl App {
             self.fonts.draw(scene, Style { color: col, ..label }, r.x + self.px(18.0) + isz + self.px(10.0), base, name);
             scene.hline(r.x, y + sh - self.px(m::HAIRLINE), nav_w, self.px(m::HAIRLINE), ink);
             self.settings_hits.push((row, Hit::Section(i)));
+            y += sh;
+            }
         }
         if !tiles {
             let cfg = "~/.config/nus/init.luau";

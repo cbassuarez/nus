@@ -42,7 +42,15 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
         vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
     );
     let c = corners[vi];
-    let px = inst.pos + c * inst.size;
+    var px = inst.pos + c * inst.size;
+    // Glyph instances may spin about their centre: phase is the angle.
+    if inst.kind == 1u && inst.phase != 0.0 {
+        let half = inst.size * 0.5;
+        let d = c * inst.size - half;
+        let cs = cos(inst.phase);
+        let sn = sin(inst.phase);
+        px = inst.pos + half + vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+    }
     let ndc = vec2(px.x / globals.screen.x * 2.0 - 1.0, 1.0 - px.y / globals.screen.y * 2.0);
     var out: VsOut;
     out.clip = vec4(ndc, 0.0, 1.0);

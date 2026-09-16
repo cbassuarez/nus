@@ -432,6 +432,30 @@ impl FontSystem {
     }
 
     /// Draw an icon with its top-left at (x, y).
+    /// An icon spun by `angle` radians about its centre and scaled by
+    /// `scale` (about the centre too): hover motion.
+    pub fn draw_icon_moved(
+        &mut self,
+        scene: &mut Scene,
+        icon: (&'static str, &'static str),
+        px: f32,
+        x: f32,
+        y: f32,
+        color: Color,
+        angle: f32,
+        scale: f32,
+    ) -> f32 {
+        if let Some(g) = self.icon(icon, px) {
+            let (w, h) = (g.width as f32 * scale, g.height as f32 * scale);
+            let dx = (g.width as f32 - w) / 2.0;
+            let dy = (g.height as f32 - h) / 2.0;
+            let mut i = Instance::glyph(x.round() + dx, y.round() + dy, w, h, g.uv, color);
+            i.phase = angle;
+            scene.push(i);
+        }
+        px
+    }
+
     pub fn draw_icon(
         &mut self,
         scene: &mut Scene,
