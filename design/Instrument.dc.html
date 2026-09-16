@@ -1,0 +1,186 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif; }
+    a { color: #f0a832; } a:hover { color: #ffc25a; }
+    .mono { font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace; }
+    .label { font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+  </style>
+</helmet>
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: {{t.chassis}}; color: {{t.text}}; font-size: 13px; display: flex; flex-direction: column;">
+
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0; gap: 8px; padding: 8px 8px 0;">
+
+    <!-- Sidebar: a rail of keys -->
+    <div style="display: flex; flex-direction: column; gap: 8px; width: 244px; flex-shrink: 0;">
+      <!-- space selector: segmented, phosphor per space -->
+      <div style="display: flex; flex-direction: row; gap: 2px; padding: 3px; background: {{t.well}}; border-radius: 8px; border: 1px solid {{t.edge}};">
+        <div class="label" style="flex-grow: 1; text-align: center; padding: 8px 0; border-radius: 6px; color: {{t.muted}};">work</div>
+        <div class="label" style="flex-grow: 1; text-align: center; padding: 8px 0; border-radius: 6px; background: {{t.key}}; color: #f0a832; box-shadow: inset 0 1px 0 {{t.keyHi}}, 0 1px 2px rgba(0,0,0,0.4); text-shadow: 0 0 10px rgba(240,168,50,0.6);">nus</div>
+        <div class="label" style="flex-grow: 1; text-align: center; padding: 8px 0; border-radius: 6px; color: {{t.muted}};">home</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 6px; padding: 10px; background: {{t.panel}}; border-radius: 10px; border: 1px solid {{t.edge}}; box-shadow: inset 0 1px 0 {{t.keyHi}}; flex-grow: 1;">
+        <div style="display: flex; flex-direction: row; align-items: center; gap: 8px; padding: 2px 4px 8px;">
+          <div class="label" style="color: {{t.muted}};">tabs</div>
+          <div style="flex-grow: 1;"></div>
+          <div class="mono" style="font-size: 10px; color: #f0a832;">3 · 1 wait</div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 8px; background: {{t.key}}; border: 1px solid {{t.edgeStrong}}; box-shadow: inset 0 1px 0 {{t.keyHi}}, 0 2px 4px rgba(0,0,0,0.35);">
+          <div style="display: flex; flex-direction: row; gap: 8px; align-items: center;">
+            <div style="width: 6px; height: 14px; border-radius: 2px; background: #f0a832; box-shadow: 0 0 8px rgba(240,168,50,0.8);"></div>
+            <div style="font-weight: 600; flex-grow: 1;">cargo test · vt</div>
+            <div class="mono" style="font-size: 10px; color: {{t.muted}};">01</div>
+          </div>
+          <div class="mono" style="height: 54px; padding: 6px 8px; border-radius: 5px; background: {{t.screen}}; border: 1px solid {{t.screenEdge}}; font-size: 7.5px; line-height: 1.5; color: {{t.screenText}}; overflow: hidden; white-space: pre;">test term::tests::alt_screen_round_trip ... ok
+test term::tests::wide_chars_take_two_cells ... ok
+test input::tests::kitty_disambiguate ... ok
+test result: ok. 17 passed; 0 failed</div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 8px; border: 1px solid transparent;">
+          <div style="display: flex; flex-direction: row; gap: 8px; align-items: center;">
+            <div style="width: 6px; height: 14px; border-radius: 2px; background: #ff5c5c; box-shadow: 0 0 8px rgba(255,92,92,0.9);"></div>
+            <div style="font-weight: 600; flex-grow: 1;">claude</div>
+            <div class="label" style="color: #ff5c5c;">wait</div>
+          </div>
+          <div class="mono" style="height: 54px; padding: 6px 8px; border-radius: 5px; background: {{t.screen}}; border: 1px solid {{t.screenEdge}}; font-size: 7.5px; line-height: 1.5; color: {{t.screenText}}; overflow: hidden; white-space: pre;">Spike 3 findings recorded.
+Proceed with spike 4? (y/n)
+▌</div>
+        </div>
+
+        <div style="display: flex; flex-direction: row; gap: 8px; align-items: center; padding: 10px;">
+          <div style="width: 6px; height: 14px; border-radius: 2px; background: {{t.edgeStrong}};"></div>
+          <div style="font-weight: 600; flex-grow: 1;">localhost:5173</div>
+          <div class="mono" style="font-size: 10px; color: {{t.muted}};">03 · split</div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 8px; align-items: center; padding: 10px; color: {{t.muted}};">
+          <div style="width: 6px; height: 14px; border-radius: 2px; background: {{t.edgeStrong}};"></div>
+          <div style="flex-grow: 1;">wgpu docs — Surface</div>
+          <div class="mono" style="font-size: 10px;">04</div>
+        </div>
+        <div style="flex-grow: 1;"></div>
+        <div class="label" style="display: flex; flex-direction: row; gap: 8px; padding: 10px; border-radius: 8px; border: 1px dashed {{t.edgeStrong}}; color: {{t.muted}};">
+          <div>+ new tab</div><div style="flex-grow: 1;"></div><div class="mono" style="letter-spacing: 0;">⌘T</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content: two inset screens with bezels -->
+    <div style="display: flex; flex-direction: row; gap: 8px; flex-grow: 1; min-width: 0;">
+      <div style="display: flex; flex-direction: column; flex-grow: 1; min-width: 0; padding: 6px; border-radius: 10px; background: {{t.panel}}; border: 1px solid {{t.edge}}; box-shadow: inset 0 1px 0 {{t.keyHi}};">
+        <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 4px 8px 8px;">
+          <div class="label" style="color: #f0a832;">01 · term</div>
+          <div style="font-weight: 600;">cargo test · vt</div>
+          <div class="mono" style="font-size: 11px; color: {{t.muted}};">~/nus</div>
+          <div style="flex-grow: 1;"></div>
+          <div class="mono" style="font-size: 10px; color: {{t.muted}};">80×42 · 144hz · 2.8ms</div>
+        </div>
+        <div class="mono" style="flex-grow: 1; padding: 14px 16px; border-radius: 6px; background: {{t.screen}}; border: 1px solid {{t.screenEdge}}; box-shadow: inset 0 2px 12px rgba(0,0,0,0.35); font-size: 13px; line-height: 1.55; white-space: pre; color: {{t.screenText}};"><span style="color: #f0a832;">❯</span> cargo test -p nus-vt
+<span style="color: {{t.muted}};">   Compiling</span> nus-vt v0.0.1 (C:\Users\seb\nus\crates\vt)
+<span style="color: {{t.muted}};">    Finished</span> `test` profile in 1.84s
+<span style="color: {{t.muted}};">     Running</span> unittests src\lib.rs
+
+running 17 tests
+test input::tests::app_cursor_mode_uses_ss3 ... <span style="color: #4fd27a;">ok</span>
+test input::tests::kitty_disambiguate ... <span style="color: #4fd27a;">ok</span>
+test term::tests::alt_screen_round_trip ... <span style="color: #4fd27a;">ok</span>
+test term::tests::crlf_and_scroll_into_history ... <span style="color: #4fd27a;">ok</span>
+test term::tests::resize_keeps_cursor_line ... <span style="color: #4fd27a;">ok</span>
+test term::tests::synchronized_update_buffers_until_end ... <span style="color: #4fd27a;">ok</span>
+test term::tests::wide_chars_take_two_cells ... <span style="color: #4fd27a;">ok</span>
+
+test result: <span style="color: #4fd27a;">ok</span>. 17 passed; 0 failed; 0 ignored
+
+<span style="color: #f0a832;">❯</span> <span style="background: #f0a832; color: {{t.screen}};">&nbsp;</span></div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; width: 520px; flex-shrink: 0; padding: 6px; border-radius: 10px; background: {{t.panel}}; border: 1px solid {{t.edge}}; box-shadow: inset 0 1px 0 {{t.keyHi}};">
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: center; padding: 4px 4px 8px;">
+          <div class="label" style="color: {{t.muted}};">03 · web</div>
+          <div class="mono" style="flex-grow: 1; padding: 6px 10px; border-radius: 6px; background: {{t.well}}; border: 1px solid {{t.edge}}; font-size: 12px; color: {{t.muted}};">localhost:<span style="color: {{t.text}};">5173</span></div>
+          <div class="label" style="padding: 6px 8px; border-radius: 6px; background: {{t.key}}; border: 1px solid {{t.edgeStrong}}; box-shadow: inset 0 1px 0 {{t.keyHi}};">devtools</div>
+        </div>
+        <div style="flex-grow: 1; border-radius: 6px; background: #ffffff; border: 1px solid {{t.screenEdge}}; display: flex; flex-direction: column; gap: 14px; padding: 28px;">
+          <div style="width: 180px; height: 22px; border-radius: 4px; background: #1d1f22;"></div>
+          <div style="width: 320px; height: 12px; border-radius: 4px; background: #1d1f22; opacity: 0.3;"></div>
+          <div style="width: 280px; height: 12px; border-radius: 4px; background: #1d1f22; opacity: 0.3;"></div>
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 10px;">
+            <div style="height: 90px; border-radius: 6px; background: #1d1f22; opacity: 0.1;"></div>
+            <div style="height: 90px; border-radius: 6px; background: #1d1f22; opacity: 0.1;"></div>
+            <div style="height: 90px; border-radius: 6px; background: #1d1f22; opacity: 0.1;"></div>
+          </div>
+        </div>
+        <div class="label" style="display: flex; flex-direction: row; gap: 14px; padding: 10px 6px 4px; color: {{t.muted}};">
+          <div style="color: {{t.text}};">Console</div><div>Network</div><div>Elements</div>
+          <div style="flex-grow: 1;"></div><div style="color: #4fd27a;">● live</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- status strip: segmented readouts -->
+  <div class="mono" style="display: flex; flex-direction: row; gap: 2px; padding: 8px; font-size: 10px; color: {{t.muted}};">
+    <div style="padding: 6px 12px; border-radius: 6px; background: {{t.well}}; border: 1px solid {{t.edge}}; color: #f0a832;">nus</div>
+    <div style="padding: 6px 12px; border-radius: 6px; background: {{t.well}}; border: 1px solid {{t.edge}};">powershell · ~/nus</div>
+    <div style="padding: 6px 12px; border-radius: 6px; background: {{t.well}}; border: 1px solid {{t.edge}};">git main ✓</div>
+    <div style="flex-grow: 1;"></div>
+    <div style="padding: 6px 12px; border-radius: 6px; background: {{t.well}}; border: 1px solid {{t.edge}}; color: #ff5c5c;">1 waiting</div>
+    <div style="padding: 6px 12px; border-radius: 6px; background: {{t.well}}; border: 1px solid {{t.edge}};">⌘K</div>
+  </div>
+
+  <!-- ⌘K palette: a raised console -->
+  <div style="position: absolute; inset: 0; background: {{t.dim}};"></div>
+  <div style="position: absolute; left: 420px; top: 200px; width: 600px; display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 12px; background: {{t.panel}}; border: 1px solid {{t.edgeStrong}}; box-shadow: inset 0 1px 0 {{t.keyHi}}, 0 30px 80px rgba(0,0,0,0.55);">
+    <div class="mono" style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 7px; background: {{t.screen}}; border: 1px solid {{t.screenEdge}}; box-shadow: inset 0 2px 10px rgba(0,0,0,0.35); font-size: 15px; color: {{t.screenText}};">
+      <div style="color: #f0a832;">›</div>
+      <div style="flex-grow: 1;">open loc<span style="background: #f0a832; color: {{t.screen}};">&nbsp;</span></div>
+      <div class="label" style="color: {{t.muted}};">esc</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 7px; background: {{t.key}}; border: 1px solid {{t.edgeStrong}}; box-shadow: inset 0 1px 0 {{t.keyHi}};">
+        <div style="width: 6px; height: 14px; border-radius: 2px; background: #f0a832; box-shadow: 0 0 8px rgba(240,168,50,0.8);"></div>
+        <div style="flex-grow: 1;"><span style="font-weight: 700;">loc</span>alhost:5173 <span style="color: {{t.muted}};">· switch to tab</span></div>
+        <div class="mono" style="font-size: 11px; color: {{t.muted}};">↵</div>
+      </div>
+      <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 7px;">
+        <div style="width: 6px; height: 14px; border-radius: 2px; background: {{t.edgeStrong}};"></div>
+        <div style="flex-grow: 1;">Open <span style="font-weight: 700;">loc</span>alhost:5173 in a browser split <span style="color: {{t.muted}};">· from terminal output</span></div>
+        <div class="mono" style="font-size: 11px; color: {{t.muted}};">⌘↵</div>
+      </div>
+      <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 7px; color: {{t.muted}};">
+        <div style="width: 6px; height: 14px; border-radius: 2px; background: {{t.edgeStrong}};"></div>
+        <div style="flex-grow: 1;">history · <span style="font-weight: 700; color: {{t.text}};">loc</span>al dev setup notes</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = this.props.dark ?? true;
+    const t = dark ? {
+      chassis: '#151618', panel: '#1e2023', well: '#121315', key: '#282b2f', keyHi: 'rgba(255,255,255,0.06)',
+      edge: '#2a2d31', edgeStrong: '#3a3e44', screen: '#0d0e10', screenEdge: '#000000', screenText: '#d6d9de',
+      text: '#e6e8eb', muted: '#8a9099', dim: 'rgba(0,0,0,0.45)'
+    } : {
+      chassis: '#d9dbdf', panel: '#eceef1', well: '#cfd2d7', key: '#f8f9fa', keyHi: 'rgba(255,255,255,0.9)',
+      edge: '#c3c7cd', edgeStrong: '#aeb3ba', screen: '#f5f6f7', screenEdge: '#b9bec6', screenText: '#1d1f22',
+      text: '#1d1f22', muted: '#6b717a', dim: 'rgba(30,32,36,0.25)'
+    };
+    return { t };
+  }
+}
+</script>
+</body>
+</html>

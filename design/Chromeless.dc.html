@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #b3261e; } a:hover { color: #7a1a14; }
+    .serif { font-family: 'Instrument Serif', Georgia, serif; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  </style>
+</helmet>
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: {{t.paper}}; color: {{t.ink}}; font-size: 13px; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid {{t.ink}}; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; font-style: italic; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div>
+    <div>nus · 01 vite · ~/nus/site</div>
+    <div style="flex-grow: 1;"></div>
+    <div style="display: flex; flex-direction: row; gap: 8px; align-items: center;"><div style="width: 8px; height: 8px; background: #c8102e;"></div>02 claude waiting</div>
+    <div>⌘K</div>
+    <div style="display: flex; flex-direction: row; gap: 14px; font-size: 13px; letter-spacing: 0;"><div>—</div><div>▢</div><div>✕</div></div>
+  </div>
+
+  <!-- full-bleed terminal; the sidebar's only trace is a 4px hot edge on the left -->
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0;">
+    <div style="width: 4px; flex-shrink: 0; background: {{t.inkTint}};"></div>
+    <div style="flex-grow: 1; min-width: 0; padding: 18px 24px; font-size: 13px; line-height: 1.55; white-space: pre; position: relative;"><span style="color: #c8102e;">❯</span> npm run dev
+
+<span style="font-weight: 600;">&gt; site@0.1.0 dev</span>
+<span style="font-weight: 600;">&gt; vite</span>
+
+  <span style="color: {{t.green}}; font-weight: 600;">VITE v6.0.3</span>  ready in 312 ms
+
+  ➜  Local:   <span style="text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px;">http://localhost:5173/</span>
+  ➜  Network: use --host to expose
+  ➜  press h + enter to show help
+<span style="background: {{t.ink}}; color: {{t.paper}};">&nbsp;</span>
+
+      <!-- the localhost hook: a ruled chip anchored to the detected line -->
+      <div class="cap" style="position: absolute; left: 330px; top: 156px; display: flex; flex-direction: row; gap: 14px; align-items: baseline; padding: 8px 12px; background: {{t.paper}}; border: 1.5px solid {{t.ink}}; box-shadow: 4px 4px 0 {{t.ink}}; white-space: nowrap;">
+        <div style="font-weight: 600;">localhost:5173</div>
+        <div>open split</div>
+        <div style="font-weight: 600;">⌘↵</div>
+        <div style="opacity: 0.6;">·</div>
+        <div>new tab</div>
+        <div style="font-weight: 600;">⌘⇧↵</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- hover/keyboard hint for the hidden sidebar -->
+  <div class="cap" style="position: absolute; left: 18px; bottom: 14px; display: flex; flex-direction: row; gap: 10px; opacity: 0.55;">
+    <div>⌘⇧S sidebar</div><div>·</div><div>⌘1–9 tab</div><div>·</div><div>⌘⌥1–9 space</div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = this.props.dark ?? true;
+    const t = dark ? {
+      paper: '#141414', ink: '#ece7da', inkTint: 'rgba(236,231,218,0.14)', green: '#7ac77f'
+    } : {
+      paper: '#f4f1ea', ink: '#141414', inkTint: 'rgba(20,20,20,0.12)', green: '#2e7d32'
+    };
+    return { t };
+  }
+}
+</script>
+</body>
+</html>

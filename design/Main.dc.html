@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #b3261e; } a:hover { color: #7a1a14; }
+    .serif { font-family: 'Instrument Serif', Georgia, serif; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  </style>
+</helmet>
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: {{t.paper}}; color: {{t.ink}}; font-size: 13px; display: flex; flex-direction: column;">
+  <!-- Space signal band -->
+  <div style="height: 6px; background: #c8102e; flex-shrink: 0;"></div>
+  <!-- Top strip: identity survives when the sidebar is hidden; window controls live here -->
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid {{t.ink}}; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; font-style: italic; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div>
+    <div>nus · 01 cargo test · ~/nus</div>
+    <div style="flex-grow: 1;"></div>
+    <div>⌘K</div>
+    <div style="display: flex; flex-direction: row; gap: 14px; font-size: 13px; letter-spacing: 0;"><div>—</div><div>▢</div><div>✕</div></div>
+  </div>
+
+  <div style="display: flex; flex-direction: row; flex-grow: 1; min-height: 0;">
+
+    <!-- Sidebar (revealed) -->
+    <div style="display: flex; flex-direction: column; width: 272px; flex-shrink: 0; border-right: 1.5px solid {{t.ink}};">
+      <div style="display: flex; flex-direction: row; border-bottom: 1.5px solid {{t.ink}};">
+        <div class="cap" style="flex-grow: 1; padding: 9px 10px; border-right: 1px solid {{t.ink}}; display: flex; flex-direction: row; gap: 8px; align-items: center;"><div style="width: 10px; height: 10px; background: #1f5fbf;"></div>work</div>
+        <div class="cap" style="flex-grow: 1; padding: 9px 10px; border-right: 1px solid {{t.ink}}; background: {{t.ink}}; color: {{t.paper}}; display: flex; flex-direction: row; gap: 8px; align-items: center;"><div style="width: 10px; height: 10px; background: #c8102e;"></div>nus</div>
+        <div class="cap" style="flex-grow: 1; padding: 9px 10px; display: flex; flex-direction: row; gap: 8px; align-items: center;"><div style="width: 10px; height: 10px; background: #d9a400;"></div>home</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-bottom: 1px solid {{t.ink}}; background: {{t.inkTint}};">
+          <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline;">
+            <div style="font-weight: 600;">01</div>
+            <div style="font-weight: 600; flex-grow: 1;">cargo test · vt</div>
+            <div class="cap">~/nus</div>
+          </div>
+          <div style="height: 52px; padding: 6px 8px; border: 1px solid {{t.ink}}; font-size: 7.5px; line-height: 1.5; overflow: hidden; white-space: pre;">test term::tests::alt_screen_round_trip ... ok
+test term::tests::wide_chars_take_two_cells ... ok
+test input::tests::kitty_disambiguate ... ok
+test result: ok. 17 passed; 0 failed</div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-bottom: 1px solid {{t.ink}};">
+          <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline;">
+            <div style="font-weight: 600;">02</div>
+            <div style="font-weight: 600; flex-grow: 1;">claude</div>
+            <div class="cap" style="padding: 1px 6px; background: #c8102e; color: #ffffff;">waiting</div>
+          </div>
+          <div style="height: 52px; padding: 6px 8px; border: 1px solid {{t.ink}}; font-size: 7.5px; line-height: 1.5; overflow: hidden; white-space: pre;">Spike 3 findings recorded.
+Proceed with spike 4? (y/n)
+▌</div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline; padding: 12px 14px; border-bottom: 1px solid {{t.ink}};">
+          <div style="font-weight: 600;">03</div>
+          <div style="font-weight: 600; flex-grow: 1;">localhost:5173</div>
+          <div class="cap">split →</div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: baseline; padding: 12px 14px; border-bottom: 1px solid {{t.ink}}; opacity: 0.6;">
+          <div style="font-weight: 600;">04</div>
+          <div style="flex-grow: 1;">wgpu docs — Surface</div>
+        </div>
+      </div>
+      <div style="flex-grow: 1;"></div>
+      <div class="cap" style="display: flex; flex-direction: row; gap: 10px; padding: 12px 14px; border-top: 1.5px solid {{t.ink}};">
+        <div>+ new tab</div><div style="flex-grow: 1;"></div><div>⌘T</div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div style="display: flex; flex-direction: row; flex-grow: 1; min-width: 0;">
+      <div style="display: flex; flex-direction: column; flex-grow: 1; min-width: 0; border-right: 1.5px solid {{t.ink}};">
+        <div class="cap" style="display: flex; flex-direction: row; gap: 14px; align-items: baseline; padding: 9px 18px; border-bottom: 1px solid {{t.ink}};">
+          <div style="font-weight: 600;">01 · cargo test</div><div>~/nus</div><div style="flex-grow: 1;"></div><div>80×42</div>
+        </div>
+        <div style="flex-grow: 1; padding: 16px 18px; font-size: 13px; line-height: 1.55; white-space: pre;"><span style="color: #c8102e;">❯</span> cargo test -p nus-vt
+<span style="color: {{t.dimInk}};">   Compiling</span> nus-vt v0.0.1 (C:\Users\seb\nus\crates\vt)
+<span style="color: {{t.dimInk}};">    Finished</span> `test` profile in 1.84s
+<span style="color: {{t.dimInk}};">     Running</span> unittests src\lib.rs
+
+running 17 tests
+test input::tests::app_cursor_mode_uses_ss3 ... <span style="color: {{t.green}};">ok</span>
+test input::tests::kitty_disambiguate ... <span style="color: {{t.green}};">ok</span>
+test term::tests::alt_screen_round_trip ... <span style="color: {{t.green}};">ok</span>
+test term::tests::crlf_and_scroll_into_history ... <span style="color: {{t.green}};">ok</span>
+test term::tests::resize_keeps_cursor_line ... <span style="color: {{t.green}};">ok</span>
+test term::tests::synchronized_update_buffers_until_end ... <span style="color: {{t.green}};">ok</span>
+test term::tests::wide_chars_take_two_cells ... <span style="color: {{t.green}};">ok</span>
+
+test result: <span style="color: {{t.green}}; font-weight: 600;">ok</span>. 17 passed; 0 failed; 0 ignored
+
+<span style="color: #c8102e;">❯</span> <span style="background: {{t.ink}}; color: {{t.paper}};">&nbsp;</span></div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; width: 520px; flex-shrink: 0;">
+        <div style="display: flex; flex-direction: row; gap: 14px; align-items: center; padding: 6px 14px; border-bottom: 1px solid {{t.ink}};">
+          <div style="font-weight: 600;">←</div>
+          <div style="flex-grow: 1; padding: 4px 8px; border: 1px solid {{t.ink}}; font-size: 12px;">localhost:5173</div>
+          <div class="cap">devtools</div>
+        </div>
+        <div style="flex-grow: 1; background: #ffffff; display: flex; flex-direction: column; gap: 14px; padding: 28px; border-bottom: 1px solid {{t.ink}};">
+          <div style="width: 180px; height: 22px; background: #141414;"></div>
+          <div style="width: 320px; height: 12px; background: #141414; opacity: 0.3;"></div>
+          <div style="width: 280px; height: 12px; background: #141414; opacity: 0.3;"></div>
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 10px;">
+            <div style="height: 90px; border: 1px solid #141414;"></div>
+            <div style="height: 90px; border: 1px solid #141414;"></div>
+            <div style="height: 90px; border: 1px solid #141414;"></div>
+          </div>
+        </div>
+        <div class="cap" style="display: flex; flex-direction: row; gap: 16px; padding: 8px 14px;">
+          <div style="font-weight: 600; text-decoration: underline;">Console</div><div>Network</div><div>Elements</div>
+          <div style="flex-grow: 1;"></div><div>■ live</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⌘K palette -->
+  <div style="position: absolute; inset: 0; background: {{t.dim}};"></div>
+  <div style="position: absolute; left: 420px; top: 220px; width: 600px; display: flex; flex-direction: column; background: {{t.paper}}; border: 2px solid {{t.ink}}; box-shadow: 8px 8px 0 {{t.ink}};">
+    <div style="display: flex; flex-direction: row; gap: 12px; align-items: baseline; padding: 14px 18px; border-bottom: 2px solid {{t.ink}}; font-size: 16px;">
+      <div class="serif" style="font-style: italic; font-size: 20px;">go</div>
+      <div style="flex-grow: 1;">open loc<span style="background: {{t.ink}}; color: {{t.paper}};">&nbsp;</span></div>
+      <div class="cap">esc</div>
+    </div>
+    <div style="display: flex; flex-direction: row; gap: 12px; align-items: baseline; padding: 10px 18px; background: {{t.ink}}; color: {{t.paper}};">
+      <div style="font-weight: 600;">01</div>
+      <div style="flex-grow: 1;"><span style="font-weight: 600;">loc</span>alhost:5173 · switch to tab</div>
+      <div>↵</div>
+    </div>
+    <div style="display: flex; flex-direction: row; gap: 12px; align-items: baseline; padding: 10px 18px; border-bottom: 1px solid {{t.ink}};">
+      <div style="font-weight: 600;">02</div>
+      <div style="flex-grow: 1;">Open <span style="font-weight: 600;">loc</span>alhost:5173 in a browser split · from terminal output</div>
+      <div>⌘↵</div>
+    </div>
+    <div style="display: flex; flex-direction: row; gap: 12px; align-items: baseline; padding: 10px 18px; opacity: 0.6;">
+      <div style="font-weight: 600;">03</div>
+      <div style="flex-grow: 1;">history · <span style="font-weight: 600;">loc</span>al dev setup notes</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = this.props.dark ?? false;
+    const t = dark ? {
+      paper: '#141414', ink: '#ece7da', inkTint: 'rgba(236,231,218,0.07)', dimInk: '#8a857a', green: '#7ac77f', dim: 'rgba(0,0,0,0.5)'
+    } : {
+      paper: '#f4f1ea', ink: '#141414', inkTint: 'rgba(20,20,20,0.06)', dimInk: '#8a857a', green: '#2e7d32', dim: 'rgba(244,241,234,0.55)'
+    };
+    return { t };
+  }
+}
+</script>
+</body>
+</html>

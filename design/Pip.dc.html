@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #b3261e; } a:hover { color: #7a1a14; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  </style>
+</helmet>
+<!-- PiP: our own always-on-top window showing a tab's texture. Two flavours side by side: a video, and a terminal tab (agent) being watched. -->
+<div style="width: 900px; height: 300px; padding: 20px; box-sizing: border-box; background: {{t.desk}}; display: flex; flex-direction: row; gap: 40px; align-items: flex-start; font-size: 13px; color: {{t.ink}};">
+
+  <div style="width: 400px; display: flex; flex-direction: column; background: {{t.paper}}; border: 2px solid {{t.ink}}; box-shadow: 6px 6px 0 {{t.ink}};">
+    <div style="height: 4px; background: #1f5fbf;"></div>
+    <div style="height: 210px; background: #141414; position: relative; display: flex; align-items: center; justify-content: center;">
+      <div style="width: 0; height: 0; border-left: 22px solid #f4f1ea; border-top: 13px solid transparent; border-bottom: 13px solid transparent; opacity: 0.9;"></div>
+      <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(244,241,234,0.25);"><div style="width: 38%; height: 100%; background: #f4f1ea;"></div></div>
+    </div>
+    <div class="cap" style="display: flex; flex-direction: row; gap: 12px; align-items: baseline; padding: 7px 10px; border-top: 1.5px solid {{t.ink}};">
+      <div style="font-weight: 600;">work · 03</div><div style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0;">wgpu — Surfaces, explained</div><div>↗</div><div>✕</div>
+    </div>
+  </div>
+
+  <div style="width: 400px; display: flex; flex-direction: column; background: {{t.paper}}; border: 2px solid {{t.ink}}; box-shadow: 6px 6px 0 {{t.ink}};">
+    <div style="height: 4px; background: #c8102e;"></div>
+    <div style="height: 210px; padding: 10px 12px; font-size: 10px; line-height: 1.55; white-space: pre; overflow: hidden;">● Reading crates/render/src/atlas.rs
+● Edit crates/render/src/atlas.rs
+  cache shaped rows by content hash
+
+Spike 4 skeleton compiles. Run the composite
+window and confirm focus routing? (y/n)
+<span style="background: {{t.ink}}; color: {{t.paper}};">&nbsp;</span></div>
+    <div class="cap" style="display: flex; flex-direction: row; gap: 12px; align-items: baseline; padding: 7px 10px; border-top: 1.5px solid {{t.ink}};">
+      <div style="font-weight: 600;">nus · 02</div><div style="flex-grow: 1;">claude</div><div style="padding: 1px 6px; background: #c8102e; color: #ffffff;">waiting</div><div>↗</div><div>✕</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":900,"height":300}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = this.props.dark ?? false;
+    const t = dark ? { paper: '#141414', ink: '#ece7da', desk: '#2a2a2a' } : { paper: '#f4f1ea', ink: '#141414', desk: '#d8d4cb' };
+    return { t };
+  }
+}
+</script>
+</body>
+</html>

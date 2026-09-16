@@ -41,3 +41,7 @@ Run `vim`, `lazygit`, `claude` at 120 fps with ligatures on all three OSes.
 The skeleton of the real app. Two layers, a hand-rolled sidebar, keyboard focus
 routing between terminal and browser. When this works, the code moves into
 `crates/` and the spikes are deleted.
+
+## Look and feel (before spike 4)
+Direction "Broadsheet" chosen 2026-09-16 — see `docs/DESIGN.md` and the
+canvas sources in `design/`. Spike 4 renders the chrome from those tokens.

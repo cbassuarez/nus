@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #b3261e; } a:hover { color: #7a1a14; }
+    .serif { font-family: 'Instrument Serif', Georgia, serif; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  </style>
+</helmet>
+<!-- A browser tab is focused; ⌥⌘T drops the quick terminal from the top edge. -->
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: {{t.paper}}; color: {{t.ink}}; font-size: 13px; display: flex; flex-direction: column;">
+  <div style="height: 6px; background: #1f5fbf; flex-shrink: 0;"></div>
+  <div class="cap" style="display: flex; flex-direction: row; align-items: center; gap: 18px; height: 30px; padding: 0 18px; border-bottom: 1.5px solid {{t.ink}}; flex-shrink: 0;">
+    <div class="serif" style="font-size: 20px; font-style: italic; text-transform: none; letter-spacing: 0; line-height: 1;">nus</div>
+    <div>work · 02 wgpu docs</div>
+    <div style="flex-grow: 1;"></div>
+    <div>⌘K</div>
+    <div style="display: flex; flex-direction: row; gap: 14px; font-size: 13px; letter-spacing: 0;"><div>—</div><div>▢</div><div>✕</div></div>
+  </div>
+  <div style="display: flex; flex-direction: row; gap: 14px; align-items: center; padding: 6px 18px; border-bottom: 1px solid {{t.ink}};">
+    <div style="font-weight: 600;">←</div><div style="font-weight: 600; opacity: 0.4;">→</div>
+    <div style="flex-grow: 1; padding: 4px 8px; border: 1px solid {{t.ink}}; font-size: 12px;">docs.rs/wgpu/latest/wgpu/struct.Surface.html</div>
+    <div class="cap">devtools</div>
+  </div>
+  <!-- page -->
+  <div style="flex-grow: 1; background: #ffffff; color: #141414; display: flex; flex-direction: row; gap: 40px; padding: 36px 60px;">
+    <div style="display: flex; flex-direction: column; gap: 10px; width: 200px;">
+      <div style="width: 120px; height: 10px; background: #141414; opacity: 0.6;"></div>
+      <div style="width: 160px; height: 10px; background: #141414; opacity: 0.25;"></div>
+      <div style="width: 140px; height: 10px; background: #141414; opacity: 0.25;"></div>
+      <div style="width: 170px; height: 10px; background: #141414; opacity: 0.25;"></div>
+      <div style="width: 130px; height: 10px; background: #141414; opacity: 0.25;"></div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 14px; flex-grow: 1;">
+      <div style="width: 360px; height: 26px; background: #141414;"></div>
+      <div style="width: 620px; height: 12px; background: #141414; opacity: 0.3;"></div>
+      <div style="width: 580px; height: 12px; background: #141414; opacity: 0.3;"></div>
+      <div style="width: 600px; height: 12px; background: #141414; opacity: 0.3;"></div>
+      <div style="width: 520px; height: 90px; border: 1px solid #141414; margin-top: 10px;"></div>
+      <div style="width: 610px; height: 12px; background: #141414; opacity: 0.3;"></div>
+      <div style="width: 560px; height: 12px; background: #141414; opacity: 0.3;"></div>
+    </div>
+  </div>
+
+  <!-- quick terminal: a sheet from the top, hard edge, offset shadow -->
+  <div style="position: absolute; left: 240px; top: 36px; width: 960px; display: flex; flex-direction: column; background: {{t.paper}}; color: {{t.ink}}; border: 2px solid {{t.ink}}; border-top: none; box-shadow: 8px 8px 0 {{t.ink}};">
+    <div class="cap" style="display: flex; flex-direction: row; gap: 14px; align-items: baseline; padding: 9px 18px; border-bottom: 1px solid {{t.ink}};">
+      <div class="serif" style="font-size: 18px; font-style: italic; text-transform: none; letter-spacing: 0;">quick</div>
+      <div>powershell · ~/nus</div>
+      <div style="flex-grow: 1;"></div>
+      <div>⌥⌘T to dismiss · esc</div>
+    </div>
+    <div style="height: 300px; padding: 14px 18px; font-size: 13px; line-height: 1.55; white-space: pre;"><span style="color: #1f5fbf;">❯</span> git status -sb
+<span style="font-weight: 600;">## main...origin/main</span>
+ M crates/render/src/atlas.rs
+?? design/
+<span style="color: #1f5fbf;">❯</span> <span style="background: {{t.ink}}; color: {{t.paper}};">&nbsp;</span></div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = this.props.dark ?? false;
+    const t = dark ? { paper: '#141414', ink: '#ece7da' } : { paper: '#f4f1ea', ink: '#141414' };
+    return { t };
+  }
+}
+</script>
+</body>
+</html>

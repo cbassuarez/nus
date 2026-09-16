@@ -1,0 +1,26 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "Broadsheet" },
+    { "id": "page-2", "name": "Directions (record)" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1440, "h": 900, "title": "Main · paper", "page": "page-1" },
+    { "file": "Dark.dc.html", "x": 1560, "y": 0, "w": 1440, "h": 900, "title": "Main · ink", "page": "page-1" },
+    { "file": "Chromeless.dc.html", "x": 0, "y": 1060, "w": 1440, "h": 900, "title": "Chromeless (default state)", "page": "page-1" },
+    { "file": "QuickTerminal.dc.html", "x": 1560, "y": 1060, "w": 1440, "h": 900, "title": "Quick terminal", "page": "page-1" },
+    { "file": "Pip.dc.html", "x": 0, "y": 2120, "w": 900, "h": 300, "title": "PiP", "page": "page-1" },
+    { "file": "Tokens.dc.html", "x": 1560, "y": 2120, "w": 1440, "h": 900, "title": "Tokens", "page": "page-1" },
+    { "file": "Aurora.dc.html", "x": 0, "y": 0, "w": 1440, "h": 900, "title": "Aurora", "page": "page-2" },
+    { "file": "Broadsheet.dc.html", "x": 1560, "y": 0, "w": 1440, "h": 900, "title": "Broadsheet (chosen)", "page": "page-2" },
+    { "file": "Instrument.dc.html", "x": 3120, "y": 0, "w": 1440, "h": 900, "title": "Instrument", "page": "page-2" }
+  ],
+  "annotations": [
+    { "id": "n-main", "x": 0, "y": -150, "w": 560, "page": "page-1", "text": "BROADSHEET — chosen 2026-09-16.\nSidebar revealed (⌘⇧S), terminal | browser split, ⌘K open. The 30px top strip keeps identity and window controls when the sidebar is hidden. Toggle dark/light above each frame; both themes are first-class." },
+    { "id": "n-chromeless", "x": 0, "y": 960, "w": 560, "page": "page-1", "text": "CHROMELESS — the default. Full-bleed terminal, a 4px hot edge where the sidebar hides. The localhost hook is a ruled chip anchored to the detected line (⌘↵ split, ⌘⇧↵ new tab). Attention state surfaces in the top strip, not as a popup." },
+    { "id": "n-quick", "x": 1560, "y": 960, "w": 560, "page": "page-1", "text": "QUICK TERMINAL — ⌥⌘T drops a sheet from the top edge over whatever is focused (here a browser tab in the blue 'work' Space). Same 2px edge + hard shadow as the palette." },
+    { "id": "n-pip", "x": 0, "y": 2020, "w": 560, "page": "page-1", "text": "PIP — our own always-on-top window drawing a tab's texture: a video (left) or a terminal tab you're keeping an eye on (right). Signal band shows which Space it came from; ↗ returns it to its tab." },
+    { "id": "n-tokens", "x": 1560, "y": 2020, "w": 560, "page": "page-1", "text": "TOKENS — what spike 4 renders from: paper/ink for both themes, six Space signals, ANSI 0–15 per theme, type ramp (IBM Plex Mono + Instrument Serif wordmark), rule weights, spacing, states, keys, principles." },
+    { "id": "n-record", "x": 0, "y": -150, "w": 560, "page": "page-2", "text": "Direction pass, kept for the record. Broadsheet was chosen; Aurora and Instrument are not being built." }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}

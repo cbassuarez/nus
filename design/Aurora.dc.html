@@ -1,0 +1,185 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Manrope', 'Segoe UI', system-ui, sans-serif; }
+    a { color: #8b7cff; } a:hover { color: #a99dff; }
+    .mono { font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace; }
+  </style>
+</helmet>
+<div style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: {{t.canvas}}; color: {{t.text}}; font-size: 13px;">
+  <!-- tinted mesh: the active Space's color floods the window -->
+  <div style="position: absolute; inset: 0; background: radial-gradient(900px 600px at 18% 0%, {{t.mesh1}}, transparent 60%), radial-gradient(700px 500px at 100% 100%, {{t.mesh2}}, transparent 60%);"></div>
+
+  <div style="position: relative; display: flex; flex-direction: row; gap: 12px; padding: 12px; height: 876px;">
+
+    <!-- Sidebar (revealed state; slides in over content when chromeless) -->
+    <div style="display: flex; flex-direction: column; gap: 14px; width: 248px; flex-shrink: 0; padding: 12px 10px; border-radius: 16px; background: {{t.glass}}; border: 1px solid {{t.hairline}}; backdrop-filter: blur(24px);">
+      <!-- spaces -->
+      <div style="display: flex; flex-direction: row; gap: 6px; align-items: center; padding: 0 4px;">
+        <div style="width: 30px; height: 30px; border-radius: 9px; background: #7c5cff; box-shadow: 0 0 0 2px {{t.canvas}}, 0 0 0 3.5px #7c5cff;"></div>
+        <div style="width: 30px; height: 30px; border-radius: 9px; background: #2fbf9a; opacity: 0.55;"></div>
+        <div style="width: 30px; height: 30px; border-radius: 9px; background: #f2a541; opacity: 0.55;"></div>
+        <div style="flex-grow: 1;"></div>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.6;"><path d="M12 5v14M5 12h14"></path></svg>
+      </div>
+      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 8px; padding: 0 6px;">
+        <div style="font-weight: 700; font-size: 15px; letter-spacing: -0.01em;">nus</div>
+        <div style="font-size: 11px; color: {{t.muted}};">3 tabs · 1 waiting</div>
+      </div>
+
+      <!-- tabs with live previews -->
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 12px; background: {{t.tabActive}}; border: 1px solid {{t.hairlineStrong}};">
+          <div style="display: flex; flex-direction: row; gap: 8px; align-items: center;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5M12 19h8"></path></svg>
+            <div style="font-weight: 600; flex-grow: 1;">cargo test · vt</div>
+            <div style="font-size: 10px; color: {{t.muted}};" class="mono">~/nus</div>
+          </div>
+          <div class="mono" style="height: 56px; padding: 6px 8px; border-radius: 8px; background: {{t.previewBg}}; font-size: 7.5px; line-height: 1.5; color: {{t.previewText}}; overflow: hidden; white-space: pre;">test term::tests::alt_screen_round_trip ... ok
+test term::tests::wide_chars_take_two_cells ... ok
+test input::tests::kitty_disambiguate ... ok
+test result: ok. 17 passed; 0 failed</div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 12px;">
+          <div style="display: flex; flex-direction: row; gap: 8px; align-items: center;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5M12 19h8"></path></svg>
+            <div style="font-weight: 600; flex-grow: 1;">claude</div>
+            <div style="display: flex; flex-direction: row; gap: 5px; align-items: center; font-size: 10px; font-weight: 700; color: #f2a541;"><div style="width: 7px; height: 7px; border-radius: 50%; background: #f2a541; box-shadow: 0 0 8px #f2a541;"></div>waiting</div>
+          </div>
+          <div class="mono" style="height: 56px; padding: 6px 8px; border-radius: 8px; background: {{t.previewBg}}; font-size: 7.5px; line-height: 1.5; color: {{t.previewText}}; overflow: hidden; white-space: pre;">Spike 3 findings recorded.
+Proceed with spike 4? (y/n)
+▌</div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 8px; align-items: center; padding: 10px; border-radius: 12px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"></path></svg>
+          <div style="font-weight: 600; flex-grow: 1;">localhost:5173</div>
+          <div style="font-size: 10px; color: {{t.muted}};">split →</div>
+        </div>
+        <div style="display: flex; flex-direction: row; gap: 8px; align-items: center; padding: 10px; border-radius: 12px; color: {{t.muted}};">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"></path></svg>
+          <div style="flex-grow: 1;">wgpu docs — Surface</div>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; flex-direction: row; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 10px; color: {{t.muted}}; font-size: 12px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+        <div>New tab</div>
+        <div style="flex-grow: 1;"></div>
+        <div class="mono" style="font-size: 10px; opacity: 0.7;">⌘T</div>
+      </div>
+    </div>
+
+    <!-- Content: terminal | browser split, panes as floating cards -->
+    <div style="display: flex; flex-direction: row; gap: 12px; flex-grow: 1; min-width: 0;">
+      <div class="mono" style="display: flex; flex-direction: column; flex-grow: 1; min-width: 0; border-radius: 16px; background: {{t.pane}}; border: 1px solid {{t.hairline}}; box-shadow: 0 20px 60px {{t.shadow}}; overflow: hidden;">
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: center; padding: 10px 16px; font-family: 'Manrope', sans-serif; font-size: 12px; color: {{t.muted}};">
+          <div style="width: 8px; height: 8px; border-radius: 50%; background: #7c5cff;"></div>
+          <div style="font-weight: 600; color: {{t.text}};">cargo test · vt</div>
+          <div>~/nus</div>
+        </div>
+        <div style="flex-grow: 1; padding: 6px 18px 18px; font-size: 13px; line-height: 1.55; white-space: pre; color: {{t.termText}};"><span style="color: #2fbf9a;">❯</span> cargo test -p nus-vt
+<span style="color: {{t.muted}};">   Compiling</span> nus-vt v0.0.1 (C:\Users\seb\nus\crates\vt)
+<span style="color: {{t.muted}};">    Finished</span> `test` profile in 1.84s
+<span style="color: {{t.muted}};">     Running</span> unittests src\lib.rs
+
+running 17 tests
+test input::tests::app_cursor_mode_uses_ss3 ... <span style="color: #2fbf9a;">ok</span>
+test input::tests::kitty_disambiguate ... <span style="color: #2fbf9a;">ok</span>
+test term::tests::alt_screen_round_trip ... <span style="color: #2fbf9a;">ok</span>
+test term::tests::crlf_and_scroll_into_history ... <span style="color: #2fbf9a;">ok</span>
+test term::tests::resize_keeps_cursor_line ... <span style="color: #2fbf9a;">ok</span>
+test term::tests::synchronized_update_buffers_until_end ... <span style="color: #2fbf9a;">ok</span>
+test term::tests::wide_chars_take_two_cells ... <span style="color: #2fbf9a;">ok</span>
+
+test result: <span style="color: #2fbf9a;">ok</span>. 17 passed; 0 failed; 0 ignored
+
+<span style="color: #2fbf9a;">❯</span> <span style="background: {{t.termText}}; color: {{t.pane}};">&nbsp;</span></div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; width: 520px; flex-shrink: 0; border-radius: 16px; background: {{t.pane}}; border: 1px solid {{t.hairline}}; box-shadow: 0 20px 60px {{t.shadow}}; overflow: hidden;">
+        <div style="display: flex; flex-direction: row; gap: 10px; align-items: center; padding: 10px 12px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.6;"><path d="M15 6l-6 6 6 6"></path></svg>
+          <div class="mono" style="flex-grow: 1; padding: 6px 12px; border-radius: 9px; background: {{t.field}}; font-size: 12px; color: {{t.muted}};">localhost:<span style="color: {{t.text}};">5173</span></div>
+          <div style="font-size: 11px; font-weight: 600; color: {{t.muted}};">devtools</div>
+        </div>
+        <div style="flex-grow: 1; margin: 0 12px 12px; border-radius: 10px; background: {{t.page}}; display: flex; flex-direction: column; gap: 14px; padding: 28px;">
+          <div style="width: 180px; height: 22px; border-radius: 6px; background: {{t.pageInk}}; opacity: 0.85;"></div>
+          <div style="width: 320px; height: 12px; border-radius: 6px; background: {{t.pageInk}}; opacity: 0.35;"></div>
+          <div style="width: 280px; height: 12px; border-radius: 6px; background: {{t.pageInk}}; opacity: 0.35;"></div>
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 10px;">
+            <div style="height: 90px; border-radius: 10px; background: {{t.pageInk}}; opacity: 0.12;"></div>
+            <div style="height: 90px; border-radius: 10px; background: {{t.pageInk}}; opacity: 0.12;"></div>
+            <div style="height: 90px; border-radius: 10px; background: {{t.pageInk}}; opacity: 0.12;"></div>
+          </div>
+        </div>
+        <div class="mono" style="display: flex; flex-direction: row; gap: 16px; padding: 8px 14px; border-top: 1px solid {{t.hairline}}; font-size: 11px; color: {{t.muted}};">
+          <div style="color: {{t.text}};">Console</div><div>Network</div><div>Elements</div>
+          <div style="flex-grow: 1;"></div><div style="color: #2fbf9a;">● live</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⌘K palette -->
+  <div style="position: absolute; inset: 0; background: {{t.dim}};"></div>
+  <div style="position: absolute; left: 420px; top: 200px; width: 600px; display: flex; flex-direction: column; border-radius: 18px; background: {{t.paletteBg}}; border: 1px solid {{t.hairlineStrong}}; box-shadow: 0 30px 90px {{t.shadowStrong}}; backdrop-filter: blur(30px); overflow: hidden;">
+    <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 16px 20px; font-size: 16px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="opacity: 0.6;"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+      <div style="flex-grow: 1;">open loc<span style="border-left: 2px solid #7c5cff;">&nbsp;</span></div>
+      <div class="mono" style="font-size: 11px; color: {{t.muted}};">esc</div>
+    </div>
+    <div style="display: flex; flex-direction: column; padding: 6px; border-top: 1px solid {{t.hairline}};">
+      <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 12px; background: {{t.tabActive}};">
+        <div style="width: 8px; height: 8px; border-radius: 50%; background: #7c5cff;"></div>
+        <div style="flex-grow: 1;"><span style="font-weight: 700;">loc</span>alhost:5173 <span style="color: {{t.muted}};">· switch to tab</span></div>
+        <div class="mono" style="font-size: 11px; color: {{t.muted}};">↵</div>
+      </div>
+      <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 12px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.7;"><path d="M4 17l6-5-6-5M12 19h8"></path></svg>
+        <div style="flex-grow: 1;">Open <span style="font-weight: 700;">loc</span>alhost:5173 in a browser split <span style="color: {{t.muted}};">· from terminal output</span></div>
+        <div class="mono" style="font-size: 11px; color: {{t.muted}};">⌘↵</div>
+      </div>
+      <div style="display: flex; flex-direction: row; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 12px; color: {{t.muted}};">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="opacity: 0.7;"><path d="M12 8v4l3 3"></path><circle cx="12" cy="12" r="9"></circle></svg>
+        <div style="flex-grow: 1;">history · <span style="font-weight: 700; color: {{t.text}};">loc</span>al dev setup notes</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = this.props.dark ?? true;
+    const t = dark ? {
+      canvas: '#100f16', mesh1: 'rgba(124,92,255,0.45)', mesh2: 'rgba(47,191,154,0.22)',
+      glass: 'rgba(22,20,30,0.55)', pane: 'rgba(20,18,27,0.82)', paletteBg: 'rgba(28,25,38,0.9)',
+      hairline: 'rgba(255,255,255,0.07)', hairlineStrong: 'rgba(255,255,255,0.14)',
+      text: '#ebe8f4', muted: '#928ca4', termText: '#d9d5e6',
+      tabActive: 'rgba(124,92,255,0.14)', previewBg: 'rgba(0,0,0,0.35)', previewText: '#b7b2c8',
+      field: 'rgba(255,255,255,0.06)', page: '#f4f3f8', pageInk: '#2a2740',
+      shadow: 'rgba(0,0,0,0.45)', shadowStrong: 'rgba(0,0,0,0.6)', dim: 'rgba(8,7,12,0.35)'
+    } : {
+      canvas: '#eceaf3', mesh1: 'rgba(124,92,255,0.28)', mesh2: 'rgba(47,191,154,0.18)',
+      glass: 'rgba(255,255,255,0.55)', pane: 'rgba(255,255,255,0.86)', paletteBg: 'rgba(255,255,255,0.92)',
+      hairline: 'rgba(20,16,40,0.08)', hairlineStrong: 'rgba(20,16,40,0.14)',
+      text: '#1d1a2a', muted: '#6f6a82', termText: '#2a2637',
+      tabActive: 'rgba(124,92,255,0.12)', previewBg: 'rgba(20,16,40,0.06)', previewText: '#4a4560',
+      field: 'rgba(20,16,40,0.06)', page: '#ffffff', pageInk: '#2a2740',
+      shadow: 'rgba(40,30,80,0.18)', shadowStrong: 'rgba(40,30,80,0.28)', dim: 'rgba(30,24,60,0.18)'
+    };
+    return { t };
+  }
+}
+</script>
+</body>
+</html>

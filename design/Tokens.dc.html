@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
+    a { color: #b3261e; } a:hover { color: #7a1a14; }
+    .serif { font-family: 'Instrument Serif', Georgia, serif; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .sw { width: 44px; height: 44px; display: flex; align-items: flex-end; padding: 3px; box-sizing: border-box; font-size: 8px; }
+  </style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; display: flex; flex-direction: row; font-size: 13px; line-height: 1.5;">
+
+  <!-- PAPER (light) -->
+  <div style="flex-grow: 1; padding: 28px 32px; background: #f4f1ea; color: #141414; display: flex; flex-direction: column; gap: 22px; border-right: 1.5px solid #141414;">
+    <div style="display: flex; flex-direction: row; align-items: baseline; gap: 14px; border-bottom: 1.5px solid #141414; padding-bottom: 10px;">
+      <div class="serif" style="font-size: 30px; font-style: italic; line-height: 1;">paper</div>
+      <div class="cap">light theme · paper #f4f1ea · ink #141414</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">surface &amp; ink</div>
+      <div style="display: flex; flex-direction: row; gap: 6px;">
+        <div class="sw" style="background: #f4f1ea; border: 1px solid #141414;">paper</div>
+        <div class="sw" style="background: rgba(20,20,20,0.06); border: 1px solid #141414;">tint</div>
+        <div class="sw" style="background: #ffffff; border: 1px solid #141414;">page</div>
+        <div class="sw" style="background: #8a857a; color: #f4f1ea;">dim</div>
+        <div class="sw" style="background: #141414; color: #f4f1ea;">ink</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">space signals · the only chrome color</div>
+      <div style="display: flex; flex-direction: row; gap: 6px;">
+        <div class="sw" style="background: #c8102e; color: #fff;">red</div>
+        <div class="sw" style="background: #1f5fbf; color: #fff;">blue</div>
+        <div class="sw" style="background: #d9a400; color: #141414;">gold</div>
+        <div class="sw" style="background: #2e7d32; color: #fff;">green</div>
+        <div class="sw" style="background: #6b3fa0; color: #fff;">violet</div>
+        <div class="sw" style="background: #1a7f8a; color: #fff;">teal</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">ansi 0–15 · terminal only</div>
+      <div style="display: flex; flex-direction: row; gap: 4px;">
+        <div class="sw" style="background: #141414; color: #f4f1ea;">0</div><div class="sw" style="background: #b3261e; color: #fff;">1</div><div class="sw" style="background: #2e7d32; color: #fff;">2</div><div class="sw" style="background: #9a6b00; color: #fff;">3</div><div class="sw" style="background: #1f5fbf; color: #fff;">4</div><div class="sw" style="background: #8e3b8e; color: #fff;">5</div><div class="sw" style="background: #1a7f8a; color: #fff;">6</div><div class="sw" style="background: #8a857a; color: #fff;">7</div>
+      </div>
+      <div style="display: flex; flex-direction: row; gap: 4px;">
+        <div class="sw" style="background: #4a4740; color: #f4f1ea;">8</div><div class="sw" style="background: #d63a2f; color: #fff;">9</div><div class="sw" style="background: #3f9a45; color: #fff;">10</div><div class="sw" style="background: #c48a00; color: #141414;">11</div><div class="sw" style="background: #3b7ee0; color: #fff;">12</div><div class="sw" style="background: #b04eb0; color: #fff;">13</div><div class="sw" style="background: #22a3b0; color: #fff;">14</div><div class="sw" style="background: #f4f1ea; border: 1px solid #141414;">15</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #141414; padding-top: 14px;">
+      <div class="cap">type</div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div class="serif" style="font-size: 34px; font-style: italic; line-height: 1;">nus</div><div class="cap">wordmark · instrument serif italic 34/20/18</div></div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div style="font-weight: 600;">01 cargo test · vt</div><div class="cap">ui strong · plex mono 600 13</div></div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div>wgpu docs — Surface</div><div class="cap">ui · plex mono 400 13 / 1.5</div></div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div class="cap">devtools · ~/nus · esc</div><div class="cap" style="opacity: 0.6;">label · 11 · caps · 0.08em</div></div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div style="font-size: 7.5px; line-height: 1.5;">test result: ok. 17 passed</div><div class="cap" style="opacity: 0.6;">preview · 7.5 / 1.5</div></div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #141414; padding-top: 14px;">
+      <div class="cap">rules · no radii · no blur</div>
+      <div style="display: flex; flex-direction: row; gap: 24px; align-items: center;">
+        <div style="display: flex; flex-direction: column; gap: 4px; width: 120px;"><div style="height: 1px; background: #141414;"></div><div class="cap" style="opacity: 0.6;">1 hairline</div></div>
+        <div style="display: flex; flex-direction: column; gap: 4px; width: 120px;"><div style="height: 1.5px; background: #141414;"></div><div class="cap" style="opacity: 0.6;">1.5 structure</div></div>
+        <div style="display: flex; flex-direction: column; gap: 4px; width: 120px;"><div style="height: 2px; background: #141414;"></div><div class="cap" style="opacity: 0.6;">2 floating</div></div>
+        <div style="display: flex; flex-direction: column; gap: 4px; width: 120px;"><div style="height: 6px; background: #c8102e;"></div><div class="cap" style="opacity: 0.6;">6 signal band</div></div>
+        <div style="width: 60px; height: 30px; border: 2px solid #141414; box-shadow: 6px 6px 0 #141414; margin-left: 8px;"></div><div class="cap" style="opacity: 0.6;">shadow 6–8 hard</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #141414; padding-top: 14px;">
+      <div class="cap">spacing</div>
+      <div class="cap" style="display: flex; flex-direction: row; gap: 18px; opacity: 0.8;"><div>row 12×14</div><div>header 9×18</div><div>bar 30</div><div>sidebar 272</div><div>split 520</div><div>palette 600</div></div>
+    </div>
+  </div>
+
+  <!-- INK (dark) -->
+  <div style="flex-grow: 1; padding: 28px 32px; background: #141414; color: #ece7da; display: flex; flex-direction: column; gap: 22px;">
+    <div style="display: flex; flex-direction: row; align-items: baseline; gap: 14px; border-bottom: 1.5px solid #ece7da; padding-bottom: 10px;">
+      <div class="serif" style="font-size: 30px; font-style: italic; line-height: 1;">ink</div>
+      <div class="cap">dark theme · paper #141414 · ink #ece7da</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">surface &amp; ink</div>
+      <div style="display: flex; flex-direction: row; gap: 6px;">
+        <div class="sw" style="background: #141414; border: 1px solid #ece7da;">paper</div>
+        <div class="sw" style="background: rgba(236,231,218,0.07); border: 1px solid #ece7da;">tint</div>
+        <div class="sw" style="background: #ffffff; color: #141414;">page</div>
+        <div class="sw" style="background: #8a857a; color: #141414;">dim</div>
+        <div class="sw" style="background: #ece7da; color: #141414;">ink</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">space signals · unchanged in dark</div>
+      <div style="display: flex; flex-direction: row; gap: 6px;">
+        <div class="sw" style="background: #c8102e; color: #fff;">red</div>
+        <div class="sw" style="background: #1f5fbf; color: #fff;">blue</div>
+        <div class="sw" style="background: #d9a400; color: #141414;">gold</div>
+        <div class="sw" style="background: #2e7d32; color: #fff;">green</div>
+        <div class="sw" style="background: #6b3fa0; color: #fff;">violet</div>
+        <div class="sw" style="background: #1a7f8a; color: #fff;">teal</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">ansi 0–15 · terminal only</div>
+      <div style="display: flex; flex-direction: row; gap: 4px;">
+        <div class="sw" style="background: #141414; border: 1px solid #ece7da;">0</div><div class="sw" style="background: #e0574c; color: #141414;">1</div><div class="sw" style="background: #7ac77f; color: #141414;">2</div><div class="sw" style="background: #e5b94a; color: #141414;">3</div><div class="sw" style="background: #6ea3ef; color: #141414;">4</div><div class="sw" style="background: #d086d0; color: #141414;">5</div><div class="sw" style="background: #6fd0da; color: #141414;">6</div><div class="sw" style="background: #bdb8ab; color: #141414;">7</div>
+      </div>
+      <div style="display: flex; flex-direction: row; gap: 4px;">
+        <div class="sw" style="background: #5a564e; color: #ece7da;">8</div><div class="sw" style="background: #ff6f63; color: #141414;">9</div><div class="sw" style="background: #93e39a; color: #141414;">10</div><div class="sw" style="background: #ffd06a; color: #141414;">11</div><div class="sw" style="background: #8fbcff; color: #141414;">12</div><div class="sw" style="background: #e9a0e9; color: #141414;">13</div><div class="sw" style="background: #8be6ef; color: #141414;">14</div><div class="sw" style="background: #ece7da; color: #141414;">15</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #ece7da; padding-top: 14px;">
+      <div class="cap">states</div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;">
+        <div class="cap" style="padding: 1px 6px; background: #c8102e; color: #ffffff;">waiting</div>
+        <div class="cap" style="padding: 1px 6px; background: #ece7da; color: #141414;">selected</div>
+        <div class="cap" style="padding: 1px 6px; border: 1px solid #ece7da;">hover</div>
+        <div class="cap" style="opacity: 0.6;">inactive · 60%</div>
+        <div class="cap" style="text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px;">link · 1.5 underline</div>
+      </div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;">
+        <div>cursor <span style="background: #ece7da; color: #141414;">&nbsp;</span></div>
+        <div class="cap" style="opacity: 0.6;">block · ink on paper · no blink by default</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #ece7da; padding-top: 14px;">
+      <div class="cap">keys</div>
+      <div class="cap" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 24px; opacity: 0.85;">
+        <div>⌘K · go (palette)</div><div>⌘T · new tab</div>
+        <div>⌘1–9 · tab</div><div>⌘⌥1–9 · space</div>
+        <div>⌘⇧S · sidebar</div><div>⌥⌘T · quick terminal</div>
+        <div>⌘↵ · open detected url in split</div><div>⌘⇧↵ · …in a new tab</div>
+        <div>⌘D · split</div><div>⌘W · close</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #ece7da; padding-top: 14px;">
+      <div class="cap">principles</div>
+      <div style="display: flex; flex-direction: column; gap: 2px; font-size: 12px;">
+        <div>Rules, not boxes. Hierarchy by weight and case, never by color.</div>
+        <div>One color on screen: the Space's. Everything else is ink on paper.</div>
+        <div>The terminal keeps its ANSI palette; chrome stays monochrome around it.</div>
+        <div>Floating things get a 2px edge and a hard offset shadow. Nothing blurs.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
