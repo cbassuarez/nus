@@ -122,6 +122,9 @@ pub struct TermPane {
     pub line: String,
     /// False once an editing key made `line` unreliable; reset on Enter.
     pub line_ok: bool,
+    /// The column the line started at: the hint anchors here, so the
+    /// shell's echo lag and caret moves never shift it.
+    pub line_col: Option<usize>,
     /// Name of the running process when a close is awaiting confirmation.
     pub confirm_close: Option<String>,
     /// Rang the bell while not being looked at.
@@ -680,6 +683,7 @@ impl App {
             cur_x: Anim::at(0.0),
             cur_y: Anim::at(0.0),
             trail: Vec::new(),
+            line_col: None,
             line: String::new(),
             line_ok: true,
             confirm_close: None,
@@ -1981,7 +1985,8 @@ impl App {
             if t.line_ok && strict_url(&t.line).is_some() && !(focus_right && has_right) {
                 let (cw, ch) = t.grid.cell_size();
                 let c = t.term.cursor();
-                let x = t.origin.0 + (c.col.saturating_sub(t.line.chars().count())) as f32 * cw;
+                let col = t.line_col.unwrap_or_else(|| c.col.saturating_sub(t.line.chars().count()));
+                let x = t.origin.0 + col as f32 * cw;
                 let y = t.origin.1 + (c.row as f32 + 1.0) * ch + self.px(6.0);
                 let parts = [
                     ("enter".into(), true),
@@ -2541,46 +2546,51 @@ impl App {
         self.draw_sidebar_menus(scene, sb);
     }
 
-    /// Three swatches — paper, ink, signal — stacked like a hand of cards.
-    /// On hover they fan out and the signal one lifts; click opens the look pages.
+    /// The look chip: paper, ink and signal as a hand of three cards —
+    /// the studio's tiles at footer size. Ink outline at the structure
+    /// weight, a hard offset shadow, corners from the carapace radius,
+    /// colours from the theme. Hover fans them out and steps them up, the
+    /// signal card on top; click opens the studio.
     fn draw_look_chip(&mut self, scene: &mut Scene, x: f32, fy: f32, fh: f32) {
-        let sw = self.px(12.0);
-        let hit = Rect::new(x - self.px(6.0), fy, sw * 2.2 + self.px(12.0), fh);
+        let sw = self.px(13.0);
+        let hit = Rect::new(x - self.px(6.0), fy, sw * 2.4 + self.px(12.0), fh);
         let (mx, my) = self.mouse;
         let hot = hit.contains(mx, my);
         let key = hover_key("look", 0);
         let dur_in = self.motion.dur(160.0);
-        let dur_out = self.motion.dur(200.0);
+        let dur_out = self.motion.dur(220.0);
         let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, if hot { dur_in } else { dur_out });
         }
-        let a = h.alpha.value();
+        let a = if self.motion.reduced() { if hot { 1.0 } else { 0.0 } } else { h.alpha.value() };
         if h.alpha.active() {
             self.dirty = true;
         }
         let ink = self.theme.ink;
         let paper = self.paper();
         let signal = self.surface.signal;
+        // The carapace's radius, scaled to a 13px card: square when it's square.
+        let radius = (self.px(self.surface.shell_radius) * 0.18).min(self.px(4.0));
+        let outline = self.px(m::HAIRLINE) * 1.5;
+        let shadow = self.px(2.0) + self.px(1.0) * a;
         let cy = fy + fh / 2.0;
-        // At rest: three squares overlapping by half, ink outline on the paper one.
-        // Hovered: they spread apart, tilt a little, and rise.
-        let step = sw * 0.5 + sw * 0.55 * a;
-        let rise = self.px(2.0) * a;
-        let radius = self.px(2.0);
+        // At rest the cards overlap by half; hovered they spread to touching and
+        // step up, each a little higher than the last.
+        let step = sw * 0.5 + sw * 0.62 * a;
+        // One hard shadow under the whole hand, then the cards. The ink card
+        // is outlined in paper so it reads as a card and not as the outline.
+        let hand = Rect::new(x, cy - sw / 2.0 - self.px(3.0) * a, 2.0 * step + sw, sw + self.px(3.0) * a);
+        scene.push(nus_render::Instance::rounded(Rect::new(hand.x + shadow, hand.y + shadow, hand.w, hand.h), radius, fade(ink, 0.9)));
         let mut i = 0.0;
-        for (c, outline) in [(paper, true), (ink, false), (signal, false)] {
-            let tilt = (i - 1.0) * 0.18 * a;
-            let r = Rect::new(x + i * step, cy - sw / 2.0 - rise * (i * 0.5 + 0.5), sw, sw);
-            if outline {
-                scene.push(nus_render::Instance::rounded(r, radius, fade(ink, 0.55)));
-                let inner = Rect::new(r.x + self.px(1.0), r.y + self.px(1.0), r.w - self.px(2.0), r.h - self.px(2.0));
-                scene.push(nus_render::Instance::rounded(inner, radius - self.px(1.0), c));
-            } else {
-                scene.push(nus_render::Instance::rounded(r, radius, c));
-            }
-            let _ = tilt;
+        for c in [paper, ink, signal] {
+            let rise = self.px(1.0) * a * (i + 1.0);
+            let r = Rect::new(x + i * step, cy - sw / 2.0 - rise, sw, sw);
+            let edge = if c == ink { paper } else { ink };
+            scene.push(nus_render::Instance::rounded(r, radius, edge));
+            let inner = Rect::new(r.x + outline, r.y + outline, r.w - 2.0 * outline, r.h - 2.0 * outline);
+            scene.push(nus_render::Instance::rounded(inner, (radius - outline).max(0.0), c));
             i += 1.0;
         }
         self.side_hits.push((hit, SideHit::Look));
@@ -3498,6 +3508,7 @@ impl App {
         if let Pane::Term(t) = pane {
             let _ = t.pty.write(format!("{cmd}\r").as_bytes());
             t.line.clear();
+            t.line_col = None;
             t.line_ok = true;
         }
         tab.focus_right = false;
@@ -3797,6 +3808,7 @@ impl App {
                                     };
                                     let _ = t.pty.write(clear);
                                     t.line.clear();
+                            t.line_col = None;
                                     t.line_ok = true;
                                     let new_tab = self.behavior.prompt_url == crate::settings::PromptUrl::NewTab;
                                     self.open_url(&url, new_tab);
@@ -3804,13 +3816,20 @@ impl App {
                                 }
                             }
                             t.line.clear();
+                            t.line_col = None;
                             t.line_ok = true;
                         }
                         (Key::Enter, true) => {
                             t.line.clear();
+                            t.line_col = None;
                             t.line_ok = true;
                         }
-                        (Key::Char(c), false) => t.line.push(c),
+                        (Key::Char(c), false) => {
+                            if t.line.is_empty() {
+                                t.line_col = Some(t.term.cursor().col);
+                            }
+                            t.line.push(c);
+                        }
                         (Key::Backspace, false) => {
                             t.line.pop();
                         }
