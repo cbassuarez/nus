@@ -45,22 +45,30 @@ impl From<accesskit_winit::Event> for UserEvent {
 
 struct Host {
     proxy: EventLoopProxy<UserEvent>,
-    app: Option<App>,
-    /// AccessKit adapter for the main window; the tree is rebuilt after
-    /// every frame that changed something.
-    access: Option<accesskit_winit::Adapter>,
-    access_frame: u64,
+    /// One app per window, in creation order.
+    apps: Vec<App>,
+    /// AccessKit adapters, one per app window; each tree is rebuilt after
+    /// a frame that changed something.
+    access: Vec<(WindowId, accesskit_winit::Adapter, u64)>,
+    /// How many windows have been made, for naming and ordering.
+    made: usize,
+    /// The window the user was last in: "raise" from another launch goes here.
+    focused: Option<WindowId>,
 }
 
-impl ApplicationHandler<UserEvent> for Host {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.app.is_some() {
-            return;
-        }
+impl Host {
+    fn app_index(&self, id: WindowId) -> Option<usize> {
+        self.apps.iter().position(|a| a.window.id() == id || a.little.as_ref().is_some_and(|l| l.window.id() == id) || a.pip.as_ref().is_some_and(|p| p.window.id() == id))
+    }
+
+    /// Open a window: the first as the prefs say, later ones next to the
+    /// window that asked, with one shell and no session restore.
+    fn spawn_window(&mut self, event_loop: &ActiveEventLoop, from: Option<usize>) {
         // The window comes up as the prefs say: last place, maximized,
         // fullscreen, or centred at 1440×900.
         let prefs = prefs::Prefs::load();
-        let start = prefs.behavior.as_ref().map(|b| b.window_start).unwrap_or(settings::WindowStart::Last);
+        let secondary = from.is_some();
+        let start = if secondary { settings::WindowStart::Centered } else { prefs.behavior.as_ref().map(|b| b.window_start).unwrap_or(settings::WindowStart::Last) };
         // The icon from the first frame: Broadsheet ink and signal until
         // the app redraws it in the live colours.
         let icon = {
@@ -84,40 +92,110 @@ impl ApplicationHandler<UserEvent> for Host {
             settings::WindowStart::Fullscreen => attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
             settings::WindowStart::Centered => {}
         }
-        let window = Arc::new(event_loop.create_window(attrs).expect("window"));
+        if let Some(i) = from {
+            // Cascade from the asking window.
+            if let Some(a) = self.apps.get(i) {
+                if let Ok(p) = a.window.outer_position() {
+                    let s = a.window.inner_size();
+                    attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(p.x + 40, p.y + 40)).with_inner_size(winit::dpi::PhysicalSize::new(s.width, s.height));
+                }
+            }
+        }
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                tracing::error!("window: {e}");
+                return;
+            }
+        };
         // The adapter must exist before the window is first shown.
-        self.access = Some(accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
+        let adapter = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
         window.set_visible(true);
-        match App::new(window, self.proxy.clone()) {
+        match App::new(window.clone(), self.proxy.clone(), secondary, self.made) {
             Ok(mut a) => {
                 a.fullscreen = start == settings::WindowStart::Fullscreen;
-                self.app = Some(a)
+                self.access.push((window.id(), adapter, 0));
+                self.apps.push(a);
+                self.made += 1;
+                self.focused = Some(window.id());
             }
             Err(e) => {
                 tracing::error!("init: {e:#}");
-                event_loop.exit();
+                if self.apps.is_empty() {
+                    event_loop.exit();
+                }
             }
+        }
+    }
+
+    /// Tell every app about every window.
+    fn share_registry(&mut self) {
+        let entries: Vec<windows::Entry> = self
+            .apps
+            .iter()
+            .map(|a| windows::Entry { id: u64::from(a.window.id()), name: a.window_name(), tabs: a.tabs.len(), ordinal: a.ordinal })
+            .collect();
+        for a in self.apps.iter_mut() {
+            if a.windows != entries {
+                a.windows = entries.clone();
+                a.dirty = true;
+            }
+        }
+    }
+}
+
+impl ApplicationHandler<UserEvent> for Host {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.apps.is_empty() {
+            self.spawn_window(event_loop, None);
         }
     }
 
     fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
-        let Some(a) = &mut self.app else { return };
         match ev {
-            UserEvent::Wake => a.dirty = true,
-            UserEvent::Access(e) => match e.window_event {
-                accesskit_winit::WindowEvent::InitialTreeRequested => {
-                    if let Some(ad) = self.access.as_mut() {
-                        ad.update_if_active(|| a.access_tree());
-                    }
+            UserEvent::Wake => {
+                for a in self.apps.iter_mut() {
+                    a.dirty = true;
                 }
-                accesskit_winit::WindowEvent::ActionRequested(req) => a.access_action(req),
-                accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
-            },
+            }
+            UserEvent::Access(e) => {
+                let Some(i) = self.apps.iter().position(|a| a.window.id() == e.window_id) else { return };
+                let a = &mut self.apps[i];
+                match e.window_event {
+                    accesskit_winit::WindowEvent::InitialTreeRequested => {
+                        if let Some((_, ad, _)) = self.access.iter_mut().find(|(id, _, _)| *id == e.window_id) {
+                            ad.update_if_active(|| a.access_tree());
+                        }
+                    }
+                    accesskit_winit::WindowEvent::ActionRequested(req) => a.access_action(req),
+                    accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+                }
+            }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(a) = self.app.as_mut() else { return };
+        // Requests the apps can't answer themselves: new windows, fronting.
+        let mut spawn_from: Vec<usize> = Vec::new();
+        let mut front: Vec<u64> = Vec::new();
+        for (i, a) in self.apps.iter_mut().enumerate() {
+            if a.new_window_request {
+                a.new_window_request = false;
+                spawn_from.push(i);
+            }
+            if let Some(id) = a.front_request.take() {
+                front.push(id);
+            }
+        }
+        for i in spawn_from {
+            self.spawn_window(event_loop, Some(i));
+        }
+        for id in front {
+            if let Some(a) = self.apps.iter().find(|a| u64::from(a.window.id()) == id) {
+                a.window.focus_window();
+            }
+        }
+        for a in self.apps.iter_mut() {
         if let Some(p) = a.pointer_request.take() {
             let cursor = match p {
                 settings::Pointer::System => winit::window::Cursor::Icon(winit::window::CursorIcon::Default),
@@ -157,13 +235,18 @@ impl ApplicationHandler<UserEvent> for Host {
                 Err(e) => tracing::warn!("pip window: {e}"),
             }
         }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(a) = self.app.as_mut() else { return };
+        let Some(i) = self.app_index(id) else { return };
+        let a = &mut self.apps[i];
         if a.window.id() == id {
-            if let Some(ad) = self.access.as_mut() {
+            if let Some((_, ad, _)) = self.access.iter_mut().find(|(wid, _, _)| *wid == id) {
                 ad.process_event(&a.window, &event);
+            }
+            if let WindowEvent::Focused(true) = event {
+                self.focused = Some(id);
             }
         }
         if a.little.as_ref().is_some_and(|l| l.window.id() == id) {
@@ -202,7 +285,17 @@ impl ApplicationHandler<UserEvent> for Host {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // The last window closing ends the app and saves the session;
+                // any other just goes.
+                if self.apps.len() == 1 {
+                    event_loop.exit();
+                } else {
+                    let a = self.apps.remove(i);
+                    self.access.retain(|(wid, _, _)| *wid != a.window.id());
+                    drop(a);
+                }
+            }
             WindowEvent::Resized(s) => a.resize(s.width, s.height),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => a.set_scale(scale_factor as f32),
             WindowEvent::Moved(p) => a.window_moved(p.x, p.y),
@@ -266,21 +359,13 @@ fn main() -> ExitCode {
 
     // One instance: a second launch hands its URLs to the first and exits.
     let urls = little::urls_from_args();
-    let secondary = windows::is_secondary();
-    let (urls_rx, port) = if secondary {
-        little::listen(&urls)
-    } else {
-        match little::claim(&urls) {
-            little::Claim::HandedOff => return ExitCode::SUCCESS,
-            little::Claim::Primary(rx, port) => (rx, port),
-        }
+    let (urls_rx, port) = match little::claim(&urls) {
+        little::Claim::HandedOff => return ExitCode::SUCCESS,
+        little::Claim::Primary(rx, port) => (rx, port),
     };
 
     let profile = std::env::current_dir().unwrap().join("profile");
-    // A second window is a second process. Chromium's process singleton
-    // lives in the root cache, so a second process needs its own root —
-    // its own cookies, until windows move in-process.
-    let cache = if secondary { profile.join(format!("win-{}", std::process::id())) } else { profile.clone() };
+    let cache = profile.clone();
     let root = cache.clone();
     let settings = Settings {
         windowless_rendering_enabled: 1,
@@ -299,18 +384,29 @@ fn main() -> ExitCode {
     let mut event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
-    let mut host = Host { proxy, app: None, access: None, access_frame: 0 };
+    let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None };
     let mut urls_rx = Some(urls_rx);
+    let _ = port;
     let code = loop {
         do_message_loop_work();
         let status = event_loop.pump_app_events(Some(Duration::from_millis(2)), &mut host);
         if let PumpStatus::Exit(code) = status {
             break code;
         }
-        if let Some(a) = host.app.as_mut() {
-            if a.urls_rx.is_none() {
-                a.urls_rx = urls_rx.take();
-                a.instance_port = port;
+        host.share_registry();
+        // URLs from other launches go to the window the user was last in.
+        if let Some(rx) = urls_rx.as_ref() {
+            let focused = host.focused;
+            let idx = host.apps.iter().position(|a| Some(a.window.id()) == focused).or(if host.apps.is_empty() { None } else { Some(0) });
+            if let Some(a) = idx.and_then(|i| host.apps.get_mut(i)) {
+                for url in rx.try_iter() {
+                    a.open_little(&url);
+                    a.dirty = true;
+                }
+            }
+        }
+        for a in host.apps.iter_mut() {
+            if a.registered_tabs != a.tabs.len() {
                 a.register_window();
             }
             a.tick();
@@ -327,19 +423,18 @@ fn main() -> ExitCode {
             if a.dirty {
                 a.redraw();
             }
-            if a.frames != host.access_frame {
-                host.access_frame = a.frames;
-                if let Some(ad) = host.access.as_mut() {
+            if let Some((_, ad, frame)) = host.access.iter_mut().find(|(id, _, _)| *id == a.window.id()) {
+                if a.frames != *frame {
+                    *frame = a.frames;
                     ad.update_if_active(|| a.access_tree());
                 }
             }
         }
     };
-    if let Some(a) = host.app.as_ref() {
+    if let Some(a) = host.apps.first() {
         a.save_session();
-        windows::unregister();
     }
-    host.app = None;
+    host.apps.clear();
     cef::shutdown();
     ExitCode::from(code as u8)
 }

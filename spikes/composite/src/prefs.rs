@@ -68,7 +68,7 @@ impl App {
         if let Some(h) = p.header {
             self.header = h;
         }
-        if !crate::windows::is_secondary() {
+        if self.ordinal == 0 {
             self.window_named = p.window_name;
         }
     }
@@ -86,7 +86,7 @@ impl App {
             theme: Some(self.theme_edit.clone()),
             cursor: Some(self.cursor.clone()),
             header: Some(self.header.clone()),
-            window_name: if crate::windows::is_secondary() { None } else { self.window_named.clone() },
+            window_name: if self.ordinal == 0 { self.window_named.clone() } else { None },
         };
         let _ = std::fs::create_dir_all(path().parent().unwrap());
         let _ = std::fs::write(path(), serde_json::to_string_pretty(&p).unwrap_or_default());

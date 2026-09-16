@@ -400,9 +400,13 @@ pub struct App {
     pub header: crate::settings::HeaderPrefs,
     /// The user's name for this window (None = auto).
     pub window_named: Option<String>,
-    pub instance_port: u16,
-    /// Other nus windows, refreshed when the list opens.
+    /// Creation order among this process's windows.
+    pub ordinal: usize,
+    /// Every window in the process, kept fresh by the host.
     pub windows: Vec<crate::windows::Entry>,
+    /// Asks the host answers: front that window; open a new one.
+    pub front_request: Option<u64>,
+    pub new_window_request: bool,
     pub win_menu: bool,
     pub win_anim: Anim,
     pub kinds_menu: bool,
@@ -510,7 +514,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(window: Arc<Window>, proxy: EventLoopProxy<UserEvent>) -> anyhow::Result<App> {
+    pub fn new(window: Arc<Window>, proxy: EventLoopProxy<UserEvent>, secondary: bool, ordinal: usize) -> anyhow::Result<App> {
         let (gpu, target) = Gpu::new(window.clone())?;
         let scale = window.scale_factor() as f32;
         let mut fonts = FontSystem::new();
@@ -572,7 +576,9 @@ impl App {
             cursor: crate::settings::CursorPrefs::default(),
             header: crate::settings::HeaderPrefs::default(),
             window_named: None,
-            instance_port: 0,
+            ordinal: 0,
+            front_request: None,
+            new_window_request: false,
             windows: Vec::new(),
             win_menu: false,
             win_anim: Anim::at(0.0),
@@ -651,8 +657,13 @@ impl App {
             last_begin_frame: Instant::now(),
             frames: 0,
         };
-        let term = app.new_term_pane(true, 0)?;
-        let right = if App::onboarded() {
+        app.ordinal = ordinal;
+        // A second window: one shell, no splash, no session restore, no name.
+        let split = !secondary;
+        let term = app.new_term_pane(split, 0)?;
+        let right = if secondary {
+            None
+        } else if App::onboarded() {
             app.new_web_pane("https://docs.rs/wgpu/latest/wgpu/").map(Pane::Web)
         } else {
             Some(Pane::Hints(HintsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0) }))
@@ -660,6 +671,12 @@ impl App {
         let first = app.make_tab(Pane::Term(term), right);
         app.tabs.push(first);
         app.apply_prefs(crate::prefs::Prefs::load());
+        if secondary {
+            app.splash = None;
+            app.start_shown = true;
+            app.then_done = true;
+            app.window_named = None;
+        }
         let mode = app.theme.mode;
         app.set_mode(mode);
         app.layout();
@@ -2322,10 +2339,10 @@ impl App {
         self.unique_name(base)
     }
 
-    /// Another window already called that? Number this one.
+    /// Another, earlier window already called that? Number this one.
     fn unique_name(&self, base: String) -> String {
-        let me = std::process::id();
-        let taken = self.windows.iter().filter(|e| e.pid != me && e.pid < me && (e.name == base || e.name.starts_with(&format!("{base} ")))).count();
+        let me = u64::from(self.window.id());
+        let taken = self.windows.iter().filter(|e| e.id != me && e.ordinal < self.ordinal && (e.name == base || e.name.starts_with(&format!("{base} ")))).count();
         if taken == 0 { base } else { format!("{base} {}", taken + 1) }
     }
 
@@ -2349,9 +2366,7 @@ impl App {
     }
 
     pub(crate) fn register_window(&mut self) {
-        self.windows = crate::windows::list();
         self.registered_tabs = self.tabs.len();
-        crate::windows::register(&self.window_name(), self.instance_port, self.tabs.len());
         let name = self.window_name();
         self.window.set_title(&if name == "nus" { "nus".to_string() } else { format!("{name} · nus") });
     }
@@ -2665,6 +2680,10 @@ impl App {
                 }
             }
             SideHit::NewTab => self.open_palette(PaletteMode::New),
+            SideHit::NewShell if !from_mouse => {
+                let p = self.behavior.default_profile;
+                self.new_tab(p);
+            }
             SideHit::NewShell => {
                 self.press = Some((Instant::now(), SideHit::NewShell));
                 self.play_event("control.press");
@@ -2694,16 +2713,13 @@ impl App {
             SideHit::WinFront(i) => {
                 self.close_menus();
                 if let Some(e) = self.windows.get(i).cloned() {
-                    crate::windows::front(&e);
+                    self.front_request = Some(e.id);
                 }
             }
             SideHit::Rail(k) => {
-                if self.windows.is_empty() {
-                    self.windows = crate::windows::list();
-                }
                 if let Some(e) = self.windows.get(k).cloned() {
-                    if e.pid != std::process::id() {
-                        crate::windows::front(&e);
+                    if e.id != u64::from(self.window.id()) {
+                        self.front_request = Some(e.id);
                     }
                 }
             }
@@ -2757,13 +2773,13 @@ impl App {
         scene.vline(edge_x, r.y, r.h, self.px(m::HAIRLINE), ink);
         let row = self.px(m::ROW_H);
         let sq = self.px(10.0);
-        let me = std::process::id();
-        let entries = if self.windows.is_empty() { vec![crate::windows::Entry { pid: me, name: self.window_name(), port: self.instance_port, tabs: self.tabs.len() }] } else { self.windows.clone() };
+        let me = u64::from(self.window.id());
+        let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal }] } else { self.windows.clone() };
         let (mx, my) = self.mouse;
         for (k, e) in entries.iter().enumerate() {
             let cy = r.y + k as f32 * row;
             let cell = Rect::new(x, cy, rw, row);
-            let on = e.pid == me;
+            let on = e.id == me;
             let hot = cell.contains(mx, my) && self.sidebar_visible();
             if on {
                 scene.rect(cell, t.tint);
@@ -2930,14 +2946,14 @@ impl App {
         let top = sb.y + self.side_header_h();
         if self.win_menu || self.win_anim.active() {
             let k = self.win_anim.value();
-            let me = std::process::id();
+            let me = u64::from(self.window.id());
             let n = self.windows.len().max(1) + 2;
             let h = n as f32 * row * k;
             let r = Rect::new(sb.x, top, sb.w, h);
             scene.layer(Some(r));
             scene.rect(r, t.paper);
             let mut y = top;
-            let entries = if self.windows.is_empty() { vec![crate::windows::Entry { pid: me, name: self.window_name(), port: self.instance_port, tabs: self.tabs.len() }] } else { self.windows.clone() };
+            let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal }] } else { self.windows.clone() };
             for (i, e) in entries.iter().enumerate() {
                 let cell = Rect::new(sb.x, y, sb.w, row);
                 let hot = cell.contains(mx, my);
@@ -2945,13 +2961,13 @@ impl App {
                     scene.rect(cell, t.tint);
                 }
                 let sq = self.px(10.0);
-                scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), if e.pid == me { self.surface.signal } else { Theme::with_alpha(self.surface.signal, 0.55) });
+                scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), if e.id == me { self.surface.signal } else { Theme::with_alpha(self.surface.signal, 0.55) });
                 let base = y + self.px(19.0);
-                let st = if e.pid == me { strong } else { label };
+                let st = if e.id == me { strong } else { label };
                 let tabs = format!("{} TAB{}", e.tabs, if e.tabs == 1 { "" } else { "S" });
                 let tw = self.fonts.measure(label, &tabs);
                 let mut right = sb.right() - self.px(12.0);
-                if e.pid == me {
+                if e.id == me {
                     let csz = self.px(12.0);
                     self.fonts.draw_icon(scene, nus_render::text::icons::CHECK, csz, right - csz, y + ((row - csz) / 2.0).round(), ink);
                     right -= csz + self.px(8.0);
@@ -2961,7 +2977,7 @@ impl App {
                 self.fonts.draw(scene, st, sb.x + self.px(30.0), base, &text);
                 scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
                 if self.win_menu {
-                    self.side_hits.push((cell, if e.pid == me { SideHit::Window } else { SideHit::WinFront(i) }));
+                    self.side_hits.push((cell, if e.id == me { SideHit::Window } else { SideHit::WinFront(i) }));
                 }
                 y += row;
             }
@@ -3123,7 +3139,6 @@ impl App {
 
     pub(crate) fn open_win_menu(&mut self) {
         self.kinds_menu = false;
-        self.windows = crate::windows::list();
         self.win_menu = true;
         self.win_anim.replay(0.0, 1.0, self.motion.dur(160.0));
         self.dirty = true;
@@ -3739,7 +3754,7 @@ impl App {
                 self.save_prefs();
                 self.dirty = true;
             }
-            Action::NewWindow => crate::windows::spawn(),
+            Action::NewWindow => self.new_window_request = true,
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
             Action::NewBrowser(url) => {
                 self.tick_hint(1);
