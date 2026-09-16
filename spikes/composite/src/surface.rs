@@ -435,6 +435,8 @@ pub struct TabCtx<'a> {
     pub space_signal: Color,
     /// "ink" or "paper", so rules can pick lightness.
     pub theme: &'a str,
+    /// The page's host, "" for shells.
+    pub host: &'a str,
     pub parent: Option<&'a Overrides>,
 }
 
@@ -491,6 +493,56 @@ function on_page(ctx)
 end
 "##;
 
+/// Starter rule sets the RULES page can write (each replaces new_tab and
+/// new_space; on_page and on_event are kept from the default).
+pub const STARTERS: [(&str, &str); 5] = [
+    ("hue per tab", r##"-- hue per tab: every terminal its own hue; stacks stay in the family.
+function new_tab(ctx)
+  if ctx.parent then
+    return { bg = ctx.parent.bg and mix(ctx.parent.bg, "#ffffff", 0.06) or nil, signal = ctx.parent.signal }
+  end
+  if ctx.kind == "terminal" then
+    local turn = (ctx.index - 1) * 0.11
+    local light = ctx.theme == "ink" and 0.11 or 0.93
+    return { bg = hsl(turn, 0.18, light), signal = hue(ctx.signal, turn) }
+  end
+end
+"##),
+    ("family per stack", r##"-- family per stack: each top-level tab takes a tint of the signal;
+-- its children step down the same family.
+function new_tab(ctx)
+  if ctx.parent then
+    return { bg = ctx.parent.bg, signal = family(ctx.parent.signal or ctx.signal, 4) }
+  end
+  local step = ((ctx.index - 1) % 5) + 1
+  return { signal = family(ctx.signal, step) }
+end
+"##),
+    ("by host", r##"-- by host: pages colour by where they are; shells stay plain.
+function new_tab(ctx)
+  if ctx.kind ~= "page" then return nil end
+  local h = ctx.host or ""
+  if h:find("github") then return { signal = "#6b3fa0" } end
+  if h:find("localhost") or h:find("127.0.0.1") then return { signal = "#d9a400" } end
+  if h:find("docs") then return { signal = "#1a7f8a" } end
+  return { signal = hue(ctx.signal, (#h % 7) / 7) }
+end
+"##),
+    ("monochrome", r##"-- monochrome: everything in the signal; only lightness moves.
+function new_tab(ctx)
+  local light = ctx.theme == "ink" and (0.10 + (ctx.index % 4) * 0.015) or (0.94 - (ctx.index % 4) * 0.015)
+  return { bg = hsl(0, 0, light), signal = ctx.signal }
+end
+"##),
+    ("time of day", r##"-- time of day: warm in the morning, cool at night (hour from the clock).
+function new_tab(ctx)
+  local h = tonumber(os_hour or 12)
+  local turn = (h / 24) * 0.9
+  return { signal = hue(ctx.signal, turn) }
+end
+"##),
+];
+
 /// The Luau state: loaded from the rules file, re-read on demand.
 pub struct Rules {
     lua: mlua::Lua,
@@ -513,6 +565,16 @@ impl Rules {
         let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new() };
         r.reload();
         r
+    }
+
+    /// Replace new_tab / new_space with a starter, keeping on_page and
+    /// on_event from the default file.
+    pub fn write_starter(&mut self, k: usize) {
+        let Some((_, body)) = STARTERS.get(k) else { return };
+        let keep = DEFAULT_RULES.split("-- new_space(ctx)").nth(1).map(|rest| format!("-- new_space(ctx){rest}")).unwrap_or_default();
+        let src = format!("-- nus rules · Luau, sandboxed. Starter: {}.\n\n{}\n{}", STARTERS[k].0, body, keep);
+        let _ = std::fs::write(&self.path, src);
+        self.reload();
     }
 
     pub fn reload(&mut self) {
@@ -550,6 +612,15 @@ impl Rules {
             "family",
             lua.create_function(|_, (h, i): (String, i64)| Ok(parse_hex(&h).map(|c| hex(family(c)[(i.clamp(1, 5) - 1) as usize])))).unwrap(),
         );
+        // The hour, for time-of-day rules (no os library in the sandbox).
+        let hour = std::process::Command::new(if cfg!(target_os = "windows") { "cmd" } else { "date" })
+            .args(if cfg!(target_os = "windows") { vec!["/c", "echo %TIME%"] } else { vec!["+%H"] })
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().split(':').next().and_then(|h| h.trim().parse::<i64>().ok()))
+            .unwrap_or(12);
+        let _ = g.set("os_hour", hour);
         let _ = g.set(
             "hsl",
             lua.create_function(|_, (h, s, l): (f32, f32, f32)| Ok(hex(from_hsl(h.rem_euclid(1.0), s, l, 1.0)))).unwrap(),
@@ -574,6 +645,7 @@ impl Rules {
         let _ = t.set("space", ctx.space);
         let _ = t.set("signal", hex(ctx.space_signal));
         let _ = t.set("theme", ctx.theme);
+        let _ = t.set("host", ctx.host);
         if let Some(p) = ctx.parent {
             let pt = self.lua.create_table().unwrap();
             if let Some(bg) = p.bg {
@@ -663,10 +735,10 @@ mod tests {
     fn default_rules_run() {
         let r = Rules::from_source(DEFAULT_RULES);
         assert!(r.status.starts_with("ok"), "{}", r.status);
-        let ctx = TabCtx { kind: "terminal", index: 1, profile: "pwsh", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", parent: None };
+        let ctx = TabCtx { kind: "terminal", index: 1, profile: "pwsh", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: None };
         let o = r.new_tab(&ctx);
         assert!(o.bg.is_some() && o.signal.is_some());
-        let child = TabCtx { kind: "page", index: 1, profile: "", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", parent: Some(&o) };
+        let child = TabCtx { kind: "page", index: 1, profile: "", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: Some(&o) };
         let c = r.new_tab(&child);
         assert_eq!(c.signal, o.signal);
         assert!(r.new_tab(&TabCtx { kind: "page", parent: None, ..ctx }).bg.is_none());
@@ -683,7 +755,7 @@ mod tests {
     fn sandbox_blocks_io() {
         let r = Rules::from_source("function new_tab(c) return { bg = tostring(io) } end");
         assert!(r.status.starts_with("ok"));
-        let ctx = TabCtx { kind: "terminal", index: 0, profile: "", space: "", space_signal: [0.0; 4], theme: "ink", parent: None };
+        let ctx = TabCtx { kind: "terminal", index: 0, profile: "", space: "", space_signal: [0.0; 4], theme: "ink", host: "", parent: None };
         assert_eq!(r.new_tab(&ctx).bg, None);
     }
 }

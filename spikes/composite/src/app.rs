@@ -2908,6 +2908,13 @@ impl App {
             Pane::Settings(_) => ("settings", ""),
             Pane::Hints(_) => ("welcome", ""),
         };
+        let host = match left {
+            Pane::Web(w) => {
+                let s = w.tab.shared.borrow();
+                s.url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").trim_start_matches("www.").to_string()
+            }
+            _ => String::new(),
+        };
         let index = self.top_level().len();
         self.rules.new_tab(&TabCtx {
             kind,
@@ -2916,6 +2923,7 @@ impl App {
             space: &self.space_name,
             space_signal: self.surface.signal,
             theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" },
+            host: &host,
             parent,
         })
     }

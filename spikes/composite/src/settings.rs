@@ -202,6 +202,7 @@ pub enum Hit {
     Family(crate::theme_edit::Family),
     Import(usize),
     OpenThemes,
+    Starter(usize),
     WindowStart(WindowStart),
     Splash(SplashMode),
     Then(Then),
@@ -256,6 +257,8 @@ enum Control {
     Buttons(Vec<(String, (&'static str, &'static str), Hit)>),
     /// Coloured runs of text, as proof.
     Proof(Vec<(Color, String)>),
+    /// A mini sidebar: (bg, signal, title, child) rows the rules produced.
+    Tabs(Vec<(Option<Color>, Option<Color>, String, bool)>),
 }
 
 impl App {
@@ -383,6 +386,7 @@ impl App {
             Hit::Family(f) => format!("family {}", f.name()),
             Hit::Import(k) => format!("import {}", crate::theme_edit::imports().get(k).map(|t| t.name.clone()).unwrap_or_default()),
             Hit::OpenThemes => "open the themes folder".into(),
+            Hit::Starter(k) => format!("start from {}", surface::STARTERS.get(k).map(|s| s.0).unwrap_or("")),
             Hit::WindowStart(w) => format!("window {:?}", w).to_lowercase(),
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
@@ -616,6 +620,7 @@ impl App {
                     self.rebuild_theme();
                 }
             }
+            Hit::Starter(k) => self.rules.write_starter(k),
             Hit::OpenThemes => {
                 let dir = crate::theme_edit::themes_dir();
                 let _ = std::fs::create_dir_all(&dir);
@@ -1165,9 +1170,35 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            10 => vec![
+            10 => {
+                // What the rules do right now: three shells, a stack child, a page.
+                let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
+                let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
+                    self.rules.new_tab(&surface::TabCtx { kind, index, profile: "powershell", space: &self.space_name, space_signal: self.surface.signal, theme, host, parent })
+                };
+                let a = mk("terminal", 0, "", None);
+                let b = mk("terminal", 1, "", None);
+                let bc = mk("page", 1, "docs.rs", Some(&b));
+                let c = mk("terminal", 2, "", None);
+                let d = mk("page", 3, "github.com", None);
+                let preview = vec![
+                    (a.bg, a.signal, "1  powershell".to_string(), false),
+                    (b.bg, b.signal, "2  powershell".to_string(), false),
+                    (bc.bg, bc.signal, "docs.rs".to_string(), true),
+                    (c.bg, c.signal, "3  wsl · ubuntu".to_string(), false),
+                    (d.bg, d.signal, "4  github".to_string(), false),
+                ];
+                let try4 = mk("terminal", 3, "", None);
+                let tried: Vec<(Option<Color>, Hit, bool)> = vec![(try4.bg, Hit::Starter(0), false), (try4.signal, Hit::Starter(0), false)];
+                vec![
                 ("FILE".into(), Info(self.rules.path.to_string_lossy().to_string())),
                 ("STATUS".into(), Info(self.rules.status.clone())),
+                ("START FROM".into(), Choice(surface::STARTERS.iter().enumerate().map(|(k, (n, _))| (n.to_uppercase(), Hit::Starter(k), false)).collect())),
+                ("".into(), Info("a starter replaces new_tab and new_space; on_page and on_event are kept".into())),
+                ("NOW".into(), Tabs(preview)),
+                ("TRY".into(), Info("new_tab { kind = \"terminal\", index = 4 } →".into())),
+                ("".into(), Swatches(tried)),
+                ("HOOKS".into(), Info("new_tab · new_space · on_page · on_event   helpers: hue · mix · hsl · family".into())),
                 (
                     "".into(),
                     Buttons(vec![
@@ -1176,7 +1207,8 @@ impl App {
                         ("RESET TO DEFAULT".into(), icons::WARNING, Hit::ResetRules),
                     ]),
                 ),
-            ],
+            ]
+            }
             11 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
@@ -1338,6 +1370,28 @@ impl App {
                         x += self.fonts.draw(scene, st, x, base, &text);
                     }
                 }
+                Control::Tabs(rows) => {
+                    // A 248px sidebar in miniature, one row per result.
+                    let sw = self.px(248.0);
+                    let rh_row = self.px(26.0);
+                    let x0 = vx;
+                    let mut ry = y + self.px(4.0);
+                    scene.outline(Rect::new(x0, ry, sw, rh_row * rows.len() as f32), self.px(m::HAIRLINE), t.tint);
+                    for (bg, sig, title, child) in rows {
+                        let rr = Rect::new(x0, ry, sw, rh_row);
+                        if let Some(b) = bg {
+                            scene.rect(rr, b);
+                        }
+                        scene.rect(Rect::new(x0, ry, self.px(2.0), rh_row), sig.unwrap_or(t.dim));
+                        let tx = x0 + if child { self.px(26.0) } else { self.px(12.0) };
+                        if child {
+                            scene.vline(x0 + self.px(14.0), ry, rh_row, self.px(m::HAIRLINE), t.dim);
+                        }
+                        let st = Style { color: ink, ..label };
+                        self.fonts.draw(scene, st, tx, ry + self.px(17.0), &title);
+                        ry += rh_row;
+                    }
+                }
                 Control::Choice(opts) => {
                     let mut x = vx;
                     for (text, hit, on) in opts {
@@ -1424,14 +1478,104 @@ impl App {
                 if ly > clip.bottom() {
                     break;
                 }
-                let comment = line.trim_start().starts_with("--");
-                let st = if comment { Style { color: t.dim, ..code } } else { code };
                 self.fonts.draw(scene, Style { color: t.dim, ..code }, cx, ly, &format!("{:>3}", n + 1));
-                let text = self.fit(st, line, maxw - self.px(40.0));
-                self.fonts.draw(scene, st, cx + self.px(36.0), ly, &text);
+                let mut x = cx + self.px(36.0);
+                let limit = cx + maxw;
+                for (kind, tok) in luau_tokens(line) {
+                    let color = match kind {
+                        Tok::Comment => t.dim,
+                        Tok::Keyword => crate::theme_edit::from_rgb(t.ansi[12]),
+                        Tok::Str => crate::theme_edit::from_rgb(t.ansi[10]),
+                        Tok::Num => crate::theme_edit::from_rgb(t.ansi[13]),
+                        Tok::Name => crate::theme_edit::from_rgb(t.ansi[11]),
+                        Tok::Plain => ink,
+                    };
+                    if x >= limit {
+                        break;
+                    }
+                    x += self.fonts.draw(scene, Style { color, ..code }, x, ly, &tok);
+                }
                 ly += lh;
             }
             scene.layer(None);
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tok {
+    Comment,
+    Keyword,
+    Str,
+    Num,
+    Name,
+    Plain,
+}
+
+/// A small Luau tokenizer for the RULES listing: comments, strings,
+/// numbers, keywords, the name after `function`.
+fn luau_tokens(line: &str) -> Vec<(Tok, String)> {
+    const KW: [&str; 16] = ["function", "end", "if", "then", "else", "elseif", "return", "local", "and", "or", "not", "nil", "true", "false", "for", "in"];
+    let mut out = Vec::new();
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    let mut after_function = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            out.push((Tok::Comment, chars[i..].iter().collect()));
+            break;
+        }
+        if c == '"' || c == '\'' {
+            let q = c;
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != q {
+                j += 1;
+            }
+            let end = (j + 1).min(chars.len());
+            out.push((Tok::Str, chars[i..end].iter().collect()));
+            i = end;
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_ascii_digit() || chars[j] == '.') {
+                j += 1;
+            }
+            out.push((Tok::Num, chars[i..j].iter().collect()));
+            i = j;
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' {
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            let word: String = chars[i..j].iter().collect();
+            let kind = if KW.contains(&word.as_str()) {
+                Tok::Keyword
+            } else if after_function {
+                Tok::Name
+            } else {
+                Tok::Plain
+            };
+            after_function = word == "function";
+            out.push((kind, word));
+            i = j;
+            continue;
+        }
+        let mut j = i;
+        while j < chars.len() && !(chars[j].is_alphanumeric() || chars[j] == '_' || chars[j] == '"' || chars[j] == '\'' || (chars[j] == '-' && chars.get(j + 1) == Some(&'-'))) {
+            j += 1;
+        }
+        if j == i {
+            j = i + 1;
+        }
+        if !chars[i..j].iter().all(|c| c.is_whitespace()) {
+            after_function = false;
+        }
+        out.push((Tok::Plain, chars[i..j].iter().collect()));
+        i = j;
+    }
+    out
 }
