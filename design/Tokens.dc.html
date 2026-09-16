@@ -7,11 +7,11 @@
 <body>
 <x-dc>
 <helmet>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
   <style>
     body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; }
     a { color: #b3261e; } a:hover { color: #7a1a14; }
-    .serif { font-family: 'Instrument Serif', Georgia, serif; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; }
     .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
     .sw { width: 44px; height: 44px; display: flex; align-items: flex-end; padding: 3px; box-sizing: border-box; font-size: 8px; }
   </style>
@@ -60,7 +60,7 @@
 
     <div style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #141414; padding-top: 14px;">
       <div class="cap">type</div>
-      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div class="serif" style="font-size: 34px; font-style: italic; line-height: 1;">nus</div><div class="cap">wordmark · instrument serif italic 34/20/18</div></div>
+      <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div class="serif" style="font-size: 34px; font-style: italic; line-height: 1;">nus</div><div class="cap">wordmark · newsreader italic 500 · 34/20/18</div></div>
       <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div style="font-weight: 600;">01 cargo test · vt</div><div class="cap">ui strong · plex mono 600 13</div></div>
       <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div>wgpu docs — Surface</div><div class="cap">ui · plex mono 400 13 / 1.5</div></div>
       <div style="display: flex; flex-direction: row; gap: 18px; align-items: baseline;"><div class="cap">devtools · ~/nus · esc</div><div class="cap" style="opacity: 0.6;">label · 11 · caps · 0.08em</div></div>
@@ -154,6 +154,7 @@
       <div class="cap">principles</div>
       <div style="display: flex; flex-direction: column; gap: 2px; font-size: 12px;">
         <div>Rules, not boxes. Hierarchy by weight and case, never by color.</div>
+        <div>UI face and terminal face are both config keys; Plex Mono is the default, not the rule.</div>
         <div>One color on screen: the Space's. Everything else is ink on paper.</div>
         <div>The terminal keeps its ANSI palette; chrome stays monochrome around it.</div>
         <div>Floating things get a 2px edge and a hard offset shadow. Nothing blurs.</div>

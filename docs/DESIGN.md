@@ -43,9 +43,9 @@ paper, no blink by default.
 
 ## Type
 
-- UI and terminal: IBM Plex Mono (bundled, OFL). Regular 400, medium 500,
-  semibold 600. The terminal font is user-configurable; the UI face is not.
-- Wordmark only: Instrument Serif italic (bundled, OFL) — `nus`, `go`,
+- UI and terminal: IBM Plex Mono (bundled, OFL) by default. Regular 400, medium 500,
+  semibold 600. Both are config keys: `font.terminal` and `font.ui`.
+- Wordmark only: Newsreader Italic 500 (bundled, OFL) — `nus`, `go`,
   `quick`, `paper`, `ink`.
 - Ramp: ui 13/1.5; ui strong 600; label 11 caps tracking 0.08em; palette
   input 16; preview 7.5/1.5; wordmark 34 (sidebar) / 20 (top strip) / 18.
