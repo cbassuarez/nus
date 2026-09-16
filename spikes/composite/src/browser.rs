@@ -37,6 +37,9 @@ pub struct Shared {
     /// opens it as a tab in this tab's stack.
     pub popup: Option<String>,
     pub created: Created,
+    /// Results of CDP calls made with `devtools`, by message id; the app
+    /// drains the ones it asked for.
+    pub replies: Vec<(i32, serde_json::Value)>,
 }
 
 /// Instant with a Default, so Shared can derive it.
@@ -309,6 +312,11 @@ wrap_dev_tools_message_observer! {
                 if let Some(id) = v.pointer("/targetInfo/targetId").and_then(|t| t.as_str()) {
                     self.o.shared.borrow_mut().target_id = Some(id.to_string());
                 }
+                let mut s = self.o.shared.borrow_mut();
+                if s.replies.len() > 32 {
+                    s.replies.remove(0);
+                }
+                s.replies.push((message_id, v));
             }
         }
 
@@ -504,6 +512,19 @@ impl BrowserTab {
             h.send_dev_tools_message(Some(msg.as_bytes()));
         }
         id
+    }
+
+    /// Run JS in the page and keep the value: the id to look for in
+    /// `Shared::replies` (`result.result.value`).
+    pub fn eval_reply(&self, expr: &str) -> i32 {
+        self.devtools("Runtime.evaluate", serde_json::json!({ "expression": expr, "returnByValue": true }))
+    }
+
+    /// Take the reply for `id`, if it has arrived.
+    pub fn take_reply(&self, id: i32) -> Option<serde_json::Value> {
+        let mut s = self.shared.borrow_mut();
+        let k = s.replies.iter().position(|(i, _)| *i == id)?;
+        Some(s.replies.remove(k).1)
     }
 
     /// Run JS in the page (fire and forget).

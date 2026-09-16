@@ -27,6 +27,7 @@ pub mod bundled {
         include_bytes!("../../../assets/fonts/IBMPlexMono-Italic.ttf");
     pub const NEWSREADER_ITALIC: &[u8] =
         include_bytes!("../../../assets/fonts/Newsreader-Italic.ttf");
+    pub const NEWSREADER: &[u8] = include_bytes!("../../../assets/fonts/Newsreader.ttf");
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -374,6 +375,8 @@ pub mod icons {
     icon!(OPEN_EXTERNAL, "arrow-square-out");
     icon!(SLIDERS, "sliders-horizontal");
     icon!(CIRCLE, "circle");
+    icon!(BOOK, "book-open");
+    icon!(BOOK_TEXT, "book-open-text");
 }
 
 impl FontSystem {

@@ -92,6 +92,8 @@ pub struct Fonts {
     pub strong: FontId,
     pub wordmark: FontId,
     pub term: FontId,
+    /// Newsreader, for the reader.
+    pub serif: FontId,
 }
 
 pub struct TermPane {
@@ -126,6 +128,9 @@ pub struct WebPane {
     pub load_fade: Anim,
     /// The URL the rules' boost was last applied to.
     pub boosted: String,
+    /// Reader mode over this page, and the pending extraction call.
+    pub reader: Option<crate::reader::Reader>,
+    pub reader_req: Option<i32>,
 }
 
 pub struct SettingsPane {
@@ -333,6 +338,7 @@ impl App {
         let ui = fonts.load_bytes(nus_render::text::bundled::PLEX_MONO, 0)?;
         let strong = fonts.load_bytes(nus_render::text::bundled::PLEX_MONO_SEMIBOLD, 0)?;
         let wordmark = fonts.load_bytes(nus_render::text::bundled::NEWSREADER_ITALIC, 0)?;
+        let serif = fonts.load_bytes(nus_render::text::bundled::NEWSREADER, 0)?;
         let term_font = ui;
         let theme = match window.theme() {
             Some(winit::window::Theme::Light) => Theme::paper(),
@@ -355,6 +361,7 @@ impl App {
                 strong,
                 wordmark,
                 term: term_font,
+                serif,
             },
             scene: Scene::new(),
             theme,
@@ -484,6 +491,8 @@ impl App {
             load: Follow::new(0.0),
             load_fade: Anim::at(0.0),
             boosted: String::new(),
+            reader: None,
+            reader_req: None,
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             focus_devtools: false,
@@ -658,6 +667,7 @@ impl App {
     pub fn tick(&mut self) {
         self.drain_popups();
         self.apply_boosts();
+        self.poll_reader();
         self.sync_anims();
         if self.anims_active() {
             self.dirty = true;
@@ -787,6 +797,50 @@ impl App {
                 }
             }
         }
+    }
+
+    // ── Reader ───────────────────────────────────────────────────────────
+
+    /// Ctrl+Shift+R: extract the focused page's article and set it in
+    /// Newsreader over the page; again to go back.
+    fn toggle_reader(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let pane = match (&tab.left, tab.focus_right) {
+            (_, true) if tab.right.is_some() => tab.right.as_mut().unwrap(),
+            (Pane::Web(_), _) => &mut tab.left,
+            _ => match tab.right.as_mut() {
+                Some(r) => r,
+                None => return,
+            },
+        };
+        if let Pane::Web(w) = pane {
+            if w.reader.take().is_none() {
+                w.reader_req = Some(w.tab.eval_reply(crate::reader::EXTRACT_JS));
+            }
+            self.dirty = true;
+        }
+    }
+
+    fn poll_reader(&mut self) {
+        for tab in self.tabs.iter_mut() {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Web(w) = p {
+                    let Some(id) = w.reader_req else { continue };
+                    let Some(v) = w.tab.take_reply(id) else { continue };
+                    w.reader_req = None;
+                    let json = v.pointer("/result/value").and_then(|x| x.as_str()).unwrap_or("");
+                    match crate::reader::Article::parse(json) {
+                        Some(a) if !a.blocks.is_empty() => w.reader = Some(crate::reader::Reader::new(a)),
+                        _ => tracing::info!("reader: nothing to extract"),
+                    }
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    fn reader_fonts(&self) -> crate::reader::ReaderFonts {
+        crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
     }
 
     fn anims_active(&self) -> bool {
@@ -1929,9 +1983,18 @@ impl App {
                     x += self.px(m::NAV_SLOT);
                 }
                 x += self.px(4.0);
-                // DevTools: the bug, lit while open.
-                let dw = isz;
+                // Reader: the book, lit while on. DevTools: the bug, lit while open.
+                let dw = isz * 2.0 + self.px(14.0);
                 let bug_x = r.right() - self.px(14.0) - isz;
+                let book_x = bug_x - self.px(14.0) - isz;
+                if p.reader.is_some() {
+                    scene.rect(Rect::new(book_x - self.px(6.0), r.y + self.px(6.0), isz + self.px(12.0), self.px(22.0)), ink);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::BOOK_TEXT, isz, book_x, iy, t.paper);
+                } else if p.reader_req.is_some() {
+                    self.fonts.draw_icon(scene, nus_render::text::icons::BOOK, isz, book_x, iy, t.dim);
+                } else {
+                    self.fonts.draw_icon(scene, nus_render::text::icons::BOOK, isz, book_x, iy, ink);
+                }
                 if p.devtools.is_some() {
                     scene.rect(Rect::new(bug_x - self.px(6.0), r.y + self.px(6.0), isz + self.px(12.0), self.px(22.0)), ink);
                     self.fonts.draw_icon(scene, nus_render::text::icons::BUG, isz, bug_x, iy, t.paper);
@@ -1949,9 +2012,13 @@ impl App {
                 let small = Style { px: self.px(12.0), ..ui };
                 self.fonts.draw(scene, small, field.x + self.px(8.0), base, &shown);
                 scene.hline(r.x, p.page.y - 1.0, r.w, self.px(m::HAIRLINE), ink);
-                // Page.
+                // Page — or the reader set over it.
                 scene.rect(p.page, t.page);
-                if let Some(bind) = bind {
+                if let Some(reader) = p.reader.as_mut() {
+                    let rf = self.reader_fonts();
+                    let paper = self.paper();
+                    reader.draw(scene, &mut self.fonts, &rf, p.page, self.scale, ink, t.dim, paper, self.surface.signal);
+                } else if let Some(bind) = bind {
                     scene.texture(p.page, bind, Some(p.page));
                     scene.layer(None);
                 }
@@ -1994,7 +2061,15 @@ impl App {
                     self.fonts.draw_icon(scene, nus_render::text::icons::CURSOR, isz, rx, base - isz + self.px(2.0), ink);
                     rx -= self.px(12.0);
                 }
-                let (icon, word) = if local { (nus_render::text::icons::HARD_HAT, "LOCAL") } else { (nus_render::text::icons::BROADCAST, "LIVE") };
+                let words = p.reader.as_ref().map(|r| r.article.words());
+                let reading = words.map(|n| format!("{n} WORDS"));
+                let (icon, word) = if let Some(rw) = reading.as_deref() {
+                    (nus_render::text::icons::BOOK_TEXT, rw)
+                } else if local {
+                    (nus_render::text::icons::HARD_HAT, "LOCAL")
+                } else {
+                    (nus_render::text::icons::BROADCAST, "LIVE")
+                };
                 let lw = self.fonts.measure(label, word);
                 rx -= lw;
                 self.fonts.draw(scene, label, rx, base, word);
@@ -2288,6 +2363,7 @@ impl App {
                 Some(KeyCode::KeyW) => return self.close_tabs(false),
                 Some(KeyCode::KeyZ) => return self.reopen_closed(),
                 Some(KeyCode::KeyD) => return self.toggle_split(),
+                Some(KeyCode::KeyR) => return self.toggle_reader(),
                 Some(KeyCode::KeyS) => {
                     self.sidebar = !self.sidebar;
                     return self.layout();
@@ -3098,6 +3174,7 @@ impl App {
         let mut down_in_web = self.mouse_down_in_web;
         let mut open_url_palette = false;
         let mut toggle_devtools = false;
+        let mut toggle_reader = false;
         let mut focus_dt: Option<(bool, bool)> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
             match p {
@@ -3114,6 +3191,8 @@ impl App {
                             }
                         } else if x > w.rect.right() - 44.0 * scale {
                             toggle_devtools = true;
+                        } else if x > w.rect.right() - 74.0 * scale {
+                            toggle_reader = true;
                         } else {
                             open_url_palette = true;
                         }
@@ -3140,7 +3219,7 @@ impl App {
                             continue;
                         }
                     }
-                    let inside = w.page.contains(x, y);
+                    let inside = w.page.contains(x, y) && w.reader.is_none();
                     if inside || (!pressed && down_in_web) {
                         let (lx, ly) = ((x - w.page.x) / scale, (y - w.page.y) / scale);
                         let b = match button {
@@ -3179,6 +3258,9 @@ impl App {
         if toggle_devtools {
             self.toggle_devtools();
         }
+        if toggle_reader {
+            self.toggle_reader();
+        }
         if open_url_palette {
             self.open_palette(PaletteMode::Url);
         }
@@ -3204,6 +3286,16 @@ impl App {
                     };
                     let (lx, ly) = ((x - w.dt_rect.x) / self.scale, (y - w.dt_rect.y) / self.scale);
                     w.devtools.as_ref().unwrap().wheel(lx as i32, ly as i32, cef_mods(self.mods), dx, dy);
+                }
+                Pane::Web(w) if w.page.contains(x, y) && w.reader.is_some() => {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y * 60.0 * self.scale,
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                    if let Some(rd) = w.reader.as_mut() {
+                        rd.scroll -= dy;
+                    }
+                    self.dirty = true;
                 }
                 Pane::Web(w) if w.page.contains(x, y) => {
                     let (dx, dy) = match delta {

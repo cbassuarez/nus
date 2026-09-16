@@ -5,6 +5,7 @@ mod anim;
 mod app;
 mod browser;
 mod pip;
+mod reader;
 mod settings;
 mod surface;
 
