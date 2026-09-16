@@ -5,6 +5,7 @@ mod access;
 mod anim;
 mod app;
 mod browser;
+mod little;
 mod pip;
 mod reader;
 mod settings;
@@ -87,6 +88,17 @@ impl ApplicationHandler<UserEvent> for Host {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(a) = self.app.as_mut() else { return };
+        if let Some(url) = a.little_request.take() {
+            let attrs = Window::default_attributes()
+                .with_title("nus · little")
+                .with_decorations(false)
+                .with_visible(false)
+                .with_inner_size(winit::dpi::LogicalSize::new(little::LITTLE_W, little::LITTLE_H));
+            match event_loop.create_window(attrs) {
+                Ok(w) => a.attach_little(Arc::new(w), &url),
+                Err(e) => tracing::warn!("little window: {e}"),
+            }
+        }
         if let Some((tab, right)) = a.pip_request.take() {
             let attrs = Window::default_attributes()
                 .with_title("nus · pip")
@@ -108,6 +120,25 @@ impl ApplicationHandler<UserEvent> for Host {
             if let Some(ad) = self.access.as_mut() {
                 ad.process_event(&a.window, &event);
             }
+        }
+        if a.little.as_ref().is_some_and(|l| l.window.id() == id) {
+            match event {
+                WindowEvent::CloseRequested => a.close_little(),
+                WindowEvent::Focused(f) => a.little_focus(f),
+                WindowEvent::Resized(s) => a.little_resized(s.width, s.height),
+                WindowEvent::Moved(p) => a.little_moved(p.x, p.y),
+                WindowEvent::ModifiersChanged(m) => a.little_modifiers(m.state()),
+                WindowEvent::KeyboardInput { event, .. } => a.little_key(&event),
+                WindowEvent::CursorMoved { position, .. } => {
+                    a.little_pos = (position.x as f32, position.y as f32);
+                    a.little_cursor(a.little_pos);
+                }
+                WindowEvent::MouseInput { state, button, .. } => a.little_mouse(button, state, a.little_pos),
+                WindowEvent::MouseWheel { delta, .. } => a.little_wheel(delta, a.little_pos),
+                WindowEvent::RedrawRequested => a.little_frame(),
+                _ => {}
+            }
+            return;
         }
         if a.pip.as_ref().is_some_and(|p| p.window.id() == id) {
             match event {
@@ -187,6 +218,13 @@ fn main() -> ExitCode {
     }
     assert_eq!(ret, -1, "browser process must not be executed here");
 
+    // One instance: a second launch hands its URLs to the first and exits.
+    let urls = little::urls_from_args();
+    let urls_rx = match little::claim(&urls) {
+        little::Claim::HandedOff => return ExitCode::SUCCESS,
+        little::Claim::Primary(rx) => rx,
+    };
+
     let profile = std::env::current_dir().unwrap().join("profile");
     let settings = Settings {
         windowless_rendering_enabled: 1,
@@ -206,6 +244,7 @@ fn main() -> ExitCode {
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
     let mut host = Host { proxy, app: None, access: None, access_frame: 0 };
+    let mut urls_rx = Some(urls_rx);
     let code = loop {
         do_message_loop_work();
         let status = event_loop.pump_app_events(Some(Duration::from_millis(2)), &mut host);
@@ -213,11 +252,15 @@ fn main() -> ExitCode {
             break code;
         }
         if let Some(a) = host.app.as_mut() {
+            if a.urls_rx.is_none() {
+                a.urls_rx = urls_rx.take();
+            }
             a.tick();
             a.process_requests();
             a.apply_term_resizes(false);
             a.begin_frames();
             a.pip_frame();
+            a.little_frame();
             // pump() consumes the change it reports, so latch it into dirty
             // rather than letting redraw() pump a second time and see nothing.
             if a.pump() {

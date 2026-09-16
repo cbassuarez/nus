@@ -83,6 +83,8 @@ pub enum Hit {
     /// Tile grid → section, and back.
     Tile(usize),
     Back,
+    MakeDefault,
+    Unregister,
 }
 
 pub const SECTIONS: [(&str, (&str, &str)); 10] = [
@@ -148,6 +150,17 @@ impl App {
         self.layout();
     }
 
+    /// Registration is a `reg query` away; ask once per visit, not per frame.
+    pub(crate) fn refresh_register_note(&mut self) {
+        self.register_note = if crate::little::registered() {
+            "registered as a browser · links from other apps open little".into()
+        } else if cfg!(target_os = "windows") {
+            "not registered · links from other apps would open elsewhere".into()
+        } else {
+            "registration needs an app bundle (macOS) or .desktop file (Linux) · v1".into()
+        };
+    }
+
     /// A click inside the settings pane. Returns true when it was handled.
     pub(crate) fn settings_click(&mut self, x: f32, y: f32) -> bool {
         let Some(tab) = self.tabs.get(self.active) else { return false };
@@ -187,6 +200,8 @@ impl App {
             Hit::ResetRules => "reset rules to default".into(),
             Hit::Reduce(None) => "reduce motion follows the OS".into(),
             Hit::Reduce(Some(r)) => format!("reduce motion {}", if r { "on" } else { "off" }),
+            Hit::MakeDefault => "make nus the default browser".into(),
+            Hit::Unregister => "unregister nus as a browser".into(),
             Hit::BarStyle(b) => format!("loading bar {}", b.name()),
             Hit::BarColor(c) => format!("bar colour {:?}", c).to_lowercase(),
         }
@@ -197,6 +212,9 @@ impl App {
             Hit::Section(k) => {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.section = k;
+                }
+                if k == 5 {
+                    self.refresh_register_note();
                 }
             }
             Hit::Theme(None) => self.behavior.follow_os_theme = true,
@@ -256,11 +274,25 @@ impl App {
                     s.section = k;
                     s.drill = true;
                 }
+                if k == 5 {
+                    self.refresh_register_note();
+                }
             }
             Hit::Back => {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.drill = false;
                 }
+            }
+            Hit::MakeDefault => match crate::little::register() {
+                Ok(()) => self.register_note = "registered · pick nus in Windows Settings".into(),
+                Err(e) => {
+                    tracing::warn!("register: {e}");
+                    self.register_note = e;
+                }
+            },
+            Hit::Unregister => {
+                let _ = crate::little::unregister();
+                self.register_note = "unregistered".into();
             }
             Hit::Reduce(r) => self.motion.reduce = r,
             Hit::BarStyle(b) => self.load_bar.style = b,
@@ -464,6 +496,14 @@ impl App {
                         self.slider_value(self::Slider::BarChase),
                         format!("{} · how eagerly it follows real progress", self.load_bar.chase),
                     ),
+                ),
+                (
+                    "DEFAULT BROWSER".into(),
+                    Buttons(vec![("MAKE DEFAULT".into(), icons::GLOBE, Hit::MakeDefault), ("UNREGISTER".into(), icons::CLOSE, Hit::Unregister)]),
+                ),
+                (
+                    "".into(),
+                    Info(self.register_note.clone()),
                 ),
                 ("SEARCH".into(), Info("google · configurable".into())),
                 ("NEW TAB".into(), Info("opens the palette; no new-tab page".into())),

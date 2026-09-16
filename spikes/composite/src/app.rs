@@ -276,6 +276,13 @@ pub struct App {
     pub access_map: std::collections::HashMap<u64, crate::access::Target>,
     /// Palette row rects from the last frame (clicks, AccessKit).
     pub palette_hits: Vec<Rect>,
+    /// Little nus: the floating window for links from outside.
+    pub little: Option<crate::little::Little>,
+    pub little_request: Option<String>,
+    pub little_pos: (f32, f32),
+    /// URLs handed over by later launches (see little::claim).
+    pub urls_rx: Option<std::sync::mpsc::Receiver<String>>,
+    pub register_note: String,
     pub behavior: crate::settings::Behavior,
     pub fullscreen: bool,
     /// The pointer has moved inside the window since it last left it.
@@ -386,6 +393,11 @@ impl App {
             settings_hits: Vec::new(),
             access_map: std::collections::HashMap::new(),
             palette_hits: Vec::new(),
+            little: None,
+            little_request: None,
+            little_pos: (0.0, 0.0),
+            urls_rx: None,
+            register_note: String::new(),
             behavior: crate::settings::Behavior::default(),
             fullscreen: false,
             pointer_inside: false,
@@ -482,7 +494,7 @@ impl App {
         })
     }
 
-    fn new_web_pane(&mut self, url: &str) -> Option<WebPane> {
+    pub(crate) fn new_web_pane(&mut self, url: &str) -> Option<WebPane> {
         let shared: SharedRef = Rc::new(std::cell::RefCell::new(Shared {
             scale: self.scale,
             size: (100.0, 100.0),
@@ -674,6 +686,12 @@ impl App {
         self.drain_popups();
         self.apply_boosts();
         self.poll_reader();
+        // Links from outside.
+        let handed: Vec<String> = self.urls_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        for u in handed {
+            self.open_little(&u);
+            self.dirty = true;
+        }
         self.sync_anims();
         if self.anims_active() {
             self.dirty = true;
@@ -1786,6 +1804,7 @@ impl App {
 
     /// Ctrl+, — open (or switch to) the settings tab.
     fn open_settings(&mut self) {
+        self.refresh_register_note();
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
             return self.activate(i);
         }
@@ -2565,35 +2584,7 @@ impl App {
                         _ => {}
                     }
                 }
-                let flags = cef_mods(self.mods);
-                let vk = vk_code(&ev.physical_key, &ev.logical_key);
-                let mut e = cef::KeyEvent {
-                    windows_key_code: vk,
-                    native_key_code: vk,
-                    modifiers: flags,
-                    is_system_key: 0,
-                    focus_on_editable_field: 0,
-                    ..Default::default()
-                };
-                if pressed {
-                    e.type_ = cef::KeyEventType::RAWKEYDOWN;
-                    w.tab.key(&e);
-                    if let Some(text) = &ev.text {
-                        if !ctrl || alt {
-                            for ch in text.encode_utf16() {
-                                let mut c = cef::KeyEvent { ..e };
-                                c.type_ = cef::KeyEventType::CHAR;
-                                c.character = ch;
-                                c.unmodified_character = ch;
-                                c.windows_key_code = ch as i32;
-                                w.tab.key(&c);
-                            }
-                        }
-                    }
-                } else {
-                    e.type_ = cef::KeyEventType::KEYUP;
-                    w.tab.key(&e);
-                }
+                forward_key(&w.tab, ev, self.mods);
             }
         }
     }
@@ -3415,7 +3406,7 @@ fn detect_localhost(term: &Term) -> Option<(usize, usize, String)> {
 
 /// The whole line is a URL: a scheme, `localhost[:port]`, or `host.tld` with a
 /// known TLD. Bare words and anything with shell syntax never qualify.
-fn strict_url(line: &str) -> Option<String> {
+pub(crate) fn strict_url(line: &str) -> Option<String> {
     let s = line.trim();
     if s.is_empty() || s.contains(char::is_whitespace) || s.contains(|c| "|&;<>$`'\"()".contains(c)) {
         return None;
@@ -3493,7 +3484,7 @@ fn vt_key(k: &WKey) -> Option<Key> {
     })
 }
 
-fn cef_mods(m: ModifiersState) -> u32 {
+pub(crate) fn cef_mods(m: ModifiersState) -> u32 {
     let mut f = 0;
     if m.shift_key() {
         f |= 2;
@@ -3511,6 +3502,41 @@ fn cef_mods(m: ModifiersState) -> u32 {
 }
 
 /// Windows virtual-key code for a winit key (what CEF expects on Windows).
+/// Forward a winit key event to a browser: raw down, chars, or up.
+pub(crate) fn forward_key(tab: &BrowserTab, ev: &WKeyEvent, mods: ModifiersState) {
+    let pressed = ev.state == ElementState::Pressed;
+    let (ctrl, alt) = (mods.control_key(), mods.alt_key());
+    let flags = cef_mods(mods);
+    let vk = vk_code(&ev.physical_key, &ev.logical_key);
+    let mut e = cef::KeyEvent {
+        windows_key_code: vk,
+        native_key_code: vk,
+        modifiers: flags,
+        is_system_key: 0,
+        focus_on_editable_field: 0,
+        ..Default::default()
+    };
+    if pressed {
+        e.type_ = cef::KeyEventType::RAWKEYDOWN;
+        tab.key(&e);
+        if let Some(text) = &ev.text {
+            if !ctrl || alt {
+                for ch in text.encode_utf16() {
+                    let mut c = cef::KeyEvent { ..e };
+                    c.type_ = cef::KeyEventType::CHAR;
+                    c.character = ch;
+                    c.unmodified_character = ch;
+                    c.windows_key_code = ch as i32;
+                    tab.key(&c);
+                }
+            }
+        }
+    } else {
+        e.type_ = cef::KeyEventType::KEYUP;
+        tab.key(&e);
+    }
+}
+
 fn vk_code(phys: &PhysicalKey, logical: &WKey) -> i32 {
     if let PhysicalKey::Code(c) = phys {
         let v = match c {
