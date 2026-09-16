@@ -254,3 +254,61 @@ same thing the mouse does.
 crate), sleeping tabs, OS media controls, find in page, favicons, ruled
 context menus, downloads, history/autocomplete, session restore, site
 permission bands, print to PDF, snap layouts, `<select>` popups.
+
+## Look & feel pages, sound, startup (settled 2026-09-16, eighth pass)
+
+**Icon.** A Newsreader Italic *n* with an open, tapered band in orbit
+(NASA-meatball stroke: start and end, heavier at the belly, tilted −24°).
+Ink *n*, signal band; the live icon follows the current theme and signal,
+the bundled one ships Broadsheet. The splash is the same drawing, nothing
+else, and fades once the first tab has painted (debounced, min hold from
+settings). Restore / recent live in the **atlas** modal (header planet
+icon), never on the splash.
+
+**Header.** Wordmark once. A crumb of favicon + *Title · host*, click to
+edit the address. DevTools panels (console, network, elements) are icons.
+
+**Sidebar.** 32px rows, favicon or profile icon, ⌘-numerals ≤ 9, hover ×,
+waiting dot, children under a rule. Footer is one row: avatar (drop a
+`profile/avatar.png`), +, history, downloads, settings.
+
+**Surface.** Ramps, not a colour: 2–4 stops, angle, loop, aurora drift and
+breath. Signal, tint, opacity (on window / chrome / panes — Windows DX12 is
+opaque, the row says so). Textures: grain, stipple, stitch, linen,
+halftone, scale, still or animated, placed on the **carapace** (masked to
+its rounded stroke, two-tone so it reads on any ramp, ×3 strength for a
+thin band), the chrome, or the panes — never on content or video. Shell:
+band or frame, width, radius. Presets (Broadsheet, Midnight, Ledger,
+Darkroom) plus `profile/surfaces/*.json`; SAVE PRESET writes one.
+
+**Theme.** Paper / ink / page tokens per mode, ANSI 16 with a picker,
+families (Solarized, Gruvbox, Nord, from-signal), contrast grade and
+saturation, import from Ghostty / Windows Terminal / VS Code / base16
+files in `profile/themes/`. Broadsheet's own tokens are not editable —
+edits layer over them and RESET returns.
+
+**Rules.** `profile/rules.luau`, sandboxed. `new_tab(ctx)` and
+`new_space(ctx)` return a look (`bg`, `signal`); `on_page(ctx)` returns
+boosts; `on_event(ev)` returns a cue name (or `false` to silence). Five
+starters, live status, syntax-coloured preview, reload on save.
+
+**Sound.** cuelume's seventeen recipes ported to a native synth on cpal
+(tone + noise layers, exponential envelopes, glide, detune, biquad,
+shimmer), cached per cue, mixed on one stream. Fourteen events, each
+mapped to a cue or silence, previewable; master volume; rules can override
+per event.
+
+**Startup.** Window: remembered / maximised / fullscreen. Splash: icon,
+icon + sound, none; hold. Then: last session / atlas / new tab / nothing.
+Atlas: on demand, on launch, persistent. Outside links: little nus or a
+tab. Start on login; make default browser.
+
+**Cursor.** Shape (the shell's, block, beam, underline), hollow or hidden
+when unfocused, blink never / after 2s idle / always with a period,
+colour ink / signal / the tab's own, motion jump / glide / comet on the
+motion register, beam weight, pointer over the chrome (system, ink arrow,
+signal dot), hide the pointer while typing.
+
+**Width rule for all of it.** Every page is the same ruled two-column
+form; under 900px it becomes tiles that drill in. Settings changed by
+assistive tech persist like clicks.

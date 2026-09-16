@@ -51,6 +51,20 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
   small `replies` queue in `Shared` is enough for extraction (reader mode);
   `window.open` from CDP needs `userGesture`.
 
+- **Texture on a stroke.** A texture instance carries the carapace's
+  radius and thickness in `uv.xy`; the shader masks the pattern to the
+  rounded stroke and emits light-or-dark speckle so it reads on any ramp.
+  The band is thin, so it is drawn at ×3 strength.
+- **Native synth beats WebAudio here.** cuelume's recipes are a few
+  hundred lines on cpal; cached buffers per cue, one output stream, no
+  process. Recipes are data, so rules can name cues.
+- **Custom pointers.** `winit::window::CustomCursor::from_rgba` (32×32)
+  built from the theme at runtime; `set_cursor_visible(false)` on a key,
+  back on the next motion.
+- **AccessKit actions bypassed persistence.** `apply_setting` from the
+  tree never called `save_prefs`; fixed. Test settings through UIA, not
+  only the mouse.
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - CEF popup surfaces (`<select>` dropdowns) are not composited.
