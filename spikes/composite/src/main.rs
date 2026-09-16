@@ -9,6 +9,7 @@ mod little;
 mod pip;
 mod reader;
 mod settings;
+mod start;
 mod surface;
 
 use std::process::ExitCode;
@@ -277,6 +278,9 @@ fn main() -> ExitCode {
             }
         }
     };
+    if let Some(a) = host.app.as_ref() {
+        a.save_session();
+    }
     host.app = None;
     cef::shutdown();
     ExitCode::from(code as u8)

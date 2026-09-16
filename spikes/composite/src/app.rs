@@ -52,6 +52,7 @@ pub enum Action {
     Reopen,
     ShellStyle,
     ShellRadius(f32),
+    Start,
     Pip,
 }
 
@@ -79,6 +80,7 @@ pub enum CrumbHit {
     Close,
     Maximize,
     Minimize,
+    Start,
 }
 
 pub struct PaletteRow {
@@ -135,6 +137,8 @@ pub struct WebPane {
     pub favicon: Option<(String, Arc<wgpu::BindGroup>)>,
     /// Which DevTools panel: 0 console, 1 network, 2 elements.
     pub dt_panel: usize,
+    /// The URL last written to the recent list.
+    pub remembered: String,
 }
 
 pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::icons::CONSOLE), ("network", nus_render::text::icons::NETWORK), ("elements", nus_render::text::icons::CODE)];
@@ -289,6 +293,13 @@ pub struct App {
     /// URLs handed over by later launches (see little::claim).
     pub urls_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub register_note: String,
+    /// The Start modal, the session it can restore, and recent places.
+    pub start: Option<crate::start::Start>,
+    pub start_shown: bool,
+    pub last_session: Option<crate::start::Session>,
+    pub recent: Vec<crate::start::Recent>,
+    /// Signature of the last saved session, to save only on change.
+    pub session_sig: String,
     pub behavior: crate::settings::Behavior,
     pub fullscreen: bool,
     /// The pointer has moved inside the window since it last left it.
@@ -404,6 +415,11 @@ impl App {
             little_pos: (0.0, 0.0),
             urls_rx: None,
             register_note: String::new(),
+            start: None,
+            start_shown: false,
+            last_session: crate::start::Session::load(),
+            recent: crate::start::load_recent(),
+            session_sig: String::new(),
             behavior: crate::settings::Behavior::default(),
             fullscreen: false,
             pointer_inside: false,
@@ -464,7 +480,7 @@ impl App {
 
     /// Spawn a shell sized for the left pane (split or not), so ConPTY never
     /// sees a resize during startup.
-    fn new_term_pane(&mut self, split: bool, profile: usize) -> anyhow::Result<TermPane> {
+    pub(crate) fn new_term_pane(&mut self, split: bool, profile: usize) -> anyhow::Result<TermPane> {
         let term_px = 13.0 * self.scale * 96.0 / 72.0;
         let grid = GridRenderer::new(&self.fonts, self.f.term, term_px);
         let c = self.content_rect();
@@ -520,6 +536,7 @@ impl App {
             reader_req: None,
             favicon: None,
             dt_panel: 0,
+            remembered: String::new(),
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             focus_devtools: false,
@@ -696,6 +713,14 @@ impl App {
         self.apply_boosts();
         self.poll_reader();
         self.sync_favicons();
+        // The Start modal greets the second frame (the first is the window).
+        if !self.start_shown && self.frames > 1 {
+            self.start_shown = true;
+            if self.behavior.start_on_launch {
+                self.open_start();
+            }
+        }
+        self.track_session();
         // Links from outside.
         let handed: Vec<String> = self.urls_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
         for u in handed {
@@ -890,6 +915,40 @@ impl App {
             if let Some(p) = &self.pip {
                 p.window.set_window_icon(Some(icon));
             }
+        }
+    }
+
+    /// Save the session when tabs change; remember pages as they settle.
+    fn track_session(&mut self) {
+        let mut sig = String::new();
+        let mut remember: Vec<crate::start::Saved> = Vec::new();
+        for t in self.tabs.iter_mut() {
+            for p in std::iter::once(&mut t.left).chain(t.right.as_mut()) {
+                match p {
+                    Pane::Term(tp) => sig.push_str(&format!("t{}|", tp.profile)),
+                    Pane::Web(w) => {
+                        let (url, title, loading) = {
+                            let s = w.tab.shared.borrow();
+                            (s.url.clone(), s.title.clone(), s.loading)
+                        };
+                        sig.push_str(&format!("w{url}|"));
+                        if !loading && !url.is_empty() && w.remembered != url {
+                            w.remembered = url.clone();
+                            remember.push(crate::start::Saved::Page { url, title });
+                        }
+                    }
+                    _ => sig.push('x'),
+                }
+            }
+            sig.push_str(&format!("{}{}|", t.pinned as u8, t.parent.unwrap_or(0)));
+        }
+        sig.push_str(&self.active.to_string());
+        for r in remember {
+            self.remember(r);
+        }
+        if sig != self.session_sig && !self.tabs.is_empty() {
+            self.session_sig = sig;
+            self.save_session();
         }
     }
 
@@ -1355,6 +1414,9 @@ impl App {
         rx -= gap + ic;
         self.fonts.draw_icon(&mut scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink);
         self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), CrumbHit::Search));
+        rx -= gap + ic;
+        self.fonts.draw_icon(&mut scene, nus_render::text::icons::PLANET, ic, rx, iy, if self.start.is_some() { self.surface.signal } else { ink });
+        self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), CrumbHit::Start));
         rx -= gap;
         // status cluster: waiting · pip · assistant · ports (one icon when narrow)
         let waiting = self.tabs.iter().filter(|t| t.waiting()).count();
@@ -1589,6 +1651,7 @@ impl App {
                 y += row_h;
             }
         }
+        self.draw_start(&mut scene);
         self.scene = scene;
     }
 
@@ -2253,7 +2316,7 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 11] = [
+                let actions: [(String, Action); 12] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
@@ -2264,6 +2327,7 @@ impl App {
                         Action::TogglePin,
                     ),
                     (format!("reopen closed tab · {}", key("Z", true)), Action::Reopen),
+                    ("start · last session, recent pages and shells".to_string(), Action::Start),
                     (format!("carapace · {:?} → next", self.surface.shell).to_lowercase(), Action::ShellStyle),
                     (format!("corner radius {} → +2", self.surface.shell_radius), Action::ShellRadius(2.0)),
                     (format!("corner radius {} → −2", self.surface.shell_radius), Action::ShellRadius(-2.0)),
@@ -2383,6 +2447,7 @@ impl App {
                 self.surface.shell = self.surface.shell.next();
                 self.layout();
             }
+            Action::Start => self.open_start(),
             Action::Pip => {
                 let tab = self.active;
                 let right = match (&self.tabs[tab].left, &self.tabs[tab].right) {
@@ -2417,7 +2482,10 @@ impl App {
         // App chords: ⌘ on macOS, Ctrl+Shift elsewhere — never reaches the shell.
         let app = if cfg!(target_os = "macos") { sup } else { ctrl && shift };
 
-        // Palette owns the keyboard while open.
+        // Start owns the keyboard while open; then the palette.
+        if self.start_key(ev) {
+            return;
+        }
         if let Some((_, input)) = self.palette.as_mut() {
             if !pressed {
                 return;
@@ -2693,7 +2761,7 @@ impl App {
         }
     }
 
-    fn make_tab(&mut self, left: Pane, right: Option<Pane>) -> Tab {
+    pub(crate) fn make_tab(&mut self, left: Pane, right: Option<Pane>) -> Tab {
         let id = self.next_id;
         self.next_id += 1;
         let look = self.look_for(&left, None);
@@ -2979,6 +3047,10 @@ impl App {
     }
 
     pub(crate) fn new_tab(&mut self, profile: usize) {
+        if let Some(p) = self.profiles.get(profile) {
+            let name = p.name.clone();
+            self.remember(crate::start::Saved::Shell { profile: name });
+        }
         if let Ok(t) = self.new_term_pane(false, profile) {
             let tab = self.make_tab(Pane::Term(t), None);
             self.tabs.push(tab);
@@ -3161,6 +3233,7 @@ impl App {
             CrumbHit::Minimize => self.window.set_minimized(true),
             CrumbHit::Space | CrumbHit::Tab | CrumbHit::Search => self.open_palette(PaletteMode::Go),
             CrumbHit::Url => self.open_palette(PaletteMode::Url),
+            CrumbHit::Start => self.open_start(),
             CrumbHit::Sidebar => {
                 self.sidebar = !self.sidebar;
                 self.layout();
@@ -3191,6 +3264,9 @@ impl App {
         let pressed = state == ElementState::Pressed;
         let strip = self.strip_rect();
 
+        if self.start_mouse(button, state, x, y) {
+            return;
+        }
         if pressed && button == MouseButton::Left && self.palette.is_some() {
             if let Some(i) = self.palette_hits.iter().position(|r| r.contains(x, y)) {
                 self.palette_sel = i;

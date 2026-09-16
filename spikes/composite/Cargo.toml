@@ -25,7 +25,7 @@ accesskit = "0.25.0"
 accesskit_winit = "0.34.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Media_Audio"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace]

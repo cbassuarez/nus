@@ -36,11 +36,14 @@ pub struct Behavior {
     pub close_asks: bool,
     pub default_profile: usize,
     pub follow_os_theme: bool,
+    /// The Start modal at launch, and its chime.
+    pub start_on_launch: bool,
+    pub startup_sound: bool,
 }
 
 impl Default for Behavior {
     fn default() -> Self {
-        Behavior { links: Links::Stack, prompt_url: PromptUrl::Split, close_asks: true, default_profile: 0, follow_os_theme: true }
+        Behavior { links: Links::Stack, prompt_url: PromptUrl::Split, close_asks: true, default_profile: 0, follow_os_theme: true, start_on_launch: true, startup_sound: false }
     }
 }
 
@@ -85,6 +88,8 @@ pub enum Hit {
     Back,
     MakeDefault,
     Unregister,
+    StartOnLaunch(bool),
+    StartupSound(bool),
 }
 
 pub const SECTIONS: [(&str, (&str, &str)); 10] = [
@@ -200,6 +205,8 @@ impl App {
             Hit::ResetRules => "reset rules to default".into(),
             Hit::Reduce(None) => "reduce motion follows the OS".into(),
             Hit::Reduce(Some(r)) => format!("reduce motion {}", if r { "on" } else { "off" }),
+            Hit::StartOnLaunch(b) => if b { "show start at launch".into() } else { "no start at launch".into() },
+            Hit::StartupSound(b) => if b { "startup sound on".into() } else { "startup sound off".into() },
             Hit::MakeDefault => "make nus the default browser".into(),
             Hit::Unregister => "unregister nus as a browser".into(),
             Hit::BarStyle(b) => format!("loading bar {}", b.name()),
@@ -299,6 +306,13 @@ impl App {
                 let _ = crate::little::unregister();
                 self.register_note = "unregistered".into();
             }
+            Hit::StartOnLaunch(b) => self.behavior.start_on_launch = b,
+            Hit::StartupSound(b) => {
+                self.behavior.startup_sound = b;
+                if b {
+                    crate::start::chime();
+                }
+            }
             Hit::Reduce(r) => self.motion.reduce = r,
             Hit::BarStyle(b) => self.load_bar.style = b,
             Hit::BarColor(c) => self.load_bar.color = c,
@@ -333,6 +347,20 @@ impl App {
                         (format!("FOLLOW OS · {}", if crate::anim::os_reduce_motion() { "ON" } else { "OFF" }), Hit::Reduce(None), self.motion.reduce.is_none()),
                         ("OFF".into(), Hit::Reduce(Some(false)), self.motion.reduce == Some(false)),
                         ("ON".into(), Hit::Reduce(Some(true)), self.motion.reduce == Some(true)),
+                    ]),
+                ),
+                (
+                    "START".into(),
+                    Choice(vec![
+                        ("AT LAUNCH".into(), Hit::StartOnLaunch(true), self.behavior.start_on_launch),
+                        ("ONLY FROM THE PLANET".into(), Hit::StartOnLaunch(false), !self.behavior.start_on_launch),
+                    ]),
+                ),
+                (
+                    "STARTUP SOUND".into(),
+                    Choice(vec![
+                        ("OFF".into(), Hit::StartupSound(false), !self.behavior.startup_sound),
+                        ("ON · A SHORT CHIME".into(), Hit::StartupSound(true), self.behavior.startup_sound),
                     ]),
                 ),
                 ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
