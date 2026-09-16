@@ -1451,13 +1451,24 @@ impl App {
             if self.surface.texture > 0.0 {
                 let g = [1.0, 1.0, 1.0, self.surface.texture];
                 let pitch = self.px(self.surface.texture_scale);
+                let tm = if self.surface.texture_motion { self.started.elapsed().as_secs_f32() % 3600.0 } else { 0.0 };
                 let rects: Vec<Rect> = match self.surface.texture_on {
                     crate::surface::TextureOn::Carapace => {
+                        // A thin band needs a heavier hand: the texture follows the
+                        // carapace's own rounded stroke and is drawn at triple strength.
+                        let gc = [1.0, 1.0, 1.0, (self.surface.texture * 3.0).min(1.0)];
                         if self.surface.shell == Shell::Band {
-                            vec![Rect::new(0.0, 0.0, w, sw)]
+                            if radius > 0.0 {
+                                scene.layer(Some(Rect::new(0.0, 0.0, w, sw)));
+                                scene.push(nus_render::Instance::texture_stroke(win, kind, gc, pitch, tm, radius, sw));
+                                scene.layer(None);
+                            } else {
+                                scene.push(nus_render::Instance::texture_kind(Rect::new(0.0, 0.0, w, sw), kind, gc, pitch, tm));
+                            }
                         } else {
-                            vec![Rect::new(0.0, 0.0, w, sw), Rect::new(0.0, h - sw, w, sw), Rect::new(0.0, 0.0, sw, h), Rect::new(w - sw, 0.0, sw, h)]
+                            scene.push(nus_render::Instance::texture_stroke(win, kind, gc, pitch, tm, radius, sw_live));
                         }
+                        Vec::new()
                     }
                     crate::surface::TextureOn::Chrome => {
                         let c = self.content_rect();
@@ -1471,7 +1482,6 @@ impl App {
                     }
                     crate::surface::TextureOn::Panes => vec![self.content_rect()],
                 };
-                let tm = if self.surface.texture_motion { self.started.elapsed().as_secs_f32() % 3600.0 } else { 0.0 };
                 for r in rects {
                     scene.push(nus_render::Instance::texture_kind(r, kind, g, pitch, tm));
                 }

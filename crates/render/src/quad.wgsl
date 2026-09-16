@@ -83,6 +83,24 @@ fn ramp(t: f32, n: u32, looping: bool, c0: vec4<f32>, c1: vec4<f32>, c2: vec4<f3
     return mix(a, b, f);
 }
 
+// Finish a texture sample: light or dark speckle so it reads on any colour,
+// masked to the instance's rounded stroke when it has one.
+fn texture_out(in: VsOut, v: f32, light: bool) -> vec4<f32> {
+    var mask = 1.0;
+    if in.params.y > 0.0 {
+        let half = in.size * 0.5;
+        let p = in.local - half;
+        let d = sd_box(p, half, in.params.x);
+        let inner = sd_box(p, half - vec2(in.params.y, in.params.y), max(in.params.x - in.params.y, 0.0));
+        mask = (1.0 - smoothstep(-0.75, 0.75, d)) * smoothstep(-0.75, 0.75, inner);
+    }
+    var tone = vec3(0.0, 0.0, 0.0);
+    if light {
+        tone = vec3(1.0, 1.0, 1.0);
+    }
+    return vec4(tone, in.color.a * v * mask);
+}
+
 // Signed distance to a rounded box of half-size `b` and radius `r`, centered at 0.
 fn sd_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     let q = abs(p) - b + vec2(r, r);
@@ -99,14 +117,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         return in.color;
     }
     // Textures: `extra` is time in ms (0 = still). Grain reseeds like film;
-    // the patterns drift slowly.
+    // the patterns drift slowly. Each texture yields a value in 0..1 and a
+    // light/dark tone; `texture_out` masks it to a rounded stroke when the
+    // instance carries one (params = radius, thickness), so a carapace
+    // texture follows the carapace.
     let tm = f32(in.extra) / 1000.0;
     let drift = vec2(tm * 6.0, tm * 2.5);
     if in.kind == 6u {
         // Paper grain: hashed speckle in screen space, alpha scaled by color.a.
         let p = floor(in.clip.xy / max(in.phase, 1.0)) + floor(tm * 24.0) * vec2(17.0, 31.0);
         let n = fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-        return vec4(in.color.rgb, in.color.a * n);
+        return texture_out(in, abs(n - 0.5) * 2.0, n > 0.5);
     }
     if in.kind == 7u {
         // Stipple: dots on a jittered grid, `phase` px apart.
@@ -117,7 +138,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let d = length(in.clip.xy + drift - c);
         let r = pitch * 0.18;
         let cov = 1.0 - smoothstep(r - 0.6, r + 0.6, d);
-        return vec4(in.color.rgb, in.color.a * cov);
+        return texture_out(in, cov, hash(cell + vec2(3.0, 9.0)) > 0.5);
     }
     if in.kind == 8u {
         // Stitch: a dashed cross-hatch, like thread — lines every `phase` px.
@@ -128,7 +149,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dash_x = step(0.5, fract(q.y * 2.0 + 0.25));
         let dash_y = step(0.5, fract(q.x * 2.0));
         let line = max((1.0 - smoothstep(0.04, 0.09, lx)) * dash_x, (1.0 - smoothstep(0.04, 0.09, ly)) * dash_y);
-        return vec4(in.color.rgb, in.color.a * line);
+        return texture_out(in, line, fract(floor(q.x) * 0.5) < 0.25);
     }
     if in.kind == 9u {
         // Linen: two fine directions of slightly uneven threads.
@@ -137,7 +158,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let wx = 0.5 + 0.5 * sin(6.2831853 * q.x) * (0.8 + 0.2 * hash(floor(q.yx)));
         let wy = 0.5 + 0.5 * sin(6.2831853 * q.y) * (0.8 + 0.2 * hash(floor(q.xy)));
         let w = max(wx, wy) * 0.6 + 0.4 * wx * wy;
-        return vec4(in.color.rgb, in.color.a * w);
+        return texture_out(in, w, wx > wy);
     }
     if in.kind == 10u {
         // Halftone: a dot screen at 30 degrees whose dots swell with a slow field.
@@ -150,7 +171,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let field = 0.5 + 0.5 * sin(in.clip.x * 0.01 + tm * 0.7) * sin(in.clip.y * 0.013 - tm * 0.5);
         let r = pitch * (0.12 + 0.28 * field);
         let cov = 1.0 - smoothstep(r - 0.6, r + 0.6, d);
-        return vec4(in.color.rgb, in.color.a * cov);
+        return texture_out(in, cov, true);
     }
     if in.kind == 1u {
         let s = textureSample(tex, tex_sampler, in.uv);

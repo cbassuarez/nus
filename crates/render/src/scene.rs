@@ -212,6 +212,22 @@ impl Instance {
         i.extra = (time * 1000.0) as u32;
         i
     }
+
+    /// A texture masked to a rounded stroke of `thickness` inside `r` — the
+    /// carapace's own shape.
+    pub fn texture_stroke(
+        r: Rect,
+        kind: u32,
+        color: Color,
+        scale: f32,
+        time: f32,
+        radius: f32,
+        thickness: f32,
+    ) -> Instance {
+        let mut i = Instance::texture_kind(r, kind, color, scale, time);
+        i.uv = [radius, thickness, 0.0, 0.0];
+        i
+    }
 }
 
 pub fn pack(c: Color) -> u32 {
