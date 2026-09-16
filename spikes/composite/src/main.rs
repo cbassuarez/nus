@@ -110,6 +110,19 @@ impl ApplicationHandler<UserEvent> for Host {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(a) = self.app.as_mut() else { return };
+        if let Some(p) = a.pointer_request.take() {
+            let cursor = match p {
+                settings::Pointer::System => winit::window::Cursor::Icon(winit::window::CursorIcon::Default),
+                settings::Pointer::InkArrow | settings::Pointer::SignalDot => {
+                    let (rgba, hot) = a.pointer_image(p);
+                    match winit::window::CustomCursor::from_rgba(rgba, 32, 32, hot.0, hot.1) {
+                        Ok(src) => winit::window::Cursor::Custom(event_loop.create_custom_cursor(src)),
+                        Err(_) => winit::window::Cursor::Icon(winit::window::CursorIcon::Default),
+                    }
+                }
+            };
+            a.window.set_cursor(cursor);
+        }
         if let Some(url) = a.little_request.take() {
             let attrs = Window::default_attributes()
                 .with_title("nus · little")

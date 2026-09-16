@@ -109,6 +109,11 @@ pub struct TermPane {
     /// The pane strip (profile · size) shows only when the tab is split;
     /// alone, the header crumb already says it.
     pub show_header: bool,
+    /// Where the drawn cursor is, in cells, easing toward the real one.
+    pub cur_x: Anim,
+    pub cur_y: Anim,
+    /// Recent cursor positions (cells) for the comet, newest last.
+    pub trail: Vec<(f32, f32, Instant)>,
     /// What has been typed at the current prompt, for the URL rule.
     pub line: String,
     /// False once an editing key made `line` unreliable; reset on Enter.
@@ -314,6 +319,12 @@ pub struct App {
     pub login_note: String,
     pub theme_edit: crate::theme_edit::ThemeEdit,
     pub ansi_sel: usize,
+    pub cursor: crate::settings::CursorPrefs,
+    /// Last keystroke into a shell, for blink-after-idle and pointer hiding.
+    pub last_key: Instant,
+    pub pointer_hidden: bool,
+    pub pointer_request: Option<crate::settings::Pointer>,
+    pub blink_half: u64,
     /// The launch sequence's "then" has run.
     pub then_done: bool,
     pub window_rect: Option<(i32, i32, u32, u32)>,
@@ -457,6 +468,11 @@ impl App {
             login_note: String::new(),
             theme_edit: crate::theme_edit::ThemeEdit::default(),
             ansi_sel: 1,
+            cursor: crate::settings::CursorPrefs::default(),
+            last_key: Instant::now(),
+            pointer_hidden: false,
+            pointer_request: None,
+            blink_half: 0,
             then_done: false,
             window_rect: None,
             atlas_used: false,
@@ -572,6 +588,9 @@ impl App {
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             origin: (0.0, 0.0),
             show_header: split,
+            cur_x: Anim::at(0.0),
+            cur_y: Anim::at(0.0),
+            trail: Vec::new(),
             line: String::new(),
             line_ok: true,
             confirm_close: None,
@@ -817,6 +836,20 @@ impl App {
         if self.surface.texture_motion && self.surface.texture > 0.0 && self.surface.texture_kind != crate::surface::TextureKind::None {
             self.dirty = true;
         }
+        // A blinking cursor wants a frame at each half period.
+        let blinking = match self.cursor.blink {
+            crate::settings::Blink::Never => false,
+            crate::settings::Blink::AfterIdle => self.last_key.elapsed().as_secs_f32() > 2.0,
+            crate::settings::Blink::Always => true,
+        };
+        if blinking {
+            let period = self.cursor.period.max(100) as u128;
+            let half = (self.started.elapsed().as_millis() / period) as u64;
+            if half != self.blink_half {
+                self.blink_half = half;
+                self.dirty = true;
+            }
+        }
         if self.surface.shell == Shell::Aurora {
             // Drift is turns per second; the loop runs at ~60 frames.
             self.shell_phase = (self.shell_phase + self.surface.drift / 60.0) % 1.0;
@@ -991,6 +1024,129 @@ impl App {
 
     fn reader_fonts(&self) -> crate::reader::ReaderFonts {
         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+    }
+
+    /// A 32×32 pointer: an ink arrow with a paper edge, or a signal dot.
+    pub fn pointer_image(&self, p: crate::settings::Pointer) -> (Vec<u8>, (u16, u16)) {
+        let ink = self.theme.ink;
+        let paper = self.theme.paper;
+        let sig = self.surface.signal;
+        let mut px = vec![0u8; 32 * 32 * 4];
+        let put = |px: &mut Vec<u8>, x: i32, y: i32, c: nus_render::Color, a: f32| {
+            if !(0..32).contains(&x) || !(0..32).contains(&y) {
+                return;
+            }
+            let i = ((y * 32 + x) * 4) as usize;
+            px[i] = (c[0] * 255.0) as u8;
+            px[i + 1] = (c[1] * 255.0) as u8;
+            px[i + 2] = (c[2] * 255.0) as u8;
+            px[i + 3] = (a * 255.0) as u8;
+        };
+        match p {
+            crate::settings::Pointer::SignalDot => {
+                for y in 0..32 {
+                    for x in 0..32 {
+                        let d = (((x - 8) as f32).powi(2) + ((y - 8) as f32).powi(2)).sqrt();
+                        if d < 7.5 {
+                            put(&mut px, x, y, sig, 1.0);
+                        } else if d < 9.0 {
+                            put(&mut px, x, y, paper, (9.0 - d).clamp(0.0, 1.0));
+                        }
+                    }
+                }
+                (px, (8, 8))
+            }
+            _ => {
+                // A classic arrow: left edge vertical, hypotenuse, a tail.
+                for y in 0..24i32 {
+                    for x in 0..18i32 {
+                        let inside = x <= y * 2 / 3 && y <= 18 || (y > 12 && y < 24 && (x as f32 - (y - 12) as f32 * 0.6).abs() < 2.5 && x > 4);
+                        let edge = inside && (x == 0 || x >= y * 2 / 3 - 1 || y >= 17 && y <= 18);
+                        if inside {
+                            put(&mut px, x, y, if edge { paper } else { ink }, 1.0);
+                        }
+                    }
+                }
+                (px, (0, 0))
+            }
+        }
+    }
+
+    /// The cursor as the prefs want it, for one pane.
+    fn cursor_look(&self, p: &TermPane, focused: bool, tab_signal: Option<nus_render::Color>) -> nus_render::CursorLook {
+        use crate::settings::{Blink, CursorColor, CursorShapePref};
+        let shape = match self.cursor.shape {
+            CursorShapePref::Shell => None,
+            CursorShapePref::Block => Some(nus_vt::CursorShape::Block),
+            CursorShapePref::Beam => Some(nus_vt::CursorShape::Beam),
+            CursorShapePref::Underline => Some(nus_vt::CursorShape::Underline),
+        };
+        let color = match self.cursor.color {
+            CursorColor::Ink => None,
+            CursorColor::Signal => Some(self.surface.signal),
+            CursorColor::Tab => tab_signal.or(Some(self.surface.signal)),
+        };
+        let idle = self.last_key.elapsed().as_secs_f32();
+        let blinking = match self.cursor.blink {
+            Blink::Never => false,
+            Blink::AfterIdle => idle > 2.0,
+            Blink::Always => true,
+        };
+        let visible = if blinking && focused {
+            let period = self.cursor.period.max(100) as f32 / 1000.0;
+            ((self.started.elapsed().as_secs_f32() / period) as u64) % 2 == 0
+        } else {
+            true
+        };
+        let _ = p;
+        nus_render::CursorLook { shape, color, weight: self.px(self.cursor.weight), visible, hollow_unfocused: self.cursor.hollow_unfocused }
+    }
+
+    /// The gliding / comet cursor, drawn by the app between cells.
+    fn draw_moving_cursor(&mut self, scene: &mut Scene, p: &mut TermPane, look: nus_render::CursorLook) {
+        use crate::settings::CursorMotion;
+        let (cw, ch) = p.grid.cell_size();
+        let cur = *p.term.cursor();
+        let (tx, ty) = (cur.col as f32, cur.row as f32);
+        let dur = self.motion.dur(60.0);
+        if (p.cur_x.target() - tx).abs() > 0.01 || (p.cur_y.target() - ty).abs() > 0.01 {
+            p.cur_x.go(tx, dur);
+            p.cur_y.go(ty, dur);
+            if self.cursor.motion == CursorMotion::Comet {
+                p.trail.push((p.cur_x.value(), p.cur_y.value(), Instant::now()));
+                if p.trail.len() > 6 {
+                    p.trail.remove(0);
+                }
+            }
+        }
+        let (x, y) = (p.cur_x.value(), p.cur_y.value());
+        let gliding = p.cur_x.active() || p.cur_y.active();
+        let color = look.color.unwrap_or(self.theme.ink);
+        let shape = look.shape.unwrap_or(p.term.cursor_style().shape);
+        let rect_at = |cx: f32, cy: f32| {
+            let px = p.origin.0 + cx * cw;
+            let py = p.origin.1 + cy * ch;
+            match shape {
+                nus_vt::CursorShape::Beam => Rect::new(px, py, look.weight, ch),
+                nus_vt::CursorShape::Underline => Rect::new(px, py + ch - look.weight, cw, look.weight),
+                _ => Rect::new(px, py, cw, ch),
+            }
+        };
+        // Comet: the trail fades over 240ms.
+        if self.cursor.motion == CursorMotion::Comet {
+            p.trail.retain(|(_, _, t)| t.elapsed().as_millis() < 240);
+            for (cx, cy, t) in &p.trail {
+                let a = 1.0 - t.elapsed().as_millis() as f32 / 240.0;
+                scene.rect(rect_at(*cx, *cy), Theme::with_alpha(color, 0.35 * a));
+            }
+            if !p.trail.is_empty() {
+                self.dirty = true;
+            }
+        }
+        if gliding {
+            scene.rect(rect_at(x, y), Theme::with_alpha(color, 0.9));
+            self.dirty = true;
+        }
     }
 
     /// Rebuild the theme for a mode from Broadsheet plus the user's edits.
@@ -2287,7 +2443,16 @@ impl App {
                     let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
                     scene.rect(clip, [bg[0], bg[1], bg[2], a]);
                 }
-                p.grid.draw(scene, &mut self.fonts, &p.term, p.origin, focused);
+                let look = self.cursor_look(p, focused, look.signal);
+                let gliding = !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) && (p.cur_x.active() || p.cur_y.active());
+                let mut lk = look;
+                if gliding {
+                    lk.visible = false;
+                }
+                p.grid.draw_with(scene, &mut self.fonts, &p.term, p.origin, focused, lk);
+                if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
+                    self.draw_moving_cursor(scene, p, look);
+                }
                 let _ = p.term.grid_mut().take_damage();
                 scene.layer(None);
             }
@@ -2772,6 +2937,13 @@ impl App {
         }
 
         // Route to the focused pane.
+        if pressed {
+            self.last_key = Instant::now();
+            if self.cursor.hide_while_typing && !self.pointer_hidden && matches!(self.tabs.get_mut(self.active).map(|t| t.focused()), Some(Pane::Term(_))) {
+                self.window.set_cursor_visible(false);
+                self.pointer_hidden = true;
+            }
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
             Pane::Settings(_) | Pane::Hints(_) => {}
@@ -3320,6 +3492,10 @@ impl App {
 
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
         self.mouse = (x, y);
+        if self.pointer_hidden {
+            self.window.set_cursor_visible(true);
+            self.pointer_hidden = false;
+        }
         if !self.sidebar_pinned() && self.sidebar_hoverable() {
             let c = self.content_rect();
             let sb = self.sidebar_rect();

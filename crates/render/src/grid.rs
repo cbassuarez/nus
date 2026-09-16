@@ -24,6 +24,28 @@ pub struct GridRenderer {
     col_of: Vec<usize>,
 }
 
+/// How the app wants the cursor drawn, over what the program asked for.
+#[derive(Clone, Copy, Debug)]
+pub struct CursorLook {
+    /// Force a shape (None = the shell's own via DECSCUSR).
+    pub shape: Option<CursorShape>,
+    /// Force a colour (None = the palette's cursor colour).
+    pub color: Option<Color>,
+    /// Beam / underline thickness in physical px.
+    pub weight: f32,
+    /// False during the off half of a blink, or while the app draws a
+    /// gliding cursor itself.
+    pub visible: bool,
+    /// Draw a hollow box when unfocused (else nothing).
+    pub hollow_unfocused: bool,
+}
+
+impl Default for CursorLook {
+    fn default() -> Self {
+        CursorLook { shape: None, color: None, weight: 2.0, visible: true, hollow_unfocused: true }
+    }
+}
+
 fn to_color(c: nus_vt::Rgb) -> Color {
     [
         c.r as f32 / 255.0,
@@ -73,15 +95,30 @@ impl GridRenderer {
         origin: (f32, f32),
         focused: bool,
     ) {
+        self.draw_with(scene, fonts, term, origin, focused, CursorLook::default());
+    }
+
+    /// `draw`, with the app's say on the cursor.
+    pub fn draw_with(
+        &mut self,
+        scene: &mut Scene,
+        fonts: &mut FontSystem,
+        term: &Term,
+        origin: (f32, f32),
+        focused: bool,
+        look: CursorLook,
+    ) {
         let (cw, ch) = self.cell_size();
         let baseline = self.metrics.baseline;
         let grid = term.grid();
         let rows = grid.rows();
         let palette = &term.palette;
         let cursor = *term.cursor();
-        let show_cursor = term.modes().contains(Modes::SHOW_CURSOR) && grid.display_offset == 0;
-        let shape = term.cursor_style().shape;
-        let cursor_rgb = to_color(palette.get(nus_vt::palette::CURSOR));
+        let show_cursor = term.modes().contains(Modes::SHOW_CURSOR) && grid.display_offset == 0 && look.visible;
+        let shape = look.shape.unwrap_or(term.cursor_style().shape);
+        let cursor_rgb = look.color.unwrap_or(to_color(palette.get(nus_vt::palette::CURSOR)));
+        let weight = look.weight.max(1.0);
+        let hollow = look.hollow_unfocused;
         let default_bg = to_color(palette.get(nus_vt::palette::BG));
         self.rows.resize_with(rows, || CachedRow {
             hash: 0,
@@ -110,7 +147,10 @@ impl GridRenderer {
                 }
             }
             if cursor_here {
-                (cursor.col, shape as u8, focused).hash(&mut h);
+                (cursor.col, shape as u8, focused, (weight * 4.0) as u32, hollow).hash(&mut h);
+                for c in cursor_rgb {
+                    ((c * 255.0) as u32).hash(&mut h);
+                }
             }
             // Palette changes invalidate everything; fold a cheap sample in.
             palette.get(nus_vt::palette::FG).r.hash(&mut h);
@@ -143,14 +183,14 @@ impl GridRenderer {
                     if is_cursor && !block {
                         let r = match (shape, focused) {
                             (_, false) => None, // hollow: drawn below
-                            (CursorShape::Underline, true) => Some(Rect::new(x, ch - 2.0, cw, 2.0)),
-                            (CursorShape::Beam, true) => Some(Rect::new(x, 0.0, 2.0, ch)),
+                            (CursorShape::Underline, true) => Some(Rect::new(x, ch - weight, cw, weight)),
+                            (CursorShape::Beam, true) => Some(Rect::new(x, 0.0, weight, ch)),
                             _ => None,
                         };
                         if let Some(r) = r {
                             cached.bg.push(Instance::rect(r, cursor_rgb));
                         }
-                        if !focused {
+                        if !focused && hollow {
                             let t = 1.0;
                             cached
                                 .bg

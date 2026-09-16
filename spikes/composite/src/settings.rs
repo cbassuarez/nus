@@ -27,6 +27,64 @@ pub enum PromptUrl {
     NewTab,
 }
 
+/// The terminal cursor, the app's way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum CursorShapePref {
+    Shell,
+    Block,
+    Beam,
+    Underline,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Blink {
+    Never,
+    AfterIdle,
+    Always,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum CursorColor {
+    Ink,
+    Signal,
+    Tab,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum CursorMotion {
+    Jump,
+    Glide,
+    Comet,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Pointer {
+    System,
+    InkArrow,
+    SignalDot,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CursorPrefs {
+    pub shape: CursorShapePref,
+    pub blink: Blink,
+    /// Blink period, ms.
+    pub period: u32,
+    pub color: CursorColor,
+    pub motion: CursorMotion,
+    /// Beam / underline weight, logical px.
+    pub weight: f32,
+    pub hollow_unfocused: bool,
+    pub pointer: Pointer,
+    pub hide_while_typing: bool,
+}
+
+impl Default for CursorPrefs {
+    fn default() -> Self {
+        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Ink, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true }
+    }
+}
+
 /// How the window comes up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum WindowStart {
@@ -148,6 +206,8 @@ pub enum Slider {
     Volume,
     SplashHold,
     Saturation,
+    BlinkPeriod,
+    CurWeight,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -203,6 +263,13 @@ pub enum Hit {
     Import(usize),
     OpenThemes,
     Starter(usize),
+    CurShape(CursorShapePref),
+    CurBlink(Blink),
+    CurColor(CursorColor),
+    CurMotion(CursorMotion),
+    CurHollow(bool),
+    CurPointer(Pointer),
+    CurHide(bool),
     WindowStart(WindowStart),
     Splash(SplashMode),
     Then(Then),
@@ -217,10 +284,11 @@ pub enum Hit {
     EventNext(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 13] = [
+pub const SECTIONS: [(&str, (&str, &str)); 14] = [
     ("APPEARANCE", icons::BRUSH),
     ("SURFACE", icons::PALETTE),
     ("THEME", icons::SQUARES),
+    ("CURSOR", icons::CURSOR),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
     ("SIDEBAR", icons::SIDEBAR),
@@ -234,11 +302,12 @@ pub const SECTIONS: [(&str, (&str, &str)); 13] = [
 ];
 
 pub const SEC_THEME: usize = 2;
-pub const SEC_SOUND: usize = 3;
-pub const SEC_STARTUP: usize = 4;
-pub const SEC_TERMINAL: usize = 7;
-pub const SEC_BROWSER: usize = 8;
-pub const RULES: usize = 10;
+pub const SEC_CURSOR: usize = 3;
+pub const SEC_SOUND: usize = 4;
+pub const SEC_STARTUP: usize = 5;
+pub const SEC_TERMINAL: usize = 8;
+pub const SEC_BROWSER: usize = 9;
+pub const RULES: usize = 11;
 
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
@@ -280,6 +349,8 @@ impl App {
             Slider::Volume => self.sound.prefs.volume,
             Slider::SplashHold => (self.behavior.splash_hold - 0.4) / 2.2,
             Slider::Saturation => (self.theme_edit.saturation - 0.5) / 1.0,
+            Slider::BlinkPeriod => (self.cursor.period as f32 - 200.0) / 1000.0,
+            Slider::CurWeight => (self.cursor.weight - 1.0) / 5.0,
         }
     }
 
@@ -308,6 +379,8 @@ impl App {
                 self.theme_edit.saturation = (0.5 + v * 20.0).round() / 20.0;
                 self.rebuild_theme();
             }
+            Slider::BlinkPeriod => self.cursor.period = ((200.0 + v * 1000.0) / 10.0).round() as u32 * 10,
+            Slider::CurWeight => self.cursor.weight = (1.0 + v * 5.0 * 2.0).round() / 2.0,
         }
         self.layout();
     }
@@ -387,6 +460,13 @@ impl App {
             Hit::Import(k) => format!("import {}", crate::theme_edit::imports().get(k).map(|t| t.name.clone()).unwrap_or_default()),
             Hit::OpenThemes => "open the themes folder".into(),
             Hit::Starter(k) => format!("start from {}", surface::STARTERS.get(k).map(|s| s.0).unwrap_or("")),
+            Hit::CurShape(s) => format!("cursor {:?}", s).to_lowercase(),
+            Hit::CurBlink(b) => format!("blink {:?}", b).to_lowercase(),
+            Hit::CurColor(c) => format!("cursor colour {:?}", c).to_lowercase(),
+            Hit::CurMotion(m) => format!("cursor motion {:?}", m).to_lowercase(),
+            Hit::CurHollow(h) => if h { "hollow when unfocused".into() } else { "hidden when unfocused".into() },
+            Hit::CurPointer(p) => format!("pointer {:?}", p).to_lowercase(),
+            Hit::CurHide(h) => if h { "hide the pointer while typing".into() } else { "keep the pointer while typing".into() },
             Hit::WindowStart(w) => format!("window {:?}", w).to_lowercase(),
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
@@ -621,6 +701,16 @@ impl App {
                 }
             }
             Hit::Starter(k) => self.rules.write_starter(k),
+            Hit::CurShape(s) => self.cursor.shape = s,
+            Hit::CurBlink(b) => self.cursor.blink = b,
+            Hit::CurColor(c) => self.cursor.color = c,
+            Hit::CurMotion(m) => self.cursor.motion = m,
+            Hit::CurHollow(h) => self.cursor.hollow_unfocused = h,
+            Hit::CurPointer(p) => {
+                self.cursor.pointer = p;
+                self.pointer_request = Some(p);
+            }
+            Hit::CurHide(h) => self.cursor.hide_while_typing = h,
             Hit::OpenThemes => {
                 let dir = crate::theme_edit::themes_dir();
                 let _ = std::fs::create_dir_all(&dir);
@@ -751,7 +841,7 @@ impl App {
                 ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
                 ("TERMINAL FONT".into(), Info("IBM Plex Mono · 13pt · ligatures on".into())),
                 ("WORDMARK".into(), Info("Newsreader Italic".into())),
-                ("CURSOR".into(), Info("block · no blink".into())),
+                ("CURSOR".into(), Buttons(vec![(format!("{:?} · {:?} · {:?}", self.cursor.shape, self.cursor.blink, self.cursor.motion).to_uppercase(), icons::CURSOR, Hit::Section(SEC_CURSOR))])),
             ],
             1 => {
                 let ink = self.theme.ink;
@@ -926,6 +1016,65 @@ impl App {
                 ]
             }
             3 => {
+                let c = &self.cursor;
+                vec![
+                    (
+                        "SHAPE".into(),
+                        Choice(vec![
+                            ("THE SHELL'S".into(), Hit::CurShape(CursorShapePref::Shell), c.shape == CursorShapePref::Shell),
+                            ("BLOCK".into(), Hit::CurShape(CursorShapePref::Block), c.shape == CursorShapePref::Block),
+                            ("BEAM".into(), Hit::CurShape(CursorShapePref::Beam), c.shape == CursorShapePref::Beam),
+                            ("UNDERLINE".into(), Hit::CurShape(CursorShapePref::Underline), c.shape == CursorShapePref::Underline),
+                        ]),
+                    ),
+                    (
+                        "UNFOCUSED".into(),
+                        Choice(vec![("HOLLOW".into(), Hit::CurHollow(true), c.hollow_unfocused), ("HIDDEN".into(), Hit::CurHollow(false), !c.hollow_unfocused)]),
+                    ),
+                    (
+                        "BLINK".into(),
+                        Choice(vec![
+                            ("NEVER".into(), Hit::CurBlink(Blink::Never), c.blink == Blink::Never),
+                            ("AFTER 2S IDLE".into(), Hit::CurBlink(Blink::AfterIdle), c.blink == Blink::AfterIdle),
+                            ("ALWAYS".into(), Hit::CurBlink(Blink::Always), c.blink == Blink::Always),
+                        ]),
+                    ),
+                    ("PERIOD".into(), Slider(self::Slider::BlinkPeriod, self.slider_value(self::Slider::BlinkPeriod), format!("{}ms", c.period))),
+                    (
+                        "COLOUR".into(),
+                        Choice(vec![
+                            ("INK".into(), Hit::CurColor(CursorColor::Ink), c.color == CursorColor::Ink),
+                            ("SIGNAL".into(), Hit::CurColor(CursorColor::Signal), c.color == CursorColor::Signal),
+                            ("THE TAB'S OWN".into(), Hit::CurColor(CursorColor::Tab), c.color == CursorColor::Tab),
+                        ]),
+                    ),
+                    ("".into(), Info("text under a block cursor inverts".into())),
+                    (
+                        "MOTION".into(),
+                        Choice(vec![
+                            ("JUMP".into(), Hit::CurMotion(CursorMotion::Jump), c.motion == CursorMotion::Jump),
+                            ("GLIDE".into(), Hit::CurMotion(CursorMotion::Glide), c.motion == CursorMotion::Glide),
+                            ("COMET".into(), Hit::CurMotion(CursorMotion::Comet), c.motion == CursorMotion::Comet),
+                        ]),
+                    ),
+                    ("".into(), Info("glide eases between cells on the motion register; comet leaves a short ink trail".into())),
+                    ("WEIGHT".into(), Slider(self::Slider::CurWeight, self.slider_value(self::Slider::CurWeight), format!("{}px · beam and underline", c.weight))),
+                    (
+                        "POINTER".into(),
+                        Choice(vec![
+                            ("SYSTEM".into(), Hit::CurPointer(Pointer::System), c.pointer == Pointer::System),
+                            ("INK ARROW".into(), Hit::CurPointer(Pointer::InkArrow), c.pointer == Pointer::InkArrow),
+                            ("SIGNAL DOT".into(), Hit::CurPointer(Pointer::SignalDot), c.pointer == Pointer::SignalDot),
+                        ]),
+                    ),
+                    ("".into(), Info("over the chrome only · pages and shells keep the system pointer".into())),
+                    (
+                        "WHILE TYPING".into(),
+                        Choice(vec![("HIDE THE POINTER".into(), Hit::CurHide(true), c.hide_while_typing), ("KEEP IT".into(), Hit::CurHide(false), !c.hide_while_typing)]),
+                    ),
+                ]
+            }
+            4 => {
                 let on = self.sound.prefs.enabled;
                 let mut rows: Vec<(String, Control)> = vec![
                     (
@@ -965,7 +1114,7 @@ impl App {
                 rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
                 rows
             }
-            4 => {
+            5 => {
                 let b = &self.behavior;
                 let launch_cue = self.sound.prefs.cue_for("launch");
                 let sound_chips: Vec<(String, Hit, bool)> = {
@@ -1033,7 +1182,7 @@ impl App {
                     ("".into(), Info(if self.login_note.is_empty() { "a shortcut in the Startup folder · reversible".into() } else { self.login_note.clone() })),
                 ]
             }
-            5 => vec![
+            6 => vec![
                 (
                     "SIDE".into(),
                     Choice(vec![
@@ -1069,7 +1218,7 @@ impl App {
                 ),
                 ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
             ],
-            6 => vec![
+            7 => vec![
                 (
                     "LINKS FROM PAGES".into(),
                     Choice(vec![
@@ -1096,7 +1245,7 @@ impl App {
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
                 ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
             ],
-            7 => {
+            8 => {
                 let mut v: Vec<(String, Control)> = vec![(
                     "DEFAULT SHELL".into(),
                     Choice(
@@ -1120,7 +1269,7 @@ impl App {
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
                 v
             }
-            8 => vec![
+            9 => vec![
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
@@ -1160,7 +1309,7 @@ impl App {
                 ("PASSWORDS".into(), Info("1Password via op (v1)".into())),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
-            9 => {
+            10 => {
                 let mut v: Vec<(String, Control)> =
                     self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))).collect();
                 if v.is_empty() {
@@ -1170,7 +1319,7 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            10 => {
+            11 => {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
                 let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
@@ -1209,7 +1358,7 @@ impl App {
                 ),
             ]
             }
-            11 => vec![
+            12 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
                 ("URL".into(), Info(key("L", true))),
@@ -1238,15 +1387,16 @@ impl App {
             0 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.motion.name()),
             1 => format!("{} · {}", surface::hex(self.surface.signal), self.surface.shell.name()),
             2 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.theme_edit.family.name()),
-            3 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
-            4 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
-            5 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
-            6 => format!("links → {:?}", self.behavior.links).to_lowercase(),
-            7 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
-            8 => format!("{} bar · google", self.load_bar.style.name()),
-            9 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
-            10 => self.rules.status.clone(),
-            11 => "chords".into(),
+            3 => format!("{:?} · {:?}", self.cursor.shape, self.cursor.motion).to_lowercase(),
+            4 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
+            5 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
+            6 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
+            7 => format!("links → {:?}", self.behavior.links).to_lowercase(),
+            8 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
+            9 => format!("{} bar · google", self.load_bar.style.name()),
+            10 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            11 => self.rules.status.clone(),
+            12 => "chords".into(),
             _ => "github releases".into(),
         }
     }

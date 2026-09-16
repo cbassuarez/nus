@@ -10,7 +10,7 @@ pub mod text;
 pub mod theme;
 
 pub use gpu::{Gpu, Target, TextureBinder};
-pub use grid::GridRenderer;
+pub use grid::{CursorLook, GridRenderer};
 pub use scene::{Bind, Color, Instance, Layer, Rect, Scene};
 pub use text::{FontId, FontSystem, Metrics, Style};
 pub use theme::{Mode, Theme};

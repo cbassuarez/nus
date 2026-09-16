@@ -271,7 +271,10 @@ impl App {
                 self.selected.clear();
                 self.activate(i);
             }
-            (Action::Click, Target::Setting(hit, x)) => self.apply_setting(hit, x),
+            (Action::Click, Target::Setting(hit, x)) => {
+                self.apply_setting(hit, x);
+                self.save_prefs();
+            }
             (Action::Click, Target::Palette(i)) => {
                 self.palette_sel = i;
                 self.palette_commit();

@@ -20,6 +20,7 @@ pub struct Prefs {
     pub sound: Option<crate::sound::SoundPrefs>,
     pub window_rect: Option<(i32, i32, u32, u32)>,
     pub theme: Option<crate::theme_edit::ThemeEdit>,
+    pub cursor: Option<crate::settings::CursorPrefs>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -59,6 +60,9 @@ impl App {
         if let Some(t) = p.theme {
             self.theme_edit = t;
         }
+        if let Some(c) = p.cursor {
+            self.cursor = c;
+        }
     }
 
     pub(crate) fn save_prefs(&self) {
@@ -72,6 +76,7 @@ impl App {
             sound: Some(self.sound.prefs.clone()),
             window_rect: self.window_rect,
             theme: Some(self.theme_edit.clone()),
+            cursor: Some(self.cursor.clone()),
         };
         let _ = std::fs::create_dir_all(path().parent().unwrap());
         let _ = std::fs::write(path(), serde_json::to_string_pretty(&p).unwrap_or_default());
