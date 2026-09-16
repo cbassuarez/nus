@@ -2,6 +2,7 @@
 //! See docs/SPIKES.md.
 
 mod access;
+mod shell;
 mod windows;
 mod anim;
 mod app;

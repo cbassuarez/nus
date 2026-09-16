@@ -43,11 +43,38 @@ bitflags! {
 pub enum Event {
     Bell,
     Title(String),
+    /// A shell-integration mark arrived (OSC 133).
+    Mark(MarkKind),
+    /// The shell reported its working directory (OSC 7).
+    Cwd(String),
+    /// Progress from the shell (OSC 9;4): state, percent.
+    Progress(u8, u8),
     ClipboardStore(u8, Vec<u8>),
     ClipboardLoad(u8),
     CursorStyle(CursorStyle),
     /// The palette or default colors changed; renderer caches are stale.
     ColorsChanged,
+}
+
+/// Shell integration marks (OSC 133), in the order a command goes through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    /// A: the prompt begins.
+    PromptStart,
+    /// B: the prompt ends; the command line begins.
+    CommandStart,
+    /// C: the command runs; output follows.
+    OutputStart,
+    /// D: the command finished, with its exit code when the shell knows it.
+    CommandEnd(Option<i32>),
+}
+
+/// A mark at an absolute line and column of the primary screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub line: u64,
+    pub col: usize,
+    pub kind: MarkKind,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,6 +125,13 @@ pub struct Term {
     /// Pixel size of a cell, for XTWINOPS reports. Set by the host.
     pub cell_px: (u16, u16),
     max_scrollback: usize,
+    /// Shell integration: marks on the primary screen, the reported cwd,
+    /// and progress. Fed by OSC 133 / 7 / 9;4 before the bytes reach vte.
+    pub marks: Vec<Mark>,
+    pub cwd: Option<String>,
+    pub progress: Option<(u8, u8)>,
+    /// Bytes of an OSC that ended past the last chunk.
+    pending_osc: Vec<u8>,
 }
 
 impl Term {
@@ -125,14 +159,203 @@ impl Term {
             events: Vec::new(),
             cell_px: (8, 16),
             max_scrollback,
+            marks: Vec::new(),
+            cwd: None,
+            progress: None,
+            pending_osc: Vec::new(),
         }
     }
 
-    /// Feed bytes from the PTY.
+    /// Feed bytes from the PTY. OSC 133 / 7 / 9;4 are read here, at the
+    /// point they occur, so a mark lands on the row the cursor is on when
+    /// the shell sent it; the bytes still go to vte untouched.
     pub fn advance(&mut self, bytes: &[u8]) {
+        if self.pending_osc.is_empty() {
+            self.advance_scan(bytes);
+        } else {
+            let mut buf = std::mem::take(&mut self.pending_osc);
+            buf.extend_from_slice(bytes);
+            self.advance_scan(&buf);
+        }
+    }
+
+    fn advance_scan(&mut self, bytes: &[u8]) {
+        let mut start = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            // ESC ] or C1 OSC.
+            let osc_at = if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b']' {
+                Some((i, i + 2))
+            } else if bytes[i] == 0x9d {
+                Some((i, i + 1))
+            } else {
+                None
+            };
+            let Some((at, body)) = osc_at else {
+                i += 1;
+                continue;
+            };
+            // Only the OSCs we care about; anything else passes straight through.
+            let rest = &bytes[body..];
+            let ours = rest.starts_with(b"133;") || rest.starts_with(b"7;") || rest.starts_with(b"9;4;");
+            if !ours && rest.len() >= 4 {
+                i += 1;
+                continue;
+            }
+            // Find the terminator: BEL, ESC \, or C1 ST.
+            let mut end = None;
+            let mut j = body;
+            while j < bytes.len() {
+                match bytes[j] {
+                    0x07 | 0x9c => {
+                        end = Some((j, j + 1));
+                        break;
+                    }
+                    0x1b if j + 1 < bytes.len() && bytes[j + 1] == b'\\' => {
+                        end = Some((j, j + 2));
+                        break;
+                    }
+                    0x1b => break, // another sequence began: not an OSC for us
+                    _ => {}
+                }
+                j += 1;
+            }
+            let Some((pay_end, seq_end)) = end else {
+                if j >= bytes.len() && (ours || rest.len() < 4) {
+                    // Ends in a later chunk: feed what came before, keep the rest.
+                    self.feed(&bytes[start..at]);
+                    self.pending_osc = bytes[at..].to_vec();
+                    return;
+                }
+                i += 1;
+                continue;
+            };
+            if ours {
+                self.feed(&bytes[start..at]);
+                let payload = bytes[body..pay_end].to_vec();
+                self.integration_osc(&payload);
+                start = at;
+            }
+            i = seq_end;
+        }
+        self.feed(&bytes[start..]);
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
         let mut processor = std::mem::take(&mut self.processor);
         processor.advance(self, bytes);
         self.processor = processor;
+    }
+
+    /// One of ours: 133;<A|B|C|D[;exit]>, 7;file://host/path, 9;4;state;pct.
+    fn integration_osc(&mut self, payload: &[u8]) {
+        let text = String::from_utf8_lossy(payload);
+        if let Some(rest) = text.strip_prefix("133;") {
+            if self.modes.contains(Modes::ALT_SCREEN) {
+                return;
+            }
+            let mut parts = rest.split(';');
+            let kind = match parts.next().and_then(|k| k.chars().next()) {
+                Some('A') => MarkKind::PromptStart,
+                Some('B') => MarkKind::CommandStart,
+                Some('C') => MarkKind::OutputStart,
+                Some('D') => MarkKind::CommandEnd(parts.next().and_then(|e| e.trim().parse().ok())),
+                _ => return,
+            };
+            let line = self.primary.abs_row(self.cursor.row);
+            let col = self.cursor.col;
+            // A prompt redrawn on the same line replaces the last mark there.
+            if let Some(last) = self.marks.last() {
+                if last.line == line && last.kind == kind {
+                    self.marks.pop();
+                }
+            }
+            self.marks.push(Mark { line, col, kind });
+            // Forget marks whose rows are gone.
+            let oldest = self.primary.oldest_abs();
+            if self.marks.first().is_some_and(|m| m.line < oldest) {
+                self.marks.retain(|m| m.line >= oldest);
+            }
+            self.events.push(Event::Mark(kind));
+        } else if let Some(rest) = text.strip_prefix("7;") {
+            let url = rest.trim();
+            // file://host/path → path; Windows drives come as /C:/…
+            let path = url.strip_prefix("file://").map(|u| u.splitn(2, '/').nth(1).map(|p| format!("/{p}")).unwrap_or_default()).unwrap_or_else(|| url.to_string());
+            let decoded = percent_decode(&path);
+            let path = decoded.strip_prefix('/').filter(|p| p.len() > 1 && p.as_bytes()[1] == b':').map(|p| p.to_string()).unwrap_or(decoded);
+            if !path.is_empty() {
+                self.cwd = Some(path.clone());
+                self.events.push(Event::Cwd(path));
+            }
+        } else if let Some(rest) = text.strip_prefix("9;4;") {
+            let mut parts = rest.split(';');
+            let state: u8 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let pct: u8 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            self.progress = if state == 0 { None } else { Some((state, pct.min(100))) };
+            self.events.push(Event::Progress(state, pct.min(100)));
+        }
+    }
+
+    /// The output of a command: rows after its C mark up to its D mark
+    /// (or the cursor's row when it is still running).
+    pub fn output_text(&self, c: &Mark) -> String {
+        let grid = &self.primary;
+        let start = if c.col == 0 { c.line } else { c.line + 1 };
+        let end = self
+            .marks
+            .iter()
+            .find(|m| matches!(m.kind, MarkKind::CommandEnd(_)) && m.line >= c.line)
+            .map(|m| m.line)
+            .unwrap_or(grid.abs_row(self.cursor.row) + 1);
+        let mut lines = Vec::new();
+        let mut line = start;
+        while line < end {
+            if let Some(row) = grid.row_abs(line) {
+                lines.push(row.text().trim_end().to_string());
+            }
+            line += 1;
+        }
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+
+    /// Is the shell sitting at a prompt (the last mark is A or B)?
+    pub fn at_prompt(&self) -> bool {
+        matches!(self.marks.last().map(|m| m.kind), Some(MarkKind::PromptStart | MarkKind::CommandStart))
+    }
+
+    /// The command text between a B mark and the next C (or the cursor).
+    pub fn command_text(&self, b: &Mark) -> String {
+        let grid = &self.primary;
+        let end = self
+            .marks
+            .iter()
+            .find(|m| matches!(m.kind, MarkKind::OutputStart) && (m.line > b.line || (m.line == b.line && m.col >= b.col)))
+            .map(|m| (m.line, m.col))
+            .unwrap_or((grid.abs_row(self.cursor.row), self.cursor.col));
+        let mut out = String::new();
+        let mut line = b.line;
+        while line <= end.0 {
+            if let Some(row) = grid.row_abs(line) {
+                let text: String = row.text();
+                let from = if line == b.line { b.col } else { 0 };
+                let to = if line == end.0 { end.1.min(text.chars().count()) } else { text.chars().count() };
+                if to > from {
+                    let piece: String = text.chars().skip(from).take(to - from).collect();
+                    out.push_str(piece.trim_end());
+                    if line < end.0 {
+                        out.push('\n');
+                    }
+                }
+            }
+            line += 1;
+        }
+        out.trim().to_string()
     }
 
     /// Call periodically (e.g. once per frame): ends a synchronized update
@@ -1078,6 +1301,42 @@ mod tests {
     }
 
     #[test]
+    fn marks_land_on_their_rows_and_survive_scrolling() {
+        let mut t = term(20, 3);
+        feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07ls -la\r\n\x1b]133;C\x07a\r\nb\r\nc\r\n\x1b]133;D;0\x07");
+        let kinds: Vec<MarkKind> = t.marks.iter().map(|m| m.kind).collect();
+        assert_eq!(kinds, vec![MarkKind::PromptStart, MarkKind::CommandStart, MarkKind::OutputStart, MarkKind::CommandEnd(Some(0))]);
+        // The prompt was on absolute line 0, which has scrolled into history.
+        assert_eq!(t.marks[0].line, 0);
+        assert_eq!(t.marks[1].col, 2);
+        assert!(matches!(t.grid().locate(0), Some(crate::grid::Loc::History(_))));
+        assert_eq!(t.command_text(&t.marks[1].clone()), "ls -la");
+        assert_eq!(t.grid().row_abs(0).map(|r| r.text().trim_end().to_string()), Some("$ ls -la".into()));
+    }
+
+    #[test]
+    fn osc_split_across_chunks_and_cwd_and_progress() {
+        let mut t = term(20, 3);
+        feed(&mut t, "x\x1b]7;file://pc/C:/Users/seb/nus");
+        assert!(t.cwd.is_none());
+        feed(&mut t, "\x07y\x1b]9;4;1;42\x1b\\z");
+        assert_eq!(t.cwd.as_deref(), Some("C:/Users/seb/nus"));
+        assert_eq!(t.progress, Some((1, 42)));
+        assert_eq!(t.grid().row(0).text().trim_end(), "xyz");
+        let events = t.take_events();
+        assert!(events.iter().any(|e| matches!(e, Event::Cwd(_))));
+        assert!(events.iter().any(|e| matches!(e, Event::Progress(1, 42))));
+    }
+
+    #[test]
+    fn foreign_oscs_pass_through() {
+        let mut t = term(20, 3);
+        feed(&mut t, "\x1b]0;my title\x07hi");
+        assert_eq!(t.grid().row(0).text().trim_end(), "hi");
+        assert!(t.marks.is_empty());
+    }
+
+    #[test]
     fn prints_and_wraps() {
         let mut t = term(5, 2);
         feed(&mut t, "abcdefg");
@@ -1238,4 +1497,23 @@ mod tests {
         feed(&mut t, "\x1b[?2026l");
         assert_eq!(t.grid().text(), "ab");
     }
+}
+
+/// Minimal %XX decoding for OSC 7 paths.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
 }

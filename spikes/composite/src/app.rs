@@ -125,6 +125,15 @@ pub struct TermPane {
     /// The column the line started at: the hint anchors here, so the
     /// shell's echo lag and caret moves never shift it.
     pub line_col: Option<usize>,
+    /// Shell integration: where the shell is, what it's doing.
+    pub cwd: Option<String>,
+    pub progress: Option<(u8, u8)>,
+    pub running_since: Option<Instant>,
+    pub last_exit: Option<i32>,
+    /// A command that took a while just finished: (exit, when) for the badge.
+    pub done: Option<(Option<i32>, Instant)>,
+    /// A paste waiting for a yes (many lines, or control characters).
+    pub confirm_paste: Option<String>,
     /// Name of the running process when a close is awaiting confirmation.
     pub confirm_close: Option<String>,
     /// Rang the bell while not being looked at.
@@ -712,7 +721,14 @@ impl App {
         let (cw, ch) = grid.cell_size();
         term.cell_px = (cw as u16, ch as u16);
         let profile_index = profile;
-        let profile = self.profiles.get(profile).cloned().unwrap_or_else(nus_pty::Profile::default_shell);
+        let mut profile = self.profiles.get(profile).cloned().unwrap_or_else(nus_pty::Profile::default_shell);
+        // New shells open where the focused one is.
+        if profile.cwd.is_none() {
+            if let Some(cwd) = self.focused_cwd() {
+                profile.cwd = Some(cwd);
+            }
+        }
+        let profile = crate::shell::integrate(profile, self.behavior.shell_integration);
         let proxy = self.proxy.clone();
         let pty = nus_pty::Pty::spawn(&profile, cols as u16, rows as u16, move || {
             let _ = proxy.send_event(UserEvent::Wake);
@@ -730,6 +746,12 @@ impl App {
             cur_y: Anim::at(0.0),
             trail: Vec::new(),
             line_col: None,
+            cwd: None,
+            progress: None,
+            running_since: None,
+            last_exit: None,
+            done: None,
+            confirm_paste: None,
             line: String::new(),
             line_ok: true,
             confirm_close: None,
@@ -1257,10 +1279,167 @@ impl App {
         }
     }
 
+    /// Blocks: a hairline where each prompt begins, an exit badge on a
+    /// command that failed, a "done" badge on one that took a while, the
+    /// shell's progress as a bar, and the paste band.
+    fn draw_blocks(&mut self, scene: &mut Scene, p: &mut TermPane, r: Rect, hh: f32) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let (cw, ch) = p.grid.cell_size();
+        let grid = p.term.grid();
+        let rows = grid.rows();
+        let label = self.label();
+        if self.behavior.shell_integration && !p.term.marks.is_empty() {
+            let top = grid.abs_of_display(0);
+            let bottom = top + rows as u64;
+            let marks: Vec<nus_vt::Mark> = p.term.marks.iter().copied().filter(|m| m.line >= top && m.line < bottom).collect();
+            for m in &marks {
+                let row = (m.line - top) as usize;
+                let y = p.origin.1 + row as f32 * ch;
+                match m.kind {
+                    nus_vt::MarkKind::PromptStart if row > 0 => {
+                        scene.hline(r.x + self.px(18.0), y - self.px(3.0), r.w - self.px(36.0), self.px(m::HAIRLINE), fade(ink, 0.16));
+                    }
+                    nus_vt::MarkKind::CommandEnd(Some(code)) if code != 0 => {
+                        // The failed command's line is the previous B mark's.
+                        if let Some(b) = p.term.marks.iter().rev().find(|x| x.kind == nus_vt::MarkKind::CommandStart && x.line < m.line) {
+                            if b.line >= top {
+                                let by = p.origin.1 + (b.line - top) as f32 * ch;
+                                let text = format!("× {code}");
+                                let tw = self.fonts.measure(label, &text);
+                                let bx = r.right() - self.px(18.0) - tw;
+                                self.fonts.draw(scene, Style { color: self.surface.signal, ..label }, bx, by + ch * 0.72, &text);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let _ = cw;
+        }
+        // A long command just finished: a badge that fades over four seconds.
+        if let Some((exit, when)) = p.done {
+            let age = when.elapsed().as_secs_f32();
+            if age < 4.0 {
+                let a = (1.0 - (age - 3.0).max(0.0)).clamp(0.0, 1.0);
+                let text = match exit { Some(0) | None => "DONE".to_string(), Some(c) => format!("FAILED · {c}") };
+                let color = match exit { Some(0) | None => ink, _ => self.surface.signal };
+                let tw = self.fonts.measure(label, &text);
+                let bx = r.right() - self.px(18.0) - tw;
+                let by = r.y + hh + self.px(14.0);
+                scene.rect(Rect::new(bx - self.px(8.0), by - self.px(11.0), tw + self.px(16.0), self.px(18.0)), fade(self.paper(), a));
+                self.fonts.draw(scene, Style { color: fade(color, a), ..label }, bx, by + self.px(2.0), &text);
+                self.dirty = true;
+            } else {
+                p.done = None;
+            }
+        }
+        // Progress from the shell (OSC 9;4), as the loading bar along the pane's top.
+        if let Some((state, pct)) = p.progress {
+            let v = if state == 3 { (self.started.elapsed().as_secs_f32() * 0.5) % 1.0 } else { pct as f32 / 100.0 };
+            let color = match state { 2 => self.surface.signal, 4 => crate::theme_edit::from_rgb(t.ansi[3]), _ => ink };
+            let th = self.px(self.load_bar.thickness);
+            scene.rect(Rect::new(r.x, r.y + hh, r.w * v, th), fade(color, 0.9));
+            if state == 3 {
+                self.dirty = true;
+            }
+        }
+        // Paste band: how many lines, Enter sends, Esc drops.
+        if let Some(text) = p.confirm_paste.clone() {
+            let drop = self.band_anim.value();
+            let bh = self.header_h();
+            let cr = Rect::new(r.x, r.y + hh - (1.0 - drop) * bh, r.w, bh);
+            scene.layer(Some(Rect::new(r.x, r.y + hh, r.w, bh)));
+            scene.rect(cr, ink);
+            let inv = Style { color: t.paper, ..self.label_strong() };
+            let inv_l = Style { color: t.paper, ..label };
+            let by = cr.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
+            let mut x = cr.x + self.px(m::HEADER_PAD_X);
+            let n = text.lines().count();
+            x += self.fonts.draw(scene, inv, x, by, &format!("PASTE {n} LINE{}?", if n == 1 { "" } else { "S" })) + self.px(14.0);
+            x += self.fonts.draw(scene, inv_l, x, by, "IT MAY RUN AS TYPED") + self.px(14.0);
+            x += self.fonts.draw(scene, inv, x, by, "ENTER") + self.px(14.0);
+            self.fonts.draw(scene, inv_l, x, by, "· ESC DROPS IT");
+            scene.layer(None);
+        }
+    }
+
+    /// The working directory the focused shell reported, if any.
+    pub(crate) fn focused_cwd(&self) -> Option<String> {
+        let tab = self.tabs.get(self.active)?;
+        let panes: Vec<&Pane> = if tab.focus_right && tab.right.is_some() { vec![tab.right.as_ref().unwrap(), &tab.left] } else { std::iter::once(&tab.left).chain(tab.right.as_ref()).collect() };
+        panes.into_iter().find_map(|p| match p {
+            Pane::Term(t) => t.cwd.clone(),
+            _ => None,
+        })
+    }
+
+    /// The focused terminal pane, if the focus is on one.
+    fn focused_term(&mut self) -> Option<&mut TermPane> {
+        let tab = self.tabs.get_mut(self.active)?;
+        match tab.focused() {
+            Pane::Term(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Scroll to the previous (-1) or next (+1) prompt.
+    pub(crate) fn jump_prompt(&mut self, dir: i32) {
+        let Some(t) = self.focused_term() else { return };
+        let grid = t.term.grid();
+        let top = grid.abs_of_display(0);
+        let prompts: Vec<u64> = t.term.marks.iter().filter(|m| m.kind == nus_vt::MarkKind::PromptStart).map(|m| m.line).collect();
+        let target = if dir < 0 { prompts.iter().rev().find(|&&l| l < top).copied() } else { prompts.iter().find(|&&l| l > top).copied() };
+        if let Some(l) = target {
+            t.term.grid_mut().scroll_to_abs(l);
+            self.dirty = true;
+        } else if dir > 0 {
+            t.term.grid_mut().scroll_to_abs(u64::MAX);
+            self.dirty = true;
+        }
+    }
+
+    /// The last command's output (or the command being typed) to the clipboard.
+    pub(crate) fn copy_last_output(&mut self) {
+        let Some(t) = self.focused_term() else { return };
+        let c = t.term.marks.iter().rev().find(|m| m.kind == nus_vt::MarkKind::OutputStart).copied();
+        let text = match c {
+            Some(c) => t.term.output_text(&c),
+            None => String::new(),
+        };
+        if text.is_empty() {
+            return;
+        }
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(text);
+        }
+        self.play_event("toggle");
+    }
+
+    /// Paste into the focused shell; many lines or control characters ask first.
+    pub(crate) fn paste_into_shell(&mut self) {
+        let Ok(mut cb) = arboard::Clipboard::new() else { return };
+        let Ok(text) = cb.get_text() else { return };
+        if text.is_empty() {
+            return;
+        }
+        let risky = text.lines().count() > 1 || text.chars().any(|c| c.is_control() && c != '\t');
+        let Some(t) = self.focused_term() else { return };
+        if risky {
+            t.confirm_paste = Some(text);
+            self.band_anim.replay(0.0, 1.0, self.motion.dur(base::BAND));
+        } else {
+            t.write_paste(&text);
+        }
+        self.dirty = true;
+    }
+
     /// The cursor as the prefs want it, for one pane.
     fn cursor_look(&self, p: &TermPane, focused: bool, tab_signal: Option<nus_render::Color>) -> nus_render::CursorLook {
         use crate::settings::{Blink, CursorColor, CursorShapePref};
         let shape = match self.cursor.shape {
+            // At a prompt the cursor is a bar: the line is text being edited.
+            CursorShapePref::Shell if p.term.at_prompt() && self.behavior.shell_integration => Some(nus_vt::CursorShape::Beam),
             CursorShapePref::Shell => None,
             CursorShapePref::Block => Some(nus_vt::CursorShape::Block),
             CursorShapePref::Beam => Some(nus_vt::CursorShape::Beam),
@@ -1283,7 +1462,6 @@ impl App {
         } else {
             true
         };
-        let _ = p;
         nus_render::CursorLook { shape, color, weight: self.px(self.cursor.weight), visible, hollow_unfocused: self.cursor.hollow_unfocused }
     }
 
@@ -1632,6 +1810,40 @@ impl App {
                                     changed = true;
                                     bell = true;
                                 }
+                            }
+                            nus_vt::Event::Mark(kind) => {
+                                tracing::debug!("shell mark {kind:?}");
+                                match kind {
+                                    nus_vt::MarkKind::OutputStart => {
+                                        t.running_since = Some(Instant::now());
+                                        t.done = None;
+                                    }
+                                    nus_vt::MarkKind::CommandEnd(exit) => {
+                                        t.last_exit = exit;
+                                        if let Some(since) = t.running_since.take() {
+                                            // A command that took a while: say so when
+                                            // the user is elsewhere, badge it either way.
+                                            if since.elapsed().as_secs_f32() > 2.0 {
+                                                t.done = Some((exit, Instant::now()));
+                                                if i != self.active || !self.window.has_focus() {
+                                                    t.waiting = true;
+                                                    bell = true;
+                                                }
+                                            }
+                                        }
+                                        t.progress = None;
+                                    }
+                                    _ => {}
+                                }
+                                changed = true;
+                            }
+                            nus_vt::Event::Cwd(path) => {
+                                t.cwd = Some(path);
+                                changed = true;
+                            }
+                            nus_vt::Event::Progress(state, pct) => {
+                                t.progress = if state == 0 { None } else { Some((state, pct)) };
+                                changed = true;
                             }
                             _ => {}
                         }
@@ -2325,7 +2537,7 @@ impl App {
                 return n.clone();
             }
         }
-        if let Some(root) = git_root_name() {
+        if let Some(root) = git_root_name(self.focused_cwd().map(std::path::PathBuf::from)) {
             return self.unique_name(root);
         }
         let mut hosts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -2348,7 +2560,7 @@ impl App {
 
     /// Where this window is, for the dateline.
     pub(crate) fn dateline(&self) -> String {
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = self.focused_cwd().map(std::path::PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
         let mut here = cwd.to_string_lossy().replace('\\', "/");
         if !home.is_empty() {
@@ -3428,6 +3640,7 @@ impl App {
                 if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
                     self.draw_moving_cursor(scene, p, look);
                 }
+                self.draw_blocks(scene, p, r, hh);
                 let _ = p.term.grid_mut().take_damage();
                 scene.layer(None);
             }
@@ -3615,6 +3828,18 @@ impl App {
         let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
         match mode {
             PaletteMode::Go => {
+                // Recent commands from the focused shell: run again.
+                if let Some(tab) = self.tabs.get(self.active) {
+                    if let Pane::Term(t) = &tab.left {
+                        let mut seen = std::collections::HashSet::new();
+                        let cmds: Vec<String> = t.term.marks.iter().rev().filter(|m| m.kind == nus_vt::MarkKind::CommandStart).map(|m| t.term.command_text(m)).filter(|c| !c.is_empty() && seen.insert(c.clone())).take(5).collect();
+                        for c in cmds {
+                            if hit(&c) {
+                                rows.push(row("↻", format!("{c} · run again"), Action::RunInShell(c.clone())));
+                            }
+                        }
+                    }
+                }
                 for (i, t) in self.tabs.iter().enumerate() {
                     if hit(&t.title()) {
                         rows.push(row(&self.tab_label(i), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
@@ -3897,6 +4122,10 @@ impl App {
         }
         if pressed && app {
             match code {
+                Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
+                Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
+                Some(KeyCode::KeyC) => return self.copy_last_output(),
+                Some(KeyCode::KeyV) => return self.paste_into_shell(),
                 Some(KeyCode::KeyT) => return self.open_palette(PaletteMode::New),
                 Some(KeyCode::KeyK) => return self.open_palette(PaletteMode::Go),
                 Some(KeyCode::KeyL) => return self.open_palette(PaletteMode::Url),
@@ -4004,6 +4233,22 @@ impl App {
                     return;
                 };
 
+                // A paste is waiting: Enter sends it, Esc drops it.
+                if t.confirm_paste.is_some() && pressed {
+                    match key {
+                        Key::Enter => {
+                            if let Some(text) = t.confirm_paste.take() {
+                                t.write_paste(&text);
+                            }
+                            return;
+                        }
+                        Key::Escape => {
+                            t.confirm_paste = None;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 // The URL-at-a-prompt rule: a whole-line URL at a fresh prompt
                 // opens in the split instead of running. Ctrl+Enter runs it.
                 if pressed {
@@ -4463,6 +4708,9 @@ impl App {
         if !force {
             for &i in &targets {
                 if let Pane::Term(t) = &mut self.tabs[i].left {
+                    if self.behavior.shell_integration && t.term.at_prompt() {
+                        continue;
+                    }
                     if let Some(p) = t.pty.foreground_process() {
                         self.active = i;
                         if let Pane::Term(t) = &mut self.tabs[i].left {
@@ -5220,9 +5468,12 @@ fn vk_code(phys: &PhysicalKey, logical: &WKey) -> i32 {
     }
 }
 
-/// The name of the git repository the app was launched in, if any.
-fn git_root_name() -> Option<String> {
-    let mut d = std::env::current_dir().ok()?;
+/// The name of the git repository at `from` (or where the app was launched), if any.
+fn git_root_name(from: Option<std::path::PathBuf>) -> Option<String> {
+    let mut d = match from {
+        Some(p) => p,
+        None => std::env::current_dir().ok()?,
+    };
     loop {
         if d.join(".git").exists() {
             return d.file_name().map(|n| n.to_string_lossy().to_string());
@@ -5236,4 +5487,20 @@ fn git_root_name() -> Option<String> {
 /// A colour at a fraction of its own alpha.
 pub(crate) fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {
     [c[0], c[1], c[2], c[3] * k]
+}
+
+impl TermPane {
+    /// Write pasted text, bracketed when the program asked for it.
+    pub fn write_paste(&mut self, text: &str) {
+        let bracketed = self.term.modes().contains(nus_vt::Modes::BRACKETED_PASTE);
+        let mut out = Vec::new();
+        if bracketed {
+            out.extend_from_slice(b"\x1b[200~");
+        }
+        out.extend_from_slice(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
+        if bracketed {
+            out.extend_from_slice(b"\x1b[201~");
+        }
+        let _ = self.pty.write(&out);
+    }
 }

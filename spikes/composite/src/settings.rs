@@ -185,6 +185,13 @@ pub struct Behavior {
     pub atlas: AtlasMode,
     #[serde(default = "default_outside")]
     pub outside: Outside,
+    /// Shells get prompt marks, cwd and exit codes injected at spawn.
+    #[serde(default = "default_true")]
+    pub shell_integration: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_window_start() -> WindowStart {
@@ -222,6 +229,7 @@ impl Default for Behavior {
             then: Then::Shell,
             atlas: AtlasMode::Planet,
             outside: Outside::Little,
+            shell_integration: true,
         }
     }
 }
@@ -308,6 +316,7 @@ pub enum Hit {
     TokSel(TokSel),
     /// Set the selected token to this colour.
     TokSet(Color),
+    ShellInt(bool),
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
     HdrDateline(bool),
@@ -556,6 +565,7 @@ impl App {
             Hit::LookTab(k) => LOOK_TABS.get(k).map(|t| t.to_lowercase()).unwrap_or_default(),
             Hit::TokSel(t) => format!("edit {:?}", t).to_lowercase(),
             Hit::TokSet(c) => format!("set to {}", surface::hex(c)),
+            Hit::ShellInt(b) => if b { "shell integration auto".into() } else { "shell integration off".into() },
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
             Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
             Hit::HdrDateline(b) => if b { "dateline on".into() } else { "dateline off".into() },
@@ -824,6 +834,7 @@ impl App {
                 }
             }
             Hit::TokSet(c) => self.set_tok(c),
+            Hit::ShellInt(b) => self.behavior.shell_integration = b,
             Hit::HdrStyle(s) => {
                 self.header.style = s;
                 if s == HeaderStyle::Rail && self.header.style != s {
@@ -1750,6 +1761,16 @@ impl App {
                             .collect(),
                     ),
                 )];
+                // Shell integration: what each shell gets.
+                v.insert(0, ("".into(), Info("prompt marks · cwd · exit codes · new tabs open where you are · jump to prompts · copy a command's output".into())));
+                v.insert(0, (
+                    "SHELL INTEGRATION".into(),
+                    Choice(vec![("AUTO".into(), Hit::ShellInt(true), self.behavior.shell_integration), ("OFF".into(), Hit::ShellInt(false), !self.behavior.shell_integration)]),
+                ));
+                for (n, p) in self.profiles.iter().enumerate().take(6) {
+                    let kind = crate::shell::kind_of(&p.program);
+                    v.insert(2 + n, (p.name.to_uppercase(), Info(crate::shell::describe(kind).into())));
+                }
                 for p in &self.profiles {
                     v.push((format!("PROFILE · {}", p.name.to_uppercase()), Info(format!("{} {}", p.program, p.args.join(" ")))));
                 }

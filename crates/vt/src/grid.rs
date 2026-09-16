@@ -44,6 +44,19 @@ pub struct Grid {
     damage: Vec<bool>,
     /// How many scrollback rows the viewer has scrolled up. 0 = live.
     pub display_offset: usize,
+    /// The absolute index of visible row 0: rows ever pushed into history
+    /// (less those pulled back). Marks are kept in absolute lines so they
+    /// survive scrolling.
+    history_total: u64,
+}
+
+/// Where an absolute line is right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Loc {
+    /// A visible row.
+    Visible(usize),
+    /// A scrollback row, 0 = oldest kept.
+    History(usize),
 }
 
 impl Grid {
@@ -57,7 +70,43 @@ impl Grid {
             max_scrollback,
             damage: vec![true; rows],
             display_offset: 0,
+            history_total: 0,
         }
+    }
+
+    /// Absolute line of visible row `r`.
+    pub fn abs_row(&self, r: usize) -> u64 {
+        self.history_total + r as u64
+    }
+
+    /// The absolute line at the top of history still kept.
+    pub fn oldest_abs(&self) -> u64 {
+        self.history_total - self.scrollback.len() as u64
+    }
+
+    /// Where an absolute line is now, if it is still kept.
+    pub fn locate(&self, abs: u64) -> Option<Loc> {
+        if abs >= self.history_total {
+            let r = (abs - self.history_total) as usize;
+            (r < self.rows).then_some(Loc::Visible(r))
+        } else {
+            let back = (self.history_total - abs) as usize;
+            (back <= self.scrollback.len()).then(|| Loc::History(self.scrollback.len() - back))
+        }
+    }
+
+    /// The row at an absolute line, if kept.
+    pub fn row_abs(&self, abs: u64) -> Option<&Row> {
+        match self.locate(abs)? {
+            Loc::Visible(r) => Some(&self.lines[r]),
+            Loc::History(i) => Some(&self.scrollback[i]),
+        }
+    }
+
+    /// The viewer's row `r` as an absolute line, honouring `display_offset`.
+    pub fn abs_of_display(&self, r: usize) -> u64 {
+        let off = self.display_offset.min(self.scrollback.len()) as u64;
+        self.history_total - off + r as u64
     }
 
     pub fn cols(&self) -> usize {
@@ -100,6 +149,16 @@ impl Grid {
             &self.scrollback[idx]
         } else {
             &self.lines[r - off]
+        }
+    }
+
+    /// Put an absolute line at the top of the view (or go live if it is
+    /// on the visible screen).
+    pub fn scroll_to_abs(&mut self, abs: u64) {
+        let new = if abs >= self.history_total { 0 } else { ((self.history_total - abs) as usize).min(self.scrollback.len()) };
+        if new != self.display_offset {
+            self.display_offset = new;
+            self.damage_all();
         }
     }
 
@@ -149,9 +208,12 @@ impl Grid {
             let row = self.lines.remove(top);
             if full && keep_history && self.max_scrollback > 0 {
                 self.scrollback.push_back(row);
+                self.history_total += 1;
                 if self.scrollback.len() > self.max_scrollback {
                     self.scrollback.pop_front();
                 }
+            } else if full && keep_history {
+                self.history_total += 1;
             }
             self.lines.insert(bottom, Row::blank(self.cols, template));
         }
@@ -225,6 +287,7 @@ impl Grid {
             let row = self.lines.remove(0);
             shift -= 1;
             cursor_row = cursor_row.saturating_sub(1);
+            self.history_total += 1;
             if self.max_scrollback > 0 {
                 self.scrollback.push_back(row);
                 if self.scrollback.len() > self.max_scrollback {
@@ -238,6 +301,7 @@ impl Grid {
             match self.scrollback.pop_back() {
                 Some(row) if self.max_scrollback > 0 => {
                     self.lines.insert(0, row);
+                    self.history_total -= 1;
                     shift += 1;
                 }
                 _ => self.lines.push(Row::blank(cols, template)),
