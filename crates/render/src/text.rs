@@ -353,6 +353,11 @@ pub mod icons {
     icon!(COPY, "copy");
     icon!(CHECK, "check");
     icon!(PENCIL, "pencil-simple");
+    icon!(SHUFFLE, "shuffle");
+    icon!(SUN, "sun");
+    icon!(MOON, "moon");
+    icon!(UNDO, "arrow-counter-clockwise");
+    icon!(SLIDERS_H, "sliders-horizontal");
     icon!(APP_WINDOW, "app-window");
     icon!(WARNING, "warning");
     icon!(HOME, "house");

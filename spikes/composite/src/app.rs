@@ -223,12 +223,32 @@ pub enum SideHit {
     NewWindow,
     /// A square on the rail.
     Rail(usize),
-    /// The look chip in the footer.
+    /// The look chip in the footer: opens the hot swapper.
     Look,
+    /// Hot swapper rows.
+    LookPreset(usize),
+    LookQuick(Quick),
+    LookStudio,
     RailNew,
     Closed,
     Downloads,
     Settings,
+}
+
+/// Quick changes to the look, from the chip: immediate, whole-window,
+/// and nothing to do with the rules that colour tabs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Quick {
+    /// Another signal from the swatches.
+    Shuffle,
+    /// Signal and stops a twelfth of a turn round the wheel.
+    Rotate,
+    /// Paper ↔ ink.
+    Flip,
+    /// The next texture.
+    Texture,
+    /// Back to the preset as saved.
+    Reset,
 }
 
 /// What an icon does when the pointer arrives.
@@ -395,6 +415,11 @@ pub struct App {
     pub registered_tabs: usize,
     pub hovers: std::collections::HashMap<u64, Hover>,
     pub look_tab: usize,
+    pub look_menu: bool,
+    pub look_anim: Anim,
+    /// The callout's rect while shown, and when the pointer left it.
+    pub look_rect: Option<Rect>,
+    pub look_leave: Option<Instant>,
     pub tok_sel: crate::settings::TokSel,
     /// Last keystroke into a shell, for blink-after-idle and pointer hiding.
     pub last_key: Instant,
@@ -560,6 +585,10 @@ impl App {
             registered_tabs: usize::MAX,
             hovers: std::collections::HashMap::new(),
             look_tab: 0,
+            look_menu: false,
+            look_anim: Anim::at(0.0),
+            look_rect: None,
+            look_leave: None,
             tok_sel: crate::settings::TokSel::Signal,
             last_key: Instant::now(),
             pointer_hidden: false,
@@ -948,7 +977,31 @@ impl App {
                 self.rail_anim.go(want, self.motion.dur(120.0));
             }
         }
-        if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() {
+        // The look callout follows the pointer: over the chip or the callout
+        // it stays; a short grace after leaving, it goes.
+        {
+            let (mx, my) = self.mouse;
+            let over_chip = self.side_hits.iter().any(|(r, h)| *h == SideHit::Look && r.contains(mx, my));
+            let over_call = self.look_rect.is_some_and(|r| r.contains(mx, my));
+            if (over_chip || over_call) && self.sidebar_visible() {
+                self.look_leave = None;
+                if !self.look_menu {
+                    self.open_look_menu();
+                }
+            } else if self.look_menu {
+                match self.look_leave {
+                    None => self.look_leave = Some(Instant::now()),
+                    Some(t) if t.elapsed().as_millis() > 220 => {
+                        self.look_menu = false;
+                        self.look_anim.go(0.0, self.motion.dur(120.0));
+                        self.look_leave = None;
+                        self.dirty = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() || self.look_anim.active() {
             self.dirty = true;
         }
         // A blinking cursor wants a frame at each half period.
@@ -2662,15 +2715,21 @@ impl App {
                 self.close_menus();
                 self.open_palette(PaletteMode::Rename);
             }
-            SideHit::Look => {
+            SideHit::Look | SideHit::LookStudio => {
+                self.close_menus();
                 self.open_settings();
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.section = crate::settings::SEC_LOOK;
                 }
                 self.look_tab = crate::settings::LOOK_PRESETS;
-                {
-                }
             }
+            SideHit::LookPreset(k) => {
+                self.apply_setting(crate::settings::Hit::Preset(k), 0.0);
+                self.play_event("toggle");
+                self.save_prefs();
+            }
+            SideHit::LookQuick(q) => self.quick_look(q),
+
             SideHit::Closed => {
                 self.open_palette(PaletteMode::Go);
                 if let Some((_, input)) = self.palette.as_mut() {
@@ -2929,6 +2988,9 @@ impl App {
             scene.hline(sb.x, top + h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
             scene.layer(None);
         }
+        if self.look_menu || self.look_anim.active() {
+            self.draw_look_menu(scene, sb);
+        }
         if self.kinds_menu || self.kinds_anim.active() {
             let k = self.kinds_anim.value();
             let n = self.profiles.len() + 1;
@@ -2980,6 +3042,85 @@ impl App {
         }
     }
 
+    /// The hot swapper: a tiny callout over the chip while the pointer is
+    /// on it. Presets as their ramps, a rule, then the quick changes as
+    /// icons — shuffle the signal, turn the hue, flip paper/ink, next
+    /// texture, back to the preset. No words: the chip's own colours say
+    /// what changed. It colours the window; the rules colour tabs.
+    fn draw_look_menu(&mut self, scene: &mut Scene, sb: Rect) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let paper = self.paper();
+        let k = self.look_anim.value();
+        if k <= 0.001 {
+            self.look_rect = None;
+            return;
+        }
+        let (mx, my) = self.mouse;
+        let presets = crate::surface::presets();
+        let live = self.look_menu;
+        let Some(chip) = self.side_hits.iter().find(|(_, h)| *h == SideHit::Look).map(|(r, _)| *r) else { return };
+        let sq = self.px(14.0);
+        let gap = self.px(6.0);
+        let pad = self.px(8.0);
+        let isz = self.px(14.0);
+        let quick: [((&'static str, &'static str), Quick, IconMotion); 5] = [
+            (nus_render::text::icons::SHUFFLE, Quick::Shuffle, IconMotion::Pop),
+            (nus_render::text::icons::RELOAD, Quick::Rotate, IconMotion::Spin(90.0)),
+            (if self.theme.mode == nus_render::Mode::Ink { nus_render::text::icons::SUN } else { nus_render::text::icons::MOON }, Quick::Flip, IconMotion::Spin(40.0)),
+            (nus_render::text::icons::BRUSH, Quick::Texture, IconMotion::Bob),
+            (nus_render::text::icons::UNDO, Quick::Reset, IconMotion::Spin(-60.0)),
+        ];
+        let w = pad * 2.0 + presets.len() as f32 * (sq + gap) + self.px(10.0) + quick.len() as f32 * (isz + gap * 2.0) - gap;
+        let h = sq + pad * 2.0;
+        // Sits over the chip, rises 4px as it comes in; clamped to the sidebar.
+        let x = (chip.x - self.px(4.0)).min(sb.right() - w - self.px(8.0)).max(sb.x + self.px(8.0));
+        let y = chip.y - h - self.px(6.0) + self.px(4.0) * (1.0 - k);
+        let r = Rect::new(x, y, w, h);
+        self.look_rect = if live { Some(Rect::new(r.x, r.y, r.w, r.h + self.px(8.0))) } else { None };
+        let a = k;
+        let radius = (self.px(self.surface.shell_radius) * 0.18).min(self.px(4.0));
+        // Hard shadow, paper card, ink outline — the chip's own language.
+        scene.push(nus_render::Instance::rounded(Rect::new(r.x + self.px(3.0), r.y + self.px(3.0), r.w, r.h), radius, fade(ink, a)));
+        scene.push(nus_render::Instance::rounded(r, radius, fade(ink, a)));
+        let hair = self.px(m::HAIRLINE) * 1.5;
+        scene.push(nus_render::Instance::rounded(Rect::new(r.x + hair, r.y + hair, r.w - 2.0 * hair, r.h - 2.0 * hair), (radius - hair).max(0.0), fade(paper, a)));
+        let mut cx = r.x + pad;
+        let cy = r.y + pad;
+        let ink_c = self.theme.ink;
+        for (i, p) in presets.iter().enumerate() {
+            let tile = Rect::new(cx, cy, sq, sq);
+            let on = p.name == self.preset_name;
+            let hot = tile.contains(mx, my) && live;
+            let ramp = p.surface.ramp(ink_c);
+            if hot {
+                scene.push(nus_render::Instance::rounded(Rect::new(tile.x - 2.0, tile.y - 2.0, sq + 4.0, sq + 4.0), radius, fade(ink, 0.25 * a)));
+            }
+            scene.push(nus_render::Instance::rounded_stops(tile, radius, &ramp, p.surface.angle, 0.0, false));
+            scene.push(nus_render::Instance::stroke(tile, radius, self.px(1.0), fade(ink, a), None, 0.0));
+            if on {
+                let d = self.px(4.0);
+                scene.rect(Rect::new(tile.x + (sq - d) / 2.0, tile.y + (sq - d) / 2.0, d, d), fade(paper, a));
+                scene.outline(Rect::new(tile.x + (sq - d) / 2.0 - 1.0, tile.y + (sq - d) / 2.0 - 1.0, d + 2.0, d + 2.0), 1.0, fade(ink, a));
+            }
+            if live {
+                self.side_hits.push((Rect::new(tile.x - gap / 2.0, r.y, sq + gap, r.h), SideHit::LookPreset(i)));
+            }
+            cx += sq + gap;
+        }
+        cx += self.px(4.0) - gap;
+        scene.vline(cx, r.y + self.px(6.0), r.h - self.px(12.0), self.px(1.0), fade(ink, 0.5 * a));
+        cx += self.px(6.0);
+        for (i, (icon, q, motion)) in quick.into_iter().enumerate() {
+            let hit = Rect::new(cx, r.y, isz + gap * 2.0, r.h);
+            self.icon_button(scene, icon, isz, cx + gap, cy, fade(ink, a), hit, hover_key("quick", i), motion);
+            if live {
+                self.side_hits.push((hit, SideHit::LookQuick(q)));
+            }
+            cx += isz + gap * 2.0;
+        }
+    }
+
     pub(crate) fn open_win_menu(&mut self) {
         self.kinds_menu = false;
         self.windows = crate::windows::list();
@@ -2995,7 +3136,64 @@ impl App {
         self.dirty = true;
     }
 
+    pub(crate) fn open_look_menu(&mut self) {
+        self.win_menu = false;
+        self.kinds_menu = false;
+        self.look_menu = true;
+        self.look_anim.replay(0.0, 1.0, self.motion.dur(160.0));
+        self.dirty = true;
+    }
+
+    /// A quick change to the look, saved like any setting.
+    pub(crate) fn quick_look(&mut self, q: Quick) {
+        use crate::settings::Hit;
+        match q {
+            Quick::Shuffle => {
+                let cur = self.surface.signal;
+                let list = crate::surface::SWATCHES;
+                let i = list.iter().position(|&(_, c)| c == cur).map(|i| (i + 1) % list.len()).unwrap_or(0);
+                let c = list[i].1;
+                self.apply_setting(Hit::Signal(c), 0.0);
+            }
+            Quick::Rotate => {
+                let ink = self.theme.ink;
+                let turn = |c: nus_render::Color| {
+                    let (h, s, l) = crate::surface::to_hsl(c);
+                    crate::surface::from_hsl((h + 1.0 / 12.0) % 1.0, s, l, 1.0)
+                };
+                let stops: Vec<nus_render::Color> = self.surface.ramp(ink).iter().map(|&c| turn(c)).collect();
+                self.surface.signal = turn(self.surface.signal);
+                self.surface.stops = stops;
+                self.refresh_icon();
+                self.rebuild_theme();
+            }
+            Quick::Flip => {
+                let ink = self.theme.mode == nus_render::Mode::Ink;
+                self.apply_setting(Hit::Theme(Some(!ink)), 0.0);
+            }
+            Quick::Texture => {
+                let all = crate::surface::TextureKind::ALL;
+                let i = all.iter().position(|&k| k == self.surface.texture_kind).map(|i| (i + 1) % all.len()).unwrap_or(0);
+                self.apply_setting(Hit::TexKind(all[i]), 0.0);
+                if self.surface.texture <= 0.0 {
+                    self.surface.texture = 0.12;
+                }
+            }
+            Quick::Reset => {
+                let k = crate::surface::presets().iter().position(|p| p.name == self.preset_name).unwrap_or(0);
+                self.apply_setting(Hit::Preset(k), 0.0);
+            }
+        }
+        self.play_event("toggle");
+        self.save_prefs();
+        self.dirty = true;
+    }
+
     pub(crate) fn close_menus(&mut self) {
+        if self.look_menu {
+            self.look_menu = false;
+            self.look_anim.go(0.0, self.motion.dur(100.0));
+        }
         if self.win_menu {
             self.win_menu = false;
             self.win_anim.go(0.0, self.motion.dur(100.0));
