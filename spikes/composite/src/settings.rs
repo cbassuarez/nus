@@ -221,13 +221,18 @@ impl App {
             Hit::Theme(Some(ink)) => {
                 self.behavior.follow_os_theme = false;
                 self.set_theme(if ink { nus_render::Theme::ink() } else { nus_render::Theme::paper() });
+                self.refresh_icon();
             }
-            Hit::Signal(c) => self.surface.signal = c,
+            Hit::Signal(c) => {
+                self.surface.signal = c;
+                self.refresh_icon();
+            }
             Hit::Base(b) => {
                 self.surface.base = b;
                 if b.is_some() && self.surface.tint == 0.0 {
                     self.surface.tint = 0.35;
                 }
+                self.refresh_icon();
             }
             Hit::Shell(sh) => {
                 self.surface.shell = sh;

@@ -454,6 +454,7 @@ impl App {
         app.tabs.push(first);
         app.layout();
         app.apply_term_resizes(true);
+        app.refresh_icon();
         Ok(app)
     }
 
@@ -874,6 +875,22 @@ impl App {
 
     fn reader_fonts(&self) -> crate::reader::ReaderFonts {
         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+    }
+
+    /// The window icon follows the surface: the n in the base colour (ink
+    /// when there is none), the band in the signal.
+    pub(crate) fn refresh_icon(&self) {
+        let n = self.surface.base.unwrap_or(self.theme.ink);
+        let rgba = nus_render::icon::app_icon(64, n, self.surface.signal);
+        if let Ok(icon) = winit::window::Icon::from_rgba(rgba, 64, 64) {
+            self.window.set_window_icon(Some(icon.clone()));
+            if let Some(l) = &self.little {
+                l.window.set_window_icon(Some(icon.clone()));
+            }
+            if let Some(p) = &self.pip {
+                p.window.set_window_icon(Some(icon));
+            }
+        }
     }
 
     /// Favicons that arrived since last frame become small textures.

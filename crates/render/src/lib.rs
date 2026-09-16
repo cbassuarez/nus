@@ -4,6 +4,7 @@
 
 pub mod gpu;
 pub mod grid;
+pub mod icon;
 pub mod scene;
 pub mod text;
 pub mod theme;
