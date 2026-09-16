@@ -146,3 +146,33 @@ directory change + console mirrored into the terminal split.
 the dev suite: scripts injected per tab via CEF's DevTools protocol
 (`Page.addScriptToEvaluateOnNewDocument`, `Runtime.addBinding`), results back
 through a DevTools message observer. This is also the userscript system.
+
+## Header, stacks, settings, onboarding (settled 2026-09-16, fifth pass)
+
+**Icons.** Phosphor (MIT), regular weight for chrome, bold for the active
+state, rasterized from SVG into the glyph atlas. Text labels in the chrome
+give way to icons; caps labels remain for words that are content (tab titles,
+section names).
+
+**Header.** Platform-native controls (traffic lights left on macOS; — ▢ ✕
+right elsewhere), drag anywhere else. Left: wordmark, then a clickable crumb
+(Space → Space switcher, tab → palette, cwd → open here). When a browser pane
+is focused the crumb becomes an editable URL field. Right: a status cluster —
+waiting count, PiP, assistant, local ports — as icons with counts.
+
+**Stacks.** A tab that spawns another (terminal → URL beside it, page → link,
+agent → tab) nests it one level under the parent. A stack collapses to one
+row ("parent · +3") unless it is active or holds a waiting tab. Closing the
+parent closes the stack (asks first). A stack is one ⌘-number; ⌘⇧[ ] walk
+inside it. Terminal → URL opens the split beside the terminal; a link from a
+page opens in the same stack, unfocused.
+
+**Settings, v1 scope.** Terminal: scrollback, cursor, copy-on-select, bell →
+OS notification when unfocused. Tabs: new-tab position, ⌘W inside a stack,
+auto-collapse. Browser: per-site zoom, downloads directory, third-party
+cookie exceptions. Assistants: router table (default tool, model per tool,
+args vs stdin, web fallbacks).
+
+**Onboarding.** First launch opens a real shell with a ruled panel beside
+it: five things to try (⌘K, ⌘T + URL, a URL at the prompt, hover the edge,
+⌥⌘T), each ticked off as you do it. No wizard, no modal.
