@@ -201,6 +201,10 @@ pub enum SideHit {
     Close(usize),
     Profile,
     NewTab,
+    /// The header's primary button: a shell in the default profile.
+    NewShell,
+    /// The window cell (name · switcher to come).
+    Window,
     Closed,
     Downloads,
     Settings,
@@ -2064,21 +2068,33 @@ impl App {
         let ui_strong = self.ui_strong();
         let dim = Style { color: t.dim, ..label };
 
-        // Space row: a window switcher (Spaces are windows).
+        // Header row: the window's name (narrow) and NEW TAB, the button
+        // hit most, wide. Quick fix ahead of the sidebar-header redesign.
+        self.side_hits.clear();
         let row_h = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
         let cell_w = (sb.w / 3.0).floor();
-        scene.rect(Rect::new(sb.x, sb.y, cell_w, row_h - self.px(m::STRUCTURE)), ink);
+        let (mx, my) = self.mouse;
+        let win_cell = Rect::new(sb.x, sb.y, cell_w, row_h - self.px(m::STRUCTURE));
+        let new_cell = Rect::new(sb.x + cell_w, sb.y, sb.w - cell_w, row_h - self.px(m::STRUCTURE));
+        let new_hot = new_cell.contains(mx, my) && self.sidebar_visible();
         scene.rect(Rect::new(sb.x + self.px(10.0), sb.y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
-        let sel = Style { color: t.paper, ..label };
-        self.fonts.draw(scene, sel, sb.x + self.px(28.0), sb.y + self.px(19.0), &self.space_name.to_uppercase());
+        let name = self.fit(label, &self.space_name.to_uppercase(), cell_w - self.px(38.0));
+        self.fonts.draw(scene, label, sb.x + self.px(28.0), sb.y + self.px(19.0), &name);
         scene.vline(sb.x + cell_w, sb.y, row_h, self.px(m::HAIRLINE), ink);
+        if new_hot {
+            scene.rect(new_cell, ink);
+        }
         {
             let isz = self.px(12.0);
+            let c = if new_hot { t.paper } else { ink };
+            let st = Style { color: c, ..strong };
             let x = sb.x + cell_w + self.px(10.0);
-            self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x, sb.y + self.px(19.0) - isz + self.px(2.0), t.dim);
-            self.fonts.draw(scene, dim, x + isz + self.px(6.0), sb.y + self.px(19.0), "SPACE");
+            self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, x, sb.y + self.px(19.0) - isz + self.px(2.0), c);
+            self.fonts.draw(scene, st, x + isz + self.px(6.0), sb.y + self.px(19.0), "NEW TAB");
         }
         scene.hline(sb.x, sb.y + row_h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
+        self.side_hits.push((win_cell, SideHit::Window));
+        self.side_hits.push((new_cell, SideHit::NewShell));
 
         let g = self.sidebar_geometry();
         let tabs = std::mem::take(&mut self.tabs);
@@ -2117,7 +2133,6 @@ impl App {
         let pad_x = self.px(m::ROW_PAD_X);
         let labels: Vec<String> = g.rows.iter().map(|&(i, _, _)| self.tab_label_of(&tabs, i)).collect();
         let row_h = self.px(m::ROW_H);
-        self.side_hits.clear();
         for (k, &(i, y, h)) in g.rows.iter().enumerate() {
             let tab = &tabs[i];
             let waiting = tab.waiting();
@@ -3619,6 +3634,13 @@ impl App {
             return;
         }
 
+        // Right-click on NEW TAB fans out: the palette asks which kind.
+        if pressed && button == MouseButton::Right && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
+            if self.side_hits.iter().any(|(r, h)| *h == SideHit::NewShell && r.contains(x, y)) {
+                self.open_palette(PaletteMode::New);
+            }
+            return;
+        }
         // Sidebar: pinned cells, tab rows, footer. Ctrl-click selects, Shift-click ranges.
         if pressed && button == MouseButton::Left && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             let sb = self.sidebar_rect();
@@ -3637,6 +3659,11 @@ impl App {
                         }
                     }
                     SideHit::NewTab => self.open_palette(PaletteMode::New),
+                    SideHit::NewShell => {
+                        let p = self.behavior.default_profile;
+                        self.new_tab(p);
+                    }
+                    SideHit::Window => self.open_palette(PaletteMode::Go),
                     SideHit::Closed => {
                         self.open_palette(PaletteMode::Go);
                         if let Some((_, input)) = self.palette.as_mut() {
