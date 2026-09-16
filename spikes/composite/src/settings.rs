@@ -118,7 +118,7 @@ enum Control {
 }
 
 impl App {
-    fn slider_value(&self, s: Slider) -> f32 {
+    pub(crate) fn slider_value(&self, s: Slider) -> f32 {
         match s {
             Slider::Tint => self.surface.tint,
             Slider::Texture => self.surface.texture / 0.3,
@@ -156,12 +156,43 @@ impl App {
             return false;
         }
         let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| r.contains(x, y)) else { return true };
-        self.apply(hit, x);
+        self.apply_setting(hit, x);
         self.dirty = true;
         true
     }
 
-    fn apply(&mut self, hit: Hit, x: f32) {
+    /// A spoken label for a control (AccessKit).
+    pub(crate) fn setting_label(&self, hit: Hit) -> String {
+        match hit {
+            Hit::Section(k) | Hit::Tile(k) => SECTIONS[k].0.to_lowercase(),
+            Hit::Back => "back to settings".into(),
+            Hit::Theme(None) => "theme follows the OS".into(),
+            Hit::Theme(Some(true)) => "ink theme".into(),
+            Hit::Theme(Some(false)) => "paper theme".into(),
+            Hit::Signal(c) => format!("signal {}", surface::hex(c)),
+            Hit::Base(None) => "no base".into(),
+            Hit::Base(Some(c)) => format!("base {}", surface::hex(c)),
+            Hit::Shell(s) => format!("carapace {}", s.name()),
+            Hit::Slider(k, _, _) => format!("{:?}", k).to_lowercase(),
+            Hit::Side(s) => format!("sidebar {:?}", s).to_lowercase(),
+            Hit::HoverFrom(h) => format!("reveal from {:?}", h).to_lowercase(),
+            Hit::Fullscreen(f) => format!("fullscreen {:?}", f).to_lowercase(),
+            Hit::Pin(p) => if p { "pin sidebar".into() } else { "sidebar on hover".into() },
+            Hit::Links(l) => format!("links {:?}", l).to_lowercase(),
+            Hit::PromptUrl(p) => format!("url at prompt {:?}", p).to_lowercase(),
+            Hit::CloseAsks(a) => if a { "ask before closing a busy tab".into() } else { "never ask".into() },
+            Hit::DefaultProfile(i) => format!("default shell {}", self.profiles.get(i).map(|p| p.name.as_str()).unwrap_or("")),
+            Hit::ReloadRules => "reload rules".into(),
+            Hit::OpenRules => "open rules in editor".into(),
+            Hit::ResetRules => "reset rules to default".into(),
+            Hit::Reduce(None) => "reduce motion follows the OS".into(),
+            Hit::Reduce(Some(r)) => format!("reduce motion {}", if r { "on" } else { "off" }),
+            Hit::BarStyle(b) => format!("loading bar {}", b.name()),
+            Hit::BarColor(c) => format!("bar colour {:?}", c).to_lowercase(),
+        }
+    }
+
+    pub(crate) fn apply_setting(&mut self, hit: Hit, x: f32) {
         match hit {
             Hit::Section(k) => {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {

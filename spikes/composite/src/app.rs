@@ -195,14 +195,14 @@ pub struct Tab {
 }
 
 impl Tab {
-    fn waiting(&self) -> bool {
+    pub(crate) fn waiting(&self) -> bool {
         let w = |p: &Pane| matches!(p, Pane::Term(t) if t.waiting);
         w(&self.left) || self.right.as_ref().is_some_and(w)
     }
 
     /// (title, detail) for a compact sidebar row: detail is cwd/host for a
     /// shell, the site for a page.
-    fn row_text(&self) -> (String, String) {
+    pub(crate) fn row_text(&self) -> (String, String) {
         match &self.left {
             Pane::Term(t) => (t.title.clone(), String::new()),
             Pane::Web(w) => {
@@ -223,7 +223,7 @@ impl Tab {
             &mut self.left
         }
     }
-    fn title(&self) -> String {
+    pub(crate) fn title(&self) -> String {
         let name = |p: &Pane| match p {
             Pane::Term(t) => t.title.clone(),
             Pane::Web(w) => {
@@ -272,6 +272,10 @@ pub struct App {
     pub sidebar_rules: SidebarRules,
     pub rules: Rules,
     pub settings_hits: Vec<(Rect, crate::settings::Hit)>,
+    /// AccessKit node id → what activating it does (rebuilt per frame).
+    pub access_map: std::collections::HashMap<u64, crate::access::Target>,
+    /// Palette row rects from the last frame (clicks, AccessKit).
+    pub palette_hits: Vec<Rect>,
     pub behavior: crate::settings::Behavior,
     pub fullscreen: bool,
     /// The pointer has moved inside the window since it last left it.
@@ -380,6 +384,8 @@ impl App {
             sidebar_rules: SidebarRules::default(),
             rules: Rules::load(),
             settings_hits: Vec::new(),
+            access_map: std::collections::HashMap::new(),
+            palette_hits: Vec::new(),
             behavior: crate::settings::Behavior::default(),
             fullscreen: false,
             pointer_inside: false,
@@ -558,7 +564,7 @@ impl App {
         Rect::new(left, top, self.target.size.0 as f32 - left - right, self.target.size.1 as f32 - top - sb)
     }
 
-    fn sidebar_rect(&self) -> Rect {
+    pub(crate) fn sidebar_rect(&self) -> Rect {
         let c = self.content_rect();
         let (_, sr, _, sl) = self.shell_insets();
         let w = self.px(m::SIDEBAR);
@@ -566,7 +572,7 @@ impl App {
         Rect::new(x + self.sidebar_shift, c.y, w, c.h)
     }
 
-    fn sidebar_visible(&self) -> bool {
+    pub(crate) fn sidebar_visible(&self) -> bool {
         self.sidebar_pinned() || self.sidebar_hover
     }
 
@@ -1437,7 +1443,9 @@ impl App {
             scene.hline(r.x, r.y + head_h - self.px(2.0), r.w, self.px(2.0), ink);
             // rows
             let mut y = r.y + head_h;
+            self.palette_hits.clear();
             for (i, PaletteRow { num, text, .. }) in rows.iter().enumerate() {
+                self.palette_hits.push(Rect::new(r.x, y, r.w, row_h));
                 let sel = i == self.palette_sel;
                 let (fg, bg) = if sel { (t.paper, Some(ink)) } else { (ink, None) };
                 if let Some(bg) = bg {
@@ -1503,7 +1511,7 @@ impl App {
 
     /// Sidebar layout: the pinned row, then one entry per listed tab with its
     /// y and height (previews expand under the hovered row and waiting tabs).
-    fn sidebar_geometry(&self) -> SidebarGeom {
+    pub(crate) fn sidebar_geometry(&self) -> SidebarGeom {
         let sb = self.sidebar_rect();
         let space_row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
         let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned).collect();
@@ -1830,7 +1838,7 @@ impl App {
     }
 
     /// Remove the panel (skip, or done). The marker is written either way.
-    fn dismiss_hints(&mut self) {
+    pub(crate) fn dismiss_hints(&mut self) {
         if !self.hints.iter().all(|&h| h) {
             let _ = std::fs::write(App::onboarded_marker(), b"skip");
         }
@@ -2104,7 +2112,7 @@ impl App {
         }
     }
 
-    fn palette_rows(&self, mode: PaletteMode, input: &str) -> Vec<PaletteRow> {
+    pub(crate) fn palette_rows(&self, mode: PaletteMode, input: &str) -> Vec<PaletteRow> {
         let q = input.trim().to_lowercase();
         let hit = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
         let mut rows = Vec::new();
@@ -2647,7 +2655,7 @@ impl App {
 
     /// Sidebar / crumb label: top-level tabs count 01, 02, …; a child carries
     /// its parent's number and a letter (03·b).
-    fn tab_label(&self, i: usize) -> String {
+    pub(crate) fn tab_label(&self, i: usize) -> String {
         self.tab_label_of(&self.tabs, i)
     }
 
@@ -2826,7 +2834,7 @@ impl App {
         self.layout();
     }
 
-    fn palette_commit(&mut self) {
+    pub(crate) fn palette_commit(&mut self) {
         let Some((mode, input)) = self.palette.take() else { return };
         let rows = self.palette_rows(mode, &input);
         let action = match rows.get(self.palette_sel) {
@@ -3035,13 +3043,51 @@ impl App {
         }
     }
 
+    /// What a header icon does; shared by the mouse and AccessKit.
+    pub(crate) fn crumb_action(&mut self, hit: CrumbHit) {
+        match hit {
+            CrumbHit::Close => std::process::exit(0),
+            CrumbHit::Maximize => self.window.set_maximized(!self.window.is_maximized()),
+            CrumbHit::Minimize => self.window.set_minimized(true),
+            CrumbHit::Space | CrumbHit::Tab | CrumbHit::Search => self.open_palette(PaletteMode::Go),
+            CrumbHit::Url => self.open_palette(PaletteMode::Url),
+            CrumbHit::Sidebar => {
+                self.sidebar = !self.sidebar;
+                self.layout();
+            }
+            CrumbHit::Ports => {
+                self.open_palette(PaletteMode::Go);
+                if let Some((_, input)) = self.palette.as_mut() {
+                    input.push_str("port");
+                }
+            }
+            CrumbHit::Assistant => {
+                self.open_palette(PaletteMode::Go);
+                if let Some((_, input)) = self.palette.as_mut() {
+                    input.push_str("ask ");
+                }
+            }
+            CrumbHit::Pip => self.return_from_pip(),
+            CrumbHit::Waiting => {
+                if let Some(i) = self.tabs.iter().position(|t| t.waiting()) {
+                    self.activate(i);
+                }
+            }
+        }
+    }
+
     pub fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
         let (x, y) = self.mouse;
         let pressed = state == ElementState::Pressed;
         let strip = self.strip_rect();
 
         if pressed && button == MouseButton::Left && self.palette.is_some() {
-            self.palette = None;
+            if let Some(i) = self.palette_hits.iter().position(|r| r.contains(x, y)) {
+                self.palette_sel = i;
+                self.palette_commit();
+            } else {
+                self.palette = None;
+            }
             self.dirty = true;
             return;
         }
@@ -3050,33 +3096,7 @@ impl App {
         if pressed && button == MouseButton::Left && strip.contains(x, y) {
             let hit = self.crumb_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h);
             match hit {
-                Some(CrumbHit::Close) => std::process::exit(0),
-                Some(CrumbHit::Maximize) => self.window.set_maximized(!self.window.is_maximized()),
-                Some(CrumbHit::Minimize) => self.window.set_minimized(true),
-                Some(CrumbHit::Space) | Some(CrumbHit::Tab) | Some(CrumbHit::Search) => self.open_palette(PaletteMode::Go),
-                Some(CrumbHit::Url) => self.open_palette(PaletteMode::Url),
-                Some(CrumbHit::Sidebar) => {
-                    self.sidebar = !self.sidebar;
-                    self.layout();
-                }
-                Some(CrumbHit::Ports) => {
-                    self.open_palette(PaletteMode::Go);
-                    if let Some((_, input)) = self.palette.as_mut() {
-                        input.push_str("port");
-                    }
-                }
-                Some(CrumbHit::Assistant) => {
-                    self.open_palette(PaletteMode::Go);
-                    if let Some((_, input)) = self.palette.as_mut() {
-                        input.push_str("ask ");
-                    }
-                }
-                Some(CrumbHit::Pip) => self.return_from_pip(),
-                Some(CrumbHit::Waiting) => {
-                    if let Some(i) = self.tabs.iter().position(|t| t.waiting()) {
-                        self.activate(i);
-                    }
-                }
+                Some(h) => self.crumb_action(h),
                 None => {
                     let _ = self.window.drag_window();
                 }
@@ -3365,7 +3385,7 @@ fn short_title(t: &str) -> String {
     t.trim_end_matches(".exe").to_string()
 }
 
-fn last_lines(term: &Term, n: usize) -> Vec<String> {
+pub(crate) fn last_lines(term: &Term, n: usize) -> Vec<String> {
     let g = term.grid();
     let mut lines: Vec<String> = (0..g.rows()).map(|r| g.visible_row(r).text()).collect();
     while lines.last().is_some_and(|l| l.is_empty()) {

@@ -1,6 +1,7 @@
 //! Spike 4: one compositor, terminal + browser panes, Broadsheet chrome.
 //! See docs/SPIKES.md.
 
+mod access;
 mod anim;
 mod app;
 mod browser;
@@ -26,11 +27,22 @@ use app::App;
 #[derive(Debug)]
 pub enum UserEvent {
     Wake,
+    Access(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(e: accesskit_winit::Event) -> Self {
+        UserEvent::Access(e)
+    }
 }
 
 struct Host {
     proxy: EventLoopProxy<UserEvent>,
     app: Option<App>,
+    /// AccessKit adapter for the main window; the tree is rebuilt after
+    /// every frame that changed something.
+    access: Option<accesskit_winit::Adapter>,
+    access_frame: u64,
 }
 
 impl ApplicationHandler<UserEvent> for Host {
@@ -42,8 +54,12 @@ impl ApplicationHandler<UserEvent> for Host {
             .with_title("nus")
             .with_decorations(false)
             .with_transparent(true)
+            .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
+        // The adapter must exist before the window is first shown.
+        self.access = Some(accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
+        window.set_visible(true);
         match App::new(window, self.proxy.clone()) {
             Ok(a) => self.app = Some(a),
             Err(e) => {
@@ -53,9 +69,19 @@ impl ApplicationHandler<UserEvent> for Host {
         }
     }
 
-    fn user_event(&mut self, _el: &ActiveEventLoop, _ev: UserEvent) {
-        if let Some(a) = &mut self.app {
-            a.dirty = true;
+    fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
+        let Some(a) = &mut self.app else { return };
+        match ev {
+            UserEvent::Wake => a.dirty = true,
+            UserEvent::Access(e) => match e.window_event {
+                accesskit_winit::WindowEvent::InitialTreeRequested => {
+                    if let Some(ad) = self.access.as_mut() {
+                        ad.update_if_active(|| a.access_tree());
+                    }
+                }
+                accesskit_winit::WindowEvent::ActionRequested(req) => a.access_action(req),
+                accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+            },
         }
     }
 
@@ -78,6 +104,11 @@ impl ApplicationHandler<UserEvent> for Host {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(a) = self.app.as_mut() else { return };
+        if a.window.id() == id {
+            if let Some(ad) = self.access.as_mut() {
+                ad.process_event(&a.window, &event);
+            }
+        }
         if a.pip.as_ref().is_some_and(|p| p.window.id() == id) {
             match event {
                 WindowEvent::CloseRequested => a.close_pip(),
@@ -174,7 +205,7 @@ fn main() -> ExitCode {
     let mut event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
-    let mut host = Host { proxy, app: None };
+    let mut host = Host { proxy, app: None, access: None, access_frame: 0 };
     let code = loop {
         do_message_loop_work();
         let status = event_loop.pump_app_events(Some(Duration::from_millis(2)), &mut host);
@@ -194,6 +225,12 @@ fn main() -> ExitCode {
             }
             if a.dirty {
                 a.redraw();
+            }
+            if a.frames != host.access_frame {
+                host.access_frame = a.frames;
+                if let Some(ad) = host.access.as_mut() {
+                    ad.update_if_active(|| a.access_tree());
+                }
             }
         }
     };
