@@ -1,0 +1,558 @@
+//! The settings tab (Ctrl+,): a ruled nav on the left, one section at a
+//! time on the right. Every control is a click target recorded in
+//! `App::settings_hits` — choice chips, sliders, swatches, buttons — so the
+//! page is native chrome like everything else. The Luau file is the other
+//! way in; the RULES section shows it and reloads it.
+
+use crate::app::{App, Pane, SettingsPane};
+use crate::surface::{self, Fullscreen, HoverFrom, Shell, Side, SWATCHES};
+use nus_render::text::icons;
+use nus_render::Style;
+use nus_render::theme::metric as m;
+use nus_render::{Color, Rect, Scene};
+
+/// Where links a page opens go (target=_blank, window.open).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Links {
+    Stack,
+    Split,
+    NewTab,
+}
+
+/// Where a URL typed at a prompt goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PromptUrl {
+    Split,
+    NewTab,
+}
+
+/// Tab and terminal behaviour the settings page edits.
+#[derive(Clone, Debug)]
+pub struct Behavior {
+    pub links: Links,
+    pub prompt_url: PromptUrl,
+    /// Closing a tab with a foreground process asks first.
+    pub close_asks: bool,
+    pub default_profile: usize,
+    pub follow_os_theme: bool,
+}
+
+impl Default for Behavior {
+    fn default() -> Self {
+        Behavior { links: Links::Stack, prompt_url: PromptUrl::Split, close_asks: true, default_profile: 0, follow_os_theme: true }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Slider {
+    Tint,
+    Texture,
+    Opacity,
+    ShellWidth,
+    Radius,
+    Grace,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Hit {
+    Section(usize),
+    Theme(Option<bool>),
+    Signal(Color),
+    Base(Option<Color>),
+    Shell(Shell),
+    /// A slider bar: kind, bar x, bar width.
+    Slider(Slider, f32, f32),
+    Side(Side),
+    HoverFrom(HoverFrom),
+    Fullscreen(Fullscreen),
+    Pin(bool),
+    Links(Links),
+    PromptUrl(PromptUrl),
+    CloseAsks(bool),
+    DefaultProfile(usize),
+    ReloadRules,
+    OpenRules,
+    ResetRules,
+}
+
+pub const SECTIONS: [(&str, (&str, &str)); 10] = [
+    ("APPEARANCE", icons::HOME),
+    ("SURFACE", icons::STACK),
+    ("SIDEBAR", icons::SIDEBAR),
+    ("TABS", icons::COPY),
+    ("TERMINAL", icons::TERMINAL),
+    ("BROWSER", icons::GLOBE),
+    ("ASSISTANTS", icons::ASSISTANT),
+    ("RULES", icons::COMMAND),
+    ("KEYS", icons::ENTER),
+    ("UPDATES", icons::RELOAD),
+];
+
+pub const RULES: usize = 7;
+
+fn key(k: &str, shift: bool) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘{}{}", if shift { "⇧" } else { "" }, k)
+    } else {
+        format!("CTRL+{}{}", if shift { "SHIFT+" } else { "" }, k)
+    }
+}
+
+/// One row's control.
+enum Control {
+    Info(String),
+    Choice(Vec<(String, Hit, bool)>),
+    Slider(Slider, f32, String),
+    Swatches(Vec<(Option<Color>, Hit, bool)>),
+    Buttons(Vec<(String, Hit)>),
+}
+
+impl App {
+    fn slider_value(&self, s: Slider) -> f32 {
+        match s {
+            Slider::Tint => self.surface.tint,
+            Slider::Texture => self.surface.texture / 0.3,
+            Slider::Opacity => (self.surface.opacity - 0.5) / 0.5,
+            Slider::ShellWidth => (self.surface.shell_width - 1.0) / 11.0,
+            Slider::Radius => self.surface.shell_radius / 24.0,
+            Slider::Grace => self.sidebar_rules.grace_ms as f32 / 1000.0,
+        }
+    }
+
+    fn set_slider(&mut self, s: Slider, v: f32) {
+        let v = v.clamp(0.0, 1.0);
+        match s {
+            Slider::Tint => self.surface.tint = v,
+            Slider::Texture => self.surface.texture = v * 0.3,
+            Slider::Opacity => self.surface.opacity = 0.5 + v * 0.5,
+            Slider::ShellWidth => self.surface.shell_width = (1.0 + v * 11.0).round(),
+            Slider::Radius => self.surface.shell_radius = (v * 24.0).round(),
+            Slider::Grace => self.sidebar_rules.grace_ms = (v * 1000.0).round() as u64,
+        }
+        self.layout();
+    }
+
+    /// A click inside the settings pane. Returns true when it was handled.
+    pub(crate) fn settings_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let Pane::Settings(s) = &tab.left else { return false };
+        if !s.rect.contains(x, y) {
+            return false;
+        }
+        let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| r.contains(x, y)) else { return true };
+        self.apply(hit, x);
+        self.dirty = true;
+        true
+    }
+
+    fn apply(&mut self, hit: Hit, x: f32) {
+        match hit {
+            Hit::Section(k) => {
+                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    s.section = k;
+                }
+            }
+            Hit::Theme(None) => self.behavior.follow_os_theme = true,
+            Hit::Theme(Some(ink)) => {
+                self.behavior.follow_os_theme = false;
+                self.set_theme(if ink { nus_render::Theme::ink() } else { nus_render::Theme::paper() });
+            }
+            Hit::Signal(c) => self.surface.signal = c,
+            Hit::Base(b) => {
+                self.surface.base = b;
+                if b.is_some() && self.surface.tint == 0.0 {
+                    self.surface.tint = 0.35;
+                }
+            }
+            Hit::Shell(sh) => {
+                self.surface.shell = sh;
+                self.layout();
+            }
+            Hit::Slider(kind, x0, w) => self.set_slider(kind, (x - x0) / w),
+            Hit::Side(side) => {
+                self.sidebar_rules.side = side;
+                self.sidebar_hover = false;
+                self.layout();
+            }
+            Hit::HoverFrom(h) => self.sidebar_rules.hover_from = h,
+            Hit::Fullscreen(f) => {
+                self.sidebar_rules.fullscreen = f;
+                self.layout();
+            }
+            Hit::Pin(p) => {
+                self.sidebar = p;
+                self.sidebar_hover = false;
+                self.layout();
+            }
+            Hit::Links(l) => self.behavior.links = l,
+            Hit::PromptUrl(p) => self.behavior.prompt_url = p,
+            Hit::CloseAsks(a) => self.behavior.close_asks = a,
+            Hit::DefaultProfile(i) => self.behavior.default_profile = i,
+            Hit::ReloadRules => self.rules.reload(),
+            Hit::OpenRules => {
+                let path = self.rules.path.to_string_lossy().to_string();
+                let cmd = if cfg!(target_os = "windows") {
+                    format!("start \"\" \"{path}\"")
+                } else if cfg!(target_os = "macos") {
+                    format!("open \"{path}\"")
+                } else {
+                    format!("xdg-open \"{path}\"")
+                };
+                self.run_in_shell(&cmd);
+            }
+            Hit::ResetRules => {
+                let _ = std::fs::write(&self.rules.path, surface::DEFAULT_RULES);
+                self.rules.reload();
+            }
+        }
+    }
+
+    fn rows_for(&self, section: usize) -> Vec<(String, Control)> {
+        use Control::*;
+        let hex = surface::hex;
+        let ink = self.theme.mode == nus_render::Mode::Ink;
+        match section {
+            0 => vec![
+                (
+                    "THEME".into(),
+                    Choice(vec![
+                        ("FOLLOW OS".into(), Hit::Theme(None), self.behavior.follow_os_theme),
+                        ("PAPER".into(), Hit::Theme(Some(false)), !self.behavior.follow_os_theme && !ink),
+                        ("INK".into(), Hit::Theme(Some(true)), !self.behavior.follow_os_theme && ink),
+                    ]),
+                ),
+                ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
+                ("TERMINAL FONT".into(), Info("IBM Plex Mono · 13pt · ligatures on".into())),
+                ("WORDMARK".into(), Info("Newsreader Italic".into())),
+                ("CURSOR".into(), Info("block · no blink".into())),
+            ],
+            1 => {
+                let sig: Vec<(Option<Color>, Hit, bool)> =
+                    SWATCHES[..6].iter().map(|&(_, c)| (Some(c), Hit::Signal(c), c == self.surface.signal)).collect();
+                let mut base: Vec<(Option<Color>, Hit, bool)> = vec![(None, Hit::Base(None), self.surface.base.is_none())];
+                base.extend(SWATCHES.iter().map(|&(_, c)| (Some(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
+                let translucent = self.target.translucent();
+                vec![
+                    ("SIGNAL".into(), Swatches(sig)),
+                    ("SIGNAL HEX".into(), Info(format!("{} · carapace, Space square, ticks, progress", hex(self.surface.signal)))),
+                    ("BASE".into(), Swatches(base)),
+                    (
+                        "TINT".into(),
+                        Slider(
+                            self::Slider::Tint,
+                            self.slider_value(self::Slider::Tint),
+                            match self.surface.base {
+                                Some(_) => format!("{}% toward {}", (self.surface.tint * 100.0).round(), hex(self.paper())),
+                                None => "pick a base first".into(),
+                            },
+                        ),
+                    ),
+                    (
+                        "TEXTURE".into(),
+                        Slider(
+                            self::Slider::Texture,
+                            self.slider_value(self::Slider::Texture),
+                            format!("grain {}% · on the carapace only", (self.surface.texture * 100.0).round()),
+                        ),
+                    ),
+                    (
+                        "OPACITY".into(),
+                        Slider(
+                            self::Slider::Opacity,
+                            self.slider_value(self::Slider::Opacity),
+                            if translucent {
+                                format!("{}% · terminal panes show the desktop through", (self.surface.opacity * 100.0).round())
+                            } else {
+                                "this compositor gives an opaque swapchain · set in v1".into()
+                            },
+                        ),
+                    ),
+                    (
+                        "CARAPACE".into(),
+                        Choice(Shell::ALL.iter().map(|&s| (s.name().to_uppercase(), Hit::Shell(s), s == self.surface.shell)).collect()),
+                    ),
+                    (
+                        "WIDTH".into(),
+                        Slider(self::Slider::ShellWidth, self.slider_value(self::Slider::ShellWidth), format!("{}px", self.surface.shell_width)),
+                    ),
+                    (
+                        "RADIUS".into(),
+                        Slider(self::Slider::Radius, self.slider_value(self::Slider::Radius), format!("{}px corners", self.surface.shell_radius)),
+                    ),
+                ]
+            }
+            2 => vec![
+                (
+                    "SIDE".into(),
+                    Choice(vec![
+                        ("LEFT".into(), Hit::Side(Side::Left), self.sidebar_rules.side == Side::Left),
+                        ("RIGHT".into(), Hit::Side(Side::Right), self.sidebar_rules.side == Side::Right),
+                    ]),
+                ),
+                (
+                    "REVEAL".into(),
+                    Choice(vec![
+                        ("SCREEN EDGE".into(), Hit::HoverFrom(HoverFrom::ScreenEdge), self.sidebar_rules.hover_from == HoverFrom::ScreenEdge),
+                        ("INSIDE WINDOW ONLY".into(), Hit::HoverFrom(HoverFrom::InsideWindow), self.sidebar_rules.hover_from == HoverFrom::InsideWindow),
+                    ]),
+                ),
+                (
+                    "GRACE".into(),
+                    Slider(self::Slider::Grace, self.slider_value(self::Slider::Grace), format!("{}ms after the pointer leaves", self.sidebar_rules.grace_ms)),
+                ),
+                (
+                    "FULLSCREEN".into(),
+                    Choice(vec![
+                        ("HOVER".into(), Hit::Fullscreen(Fullscreen::Hover), self.sidebar_rules.fullscreen == Fullscreen::Hover),
+                        ("HIDDEN".into(), Hit::Fullscreen(Fullscreen::Hidden), self.sidebar_rules.fullscreen == Fullscreen::Hidden),
+                        ("PINNED".into(), Hit::Fullscreen(Fullscreen::Pinned), self.sidebar_rules.fullscreen == Fullscreen::Pinned),
+                    ]),
+                ),
+                (
+                    "NOW".into(),
+                    Choice(vec![
+                        ("PINNED".into(), Hit::Pin(true), self.sidebar),
+                        (format!("HOVER · {} PINS", key("S", true)), Hit::Pin(false), !self.sidebar),
+                    ]),
+                ),
+                ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
+            ],
+            3 => vec![
+                (
+                    "LINKS FROM PAGES".into(),
+                    Choice(vec![
+                        ("IN THE STACK".into(), Hit::Links(Links::Stack), self.behavior.links == Links::Stack),
+                        ("IN THE SPLIT".into(), Hit::Links(Links::Split), self.behavior.links == Links::Split),
+                        ("NEW TAB".into(), Hit::Links(Links::NewTab), self.behavior.links == Links::NewTab),
+                    ]),
+                ),
+                (
+                    "URL AT A PROMPT".into(),
+                    Choice(vec![
+                        ("OPENS BESIDE".into(), Hit::PromptUrl(PromptUrl::Split), self.behavior.prompt_url == PromptUrl::Split),
+                        ("NEW TAB".into(), Hit::PromptUrl(PromptUrl::NewTab), self.behavior.prompt_url == PromptUrl::NewTab),
+                    ]),
+                ),
+                (
+                    "CLOSING".into(),
+                    Choice(vec![
+                        ("ASK WHEN BUSY".into(), Hit::CloseAsks(true), self.behavior.close_asks),
+                        ("NEVER ASK".into(), Hit::CloseAsks(false), !self.behavior.close_asks),
+                    ]),
+                ),
+                ("STACKS".into(), Info("one level · collapse when not active · closing the parent asks".into())),
+                ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
+                ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
+            ],
+            4 => {
+                let mut v: Vec<(String, Control)> = vec![(
+                    "DEFAULT SHELL".into(),
+                    Choice(
+                        self.profiles
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| (p.name.to_uppercase(), Hit::DefaultProfile(i), i == self.behavior.default_profile))
+                            .collect(),
+                    ),
+                )];
+                for p in &self.profiles {
+                    v.push((format!("PROFILE · {}", p.name.to_uppercase()), Info(format!("{} {}", p.program, p.args.join(" ")))));
+                }
+                v.push(("SCROLLBACK".into(), Info("10 000 lines · restored with the session".into())));
+                v.push(("ATTENTION".into(), Info("BEL and OSC 133 mark a tab WAITING while it is not active".into())));
+                v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
+                v
+            }
+            5 => vec![
+                ("SEARCH".into(), Info("google · configurable".into())),
+                ("NEW TAB".into(), Info("opens the palette; no new-tab page".into())),
+                ("COOKIES".into(), Info("one jar per Space · third-party blocked (v1)".into())),
+                ("DOWNLOADS".into(), Info("~/Downloads · silent · ruled toast (v1)".into())),
+                ("PASSWORDS".into(), Info("1Password via op (v1)".into())),
+                ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
+            ],
+            6 => {
+                let mut v: Vec<(String, Control)> =
+                    self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))).collect();
+                if v.is_empty() {
+                    v.push(("LOCAL".into(), Info("none on PATH (claude, codex, ollama are detected)".into())));
+                }
+                v.push(("WEB · CHATGPT".into(), Info("https://chatgpt.com/?q=…".into())));
+                v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
+                v
+            }
+            7 => vec![
+                ("FILE".into(), Info(self.rules.path.to_string_lossy().to_string())),
+                ("STATUS".into(), Info(self.rules.status.clone())),
+                (
+                    "".into(),
+                    Buttons(vec![("RELOAD".into(), Hit::ReloadRules), ("OPEN IN EDITOR".into(), Hit::OpenRules), ("RESET TO DEFAULT".into(), Hit::ResetRules)]),
+                ),
+            ],
+            8 => vec![
+                ("NEW TAB".into(), Info(key("T", true))),
+                ("GO".into(), Info(key("K", true))),
+                ("URL".into(), Info(key("L", true))),
+                ("CLOSE".into(), Info(key("W", true))),
+                ("REOPEN CLOSED".into(), Info(key("Z", true))),
+                ("SPLIT".into(), Info(key("D", true))),
+                ("SIDEBAR".into(), Info(key("S", true))),
+                ("DEVTOOLS".into(), Info(key("I", true))),
+                ("TAB N".into(), Info(key("1–9", false))),
+                ("MRU".into(), Info(key("`", false))),
+                ("PREV / NEXT".into(), Info(key("PGUP / PGDN", false))),
+                ("SETTINGS".into(), Info(key(",", false))),
+                ("FULLSCREEN".into(), Info("F11".into())),
+            ],
+            _ => vec![
+                ("CHANNEL".into(), Info("GitHub Releases · self-update (v1)".into())),
+                ("TELEMETRY".into(), Info("none".into())),
+                ("VERSION".into(), Info(format!("nus spike 4 · CEF {}", crate::chromium_version()))),
+            ],
+        }
+    }
+
+    pub(crate) fn draw_settings(&mut self, scene: &mut Scene, p: &SettingsPane) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let label = self.label();
+        let strong = self.label_strong();
+        let ui = self.ui();
+        let dim = Style { color: t.dim, ..label };
+        let r = p.rect;
+        self.settings_hits.clear();
+
+        // Nav.
+        let nav_w = self.px(220.0);
+        scene.vline(r.x + nav_w, r.y, r.h, self.px(m::STRUCTURE), ink);
+        let sh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
+        let isz = self.px(14.0);
+        for (i, (name, icon)) in SECTIONS.iter().enumerate() {
+            let y = r.y + i as f32 * sh;
+            let sel = i == p.section;
+            let row = Rect::new(r.x, y, nav_w, sh);
+            if sel {
+                scene.rect(Rect::new(r.x, y, nav_w, sh - self.px(m::HAIRLINE)), ink);
+            }
+            let col = if sel { t.paper } else { ink };
+            let base = y + self.px(12.0) + self.px(m::LABEL_PX) - self.px(2.0);
+            self.fonts.draw_icon(scene, *icon, isz, r.x + self.px(18.0), base - isz + self.px(2.0), col);
+            self.fonts.draw(scene, Style { color: col, ..label }, r.x + self.px(18.0) + isz + self.px(10.0), base, name);
+            scene.hline(r.x, y + sh - self.px(m::HAIRLINE), nav_w, self.px(m::HAIRLINE), ink);
+            self.settings_hits.push((row, Hit::Section(i)));
+        }
+        let cfg = "~/.config/nus/init.luau";
+        self.fonts.draw(scene, dim, r.x + self.px(18.0), r.bottom() - self.px(14.0), cfg);
+
+        // Content.
+        let cx = r.x + nav_w + self.px(40.0);
+        let mut y = r.y + self.px(28.0);
+        let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
+        self.fonts.draw(scene, wm, cx, y + self.px(30.0), &SECTIONS[p.section].0.to_lowercase());
+        y += self.px(58.0);
+        let maxw = (r.w - nav_w - self.px(80.0)).min(self.px(760.0));
+        let label_w = self.px(200.0);
+        let rows = self.rows_for(p.section);
+        for (k, control) in rows {
+            let rh = match &control {
+                Control::Swatches(_) => self.px(12.0) * 2.0 + self.px(18.0) + self.px(m::HAIRLINE),
+                _ => self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE),
+            };
+            let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);
+            self.fonts.draw(scene, dim, cx, base, &k);
+            let vx = cx + label_w;
+            match control {
+                Control::Info(v) => {
+                    let vs = self.fit(ui, &v, maxw - label_w);
+                    self.fonts.draw(scene, ui, vx, base, &vs);
+                }
+                Control::Choice(opts) => {
+                    let mut x = vx;
+                    for (text, hit, on) in opts {
+                        let w = self.fonts.measure(label, &text) + self.px(20.0);
+                        let chip = Rect::new(x, base - self.px(m::LABEL_PX) - self.px(6.0), w, self.px(m::LABEL_PX) + self.px(12.0));
+                        if on {
+                            scene.rect(chip, ink);
+                        } else {
+                            scene.outline(chip, self.px(m::HAIRLINE), ink);
+                        }
+                        let st = Style { color: if on { t.paper } else { ink }, ..label };
+                        self.fonts.draw(scene, st, x + self.px(10.0), base - self.px(1.0), &text);
+                        self.settings_hits.push((chip, hit));
+                        x += w + self.px(8.0);
+                    }
+                }
+                Control::Slider(kind, v, text) => {
+                    let bw = self.px(200.0);
+                    let bar = Rect::new(vx, base - self.px(6.0), bw, self.px(2.0));
+                    scene.rect(bar, t.tint);
+                    scene.rect(Rect::new(vx, bar.y, bw * v, bar.h), self.surface.signal);
+                    let knob = self.px(10.0);
+                    scene.rect(Rect::new(vx + bw * v - knob / 2.0, bar.y - knob / 2.0 + bar.h / 2.0, knob, knob), ink);
+                    self.settings_hits.push((Rect::new(vx - knob, bar.y - self.px(12.0), bw + 2.0 * knob, self.px(26.0)), Hit::Slider(kind, vx, bw)));
+                    let ts = self.fit(dim, &text, maxw - label_w - bw - self.px(20.0));
+                    self.fonts.draw(scene, dim, vx + bw + self.px(20.0), base, &ts);
+                }
+                Control::Swatches(items) => {
+                    let sz = self.px(18.0);
+                    let mut x = vx;
+                    let sy = y + self.px(12.0);
+                    for (c, hit, on) in items {
+                        let sw = Rect::new(x, sy, sz, sz);
+                        match c {
+                            Some(c) => scene.rect(sw, c),
+                            None => {
+                                scene.outline(sw, self.px(m::HAIRLINE), ink);
+                                // "none": a diagonal hairline.
+                                scene.push(nus_render::Instance::hazard(sw, sz, t.tint, t.paper, sz * 2.0));
+                            }
+                        }
+                        if on {
+                            scene.outline(Rect::new(x - self.px(3.0), sy - self.px(3.0), sz + self.px(6.0), sz + self.px(6.0)), self.px(m::STRUCTURE), ink);
+                        }
+                        self.settings_hits.push((Rect::new(x - self.px(4.0), sy - self.px(4.0), sz + self.px(8.0), sz + self.px(8.0)), hit));
+                        x += sz + self.px(12.0);
+                    }
+                }
+                Control::Buttons(items) => {
+                    let mut x = vx;
+                    for (text, hit) in items {
+                        let w = self.fonts.measure(strong, &text) + self.px(24.0);
+                        let b = Rect::new(x, base - self.px(m::LABEL_PX) - self.px(8.0), w, self.px(m::LABEL_PX) + self.px(16.0));
+                        scene.rect(Rect::new(b.x + self.px(3.0), b.y + self.px(3.0), b.w, b.h), ink);
+                        scene.rect(b, t.paper);
+                        scene.outline(b, self.px(m::STRUCTURE), ink);
+                        self.fonts.draw(scene, strong, x + self.px(12.0), base, &text);
+                        self.settings_hits.push((b, hit));
+                        x += w + self.px(14.0);
+                    }
+                }
+            }
+            scene.hline(cx, y + rh - self.px(m::HAIRLINE), maxw, self.px(m::HAIRLINE), t.tint);
+            y += rh;
+        }
+
+        // RULES: the file itself, as far as it fits.
+        if p.section == RULES {
+            y += self.px(16.0);
+            let code = Style { font: self.f.ui, px: self.px(11.5), color: ink, tracking: 0.0 };
+            let lh = self.px(11.5 * 1.55);
+            let src = self.rules.source.clone();
+            let clip = Rect::new(cx, y, maxw, r.bottom() - y - self.px(20.0));
+            scene.layer(Some(clip));
+            let mut ly = y + self.px(12.0);
+            for (n, line) in src.lines().enumerate() {
+                if ly > clip.bottom() {
+                    break;
+                }
+                let comment = line.trim_start().starts_with("--");
+                let st = if comment { Style { color: t.dim, ..code } } else { code };
+                self.fonts.draw(scene, Style { color: t.dim, ..code }, cx, ly, &format!("{:>3}", n + 1));
+                let text = self.fit(st, line, maxw - self.px(40.0));
+                self.fonts.draw(scene, st, cx + self.px(36.0), ly, &text);
+                ly += lh;
+            }
+            scene.layer(None);
+        }
+    }
+}

@@ -4,6 +4,8 @@
 mod app;
 mod browser;
 mod pip;
+mod settings;
+mod surface;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -37,6 +39,7 @@ impl ApplicationHandler<UserEvent> for Host {
         let attrs = Window::default_attributes()
             .with_title("nus")
             .with_decorations(false)
+            .with_transparent(true)
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         match App::new(window, self.proxy.clone()) {
@@ -94,10 +97,14 @@ impl ApplicationHandler<UserEvent> for Host {
             WindowEvent::Resized(s) => a.resize(s.width, s.height),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => a.set_scale(scale_factor as f32),
             WindowEvent::Moved(p) => a.window_moved(p.x, p.y),
-            WindowEvent::ThemeChanged(t) => a.set_theme(match t {
-                winit::window::Theme::Light => nus_render::Theme::paper(),
-                winit::window::Theme::Dark => nus_render::Theme::ink(),
-            }),
+            WindowEvent::ThemeChanged(t) => {
+                if a.behavior.follow_os_theme {
+                    a.set_theme(match t {
+                        winit::window::Theme::Light => nus_render::Theme::paper(),
+                        winit::window::Theme::Dark => nus_render::Theme::ink(),
+                    })
+                }
+            }
             WindowEvent::Focused(f) => a.focus_changed(f),
             WindowEvent::ModifiersChanged(m) => a.modifiers(m.state()),
             WindowEvent::KeyboardInput { event, .. } => {
@@ -105,6 +112,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 a.dirty = true;
             }
             WindowEvent::CursorMoved { position, .. } => a.mouse_moved(position.x as f32, position.y as f32),
+            WindowEvent::CursorLeft { .. } => a.cursor_left(),
             WindowEvent::MouseInput { state, button, .. } => {
                 a.mouse_button(button, state);
                 a.dirty = true;
@@ -177,7 +185,12 @@ fn main() -> ExitCode {
             a.apply_term_resizes(false);
             a.begin_frames();
             a.pip_frame();
-            if a.dirty || a.pump() {
+            // pump() consumes the change it reports, so latch it into dirty
+            // rather than letting redraw() pump a second time and see nothing.
+            if a.pump() {
+                a.dirty = true;
+            }
+            if a.dirty {
                 a.redraw();
             }
         }

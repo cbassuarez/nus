@@ -34,6 +34,20 @@ pub struct Shared {
     /// A page asked for a new window (target=_blank, window.open); the app
     /// opens it as a tab in this tab's stack.
     pub popup: Option<String>,
+    pub created: Created,
+}
+
+/// Instant with a Default, so Shared can derive it.
+pub struct Created(pub std::time::Instant);
+impl Default for Created {
+    fn default() -> Self {
+        Created(std::time::Instant::now())
+    }
+}
+impl Created {
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.0.elapsed()
+    }
 }
 
 /// A video's state in CSS px relative to the viewport.
@@ -211,6 +225,9 @@ wrap_render_handler! {
                     let bind = (self.osr.bind_texture)(&texture);
                     let mut s = self.osr.shared.borrow_mut();
                     s.bind = Some(bind);
+                    if s.paints == 0 {
+                        tracing::info!("first paint +{}ms", s.created.elapsed().as_millis());
+                    }
                     s.paints += 1;
                 }
                 Err(e) => tracing::warn!("texture import: {e:?}"),
@@ -251,12 +268,18 @@ wrap_display_handler! {
         fn on_address_change(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {
             let main = frame.map(|f| f.is_main() != 0).unwrap_or(true);
             if let (true, Some(u)) = (main, url) {
-                self.d.shared.borrow_mut().url = u.to_string();
+                let mut s = self.d.shared.borrow_mut();
+                tracing::info!("address {} +{}ms", u, s.created.elapsed().as_millis());
+                s.url = u.to_string();
             }
         }
 
         fn on_loading_progress_change(&self, _browser: Option<&mut Browser>, progress: f64) {
-            self.d.shared.borrow_mut().loading = progress < 1.0;
+            let mut s = self.d.shared.borrow_mut();
+            if progress >= 1.0 && s.loading {
+                tracing::info!("loaded {} +{}ms", s.url, s.created.elapsed().as_millis());
+            }
+            s.loading = progress < 1.0;
         }
     }
 }
@@ -436,10 +459,10 @@ impl BrowserTab {
             }),
             LifeBuilder::new(Display { shared: shared.clone() }),
         );
-        let mut context = request_context_create_context(
-            Some(&RequestContextSettings::default()),
-            None,
-        );
+        // The global context: one cookie jar and cache for the Space. (v1 gives
+        // each Space its own, with cache_path under the profile.)
+        let mut context = request_context_get_global_context();
+        let t0 = std::time::Instant::now();
         let browser = browser_host_create_browser_sync(
             Some(&window_info),
             Some(&mut client),
@@ -448,6 +471,7 @@ impl BrowserTab {
             None,
             context.as_mut(),
         )?;
+        tracing::info!("create_browser_sync {url} took {}ms", t0.elapsed().as_millis());
         let mut observer = ObserverBuilder::new(Observer { shared: shared.clone() });
         let registration = browser.host().and_then(|h| h.add_dev_tools_message_observer(Some(&mut observer)));
         let tab = BrowserTab { browser, shared, _observer: registration };

@@ -22,6 +22,7 @@ pub struct Gpu {
     atlas_bind: wgpu::BindGroup,
     instances: wgpu::Buffer,
     instance_cap: usize,
+    adapter: wgpu::Adapter,
 }
 
 /// A window's surface.
@@ -30,6 +31,17 @@ pub struct Target {
     /// Physical pixels.
     pub size: (u32, u32),
     format: wgpu::TextureFormat,
+    alpha_mode: wgpu::CompositeAlphaMode,
+}
+
+impl Target {
+    /// Whether the swapchain composites alpha, i.e. the window can be see-through.
+    pub fn translucent(&self) -> bool {
+        !matches!(
+            self.alpha_mode,
+            wgpu::CompositeAlphaMode::Opaque | wgpu::CompositeAlphaMode::Auto
+        )
+    }
 }
 
 impl Gpu {
@@ -172,24 +184,50 @@ impl Gpu {
             atlas_bind,
             instances,
             instance_cap,
+            adapter,
         };
         let mut target = Target {
             surface,
             size: (size.width.max(1), size.height.max(1)),
             format,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
         };
+        target.alpha_mode = gpu.alpha_mode_for(&target.surface);
         target.configure(&gpu.device);
         Ok((gpu, target))
+    }
+
+    /// Premultiplied alpha when the compositor offers it, so a window made
+    /// transparent can show the desktop through its paper.
+    fn alpha_mode_for(&self, surface: &wgpu::Surface<'static>) -> wgpu::CompositeAlphaMode {
+        let caps = surface.get_capabilities(&self.adapter);
+        let mode = if caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+        {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else if caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+        {
+            wgpu::CompositeAlphaMode::PostMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
+        tracing::info!("surface alpha modes {:?} → {:?}", caps.alpha_modes, mode);
+        mode
     }
 
     /// A surface for another window (PiP, quick terminal).
     pub fn target(&self, window: Arc<Window>) -> Result<Target> {
         let surface = self.instance.create_surface(window.clone())?;
         let size = window.inner_size();
+        let alpha_mode = self.alpha_mode_for(&surface);
         let mut t = Target {
             surface,
             size: (size.width.max(1), size.height.max(1)),
             format: self.format,
+            alpha_mode,
         };
         t.configure(&self.device);
         Ok(t)
@@ -353,7 +391,7 @@ impl Target {
                 format: self.format,
                 color_space: wgpu::SurfaceColorSpace::Auto,
                 view_formats: vec![self.format],
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                alpha_mode: self.alpha_mode,
                 width: self.size.0,
                 height: self.size.1,
                 desired_maximum_frame_latency: 1,

@@ -232,14 +232,17 @@ impl App {
             // Progress: a hairline along the bottom in the signal color.
             if v.dur > 0.0 {
                 let p = (v.t / v.dur).clamp(0.0, 1.0) as f32;
-                pip.scene.rect(Rect::new(0.0, h - (2.0 * scale).round(), w * p, (2.0 * scale).round()), self.signal);
+                pip.scene.rect(Rect::new(0.0, h - (2.0 * scale).round(), w * p, (2.0 * scale).round()), self.surface.signal);
             }
             if v.paused {
                 pip.scene.rect(Rect::new(0.0, band, w, h - band), theme.scrim);
             }
         }
-        pip.scene.rect(Rect::new(0.0, 0.0, w, band), self.signal);
-        pip.scene.push(nus_render::Instance::grain(Rect::new(0.0, 0.0, w, h), [1.0, 1.0, 1.0, 0.07], 1.0 * scale));
+        // Texture lives on the carapace only; the video stays clean.
+        pip.scene.rect(Rect::new(0.0, 0.0, w, band), self.surface.signal);
+        if self.surface.texture > 0.0 {
+            pip.scene.push(nus_render::Instance::grain(Rect::new(0.0, 0.0, w, band), [1.0, 1.0, 1.0, self.surface.texture], 1.0 * scale));
+        }
         if pip.focused {
             let t = (m::FLOATING * scale).round();
             pip.scene.push(nus_render::Instance::stroke(Rect::new(0.0, 0.0, w, h), 0.0, t, theme.ink, None, 0.0));

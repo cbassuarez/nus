@@ -55,18 +55,8 @@ pub enum Action {
     Pip,
 }
 
-/// The Space color as a physical shell around the window.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Shell {
-    /// A band along the top edge (Broadsheet default).
-    Band,
-    /// A stroke around all four edges.
-    Stroke,
-    /// A stroke fading signal → ink along the diagonal.
-    Gradient,
-    /// A slowly moving two-signal gradient.
-    Aurora,
-}
+pub use crate::surface::Shell;
+use crate::surface::{Fullscreen, HoverFrom, Overrides, Rules, Side, SidebarRules, Surface, TabCtx};
 
 pub enum Closed {
     Term(usize),
@@ -137,10 +127,25 @@ pub struct SettingsPane {
     pub section: usize,
 }
 
+/// First-run panel beside the first shell: five things to try, ticked off
+/// as they happen. Lives in `App::hints`; this is just its rect.
+pub struct HintsPane {
+    pub rect: Rect,
+}
+
+pub const HINTS: [(&str, &str); 5] = [
+    ("K", "the palette · tabs, ports, ask, settings"),
+    ("T", "new tab · type a URL for a page, a name for a shell"),
+    ("ENTER", "at a prompt that is a URL · opens it beside"),
+    ("EDGE", "hover the left edge · tabs slide in, pin with Ctrl+Shift+S"),
+    ("`", "back to the last tab · Ctrl+PgUp/PgDn walk them"),
+];
+
 pub enum Pane {
     Term(TermPane),
     Web(WebPane),
     Settings(SettingsPane),
+    Hints(HintsPane),
 }
 
 pub struct SidebarGeom {
@@ -160,6 +165,8 @@ pub struct Tab {
     pub right: Option<Pane>,
     pub focus_right: bool,
     pub pinned: bool,
+    /// Colours the rules gave this tab.
+    pub look: Overrides,
 }
 
 impl Tab {
@@ -180,6 +187,7 @@ impl Tab {
                 (title, host)
             }
             Pane::Settings(_) => ("settings".into(), String::new()),
+            Pane::Hints(_) => ("welcome".into(), String::new()),
         }
     }
 
@@ -202,6 +210,7 @@ impl Tab {
                 }
             }
             Pane::Settings(_) => "settings".into(),
+            Pane::Hints(_) => "welcome".into(),
         };
         match &self.right {
             Some(r) => format!("{} | {}", name(&self.left), name(r)),
@@ -224,7 +233,6 @@ pub struct App {
     pub bind_texture: Rc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
 
     pub space_name: String,
-    pub signal: nus_render::Color,
     pub tabs: Vec<Tab>,
     pub active: usize,
     /// Sidebar pinned open (Ctrl+Shift+S). Otherwise it slides in on hover.
@@ -233,9 +241,16 @@ pub struct App {
     pub sidebar_leave: Option<Instant>,
     pub hover_row: Option<usize>,
     pub user_name: String,
-    pub shell: Shell,
-    pub shell_width: f32,
-    pub shell_radius: f32,
+    /// What the window is made of (see surface.rs) and the rules that colour
+    /// new tabs; both editable from the settings tab.
+    pub surface: Surface,
+    pub sidebar_rules: SidebarRules,
+    pub rules: Rules,
+    pub settings_hits: Vec<(Rect, crate::settings::Hit)>,
+    pub behavior: crate::settings::Behavior,
+    pub fullscreen: bool,
+    /// The pointer has moved inside the window since it last left it.
+    pub pointer_inside: bool,
     pub shell_phase: f32,
     pub pip: Option<crate::pip::Pip>,
     pub pip_request: Option<(usize, bool)>,
@@ -243,6 +258,9 @@ pub struct App {
     pub devtools_request: Option<(usize, bool)>,
     pub crumb_hits: Vec<(Rect, CrumbHit)>,
     pub next_id: u64,
+    /// Onboarding ticks (see HINTS); the panel leaves once all five are set.
+    pub hints: [bool; 5],
+    pub hint_hits: Vec<(Rect, usize)>,
     /// Closing a stack's parent asks first: the parent's index.
     pub confirm_stack: Option<usize>,
     pub window_focused: bool,
@@ -309,22 +327,27 @@ impl App {
             device,
             bind_texture,
             space_name: "nus".into(),
-            signal: signal::RED,
             tabs: Vec::new(),
             active: 0,
             sidebar: false,
             sidebar_hover: false,
             sidebar_leave: None,
             hover_row: None,
-            shell: Shell::Band,
-            shell_width: m::BAND,
-            shell_radius: 0.0,
+            surface: Surface::default(),
+            sidebar_rules: SidebarRules::default(),
+            rules: Rules::load(),
+            settings_hits: Vec::new(),
+            behavior: crate::settings::Behavior::default(),
+            fullscreen: false,
+            pointer_inside: false,
             shell_phase: 0.0,
             pip: None,
             pip_request: None,
             devtools_request: None,
             crumb_hits: Vec::new(),
             next_id: 1,
+            hints: App::load_hints(),
+            hint_hits: Vec::new(),
             confirm_stack: None,
             window_focused: true,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
@@ -346,15 +369,19 @@ impl App {
             frames: 0,
         };
         let term = app.new_term_pane(true, 0)?;
-        let web = app.new_web_pane("https://docs.rs/wgpu/latest/wgpu/");
-        let first = app.make_tab(Pane::Term(term), web.map(Pane::Web));
+        let right = if App::onboarded() {
+            app.new_web_pane("https://docs.rs/wgpu/latest/wgpu/").map(Pane::Web)
+        } else {
+            Some(Pane::Hints(HintsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0) }))
+        };
+        let first = app.make_tab(Pane::Term(term), right);
         app.tabs.push(first);
         app.layout();
         app.apply_term_resizes(true);
         Ok(app)
     }
 
-    fn px(&self, v: f32) -> f32 {
+    pub(crate) fn px(&self, v: f32) -> f32 {
         (v * self.scale).round()
     }
 
@@ -419,8 +446,8 @@ impl App {
 
     /// (top, right, bottom, left) physical px the shell takes from the window.
     fn shell_insets(&self) -> (f32, f32, f32, f32) {
-        let w = self.px(self.shell_width);
-        match self.shell {
+        let w = self.px(self.surface.shell_width);
+        match self.surface.shell {
             Shell::Band => (w, 0.0, 0.0, 0.0),
             _ => (w, w, w, w),
         }
@@ -431,28 +458,67 @@ impl App {
         Rect::new(left, top, self.target.size.0 as f32 - left - right, self.px(m::TOP_STRIP))
     }
 
-    fn content_rect(&self) -> Rect {
+    /// Pinned open: the user's pin, or the fullscreen rule.
+    pub fn sidebar_pinned(&self) -> bool {
+        if self.fullscreen {
+            return match self.sidebar_rules.fullscreen {
+                Fullscreen::Pinned => true,
+                Fullscreen::Hidden => false,
+                Fullscreen::Hover => self.sidebar,
+            };
+        }
+        self.sidebar
+    }
+
+    /// Whether a hover may reveal it at all.
+    fn sidebar_hoverable(&self) -> bool {
+        !(self.fullscreen && self.sidebar_rules.fullscreen == Fullscreen::Hidden)
+    }
+
+    pub fn sidebar_right(&self) -> bool {
+        self.sidebar_rules.side == Side::Right
+    }
+
+    pub(crate) fn content_rect(&self) -> Rect {
         let (st, sr, sb, sl) = self.shell_insets();
         let top = st + self.px(m::TOP_STRIP) + self.px(m::STRUCTURE);
-        let left = sl + if self.sidebar {
-            self.px(m::SIDEBAR) + self.px(m::STRUCTURE)
-        } else {
-            self.px(4.0)
-        };
-        Rect::new(left, top, self.target.size.0 as f32 - left - sr, self.target.size.1 as f32 - top - sb)
+        let taken = if self.sidebar_pinned() { self.px(m::SIDEBAR) + self.px(m::STRUCTURE) } else { self.px(4.0) };
+        let (left, right) = if self.sidebar_right() { (sl, sr + taken) } else { (sl + taken, sr) };
+        Rect::new(left, top, self.target.size.0 as f32 - left - right, self.target.size.1 as f32 - top - sb)
     }
 
     fn sidebar_rect(&self) -> Rect {
         let c = self.content_rect();
-        let (_, _, _, sl) = self.shell_insets();
-        Rect::new(sl, c.y, self.px(m::SIDEBAR), c.h)
+        let (_, sr, _, sl) = self.shell_insets();
+        let w = self.px(m::SIDEBAR);
+        if self.sidebar_right() {
+            Rect::new(self.target.size.0 as f32 - sr - w, c.y, w, c.h)
+        } else {
+            Rect::new(sl, c.y, w, c.h)
+        }
     }
 
     fn sidebar_visible(&self) -> bool {
-        self.sidebar || self.sidebar_hover
+        self.sidebar_pinned() || self.sidebar_hover
     }
 
-    fn header_h(&self) -> f32 {
+    /// The paper the chrome draws on (theme paper tinted by the surface).
+    pub fn paper(&self) -> nus_render::Color {
+        self.surface.paper(self.theme.paper)
+    }
+
+    pub fn toggle_fullscreen(&mut self) {
+        self.fullscreen = !self.fullscreen;
+        self.window.set_fullscreen(if self.fullscreen { Some(winit::window::Fullscreen::Borderless(None)) } else { None });
+        self.sidebar_hover = false;
+        self.layout();
+    }
+
+    pub fn cursor_left(&mut self) {
+        self.pointer_inside = false;
+    }
+
+    pub(crate) fn header_h(&self) -> f32 {
         self.px(m::HEADER_PAD_Y) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE)
     }
 
@@ -481,6 +547,7 @@ impl App {
                 let _ = area; // terminal size is applied by `apply_term_resizes`
             }
             Pane::Settings(s) => s.rect = r,
+            Pane::Hints(h) => h.rect = r,
             Pane::Web(w) => {
                 w.rect = r;
                 let url_row = (6.0 * 2.0 + 22.0) * scale;
@@ -521,7 +588,7 @@ impl App {
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
         self.drain_popups();
-        if self.shell == Shell::Aurora {
+        if self.surface.shell == Shell::Aurora {
             self.shell_phase = (self.shell_phase + 0.0015) % 1.0;
             self.dirty = true;
         }
@@ -703,10 +770,12 @@ impl App {
         self.window.pre_present_notify();
         // Outside a rounded shell: the opposite theme's paper until the window
         // itself is transparent (v1).
-        let clear = if self.shell_radius > 0.0 {
+        let clear = if self.surface.shell_radius > 0.0 && !self.target.translucent() {
             if self.theme.mode == nus_render::Mode::Ink { Theme::paper().paper } else { Theme::ink().paper }
         } else {
-            self.theme.paper
+            let p = self.paper();
+            let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
+            [p[0] * a, p[1] * a, p[2] * a, a]
         };
         self.gpu.render(&mut self.target, &self.scene, clear);
         self.frames += 1;
@@ -714,7 +783,7 @@ impl App {
 
     // --- drawing ---------------------------------------------------------
 
-    fn label(&self) -> Style {
+    pub(crate) fn label(&self) -> Style {
         Style {
             font: self.f.ui,
             px: self.px(m::LABEL_PX),
@@ -722,13 +791,13 @@ impl App {
             tracking: self.px(m::LABEL_PX) * m::LABEL_TRACKING,
         }
     }
-    fn label_strong(&self) -> Style {
+    pub(crate) fn label_strong(&self) -> Style {
         Style {
             font: self.f.strong,
             ..self.label()
         }
     }
-    fn ui(&self) -> Style {
+    pub(crate) fn ui(&self) -> Style {
         Style {
             font: self.f.ui,
             px: self.px(m::UI_PX),
@@ -736,7 +805,7 @@ impl App {
             tracking: 0.0,
         }
     }
-    fn ui_strong(&self) -> Style {
+    pub(crate) fn ui_strong(&self) -> Style {
         Style {
             font: self.f.strong,
             ..self.ui()
@@ -754,25 +823,37 @@ impl App {
         // Shell + top strip.
         scene.layer(None);
         let win = Rect::new(0.0, 0.0, w, h);
-        let radius = self.px(self.shell_radius);
-        let sw = self.px(self.shell_width);
+        let radius = self.px(self.surface.shell_radius);
+        let sw = self.px(self.surface.shell_width);
         if radius > 0.0 {
             // The paper is a rounded card; the corners outside it show the clear color.
-            scene.push(nus_render::Instance::rounded(win, radius, t.paper));
+            scene.push(nus_render::Instance::rounded(win, radius, self.paper()));
         }
-        match self.shell {
+        match self.surface.shell {
             Shell::Band => {
                 if radius > 0.0 {
                     scene.layer(Some(Rect::new(0.0, 0.0, w, sw)));
-                    scene.push(nus_render::Instance::rounded(win, radius, self.signal));
+                    scene.push(nus_render::Instance::rounded(win, radius, self.surface.signal));
                     scene.layer(None);
                 } else {
-                    scene.rect(Rect::new(0.0, 0.0, w, sw), self.signal);
+                    scene.rect(Rect::new(0.0, 0.0, w, sw), self.surface.signal);
                 }
             }
-            Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.signal, None, 0.0)),
-            Shell::Gradient => scene.push(nus_render::Instance::stroke(win, radius, sw, self.signal, Some(ink), 0.0)),
-            Shell::Aurora => scene.push(nus_render::Instance::stroke(win, radius, sw, self.signal, Some(signal::VIOLET), self.shell_phase)),
+            Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, None, 0.0)),
+            Shell::Gradient => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, Some(ink), 0.0)),
+            Shell::Aurora => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, Some(signal::VIOLET), self.shell_phase)),
+        }
+        // Texture lives on the carapace, never on content.
+        if self.surface.texture > 0.0 {
+            let g = [1.0, 1.0, 1.0, self.surface.texture];
+            let frame = if self.surface.shell == Shell::Band {
+                vec![Rect::new(0.0, 0.0, w, sw)]
+            } else {
+                vec![Rect::new(0.0, 0.0, w, sw), Rect::new(0.0, h - sw, w, sw), Rect::new(0.0, 0.0, sw, h), Rect::new(w - sw, 0.0, sw, h)]
+            };
+            for r in frame {
+                scene.push(nus_render::Instance::grain(r, g, self.scale));
+            }
         }
         let strip = self.strip_rect();
         scene.hline(strip.x, strip.bottom(), strip.w, self.px(m::STRUCTURE), ink);
@@ -800,7 +881,7 @@ impl App {
         };
         {
             let sw = self.px(10.0);
-            scene.rect(Rect::new(x, strip.y + ((strip.h - sw) / 2.0).round(), sw, sw), self.signal);
+            scene.rect(Rect::new(x, strip.y + ((strip.h - sw) / 2.0).round(), sw, sw), self.surface.signal);
             let name = self.space_name.to_uppercase();
             let w = sw + self.px(8.0) + self.fonts.measure(label, &name);
             self.fonts.draw(&mut scene, label, x + sw + self.px(8.0), lbase, &name);
@@ -818,7 +899,7 @@ impl App {
             // The crumb becomes the URL field while a browser pane is focused.
             let field = Rect::new(x, strip.y + self.px(4.0), (strip.w * 0.42).min(self.px(640.0)), strip.h - self.px(8.0));
             if is_local(&url) {
-                scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.signal, ink, self.px(8.0)));
+                scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.surface.signal, ink, self.px(8.0)));
             } else {
                 scene.outline(field, self.px(m::HAIRLINE), ink);
             }
@@ -834,6 +915,7 @@ impl App {
                 Pane::Term(p) => (nus_render::text::icons::TERMINAL, p.title.clone()),
                 Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
+                Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
             };
             let title = format!("{} {}", self.tab_label(self.active), title).to_uppercase();
             let tw = self.fonts.measure(label, &title);
@@ -880,11 +962,11 @@ impl App {
             if !count.is_empty() {
                 let cw = self.fonts.measure(label, &count);
                 rx -= cw;
-                self.fonts.draw(&mut scene, Style { color: if hit == CrumbHit::Waiting { self.signal } else { color }, ..label }, rx, lbase, &count);
+                self.fonts.draw(&mut scene, Style { color: if hit == CrumbHit::Waiting { self.surface.signal } else { color }, ..label }, rx, lbase, &count);
                 rx -= self.px(4.0);
             }
             rx -= ic;
-            self.fonts.draw_icon(&mut scene, icon, ic, rx, iy, if hit == CrumbHit::Waiting && lit { self.signal } else { color });
+            self.fonts.draw_icon(&mut scene, icon, ic, rx, iy, if hit == CrumbHit::Waiting && lit { self.surface.signal } else { color });
             self.crumb_hits.push((Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h), hit));
             rx -= gap;
         }
@@ -892,11 +974,14 @@ impl App {
 
         // Sidebar or hot edge.
         let c = self.content_rect();
-        if self.sidebar {
+        let right_side = self.sidebar_right();
+        if self.sidebar_pinned() {
             self.draw_sidebar(&mut scene);
-            scene.vline(c.x - self.px(m::STRUCTURE), c.y, c.h, self.px(m::STRUCTURE), ink);
-        } else if !self.sidebar_hover {
-            scene.rect(Rect::new(c.x - self.px(4.0), c.y, self.px(4.0), c.h), t.hot);
+            let x = if right_side { c.right() } else { c.x - self.px(m::STRUCTURE) };
+            scene.vline(x, c.y, c.h, self.px(m::STRUCTURE), ink);
+        } else if !self.sidebar_hover && self.sidebar_hoverable() {
+            let x = if right_side { c.right() } else { c.x - self.px(4.0) };
+            scene.rect(Rect::new(x, c.y, self.px(4.0), c.h), t.hot);
         }
 
         // Panes.
@@ -909,18 +994,20 @@ impl App {
                 Some(Pane::Term(p)) => p.rect,
                 Some(Pane::Web(p)) => p.rect,
                 Some(Pane::Settings(p)) => p.rect,
+                Some(Pane::Hints(p)) => p.rect,
                 None => unreachable!(),
             };
             scene.vline(r.x - self.px(m::STRUCTURE), r.y, r.h, self.px(m::STRUCTURE), ink);
         }
         let n = self.tab_label(active);
+        let look = self.tabs[active].look.clone();
         let mut tabs = std::mem::take(&mut self.tabs);
         {
             let tab = &mut tabs[active];
             let left_focused = !(focus_right && has_right);
-            self.draw_pane(&mut scene, &mut tab.left, &n, left_focused);
+            self.draw_pane(&mut scene, &mut tab.left, &n, left_focused, &look);
             if let Some(r) = tab.right.as_mut() {
-                self.draw_pane(&mut scene, r, &n, !left_focused);
+                self.draw_pane(&mut scene, r, &n, !left_focused, &look);
             }
         }
         self.tabs = tabs;
@@ -978,14 +1065,16 @@ impl App {
         }
 
         // Hover-revealed sidebar slides over the content.
-        if self.sidebar_hover && !self.sidebar {
+        if self.sidebar_hover && !self.sidebar_pinned() {
             let sb = self.sidebar_rect();
+            let shadow = if self.sidebar_right() { -self.px(8.0) } else { self.px(8.0) };
             scene.layer(None);
-            scene.rect(Rect::new(sb.x + self.px(8.0), sb.y, sb.w, sb.h), Theme::with_alpha(ink, 0.18));
-            scene.rect(sb, t.paper);
+            scene.rect(Rect::new(sb.x + shadow, sb.y, sb.w, sb.h), Theme::with_alpha(ink, 0.18));
+            scene.rect(sb, self.paper());
             self.draw_sidebar(&mut scene);
             scene.layer(None);
-            scene.vline(sb.right(), sb.y, sb.h, self.px(m::STRUCTURE), ink);
+            let x = if self.sidebar_right() { sb.x - self.px(m::STRUCTURE) } else { sb.right() };
+            scene.vline(x, sb.y, sb.h, self.px(m::STRUCTURE), ink);
         }
 
         // Palette.
@@ -1020,10 +1109,17 @@ impl App {
                 color: ink,
                 tracking: 0.0,
             };
-            px += self.fonts.draw(&mut scene, big, px, base, &input);
-            scene.rect(Rect::new(px + self.px(2.0), base - self.px(14.0), self.px(9.0), self.px(18.0)), ink);
+            // Long input keeps the caret in view: the head scrolls off, clipped.
             let esc = self.label();
             let ew = self.fonts.measure(esc, "ESC");
+            let avail = r.right() - self.px(18.0) - ew - self.px(18.0) - self.px(12.0) - px;
+            let iw = self.fonts.measure(big, &input);
+            let field = Rect::new(px, r.y, avail, head_h);
+            scene.layer(Some(field));
+            let shift = (iw - avail).max(0.0);
+            px += self.fonts.draw(&mut scene, big, px - shift, base, &input) - shift;
+            scene.layer(None);
+            scene.rect(Rect::new(px + self.px(2.0), base - self.px(14.0), self.px(9.0), self.px(18.0)), ink);
             self.fonts.draw(&mut scene, esc, r.right() - self.px(18.0) - ew, base - self.px(2.0), "ESC");
             scene.hline(r.x, r.y + head_h - self.px(2.0), r.w, self.px(2.0), ink);
             // rows
@@ -1055,7 +1151,8 @@ impl App {
                     }
                     None => px += self.fonts.draw(&mut scene, strong, px, base, num) + self.px(12.0),
                 }
-                self.fonts.draw(&mut scene, ui, px, base, text);
+                let text = self.fit(ui, text, r.right() - self.px(18.0) - px);
+                self.fonts.draw(&mut scene, ui, px, base, &text);
                 if !sel {
                     scene.hline(r.x, y + row_h - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), t.tint);
                 }
@@ -1135,7 +1232,7 @@ impl App {
         let row_h = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
         let cell_w = (sb.w / 3.0).floor();
         scene.rect(Rect::new(sb.x, sb.y, cell_w, row_h - self.px(m::STRUCTURE)), ink);
-        scene.rect(Rect::new(sb.x + self.px(10.0), sb.y + self.px(10.0), self.px(10.0), self.px(10.0)), self.signal);
+        scene.rect(Rect::new(sb.x + self.px(10.0), sb.y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
         let sel = Style { color: t.paper, ..label };
         self.fonts.draw(scene, sel, sb.x + self.px(28.0), sb.y + self.px(19.0), &self.space_name.to_uppercase());
         scene.vline(sb.x + cell_w, sb.y, row_h, self.px(m::HAIRLINE), ink);
@@ -1196,12 +1293,14 @@ impl App {
                 x += self.px(18.0);
                 x += self.fonts.draw(scene, dim, x, base, &labels[k][labels[k].len() - 1..]) + self.px(10.0);
             } else {
-                x += self.fonts.draw(scene, ui_strong, x, base, &labels[k]) + self.px(10.0);
+                let num = Style { color: tab.look.signal.unwrap_or(ink), ..ui_strong };
+                x += self.fonts.draw(scene, num, x, base, &labels[k]) + self.px(10.0);
             }
             let icon = match &tab.left {
                 Pane::Term(_) => nus_render::text::icons::TERMINAL,
                 Pane::Web(_) => nus_render::text::icons::GLOBE,
                 Pane::Settings(_) => nus_render::text::icons::SETTINGS,
+                Pane::Hints(_) => nus_render::text::icons::HOME,
             };
             let isz = self.px(14.0);
             x += self.fonts.draw_icon(scene, icon, isz, x, base - isz + self.px(2.0), ink) + self.px(10.0);
@@ -1220,7 +1319,7 @@ impl App {
             if waiting {
                 let w = self.fonts.measure(strong, &tag) + self.px(12.0);
                 let r = Rect::new(sb.right() - pad_x - w, base - self.px(m::LABEL_PX) - self.px(1.0), w, self.px(m::LABEL_PX) + self.px(4.0));
-                scene.rect(r, self.signal);
+                scene.rect(r, self.surface.signal);
                 self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, r.x + self.px(6.0), base, &tag);
             } else if !stack.is_empty() && !open {
                 // Collapsed stack: count and a caret.
@@ -1257,7 +1356,7 @@ impl App {
                             scene.layer(None);
                         }
                     }
-                    Pane::Settings(_) => {}
+                    Pane::Settings(_) | Pane::Hints(_) => {}
                 }
             }
             scene.hline(sb.x, y + h - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), ink);
@@ -1271,7 +1370,7 @@ impl App {
         // identity
         let id_h = self.px(10.0) * 2.0 + self.px(22.0);
         let av = Rect::new(sb.x + pad_x, y + self.px(10.0), self.px(22.0), self.px(22.0));
-        scene.rect(av, self.signal);
+        scene.rect(av, self.surface.signal);
         let initial = self.user_initial();
         let iw = self.fonts.measure(ui_strong, &initial);
         self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..ui_strong }, av.x + (av.w - iw) / 2.0, av.y + self.px(16.0), &initial);
@@ -1337,105 +1436,132 @@ impl App {
         self.activate(self.tabs.len() - 1);
     }
 
-    fn draw_settings(&mut self, scene: &mut Scene, p: &SettingsPane) {
+    // ── Onboarding ─────────────────────────────────────────────────────
+    // No wizard: the first launch is a real shell with this panel beside it.
+
+    fn onboarded_marker() -> std::path::PathBuf {
+        std::env::current_dir().unwrap_or_default().join("profile").join("onboarded")
+    }
+
+    /// The marker holds the ticks ("10110") or "skip"; done when all five.
+    fn onboarded() -> bool {
+        if std::env::var_os("NUS_ONBOARD").is_some() {
+            return false;
+        }
+        let s = std::fs::read_to_string(App::onboarded_marker()).unwrap_or_default();
+        s.trim() == "skip" || s.trim() == "11111"
+    }
+
+    fn load_hints() -> [bool; 5] {
+        let s = std::fs::read_to_string(App::onboarded_marker()).unwrap_or_default();
+        let mut h = [false; 5];
+        for (k, c) in s.trim().chars().take(5).enumerate() {
+            h[k] = c == '1';
+        }
+        h
+    }
+
+    fn save_hints(&self) {
+        let s: String = self.hints.iter().map(|&h| if h { '1' } else { '0' }).collect();
+        let _ = std::fs::write(App::onboarded_marker(), s);
+    }
+
+    fn tick_hint(&mut self, k: usize) {
+        if self.hints[k] || !self.hints_open() {
+            return;
+        }
+        self.hints[k] = true;
+        self.dirty = true;
+        self.save_hints();
+    }
+
+    fn hints_open(&self) -> bool {
+        self.tabs.iter().any(|t| matches!(t.right, Some(Pane::Hints(_))) || matches!(t.left, Pane::Hints(_)))
+    }
+
+    /// Remove the panel (skip, or done). The marker is written either way.
+    fn dismiss_hints(&mut self) {
+        if !self.hints.iter().all(|&h| h) {
+            let _ = std::fs::write(App::onboarded_marker(), b"skip");
+        }
+        for t in self.tabs.iter_mut() {
+            if matches!(t.right, Some(Pane::Hints(_))) {
+                t.right = None;
+                t.focus_right = false;
+            }
+        }
+        self.layout();
+        self.dirty = true;
+    }
+
+    fn draw_hints(&mut self, scene: &mut Scene, r: Rect) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
         let strong = self.label_strong();
         let ui = self.ui();
         let dim = Style { color: t.dim, ..label };
-        let r = p.rect;
-        let nav_w = self.px(220.0);
-        scene.vline(r.x + nav_w, r.y, r.h, self.px(m::STRUCTURE), ink);
-        let sections = ["APPEARANCE", "SPACES & PROFILES", "BROWSER", "ASSISTANTS", "KEYS", "UPDATES"];
-        let sh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
-        for (i, s) in sections.iter().enumerate() {
-            let y = r.y + i as f32 * sh;
-            let sel = i == p.section;
-            if sel {
-                scene.rect(Rect::new(r.x, y, nav_w, sh - self.px(m::HAIRLINE)), ink);
-            }
-            let st = Style { color: if sel { t.paper } else { ink }, ..label };
-            self.fonts.draw(scene, st, r.x + self.px(18.0), y + self.px(12.0) + self.px(m::LABEL_PX) - self.px(2.0), s);
-            scene.hline(r.x, y + sh - self.px(m::HAIRLINE), nav_w, self.px(m::HAIRLINE), ink);
-        }
-        let cfg = "~/.config/nus/init.luau";
-        self.fonts.draw(scene, dim, r.x + self.px(18.0), r.bottom() - self.px(14.0), cfg);
-
-        // Content.
-        let cx = r.x + nav_w + self.px(40.0);
-        let mut y = r.y + self.px(28.0);
-        let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
-        self.fonts.draw(scene, wm, cx, y + self.px(30.0), &sections[p.section].to_lowercase());
+        self.hint_hits.clear();
+        let pad = self.px(28.0);
+        let mut y = r.y + self.px(30.0);
+        // Masthead.
+        let wm = Style { font: self.f.wordmark, px: self.px(44.0), color: ink, tracking: 0.0 };
+        self.fonts.draw(scene, wm, r.x + pad, y + self.px(36.0), "nus");
+        let done = self.hints.iter().filter(|&&h| h).count();
+        let tally = format!("{done} OF 5");
+        let tw = self.fonts.measure(label, &tally);
+        self.fonts.draw(scene, dim, r.right() - pad - tw, y + self.px(30.0), &tally);
         y += self.px(58.0);
-        let rows: Vec<(String, String)> = match p.section {
-            0 => vec![
-                ("THEME".into(), format!("{} · follows the OS", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" })),
-                ("UI FONT".into(), "IBM Plex Mono · 13 / 1.5".into()),
-                ("TERMINAL FONT".into(), "IBM Plex Mono · 13pt · ligatures on".into()),
-                ("CURSOR".into(), "block · no blink".into()),
-                ("SIDEBAR".into(), if self.sidebar { "pinned".into() } else { "hover edge · Ctrl+Shift+S pins".into() }),
-                ("SHELL".into(), format!("{:?} · {}px · radius {}", self.shell, self.shell_width, self.shell_radius).to_lowercase()),
-                ("QUICK TERMINAL".into(), "global hotkey (not wired in this spike)".into()),
-            ],
-            1 => {
-                let mut v = vec![("SPACE".into(), format!("{} · signal red · {} cookies", self.space_name, self.space_name))];
-                for (i, pr) in self.profiles.iter().enumerate() {
-                    v.push((if i == 0 { "DEFAULT SHELL".into() } else { "PROFILE".into() }, format!("{} · {} {}", pr.name, pr.program, pr.args.join(" "))));
-                }
-                v
+        self.fonts.draw(scene, strong, r.x + pad, y, "FIVE THINGS TO TRY");
+        y += self.px(12.0);
+        scene.hline(r.x + pad, y, r.w - 2.0 * pad, self.px(m::STRUCTURE), ink);
+        y += self.px(m::STRUCTURE);
+        // Rows: a box, the chord, then what it does. Ticked rows dim.
+        let row_h = self.px(60.0);
+        let box_sz = self.px(14.0);
+        for (k, (chord, what)) in HINTS.iter().enumerate() {
+            let ticked = self.hints[k];
+            let ry = y;
+            let base = ry + self.px(24.0);
+            let bx = r.x + pad;
+            let by = base - box_sz + self.px(2.0);
+            if ticked {
+                scene.rect(Rect::new(bx, by, box_sz, box_sz), self.surface.signal);
+                self.fonts.draw_icon(scene, nus_render::text::icons::CHECK, box_sz, bx, by, [1.0, 1.0, 1.0, 1.0]);
+            } else {
+                scene.outline(Rect::new(bx, by, box_sz, box_sz), self.px(m::HAIRLINE), ink);
             }
-            2 => vec![
-                ("SEARCH".into(), "google · configurable".into()),
-                ("NEW TAB".into(), "opens the palette; no new-tab page".into()),
-                ("THIRD-PARTY COOKIES".into(), "blocked (v1)".into()),
-                ("DOWNLOADS".into(), "~/Downloads · silent · ruled toast (v1)".into()),
-                ("PASSWORDS".into(), "1Password via op (v1)".into()),
-                ("ENGINE".into(), format!("Chromium {}", crate::chromium_version())),
-            ],
-            3 => {
-                let mut v: Vec<(String, String)> = self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), c.clone())).collect();
-                if v.is_empty() {
-                    v.push(("LOCAL".into(), "none on PATH (claude, codex, ollama are detected)".into()));
-                }
-                v.push(("WEB · CHATGPT".into(), "https://chatgpt.com/?q=…".into()));
-                v.push(("WEB · CLAUDE".into(), "https://claude.ai/new?q=…".into()));
-                v.push(("DEFAULT".into(), self.llm_tools.first().map(|(n, _)| n.clone()).unwrap_or_else(|| "claude (web)".into())));
-                v
-            }
-            4 => vec![
-                ("NEW TAB".into(), key("T", true)),
-                ("GO".into(), key("K", true)),
-                ("URL".into(), key("L", true)),
-                ("CLOSE".into(), key("W", true)),
-                ("REOPEN CLOSED".into(), key("Z", true)),
-                ("SPLIT".into(), key("D", true)),
-                ("SIDEBAR".into(), key("S", true)),
-                ("TAB N".into(), key("1–9", false)),
-                ("MRU".into(), key("`", false)),
-                ("PREV / NEXT".into(), key("PGUP / PGDN", false)),
-                ("SETTINGS".into(), key(",", false)),
-            ],
-            _ => vec![
-                ("CHANNEL".into(), "GitHub Releases · self-update (v1)".into()),
-                ("TELEMETRY".into(), "none".into()),
-                ("VERSION".into(), format!("nus spike 4 · CEF {}", crate::chromium_version())),
-            ],
-        };
-        let rh = self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
-        let maxw = (r.w - nav_w - self.px(80.0)).min(self.px(760.0));
-        for (k, v) in rows {
-            let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);
-            self.fonts.draw(scene, dim, cx, base, &k);
-            let vs = self.fit(ui, &v, maxw - self.px(200.0));
-            self.fonts.draw(scene, ui, cx + self.px(200.0), base, &vs);
-            scene.hline(cx, y + rh - self.px(m::HAIRLINE), maxw, self.px(m::HAIRLINE), t.tint);
-            y += rh;
+            let chord = match *chord {
+                "EDGE" => "HOVER THE EDGE".to_string(),
+                "ENTER" => "ENTER".to_string(),
+                c => key(c, c != "`"),
+            };
+            let cs = Style { color: if ticked { t.dim } else { ink }, ..strong };
+            let x = bx + box_sz + self.px(14.0);
+            self.fonts.draw(scene, cs, x, base, &chord);
+            let ws = Style { color: if ticked { t.dim } else { ink }, ..ui };
+            let what = self.fit(ws, what, r.right() - pad - x);
+            self.fonts.draw(scene, ws, x, base + self.px(20.0), &what);
+            scene.hline(r.x + pad, ry + row_h - self.px(m::HAIRLINE), r.w - 2.0 * pad, self.px(m::HAIRLINE), ink);
+            self.hint_hits.push((Rect::new(r.x, ry, r.w, row_h), k));
+            y += row_h;
         }
-        let _ = strong;
+        // Foot: skip, or close when done.
+        let fy = r.bottom() - self.px(44.0);
+        scene.hline(r.x + pad, fy, r.w - 2.0 * pad, self.px(m::STRUCTURE), ink);
+        let base = fy + self.px(26.0);
+        let word = if done == 5 { "ALL FIVE · CLOSE THIS PANEL" } else { "SKIP THE TOUR" };
+        let st = if done == 5 { Style { color: self.surface.signal, ..strong } } else { dim };
+        let ww = self.fonts.draw(scene, st, r.x + pad, base, word);
+        self.hint_hits.push((Rect::new(r.x + pad, fy, ww + self.px(20.0), self.px(44.0)), usize::MAX));
+        let note = "SETTINGS REMEMBER YOU SKIPPED";
+        let nw = self.fonts.measure(dim, note);
+        if r.w > nw + ww + 3.0 * pad {
+            self.fonts.draw(scene, dim, r.right() - pad - nw, base, note);
+        }
     }
 
-    fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool) {
+    fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
@@ -1444,6 +1570,10 @@ impl App {
             Pane::Settings(p) => {
                 let p = SettingsPane { rect: p.rect, section: p.section };
                 self.draw_settings(scene, &p);
+            }
+            Pane::Hints(p) => {
+                let r = p.rect;
+                self.draw_hints(scene, r);
             }
             Pane::Term(p) => {
                 let r = p.rect;
@@ -1470,6 +1600,12 @@ impl App {
                 }
                 let clip = Rect::new(r.x, r.y + hh, r.w, r.h - hh);
                 scene.layer(Some(clip));
+                // The rules' paper for this tab; carries the window opacity so
+                // a translucent window stays translucent.
+                if let Some(bg) = look.bg {
+                    let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
+                    scene.rect(clip, [bg[0], bg[1], bg[2], a]);
+                }
                 p.grid.draw(scene, &mut self.fonts, &p.term, p.origin, focused);
                 let _ = p.term.grid_mut().take_damage();
                 scene.layer(None);
@@ -1490,7 +1626,7 @@ impl App {
                 let field = Rect::new(x, r.y + self.px(6.0), r.right() - self.px(14.0) - dw - self.px(14.0) - x, self.px(22.0));
                 let local = is_local(&url);
                 if local {
-                    scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.signal, ink, self.px(8.0)));
+                    scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.surface.signal, ink, self.px(8.0)));
                 } else {
                     scene.outline(field, self.px(m::HAIRLINE), ink);
                 }
@@ -1506,10 +1642,10 @@ impl App {
                     scene.layer(None);
                 }
                 if local {
-                    scene.push(nus_render::Instance::hazard(p.page, self.px(5.0), self.signal, ink, self.px(10.0)));
+                    scene.push(nus_render::Instance::hazard(p.page, self.px(5.0), self.surface.signal, ink, self.px(10.0)));
                 }
                 if loading {
-                    scene.rect(Rect::new(p.page.x, p.page.y, p.page.w * 0.5, self.px(2.0)), self.signal);
+                    scene.rect(Rect::new(p.page.x, p.page.y, p.page.w * 0.5, self.px(2.0)), self.surface.signal);
                 }
                 if let Some(d) = &p.devtools {
                     {
@@ -1550,7 +1686,7 @@ impl App {
         }
     }
 
-    fn fit(&self, style: Style, text: &str, max_w: f32) -> String {
+    pub(crate) fn fit(&self, style: Style, text: &str, max_w: f32) -> String {
         if self.fonts.measure(style, text) <= max_w {
             return text.to_string();
         }
@@ -1594,7 +1730,7 @@ impl App {
                     }
                 }
                 let actions: [(String, Action); 11] = [
-                    (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(0)),
+                    (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
                     (format!("close tab · {}", key("W", true)), Action::CloseTab),
@@ -1604,9 +1740,9 @@ impl App {
                         Action::TogglePin,
                     ),
                     (format!("reopen closed tab · {}", key("Z", true)), Action::Reopen),
-                    (format!("carapace · {:?} → next", self.shell).to_lowercase(), Action::ShellStyle),
-                    (format!("corner radius {} → +2", self.shell_radius), Action::ShellRadius(2.0)),
-                    (format!("corner radius {} → −2", self.shell_radius), Action::ShellRadius(-2.0)),
+                    (format!("carapace · {:?} → next", self.surface.shell).to_lowercase(), Action::ShellStyle),
+                    (format!("corner radius {} → +2", self.surface.shell_radius), Action::ShellRadius(2.0)),
+                    (format!("corner radius {} → −2", self.surface.shell_radius), Action::ShellRadius(-2.0)),
                     ("picture in picture · this tab's video".into(), Action::Pip),
                 ];
                 for (label, a) in actions {
@@ -1669,10 +1805,11 @@ impl App {
     }
 
     /// Type `cmd` + Enter into the focused terminal, or a fresh one.
-    fn run_in_shell(&mut self, cmd: &str) {
+    pub(crate) fn run_in_shell(&mut self, cmd: &str) {
         let has_term = self.tabs.get_mut(self.active).is_some_and(|t| matches!(t.focused(), Pane::Term(_)) || matches!(t.left, Pane::Term(_)));
         if !has_term {
-            self.new_tab(0);
+            let p = self.behavior.default_profile;
+            self.new_tab(p);
         }
         let tab = &mut self.tabs[self.active];
         let pane = if matches!(tab.focused(), Pane::Term(_)) { tab.focused() } else { &mut tab.left };
@@ -1685,6 +1822,9 @@ impl App {
     }
 
     fn open_palette(&mut self, mode: PaletteMode) {
+        if mode == PaletteMode::Go {
+            self.tick_hint(0);
+        }
         if matches!(mode, PaletteMode::Go | PaletteMode::New) {
             self.ports = nus_pty::listening_ports()
                 .into_iter()
@@ -1701,7 +1841,10 @@ impl App {
             Action::SwitchTab(i) => self.activate(i),
             Action::NewTerminal(p) => self.new_tab(p),
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
-            Action::NewBrowser(url) => self.open_url(&url, true),
+            Action::NewBrowser(url) => {
+                self.tick_hint(1);
+                self.open_url(&url, true)
+            }
             Action::OpenInPane(url) => self.open_url(&url, false),
             Action::RunInShell(cmd) => self.run_in_shell(&cmd),
             Action::ToggleSplit => self.toggle_split(),
@@ -1712,12 +1855,7 @@ impl App {
             }
             Action::Reopen => self.reopen_closed(),
             Action::ShellStyle => {
-                self.shell = match self.shell {
-                    Shell::Band => Shell::Stroke,
-                    Shell::Stroke => Shell::Gradient,
-                    Shell::Gradient => Shell::Aurora,
-                    Shell::Aurora => Shell::Band,
-                };
+                self.surface.shell = self.surface.shell.next();
                 self.layout();
             }
             Action::Pip => {
@@ -1732,7 +1870,7 @@ impl App {
                 }
             }
             Action::ShellRadius(d) => {
-                self.shell_radius = (self.shell_radius + d).clamp(0.0, 24.0);
+                self.surface.shell_radius = (self.surface.shell_radius + d).clamp(0.0, 24.0);
                 self.layout();
             }
             Action::ToggleSidebar => {
@@ -1820,6 +1958,9 @@ impl App {
             PhysicalKey::Code(c) => Some(c),
             _ => None,
         };
+        if pressed && code == Some(KeyCode::F11) && !ctrl && !shift {
+            return self.toggle_fullscreen();
+        }
         if pressed && app {
             match code {
                 Some(KeyCode::KeyT) => return self.open_palette(PaletteMode::New),
@@ -1864,6 +2005,7 @@ impl App {
             match code {
                 Some(KeyCode::Comma) => return self.open_settings(),
                 Some(KeyCode::Backquote) => {
+                    self.tick_hint(4);
                     if let Some(&prev) = self.mru.get(1) {
                         self.activate(prev);
                     }
@@ -1882,7 +2024,9 @@ impl App {
                 }
                 WKey::Named(NamedKey::Enter) => {
                     if let Some((_, _, url)) = self.detected.clone() {
-                        self.open_url(&url, false);
+                        self.tick_hint(2);
+                        let new_tab = self.behavior.prompt_url == crate::settings::PromptUrl::NewTab;
+                        self.open_url(&url, new_tab);
                         return;
                     }
                     // Otherwise falls through: Ctrl+Enter at a URL line runs it in the shell.
@@ -1894,7 +2038,7 @@ impl App {
         // Route to the focused pane.
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
-            Pane::Settings(_) => {}
+            Pane::Settings(_) | Pane::Hints(_) => {}
             Pane::Term(t) => {
                 let action = match (ev.state, ev.repeat) {
                     (ElementState::Released, _) => KeyAction::Release,
@@ -1936,7 +2080,8 @@ impl App {
                                     let _ = t.pty.write(clear);
                                     t.line.clear();
                                     t.line_ok = true;
-                                    self.open_url(&url, false);
+                                    let new_tab = self.behavior.prompt_url == crate::settings::PromptUrl::NewTab;
+                                    self.open_url(&url, new_tab);
                                     return;
                                 }
                             }
@@ -2053,7 +2198,28 @@ impl App {
     fn make_tab(&mut self, left: Pane, right: Option<Pane>) -> Tab {
         let id = self.next_id;
         self.next_id += 1;
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false }
+        let look = self.look_for(&left, None);
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false, look }
+    }
+
+    /// Ask the rules what a new tab looks like.
+    fn look_for(&self, left: &Pane, parent: Option<&Overrides>) -> Overrides {
+        let (kind, profile) = match left {
+            Pane::Term(t) => ("terminal", self.profiles.get(t.profile).map(|p| p.name.as_str()).unwrap_or("")),
+            Pane::Web(_) => ("page", ""),
+            Pane::Settings(_) => ("settings", ""),
+            Pane::Hints(_) => ("welcome", ""),
+        };
+        let index = self.top_level().len();
+        self.rules.new_tab(&TabCtx {
+            kind,
+            index,
+            profile,
+            space: &self.space_name,
+            space_signal: self.surface.signal,
+            theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" },
+            parent,
+        })
     }
 
     // ── Stacks ─────────────────────────────────────────────────────────
@@ -2114,11 +2280,13 @@ impl App {
     }
 
     /// Open `url` as a page in the stack of tab `source`.
-    fn open_in_stack(&mut self, source: usize, url: &str) {
+    pub(crate) fn open_in_stack(&mut self, source: usize, url: &str) {
         let root = self.stack_root(source);
         let Some(w) = self.new_web_pane(url) else { return };
         let mut tab = self.make_tab(Pane::Web(w), None);
         tab.parent = Some(self.tabs[root].id);
+        let parent_look = self.tabs[root].look.clone();
+        tab.look = self.look_for(&tab.left, Some(&parent_look));
         let at = self.children(root).last().copied().unwrap_or(root) + 1;
         self.tabs.insert(at, tab);
         // Indices after `at` shifted by one.
@@ -2140,7 +2308,7 @@ impl App {
     }
 
     /// Pages that asked for a new window since the last frame.
-    fn drain_popups(&mut self) {
+    pub(crate) fn drain_popups(&mut self) {
         let mut opens = Vec::new();
         for (i, tab) in self.tabs.iter().enumerate() {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
@@ -2152,7 +2320,14 @@ impl App {
             }
         }
         for (i, url) in opens {
-            self.open_in_stack(i, &url);
+            match self.behavior.links {
+                crate::settings::Links::Stack => self.open_in_stack(i, &url),
+                crate::settings::Links::Split => {
+                    self.activate(i);
+                    self.open_url(&url, false);
+                }
+                crate::settings::Links::NewTab => self.open_url(&url, true),
+            }
             self.dirty = true;
         }
     }
@@ -2258,13 +2433,13 @@ impl App {
         let rows = self.palette_rows(mode, &input);
         let action = match rows.get(self.palette_sel) {
             Some(r) => r.action.clone(),
-            None if mode == PaletteMode::New => Action::NewTerminal(0),
+            None if mode == PaletteMode::New => Action::NewTerminal(self.behavior.default_profile),
             None => return,
         };
         self.run(action);
     }
 
-    fn open_url(&mut self, url: &str, new_tab: bool) {
+    pub(crate) fn open_url(&mut self, url: &str, new_tab: bool) {
         if new_tab {
             if let Some(w) = self.new_web_pane(url) {
                 let tab = self.make_tab(Pane::Web(w), None);
@@ -2287,7 +2462,7 @@ impl App {
         self.layout();
     }
 
-    fn new_tab(&mut self, profile: usize) {
+    pub(crate) fn new_tab(&mut self, profile: usize) {
         if let Ok(t) = self.new_term_pane(false, profile) {
             let tab = self.make_tab(Pane::Term(t), None);
             self.tabs.push(tab);
@@ -2297,7 +2472,8 @@ impl App {
 
     /// Close the selection (or the active tab). Unless `force`, a terminal
     /// with a foreground process asks first.
-    fn close_tabs(&mut self, force: bool) {
+    pub(crate) fn close_tabs(&mut self, force: bool) {
+        let force = force || !self.behavior.close_asks;
         let mut targets: Vec<usize> = if self.selected.is_empty() {
             vec![self.active]
         } else {
@@ -2349,7 +2525,7 @@ impl App {
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
                 Pane::Web(w) => Closed::Web(w.tab.shared.borrow().url.clone()),
-                Pane::Settings(_) => {
+                Pane::Settings(_) | Pane::Hints(_) => {
                     self.tab_removed(i);
                     continue;
                 }
@@ -2402,20 +2578,32 @@ impl App {
 
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
         self.mouse = (x, y);
-        if !self.sidebar {
+        if !self.sidebar_pinned() && self.sidebar_hoverable() {
             let c = self.content_rect();
             let sb = self.sidebar_rect();
             let inside = sb.contains(x, y);
-            if !self.sidebar_hover && x < self.px(6.0) && y >= c.y {
+            let edge = self.px(6.0);
+            let at_edge = if self.sidebar_right() { x > self.target.size.0 as f32 - edge } else { x < edge };
+            // "Inside window" means the pointer must have travelled from inside
+            // to the edge; arriving straight from the desktop doesn't count.
+            let allowed = match self.sidebar_rules.hover_from {
+                HoverFrom::ScreenEdge => true,
+                HoverFrom::InsideWindow => self.pointer_inside,
+            };
+            if !self.sidebar_hover && at_edge && y >= c.y && allowed {
                 self.sidebar_hover = true;
+                self.tick_hint(3);
                 self.sidebar_leave = None;
                 self.dirty = true;
             } else if self.sidebar_hover {
                 if inside {
                     self.sidebar_leave = None;
                 } else if self.sidebar_leave.is_none() {
-                    self.sidebar_leave = Some(Instant::now() + std::time::Duration::from_millis(300));
+                    self.sidebar_leave = Some(Instant::now() + std::time::Duration::from_millis(self.sidebar_rules.grace_ms));
                 }
+            }
+            if !at_edge {
+                self.pointer_inside = true;
             }
         }
         if self.sidebar_visible() {
@@ -2537,6 +2725,20 @@ impl App {
             return;
         }
 
+        // Onboarding foot: skip / close.
+        if pressed && button == MouseButton::Left && self.hints_open() {
+            if let Some(&(_, k)) = self.hint_hits.iter().find(|(r, _)| r.contains(x, y)) {
+                if k == usize::MAX {
+                    return self.dismiss_hints();
+                }
+            }
+        }
+
+        // Settings: chips, sliders, swatches, buttons.
+        if pressed && button == MouseButton::Left && self.settings_click(x, y) {
+            return;
+        }
+
         // Panes: focus, and forward to the browser.
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let mut hit_right = None;
@@ -2544,27 +2746,14 @@ impl App {
             Pane::Term(t) => t.rect.contains(x, y),
             Pane::Web(w) => w.rect.contains(x, y),
             Pane::Settings(s) => s.rect.contains(x, y),
+            Pane::Hints(s) => s.rect.contains(x, y),
         };
-        // Settings: clicking a section selects it.
-        let scale = self.scale;
-        let sh = (12.0 * 2.0 + m::LABEL_PX + m::HAIRLINE) * scale;
-        if pressed && button == MouseButton::Left {
-            if let Pane::Settings(s) = &mut tab.left {
-                if s.rect.contains(x, y) && x < s.rect.x + 220.0 * scale {
-                    let k = ((y - s.rect.y) / sh) as usize;
-                    if k < 6 {
-                        s.section = k;
-                    }
-                    self.dirty = true;
-                    return;
-                }
-            }
-        }
         if let Some(r) = &tab.right {
             let hit = match r {
                 Pane::Term(t) => t.rect.contains(x, y),
                 Pane::Web(w) => w.rect.contains(x, y),
                 Pane::Settings(s) => s.rect.contains(x, y),
+            Pane::Hints(s) => s.rect.contains(x, y),
             };
             if hit {
                 hit_right = Some(true);
@@ -2638,7 +2827,7 @@ impl App {
                     }
                     w.tab.focus(is_right == focus_right);
                 }
-                Pane::Term(_) | Pane::Settings(_) => {}
+                Pane::Term(_) | Pane::Settings(_) | Pane::Hints(_) => {}
             }
         }
         self.mouse_down_in_web = down_in_web;
