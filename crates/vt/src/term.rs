@@ -216,8 +216,9 @@ impl Term {
             return;
         }
         let template = Cell::erased_from(&self.cursor.template);
-        let shift = self.primary.resize(cols, rows, &template);
-        self.alternate.resize(cols, rows, &template);
+        let cursor_row = self.cursor.row;
+        let shift = self.primary.resize(cols, rows, &template, cursor_row);
+        self.alternate.resize(cols, rows, &template, cursor_row);
         let shift = if self.modes.contains(Modes::ALT_SCREEN) {
             0
         } else {
@@ -1203,6 +1204,20 @@ mod tests {
         t.resize(10, 4);
         assert_eq!(t.grid().text(), "a\nb\nc\nd");
         assert_eq!(t.cursor().row, 3);
+    }
+
+    #[test]
+    fn shrink_drops_blank_rows_below_cursor_first() {
+        let mut t = term(10, 4);
+        feed(&mut t, "prompt>"); // cursor on row 0, rows 1..3 blank
+        t.resize(10, 2);
+        assert_eq!(
+            t.grid().text(),
+            "prompt>
+"
+        );
+        assert_eq!(t.cursor().row, 0);
+        assert_eq!(t.grid().scrollback_len(), 0);
     }
 
     #[test]

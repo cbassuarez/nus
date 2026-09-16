@@ -196,9 +196,18 @@ impl Grid {
     /// are dropped from the top (into scrollback) or added at the bottom.
     /// Returns how far the cursor row must shift to stay on the same line
     /// (negative when rows left the top, positive when history was pulled
-    /// back in).
-    pub fn resize(&mut self, cols: usize, rows: usize, template: &Cell) -> isize {
+    /// back in). When shrinking, blank rows below `cursor_row` go first; rows
+    /// leave the top only when the cursor would otherwise fall off — which
+    /// is what conhost/ConPTY assumes when it repaints with absolute CUPs.
+    pub fn resize(
+        &mut self,
+        cols: usize,
+        rows: usize,
+        template: &Cell,
+        cursor_row: usize,
+    ) -> isize {
         let mut shift: isize = 0;
+        let mut cursor_row = cursor_row;
         let cols = cols.max(1);
         let rows = rows.max(1);
         if cols != self.cols {
@@ -208,8 +217,14 @@ impl Grid {
             self.cols = cols;
         }
         while self.lines.len() > rows {
+            let last = self.lines.len() - 1;
+            if last > cursor_row && self.lines[last].cells.iter().all(|c| c.is_blank()) {
+                self.lines.pop();
+                continue;
+            }
             let row = self.lines.remove(0);
             shift -= 1;
+            cursor_row = cursor_row.saturating_sub(1);
             if self.max_scrollback > 0 {
                 self.scrollback.push_back(row);
                 if self.scrollback.len() > self.max_scrollback {

@@ -1,0 +1,278 @@
+//! Draws a `nus_vt::Term` into a rect. Rows are shaped once and cached by
+//! content hash; only damaged rows (and the cursor row) are rebuilt.
+
+use std::hash::{Hash, Hasher};
+
+use nus_vt::{Cell, Color as VtColor, CursorShape, Flags, Modes, Term};
+
+use crate::scene::{Color, Instance, Rect, Scene};
+use crate::text::{FontId, FontSystem, Metrics};
+
+struct CachedRow {
+    hash: u64,
+    /// Instances positioned relative to the row's top-left.
+    bg: Vec<Instance>,
+    fg: Vec<Instance>,
+}
+
+pub struct GridRenderer {
+    pub font: FontId,
+    pub px: f32,
+    pub metrics: Metrics,
+    rows: Vec<CachedRow>,
+    text: String,
+    col_of: Vec<usize>,
+}
+
+fn to_color(c: nus_vt::Rgb) -> Color {
+    [
+        c.r as f32 / 255.0,
+        c.g as f32 / 255.0,
+        c.b as f32 / 255.0,
+        1.0,
+    ]
+}
+
+impl GridRenderer {
+    pub fn new(fonts: &FontSystem, font: FontId, px: f32) -> GridRenderer {
+        GridRenderer {
+            font,
+            px,
+            metrics: fonts.metrics(font, px),
+            rows: Vec::new(),
+            text: String::new(),
+            col_of: Vec::new(),
+        }
+    }
+
+    pub fn set_font(&mut self, fonts: &FontSystem, font: FontId, px: f32) {
+        self.font = font;
+        self.px = px;
+        self.metrics = fonts.metrics(font, px);
+        self.rows.clear();
+    }
+
+    pub fn cell_size(&self) -> (f32, f32) {
+        (self.metrics.advance, self.metrics.line_height)
+    }
+
+    /// How many columns/rows fit in `rect`.
+    pub fn grid_size(&self, rect: Rect) -> (usize, usize) {
+        let cols = (rect.w / self.metrics.advance).floor().max(2.0) as usize;
+        let rows = (rect.h / self.metrics.line_height).floor().max(1.0) as usize;
+        (cols, rows)
+    }
+
+    /// Draw the terminal's visible grid with its top-left at `origin`.
+    /// Pushes into the scene's current layer.
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        fonts: &mut FontSystem,
+        term: &Term,
+        origin: (f32, f32),
+        focused: bool,
+    ) {
+        let (cw, ch) = self.cell_size();
+        let baseline = self.metrics.baseline;
+        let grid = term.grid();
+        let rows = grid.rows();
+        let palette = &term.palette;
+        let cursor = *term.cursor();
+        let show_cursor = term.modes().contains(Modes::SHOW_CURSOR) && grid.display_offset == 0;
+        let shape = term.cursor_style().shape;
+        let cursor_rgb = to_color(palette.get(nus_vt::palette::CURSOR));
+        let default_bg = to_color(palette.get(nus_vt::palette::BG));
+        self.rows.resize_with(rows, || CachedRow {
+            hash: 0,
+            bg: Vec::new(),
+            fg: Vec::new(),
+        });
+
+        for r in 0..rows {
+            let row = grid.visible_row(r);
+            let cursor_here = show_cursor && r == cursor.row;
+            let mut h = std::hash::DefaultHasher::new();
+            for c in &row.cells {
+                c.ch.hash(&mut h);
+                c.flags.bits().hash(&mut h);
+                std::mem::discriminant(&c.fg).hash(&mut h);
+                std::mem::discriminant(&c.bg).hash(&mut h);
+                match c.fg {
+                    VtColor::Indexed(i) => i.hash(&mut h),
+                    VtColor::Rgb(a, b, d) => (a, b, d).hash(&mut h),
+                    VtColor::Default => {}
+                }
+                match c.bg {
+                    VtColor::Indexed(i) => i.hash(&mut h),
+                    VtColor::Rgb(a, b, d) => (a, b, d).hash(&mut h),
+                    VtColor::Default => {}
+                }
+            }
+            if cursor_here {
+                (cursor.col, shape as u8, focused).hash(&mut h);
+            }
+            // Palette changes invalidate everything; fold a cheap sample in.
+            palette.get(nus_vt::palette::FG).r.hash(&mut h);
+            let hash = h.finish();
+            if self.rows[r].hash != hash || self.rows[r].hash == 0 {
+                let cached = &mut self.rows[r];
+                cached.hash = hash;
+                cached.bg.clear();
+                cached.fg.clear();
+                self.text.clear();
+                self.col_of.clear();
+                for (c, cell) in row.cells.iter().enumerate() {
+                    if cell.flags.contains(Flags::WIDE_SPACER) {
+                        continue;
+                    }
+                    let is_cursor = cursor_here && c == cursor.col;
+                    let block = is_cursor && shape == CursorShape::Block && focused;
+                    let (fg, bg) = resolve(cell, palette, block, cursor_rgb, default_bg);
+                    let x = c as f32 * cw;
+                    if let Some(bgc) = bg {
+                        let w = if cell.flags.contains(Flags::WIDE) {
+                            2.0 * cw
+                        } else {
+                            cw
+                        };
+                        cached
+                            .bg
+                            .push(Instance::rect(Rect::new(x, 0.0, w, ch), bgc));
+                    }
+                    if is_cursor && !block {
+                        let r = match (shape, focused) {
+                            (_, false) => None, // hollow: drawn below
+                            (CursorShape::Underline, true) => Some(Rect::new(x, ch - 2.0, cw, 2.0)),
+                            (CursorShape::Beam, true) => Some(Rect::new(x, 0.0, 2.0, ch)),
+                            _ => None,
+                        };
+                        if let Some(r) = r {
+                            cached.bg.push(Instance::rect(r, cursor_rgb));
+                        }
+                        if !focused {
+                            let t = 1.0;
+                            cached
+                                .bg
+                                .push(Instance::rect(Rect::new(x, 0.0, cw, t), cursor_rgb));
+                            cached
+                                .bg
+                                .push(Instance::rect(Rect::new(x, ch - t, cw, t), cursor_rgb));
+                            cached
+                                .bg
+                                .push(Instance::rect(Rect::new(x, 0.0, t, ch), cursor_rgb));
+                            cached.bg.push(Instance::rect(
+                                Rect::new(x + cw - t, 0.0, t, ch),
+                                cursor_rgb,
+                            ));
+                        }
+                    }
+                    if cell.flags.intersects(Flags::ANY_UNDERLINE)
+                        && !cell.flags.contains(Flags::HIDDEN)
+                    {
+                        let ulc = cell
+                            .ul
+                            .map(|u| to_color(palette.resolve(u, true)))
+                            .unwrap_or(fg);
+                        cached
+                            .bg
+                            .push(Instance::rect(Rect::new(x, baseline + 2.0, cw, 1.0), ulc));
+                    }
+                    if cell.flags.contains(Flags::STRIKE) {
+                        cached.bg.push(Instance::rect(
+                            Rect::new(x, (ch * 0.5).round(), cw, 1.0),
+                            fg,
+                        ));
+                    }
+                    if cell.ch != ' ' && !cell.flags.contains(Flags::HIDDEN) {
+                        let start = self.text.len();
+                        self.text.push(cell.ch);
+                        for _ in start..self.text.len() {
+                            self.col_of.push(c);
+                        }
+                    } else {
+                        self.text.push(' ');
+                        self.col_of.push(c);
+                    }
+                }
+                if !self.text.trim().is_empty() {
+                    for g in fonts.shape(self.font, self.px, &self.text) {
+                        let Some(a) = fonts.glyph(self.font, self.px, g.id) else {
+                            continue;
+                        };
+                        let c = self.col_of[g.cluster as usize];
+                        let cell = &row.cells[c];
+                        let is_cursor = cursor_here && c == cursor.col;
+                        let block = is_cursor && shape == CursorShape::Block && focused;
+                        let (fg, _) = resolve(cell, palette, block, cursor_rgb, default_bg);
+                        let x = (c as f32 * cw + g.x_offset + a.left as f32).round();
+                        let y = (baseline - g.y_offset - a.top as f32).round();
+                        cached.fg.push(Instance::glyph(
+                            x,
+                            y,
+                            a.width as f32,
+                            a.height as f32,
+                            a.uv,
+                            fg,
+                        ));
+                    }
+                }
+            }
+        }
+
+        let (ox, oy) = origin;
+        for (r, cached) in self.rows.iter().enumerate() {
+            let y = oy + r as f32 * ch;
+            for i in &cached.bg {
+                let mut i = *i;
+                i.pos[0] += ox;
+                i.pos[1] += y;
+                scene.push(i);
+            }
+        }
+        for (r, cached) in self.rows.iter().enumerate() {
+            let y = oy + r as f32 * ch;
+            for i in &cached.fg {
+                let mut i = *i;
+                i.pos[0] += ox;
+                i.pos[1] += y;
+                scene.push(i);
+            }
+        }
+    }
+}
+
+fn resolve(
+    cell: &Cell,
+    palette: &nus_vt::Palette,
+    block_cursor: bool,
+    cursor_rgb: Color,
+    default_bg: Color,
+) -> (Color, Option<Color>) {
+    let mut fg = cell.fg;
+    let mut bg = cell.bg;
+    if cell.flags.contains(Flags::INVERSE) {
+        std::mem::swap(&mut fg, &mut bg);
+        if fg == VtColor::Default {
+            fg = VtColor::Indexed(0);
+        }
+    }
+    let mut fgc = to_color(palette.resolve(fg, true));
+    if cell.flags.contains(Flags::BOLD) {
+        if let VtColor::Indexed(i @ 0..=7) = fg {
+            fgc = to_color(palette.get(i as usize + 8));
+        }
+    }
+    if cell.flags.contains(Flags::DIM) {
+        fgc = [fgc[0] * 0.6, fgc[1] * 0.6, fgc[2] * 0.6, 1.0];
+    }
+    if block_cursor {
+        return (default_bg, Some(cursor_rgb));
+    }
+    let bgc = if bg == VtColor::Default && !cell.flags.contains(Flags::INVERSE) {
+        None
+    } else {
+        Some(to_color(palette.resolve(bg, false)))
+    };
+    (fgc, bgc)
+}

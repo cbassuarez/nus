@@ -212,3 +212,59 @@ impl Drop for Pty {
         self.kill();
     }
 }
+
+impl Profile {
+    /// Everything a new tab could run: the default shell, WSL distros
+    /// (Windows), and every concrete `Host` in ~/.ssh/config.
+    pub fn discover() -> Vec<Profile> {
+        let mut out = vec![Profile::default_shell()];
+        #[cfg(windows)]
+        {
+            if which("pwsh.exe") && which("powershell.exe") {
+                out.push(Profile {
+                    name: "powershell".into(),
+                    program: "powershell.exe".into(),
+                    args: vec!["-NoLogo".into()],
+                    cwd: None,
+                    env: Vec::new(),
+                });
+            }
+            if let Ok(o) = std::process::Command::new("wsl.exe")
+                .args(["-l", "-q"])
+                .output()
+            {
+                // wsl.exe prints UTF-16LE.
+                let u16s: Vec<u16> = o
+                    .stdout
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                for line in String::from_utf16_lossy(&u16s).lines() {
+                    let d = line.trim().trim_matches('\0');
+                    if !d.is_empty() {
+                        out.push(Profile::wsl(d));
+                    }
+                }
+            }
+        }
+        if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+            let cfg = std::path::Path::new(&home).join(".ssh").join("config");
+            if let Ok(text) = std::fs::read_to_string(cfg) {
+                for line in text.lines() {
+                    let line = line.trim();
+                    if let Some(rest) = line
+                        .strip_prefix("Host ")
+                        .or_else(|| line.strip_prefix("host "))
+                    {
+                        for host in rest.split_whitespace() {
+                            if !host.contains(['*', '?', '!']) {
+                                out.push(Profile::ssh(host));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}

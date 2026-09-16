@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 fn main() -> anyhow::Result<()> {
-    let (cols, rows) = (80u16, 24u16);
+    let (cols, rows) = (67u16, 34u16);
     let profile = nus_pty::Profile::default_shell();
     eprintln!("profile: {} {:?}", profile.program, profile.args);
     let mut pty = nus_pty::Pty::spawn(&profile, cols, rows, || {})?;
@@ -20,6 +20,14 @@ fn main() -> anyhow::Result<()> {
             pty.write(&responses)?;
         }
         if !sent && start.elapsed() > Duration::from_millis(1500) {
+            eprintln!(
+                "before input: cursor {:?}, wrap_next {}",
+                (term.cursor().row, term.cursor().col),
+                term.cursor().wrap_next
+            );
+            for r in 0..6 {
+                eprintln!("  row {r}: {:?}", term.grid().row(r).text());
+            }
             pty.write(b"echo nus-ok-$([int]([math]::Pow(6,2)))\r")?;
             sent = true;
         }

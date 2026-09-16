@@ -1,6 +1,6 @@
 [package]
 name = "nus-render"
-description = "wgpu compositor: retained scene graph, glyph atlas, external texture layers"
+description = "wgpu compositor: scene layers, glyph atlas, terminal grid, theme tokens"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,10 +8,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nus-vt = { path = "../vt" }
 wgpu.workspace = true
-raw-window-handle.workspace = true
+winit.workspace = true
 swash.workspace = true
 rustybuzz.workspace = true
 fontdb.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
 anyhow.workspace = true
 tracing.workspace = true

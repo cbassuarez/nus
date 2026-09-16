@@ -1,0 +1,24 @@
+[package]
+name = "composite"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Spike 4 — see docs/SPIKES.md. The app skeleton: nus-render compositor,
+# terminal + browser panes, Broadsheet chrome, focus routing.
+
+[package.metadata.cef.bundle]
+helper_name = "composite_helper"
+
+[dependencies]
+nus-vt = { path = "../../crates/vt" }
+nus-pty = { path = "../../crates/pty" }
+nus-render = { path = "../../crates/render" }
+cef = { path = "../../vendor/cef-rs/cef", default-features = false, features = ["sandbox", "build-util", "resources", "accelerated_osr"] }
+wgpu = "30"
+winit = "0.30"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace]
