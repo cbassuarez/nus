@@ -5,6 +5,7 @@
 //! way in; the RULES section shows it and reloads it.
 
 use crate::app::{App, Pane, SettingsPane};
+use crate::anim::{BarColor, BarStyle};
 use crate::surface::{self, Fullscreen, HoverFrom, Shell, Side, SWATCHES};
 use nus_render::text::icons;
 use nus_render::Style;
@@ -51,6 +52,9 @@ pub enum Slider {
     ShellWidth,
     Radius,
     Grace,
+    Motion,
+    BarThickness,
+    BarChase,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -73,6 +77,9 @@ pub enum Hit {
     ReloadRules,
     OpenRules,
     ResetRules,
+    Reduce(Option<bool>),
+    BarStyle(BarStyle),
+    BarColor(BarColor),
 }
 
 pub const SECTIONS: [(&str, (&str, &str)); 10] = [
@@ -116,6 +123,9 @@ impl App {
             Slider::ShellWidth => (self.surface.shell_width - 1.0) / 11.0,
             Slider::Radius => self.surface.shell_radius / 24.0,
             Slider::Grace => self.sidebar_rules.grace_ms as f32 / 1000.0,
+            Slider::Motion => self.motion.register,
+            Slider::BarThickness => (self.load_bar.thickness - 1.0) / 5.0,
+            Slider::BarChase => (self.load_bar.chase - 2.0) / 14.0,
         }
     }
 
@@ -128,6 +138,9 @@ impl App {
             Slider::ShellWidth => self.surface.shell_width = (1.0 + v * 11.0).round(),
             Slider::Radius => self.surface.shell_radius = (v * 24.0).round(),
             Slider::Grace => self.sidebar_rules.grace_ms = (v * 1000.0).round() as u64,
+            Slider::Motion => self.motion.register = v,
+            Slider::BarThickness => self.load_bar.thickness = (1.0 + v * 5.0).round(),
+            Slider::BarChase => self.load_bar.chase = (2.0 + v * 14.0).round(),
         }
         self.layout();
     }
@@ -204,6 +217,9 @@ impl App {
                 let _ = std::fs::write(&self.rules.path, surface::DEFAULT_RULES);
                 self.rules.reload();
             }
+            Hit::Reduce(r) => self.motion.reduce = r,
+            Hit::BarStyle(b) => self.load_bar.style = b,
+            Hit::BarColor(c) => self.load_bar.color = c,
         }
     }
 
@@ -219,6 +235,22 @@ impl App {
                         ("FOLLOW OS".into(), Hit::Theme(None), self.behavior.follow_os_theme),
                         ("PAPER".into(), Hit::Theme(Some(false)), !self.behavior.follow_os_theme && !ink),
                         ("INK".into(), Hit::Theme(Some(true)), !self.behavior.follow_os_theme && ink),
+                    ]),
+                ),
+                (
+                    "MOTION".into(),
+                    Slider(
+                        self::Slider::Motion,
+                        self.slider_value(self::Slider::Motion),
+                        format!("{} · snappy ← → cinematic · sidebar {}ms", self.motion.name(), (self.motion.dur(crate::anim::base::SIDEBAR) * 1000.0).round()),
+                    ),
+                ),
+                (
+                    "REDUCE MOTION".into(),
+                    Choice(vec![
+                        (format!("FOLLOW OS · {}", if crate::anim::os_reduce_motion() { "ON" } else { "OFF" }), Hit::Reduce(None), self.motion.reduce.is_none()),
+                        ("OFF".into(), Hit::Reduce(Some(false)), self.motion.reduce == Some(false)),
+                        ("ON".into(), Hit::Reduce(Some(true)), self.motion.reduce == Some(true)),
                     ]),
                 ),
                 ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
@@ -364,6 +396,30 @@ impl App {
                 v
             }
             5 => vec![
+                (
+                    "LOADING BAR".into(),
+                    Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
+                ),
+                (
+                    "BAR COLOUR".into(),
+                    Choice(vec![
+                        ("SIGNAL".into(), Hit::BarColor(BarColor::Signal), self.load_bar.color == BarColor::Signal),
+                        ("TAB".into(), Hit::BarColor(BarColor::Tab), self.load_bar.color == BarColor::Tab),
+                        ("INK".into(), Hit::BarColor(BarColor::Ink), self.load_bar.color == BarColor::Ink),
+                    ]),
+                ),
+                (
+                    "BAR WEIGHT".into(),
+                    Slider(self::Slider::BarThickness, self.slider_value(self::Slider::BarThickness), format!("{}px", self.load_bar.thickness)),
+                ),
+                (
+                    "BAR CHASE".into(),
+                    Slider(
+                        self::Slider::BarChase,
+                        self.slider_value(self::Slider::BarChase),
+                        format!("{} · how eagerly it follows real progress", self.load_bar.chase),
+                    ),
+                ),
                 ("SEARCH".into(), Info("google · configurable".into())),
                 ("NEW TAB".into(), Info("opens the palette; no new-tab page".into())),
                 ("COOKIES".into(), Info("one jar per Space · third-party blocked (v1)".into())),

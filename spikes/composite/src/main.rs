@@ -1,6 +1,7 @@
 //! Spike 4: one compositor, terminal + browser panes, Broadsheet chrome.
 //! See docs/SPIKES.md.
 
+mod anim;
 mod app;
 mod browser;
 mod pip;

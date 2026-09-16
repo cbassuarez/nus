@@ -56,6 +56,7 @@ pub enum Action {
 }
 
 pub use crate::surface::Shell;
+use crate::anim::{base, Anim, BarColor, BarStyle, Follow, LoadBar, Motion};
 use crate::surface::{Fullscreen, HoverFrom, Overrides, Rules, Side, SidebarRules, Surface, TabCtx};
 
 pub enum Closed {
@@ -120,6 +121,9 @@ pub struct WebPane {
     /// DevTools pane rect (below the page) when open.
     pub dt_rect: Rect,
     pub focus_devtools: bool,
+    /// The loading bar chases real progress, then fades out.
+    pub load: Follow,
+    pub load_fade: Anim,
 }
 
 pub struct SettingsPane {
@@ -251,6 +255,22 @@ pub struct App {
     pub fullscreen: bool,
     /// The pointer has moved inside the window since it last left it.
     pub pointer_inside: bool,
+    pub motion: Motion,
+    pub load_bar: LoadBar,
+    /// 0 hidden … 1 shown, for the hover sidebar.
+    pub sidebar_anim: Anim,
+    /// 0 … 1 rise-and-fade for the palette.
+    pub palette_anim: Anim,
+    /// 0 … 1 drop for confirmation bands.
+    pub band_anim: Anim,
+    /// The active tint's y in the sidebar; it travels between rows.
+    pub tint_anim: Anim,
+    /// Crumb title alpha, replayed on every tab switch.
+    pub crumb_anim: Anim,
+    /// Per-tab sidebar row heights (previews grow, stacks unfold), by tab id.
+    pub row_anims: std::collections::HashMap<u64, Anim>,
+    /// Transient x offset applied to sidebar_rect while the slide-in draws.
+    pub sidebar_shift: f32,
     pub shell_phase: f32,
     pub pip: Option<crate::pip::Pip>,
     pub pip_request: Option<(usize, bool)>,
@@ -340,6 +360,15 @@ impl App {
             behavior: crate::settings::Behavior::default(),
             fullscreen: false,
             pointer_inside: false,
+            motion: Motion::default(),
+            load_bar: LoadBar::default(),
+            sidebar_anim: Anim::at(0.0),
+            palette_anim: Anim::at(1.0),
+            band_anim: Anim::at(1.0),
+            tint_anim: Anim::at(0.0),
+            crumb_anim: Anim::at(1.0),
+            row_anims: std::collections::HashMap::new(),
+            sidebar_shift: 0.0,
             shell_phase: 0.0,
             pip: None,
             pip_request: None,
@@ -436,6 +465,8 @@ impl App {
             page: Rect::new(0.0, 0.0, 1.0, 1.0),
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             seen_paints: 0,
+            load: Follow::new(0.0),
+            load_fade: Anim::at(0.0),
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             focus_devtools: false,
@@ -491,11 +522,8 @@ impl App {
         let c = self.content_rect();
         let (_, sr, _, sl) = self.shell_insets();
         let w = self.px(m::SIDEBAR);
-        if self.sidebar_right() {
-            Rect::new(self.target.size.0 as f32 - sr - w, c.y, w, c.h)
-        } else {
-            Rect::new(sl, c.y, w, c.h)
-        }
+        let x = if self.sidebar_right() { self.target.size.0 as f32 - sr - w } else { sl };
+        Rect::new(x + self.sidebar_shift, c.y, w, c.h)
     }
 
     fn sidebar_visible(&self) -> bool {
@@ -588,6 +616,10 @@ impl App {
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
         self.drain_popups();
+        self.sync_anims();
+        if self.anims_active() {
+            self.dirty = true;
+        }
         if self.surface.shell == Shell::Aurora {
             self.shell_phase = (self.shell_phase + 0.0015) % 1.0;
             self.dirty = true;
@@ -598,6 +630,133 @@ impl App {
                 self.sidebar_hover = false;
                 self.hover_row = None;
                 self.dirty = true;
+            }
+        }
+    }
+
+    // ── Motion ───────────────────────────────────────────────────────────
+
+    /// Point every animation at its current target (rows, tint, sidebar,
+    /// loading bars). Cheap; runs each loop.
+    fn sync_anims(&mut self) {
+        let hover_dur = self.motion.dur(base::SIDEBAR);
+        let row_dur = self.motion.dur(base::ROW);
+        // Hover sidebar: shown while hovered and not pinned.
+        let want = if self.sidebar_hover && !self.sidebar_pinned() { 1.0 } else { 0.0 };
+        self.sidebar_anim.go(want, hover_dur);
+        // Row heights.
+        let compact = self.px(9.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
+        let expanded = compact + self.px(8.0) + self.px(m::PREVIEW_H) + self.px(3.0);
+        let ids: Vec<(u64, f32)> = (0..self.tabs.len())
+            .map(|i| {
+                let t = &self.tabs[i];
+                let hidden = t.pinned || (t.parent.is_some() && !self.stack_open(self.stack_root(i)));
+                let h = if hidden {
+                    0.0
+                } else if self.hover_row == Some(i) || t.waiting() {
+                    expanded
+                } else {
+                    compact
+                };
+                (t.id, h)
+            })
+            .collect();
+        for (id, h) in ids {
+            let a = self.row_anims.entry(id).or_insert_with(|| Anim::at(0.0));
+            a.go(h, row_dur);
+        }
+        let live: std::collections::HashSet<u64> = self.tabs.iter().map(|t| t.id).collect();
+        self.row_anims.retain(|id, _| live.contains(id));
+        // Active tint travels to the active row.
+        let g = self.sidebar_geometry();
+        if let Some(&(_, y, _)) = g.rows.iter().find(|&&(i, _, _)| i == self.active) {
+            let d = self.motion.dur(base::TINT);
+            if self.tint_anim.target() == 0.0 && !self.tint_anim.active() {
+                self.tint_anim = Anim::at(y);
+            } else {
+                self.tint_anim.go(y, d);
+            }
+        }
+        // Loading bars chase progress; on arrival they fade out.
+        let chase = self.load_bar.chase;
+        let out = self.motion.dur(base::LOAD_OUT);
+        for tab in self.tabs.iter_mut() {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Web(w) = p {
+                    let (loading, progress) = {
+                        let s = w.tab.shared.borrow();
+                        (s.loading, s.progress as f32)
+                    };
+                    if loading {
+                        // Real progress, with a trickle so a stalled bar still breathes.
+                        let trickle = (w.load.target + 0.002).min(0.92);
+                        w.load.target = progress.max(trickle).max(0.08);
+                        w.load_fade.go(1.0, 0.0);
+                    } else if w.load.target < 1.0 || w.load.value < 0.999 {
+                        w.load.target = 1.0;
+                    } else if w.load_fade.target() > 0.0 {
+                        w.load_fade.go(0.0, out);
+                    } else if !w.load_fade.active() && w.load.value >= 0.999 {
+                        // Rest for the next navigation.
+                        w.load = Follow::new(0.0);
+                    }
+                    if w.load.step(chase) {
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn anims_active(&self) -> bool {
+        self.sidebar_anim.active()
+            || self.palette_anim.active()
+            || self.band_anim.active()
+            || self.tint_anim.active()
+            || self.crumb_anim.active()
+            || self.row_anims.values().any(|a| a.active())
+            || self.tabs.iter().any(|t| {
+                std::iter::once(&t.left)
+                    .chain(t.right.as_ref())
+                    .any(|p| matches!(p, Pane::Web(w) if w.load_fade.active() || w.load.value != w.load.target))
+            })
+    }
+
+    /// The loading bar for a page: chases progress, fades when done.
+    fn draw_load_bar(&mut self, scene: &mut Scene, page: Rect, w: &WebPane, tab_signal: Option<nus_render::Color>) {
+        let alpha = w.load_fade.value();
+        if alpha <= 0.001 {
+            return;
+        }
+        let v = w.load.value.clamp(0.0, 1.0);
+        let base_color = match self.load_bar.color {
+            BarColor::Signal => self.surface.signal,
+            BarColor::Tab => tab_signal.unwrap_or(self.surface.signal),
+            BarColor::Ink => self.theme.ink,
+        };
+        let col = |a: f32| [base_color[0], base_color[1], base_color[2], base_color[3] * a * alpha];
+        let th = self.px(self.load_bar.thickness);
+        match self.load_bar.style {
+            BarStyle::Rule => scene.rect(Rect::new(page.x, page.y, page.w * v, th), col(1.0)),
+            BarStyle::Comet => {
+                let head = page.x + page.w * v;
+                let tail = (page.w * 0.28).min(head - page.x);
+                let segs = 12;
+                for k in 0..segs {
+                    let f0 = k as f32 / segs as f32;
+                    let f1 = (k + 1) as f32 / segs as f32;
+                    let x0 = head - tail * (1.0 - f0);
+                    let x1 = head - tail * (1.0 - f1);
+                    scene.rect(Rect::new(x0, page.y, x1 - x0 + 0.5, th), col(0.12 + 0.88 * f1 * f1));
+                }
+                scene.rect(Rect::new(head - th * 2.0, page.y, th * 2.0, th), col(1.0));
+            }
+            BarStyle::Carapace => {
+                let sw = self.px(self.surface.shell_width).max(th);
+                let win_w = self.target.size.0 as f32;
+                let fill = [1.0, 1.0, 1.0, 0.55 * alpha];
+                scene.layer(None);
+                scene.rect(Rect::new(0.0, 0.0, win_w * v, sw), fill);
             }
         }
     }
@@ -919,8 +1078,9 @@ impl App {
             };
             let title = format!("{} {}", self.tab_label(self.active), title).to_uppercase();
             let tw = self.fonts.measure(label, &title);
+            let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..label };
             self.fonts.draw_icon(&mut scene, icon, ic, x, iy, ink);
-            self.fonts.draw(&mut scene, label, x + ic + self.px(8.0), lbase, &title);
+            self.fonts.draw(&mut scene, fade, x + ic + self.px(8.0), lbase, &title);
             segment(&mut self.crumb_hits, &mut x, ic + p8 + tw, CrumbHit::Tab);
         }
         // Right side: status cluster, search, sidebar, window controls.
@@ -1050,8 +1210,9 @@ impl App {
         if let Some(root) = self.confirm_stack {
             let c = self.content_rect();
             let hh = self.header_h();
-            let cr = Rect::new(c.x, c.y, c.w, hh);
-            scene.layer(None);
+            let drop = self.band_anim.value();
+            let cr = Rect::new(c.x, c.y - (1.0 - drop) * hh, c.w, hh);
+            scene.layer(Some(Rect::new(c.x, c.y, c.w, hh)));
             scene.rect(cr, ink);
             let inv = Style { color: t.paper, ..self.label_strong() };
             let inv_l = Style { color: t.paper, ..label };
@@ -1065,13 +1226,18 @@ impl App {
         }
 
         // Hover-revealed sidebar slides over the content.
-        if self.sidebar_hover && !self.sidebar_pinned() {
+        let slide = self.sidebar_anim.value();
+        if slide > 0.001 && !self.sidebar_pinned() {
             let sb = self.sidebar_rect();
+            let off = (1.0 - slide) * (sb.w + self.px(12.0));
+            let sb = if self.sidebar_right() { Rect::new(sb.x + off, sb.y, sb.w, sb.h) } else { Rect::new(sb.x - off, sb.y, sb.w, sb.h) };
             let shadow = if self.sidebar_right() { -self.px(8.0) } else { self.px(8.0) };
             scene.layer(None);
-            scene.rect(Rect::new(sb.x + shadow, sb.y, sb.w, sb.h), Theme::with_alpha(ink, 0.18));
+            scene.rect(Rect::new(sb.x + shadow, sb.y, sb.w, sb.h), Theme::with_alpha(ink, 0.18 * slide));
             scene.rect(sb, self.paper());
+            self.sidebar_shift = sb.x - self.sidebar_rect().x;
             self.draw_sidebar(&mut scene);
+            self.sidebar_shift = 0.0;
             scene.layer(None);
             let x = if self.sidebar_right() { sb.x - self.px(m::STRUCTURE) } else { sb.right() };
             scene.vline(x, sb.y, sb.h, self.px(m::STRUCTURE), ink);
@@ -1080,10 +1246,11 @@ impl App {
         // Palette.
         if let Some((mode, input)) = self.palette.clone() {
             scene.layer(None);
-            scene.rect(Rect::new(0.0, 0.0, w, h), t.scrim);
+            let rise = self.palette_anim.value();
+            scene.rect(Rect::new(0.0, 0.0, w, h), Theme::with_alpha(t.scrim, t.scrim[3] * rise));
             let pw = self.px(m::PALETTE);
             let bx = ((w - pw) / 2.0).round();
-            let by = self.px(220.0);
+            let by = self.px(220.0) + (1.0 - rise) * self.px(10.0);
             let rows = self.palette_rows(mode, &input);
             let row_h = self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE);
             let head_h = self.px(14.0) * 2.0 + self.px(16.0) + self.px(2.0);
@@ -1203,11 +1370,23 @@ impl App {
             if self.tabs[i].pinned {
                 continue;
             }
-            if self.tabs[i].parent.is_some() && !self.stack_open(self.stack_root(i)) {
+            let hidden = self.tabs[i].parent.is_some() && !self.stack_open(self.stack_root(i));
+            let waiting = self.tabs[i].waiting();
+            let want = if hidden {
+                0.0
+            } else if self.hover_row == Some(i) || waiting {
+                expanded
+            } else {
+                compact
+            };
+            // Animated height when one is running; otherwise the target.
+            let h = match self.row_anims.get(&self.tabs[i].id) {
+                Some(a) if a.active() => a.value(),
+                _ => want,
+            };
+            if h < 0.5 {
                 continue;
             }
-            let waiting = self.tabs[i].waiting();
-            let h = if self.hover_row == Some(i) || waiting { expanded } else { compact };
             rows.push((i, y, h));
             y += h;
         }
@@ -1287,8 +1466,10 @@ impl App {
             let stack: Vec<usize> = if child { Vec::new() } else { (0..tabs.len()).filter(|&j| tabs[j].parent == Some(tab.id)).collect() };
             let open = !stack.is_empty() && (i == self.active || stack.contains(&self.active));
             if i == self.active {
-                scene.rect(Rect::new(sb.x, y, sb.w, h), t.tint);
+                let ty = if self.tint_anim.active() { self.tint_anim.value() } else { y };
+                scene.rect(Rect::new(sb.x, ty, sb.w, h), t.tint);
             }
+            scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
             if self.selected.contains(&i) {
                 scene.outline(Rect::new(sb.x, y, sb.w, h - self.px(m::HAIRLINE)), self.px(m::STRUCTURE), ink);
             }
@@ -1368,6 +1549,7 @@ impl App {
                 }
             }
             scene.hline(sb.x, y + h - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), ink);
+            scene.layer(None);
         }
         self.tabs = tabs;
 
@@ -1614,7 +1796,9 @@ impl App {
                 let _ = x;
                 scene.hline(r.x, r.y + hh - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
                 if let Some(proc_name) = p.confirm_close.clone() {
-                    let cr = Rect::new(r.x, r.y + hh, r.w, hh);
+                    let drop = self.band_anim.value();
+                    let cr = Rect::new(r.x, r.y + hh - (1.0 - drop) * hh, r.w, hh);
+                    scene.layer(Some(Rect::new(r.x, r.y + hh, r.w, hh)));
                     scene.rect(cr, ink);
                     let inv = Style { color: t.paper, ..strong };
                     let inv_l = Style { color: t.paper, ..label };
@@ -1682,9 +1866,8 @@ impl App {
                 if local {
                     scene.push(nus_render::Instance::hazard(p.page, self.px(5.0), self.surface.signal, ink, self.px(10.0)));
                 }
-                if loading {
-                    scene.rect(Rect::new(p.page.x, p.page.y, p.page.w * 0.5, self.px(2.0)), self.surface.signal);
-                }
+                let _ = loading;
+                self.draw_load_bar(scene, p.page, p, look.signal);
                 if let Some(d) = &p.devtools {
                     {
                         let s = d.shared.borrow();
@@ -1876,6 +2059,7 @@ impl App {
         }
         self.palette = Some((mode, String::new()));
         self.palette_sel = 0;
+        self.palette_anim.replay(0.0, 1.0, self.motion.dur(base::PALETTE));
         self.dirty = true;
     }
 
@@ -2391,6 +2575,9 @@ impl App {
                 self.request_pip(prev, right);
             }
         }
+        if prev != i {
+            self.crumb_anim.replay(0.0, 1.0, self.motion.dur(base::CRUMB));
+        }
         self.active = i;
         let tab = &mut self.tabs[i];
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
@@ -2538,6 +2725,7 @@ impl App {
             if let Some(&root) = targets.iter().find(|&&i| self.tabs[i].parent.is_none() && !self.children(i).is_empty()) {
                 self.confirm_stack = Some(root);
                 self.active = root;
+                self.band_anim.replay(0.0, 1.0, self.motion.dur(base::BAND));
                 self.dirty = true;
                 return;
             }
@@ -2557,6 +2745,7 @@ impl App {
                         if let Pane::Term(t) = &mut self.tabs[i].left {
                             t.confirm_close = Some(p);
                         }
+                        self.band_anim.replay(0.0, 1.0, self.motion.dur(base::BAND));
                         self.dirty = true;
                         return;
                     }

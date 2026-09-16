@@ -16,6 +16,8 @@ pub struct Shared {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    /// 0..1 from on_loading_progress_change.
+    pub progress: f64,
     /// Bumped on every accelerated paint; the app redraws when it changes.
     pub paints: u64,
     /// The page's dominant <video>, reported by the injected tracker.
@@ -280,6 +282,7 @@ wrap_display_handler! {
                 tracing::info!("loaded {} +{}ms", s.url, s.created.elapsed().as_millis());
             }
             s.loading = progress < 1.0;
+            s.progress = progress;
         }
     }
 }
