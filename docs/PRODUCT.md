@@ -210,3 +210,47 @@ process is running, or never. Default shell profile.
 **Onboarding, as built.** The fifth chord in the panel is Ctrl+` (last tab)
 until the quick terminal exists. Ticks persist across launches; SKIP THE
 TOUR is remembered.
+
+## Motion, small screens, 2027 niceties (settled 2026-09-16, seventh pass)
+
+**Motion as ink.** One easing (ease-out cubic), base durations of 80–220ms,
+and a register slider from snappy (0.45×) to cinematic (2.2×); reduce
+motion follows the OS or is forced. Things slide and rules extend; nothing
+scales, bounces or blurs. Sidebar slides, rows grow, stacks unfold, the
+active tint travels, the palette rises, bands drop, the crumb fades, the
+loading bar travels. Content switches instantly.
+
+**Loading bar.** Chases real progress with a trickle, fades on arrival.
+Styles: rule, comet (bright head, fading tail), carapace (fills the band
+across the window). Colour: signal, the tab's own, or ink. Weight and
+chase are sliders.
+
+**Width, not mode.** Wide ≥1200 logical px: everything. Standard 900–1200:
+sidebar hover-only. Narrow <900: no split (the focused pane takes the
+content), one status icon, palette to the window, settings as a tile grid
+that drills into a section under a back crumb. No manual kiosk/touch
+switch.
+
+**Reader mode.** Ctrl+Shift+R or the book: the article, extracted in the
+page, set here in Newsreader on our paper — 640px measure, 19/28 body,
+rules not boxes, signal bullets, mono code. The page keeps living
+underneath. Word count in the tools row; the text feeds "ask about this
+page".
+
+**Boosts.** `on_page(ctx)` in `rules.luau` returns `{ css, js }` per site.
+
+**Little nus.** Links from other apps open in a small floating window with
+the band and one page; Esc closes, Ctrl+Shift+O keeps it as a tab. One
+instance: later launches hand their URLs over. MAKE DEFAULT in settings
+registers nus as a browser (Windows now; bundle / .desktop for the
+others).
+
+**Accessibility.** The chrome is an AccessKit tree from day one: every hit
+target is a node with a spoken label and an action, panes carry their
+text, the palette is a list box. Screen readers and UI automation see the
+same thing the mouse does.
+
+**Deferred from this pass** (still planned): content blocking (adblock
+crate), sleeping tabs, OS media controls, find in page, favicons, ruled
+context menus, downloads, history/autocomplete, session restore, site
+permission bands, print to PDF, snap layouts, `<select>` popups.

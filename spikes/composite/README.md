@@ -42,9 +42,20 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - **Luau in-process.** mlua (luau, vendored) adds ~1 min to a clean build
   and sandboxes fine: `io`/`os`/`require` are absent in `sandbox(true)`.
 
+- **Windows swapchain sizes lie mid-move** (0 or 32767); clamp to the
+  device's max texture dimension or `Surface::configure` panics.
+- **UI Automation is the test harness for AccessKit.** `[System.Windows.
+  Automation.AutomationElement]::FromHandle` walks the tree and
+  `InvokePattern` drives it; no screen reader needed to verify.
+- **CDP replies by id.** `Runtime.evaluate` with `returnByValue` and a
+  small `replies` queue in `Shared` is enough for extraction (reader mode);
+  `window.open` from CDP needs `userGesture`.
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - CEF popup surfaces (`<select>` dropdowns) are not composited.
 - Selection / copy / paste, scrollbars, favicons, history, find.
 - Space-owned browser profiles (one request context per Space; the spike uses the global one).
 - Window transparency on Windows (needs a DirectComposition swapchain).
+- Single instance over a named pipe / unix socket (loopback TCP here).
+- Reader mode images (captions only here) and link following.
