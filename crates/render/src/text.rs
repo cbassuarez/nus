@@ -94,6 +94,7 @@ pub struct FontSystem {
     /// Pending atlas uploads: (x, y, w, h, data).
     pub uploads: Vec<(u32, u32, u32, u32, Vec<u8>)>,
     db: Option<fontdb::Database>,
+    icons: HashMap<IconKey, Option<AtlasGlyph>>,
 }
 
 impl FontSystem {
@@ -107,6 +108,7 @@ impl FontSystem {
             shelf_h: 0,
             uploads: Vec::new(),
             db: None,
+            icons: HashMap::new(),
         }
     }
 
@@ -309,4 +311,122 @@ impl Default for FontSystem {
     fn default() -> Self {
         FontSystem::new()
     }
+}
+
+/// Bundled Phosphor icons (MIT), regular weight unless noted.
+pub mod icons {
+    macro_rules! icon {
+        ($name:ident, $file:literal) => {
+            pub const $name: (&str, &str) = (
+                $file,
+                include_str!(concat!("../../../assets/icons/", $file, ".svg")),
+            );
+        };
+    }
+    icon!(SEARCH, "magnifying-glass");
+    icon!(COMMAND, "command");
+    icon!(BACK, "arrow-left");
+    icon!(FORWARD, "arrow-right");
+    icon!(RELOAD, "arrows-clockwise");
+    icon!(SIDEBAR, "sidebar-simple");
+    icon!(TERMINAL, "terminal-window");
+    icon!(GLOBE, "globe");
+    icon!(SETTINGS, "gear-six");
+    icon!(PIP, "picture-in-picture");
+    icon!(BELL, "bell");
+    icon!(PORTS, "plugs-connected");
+    icon!(ASSISTANT, "sparkle");
+    icon!(MINIMIZE, "minus");
+    icon!(MAXIMIZE, "square");
+    icon!(CLOSE, "x");
+    icon!(PIN, "push-pin");
+    icon!(CARET_RIGHT, "caret-right");
+    icon!(CARET_DOWN, "caret-down");
+    icon!(STACK, "stack");
+    icon!(LINK, "link");
+    icon!(PLUS, "plus");
+    icon!(ENTER, "key-return");
+    icon!(HASH, "hash");
+    icon!(MORE, "dots-three");
+    icon!(HARD_HAT, "hard-hat");
+    icon!(COPY, "copy");
+    icon!(CHECK, "check");
+    icon!(WARNING, "warning");
+    icon!(HOME, "house");
+    icon!(GLOBE_BOLD, "globe-bold");
+    icon!(TERMINAL_BOLD, "terminal-window-bold");
+    icon!(BELL_BOLD, "bell-bold");
+}
+
+impl FontSystem {
+    /// Rasterize an SVG icon at `px` (square) into the atlas; cached by
+    /// name and size.
+    pub fn icon(&mut self, icon: (&'static str, &'static str), px: f32) -> Option<AtlasGlyph> {
+        let (name, svg) = icon;
+        let key = IconKey {
+            name,
+            px_x64: (px * 64.0) as u32,
+        };
+        if let Some(g) = self.icons.get(&key) {
+            return *g;
+        }
+        let entry = (|| {
+            let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).ok()?;
+            let side = px.round().max(1.0) as u32;
+            let mut pixmap = resvg::tiny_skia::Pixmap::new(side, side)?;
+            let s = side as f32 / tree.size().width().max(1.0);
+            resvg::render(
+                &tree,
+                resvg::tiny_skia::Transform::from_scale(s, s),
+                &mut pixmap.as_mut(),
+            );
+            let data: Vec<u8> = pixmap.pixels().iter().map(|p| p.alpha()).collect();
+            let (x, y) = self.pack(side, side)?;
+            self.uploads.push((x, y, side, side, data));
+            let a = ATLAS_SIZE as f32;
+            Some(AtlasGlyph {
+                uv: [
+                    x as f32 / a,
+                    y as f32 / a,
+                    (x + side) as f32 / a,
+                    (y + side) as f32 / a,
+                ],
+                left: 0,
+                top: side as i32,
+                width: side,
+                height: side,
+            })
+        })();
+        self.icons.insert(key, entry);
+        entry
+    }
+
+    /// Draw an icon with its top-left at (x, y).
+    pub fn draw_icon(
+        &mut self,
+        scene: &mut Scene,
+        icon: (&'static str, &'static str),
+        px: f32,
+        x: f32,
+        y: f32,
+        color: Color,
+    ) -> f32 {
+        if let Some(g) = self.icon(icon, px) {
+            scene.push(Instance::glyph(
+                x.round(),
+                y.round(),
+                g.width as f32,
+                g.height as f32,
+                g.uv,
+                color,
+            ));
+        }
+        px
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct IconKey {
+    name: &'static str,
+    px_x64: u32,
 }

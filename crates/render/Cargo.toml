@@ -16,5 +16,6 @@ rustybuzz.workspace = true
 fontdb.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
+resvg = { version = "0.48", default-features = false }
 anyhow.workspace = true
 tracing.workspace = true
