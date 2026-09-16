@@ -106,6 +106,9 @@ pub struct TermPane {
     pub profile: usize,
     pub rect: Rect,
     pub origin: (f32, f32),
+    /// The pane strip (profile · size) shows only when the tab is split;
+    /// alone, the header crumb already says it.
+    pub show_header: bool,
     /// What has been typed at the current prompt, for the URL rule.
     pub line: String,
     /// False once an editing key made `line` unreliable; reset on Enter.
@@ -533,6 +536,7 @@ impl App {
             profile: profile_index,
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             origin: (0.0, 0.0),
+            show_header: split,
             line: String::new(),
             line_ok: true,
             confirm_close: None,
@@ -684,9 +688,12 @@ impl App {
         } else {
             (c, None)
         };
+        let split = tab.right.is_some();
         let place = |pane: &mut Pane, r: Rect| match pane {
             Pane::Term(t) => {
                 t.rect = r;
+                t.show_header = split;
+                let header = if split { header } else { 0.0 };
                 let area = Rect::new(r.x + pad_x, r.y + header + pad_y, r.w - 2.0 * pad_x, r.h - header - 2.0 * pad_y);
                 t.origin = (area.x, area.y);
                 let _ = area; // terminal size is applied by `apply_term_resizes`
@@ -1115,6 +1122,7 @@ impl App {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Term(t) = p {
                     let r = t.rect;
+                    let header = if t.show_header { header } else { 0.0 };
                     let area = Rect::new(r.x + pad_x, r.y + header + pad_y, r.w - 2.0 * pad_x, r.h - header - 2.0 * pad_y);
                     let (cols, rows) = t.grid.grid_size(area);
                     if (cols, rows) != (t.term.cols(), t.term.rows()) {
@@ -1428,8 +1436,10 @@ impl App {
             x += self.px(18.0);
         } else {
             let tab = &self.tabs[self.active];
+            // Split tabs read as "left | right"; the pane strips name each side.
             let (icon, title) = match &tab.left {
-                Pane::Term(p) => (nus_render::text::icons::TERMINAL, p.title.clone()),
+                Pane::Term(p) if tab.right.is_none() => (nus_render::text::icons::TERMINAL, p.title.clone()),
+                Pane::Term(_) => (nus_render::text::icons::TERMINAL, tab.title()),
                 Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
                 Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
@@ -2108,24 +2118,29 @@ impl App {
             }
             Pane::Term(p) => {
                 let r = p.rect;
-                let hh = self.header_h();
-                let base = r.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
-                let mut x = r.x + self.px(m::HEADER_PAD_X);
-                let isz = self.px(13.0);
-                self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, isz, x, base - isz + self.px(2.0), ink);
-                x += isz + self.px(8.0);
-                x += self.fonts.draw(scene, strong, x, base, &format!("{} · {}", n, p.title).to_uppercase()) + self.px(14.0);
-                let dims = format!("{}×{}", p.term.cols(), p.term.rows());
-                let dw = self.fonts.measure(label, &dims);
-                let dx = r.right() - self.px(m::HEADER_PAD_X) - dw;
-                self.fonts.draw(scene, label, dx, base, &dims);
-                self.fonts.draw_icon(scene, nus_render::text::icons::EXPAND, isz, dx - isz - self.px(6.0), base - isz + self.px(2.0), t.dim);
-                let _ = x;
-                scene.hline(r.x, r.y + hh - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
+                let hh = if p.show_header { self.header_h() } else { 0.0 };
+                if p.show_header {
+                    // Split: this pane's strip names its shell and grid.
+                    let base = r.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
+                    let mut x = r.x + self.px(m::HEADER_PAD_X);
+                    let isz = self.px(13.0);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, isz, x, base - isz + self.px(2.0), ink);
+                    x += isz + self.px(8.0);
+                    let _ = n;
+                    x += self.fonts.draw(scene, strong, x, base, &p.title.to_uppercase()) + self.px(14.0);
+                    let dims = format!("{}×{}", p.term.cols(), p.term.rows());
+                    let dw = self.fonts.measure(label, &dims);
+                    let dx = r.right() - self.px(m::HEADER_PAD_X) - dw;
+                    self.fonts.draw(scene, label, dx, base, &dims);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::EXPAND, isz, dx - isz - self.px(6.0), base - isz + self.px(2.0), t.dim);
+                    let _ = x;
+                    scene.hline(r.x, r.y + hh - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
+                }
                 if let Some(proc_name) = p.confirm_close.clone() {
                     let drop = self.band_anim.value();
-                    let cr = Rect::new(r.x, r.y + hh - (1.0 - drop) * hh, r.w, hh);
-                    scene.layer(Some(Rect::new(r.x, r.y + hh, r.w, hh)));
+                    let bh = self.header_h();
+                    let cr = Rect::new(r.x, r.y + hh - (1.0 - drop) * bh, r.w, bh);
+                    scene.layer(Some(Rect::new(r.x, r.y + hh, r.w, bh)));
                     scene.rect(cr, ink);
                     let inv = Style { color: t.paper, ..strong };
                     let inv_l = Style { color: t.paper, ..label };
