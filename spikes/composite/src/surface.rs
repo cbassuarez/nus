@@ -212,6 +212,13 @@ pub struct Overrides {
     pub signal: Option<Color>,
 }
 
+/// A site boost: CSS and/or JS the rules hand a page.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Boost {
+    pub css: Option<String>,
+    pub js: Option<String>,
+}
+
 /// Context handed to `new_tab` / `new_space`.
 pub struct TabCtx<'a> {
     pub kind: &'a str,
@@ -255,6 +262,15 @@ end
 -- new_space(ctx) · ctx has index and name. Return { signal = "#rrggbb" }.
 function new_space(ctx)
   return { signal = hue("#c8102e", (ctx.index - 1) * 0.17) }
+end
+
+-- on_page(ctx) runs whenever a page's address changes: ctx has url and
+-- host. Return { css = "…", js = "…" } to boost the site (either key
+-- optional), or nil to leave it alone. Boosts run inside the page.
+function on_page(ctx)
+  if ctx.host == "example.com" then
+    return { css = "body { font-family: 'IBM Plex Mono', ui-monospace, monospace; }" }
+  end
 end
 "##;
 
@@ -320,13 +336,8 @@ impl Rules {
         self.status = match lua.load(&self.source).set_name("rules.luau").exec() {
             Ok(()) => {
                 let has = |n: &str| g.get::<mlua::Function>(n).is_ok();
-                format!(
-                    "ok · {}{}",
-                    if has("new_tab") { "new_tab " } else { "" },
-                    if has("new_space") { "new_space" } else { "" }
-                )
-                .trim()
-                .to_string()
+                let names: Vec<&str> = ["new_tab", "new_space", "on_page"].into_iter().filter(|n| has(n)).collect();
+                format!("ok · {}", names.join(" "))
             }
             Err(e) => first_line(&e.to_string()),
         };
@@ -361,6 +372,23 @@ impl Rules {
             Err(e) => {
                 tracing::warn!("rules new_tab: {e}");
                 Overrides::default()
+            }
+        }
+    }
+
+    /// What the rules want done to a page at `url`.
+    pub fn on_page(&self, url: &str) -> Boost {
+        let Ok(f) = self.lua.globals().get::<mlua::Function>("on_page") else { return Boost::default() };
+        let host = url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").trim_start_matches("www.");
+        let t = self.lua.create_table().unwrap();
+        let _ = t.set("url", url);
+        let _ = t.set("host", host);
+        match f.call::<Option<mlua::Table>>(t) {
+            Ok(Some(o)) => Boost { css: o.get::<String>("css").ok(), js: o.get::<String>("js").ok() },
+            Ok(None) => Boost::default(),
+            Err(e) => {
+                tracing::warn!("rules on_page: {e}");
+                Boost::default()
             }
         }
     }
@@ -408,6 +436,13 @@ mod tests {
         let c = r.new_tab(&child);
         assert_eq!(c.signal, o.signal);
         assert!(r.new_tab(&TabCtx { kind: "page", parent: None, ..ctx }).bg.is_none());
+    }
+
+    #[test]
+    fn boosts_by_host() {
+        let r = Rules::from_source(DEFAULT_RULES);
+        assert!(r.on_page("https://www.example.com/x").css.is_some());
+        assert_eq!(r.on_page("https://docs.rs/"), Boost::default());
     }
 
     #[test]

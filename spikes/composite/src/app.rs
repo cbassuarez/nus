@@ -124,6 +124,8 @@ pub struct WebPane {
     /// The loading bar chases real progress, then fades out.
     pub load: Follow,
     pub load_fade: Anim,
+    /// The URL the rules' boost was last applied to.
+    pub boosted: String,
 }
 
 pub struct SettingsPane {
@@ -481,6 +483,7 @@ impl App {
             seen_paints: 0,
             load: Follow::new(0.0),
             load_fade: Anim::at(0.0),
+            boosted: String::new(),
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             focus_devtools: false,
@@ -654,6 +657,7 @@ impl App {
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
         self.drain_popups();
+        self.apply_boosts();
         self.sync_anims();
         if self.anims_active() {
             self.dirty = true;
@@ -741,6 +745,45 @@ impl App {
                     if w.load.step(chase) {
                         self.dirty = true;
                     }
+                }
+            }
+        }
+    }
+
+    /// Apply `on_page` boosts to pages whose address changed. Runs at the
+    /// address change and again once loaded, so late documents get it too.
+    fn apply_boosts(&mut self) {
+        let mut jobs: Vec<(usize, bool, String, crate::surface::Boost)> = Vec::new();
+        for (i, tab) in self.tabs.iter().enumerate() {
+            for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
+                if let Pane::Web(w) = p {
+                    let (url, loading) = {
+                        let s = w.tab.shared.borrow();
+                        (s.url.clone(), s.loading)
+                    };
+                    let key = format!("{url}#{}", if loading { "loading" } else { "loaded" });
+                    if url.is_empty() || w.boosted == key {
+                        continue;
+                    }
+                    let boost = self.rules.on_page(&url);
+                    jobs.push((i, right, key, boost));
+                }
+            }
+        }
+        for (i, right, key, boost) in jobs {
+            let Some(tab) = self.tabs.get_mut(i) else { continue };
+            let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+            if let Some(Pane::Web(w)) = pane {
+                w.boosted = key;
+                if let Some(css) = &boost.css {
+                    let js = format!(
+                        "(function(){{var s=document.getElementById('nus-boost');if(!s){{s=document.createElement('style');s.id='nus-boost';(document.head||document.documentElement).appendChild(s);}}s.textContent={};}})()",
+                        serde_json::to_string(css).unwrap_or_default()
+                    );
+                    w.tab.eval(&js);
+                }
+                if let Some(js) = &boost.js {
+                    w.tab.eval(js);
                 }
             }
         }
