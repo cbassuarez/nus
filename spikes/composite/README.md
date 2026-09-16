@@ -26,9 +26,25 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - Sidebar previews of browser tabs are the same CEF texture drawn small —
   free.
 
+- **Pump once.** `pump()` consumes the change it reports. The loop pumped,
+  then `redraw()` pumped again and saw nothing, so browser-only changes
+  (first paint, video frames) never redrew until the next input event — it
+  looked like slow page loads. Latch the result into `dirty`.
+- **One request context.** `request_context_create_context` with default
+  settings gives each tab a private in-memory cookie jar and cache. Use the
+  global context (per-Space contexts with a cache_path in v1).
+- **Popups → stacks.** `on_before_popup` hands the URL to the app instead of
+  loading in place; the app opens it as a stack child (or split / new tab by
+  rule). `window.open` from CDP needs `userGesture: true` or Chrome blocks it.
+- **DX12 swapchain alpha is Opaque.** `get_capabilities().alpha_modes` is
+  `[Opaque]` here, so window opacity has no effect on Windows without
+  DirectComposition; the OPACITY row says so. Metal/Wayland to be checked.
+- **Luau in-process.** mlua (luau, vendored) adds ~1 min to a clean build
+  and sandboxes fine: `io`/`os`/`require` are absent in `sandbox(true)`.
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - CEF popup surfaces (`<select>` dropdowns) are not composited.
-- DevTools: needs a second OSR browser; F12 only logs.
 - Selection / copy / paste, scrollbars, favicons, history, find.
-- Space-owned browser profiles (one request context per Space).
+- Space-owned browser profiles (one request context per Space; the spike uses the global one).
+- Window transparency on Windows (needs a DirectComposition swapchain).
