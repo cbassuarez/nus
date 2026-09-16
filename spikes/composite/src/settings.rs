@@ -62,6 +62,7 @@ pub enum Slider {
     Angle,
     Drift,
     Breath,
+    Volume,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -106,11 +107,18 @@ pub enum Hit {
     OpacityOn(OpacityOn),
     TexKind(TextureKind),
     TexOn(TextureOn),
+    SoundOn(bool),
+    /// Play a cue by index into sound::NAMES.
+    Play(usize),
+    /// Event (index into sound::EVENTS) → cue index, or usize::MAX for quiet.
+    EventCue(usize, usize),
+    EventNext(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 10] = [
+pub const SECTIONS: [(&str, (&str, &str)); 11] = [
     ("APPEARANCE", icons::BRUSH),
     ("SURFACE", icons::PALETTE),
+    ("SOUND", icons::SPEAKER),
     ("SIDEBAR", icons::SIDEBAR),
     ("TABS", icons::SQUARES),
     ("TERMINAL", icons::TERMINAL),
@@ -121,7 +129,10 @@ pub const SECTIONS: [(&str, (&str, &str)); 10] = [
     ("UPDATES", icons::DOWNLOAD),
 ];
 
-pub const RULES: usize = 7;
+pub const SEC_SOUND: usize = 2;
+pub const SEC_TERMINAL: usize = 5;
+pub const SEC_BROWSER: usize = 6;
+pub const RULES: usize = 8;
 
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
@@ -156,6 +167,7 @@ impl App {
             Slider::Angle => self.surface.angle / 360.0,
             Slider::Drift => self.surface.drift / 0.5,
             Slider::Breath => self.surface.breath,
+            Slider::Volume => self.sound.prefs.volume,
         }
     }
 
@@ -175,6 +187,10 @@ impl App {
             Slider::Angle => self.surface.angle = (v * 360.0 / 15.0).round() * 15.0 % 360.0,
             Slider::Drift => self.surface.drift = (v * 0.5 * 100.0).round() / 100.0,
             Slider::Breath => self.surface.breath = (v * 20.0).round() / 20.0,
+            Slider::Volume => {
+                self.sound.prefs.volume = (v * 20.0).round() / 20.0;
+                self.sound.cue("tick");
+            }
         }
         self.layout();
     }
@@ -198,6 +214,13 @@ impl App {
             return false;
         }
         let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| r.contains(x, y)) else { return true };
+        match hit {
+            Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) => {}
+            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::ReloadAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {
+                self.play_event("control.press")
+            }
+            _ => self.play_event("toggle"),
+        }
         self.apply_setting(hit, x);
         self.save_prefs();
         self.dirty = true;
@@ -237,6 +260,10 @@ impl App {
             Hit::StopAdd => "add a stop".into(),
             Hit::StopRemove => "remove a stop".into(),
             Hit::StopColor(c) => format!("stop colour {}", surface::hex(c)),
+            Hit::SoundOn(b) => if b { "sound on".into() } else { "sound off".into() },
+            Hit::Play(i) => format!("play {}", crate::sound::NAMES.get(i).copied().unwrap_or("")),
+            Hit::EventCue(e, c) => format!("{} → {}", crate::sound::EVENTS[e].0, if c == usize::MAX { "quiet" } else { crate::sound::NAMES[c] }),
+            Hit::EventNext(e) => format!("{}: next cue", crate::sound::EVENTS[e].0),
             Hit::OpacityOn(o) => format!("opacity on {:?}", o).to_lowercase(),
             Hit::TexKind(k) => format!("texture {}", k.name()),
             Hit::TexOn(o) => format!("texture on {:?}", o).to_lowercase(),
@@ -258,7 +285,7 @@ impl App {
                     s.section = k;
                     s.scroll = 0.0;
                 }
-                if k == 5 {
+                if k == SEC_BROWSER {
                     self.refresh_register_note();
                 }
             }
@@ -324,7 +351,7 @@ impl App {
                     s.section = k;
                     s.drill = true;
                 }
-                if k == 5 {
+                if k == SEC_BROWSER {
                     self.refresh_register_note();
                 }
             }
@@ -400,6 +427,40 @@ impl App {
                 let i = self.stop_sel.min(self.surface.stops.len() - 1);
                 self.surface.stops[i] = c;
             }
+            Hit::SoundOn(b) => {
+                self.sound.prefs.enabled = b;
+                if b {
+                    self.sound.cue("chime");
+                }
+            }
+            Hit::Play(i) => {
+                if let Some(n) = crate::sound::NAMES.get(i) {
+                    self.sound.cue(n);
+                }
+            }
+            Hit::EventCue(e, c) => {
+                let ev = crate::sound::EVENTS[e].0.to_string();
+                let cue = if c == usize::MAX { String::new() } else { crate::sound::NAMES[c].to_string() };
+                if !cue.is_empty() {
+                    self.sound.cue(&cue);
+                }
+                self.sound.prefs.map.insert(ev, cue);
+            }
+            Hit::EventNext(e) => {
+                let ev = crate::sound::EVENTS[e].0;
+                let cur = self.sound.prefs.cue_for(ev);
+                let idx = cur.as_deref().and_then(|c| crate::sound::NAMES.iter().position(|n| *n == c));
+                let next = match idx {
+                    Some(i) if i + 1 < crate::sound::NAMES.len() => Some(i + 1),
+                    Some(_) => None,
+                    None => Some(0),
+                };
+                let cue = next.map(|i| crate::sound::NAMES[i].to_string()).unwrap_or_default();
+                if !cue.is_empty() {
+                    self.sound.cue(&cue);
+                }
+                self.sound.prefs.map.insert(ev.to_string(), cue);
+            }
             Hit::OpacityOn(o) => self.surface.opacity_on = o,
             Hit::TexKind(k) => {
                 self.surface.texture_kind = k;
@@ -424,7 +485,7 @@ impl App {
             Hit::StartupSound(b) => {
                 self.behavior.startup_sound = b;
                 if b {
-                    crate::start::chime();
+                    self.play_event("launch");
                 }
             }
             Hit::Reduce(r) => self.motion.reduce = r,
@@ -474,7 +535,7 @@ impl App {
                     "STARTUP SOUND".into(),
                     Choice(vec![
                         ("OFF".into(), Hit::StartupSound(false), !self.behavior.startup_sound),
-                        ("ON · A SHORT CHIME".into(), Hit::StartupSound(true), self.behavior.startup_sound),
+                        ("ON · THE LAUNCH CUE".into(), Hit::StartupSound(true), self.behavior.startup_sound),
                     ]),
                 ),
                 ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
@@ -594,7 +655,47 @@ impl App {
                     ),
                 ]
             }
-            2 => vec![
+            2 => {
+                let on = self.sound.prefs.enabled;
+                let mut rows: Vec<(String, Control)> = vec![
+                    (
+                        "SOUND".into(),
+                        Choice(vec![("ON".into(), Hit::SoundOn(true), on), ("OFF".into(), Hit::SoundOn(false), !on)]),
+                    ),
+                    (
+                        "VOLUME".into(),
+                        Slider(self::Slider::Volume, self.slider_value(self::Slider::Volume), format!("{}%", (self.sound.prefs.volume * 100.0).round())),
+                    ),
+                    (
+                        "".into(),
+                        Info(if self.sound.player.is_some() { "cuelume's seventeen cues · synthesized here · click one to hear it".into() } else { "no audio output device found".into() }),
+                    ),
+                ];
+                // The palette, in rows of six.
+                for chunk in (0..crate::sound::NAMES.len()).collect::<Vec<_>>().chunks(6) {
+                    rows.push((
+                        if chunk[0] == 0 { "THE PALETTE".into() } else { "".into() },
+                        Choice(chunk.iter().map(|&i| (crate::sound::NAMES[i].to_uppercase(), Hit::Play(i), false)).collect()),
+                    ));
+                }
+                rows.push(("".into(), Info("what plays when · QUIET silences an event · NEXT walks the palette".into())));
+                for (e, (ev, _, note)) in crate::sound::EVENTS.iter().enumerate() {
+                    let cur = self.sound.prefs.cue_for(ev);
+                    let mut chips = vec![("QUIET".into(), Hit::EventCue(e, usize::MAX), cur.is_none())];
+                    if let Some(c) = &cur {
+                        let ci = crate::sound::NAMES.iter().position(|n| n == c).unwrap_or(0);
+                        chips.push((c.to_uppercase(), Hit::EventCue(e, ci), true));
+                    }
+                    chips.push(("NEXT ▸".into(), Hit::EventNext(e), false));
+                    if !note.is_empty() {
+                        chips.push((note.to_uppercase(), Hit::EventNext(e), false));
+                    }
+                    rows.push((ev.replace('.', " · ").to_uppercase(), Choice(chips)));
+                }
+                rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
+                rows
+            }
+            3 => vec![
                 (
                     "SIDE".into(),
                     Choice(vec![
@@ -630,7 +731,7 @@ impl App {
                 ),
                 ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
             ],
-            3 => vec![
+            4 => vec![
                 (
                     "LINKS FROM PAGES".into(),
                     Choice(vec![
@@ -657,7 +758,7 @@ impl App {
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
                 ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
             ],
-            4 => {
+            5 => {
                 let mut v: Vec<(String, Control)> = vec![(
                     "DEFAULT SHELL".into(),
                     Choice(
@@ -681,7 +782,7 @@ impl App {
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
                 v
             }
-            5 => vec![
+            6 => vec![
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
@@ -721,7 +822,7 @@ impl App {
                 ("PASSWORDS".into(), Info("1Password via op (v1)".into())),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
-            6 => {
+            7 => {
                 let mut v: Vec<(String, Control)> =
                     self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))).collect();
                 if v.is_empty() {
@@ -731,7 +832,7 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            7 => vec![
+            8 => vec![
                 ("FILE".into(), Info(self.rules.path.to_string_lossy().to_string())),
                 ("STATUS".into(), Info(self.rules.status.clone())),
                 (
@@ -743,7 +844,7 @@ impl App {
                     ]),
                 ),
             ],
-            8 => vec![
+            9 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
                 ("URL".into(), Info(key("L", true))),
@@ -771,13 +872,14 @@ impl App {
         match k {
             0 => format!("{} · {}", if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.motion.name()),
             1 => format!("{} · {}", surface::hex(self.surface.signal), self.surface.shell.name()),
-            2 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
-            3 => format!("links → {:?}", self.behavior.links).to_lowercase(),
-            4 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
-            5 => format!("{} bar · google", self.load_bar.style.name()),
-            6 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
-            7 => self.rules.status.clone(),
-            8 => "chords".into(),
+            2 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
+            3 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
+            4 => format!("links → {:?}", self.behavior.links).to_lowercase(),
+            5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
+            6 => format!("{} bar · google", self.load_bar.style.name()),
+            7 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            8 => self.rules.status.clone(),
+            9 => "chords".into(),
             _ => "github releases".into(),
         }
     }

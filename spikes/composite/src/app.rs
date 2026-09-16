@@ -142,6 +142,8 @@ pub struct WebPane {
     pub dt_panel: usize,
     /// The URL last written to the recent list.
     pub remembered: String,
+    /// When the current load began (for the ready cue).
+    pub load_since: Option<Instant>,
 }
 
 pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::icons::CONSOLE), ("network", nus_render::text::icons::NETWORK), ("elements", nus_render::text::icons::CODE)];
@@ -314,6 +316,7 @@ pub struct App {
     pub stop_sel: usize,
     /// How tall the settings column's content was last frame.
     pub settings_reach: f32,
+    pub sound: crate::sound::Sound,
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
     pub splash: Option<crate::splash::Splash>,
@@ -443,6 +446,7 @@ impl App {
             preset_name: "broadsheet".into(),
             stop_sel: 0,
             settings_reach: 0.0,
+            sound: crate::sound::Sound::new(crate::sound::SoundPrefs::default()),
             start: None,
             splash: Some(crate::splash::Splash::new()),
             start_shown: false,
@@ -505,7 +509,7 @@ impl App {
         app.refresh_icon();
         app.load_avatar();
         if app.behavior.startup_sound {
-            crate::start::chime();
+            app.play_event("launch");
         }
         Ok(app)
     }
@@ -574,6 +578,7 @@ impl App {
             favicon: None,
             dt_panel: 0,
             remembered: String::new(),
+            load_since: None,
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             focus_devtools: false,
@@ -824,6 +829,7 @@ impl App {
         // Loading bars chase progress; on arrival they fade out.
         let chase = self.load_bar.chase;
         let out = self.motion.dur(base::LOAD_OUT);
+        let mut ready_cue = false;
         for tab in self.tabs.iter_mut() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
@@ -836,8 +842,16 @@ impl App {
                         let trickle = (w.load.target + 0.002).min(0.92);
                         w.load.target = progress.max(trickle).max(0.08);
                         w.load_fade.go(1.0, 0.0);
+                        if w.load_since.is_none() {
+                            w.load_since = Some(Instant::now());
+                        }
                     } else if w.load.target < 1.0 || w.load.value < 0.999 {
                         w.load.target = 1.0;
+                        if let Some(t0) = w.load_since.take() {
+                            if t0.elapsed().as_secs_f32() > 1.0 {
+                                ready_cue = true;
+                            }
+                        }
                     } else if w.load_fade.target() > 0.0 {
                         w.load_fade.go(0.0, out);
                     } else if !w.load_fade.active() && w.load.value >= 0.999 {
@@ -849,6 +863,9 @@ impl App {
                     }
                 }
             }
+        }
+        if ready_cue {
+            self.play_event("page.ready");
         }
     }
 
@@ -933,6 +950,12 @@ impl App {
 
     fn reader_fonts(&self) -> crate::reader::ReaderFonts {
         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+    }
+
+    /// A sound for something that happened, after rules.luau has had its say.
+    pub(crate) fn play_event(&mut self, event: &str) {
+        let over = self.rules.on_event(event);
+        self.sound.event(event, over);
     }
 
     /// profile/avatar.png → a texture (any size; drawn at 22px).
@@ -1182,6 +1205,7 @@ impl App {
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
         let mut detected = None;
+        let mut bell = false;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Term(t) = p {
@@ -1211,6 +1235,7 @@ impl App {
                                 if i != self.active || !self.window.has_focus() {
                                     t.waiting = true;
                                     changed = true;
+                                    bell = true;
                                 }
                             }
                             _ => {}
@@ -1239,6 +1264,9 @@ impl App {
         if detected != self.detected {
             self.detected = detected;
             changed = true;
+        }
+        if bell {
+            self.play_event("bell");
         }
         changed
     }
@@ -2048,6 +2076,7 @@ impl App {
         self.hints[k] = true;
         self.dirty = true;
         self.save_hints();
+        self.play_event("onboarding.tick");
     }
 
     fn hints_open(&self) -> bool {
@@ -2460,6 +2489,7 @@ impl App {
         self.palette = Some((mode, String::new()));
         self.palette_sel = 0;
         self.palette_anim.replay(0.0, 1.0, self.motion.dur(base::PALETTE));
+        self.play_event("palette.open");
         self.dirty = true;
     }
 
@@ -2538,8 +2568,14 @@ impl App {
                     input.pop();
                     self.palette_sel = 0;
                 }
-                WKey::Named(NamedKey::ArrowDown) => self.palette_sel += 1,
-                WKey::Named(NamedKey::ArrowUp) => self.palette_sel = self.palette_sel.saturating_sub(1),
+                WKey::Named(NamedKey::ArrowDown) => {
+                    self.palette_sel += 1;
+                    self.play_event("palette.move");
+                }
+                WKey::Named(NamedKey::ArrowUp) => {
+                    self.palette_sel = self.palette_sel.saturating_sub(1);
+                    self.play_event("palette.move");
+                }
                 WKey::Named(NamedKey::Space) => input.push(' '),
                 WKey::Character(c) if app => {
                     if c.eq_ignore_ascii_case("k") || c.eq_ignore_ascii_case("t") || c.eq_ignore_ascii_case("l") {
@@ -2957,6 +2993,7 @@ impl App {
         }
         if prev != i {
             self.crumb_anim.replay(0.0, 1.0, self.motion.dur(base::CRUMB));
+            self.play_event("tab.switch");
         }
         self.active = i;
         let tab = &mut self.tabs[i];
@@ -3151,6 +3188,7 @@ impl App {
                 }
             }
         }
+        self.play_event("tab.close");
         for &i in targets.iter().rev() {
             let tab = self.tabs.remove(i);
             self.closed.push(match &tab.left {
@@ -3223,6 +3261,7 @@ impl App {
             };
             if !self.sidebar_hover && at_edge && y >= c.y && allowed {
                 self.sidebar_hover = true;
+                self.play_event("sidebar.reveal");
                 self.tick_hint(3);
                 self.sidebar_leave = None;
                 self.dirty = true;
@@ -3345,7 +3384,7 @@ impl App {
                     SideHit::Profile => {
                         self.open_settings();
                         if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
-                            s.section = 4;
+                            s.section = crate::settings::SEC_TERMINAL;
                         }
                     }
                     SideHit::NewTab => self.open_palette(PaletteMode::New),

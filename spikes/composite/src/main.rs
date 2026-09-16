@@ -10,6 +10,7 @@ mod pip;
 mod prefs;
 mod reader;
 mod settings;
+mod sound;
 mod splash;
 mod start;
 mod surface;

@@ -447,74 +447,9 @@ impl App {
     }
 }
 
-// ── Sound ────────────────────────────────────────────────────────────────
-
-/// A short two-note chime as WAV bytes (mono, 22.05kHz, 16-bit).
-pub fn chime_wav() -> Vec<u8> {
-    let rate = 22_050u32;
-    let notes = [(659.25f32, 0.11f32), (880.0, 0.16)];
-    let mut samples: Vec<i16> = Vec::new();
-    for (f, len) in notes {
-        let n = (rate as f32 * len) as usize;
-        for i in 0..n {
-            let t = i as f32 / rate as f32;
-            let env = (1.0 - (i as f32 / n as f32)).powf(1.6) * (1.0 - (-t * 400.0).exp());
-            let v = (t * f * std::f32::consts::TAU).sin() * 0.28 * env;
-            samples.push((v * i16::MAX as f32) as i16);
-        }
-    }
-    let data_len = (samples.len() * 2) as u32;
-    let mut out = Vec::with_capacity(44 + data_len as usize);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_len).to_le_bytes());
-    out.extend_from_slice(b"WAVEfmt ");
-    out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&rate.to_le_bytes());
-    out.extend_from_slice(&(rate * 2).to_le_bytes());
-    out.extend_from_slice(&2u16.to_le_bytes());
-    out.extend_from_slice(&16u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_len.to_le_bytes());
-    for s in samples {
-        out.extend_from_slice(&s.to_le_bytes());
-    }
-    out
-}
-
-/// Play the chime without blocking. Off unless the setting is on.
-pub fn chime() {
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
-        // PlaySound keeps reading the buffer while it plays; leak a copy.
-        let wav: &'static [u8] = Box::leak(chime_wav().into_boxed_slice());
-        unsafe {
-            PlaySoundW(wav.as_ptr() as *const u16, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let path = std::env::temp_dir().join("nus-chime.wav");
-        if std::fs::write(&path, chime_wav()).is_ok() {
-            let cmd = if cfg!(target_os = "macos") { "afplay" } else { "paplay" };
-            let _ = std::process::Command::new(cmd).arg(&path).spawn();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wav_header() {
-        let w = chime_wav();
-        assert_eq!(&w[..4], b"RIFF");
-        assert_eq!(&w[8..12], b"WAVE");
-        assert!(w.len() > 44 + 1000);
-    }
 
     #[test]
     fn session_json_roundtrip() {

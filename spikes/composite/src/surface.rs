@@ -467,6 +467,15 @@ function new_space(ctx)
   return { signal = hue("#c8102e", (ctx.index - 1) * 0.17) }
 end
 
+-- on_event(ev) picks a sound: ev.name is one of launch, tab.switch,
+-- tab.close, sidebar.reveal, palette.open, palette.move, control.press,
+-- control.release, toggle, page.ready, copied, bell, onboarding.tick,
+-- hover. Return a cue name ("droplet"), false for quiet, or nil to keep
+-- the setting.
+function on_event(ev)
+  if ev.name == "hover" then return false end
+end
+
 -- on_page(ctx) runs whenever a page's address changes: ctx has url and
 -- host. Return { css = "…", js = "…" } to boost the site (either key
 -- optional), or nil to leave it alone. Boosts run inside the page.
@@ -543,7 +552,7 @@ impl Rules {
         self.status = match lua.load(&self.source).set_name("rules.luau").exec() {
             Ok(()) => {
                 let has = |n: &str| g.get::<mlua::Function>(n).is_ok();
-                let names: Vec<&str> = ["new_tab", "new_space", "on_page"].into_iter().filter(|n| has(n)).collect();
+                let names: Vec<&str> = ["new_tab", "new_space", "on_page", "on_event"].into_iter().filter(|n| has(n)).collect();
                 format!("ok · {}", names.join(" "))
             }
             Err(e) => first_line(&e.to_string()),
@@ -597,6 +606,19 @@ impl Rules {
                 tracing::warn!("rules on_page: {e}");
                 Boost::default()
             }
+        }
+    }
+
+    /// What the rules say an event should sound like: Some(Some(cue)) to
+    /// pick one, Some(None) for quiet (`return false`), None to leave it.
+    pub fn on_event(&self, event: &str) -> Option<Option<String>> {
+        let f = self.lua.globals().get::<mlua::Function>("on_event").ok()?;
+        let t = self.lua.create_table().ok()?;
+        let _ = t.set("name", event);
+        match f.call::<mlua::Value>(t) {
+            Ok(mlua::Value::String(s)) => Some(Some(s.to_str().map(|s| s.to_string()).unwrap_or_default())),
+            Ok(mlua::Value::Boolean(false)) => Some(None),
+            _ => None,
         }
     }
 
