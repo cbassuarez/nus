@@ -72,6 +72,7 @@ pub enum Action {
     TileSwap,
     KeepPeek,
     Compact,
+    Focus,
     /// Run a named chain from rules.luau.
     Chain(String),
     SaveToFolder(usize, usize),
@@ -207,6 +208,8 @@ pub struct WebPane {
     pub find: Option<crate::webui::Find>,
     /// The permission band's ALLOW / DENY chips.
     pub perm_hits: Vec<(Rect, bool)>,
+    /// Focus mode: no URL row, no tools row, the page alone.
+    pub bare: bool,
     /// The site panel (the gear at the end of the URL row), and its controls.
     pub site_panel: bool,
     pub site_hits: Vec<(Rect, crate::sites::SiteHit)>,
@@ -531,6 +534,9 @@ pub struct App {
     pub peek_anim: Anim,
     /// The compact column's hovered row, for its tooltip after the panes.
     pub compact_tip: Option<(usize, f32)>,
+    /// Focus mode: no strip, no sidebar, no rows — the panes alone.
+    pub focus: bool,
+    pub focus_hint: Option<Instant>,
     /// Folders under the tabs: plain ones (saved pages) and live ones.
     pub folders: Vec<crate::folders::Folder>,
     pub next_folder_id: u64,
@@ -731,6 +737,8 @@ impl App {
             resize_cursor: None,
             peek_anim: Anim::at(0.0),
             compact_tip: None,
+            focus: false,
+            focus_hint: None,
             folders: Vec::new(),
             next_folder_id: 100,
             live: crate::folders::start(),
@@ -946,7 +954,7 @@ impl App {
             dt_panel: 0,
             remembered: String::new(),
             find: None,
-            perm_hits: Vec::new(), site_panel: false, site_hits: Vec::new(),
+            perm_hits: Vec::new(), bare: false, site_panel: false, site_hits: Vec::new(),
             asleep: None,
             load_since: None,
             devtools: None,
@@ -984,7 +992,7 @@ impl App {
 
     /// Pinned open: the user's pin, or the fullscreen rule. Never below Wide.
     pub fn sidebar_pinned(&self) -> bool {
-        if self.width_class() != Width::Wide {
+        if self.width_class() != Width::Wide || self.focus {
             return false;
         }
         if self.fullscreen {
@@ -999,7 +1007,40 @@ impl App {
 
     /// Whether a hover may reveal it at all.
     fn sidebar_hoverable(&self) -> bool {
-        !(self.fullscreen && self.sidebar_rules.fullscreen == Fullscreen::Hidden)
+        !self.focus && !(self.fullscreen && self.sidebar_rules.fullscreen == Fullscreen::Hidden)
+    }
+
+    /// Focus mode: the panes alone in the window. Ctrl+Shift+F11 both ways.
+    pub(crate) fn toggle_focus(&mut self) {
+        self.focus = !self.focus;
+        self.focus_hint = if self.focus { Some(Instant::now()) } else { None };
+        self.sidebar_hover = false;
+        self.close_menus();
+        self.play_event("toggle");
+        self.layout();
+        self.dirty = true;
+    }
+
+    /// The hint that fades after entering focus mode.
+    fn draw_focus_hint(&mut self, scene: &mut Scene) {
+        let Some(at) = self.focus_hint else { return };
+        let age = at.elapsed().as_secs_f32();
+        if age > 3.0 {
+            self.focus_hint = None;
+            return;
+        }
+        self.dirty = true;
+        let k = if age < 0.3 { age / 0.3 } else if age > 2.4 { ((3.0 - age) / 0.6).max(0.0) } else { 1.0 };
+        let t = self.theme.clone();
+        let label = self.label();
+        let text = "FOCUS  ·  CTRL+SHIFT+F11 LEAVES";
+        let tw = self.fonts.measure(label, text);
+        let c = self.content_rect();
+        let w = tw + self.px(24.0);
+        let r = Rect::new(c.x + ((c.w - w) / 2.0).round(), c.bottom() - self.px(44.0), w, self.px(26.0));
+        scene.layer(None);
+        scene.rect(r, fade(t.ink, k));
+        self.fonts.draw(scene, Style { color: fade(t.paper, k), ..label }, r.x + self.px(12.0), r.y + self.px(17.0), text);
     }
 
     pub fn sidebar_right(&self) -> bool {
@@ -1008,8 +1049,8 @@ impl App {
 
     pub(crate) fn content_rect(&self) -> Rect {
         let (st, sr, sb, sl) = self.shell_insets();
-        let top = st + if self.compact() { 0.0 } else { self.px(m::TOP_STRIP) + self.px(m::STRUCTURE) };
-        let taken = if self.sidebar_pinned() { self.sidebar_w() + self.px(m::STRUCTURE) } else { self.px(4.0) };
+        let top = st + if self.compact() || self.focus { 0.0 } else { self.px(m::TOP_STRIP) + self.px(m::STRUCTURE) };
+        let taken = if self.sidebar_pinned() { self.sidebar_w() + self.px(m::STRUCTURE) } else if self.focus { 0.0 } else { self.px(4.0) };
         let (left, right) = if self.sidebar_right() { (sl, sr + taken) } else { (sl + taken, sr) };
         Rect::new(left, top, self.target.size.0 as f32 - left - right, self.target.size.1 as f32 - top - sb)
     }
@@ -1103,9 +1144,10 @@ impl App {
             (c, None)
         };
         let split = tab.right.is_some();
-        place_pane(&mut tab.left, left_rect, header, pad_x, pad_y, scale, split);
+        let bare = self.focus;
+        place_pane_bare(&mut tab.left, left_rect, header, pad_x, pad_y, scale, split, bare);
         if let (Some(r), Some(rr)) = (tab.right.as_mut(), right_rect) {
-            place_pane(r, rr, header, pad_x, pad_y, scale, split);
+            place_pane_bare(r, rr, header, pad_x, pad_y, scale, split, bare);
         }
         self.dirty = true;
     }
@@ -2516,7 +2558,7 @@ impl App {
                 }
             }
         }
-        if !self.compact() {
+        if !self.compact() && !self.focus {
             self.draw_strip(&mut scene);
         }
 
@@ -2641,6 +2683,7 @@ impl App {
         }
 
         self.draw_compact_tip(&mut scene);
+        self.draw_focus_hint(&mut scene);
         // In compact mode the strip rides over the content when summoned.
         if self.compact() && self.strip_shown() {
             self.draw_strip(&mut scene);
@@ -4311,6 +4354,8 @@ impl App {
                 let s = p.tab.shared.borrow();
                 let (url, bind, loading) = (s.url.clone(), s.bind.clone(), s.loading);
                 drop(s);
+                let local = is_local(&url);
+                if !p.bare {
                 // URL row.
                 let base = r.y + self.px(6.0) + self.px(22.0) - self.px(6.0);
                 let mut x = r.x + self.px(14.0);
@@ -4352,7 +4397,6 @@ impl App {
                     self.fonts.draw_icon(scene, nus_render::text::icons::BUG, isz, bug_x, iy, ink);
                 }
                 let field = Rect::new(x, r.y + self.px(6.0), r.right() - self.px(14.0) - dw - self.px(18.0) - x, self.px(22.0));
-                let local = is_local(&url);
                 if local {
                     scene.push(nus_render::Instance::hazard(field, self.px(2.0), self.surface.signal, ink, self.px(8.0)));
                 } else {
@@ -4362,6 +4406,7 @@ impl App {
                 let small = Style { px: self.px(12.0), ..ui };
                 self.fonts.draw(scene, small, field.x + self.px(8.0), base, &shown);
                 scene.hline(r.x, p.page.y - 1.0, r.w, self.px(m::HAIRLINE), ink);
+                }
                 // Page — or the reader set over it.
                 scene.rect(p.page, t.page);
                 if let Some(reader) = p.reader.as_mut() {
@@ -4392,6 +4437,7 @@ impl App {
                         scene.layer(None);
                     }
                 }
+                if !p.bare {
                 // Devtools row.
                 let ty = p.dt_rect.bottom().max(p.page.bottom());
                 scene.hline(r.x, ty, r.w, self.px(m::HAIRLINE), ink);
@@ -4428,6 +4474,7 @@ impl App {
                 self.fonts.draw(scene, label, rx, base, word);
                 rx -= isz + self.px(6.0);
                 self.fonts.draw_icon(scene, icon, isz, rx, base - isz + self.px(2.0), if local { self.surface.signal } else { ink });
+                }
             }
         }
     }
@@ -4531,7 +4578,7 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 17] = [
+                let actions: [(String, Action); 18] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
@@ -4539,6 +4586,7 @@ impl App {
                     ("untile · one tab in the content again".to_string(), Action::Untile),
                     ("keep the peek · CTRL+ENTER · into the stack".to_string(), Action::KeepPeek),
                     (format!("compact sidebar · {} · icons only, the strip hides", key("B", true)), Action::Compact),
+                    (format!("{} · CTRL+SHIFT+F11 · the page alone in the window", if self.focus { "leave focus" } else { "focus" }), Action::Focus),
                     ("swap tiles · CTRL+ALT+SHIFT+→".to_string(), Action::TileSwap),
                     (format!("close tab · {}", key("W", true)), Action::CloseTab),
                     (format!("sidebar · {}", key("S", true)), Action::ToggleSidebar),
@@ -4731,6 +4779,7 @@ impl App {
             Action::FoldAll => self.fold_all(),
             Action::KeepPeek => self.keep_peek(),
             Action::Compact => self.toggle_compact(),
+            Action::Focus => self.toggle_focus(),
             Action::Chain(name) => self.run_chain(&name),
             Action::SaveToFolder(i, fi) => self.save_to_folder(i, fi),
             Action::OpenItem(fi, k) => self.open_item(fi, k),
@@ -4906,6 +4955,9 @@ impl App {
         };
         if pressed && code == Some(KeyCode::F11) && !ctrl && !shift {
             return self.toggle_fullscreen();
+        }
+        if pressed && code == Some(KeyCode::F11) && ctrl && shift {
+            return self.toggle_focus();
         }
         if pressed && code == Some(KeyCode::F1) && !ctrl && !shift {
             return self.open_welcome();
@@ -6723,6 +6775,12 @@ pub(crate) fn subtree_of(tabs: &[Tab], i: usize) -> Vec<usize> {
 /// Give a pane its rectangle. A split (or tiled) terminal shows its header
 /// strip; a page lays out its URL row, page, DevTools and tools row.
 pub(crate) fn place_pane(pane: &mut Pane, r: Rect, header: f32, pad_x: f32, pad_y: f32, scale: f32, split: bool) {
+    place_pane_bare(pane, r, header, pad_x, pad_y, scale, split, false)
+}
+
+/// `place_pane`, with the page alone (no rows) when `bare`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_pane_bare(pane: &mut Pane, r: Rect, header: f32, pad_x: f32, pad_y: f32, scale: f32, split: bool, bare: bool) {
     match pane {
         Pane::Term(t) => {
             t.rect = r;
@@ -6736,8 +6794,9 @@ pub(crate) fn place_pane(pane: &mut Pane, r: Rect, header: f32, pad_x: f32, pad_
         Pane::Hints(h) => h.rect = r,
         Pane::Web(w) => {
             w.rect = r;
-            let url_row = (6.0 * 2.0 + 22.0) * scale;
-            let tools_row = (8.0 * 2.0 + 13.0 + 1.0) * scale;
+            w.bare = bare;
+            let url_row = if bare { 0.0 } else { (6.0 * 2.0 + 22.0) * scale };
+            let tools_row = if bare { -1.0 } else { (8.0 * 2.0 + 13.0 + 1.0) * scale };
             let avail = r.h - url_row.round() - 1.0 - tools_row.round();
             let dt_h = if w.devtools.is_some() { (avail * 0.42).round() } else { 0.0 };
             w.page = Rect::new(r.x, r.y + url_row.round() + 1.0, r.w, avail - dt_h);

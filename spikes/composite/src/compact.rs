@@ -22,6 +22,9 @@ impl App {
     /// The strip is there in compact mode only while the pointer is at
     /// the top, a menu is up, or the window is being resized.
     pub(crate) fn strip_shown(&self) -> bool {
+        if self.focus {
+            return false;
+        }
         if !self.compact() {
             return true;
         }

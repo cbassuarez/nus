@@ -142,6 +142,7 @@ impl App {
             row("SHIFT+F2", "Name this window", format!("“{}” · auto-named from the git root or the host; the name is in the title bar and Alt-Tab", self.window_name()), Some(("RENAME", Act::Rename))),
             row("CTRL+N", "New window", "windows own their tabs; the rail or the header lists them", Some(("OPEN ONE", Act::NewWindow))),
             row("CTRL+1–9", "Tabs by number", "Ctrl+` goes back to the last one; Ctrl+PgUp / PgDn walk them", None),
+            row("CTRL+SHIFT+F11", "Focus", "the page (or shell) alone in the window: no strip, no sidebar, no rows · the same chord leaves", None),
             row(k("B"), "Compact", "a 48px column of icons; the top strip hides until the pointer reaches the top; hover a row for its name", None),
             row(k("S"), "The sidebar", "pin it, or let it slide in from the edge · BAR or RAIL header under settings", None),
             row("", "Site panel", "the gear at the end of a page's URL row: zoom (remembered), autoplay, JavaScript, cookies, boosts, blocking and the permissions this site was given · per host", None),
