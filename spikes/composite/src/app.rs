@@ -2295,6 +2295,20 @@ impl App {
         };
         self.gpu.render(&mut self.target, &self.scene, clear);
         self.frames += 1;
+        // NUS_FPS=1 logs the frame rate once a second.
+        if std::env::var("NUS_FPS").is_ok() {
+            thread_local! { static FPS: std::cell::Cell<(u64, Option<Instant>)> = const { std::cell::Cell::new((0, None)) }; }
+            FPS.with(|f| {
+                let (n, t) = f.get();
+                let t = t.unwrap_or_else(Instant::now);
+                if t.elapsed().as_secs_f32() >= 1.0 {
+                    eprintln!("FPS {}", n + 1);
+                    f.set((0, Some(Instant::now())));
+                } else {
+                    f.set((n + 1, Some(t)));
+                }
+            });
+        }
     }
 
     // --- drawing ---------------------------------------------------------
@@ -4550,10 +4564,20 @@ impl App {
         if self.fonts.measure(style, text) <= max_w {
             return text.to_string();
         }
-        let mut s: String = text.chars().collect();
-        while !s.is_empty() && self.fonts.measure(style, &format!("{s}…")) > max_w {
-            s.pop();
+        // The longest prefix that fits with an ellipsis: width grows with
+        // the prefix, so bisect on the character count.
+        let chars: Vec<char> = text.chars().collect();
+        let (mut lo, mut hi) = (0usize, chars.len());
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            let s: String = chars[..mid].iter().collect();
+            if self.fonts.measure(style, &format!("{s}…")) <= max_w {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
         }
+        let s: String = chars[..lo].iter().collect();
         format!("{s}…")
     }
 

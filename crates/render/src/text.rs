@@ -103,6 +103,9 @@ pub struct FontSystem {
     /// live behind a RefCell so shaping (and measuring) stays `&self`.
     extra: std::cell::RefCell<Vec<Face>>,
     fallbacks: std::cell::RefCell<Option<Vec<FontId>>>,
+    /// Measured widths by (font, px, tracking, text): the sidebar measures
+    /// the same strings every frame. Cleared when it grows large.
+    widths: std::cell::RefCell<HashMap<(u16, u32, u32, String), f32>>,
 }
 
 /// Font ids at or above this index the `extra` (fallback) faces.
@@ -130,6 +133,7 @@ impl FontSystem {
             icons: HashMap::new(),
             extra: std::cell::RefCell::new(Vec::new()),
             fallbacks: std::cell::RefCell::new(None),
+            widths: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -433,10 +437,21 @@ impl FontSystem {
 
     /// Width of `text` without drawing it.
     pub fn measure(&self, s: Style, text: &str) -> f32 {
-        self.shape(s.font, s.px, text)
+        let key = (s.font.0, s.px.to_bits(), s.tracking.to_bits(), text.to_string());
+        if let Some(w) = self.widths.borrow().get(&key) {
+            return *w;
+        }
+        let w = self
+            .shape(s.font, s.px, text)
             .iter()
             .map(|g| g.x_advance + s.tracking)
-            .sum()
+            .sum();
+        let mut cache = self.widths.borrow_mut();
+        if cache.len() > 8192 {
+            cache.clear();
+        }
+        cache.insert(key, w);
+        w
     }
 }
 
