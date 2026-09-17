@@ -95,6 +95,8 @@ pub static DOWNLOADS: std::sync::Mutex<Vec<Download>> = std::sync::Mutex::new(Ve
 /// Content blocking: on/off and the hosts to refuse. Built-in list plus
 /// profile/blocklist.txt (one host per line; `||host^` lines work too).
 pub static BLOCKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// Chromium's smooth scrolling, read once at start from the prefs.
+pub static SMOOTH_SCROLL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static BLOCKLIST: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
 
 const BUILTIN_BLOCKLIST: &[&str] = &[
@@ -258,6 +260,9 @@ wrap_app! {
             cl.append_switch(Some(&"noerrdialogs".into()));
             cl.append_switch(Some(&"hide-crash-restore-bubble".into()));
             cl.append_switch(Some(&"use-mock-keychain".into()));
+            if !crate::browser::SMOOTH_SCROLL.load(std::sync::atomic::Ordering::Relaxed) {
+                cl.append_switch(Some(&"disable-smooth-scrolling".into()));
+            }
             if std::env::var_os("NUS_AUTOPLAY").is_some() {
                 cl.append_switch_with_value(Some(&"autoplay-policy".into()), Some(&"no-user-gesture-required".into()));
             }

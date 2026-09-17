@@ -151,6 +151,8 @@ pub struct TermPane {
     pub trail: Vec<(f32, f32, Instant)>,
     /// The smeared caret's four corners (Neovide's cursor, ported).
     pub smear: crate::smear::Smear,
+    /// An eased scroll in flight (neoscroll-style).
+    pub trip: Option<crate::scrolling::Trip>,
     /// What has been typed at the current prompt, for the URL rule.
     pub line: String,
     /// False once an editing key made `line` unreliable; reset on Enter.
@@ -949,6 +951,7 @@ impl App {
             cur_y: Anim::at(0.0),
             trail: Vec::new(),
             smear: crate::smear::Smear::new(),
+            trip: None,
             line_col: None,
             cwd: None,
             progress: None,
@@ -1266,6 +1269,7 @@ impl App {
         self.tend_folders();
         self.tend_shells();
         self.tend_ask();
+        self.tend_scrolling();
         // A held NEW TAB fans the kinds out.
         if let Some((at, SideHit::NewShell)) = self.press {
             if at.elapsed().as_millis() >= 240 && !self.kinds_menu {
@@ -5252,6 +5256,17 @@ impl App {
                 _ => {}
             }
             match &ev.logical_key {
+                WKey::Named(NamedKey::Home) | WKey::Named(NamedKey::End) if self.focused_term().is_some() => {
+                    let up = matches!(ev.logical_key, WKey::Named(NamedKey::Home));
+                    let easing = self.behavior.scroll_easing;
+                    let motion = self.motion.clone();
+                    if let Some(t) = self.focused_term() {
+                        let far = t.term.grid().scrollback_len() as f32 + 1.0;
+                        crate::scrolling::scroll_shell(t, if up { far } else { -far }, easing, &motion);
+                    }
+                    self.dirty = true;
+                    return;
+                }
                 WKey::Named(NamedKey::PageUp) => {
                     let n = self.tabs.len();
                     return self.activate((self.active + n - 1) % n);
@@ -5289,10 +5304,21 @@ impl App {
                 }
             }
         }
+        let easing = self.behavior.scroll_easing;
+        let motion = self.motion.clone();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
             Pane::Settings(_) | Pane::Hints(_) => {}
             Pane::Term(t) => {
+                // Shift+PgUp / PgDn: a page of scrollback, on the curve
+                // (unless the program asked for the keys, as in an alternate screen).
+                if pressed && shift && !ctrl && !alt && matches!(ev.logical_key, WKey::Named(NamedKey::PageUp) | WKey::Named(NamedKey::PageDown)) && !t.term.modes().contains(nus_vt::Modes::ALT_SCREEN) {
+                    let page = (t.term.rows() as f32 - 1.0).max(1.0);
+                    let up = matches!(ev.logical_key, WKey::Named(NamedKey::PageUp));
+                    crate::scrolling::scroll_shell(t, if up { page } else { -page }, easing, &motion);
+                    self.dirty = true;
+                    return;
+                }
                 let action = match (ev.state, ev.repeat) {
                     (ElementState::Released, _) => KeyAction::Release,
                     (ElementState::Pressed, true) => KeyAction::Repeat,
@@ -6588,15 +6614,18 @@ impl App {
         if self.ask_wheel(x, y, dy_px) {
             return;
         }
+        let wheel_lines = self.behavior.wheel_lines as f32;
+        let easing = self.behavior.scroll_easing;
+        let motion = self.motion.clone();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             match p {
                 Pane::Term(t) if t.rect.contains(x, y) => {
                     let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as isize,
-                        MouseScrollDelta::PixelDelta(p) => (p.y as f32 / t.grid.cell_size().1) as isize,
+                        MouseScrollDelta::LineDelta(_, y) => y * wheel_lines,
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32 / t.grid.cell_size().1,
                     };
-                    t.term.grid_mut().scroll_display(lines);
+                    crate::scrolling::scroll_shell(t, lines, easing, &motion);
                     self.dirty = true;
                 }
                 Pane::Web(w) if w.devtools.is_some() && w.dt_rect.contains(x, y) => {

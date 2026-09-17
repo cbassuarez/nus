@@ -231,6 +231,19 @@ pub struct Behavior {
     /// The rule between a split's panes drags to resize.
     #[serde(default = "default_true")]
     pub pane_divider: bool,
+    /// How the shell's view moves: neoscroll's curves, or at once.
+    #[serde(default)]
+    pub scroll_easing: crate::scrolling::Easing,
+    /// Lines per wheel tick in the shell.
+    #[serde(default = "default_wheel_lines")]
+    pub wheel_lines: u32,
+    /// Chromium's smooth scrolling in pages (takes a restart).
+    #[serde(default = "default_true")]
+    pub page_smooth_scroll: bool,
+}
+
+fn default_wheel_lines() -> u32 {
+    3
 }
 
 /// OSC 52: tmux, neovim and friends setting (and reading) the clipboard.
@@ -315,6 +328,9 @@ impl Default for Behavior {
             osc52: Osc52::Write,
             pane_controls: crate::panes::Controls::Near,
             pane_divider: true,
+            scroll_easing: crate::scrolling::Easing::Cubic,
+            wheel_lines: 3,
+            page_smooth_scroll: true,
         }
     }
 }
@@ -411,6 +427,9 @@ pub enum Hit {
     Highlight(bool),
     CopyOnSelect(bool),
     PaneControls(crate::panes::Controls),
+    ScrollEasing(crate::scrolling::Easing),
+    WheelLines(u32),
+    PageSmooth(bool),
     PaneDivider(bool),
     MiddlePaste(bool),
     Osc52(Osc52),
@@ -676,6 +695,9 @@ impl App {
             Hit::Highlight(b) => if b { "highlight the command line".into() } else { "plain command line".into() },
             Hit::CopyOnSelect(b) => if b { "copy on select on".into() } else { "copy on select off".into() },
             Hit::PaneControls(c) => format!("pane controls {:?}", c).to_lowercase(),
+            Hit::ScrollEasing(e) => format!("scroll {}", e.name()),
+            Hit::WheelLines(n) => format!("{n} lines per wheel tick"),
+            Hit::PageSmooth(b) => if b { "smooth page scrolling".into() } else { "instant page scrolling".into() },
             Hit::PaneDivider(b) => if b { "pane divider drags".into() } else { "pane divider fixed".into() },
             Hit::MiddlePaste(b) => if b { "middle click pastes".into() } else { "middle click does nothing".into() },
             Hit::Osc52(o) => format!("osc 52 {:?}", o).to_lowercase(),
@@ -966,6 +988,12 @@ impl App {
             Hit::Highlight(b) => self.behavior.highlight = b,
             Hit::CopyOnSelect(b) => self.behavior.copy_on_select = b,
             Hit::PaneControls(c) => self.behavior.pane_controls = c,
+            Hit::ScrollEasing(e) => self.behavior.scroll_easing = e,
+            Hit::WheelLines(n) => self.behavior.wheel_lines = n,
+            Hit::PageSmooth(b) => {
+                self.behavior.page_smooth_scroll = b;
+                self.refresh_register_note();
+            }
             Hit::PaneDivider(b) => self.behavior.pane_divider = b,
             Hit::MiddlePaste(b) => self.behavior.middle_paste = b,
             Hit::Osc52(o) => self.behavior.osc52 = o,
@@ -1973,6 +2001,15 @@ impl App {
                     ]),
                 ));
                 v.insert(5, ("".into(), Info("tmux, neovim and ssh sessions put text on your clipboard through OSC 52; reading it back is off unless you say so · copy keeps the selection, paste is bracketed and asks when it's many lines".into())));
+                v.insert(6, (
+                    "SCROLL".into(),
+                    Choice(crate::scrolling::Easing::ALL.iter().map(|&e| (e.name().to_uppercase(), Hit::ScrollEasing(e), e == self.behavior.scroll_easing)).collect()),
+                ));
+                v.insert(7, (
+                    "WHEEL".into(),
+                    Choice(vec![("1 LINE".into(), Hit::WheelLines(1), self.behavior.wheel_lines == 1), ("3 LINES".into(), Hit::WheelLines(3), self.behavior.wheel_lines == 3), ("5 LINES".into(), Hit::WheelLines(5), self.behavior.wheel_lines == 5), ("8 LINES".into(), Hit::WheelLines(8), self.behavior.wheel_lines == 8)]),
+                ));
+                v.insert(8, ("".into(), Info("neoscroll's curves: the view moves a line at a time on an eased clock, and more ticks extend the trip; Shift+PgUp/PgDn and Ctrl+Shift+Home/End ride the same curve".into())));
                 v.insert(0, (
                     "SHELL INTEGRATION".into(),
                     Choice(vec![("AUTO".into(), Hit::ShellInt(true), self.behavior.shell_integration), ("OFF".into(), Hit::ShellInt(false), !self.behavior.shell_integration)]),
@@ -2000,6 +2037,11 @@ impl App {
                     Choice(vec![("ON".into(), Hit::Block(true), self.behavior.block_content), ("OFF".into(), Hit::Block(false), !self.behavior.block_content)]),
                 ),
                 ("".into(), Info(format!("{} hosts refused · ads, trackers, analytics · add yours to profile/blocklist.txt", crate::browser::blocklist_len()))),
+                (
+                    "SCROLL".into(),
+                    Choice(vec![("SMOOTH".into(), Hit::PageSmooth(true), self.behavior.page_smooth_scroll), ("INSTANT".into(), Hit::PageSmooth(false), !self.behavior.page_smooth_scroll)]),
+                ),
+                ("".into(), Info("Chromium's own smooth scrolling for wheels and keys; trackpads are pixel-precise either way · takes effect at the next start".into())),
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),

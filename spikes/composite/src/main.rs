@@ -19,6 +19,7 @@ mod ask;
 mod smear;
 mod syntax;
 mod panes;
+mod scrolling;
 mod anim;
 mod app;
 mod browser;

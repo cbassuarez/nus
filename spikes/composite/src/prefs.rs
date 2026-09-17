@@ -39,6 +39,7 @@ impl Prefs {
 impl App {
     pub(crate) fn apply_prefs(&mut self, p: Prefs) {
         crate::browser::BLOCKING.store(p.behavior.as_ref().map(|b| b.block_content).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
+        crate::browser::SMOOTH_SCROLL.store(p.behavior.as_ref().map(|b| b.page_smooth_scroll).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
         if let Some(s) = p.surface {
             self.surface = s;
         }
