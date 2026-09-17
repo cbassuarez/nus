@@ -559,3 +559,57 @@ arrow keys under alternate scroll (1007), and scrolls us otherwise. Next
 for adoption: a terminfo entry (`nus`) shipped and TERM=nus once tools
 know it, vttest/esctest runs, and a `nus` CLI (open a URL or a file,
 `nus ask`).
+
+## LSP, the editor, the ports board (settled 2026-09-17, fifteenth pass)
+
+**LSP is real.** `crates/lsp` is the client: a server per language spawned
+on demand over stdio (JSON-RPC, lsp-types), initialize/shutdown, document
+sync, hover, completion, diagnostics, definition, formatting, all off the
+main thread. Servers come from the welcome page's OPTIONAL TOOLS (bundles):
+rust-analyzer, PowerShell Editor Services, bash-language-server,
+typescript-language-server, pyright, and more as bundles.json grows.
+
+**The editor pane is a full editor.** Open a file from the prompt
+(`nus <file>`), a click on a path, or the URL row. Multi-buffer with a
+FILES folder in the sidebar (the cwd tree), find/replace, format-on-save,
+tree-sitter colour, LSP hover/completion/diagnostics/go-to-definition.
+The buffer is ropey; nothing hand-rolled where a crate is the real thing.
+
+**The prompt line has LSP too**, configurable: TERMINAL · PROMPT LSP:
+QUIET (default: dotted underline on a diagnostic, hover for the message,
+completions ride the ghost prediction and Tab accepts) · MENU (a small
+completion list under the caret) · OFF. bash-language-server or PowerShell
+Editor Services by shell.
+
+**The ports board** (Ctrl+Shift+P; the status-cluster icon; palette
+`ports`; the PORTS folder header) is a centred overlay sheet, ~70% wide,
+in the departures-board manner: monospace ruled rows that split-flap in
+and out as ports arrive and depart (reduced-motion: fade), a lamp per row
+(UP · EXPOSED · DYING). EXPAND or Ctrl+Enter makes it a full page tab;
+Esc closes. Grouped by origin by default — MINE (ports your nus shells
+started; we own the pty tree) · OTHERS (user processes) · SYSTEM
+(privileged, dim) · CONNECTIONS (established in/outbound, one row per
+process with a count and top remote hosts) · DOCKER/WSL when present —
+or by port, or by process. A row knows process, pid, command line, cwd,
+owning tab, bound interface (0.0.0.0 gets the exposed lamp and a warning
+stripe), uptime, protocol (TCP/UDP), and an HTTP probe (status, title,
+framework) when probing is on. Enter/click opens the detail in place with
+the action strip: OPEN (tab/split/peek), COPY URL, JUMP TO SHELL, KILL
+(graceful, DYING lamp, force after 3 s; no confirm for yours, confirm for
+system), RUN AGAIN (its block command), TUNNEL (cloudflared or ngrok in
+the owning tab's split, the public URL on the row), WATCH (a toast when
+it comes up or goes), and an inline rename on the name cell (persisted
+by process+port in profile/ports.json). A new port: the status icon
+lights and a line rides beside it for 6 s — "5173 · vite is up · O to
+open" — never stealing focus.
+
+**Settings — PORTS:** GROUPING (origin · port · process); OPEN IN (tab ·
+split · peek); POLL WHILE OPEN (1 s · 5 s · 10 s); NEW-PORT TOAST (on ·
+off); SHOW SYSTEM · UDP · CONNECTIONS · DOCKER/WSL (each on/off); ASK
+BEFORE KILL (system · always · never); PROBE (on · off — it sends a
+request to your server); TUNNEL (cloudflared · ngrok); HIDDEN PROCESSES
+(a list, seeded with the system set). **Rules:** `ports` in rules.luau —
+by port or process: name, tint, auto-open in a split when it appears,
+auto-tunnel, hide, watch. Rules for power users; the settings for those
+who can't be bothered.
+
