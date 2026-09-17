@@ -11,6 +11,7 @@ mod themes;
 mod windows;
 mod tiles;
 mod peek;
+mod compact;
 mod anim;
 mod app;
 mod browser;

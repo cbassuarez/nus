@@ -69,11 +69,14 @@ pub struct SidebarRules {
     pub fullscreen: Fullscreen,
     /// Milliseconds the sidebar stays after the pointer leaves it.
     pub grace_ms: u64,
+    /// A 48px column of icons; the top strip hides until hovered.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 impl Default for SidebarRules {
     fn default() -> Self {
-        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 300 }
+        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 300, compact: false }
     }
 }
 

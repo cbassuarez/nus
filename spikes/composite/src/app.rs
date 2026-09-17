@@ -69,6 +69,7 @@ pub enum Action {
     Untile,
     TileSwap,
     KeepPeek,
+    Compact,
     ColourTab(usize, Option<nus_render::Color>),
 }
 
@@ -510,6 +511,8 @@ pub struct App {
     /// The pointer is a resize arrow over a divider.
     pub resize_cursor: Option<crate::tiles::Divider>,
     pub peek_anim: Anim,
+    /// The compact column's hovered row, for its tooltip after the panes.
+    pub compact_tip: Option<(usize, f32)>,
     /// A right-click asked for a paste; answered in tick.
     pub paste_request: bool,
     /// Downloads list in the footer.
@@ -705,6 +708,7 @@ impl App {
             tile_drag: None,
             resize_cursor: None,
             peek_anim: Anim::at(0.0),
+            compact_tip: None,
             drag: None,
             drag_armed: None,
             paste_request: false,
@@ -978,8 +982,8 @@ impl App {
 
     pub(crate) fn content_rect(&self) -> Rect {
         let (st, sr, sb, sl) = self.shell_insets();
-        let top = st + self.px(m::TOP_STRIP) + self.px(m::STRUCTURE);
-        let taken = if self.sidebar_pinned() { self.px(m::SIDEBAR) + self.px(m::STRUCTURE) } else { self.px(4.0) };
+        let top = st + if self.compact() { 0.0 } else { self.px(m::TOP_STRIP) + self.px(m::STRUCTURE) };
+        let taken = if self.sidebar_pinned() { self.sidebar_w() + self.px(m::STRUCTURE) } else { self.px(4.0) };
         let (left, right) = if self.sidebar_right() { (sl, sr + taken) } else { (sl + taken, sr) };
         Rect::new(left, top, self.target.size.0 as f32 - left - right, self.target.size.1 as f32 - top - sb)
     }
@@ -987,9 +991,14 @@ impl App {
     pub(crate) fn sidebar_rect(&self) -> Rect {
         let c = self.content_rect();
         let (_, sr, _, sl) = self.shell_insets();
-        let w = self.px(m::SIDEBAR);
+        let w = self.sidebar_w();
         let x = if self.sidebar_right() { self.target.size.0 as f32 - sr - w } else { sl };
         Rect::new(x + self.sidebar_shift, c.y, w, c.h)
+    }
+
+    /// The sidebar's width: the column in compact mode, else the full list.
+    pub(crate) fn sidebar_w(&self) -> f32 {
+        if self.compact() { self.px(crate::compact::COMPACT_W) } else { self.px(m::SIDEBAR) }
     }
 
     pub(crate) fn sidebar_visible(&self) -> bool {
@@ -1542,7 +1551,7 @@ impl App {
             scene.layer(Some(Rect::new(r.x, r.y + hh, r.w, bh)));
             scene.rect(cr, ink);
             let inv = Style { color: t.paper, ..self.label_strong() };
-            let inv_l = Style { color: t.paper, ..label };
+            let inv_l = Style { color: t.paper, ..self.label() };
             let by = cr.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
             let mut x = cr.x + self.px(m::HEADER_PAD_X);
             let n = text.lines().count();
@@ -2229,6 +2238,177 @@ impl App {
         }
     }
 
+    /// The top strip: wordmark, crumb, window cluster. Drawn in place, or
+    /// over the content when the compact sidebar hides it until hovered.
+    fn draw_strip(&mut self, scene: &mut Scene) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        if self.compact() {
+            let st = self.strip_rect();
+            scene.rect(Rect::new(st.x, st.y, st.w, st.h + self.px(m::STRUCTURE)), self.paper());
+        }
+        let strip = self.strip_rect();
+        scene.hline(strip.x, strip.bottom(), strip.w, self.px(m::STRUCTURE), ink);
+        let ic = self.px(16.0);
+        let iy = strip.y + ((strip.h - ic) / 2.0).round();
+        let mut x = strip.x + self.px(18.0);
+        let base = strip.y + self.px(21.0);
+        let wm = Style {
+            font: self.f.wordmark,
+            px: self.px(m::WORDMARK_PX),
+            color: ink,
+            tracking: 0.0,
+        };
+        x += self.fonts.draw(scene, wm, x, base, "nus") + self.px(18.0);
+        let label = self.label();
+        let dim = Style { color: t.dim, ..label };
+        let lbase = strip.y + self.px(19.0);
+        // Crumb: Space chip · tab · cwd/host — each a click target (self.crumb_hits).
+        self.crumb_hits.clear();
+        let (p4, p6, p12, p18, p8) = (self.px(4.0), self.px(6.0), self.px(12.0), self.px(18.0), self.px(8.0));
+        let segment = move |hits: &mut Vec<(Rect, CrumbHit)>, x: &mut f32, w: f32, hit: CrumbHit| {
+            let r = Rect::new(*x - p6, strip.y + p4, w + p12, strip.h - p8);
+            hits.push((r, hit));
+            *x += w + p18;
+        };
+        // The Space lives in the sidebar; the header keeps the wordmark once.
+        let _ = CrumbHit::Space;
+        let (focused_web, url) = {
+            let tab = &self.tabs[self.active];
+            let pane = if tab.focus_right && tab.right.is_some() { tab.right.as_ref().unwrap() } else { &tab.left };
+            match pane {
+                Pane::Web(w) => (true, w.tab.shared.borrow().url.clone()),
+                _ => (false, String::new()),
+            }
+        };
+        if focused_web {
+            // The crumb is the site: favicon, title, host. Click to edit the URL.
+            let (title, fav) = {
+                let tab = &self.tabs[self.active];
+                let pane = if tab.focus_right && tab.right.is_some() { tab.right.as_ref().unwrap() } else { &tab.left };
+                match pane {
+                    Pane::Web(w) => (w.tab.shared.borrow().title.clone(), w.favicon.as_ref().map(|(_, b)| b.clone())),
+                    _ => (String::new(), None),
+                }
+            };
+            let host = url.split("//").nth(1).unwrap_or(&url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
+            let ui = self.ui();
+            let dim_ui = Style { color: t.dim, ..ui };
+            let maxw = (strip.w * 0.42).min(self.px(640.0));
+            let start = x;
+            match fav {
+                Some(b) => {
+                    scene.texture(Rect::new(x, iy, ic, ic), b, None);
+                    scene.layer(None);
+                }
+                None => {
+                    self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, ic, x, iy, ink);
+                }
+            }
+            x += ic + self.px(8.0);
+            let shown_title = if title.is_empty() { host.clone() } else { title.clone() };
+            let host_text = if title.is_empty() || host.is_empty() { String::new() } else { format!(" · {host}") };
+            let hw = self.fonts.measure(dim_ui, &host_text);
+            let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..ui };
+            let tfit = self.fit(fade, &shown_title, maxw - (x - start) - hw);
+            x += self.fonts.draw(scene, fade, x, lbase, &tfit);
+            if !host_text.is_empty() {
+                x += self.fonts.draw(scene, dim_ui, x, lbase, &host_text);
+            }
+            let field = Rect::new(start, strip.y, x - start + self.px(8.0), strip.h);
+            if is_local(&url) {
+                scene.hline(start, strip.bottom() - self.px(3.0), x - start, self.px(2.0), self.surface.signal);
+            }
+            self.crumb_hits.push((field, CrumbHit::Url));
+            x += self.px(18.0);
+        } else {
+            let tab = &self.tabs[self.active];
+            // Split tabs read as "left | right"; the pane strips name each side.
+            let (icon, title) = match &tab.left {
+                Pane::Term(p) if tab.right.is_none() => (nus_render::text::icons::TERMINAL, p.title.clone()),
+                Pane::Term(_) => (nus_render::text::icons::TERMINAL, tab.title()),
+                Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
+                Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
+                Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
+            };
+            let title = format!("{} {}", self.tab_label(self.active), title).to_uppercase();
+            let tw = self.fonts.measure(label, &title);
+            let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..label };
+            self.fonts.draw_icon(scene, icon, ic, x, iy, ink);
+            self.fonts.draw(scene, fade, x + ic + self.px(8.0), lbase, &title);
+            segment(&mut self.crumb_hits, &mut x, ic + p8 + tw, CrumbHit::Tab);
+        }
+        // Right side: status cluster, search, sidebar, window controls.
+        let mut rx = strip.right() - self.px(18.0);
+        let gap = self.px(14.0);
+        if !cfg!(target_os = "macos") {
+            for (icon, hit) in [
+                (nus_render::text::icons::CLOSE, CrumbHit::Close),
+                (nus_render::text::icons::MAXIMIZE, CrumbHit::Maximize),
+                (nus_render::text::icons::MINIMIZE, CrumbHit::Minimize),
+            ] {
+                rx -= ic;
+                let hr = Rect::new(rx - p6, strip.y, ic + p12, strip.h);
+                self.icon_button(scene, icon, ic, rx, iy, ink, hr, hover_key("winctl", hit as usize), IconMotion::Still);
+                self.crumb_hits.push((hr, hit));
+                rx -= gap;
+            }
+            rx -= self.px(6.0);
+        }
+        rx -= ic;
+        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+        self.icon_button(scene, nus_render::text::icons::SIDEBAR, ic, rx, iy, if self.sidebar { ink } else { t.dim }, hr, hover_key("sidebar", 0), IconMotion::Pop);
+        self.crumb_hits.push((hr, CrumbHit::Sidebar));
+        rx -= gap + ic;
+        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+        self.icon_button(scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink, hr, hover_key("search", 0), IconMotion::Pop);
+        self.crumb_hits.push((hr, CrumbHit::Search));
+        rx -= gap + ic;
+        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+        let pc = if self.start.is_some() { self.surface.signal } else { ink };
+        self.icon_button(scene, nus_render::text::icons::PLANET, ic, rx, iy, pc, hr, hover_key("atlas", 0), IconMotion::Spin(-25.0));
+        self.crumb_hits.push((hr, CrumbHit::Start));
+        rx -= gap;
+        // status cluster: waiting · pip · assistant · ports (one icon when narrow)
+        let waiting = self.tabs.iter().filter(|t| t.waiting()).count();
+        let mut cluster: Vec<((&'static str, &'static str), String, CrumbHit, bool)> = Vec::new();
+        if self.width_class() == Width::Narrow {
+            let lit = waiting > 0 || self.pip.is_some();
+            let count = if waiting > 0 { waiting.to_string() } else { String::new() };
+            cluster.push((nus_render::text::icons::MORE, count, CrumbHit::Waiting, lit));
+        } else {
+        if !self.ports.is_empty() || true {
+            cluster.push((nus_render::text::icons::PORTS, if self.ports.is_empty() { String::new() } else { self.ports.len().to_string() }, CrumbHit::Ports, !self.ports.is_empty()));
+        }
+        cluster.push((nus_render::text::icons::ASSISTANT, String::new(), CrumbHit::Assistant, !self.llm_tools.is_empty()));
+        if self.pip.is_some() {
+            cluster.push((nus_render::text::icons::PIP, String::new(), CrumbHit::Pip, true));
+        }
+        cluster.push((if waiting > 0 { nus_render::text::icons::BELL_BOLD } else { nus_render::text::icons::BELL }, if waiting > 0 { waiting.to_string() } else { String::new() }, CrumbHit::Waiting, waiting > 0));
+        }
+        for (icon, count, hit, lit) in cluster {
+            let color = if lit { ink } else { t.dim };
+            if !count.is_empty() {
+                let cw = self.fonts.measure(label, &count);
+                rx -= cw;
+                self.fonts.draw(scene, Style { color: if hit == CrumbHit::Waiting { self.surface.signal } else { color }, ..label }, rx, lbase, &count);
+                rx -= self.px(4.0);
+            }
+            rx -= ic;
+            let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+            let motion = match hit {
+                CrumbHit::Waiting => IconMotion::Swing,
+                CrumbHit::Assistant => IconMotion::Pop,
+                CrumbHit::Ports => IconMotion::Bob,
+                _ => IconMotion::Still,
+            };
+            self.icon_button(scene, icon, ic, rx, iy, if hit == CrumbHit::Waiting && lit { self.surface.signal } else { color }, hr, hover_key("cluster", hit as usize), motion);
+            self.crumb_hits.push((hr, hit));
+            rx -= gap;
+        }
+        let _ = dim;
+    }
+
     fn build(&mut self) {
         let mut scene = std::mem::take(&mut self.scene);
         scene.clear();
@@ -2306,166 +2486,9 @@ impl App {
                 }
             }
         }
-        let strip = self.strip_rect();
-        scene.hline(strip.x, strip.bottom(), strip.w, self.px(m::STRUCTURE), ink);
-        let ic = self.px(16.0);
-        let iy = strip.y + ((strip.h - ic) / 2.0).round();
-        let mut x = strip.x + self.px(18.0);
-        let base = strip.y + self.px(21.0);
-        let wm = Style {
-            font: self.f.wordmark,
-            px: self.px(m::WORDMARK_PX),
-            color: ink,
-            tracking: 0.0,
-        };
-        x += self.fonts.draw(&mut scene, wm, x, base, "nus") + self.px(18.0);
-        let label = self.label();
-        let dim = Style { color: t.dim, ..label };
-        let lbase = strip.y + self.px(19.0);
-        // Crumb: Space chip · tab · cwd/host — each a click target (self.crumb_hits).
-        self.crumb_hits.clear();
-        let (p4, p6, p12, p18, p8) = (self.px(4.0), self.px(6.0), self.px(12.0), self.px(18.0), self.px(8.0));
-        let segment = move |hits: &mut Vec<(Rect, CrumbHit)>, x: &mut f32, w: f32, hit: CrumbHit| {
-            let r = Rect::new(*x - p6, strip.y + p4, w + p12, strip.h - p8);
-            hits.push((r, hit));
-            *x += w + p18;
-        };
-        // The Space lives in the sidebar; the header keeps the wordmark once.
-        let _ = CrumbHit::Space;
-        let (focused_web, url) = {
-            let tab = &self.tabs[self.active];
-            let pane = if tab.focus_right && tab.right.is_some() { tab.right.as_ref().unwrap() } else { &tab.left };
-            match pane {
-                Pane::Web(w) => (true, w.tab.shared.borrow().url.clone()),
-                _ => (false, String::new()),
-            }
-        };
-        if focused_web {
-            // The crumb is the site: favicon, title, host. Click to edit the URL.
-            let (title, fav) = {
-                let tab = &self.tabs[self.active];
-                let pane = if tab.focus_right && tab.right.is_some() { tab.right.as_ref().unwrap() } else { &tab.left };
-                match pane {
-                    Pane::Web(w) => (w.tab.shared.borrow().title.clone(), w.favicon.as_ref().map(|(_, b)| b.clone())),
-                    _ => (String::new(), None),
-                }
-            };
-            let host = url.split("//").nth(1).unwrap_or(&url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
-            let ui = self.ui();
-            let dim_ui = Style { color: t.dim, ..ui };
-            let maxw = (strip.w * 0.42).min(self.px(640.0));
-            let start = x;
-            match fav {
-                Some(b) => {
-                    scene.texture(Rect::new(x, iy, ic, ic), b, None);
-                    scene.layer(None);
-                }
-                None => {
-                    self.fonts.draw_icon(&mut scene, nus_render::text::icons::GLOBE, ic, x, iy, ink);
-                }
-            }
-            x += ic + self.px(8.0);
-            let shown_title = if title.is_empty() { host.clone() } else { title.clone() };
-            let host_text = if title.is_empty() || host.is_empty() { String::new() } else { format!(" · {host}") };
-            let hw = self.fonts.measure(dim_ui, &host_text);
-            let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..ui };
-            let tfit = self.fit(fade, &shown_title, maxw - (x - start) - hw);
-            x += self.fonts.draw(&mut scene, fade, x, lbase, &tfit);
-            if !host_text.is_empty() {
-                x += self.fonts.draw(&mut scene, dim_ui, x, lbase, &host_text);
-            }
-            let field = Rect::new(start, strip.y, x - start + self.px(8.0), strip.h);
-            if is_local(&url) {
-                scene.hline(start, strip.bottom() - self.px(3.0), x - start, self.px(2.0), self.surface.signal);
-            }
-            self.crumb_hits.push((field, CrumbHit::Url));
-            x += self.px(18.0);
-        } else {
-            let tab = &self.tabs[self.active];
-            // Split tabs read as "left | right"; the pane strips name each side.
-            let (icon, title) = match &tab.left {
-                Pane::Term(p) if tab.right.is_none() => (nus_render::text::icons::TERMINAL, p.title.clone()),
-                Pane::Term(_) => (nus_render::text::icons::TERMINAL, tab.title()),
-                Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
-                Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
-                Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
-            };
-            let title = format!("{} {}", self.tab_label(self.active), title).to_uppercase();
-            let tw = self.fonts.measure(label, &title);
-            let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..label };
-            self.fonts.draw_icon(&mut scene, icon, ic, x, iy, ink);
-            self.fonts.draw(&mut scene, fade, x + ic + self.px(8.0), lbase, &title);
-            segment(&mut self.crumb_hits, &mut x, ic + p8 + tw, CrumbHit::Tab);
+        if !self.compact() {
+            self.draw_strip(&mut scene);
         }
-        // Right side: status cluster, search, sidebar, window controls.
-        let mut rx = strip.right() - self.px(18.0);
-        let gap = self.px(14.0);
-        if !cfg!(target_os = "macos") {
-            for (icon, hit) in [
-                (nus_render::text::icons::CLOSE, CrumbHit::Close),
-                (nus_render::text::icons::MAXIMIZE, CrumbHit::Maximize),
-                (nus_render::text::icons::MINIMIZE, CrumbHit::Minimize),
-            ] {
-                rx -= ic;
-                let hr = Rect::new(rx - p6, strip.y, ic + p12, strip.h);
-                self.icon_button(&mut scene, icon, ic, rx, iy, ink, hr, hover_key("winctl", hit as usize), IconMotion::Still);
-                self.crumb_hits.push((hr, hit));
-                rx -= gap;
-            }
-            rx -= self.px(6.0);
-        }
-        rx -= ic;
-        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-        self.icon_button(&mut scene, nus_render::text::icons::SIDEBAR, ic, rx, iy, if self.sidebar { ink } else { t.dim }, hr, hover_key("sidebar", 0), IconMotion::Pop);
-        self.crumb_hits.push((hr, CrumbHit::Sidebar));
-        rx -= gap + ic;
-        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-        self.icon_button(&mut scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink, hr, hover_key("search", 0), IconMotion::Pop);
-        self.crumb_hits.push((hr, CrumbHit::Search));
-        rx -= gap + ic;
-        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-        let pc = if self.start.is_some() { self.surface.signal } else { ink };
-        self.icon_button(&mut scene, nus_render::text::icons::PLANET, ic, rx, iy, pc, hr, hover_key("atlas", 0), IconMotion::Spin(-25.0));
-        self.crumb_hits.push((hr, CrumbHit::Start));
-        rx -= gap;
-        // status cluster: waiting · pip · assistant · ports (one icon when narrow)
-        let waiting = self.tabs.iter().filter(|t| t.waiting()).count();
-        let mut cluster: Vec<((&'static str, &'static str), String, CrumbHit, bool)> = Vec::new();
-        if self.width_class() == Width::Narrow {
-            let lit = waiting > 0 || self.pip.is_some();
-            let count = if waiting > 0 { waiting.to_string() } else { String::new() };
-            cluster.push((nus_render::text::icons::MORE, count, CrumbHit::Waiting, lit));
-        } else {
-        if !self.ports.is_empty() || true {
-            cluster.push((nus_render::text::icons::PORTS, if self.ports.is_empty() { String::new() } else { self.ports.len().to_string() }, CrumbHit::Ports, !self.ports.is_empty()));
-        }
-        cluster.push((nus_render::text::icons::ASSISTANT, String::new(), CrumbHit::Assistant, !self.llm_tools.is_empty()));
-        if self.pip.is_some() {
-            cluster.push((nus_render::text::icons::PIP, String::new(), CrumbHit::Pip, true));
-        }
-        cluster.push((if waiting > 0 { nus_render::text::icons::BELL_BOLD } else { nus_render::text::icons::BELL }, if waiting > 0 { waiting.to_string() } else { String::new() }, CrumbHit::Waiting, waiting > 0));
-        }
-        for (icon, count, hit, lit) in cluster {
-            let color = if lit { ink } else { t.dim };
-            if !count.is_empty() {
-                let cw = self.fonts.measure(label, &count);
-                rx -= cw;
-                self.fonts.draw(&mut scene, Style { color: if hit == CrumbHit::Waiting { self.surface.signal } else { color }, ..label }, rx, lbase, &count);
-                rx -= self.px(4.0);
-            }
-            rx -= ic;
-            let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-            let motion = match hit {
-                CrumbHit::Waiting => IconMotion::Swing,
-                CrumbHit::Assistant => IconMotion::Pop,
-                CrumbHit::Ports => IconMotion::Bob,
-                _ => IconMotion::Still,
-            };
-            self.icon_button(&mut scene, icon, ic, rx, iy, if hit == CrumbHit::Waiting && lit { self.surface.signal } else { color }, hr, hover_key("cluster", hit as usize), motion);
-            self.crumb_hits.push((hr, hit));
-            rx -= gap;
-        }
-        let _ = dim;
 
         self.draw_resize_overlay(&mut scene);
         // Sidebar or hot edge.
@@ -2559,7 +2582,7 @@ impl App {
             scene.layer(Some(Rect::new(c.x, c.y, c.w, hh)));
             scene.rect(cr, ink);
             let inv = Style { color: t.paper, ..self.label_strong() };
-            let inv_l = Style { color: t.paper, ..label };
+            let inv_l = Style { color: t.paper, ..self.label() };
             let by = cr.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
             let mut x = cr.x + self.px(m::HEADER_PAD_X);
             let n = self.children(root).len();
@@ -2587,6 +2610,13 @@ impl App {
             scene.vline(x, sb.y, sb.h, self.px(m::STRUCTURE), ink);
         }
 
+        self.draw_compact_tip(&mut scene);
+        // In compact mode the strip rides over the content when summoned.
+        if self.compact() && self.strip_shown() {
+            self.draw_strip(&mut scene);
+        } else if self.compact() {
+            self.crumb_hits.clear();
+        }
         // Palette.
         if let Some((mode, input)) = self.palette.clone() {
             scene.layer(None);
@@ -2763,7 +2793,7 @@ impl App {
 
     /// The rail's width right now (0 when off or hidden).
     pub(crate) fn rail_w(&self) -> f32 {
-        if self.header.style != crate::settings::HeaderStyle::Rail {
+        if self.header.style != crate::settings::HeaderStyle::Rail || self.compact() {
             return 0.0;
         }
         let full = self.px(30.0);
@@ -2784,6 +2814,9 @@ impl App {
     /// Height of the sidebar header for the current prefs.
     pub(crate) fn side_header_h(&self) -> f32 {
         use crate::settings::HeaderStyle;
+        if self.compact() {
+            return self.px(crate::compact::COMPACT_HEAD);
+        }
         let row = self.px(9.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::STRUCTURE);
         let title = if self.header.masthead { self.px(44.0) } else { row };
         let dateline = if self.header.dateline { self.px(16.0) } else { 0.0 };
@@ -2881,6 +2914,9 @@ impl App {
     }
 
     fn draw_sidebar(&mut self, scene: &mut Scene) {
+        if self.compact() {
+            return self.draw_sidebar_compact(scene);
+        }
         let t = self.theme.clone();
         let ink = t.ink;
         let full = self.sidebar_rect();
@@ -3517,7 +3553,7 @@ impl App {
     }
 
     /// The window list and the kinds fan-out, drawn last so they sit over the rows.
-    fn draw_sidebar_menus(&mut self, scene: &mut Scene, sb: Rect) {
+    pub(crate) fn draw_sidebar_menus(&mut self, scene: &mut Scene, sb: Rect) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
@@ -4109,7 +4145,7 @@ impl App {
                     scene.layer(Some(Rect::new(r.x, r.y + hh, r.w, bh)));
                     scene.rect(cr, ink);
                     let inv = Style { color: t.paper, ..strong };
-                    let inv_l = Style { color: t.paper, ..label };
+                    let inv_l = Style { color: t.paper, ..self.label() };
                     let by = cr.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
                     let mut x = cr.x + self.px(m::HEADER_PAD_X);
                     x += self.fonts.draw(scene, inv, x, by, &format!("{} IS RUNNING", proc_name.to_uppercase())) + self.px(14.0);
@@ -4357,13 +4393,14 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 16] = [
+                let actions: [(String, Action); 17] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
                     (format!("tile the selected tabs · {} with rows selected", key("D", true)), Action::Tile),
                     ("untile · one tab in the content again".to_string(), Action::Untile),
                     ("keep the peek · CTRL+ENTER · into the stack".to_string(), Action::KeepPeek),
+                    (format!("compact sidebar · {} · icons only, the strip hides", key("B", true)), Action::Compact),
                     ("swap tiles · CTRL+ALT+SHIFT+→".to_string(), Action::TileSwap),
                     (format!("close tab · {}", key("W", true)), Action::CloseTab),
                     (format!("sidebar · {}", key("S", true)), Action::ToggleSidebar),
@@ -4518,6 +4555,7 @@ impl App {
             Action::Welcome => self.open_welcome(),
             Action::FoldAll => self.fold_all(),
             Action::KeepPeek => self.keep_peek(),
+            Action::Compact => self.toggle_compact(),
             Action::Tile => self.tile_selected(),
             Action::Untile => self.untile(),
             Action::TileSwap => self.tile_swap(1),
@@ -4731,6 +4769,7 @@ impl App {
                 Some(KeyCode::KeyW) => return self.close_tabs(false),
                 Some(KeyCode::KeyZ) => return self.reopen_closed(),
                 Some(KeyCode::KeyD) => return self.divide(),
+                Some(KeyCode::KeyB) => return self.toggle_compact(),
                 Some(KeyCode::KeyR) => return self.toggle_reader(),
                 Some(KeyCode::KeyS) => {
                     self.sidebar = !self.sidebar;
@@ -5602,6 +5641,12 @@ impl App {
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
         let was = self.mouse;
         self.mouse = (x, y);
+        if self.compact() {
+            let edge = self.strip_rect().bottom() + self.px(6.0);
+            if (was.1 <= edge) != (y <= edge) {
+                self.dirty = true;
+            }
+        }
         if (was.0 - x).abs() + (was.1 - y).abs() > 0.0 {
             let strip = self.strip_rect();
             if strip.contains(x, y) || strip.contains(was.0, was.1) || (self.sidebar_visible() && (self.sidebar_rect().contains(x, y) || self.sidebar_rect().contains(was.0, was.1))) {
@@ -5748,7 +5793,7 @@ impl App {
         }
 
         // Top strip: window controls, else drag.
-        if pressed && button == MouseButton::Left && strip.contains(x, y) {
+        if pressed && button == MouseButton::Left && strip.contains(x, y) && self.strip_shown() {
             let hit = self.crumb_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h);
             match hit {
                 Some(h) => self.crumb_action(h),

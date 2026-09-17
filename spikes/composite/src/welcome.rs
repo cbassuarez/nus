@@ -142,6 +142,7 @@ impl App {
             row("SHIFT+F2", "Name this window", format!("“{}” · auto-named from the git root or the host; the name is in the title bar and Alt-Tab", self.window_name()), Some(("RENAME", Act::Rename))),
             row("CTRL+N", "New window", "windows own their tabs; the rail or the header lists them", Some(("OPEN ONE", Act::NewWindow))),
             row("CTRL+1–9", "Tabs by number", "Ctrl+` goes back to the last one; Ctrl+PgUp / PgDn walk them", None),
+            row(k("B"), "Compact", "a 48px column of icons; the top strip hides until the pointer reaches the top; hover a row for its name", None),
             row(k("S"), "The sidebar", "pin it, or let it slide in from the edge · BAR or RAIL header under settings", None),
             row("ALT+CLICK", "Peek", "a link floats over the page instead of leaving it · Esc closes, Ctrl+Enter keeps it in the stack", None),
             row(k("D"), "Tiles", "Ctrl+click two to four rows, then tile them: side by side, an L, or a grid · drag the rules · Ctrl+Alt+arrows walk the tiles, with Shift they swap", None),

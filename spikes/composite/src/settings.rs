@@ -359,6 +359,7 @@ pub enum Hit {
     HdrCaret(bool),
     HdrRailHover(bool),
     HdrFlash(bool),
+    Compact(bool),
     CurShape(CursorShapePref),
     CurBlink(Blink),
     CurColor(CursorColor),
@@ -566,6 +567,7 @@ impl App {
             Hit::Shell(s) => format!("carapace {}", s.name()),
             Hit::Slider(k, _, _) => format!("{:?}", k).to_lowercase(),
             Hit::Side(s) => format!("sidebar {:?}", s).to_lowercase(),
+            Hit::Compact(c) => (if c { "compact sidebar" } else { "full sidebar" }).into(),
             Hit::HoverFrom(h) => format!("reveal from {:?}", h).to_lowercase(),
             Hit::Fullscreen(f) => format!("fullscreen {:?}", f).to_lowercase(),
             Hit::Pin(p) => if p { "pin sidebar".into() } else { "sidebar on hover".into() },
@@ -688,6 +690,11 @@ impl App {
                 self.layout();
             }
             Hit::HoverFrom(h) => self.sidebar_rules.hover_from = h,
+            Hit::Compact(c) => {
+                if self.sidebar_rules.compact != c {
+                    self.toggle_compact();
+                }
+            }
             Hit::Fullscreen(f) => {
                 self.sidebar_rules.fullscreen = f;
                 self.layout();
@@ -1751,6 +1758,13 @@ impl App {
                 (
                     "PRESS".into(),
                     Choice(vec![("FLASH".into(), Hit::HdrFlash(true), self.header.flash), ("NONE".into(), Hit::HdrFlash(false), !self.header.flash)]),
+                ),
+                (
+                    "DENSITY".into(),
+                    Choice(vec![
+                        ("FULL".into(), Hit::Compact(false), !self.sidebar_rules.compact),
+                        ("COMPACT · ICONS ONLY".into(), Hit::Compact(true), self.sidebar_rules.compact),
+                    ]),
                 ),
                 (
                     "SIDE".into(),
