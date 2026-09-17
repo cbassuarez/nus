@@ -81,12 +81,29 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - **HSL in 0..1.** `surface::to_hsl` returns hue as a fraction of a turn;
   the picker multiplies for display only.
 
+- **Intercept before vte.** OSC 133 / 7 / 9;4 / 1337 and the Kitty
+  graphics APC are read in `Term::advance` at the byte where they occur,
+  then handed on (or, for image payloads, dropped) — vte's `ansi::Handler`
+  has no hook for them. Marks live in absolute lines (`Grid::history_total`).
+- **PowerShell execution policy.** Dot-sourcing a script from a profile
+  is blocked by default; `-NoExit -EncodedCommand <utf16le base64>` runs
+  the same script and isn't subject to it. `-replace` with a lone
+  backslash is an invalid regex — use `.Replace([char]92, '/')`.
+- **Fallback faces behind a RefCell.** `FontSystem::shape` and `measure`
+  stay `&self` while loading system faces lazily; fallback ids start at
+  0x8000. Symmetric glyphs need asymmetric hover angles.
+- **Chromium's process singleton** was the reason windows moved
+  in-process; one profile, N `App`s, events routed by window id.
+- **Tests as the harness.** nus-vt tests cover marks across chunks,
+  OSC 7/9;4, Kitty chunked RGBA with cursor motion, foreign OSCs
+  passing through; termui tests cover hint scanning and labels;
+  predict tests cover token classes.
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - CEF popup surfaces (`<select>` dropdowns) are not composited.
-- Selection / copy / paste, scrollbars, favicons, history, find.
+- Colour emoji (RGBA atlas), Sixel, output folding, custom hint regexes.
 - Space-owned browser profiles (one request context per Space; the spike uses the global one).
 - Window transparency on Windows (needs a DirectComposition swapchain).
 - Single instance over a named pipe / unix socket (loopback TCP here).
-- Windows in one process sharing the Chromium profile (one process per window here).
 - Reader mode images (captions only here) and link following.

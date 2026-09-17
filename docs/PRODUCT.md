@@ -367,3 +367,58 @@ shortcut, not a limit.
 window from the first frame — never the default exe glyph. Sidebar text
 fits, or marquees when its row is active or hovered, or clips under a
 fade; never an ellipsis.
+
+## The polish pass (settled 2026-09-16, eleventh pass)
+
+Researched against Rio, Ghostty, kitty, WezTerm, Warp, Dia, Arc, Zen,
+Vivaldi and Orion; tier one built in full.
+
+**Windows in one process.** One `App` per OS window, one Chromium
+profile, a registry every window sees; the rail and the window list are
+real; links from other launches land in the window last used.
+
+**Shell integration, auto-injected.** OSC 133 prompt marks, OSC 7 cwd
+and OSC 9;4 progress read in nus-vt at the point they occur; bundled
+scripts for PowerShell (-NoExit -EncodedCommand), bash (--rcfile), zsh
+(ZDOTDIR), fish (-C), cmd (PROMPT); nushell has it built in. AUTO / OFF
+under TERMINAL. It buys: a bar cursor at the prompt, new shells where
+the focused one is, the window's name and dateline from the cwd, jump
+between prompts, copy the last output, paste with a band when it's
+risky, DONE / FAILED badges and a ring when a long command ends
+elsewhere, × codes on failed lines, progress as the loading bar, no
+close-confirm at a prompt, recent commands in the palette to run again.
+
+**Blocks.** Each command is a block: a hairline where it starts, a
+gutter rule on hover (signal when it failed), chips to copy its output
+or run it again, Ctrl+triple-click selects its output, the scrollbar
+ticks are the prompts.
+
+**The terminal's interaction layer.** Selection with semantic zones,
+copy and paste (bracketed, protected), click-to-move at a prompt, a thin
+scrollbar that appears on hover or when scrolled, find in scrollback as
+a band, hints mode (labels over URLs, paths and hashes), an unfocused
+split washes with paper, a cols × rows card while resizing.
+
+**Fonts and images.** Missing glyphs come from system fallbacks
+(symbols, emoji as masks, other scripts) without the app knowing; Kitty
+graphics and iTerm2 inline images draw in the shell; the Kitty keyboard
+protocol was already in.
+
+**The command line, lit and predicted.** Tokens colour as you type;
+the history entry that continues your line ghosts after the caret and
+Right / End accepts it. Terminal-side, nothing to install; history per
+profile in profile/history.
+
+**Browser table stakes.** Find in page, downloads (to ~/Downloads, a
+list in the footer, click reveals), permission asks as a band, `<select>`
+popups composited, content blocking (built-in hosts plus
+profile/blocklist.txt), history-ranked address palette, idle pages sleep
+after 30 minutes and archive after 12 hours.
+
+**The welcome page.** A full tab, ruled, with a live START HERE
+checklist and TRY buttons that do the thing; F1, the palette, settings.
+
+**Still to do before bundling:** `<select>` popups need a live test on a
+real form; downloads and permission bands were built to the CEF
+contract but not exercised by hand; colour emoji want an RGBA atlas;
+Sixel is not decoded; command output folding; hints with custom regex.
