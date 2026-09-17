@@ -864,6 +864,17 @@ impl BrowserTab {
         device: wgpu::Device,
         bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
     ) -> Option<BrowserTab> {
+        Self::create_in(url, shared, device, bind_texture, crate::containers::PERSONAL)
+    }
+
+    /// `create`, in a container's request context (its own cookie jar).
+    pub fn create_in(
+        url: &str,
+        shared: SharedRef,
+        device: wgpu::Device,
+        bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
+        container: &str,
+    ) -> Option<BrowserTab> {
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             shared_texture_enabled: 1,
@@ -890,9 +901,9 @@ impl BrowserTab {
             PermissionBuilder::new(Display { shared: shared.clone() }),
             RequestBuilder::new(Display { shared: shared.clone() }),
         );
-        // The global context: one cookie jar and cache for the Space. (v1 gives
-        // each Space its own, with cache_path under the profile.)
-        let mut context = request_context_get_global_context();
+        // The container's context: the global one for PERSONAL, else its own
+        // cookie jar and cache under profile/containers.
+        let mut context = crate::containers::context(container);
         let t0 = std::time::Instant::now();
         let browser = browser_host_create_browser_sync(
             Some(&window_info),

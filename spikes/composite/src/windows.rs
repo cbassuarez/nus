@@ -12,4 +12,6 @@ pub struct Entry {
     pub tabs: usize,
     /// Creation order: the first window is 0.
     pub ordinal: usize,
+    /// The window's container colour, for its square.
+    pub colour: nus_render::Color,
 }

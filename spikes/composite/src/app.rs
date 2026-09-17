@@ -73,6 +73,10 @@ pub enum Action {
     KeepPeek,
     Compact,
     Focus,
+    /// This window's container; a new one; the page again in one.
+    Container(String),
+    NewContainer(String),
+    ReopenIn(String),
     /// Run a named chain from rules.luau.
     Chain(String),
     SaveToFolder(usize, usize),
@@ -208,6 +212,8 @@ pub struct WebPane {
     pub find: Option<crate::webui::Find>,
     /// The permission band's ALLOW / DENY chips.
     pub perm_hits: Vec<(Rect, bool)>,
+    /// The container this page lives in.
+    pub container: String,
     /// Focus mode: no URL row, no tools row, the page alone.
     pub bare: bool,
     /// The site panel (the gear at the end of the URL row), and its controls.
@@ -534,6 +540,9 @@ pub struct App {
     pub peek_anim: Anim,
     /// The compact column's hovered row, for its tooltip after the panes.
     pub compact_tip: Option<(usize, f32)>,
+    /// This window's container (new pages open in it), and the list.
+    pub container: String,
+    pub containers: Vec<crate::containers::Container>,
     /// Focus mode: no strip, no sidebar, no rows — the panes alone.
     pub focus: bool,
     pub focus_hint: Option<Instant>,
@@ -737,6 +746,8 @@ impl App {
             resize_cursor: None,
             peek_anim: Anim::at(0.0),
             compact_tip: None,
+            container: crate::containers::PERSONAL.to_string(),
+            containers: crate::containers::load(),
             focus: false,
             focus_hint: None,
             folders: Vec::new(),
@@ -934,14 +945,21 @@ impl App {
     }
 
     pub(crate) fn new_web_pane(&mut self, url: &str) -> Option<WebPane> {
+        let c = self.container.clone();
+        self.new_web_pane_in(url, &c)
+    }
+
+    /// A page in a named container.
+    pub(crate) fn new_web_pane_in(&mut self, url: &str, container: &str) -> Option<WebPane> {
         let shared: SharedRef = Rc::new(std::cell::RefCell::new(Shared {
             scale: self.scale,
             size: (100.0, 100.0),
             ..Default::default()
         }));
-        let tab = BrowserTab::create(url, shared, self.device.clone(), self.bind_texture.clone())?;
+        let tab = BrowserTab::create_in(url, shared, self.device.clone(), self.bind_texture.clone(), container)?;
         Some(WebPane {
             tab,
+            container: container.to_string(),
             page: Rect::new(0.0, 0.0, 1.0, 1.0),
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             seen_paints: 0,
@@ -2955,7 +2973,9 @@ impl App {
     pub(crate) fn register_window(&mut self) {
         self.registered_tabs = self.tabs.len();
         let name = self.window_name();
-        self.window.set_title(&if name == "nus" { "nus".to_string() } else { format!("{name} · nus") });
+        let base = if name == "nus" { "nus".to_string() } else { format!("{name} · nus") };
+        let title = if self.container == crate::containers::PERSONAL { base } else { format!("{base} · {}", self.container.to_lowercase()) };
+        self.window.set_title(&title);
     }
 
     pub(crate) fn sidebar_geometry(&self) -> SidebarGeom {
@@ -3138,6 +3158,15 @@ impl App {
                 self.fonts.draw_icon(scene, icon, csz, cx, y + (row_h - csz) / 2.0, t.dim);
                 self.side_hits.push((Rect::new(cx - self.px(8.0), y, tw + csz + self.px(16.0), row_h), SideHit::Fold(i)));
                 right -= tw + csz + self.px(10.0);
+            }
+            // A page in a container: its colour as a small square before the title.
+            if let Pane::Web(w) = &tab.left {
+                if w.container != crate::containers::PERSONAL {
+                    let c = self.colour_of(&w.container);
+                    let d = self.px(6.0);
+                    scene.rect(Rect::new(x, y + ((row_h - d) / 2.0).round(), d, d), c);
+                    x += d + self.px(6.0);
+                }
             }
             let (title, _) = tab.row_text();
             let st = if active { ui_strong } else { ui };
@@ -3476,7 +3505,7 @@ impl App {
         let row = self.px(m::ROW_H);
         let sq = self.px(10.0);
         let me = u64::from(self.window.id());
-        let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal }] } else { self.windows.clone() };
+        let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal, colour: self.container_colour() }] } else { self.windows.clone() };
         let (mx, my) = self.mouse;
         for (k, e) in entries.iter().enumerate() {
             let cy = r.y + k as f32 * row;
@@ -3490,7 +3519,7 @@ impl App {
             } else if hot {
                 scene.rect(cell, fade(t.tint, 0.5));
             }
-            let color = if on { self.surface.signal } else { Theme::with_alpha(self.surface.signal, 0.55) };
+            let color = if on { e.colour } else { Theme::with_alpha(e.colour, 0.55) };
             scene.rect(Rect::new(x + ((rw - sq) / 2.0).round(), cy + ((row - sq) / 2.0).round(), sq, sq), color);
             self.side_hits.push((cell, SideHit::Rail(k)));
         }
@@ -3532,7 +3561,7 @@ impl App {
                 let bg = if hot || self.win_menu { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.6) } else { self.paper() };
                 self.marquee(scene, wm, sb.x + self.px(12.0), y + self.px(31.0), sb.w - self.px(52.0), &name, hot, bg, hover_key("mast", 0));
             } else {
-                scene.rect(Rect::new(sb.x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
+                scene.rect(Rect::new(sb.x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.container_colour());
                 let bg = if hot || self.win_menu { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.6) } else { self.paper() };
                 self.marquee(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), sb.w - self.px(60.0), &name.to_uppercase(), hot, bg, hover_key("mast", 1));
             }
@@ -3655,7 +3684,7 @@ impl App {
             scene.layer(Some(r));
             scene.rect(r, t.paper);
             let mut y = top;
-            let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal }] } else { self.windows.clone() };
+            let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal, colour: self.container_colour() }] } else { self.windows.clone() };
             for (i, e) in entries.iter().enumerate() {
                 let cell = Rect::new(sb.x, y, sb.w, row);
                 let hot = cell.contains(mx, my);
@@ -3663,7 +3692,7 @@ impl App {
                     scene.rect(cell, t.tint);
                 }
                 let sq = self.px(10.0);
-                scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), if e.id == me { self.surface.signal } else { Theme::with_alpha(self.surface.signal, 0.55) });
+                scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), if e.id == me { e.colour } else { Theme::with_alpha(e.colour, 0.55) });
                 let base = y + self.px(19.0);
                 let st = if e.id == me { strong } else { label };
                 let tabs = format!("{} TAB{}", e.tabs, if e.tabs == 1 { "" } else { "S" });
@@ -4606,6 +4635,21 @@ impl App {
                         rows.push(row("·", label, a));
                     }
                 }
+                // Containers: switch this window's, reopen the page in one, make one.
+                if !q.is_empty() && (q.starts_with("container") || "containers".contains(q.as_str()) || q == "jar") {
+                    let page = self.tabs.get(self.active).is_some_and(|t| matches!(t.left, Pane::Web(_)));
+                    for c in self.containers.clone() {
+                        let on = c.name == self.container;
+                        rows.push(row(if on { "●" } else { "○" }, format!("container {} · {}", c.name, if on { "this window's · new pages open here" } else { "make it this window's" }), Action::Container(c.name.clone())));
+                        if page && !on {
+                            rows.push(row("↻", format!("reopen this page in {}", c.name), Action::ReopenIn(c.name.clone())));
+                        }
+                    }
+                    let name = q.trim_start_matches("container").trim();
+                    if !name.is_empty() && !self.containers.iter().any(|c| c.name.eq_ignore_ascii_case(name)) {
+                        rows.push(row("+", format!("new container “{}” · its own cookies and sign-ins", name.to_uppercase()), Action::NewContainer(name.to_string())));
+                    }
+                }
                 // Folder items, by title or folder name.
                 if !q.is_empty() {
                     for (fi, f) in self.folders.iter().enumerate() {
@@ -4780,6 +4824,9 @@ impl App {
             Action::KeepPeek => self.keep_peek(),
             Action::Compact => self.toggle_compact(),
             Action::Focus => self.toggle_focus(),
+            Action::Container(n) => self.set_container(&n),
+            Action::NewContainer(n) => self.new_container(&n),
+            Action::ReopenIn(n) => self.reopen_in(&n),
             Action::Chain(name) => self.run_chain(&name),
             Action::SaveToFolder(i, fi) => self.save_to_folder(i, fi),
             Action::OpenItem(fi, k) => self.open_item(fi, k),

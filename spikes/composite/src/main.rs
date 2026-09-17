@@ -14,6 +14,7 @@ mod peek;
 mod compact;
 mod folders;
 mod sites;
+mod containers;
 mod anim;
 mod app;
 mod browser;
@@ -125,6 +126,10 @@ impl Host {
         match App::new(window.clone(), self.proxy.clone(), secondary, self.made) {
             Ok(mut a) => {
                 a.fullscreen = start == settings::WindowStart::Fullscreen;
+                if let Some(parent) = from.and_then(|i| self.apps.get(i)) {
+                    a.container = parent.container.clone();
+                    a.register_window();
+                }
                 self.access.push((window.id(), adapter, 0));
                 self.apps.push(a);
                 self.made += 1;
@@ -144,7 +149,7 @@ impl Host {
         let entries: Vec<windows::Entry> = self
             .apps
             .iter()
-            .map(|a| windows::Entry { id: u64::from(a.window.id()), name: a.window_name(), tabs: a.tabs.len(), ordinal: a.ordinal })
+            .map(|a| windows::Entry { id: u64::from(a.window.id()), name: a.window_name(), tabs: a.tabs.len(), ordinal: a.ordinal, colour: a.container_colour() })
             .collect();
         for a in self.apps.iter_mut() {
             if a.windows != entries {
