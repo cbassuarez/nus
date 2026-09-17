@@ -42,7 +42,13 @@ pub struct CursorLook {
 
 impl Default for CursorLook {
     fn default() -> Self {
-        CursorLook { shape: None, color: None, weight: 2.0, visible: true, hollow_unfocused: true }
+        CursorLook {
+            shape: None,
+            color: None,
+            weight: 2.0,
+            visible: true,
+            hollow_unfocused: true,
+        }
     }
 }
 
@@ -114,9 +120,12 @@ impl GridRenderer {
         let rows = grid.rows();
         let palette = &term.palette;
         let cursor = *term.cursor();
-        let show_cursor = term.modes().contains(Modes::SHOW_CURSOR) && grid.display_offset == 0 && look.visible;
+        let show_cursor =
+            term.modes().contains(Modes::SHOW_CURSOR) && grid.display_offset == 0 && look.visible;
         let shape = look.shape.unwrap_or(term.cursor_style().shape);
-        let cursor_rgb = look.color.unwrap_or(to_color(palette.get(nus_vt::palette::CURSOR)));
+        let cursor_rgb = look
+            .color
+            .unwrap_or(to_color(palette.get(nus_vt::palette::CURSOR)));
         let weight = look.weight.max(1.0);
         let hollow = look.hollow_unfocused;
         let default_bg = to_color(palette.get(nus_vt::palette::BG));
@@ -147,7 +156,14 @@ impl GridRenderer {
                 }
             }
             if cursor_here {
-                (cursor.col, shape as u8, focused, (weight * 4.0) as u32, hollow).hash(&mut h);
+                (
+                    cursor.col,
+                    shape as u8,
+                    focused,
+                    (weight * 4.0) as u32,
+                    hollow,
+                )
+                    .hash(&mut h);
                 for c in cursor_rgb {
                     ((c * 255.0) as u32).hash(&mut h);
                 }
@@ -183,7 +199,9 @@ impl GridRenderer {
                     if is_cursor && !block {
                         let r = match (shape, focused) {
                             (_, false) => None, // hollow: drawn below
-                            (CursorShape::Underline, true) => Some(Rect::new(x, ch - weight, cw, weight)),
+                            (CursorShape::Underline, true) => {
+                                Some(Rect::new(x, ch - weight, cw, weight))
+                            }
                             (CursorShape::Beam, true) => Some(Rect::new(x, 0.0, weight, ch)),
                             _ => None,
                         };

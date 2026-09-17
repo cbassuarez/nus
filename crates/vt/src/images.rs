@@ -51,10 +51,13 @@ pub fn kitty_controls(s: &str) -> Vec<(char, String)> {
 
 /// A numeric control, or the default.
 pub fn control_num(c: &[(char, String)], key: char, default: i64) -> i64 {
-    c.iter().find(|(k, _)| *k == key).and_then(|(_, v)| v.parse().ok()).unwrap_or(default)
+    c.iter()
+        .find(|(k, _)| *k == key)
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(default)
 }
 
-pub fn control_str<'a>(c: &'a [(char, String)], key: char) -> Option<&'a str> {
+pub fn control_str(c: &[(char, String)], key: char) -> Option<&str> {
     c.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str())
 }
 
@@ -95,9 +98,15 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let n = info.buffer_size();
     let rgba: Vec<u8> = match info.color_type {
         png::ColorType::Rgba => buf[..n].to_vec(),
-        png::ColorType::Rgb => buf[..n].chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::Rgb => buf[..n]
+            .chunks(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
         png::ColorType::Grayscale => buf[..n].iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf[..n].chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::GrayscaleAlpha => buf[..n]
+            .chunks(2)
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
         _ => return None,
     };
     // 16-bit depths come out as 2 bytes per sample; take the high byte.
@@ -112,9 +121,15 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         let samples: Vec<u8> = buf[..n].chunks(2).map(|p| p[0]).collect();
         let rgba: Vec<u8> = match per {
             4 => samples,
-            3 => samples.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+            3 => samples
+                .chunks(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
             1 => samples.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-            _ => samples.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+            _ => samples
+                .chunks(2)
+                .flat_map(|p| [p[0], p[0], p[0], p[1]])
+                .collect(),
         };
         return Some((w, h, rgba));
     }
@@ -126,19 +141,32 @@ pub fn decode_raw(format: u32, w: u32, h: u32, data: &[u8]) -> Option<Vec<u8>> {
     let n = (w * h) as usize;
     match format {
         32 if data.len() >= n * 4 => Some(data[..n * 4].to_vec()),
-        24 if data.len() >= n * 3 => Some(data[..n * 3].chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect()),
+        24 if data.len() >= n * 3 => Some(
+            data[..n * 3]
+                .chunks(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
+        ),
         _ => None,
     }
 }
 
 /// iTerm2 `File=` arguments: name=…;width=…;height=…;inline=1.
 pub fn iterm_args(s: &str) -> Vec<(String, String)> {
-    s.split(';').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    s.split(';')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 /// An iTerm2 size ("auto", "12" cells, "200px", "50%") in cells, given
 /// the cell size and the image's pixel size along that axis.
-pub fn iterm_size(spec: Option<&str>, image_px: u32, cell_px: u16, screen_cells: usize) -> Option<usize> {
+pub fn iterm_size(
+    spec: Option<&str>,
+    image_px: u32,
+    cell_px: u16,
+    screen_cells: usize,
+) -> Option<usize> {
     let spec = spec?.trim();
     if spec == "auto" || spec.is_empty() {
         return None;

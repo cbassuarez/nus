@@ -113,11 +113,39 @@ const EXTRA_BASE: u16 = 0x8000;
 
 /// Families tried, in order, for characters the main font lacks.
 #[cfg(target_os = "windows")]
-const FALLBACK_FAMILIES: &[&str] = &["Cascadia Mono", "Consolas", "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", "Segoe UI Historic", "Microsoft YaHei", "Yu Gothic UI", "Malgun Gothic", "Nirmala UI"];
+const FALLBACK_FAMILIES: &[&str] = &[
+    "Cascadia Mono",
+    "Consolas",
+    "Segoe UI Symbol",
+    "Segoe UI Emoji",
+    "Segoe UI",
+    "Segoe UI Historic",
+    "Microsoft YaHei",
+    "Yu Gothic UI",
+    "Malgun Gothic",
+    "Nirmala UI",
+];
 #[cfg(target_os = "macos")]
-const FALLBACK_FAMILIES: &[&str] = &["Menlo", "Apple Symbols", "Apple Color Emoji", "Helvetica Neue", "PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo"];
+const FALLBACK_FAMILIES: &[&str] = &[
+    "Menlo",
+    "Apple Symbols",
+    "Apple Color Emoji",
+    "Helvetica Neue",
+    "PingFang SC",
+    "Hiragino Sans",
+    "Apple SD Gothic Neo",
+];
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-const FALLBACK_FAMILIES: &[&str] = &["DejaVu Sans Mono", "Noto Sans Mono", "Noto Sans Symbols2", "Noto Sans Symbols", "Noto Color Emoji", "DejaVu Sans", "Noto Sans CJK SC", "Noto Sans"];
+const FALLBACK_FAMILIES: &[&str] = &[
+    "DejaVu Sans Mono",
+    "Noto Sans Mono",
+    "Noto Sans Symbols2",
+    "Noto Sans Symbols",
+    "Noto Color Emoji",
+    "DejaVu Sans",
+    "Noto Sans CJK SC",
+    "Noto Sans",
+];
 
 impl FontSystem {
     pub fn new() -> FontSystem {
@@ -159,7 +187,10 @@ impl FontSystem {
         }
         let db = self.db.borrow();
         let db = db.as_ref()?;
-        let id = db.query(&fontdb::Query { families: &[fontdb::Family::Name(family)], ..Default::default() })?;
+        let id = db.query(&fontdb::Query {
+            families: &[fontdb::Family::Name(family)],
+            ..Default::default()
+        })?;
         let face = db.face(id)?;
         let index = face.index;
         let data = match &face.source {
@@ -172,7 +203,12 @@ impl FontSystem {
         let font = FontRef::from_index(data, index as usize)?;
         let units_per_em = font.metrics(&[]).units_per_em as f32;
         let mut extra = self.extra.borrow_mut();
-        extra.push(Face { data, index, hb, units_per_em });
+        extra.push(Face {
+            data,
+            index,
+            hb,
+            units_per_em,
+        });
         Some(FontId(EXTRA_BASE + (extra.len() - 1) as u16))
     }
 
@@ -186,19 +222,20 @@ impl FontSystem {
                 out.push(id);
             }
         }
-        tracing::info!("font fallbacks: {} of {} families", out.len(), FALLBACK_FAMILIES.len());
+        tracing::info!(
+            "font fallbacks: {} of {} families",
+            out.len(),
+            FALLBACK_FAMILIES.len()
+        );
         *self.fallbacks.borrow_mut() = Some(out.clone());
         out
     }
 
     /// A face among the fallbacks that has `ch`.
     fn fallback_for(&self, ch: char) -> Option<FontId> {
-        for id in self.fallbacks() {
-            if self.swash(id).charmap().map(ch) != 0 {
-                return Some(id);
-            }
-        }
-        None
+        self.fallbacks()
+            .into_iter()
+            .find(|&id| self.swash(id).charmap().map(ch) != 0)
     }
 
     pub fn load_bytes(&mut self, data: &'static [u8], index: u32) -> Result<FontId> {
@@ -225,7 +262,9 @@ impl FontSystem {
             }
         }
         let guard = self.db.borrow();
-        let Some(db) = guard.as_ref() else { return fallback };
+        let Some(db) = guard.as_ref() else {
+            return fallback;
+        };
         let id = db.query(&fontdb::Query {
             families: &[fontdb::Family::Name(family)],
             ..Default::default()
@@ -256,7 +295,9 @@ impl FontSystem {
     }
 
     fn swash(&self, font: FontId) -> FontRef<'static> {
-        self.with_face(font, |f| FontRef::from_index(f.data, f.index as usize).expect("parsed at load"))
+        self.with_face(font, |f| {
+            FontRef::from_index(f.data, f.index as usize).expect("parsed at load")
+        })
     }
 
     pub fn metrics(&self, font: FontId, px: f32) -> Metrics {
@@ -278,28 +319,28 @@ impl FontSystem {
 
     fn shape_one(&self, font: FontId, px: f32, text: &str, cluster_base: u32) -> Vec<ShapedGlyph> {
         self.with_face(font, |face| {
-        let mut buf = rustybuzz::UnicodeBuffer::new();
-        buf.push_str(text);
-        buf.guess_segment_properties();
-        let features = [rustybuzz::Feature::new(
-            rustybuzz::ttf_parser::Tag::from_bytes(b"calt"),
-            1,
-            ..,
-        )];
-        let out = rustybuzz::shape(&face.hb, &features, buf);
-        let s = px / face.units_per_em;
-        out.glyph_infos()
-            .iter()
-            .zip(out.glyph_positions())
-            .map(|(i, p)| ShapedGlyph {
-                id: i.glyph_id as u16,
-                font,
-                cluster: i.cluster + cluster_base,
-                x_advance: p.x_advance as f32 * s,
-                x_offset: p.x_offset as f32 * s,
-                y_offset: p.y_offset as f32 * s,
-            })
-            .collect()
+            let mut buf = rustybuzz::UnicodeBuffer::new();
+            buf.push_str(text);
+            buf.guess_segment_properties();
+            let features = [rustybuzz::Feature::new(
+                rustybuzz::ttf_parser::Tag::from_bytes(b"calt"),
+                1,
+                ..,
+            )];
+            let out = rustybuzz::shape(&face.hb, &features, buf);
+            let s = px / face.units_per_em;
+            out.glyph_infos()
+                .iter()
+                .zip(out.glyph_positions())
+                .map(|(i, p)| ShapedGlyph {
+                    id: i.glyph_id as u16,
+                    font,
+                    cluster: i.cluster + cluster_base,
+                    x_advance: p.x_advance as f32 * s,
+                    x_offset: p.x_offset as f32 * s,
+                    y_offset: p.y_offset as f32 * s,
+                })
+                .collect()
         })
     }
 
@@ -316,7 +357,13 @@ impl FontSystem {
             b.push(text.len() as u32);
             b
         };
-        let cluster_end = |c: u32| bytes.iter().copied().find(|&x| x > c).unwrap_or(text.len() as u32);
+        let cluster_end = |c: u32| {
+            bytes
+                .iter()
+                .copied()
+                .find(|&x| x > c)
+                .unwrap_or(text.len() as u32)
+        };
         let mut out: Vec<ShapedGlyph> = Vec::with_capacity(glyphs.len());
         let mut i = 0;
         while i < glyphs.len() {
@@ -437,7 +484,12 @@ impl FontSystem {
 
     /// Width of `text` without drawing it.
     pub fn measure(&self, s: Style, text: &str) -> f32 {
-        let key = (s.font.0, s.px.to_bits(), s.tracking.to_bits(), text.to_string());
+        let key = (
+            s.font.0,
+            s.px.to_bits(),
+            s.tracking.to_bits(),
+            text.to_string(),
+        );
         if let Some(w) = self.widths.borrow().get(&key) {
             return *w;
         }
@@ -596,6 +648,7 @@ impl FontSystem {
     /// Draw an icon with its top-left at (x, y).
     /// An icon spun by `angle` radians about its centre and scaled by
     /// `scale` (about the centre too): hover motion.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_icon_moved(
         &mut self,
         scene: &mut Scene,
@@ -657,15 +710,32 @@ mod tests {
         let plex = fonts.load_bytes(bundled::PLEX_MONO, 0).unwrap();
         // Plex Mono has the letters; the command sign and the emoji it does not.
         let glyphs = fonts.shape(plex, 13.0, "a \u{2318} b \u{1F600}");
-        assert!(glyphs.iter().all(|g| g.id != 0 || g.font != plex), "every glyph resolved or reshaped: {glyphs:?}");
-        let resolved = glyphs.iter().filter(|g| g.font != plex && g.id != 0).count();
+        assert!(
+            glyphs.iter().all(|g| g.id != 0 || g.font != plex),
+            "every glyph resolved or reshaped: {glyphs:?}"
+        );
+        let resolved = glyphs
+            .iter()
+            .filter(|g| g.font != plex && g.id != 0)
+            .count();
         // On a machine with system fonts, both symbols resolve; on a bare CI box at least the code runs.
         if fonts.fallbacks().is_empty() {
             return;
         }
-        assert!(resolved >= 1, "a fallback face supplied the symbol: {glyphs:?}");
+        assert!(
+            resolved >= 1,
+            "a fallback face supplied the symbol: {glyphs:?}"
+        );
         // Measuring still works through fallbacks and stays &self.
-        let w = fonts.measure(Style { font: plex, px: 13.0, color: [0.0; 4], tracking: 0.0 }, "\u{2318}");
+        let w = fonts.measure(
+            Style {
+                font: plex,
+                px: 13.0,
+                color: [0.0; 4],
+                tracking: 0.0,
+            },
+            "\u{2318}",
+        );
         assert!(w > 0.0);
     }
 }

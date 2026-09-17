@@ -10,7 +10,7 @@ pub mod term;
 
 pub use cell::{Cell, Color, Flags};
 pub use grid::{Grid, Row};
-pub use palette::{Palette, Rgb};
 pub use images::{Image, Placement};
+pub use palette::{Palette, Rgb};
 pub use term::{Cursor, Event, Mark, MarkKind, Modes, Term};
 pub use vte::ansi::{CursorShape, CursorStyle, KeyboardModes};

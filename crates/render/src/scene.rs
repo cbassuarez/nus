@@ -130,8 +130,14 @@ impl Instance {
     pub fn quad(corners: [[f32; 2]; 4], color: Color) -> Instance {
         let min_x = corners.iter().map(|c| c[0]).fold(f32::INFINITY, f32::min);
         let min_y = corners.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
-        let max_x = corners.iter().map(|c| c[0]).fold(f32::NEG_INFINITY, f32::max);
-        let max_y = corners.iter().map(|c| c[1]).fold(f32::NEG_INFINITY, f32::max);
+        let max_x = corners
+            .iter()
+            .map(|c| c[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = corners
+            .iter()
+            .map(|c| c[1])
+            .fold(f32::NEG_INFINITY, f32::max);
         // A pixel of slack so the anti-aliased edge isn't clipped.
         let (x, y) = (min_x.floor() - 1.0, min_y.floor() - 1.0);
         let (w, h) = ((max_x - x).ceil() + 1.0, (max_y - y).ceil() + 1.0);
@@ -146,7 +152,12 @@ impl Instance {
         Instance {
             pos: [x, y],
             size: [w, h],
-            uv: [c0x, c0y, f32::from_bits(pack16(corners[1])), f32::from_bits(pack16(corners[2]))],
+            uv: [
+                c0x,
+                c0y,
+                f32::from_bits(pack16(corners[1])),
+                f32::from_bits(pack16(corners[2])),
+            ],
             color,
             kind: 12,
             color2: pack16(corners[3]),

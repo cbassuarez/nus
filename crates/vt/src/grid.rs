@@ -155,7 +155,11 @@ impl Grid {
     /// Put an absolute line at the top of the view (or go live if it is
     /// on the visible screen).
     pub fn scroll_to_abs(&mut self, abs: u64) {
-        let new = if abs >= self.history_total { 0 } else { ((self.history_total - abs) as usize).min(self.scrollback.len()) };
+        let new = if abs >= self.history_total {
+            0
+        } else {
+            ((self.history_total - abs) as usize).min(self.scrollback.len())
+        };
         if new != self.display_offset {
             self.display_offset = new;
             self.damage_all();

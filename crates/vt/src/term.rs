@@ -199,8 +199,14 @@ impl Term {
             // Queries vte doesn't carry: XTVERSION (CSI > q) and XTGETTCAP
             // (DCS + q … ST). Answered here and kept from vte.
             if bytes[i] == 0x1b && i + 1 < bytes.len() {
-                if bytes[i + 1] == b'[' && (bytes[i + 2..].starts_with(b">q") || bytes[i + 2..].starts_with(b">0q")) {
-                    let len = if bytes[i + 2..].starts_with(b">q") { 4 } else { 5 };
+                if bytes[i + 1] == b'['
+                    && (bytes[i + 2..].starts_with(b">q") || bytes[i + 2..].starts_with(b">0q"))
+                {
+                    let len = if bytes[i + 2..].starts_with(b">q") {
+                        4
+                    } else {
+                        5
+                    };
                     self.feed(&bytes[start..i]);
                     self.respond(format!("\x1bP>|nus {}\x1b\\", env!("CARGO_PKG_VERSION")));
                     i += len;
@@ -239,7 +245,8 @@ impl Term {
             }
             // ESC ] or C1 OSC; ESC _ APC (Kitty graphics).
             let apc = bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'_';
-            let osc_at = if bytes[i] == 0x1b && i + 1 < bytes.len() && (bytes[i + 1] == b']' || apc) {
+            let osc_at = if bytes[i] == 0x1b && i + 1 < bytes.len() && (bytes[i + 1] == b']' || apc)
+            {
                 Some((i, i + 2))
             } else if bytes[i] == 0x9d {
                 Some((i, i + 1))
@@ -252,7 +259,14 @@ impl Term {
             };
             // Only the sequences we care about; anything else passes straight through.
             let rest = &bytes[body..];
-            let ours = if apc { rest.starts_with(b"G") } else { rest.starts_with(b"133;") || rest.starts_with(b"7;") || rest.starts_with(b"9;4;") || rest.starts_with(b"1337;File=") };
+            let ours = if apc {
+                rest.starts_with(b"G")
+            } else {
+                rest.starts_with(b"133;")
+                    || rest.starts_with(b"7;")
+                    || rest.starts_with(b"9;4;")
+                    || rest.starts_with(b"1337;File=")
+            };
             if !ours && rest.len() >= 10 {
                 i += 1;
                 continue;
@@ -300,7 +314,11 @@ impl Term {
                     self.integration_osc(&payload);
                 }
                 // Image payloads never reach vte; the rest does.
-                start = if apc || payload.starts_with(b"1337;") { seq_end } else { at };
+                start = if apc || payload.starts_with(b"1337;") {
+                    seq_end
+                } else {
+                    at
+                };
             }
             i = seq_end;
         }
@@ -349,18 +367,39 @@ impl Term {
         } else if let Some(rest) = text.strip_prefix("7;") {
             let url = rest.trim();
             // file://host/path → path; Windows drives come as /C:/…
-            let path = url.strip_prefix("file://").map(|u| u.splitn(2, '/').nth(1).map(|p| format!("/{p}")).unwrap_or_default()).unwrap_or_else(|| url.to_string());
+            let path = url
+                .strip_prefix("file://")
+                .map(|u| {
+                    u.split_once('/')
+                        .map(|x| format!("/{}", x.1))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_else(|| url.to_string());
             let decoded = percent_decode(&path);
-            let path = decoded.strip_prefix('/').filter(|p| p.len() > 1 && p.as_bytes()[1] == b':').map(|p| p.to_string()).unwrap_or(decoded);
+            let path = decoded
+                .strip_prefix('/')
+                .filter(|p| p.len() > 1 && p.as_bytes()[1] == b':')
+                .map(|p| p.to_string())
+                .unwrap_or(decoded);
             if !path.is_empty() {
                 self.cwd = Some(path.clone());
                 self.events.push(Event::Cwd(path));
             }
         } else if let Some(rest) = text.strip_prefix("9;4;") {
             let mut parts = rest.split(';');
-            let state: u8 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-            let pct: u8 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-            self.progress = if state == 0 { None } else { Some((state, pct.min(100))) };
+            let state: u8 = parts
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            let pct: u8 = parts
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            self.progress = if state == 0 {
+                None
+            } else {
+                Some((state, pct.min(100)))
+            };
             self.events.push(Event::Progress(state, pct.min(100)));
         }
     }
@@ -416,10 +455,9 @@ impl Term {
         let id = control_num(&c, 'i', 0) as u32;
         let more = control_num(&c, 'm', 0) == 1;
         let respond = |me: &mut Term, id: u32, msg: &str| {
-            if quiet == 0 || (quiet == 1 && msg != "OK") {
-                if id != 0 {
-                    me.responses.extend_from_slice(format!("\x1b_Gi={id};{msg}\x1b\\").as_bytes());
-                }
+            if (quiet == 0 || (quiet == 1 && msg != "OK")) && id != 0 {
+                me.responses
+                    .extend_from_slice(format!("\x1b_Gi={id};{msg}\x1b\\").as_bytes());
             }
         };
         match action.as_str() {
@@ -442,7 +480,12 @@ impl Term {
             }
             "p" => {
                 if self.images.iter().any(|im| im.id == id) {
-                    self.place_image(id, control_num(&c, 'c', 0) as usize, control_num(&c, 'r', 0) as usize, control_num(&c, 'C', 0) == 1);
+                    self.place_image(
+                        id,
+                        control_num(&c, 'c', 0) as usize,
+                        control_num(&c, 'r', 0) as usize,
+                        control_num(&c, 'C', 0) == 1,
+                    );
                     respond(self, id, "OK");
                 } else {
                     respond(self, id, "ENOENT:no image with that id");
@@ -469,15 +512,26 @@ impl Term {
                 let bytes = crate::images::base64_decode(&pending.data);
                 let decoded = match pending.format {
                     100 => crate::images::decode_png(&bytes),
-                    f => crate::images::decode_raw(f, pending.width, pending.height, &bytes).map(|rgba| (pending.width, pending.height, rgba)),
+                    f => crate::images::decode_raw(f, pending.width, pending.height, &bytes)
+                        .map(|rgba| (pending.width, pending.height, rgba)),
                 };
                 let Some((w, h, rgba)) = decoded else {
                     respond(self, pending.id, "EINVAL:could not decode");
                     return;
                 };
-                let id = if pending.id == 0 { self.next_image_id += 1; self.next_image_id } else { pending.id };
+                let id = if pending.id == 0 {
+                    self.next_image_id += 1;
+                    self.next_image_id
+                } else {
+                    pending.id
+                };
                 self.images.retain(|im| im.id != id);
-                self.images.push(crate::images::Image { id, width: w, height: h, rgba });
+                self.images.push(crate::images::Image {
+                    id,
+                    width: w,
+                    height: h,
+                    rgba,
+                });
                 self.trim_images();
                 if pending.display {
                     self.place_image(id, pending.cols, pending.rows, false);
@@ -500,14 +554,30 @@ impl Term {
 
     /// Put an image at the cursor and move past it (unless `keep_cursor`).
     fn place_image(&mut self, id: u32, cols: usize, rows: usize, keep_cursor: bool) {
-        let Some(im) = self.images.iter().find(|im| im.id == id) else { return };
+        let Some(im) = self.images.iter().find(|im| im.id == id) else {
+            return;
+        };
         let (cw, ch) = (self.cell_px.0.max(1) as f32, self.cell_px.1.max(1) as f32);
-        let cols = if cols > 0 { cols } else { (im.width as f32 / cw).ceil().max(1.0) as usize };
-        let rows = if rows > 0 { rows } else { (im.height as f32 / ch).ceil().max(1.0) as usize };
+        let cols = if cols > 0 {
+            cols
+        } else {
+            (im.width as f32 / cw).ceil().max(1.0) as usize
+        };
+        let rows = if rows > 0 {
+            rows
+        } else {
+            (im.height as f32 / ch).ceil().max(1.0) as usize
+        };
         let cols = cols.min(self.primary.cols().max(1));
         let line = self.primary.abs_row(self.cursor.row);
         let col = self.cursor.col;
-        self.placements.push(crate::images::Placement { image: id, line, col, cols, rows });
+        self.placements.push(crate::images::Placement {
+            image: id,
+            line,
+            col,
+            cols,
+            rows,
+        });
         self.images_gen += 1;
         if !keep_cursor {
             for _ in 1..rows {
@@ -521,27 +591,56 @@ impl Term {
     /// iTerm2 inline image: `<args>:<base64>`.
     fn iterm_image(&mut self, payload: &[u8]) {
         use crate::images::{iterm_args, iterm_size};
-        let Some(colon) = payload.iter().position(|&b| b == b':') else { return };
+        let Some(colon) = payload.iter().position(|&b| b == b':') else {
+            return;
+        };
         let args = iterm_args(&String::from_utf8_lossy(&payload[..colon]));
         let inline = args.iter().any(|(k, v)| k == "inline" && v == "1");
         if !inline {
             return;
         }
         let bytes = crate::images::base64_decode(&payload[colon + 1..]);
-        let Some((w, h, rgba)) = crate::images::decode_png(&bytes) else { return };
+        let Some((w, h, rgba)) = crate::images::decode_png(&bytes) else {
+            return;
+        };
         self.next_image_id += 1;
         let id = self.next_image_id;
-        self.images.push(crate::images::Image { id, width: w, height: h, rgba });
+        self.images.push(crate::images::Image {
+            id,
+            width: w,
+            height: h,
+            rgba,
+        });
         self.trim_images();
-        let width = args.iter().find(|(k, _)| k == "width").map(|(_, v)| v.as_str());
-        let height = args.iter().find(|(k, _)| k == "height").map(|(_, v)| v.as_str());
+        let width = args
+            .iter()
+            .find(|(k, _)| k == "width")
+            .map(|(_, v)| v.as_str());
+        let height = args
+            .iter()
+            .find(|(k, _)| k == "height")
+            .map(|(_, v)| v.as_str());
         let cols = iterm_size(width, w, self.cell_px.0, self.primary.cols()).unwrap_or(0);
         let rows = iterm_size(height, h, self.cell_px.1, self.primary.rows()).unwrap_or(0);
         // Keep the aspect when only one side is given.
         let (cols, rows) = match (cols, rows) {
             (0, 0) => (0, 0),
-            (c, 0) => (c, ((c as f32 * self.cell_px.0 as f32) * h as f32 / w as f32 / self.cell_px.1.max(1) as f32).ceil().max(1.0) as usize),
-            (0, r) => (((r as f32 * self.cell_px.1 as f32) * w as f32 / h as f32 / self.cell_px.0.max(1) as f32).ceil().max(1.0) as usize, r),
+            (c, 0) => (
+                c,
+                ((c as f32 * self.cell_px.0 as f32) * h as f32
+                    / w as f32
+                    / self.cell_px.1.max(1) as f32)
+                    .ceil()
+                    .max(1.0) as usize,
+            ),
+            (0, r) => (
+                ((r as f32 * self.cell_px.1 as f32) * w as f32
+                    / h as f32
+                    / self.cell_px.0.max(1) as f32)
+                    .ceil()
+                    .max(1.0) as usize,
+                r,
+            ),
             (c, r) => (c, r),
         };
         self.place_image(id, cols, rows, false);
@@ -585,10 +684,23 @@ impl Term {
                 line += 1;
                 continue;
             };
-            let chars: Vec<char> = row.cells.iter().filter(|c| !c.flags.contains(crate::cell::Flags::WIDE_SPACER)).map(|c| c.ch).collect();
+            let chars: Vec<char> = row
+                .cells
+                .iter()
+                .filter(|c| !c.flags.contains(crate::cell::Flags::WIDE_SPACER))
+                .map(|c| c.ch)
+                .collect();
             let from = if line == start.0 { start.1 } else { 0 };
-            let to = if line == end.0 { (end.1 + 1).min(chars.len()) } else { chars.len() };
-            let piece: String = chars.get(from.min(chars.len())..to.max(from.min(chars.len()))).unwrap_or(&[]).iter().collect();
+            let to = if line == end.0 {
+                (end.1 + 1).min(chars.len())
+            } else {
+                chars.len()
+            };
+            let piece: String = chars
+                .get(from.min(chars.len())..to.max(from.min(chars.len())))
+                .unwrap_or(&[])
+                .iter()
+                .collect();
             if line == end.0 || row.wrapped {
                 out.push_str(&piece);
             } else {
@@ -622,7 +734,10 @@ impl Term {
 
     /// The last non-blank column of a line (for line selection).
     pub fn line_end(&self, line: u64) -> usize {
-        self.primary.row_abs(line).map(|r| r.text().chars().count().saturating_sub(1)).unwrap_or(0)
+        self.primary
+            .row_abs(line)
+            .map(|r| r.text().chars().count().saturating_sub(1))
+            .unwrap_or(0)
     }
 
     /// Case-insensitive matches of `q` in history and the screen: (line, col, len).
@@ -637,7 +752,11 @@ impl Term {
         let last = grid.abs_row(grid.rows() - 1);
         while line <= last {
             if let Some(row) = grid.row_abs(line) {
-                let chars: Vec<char> = row.cells.iter().map(|c| c.ch.to_lowercase().next().unwrap_or(c.ch)).collect();
+                let chars: Vec<char> = row
+                    .cells
+                    .iter()
+                    .map(|c| c.ch.to_lowercase().next().unwrap_or(c.ch))
+                    .collect();
                 if chars.len() >= q.len() {
                     let mut i = 0;
                     while i + q.len() <= chars.len() {
@@ -657,18 +776,41 @@ impl Term {
 
     /// The block a line belongs to: (prompt line, command text, exit) from marks.
     pub fn block_at(&self, line: u64) -> Option<(u64, u64, String, Option<i32>)> {
-        let starts: Vec<usize> = self.marks.iter().enumerate().filter(|(_, m)| m.kind == MarkKind::PromptStart).map(|(i, _)| i).collect();
+        let starts: Vec<usize> = self
+            .marks
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.kind == MarkKind::PromptStart)
+            .map(|(i, _)| i)
+            .collect();
         let idx = starts.iter().rposition(|&i| self.marks[i].line <= line)?;
         let start = self.marks[starts[idx]].line;
-        let end = starts.get(idx + 1).map(|&i| self.marks[i].line).unwrap_or(self.primary.abs_row(self.primary.rows() - 1) + 1);
-        let cmd = self.marks[starts[idx]..].iter().find(|m| m.kind == MarkKind::CommandStart).map(|b| self.command_text(b)).unwrap_or_default();
-        let exit = self.marks[starts[idx]..].iter().take_while(|m| m.line < end || m.kind != MarkKind::PromptStart).find_map(|m| match m.kind { MarkKind::CommandEnd(e) => Some(e), _ => None }).flatten();
+        let end = starts
+            .get(idx + 1)
+            .map(|&i| self.marks[i].line)
+            .unwrap_or(self.primary.abs_row(self.primary.rows() - 1) + 1);
+        let cmd = self.marks[starts[idx]..]
+            .iter()
+            .find(|m| m.kind == MarkKind::CommandStart)
+            .map(|b| self.command_text(b))
+            .unwrap_or_default();
+        let exit = self.marks[starts[idx]..]
+            .iter()
+            .take_while(|m| m.line < end || m.kind != MarkKind::PromptStart)
+            .find_map(|m| match m.kind {
+                MarkKind::CommandEnd(e) => Some(e),
+                _ => None,
+            })
+            .flatten();
         Some((start, end, cmd, exit))
     }
 
     /// Is the shell sitting at a prompt (the last mark is A or B)?
     pub fn at_prompt(&self) -> bool {
-        matches!(self.marks.last().map(|m| m.kind), Some(MarkKind::PromptStart | MarkKind::CommandStart))
+        matches!(
+            self.marks.last().map(|m| m.kind),
+            Some(MarkKind::PromptStart | MarkKind::CommandStart)
+        )
     }
 
     /// The command text between a B mark and the next C (or the cursor).
@@ -677,7 +819,10 @@ impl Term {
         let end = self
             .marks
             .iter()
-            .find(|m| matches!(m.kind, MarkKind::OutputStart) && (m.line > b.line || (m.line == b.line && m.col >= b.col)))
+            .find(|m| {
+                matches!(m.kind, MarkKind::OutputStart)
+                    && (m.line > b.line || (m.line == b.line && m.col >= b.col))
+            })
             .map(|m| (m.line, m.col))
             .unwrap_or((grid.abs_row(self.cursor.row), self.cursor.col));
         let mut out = String::new();
@@ -686,7 +831,11 @@ impl Term {
             if let Some(row) = grid.row_abs(line) {
                 let text: String = row.text();
                 let from = if line == b.line { b.col } else { 0 };
-                let to = if line == end.0 { end.1.min(text.chars().count()) } else { text.chars().count() };
+                let to = if line == end.0 {
+                    end.1.min(text.chars().count())
+                } else {
+                    text.chars().count()
+                };
                 if to > from {
                     let piece: String = text.chars().skip(from).take(to - from).collect();
                     out.push_str(piece.trim_end());
@@ -1631,6 +1780,25 @@ impl Handler for Term {
     }
 }
 
+/// Minimal %XX decoding for OSC 7 paths.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1643,7 +1811,12 @@ mod tests {
         // "TN" and "Tc" and an unknown "zz", hex-encoded, one DCS.
         t.advance(b"\x1bP+q544e;5463;7a7a\x1b\\");
         let r = String::from_utf8(t.take_responses()).unwrap();
-        assert!(r.contains("\x1bP1+r544E=") && r.contains("\x1bP1+r5463\x1b\\") && r.contains("\x1bP0+r7A7A"), "{r:?}");
+        assert!(
+            r.contains("\x1bP1+r544E=")
+                && r.contains("\x1bP1+r5463\x1b\\")
+                && r.contains("\x1bP0+r7A7A"),
+            "{r:?}"
+        );
         // Split across chunks.
         t.advance(b"\x1bP+q5247");
         t.advance(b"42\x1b\\");
@@ -1663,15 +1836,32 @@ mod tests {
     #[test]
     fn marks_land_on_their_rows_and_survive_scrolling() {
         let mut t = term(20, 3);
-        feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07ls -la\r\n\x1b]133;C\x07a\r\nb\r\nc\r\n\x1b]133;D;0\x07");
+        feed(
+            &mut t,
+            "\x1b]133;A\x07$ \x1b]133;B\x07ls -la\r\n\x1b]133;C\x07a\r\nb\r\nc\r\n\x1b]133;D;0\x07",
+        );
         let kinds: Vec<MarkKind> = t.marks.iter().map(|m| m.kind).collect();
-        assert_eq!(kinds, vec![MarkKind::PromptStart, MarkKind::CommandStart, MarkKind::OutputStart, MarkKind::CommandEnd(Some(0))]);
+        assert_eq!(
+            kinds,
+            vec![
+                MarkKind::PromptStart,
+                MarkKind::CommandStart,
+                MarkKind::OutputStart,
+                MarkKind::CommandEnd(Some(0))
+            ]
+        );
         // The prompt was on absolute line 0, which has scrolled into history.
         assert_eq!(t.marks[0].line, 0);
         assert_eq!(t.marks[1].col, 2);
-        assert!(matches!(t.grid().locate(0), Some(crate::grid::Loc::History(_))));
+        assert!(matches!(
+            t.grid().locate(0),
+            Some(crate::grid::Loc::History(_))
+        ));
         assert_eq!(t.command_text(&t.marks[1].clone()), "ls -la");
-        assert_eq!(t.grid().row_abs(0).map(|r| r.text().trim_end().to_string()), Some("$ ls -la".into()));
+        assert_eq!(
+            t.grid().row_abs(0).map(|r| r.text().trim_end().to_string()),
+            Some("$ ls -la".into())
+        );
     }
 
     #[test]
@@ -1701,22 +1891,40 @@ mod tests {
         let mut t = term(20, 6);
         t.cell_px = (8, 16);
         // 2×2 RGBA, chunked over two APCs; 16px wide → 2 cols, 32px → 2 rows when sized in px.
-        let px: Vec<u8> = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        let px: Vec<u8> = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
         let b64 = {
-            const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const T: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             let mut out = String::new();
             for chunk in px.chunks(3) {
-                let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+                let b = [
+                    chunk[0],
+                    *chunk.get(1).unwrap_or(&0),
+                    *chunk.get(2).unwrap_or(&0),
+                ];
                 let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
                 out.push(T[(n >> 18) as usize & 63] as char);
                 out.push(T[(n >> 12) as usize & 63] as char);
-                out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-                out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+                out.push(if chunk.len() > 1 {
+                    T[(n >> 6) as usize & 63] as char
+                } else {
+                    '='
+                });
+                out.push(if chunk.len() > 2 {
+                    T[n as usize & 63] as char
+                } else {
+                    '='
+                });
             }
             out
         };
         let (a, b) = b64.split_at(8);
-        feed(&mut t, &format!("x\x1b_Ga=T,f=32,s=2,v=2,i=3,c=4,r=2,m=1;{a}\x1b\\"));
+        feed(
+            &mut t,
+            &format!("x\x1b_Ga=T,f=32,s=2,v=2,i=3,c=4,r=2,m=1;{a}\x1b\\"),
+        );
         assert!(t.images.is_empty());
         feed(&mut t, &format!("\x1b_Gm=0;{b}\x1b\\y"));
         assert_eq!(t.images.len(), 1);
@@ -1895,23 +2103,4 @@ mod tests {
         feed(&mut t, "\x1b[?2026l");
         assert_eq!(t.grid().text(), "ab");
     }
-}
-
-/// Minimal %XX decoding for OSC 7 paths.
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
 }
