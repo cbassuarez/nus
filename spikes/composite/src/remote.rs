@@ -145,6 +145,34 @@ impl App {
                 self.toggle_split();
                 Ok(Value::Null)
             }
+            "ssh" => {
+                let Some(host) = s("host") else { return Err("ssh needs host".into()) };
+                // A profile for this host, added if ~/.ssh/config didn't have it.
+                let name = format!("ssh:{host}");
+                let idx = match self.profiles.iter().position(|p| p.name == name) {
+                    Some(i) => i,
+                    None => {
+                        self.profiles.push(nus_pty::Profile::ssh(&host));
+                        self.profiles.len() - 1
+                    }
+                };
+                if b("split") {
+                    match self.new_term_pane(true, idx) {
+                        Ok(t) => {
+                            let tab = &mut self.tabs[self.active];
+                            tab.right = Some(Pane::Term(t));
+                            tab.focus_right = true;
+                            self.apply_term_resizes(false);
+                            self.layout();
+                        }
+                        Err(e) => return Err(e.to_string()),
+                    }
+                } else {
+                    self.new_tab(idx);
+                }
+                self.dirty = true;
+                Ok(json!({ "tab": self.active + 1 }))
+            }
             "send-text" => {
                 let Some(text) = s("text") else { return Err("send-text needs text".into()) };
                 let i = n("tab").map(|t| t.saturating_sub(1)).unwrap_or(self.active);

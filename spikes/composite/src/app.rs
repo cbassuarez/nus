@@ -1115,7 +1115,9 @@ impl App {
                 profile.cwd = Some(cwd);
             }
         }
-        let profile = crate::shell::integrate(profile, self.behavior.shell_integration);
+        let is_ssh = profile.program.rsplit(['/', '\\']).next().unwrap_or("").trim_end_matches(".exe") == "ssh";
+        let on = if is_ssh { self.behavior.shell_integration && self.behavior.ssh_integration } else { self.behavior.shell_integration };
+        let profile = crate::shell::integrate(profile, on);
         let proxy = self.proxy.clone();
         let pty = nus_pty::Pty::spawn(&profile, cols as u16, rows as u16, move || {
             let _ = proxy.send_event(UserEvent::Wake);

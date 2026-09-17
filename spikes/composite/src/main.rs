@@ -32,6 +32,7 @@ mod remote;
 mod taskbar;
 mod askctx;
 mod layout_file;
+mod ssh;
 mod hotkey;
 mod anim;
 mod app;

@@ -179,6 +179,10 @@ fn main() -> ExitCode {
             opts.insert("do".into(), Value::String(rest.first().cloned().unwrap_or_else(|| "toggle".into())));
             ("hatch", Value::Object(opts))
         }
+        "ssh" => {
+            opts.insert("host".into(), Value::String(rest.first().cloned().unwrap_or_default()));
+            ("ssh", Value::Object(opts))
+        }
         "layout" => {
             if rest.first().map(String::as_str) == Some("save") {
                 opts.insert("save".into(), Value::String(rest.get(1).cloned().unwrap_or_else(|| "layout".into())));
@@ -273,7 +277,7 @@ const USAGE: &str = "usage: nus <command> [args] [--json]
   send-text <text> [--tab N] [--right] [--enter] · focus <tab> · close [<tab>] [--force]
   theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|hoist|land]
   block [last|all] [--tab N] · ask <question> · raise · version
-  layout · layout save <name> · open <file>.nus.luau
+  layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
   a bare <file> or <url> opens it";
 
 #[cfg(test)]

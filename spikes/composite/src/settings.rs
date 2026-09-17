@@ -315,6 +315,9 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    /// ssh profiles bring the shell integration to the remote.
+    #[serde(default = "default_true")]
+    pub ssh_integration: bool,
     /// THEN · LAYOUT: which saved layout opens at launch.
     #[serde(default)]
     pub then_layout: String,
@@ -497,6 +500,7 @@ impl Default for Behavior {
             progress_taskbar: true,
             ask_ctx: default_ask_ctx(),
             then_layout: String::new(),
+            ssh_integration: true,
             ports_grouping: PortsGrouping::Origin,
             ports_open: PortsOpen::Split,
             ports_poll: 1,
@@ -639,6 +643,7 @@ pub enum Hit {
     ProgressTaskbar(bool),
     AskCtx(crate::askctx::Ctx),
     ForgetMemory,
+    SshIntegration(bool),
     PortsGrouping(PortsGrouping),
     PortsOpen(PortsOpen),
     PortsPoll(u8),
@@ -934,6 +939,7 @@ impl App {
             Hit::ProgressTaskbar(b) => if b { "progress on the taskbar".into() } else { "taskbar left alone".into() },
             Hit::AskCtx(c) => format!("ask context · {}", c.key()),
             Hit::ForgetMemory => "memory cleared".into(),
+            Hit::SshIntegration(b) => if b { "ssh brings the integration".into() } else { "ssh as is".into() },
             Hit::PortsGrouping(g) => g.name().into(),
             Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
             Hit::PortsPoll(n) => format!("poll every {n}s"),
@@ -1259,6 +1265,7 @@ impl App {
                     self.behavior.ask_ctx.push(k);
                 }
             }
+            Hit::SshIntegration(b) => self.behavior.ssh_integration = b,
             Hit::ForgetMemory => {
                 let _ = std::fs::write(std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), "");
             }
@@ -2311,14 +2318,19 @@ impl App {
                     ]),
                 ));
                 v.insert(7, (
+                    "SSH".into(),
+                    Choice(vec![("BRING THE INTEGRATION".into(), Hit::SshIntegration(!self.behavior.ssh_integration), self.behavior.ssh_integration)]),
+                ));
+                v.insert(8, ("".into(), Info("an ssh profile (from ~/.ssh/config, or nus ssh <host>) writes nus's bash and zsh scripts to ~/.cache/nus on the remote over the same connection and execs your shell with them: marks, cwd with the host, exit codes, progress · nothing to install there".into())));
+                v.insert(9, (
                     "PROGRESS".into(),
                     Choice(vec![
                         ("SIDEBAR · CRUMB".into(), Hit::ProgressSidebar(!self.behavior.progress_sidebar), self.behavior.progress_sidebar),
                         ("TASKBAR".into(), Hit::ProgressTaskbar(!self.behavior.progress_taskbar), self.behavior.progress_taskbar),
                     ]),
                 ));
-                v.insert(8, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
-                v.insert(9, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
+                v.insert(10, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
+                v.insert(11, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
                 v.insert(3, (
                     "CLIPBOARD".into(),
                     Choice(vec![

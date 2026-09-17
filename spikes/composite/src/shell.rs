@@ -75,6 +75,10 @@ pub fn integrate(mut p: nus_pty::Profile, on: bool) -> nus_pty::Profile {
     if !on {
         return p;
     }
+    // ssh: the integration goes over the wire (see ssh.rs).
+    if kind_of(&p.program) == Kind::Other && p.program.rsplit(['/', '\\']).next().unwrap_or("").trim_end_matches(".exe") == "ssh" {
+        return crate::ssh::integrate(p);
+    }
     let path = |name: &str| d.join(name).to_string_lossy().replace('\\', "/");
     match kind_of(&p.program) {
         Kind::PowerShell => {
