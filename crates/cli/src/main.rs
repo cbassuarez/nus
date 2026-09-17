@@ -179,6 +179,12 @@ fn main() -> ExitCode {
             opts.insert("do".into(), Value::String(rest.first().cloned().unwrap_or_else(|| "toggle".into())));
             ("hatch", Value::Object(opts))
         }
+        "layout" => {
+            if rest.first().map(String::as_str) == Some("save") {
+                opts.insert("save".into(), Value::String(rest.get(1).cloned().unwrap_or_else(|| "layout".into())));
+            }
+            ("layout", Value::Object(opts))
+        }
         "block" => {
             opts.insert("which".into(), Value::String(rest.first().cloned().unwrap_or_else(|| "last".into())));
             ("block", Value::Object(opts))
@@ -208,7 +214,7 @@ fn main() -> ExitCode {
     };
     match call(cmd, args) {
         Ok(v) => {
-            if want_json || !matches!(cmd, "ls" | "version" | "ports" | "block" | "theme") {
+            if want_json || !matches!(cmd, "ls" | "version" | "ports" | "block" | "theme" | "layout") {
                 if !v.is_null() {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
                 }
@@ -242,6 +248,14 @@ fn main() -> ExitCode {
                             println!("{}", t.as_str().unwrap_or(""));
                         }
                     }
+                    "layout" => {
+                        for l in v.get("layouts").and_then(Value::as_array).into_iter().flatten() {
+                            println!("{}  {}", l.get("name").and_then(Value::as_str).unwrap_or(""), l.get("path").and_then(Value::as_str).unwrap_or(""));
+                        }
+                        if let Some(c) = v.get("current").and_then(Value::as_str) {
+                            println!("\n-- this window, as a layout:\n{c}");
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -259,6 +273,7 @@ const USAGE: &str = "usage: nus <command> [args] [--json]
   send-text <text> [--tab N] [--right] [--enter] · focus <tab> · close [<tab>] [--force]
   theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|hoist|land]
   block [last|all] [--tab N] · ask <question> · raise · version
+  layout · layout save <name> · open <file>.nus.luau
   a bare <file> or <url> opens it";
 
 #[cfg(test)]

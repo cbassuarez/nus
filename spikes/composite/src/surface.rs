@@ -858,6 +858,52 @@ impl Rules {
         }
     }
 
+    /// The `on_open_layout` hook: the layout about to open, as a table the
+    /// rule may edit (space, tabs); what it returns is what opens.
+    pub fn on_open_layout(&self, l: crate::layout_file::Layout) -> crate::layout_file::Layout {
+        let Ok(f) = self.lua.globals().get::<mlua::Function>("on_open_layout") else { return l };
+        let t = self.lua.create_table().unwrap();
+        let _ = t.set("space", l.space.clone());
+        let tabs = self.lua.create_table().unwrap();
+        for (i, tab) in l.tabs.iter().enumerate() {
+            let tt = self.lua.create_table().unwrap();
+            let _ = tt.set("shell", tab.shell.clone());
+            let _ = tt.set("cwd", tab.cwd.clone());
+            let _ = tt.set("run", tab.run.clone());
+            let _ = tt.set("page", tab.page.clone());
+            let _ = tt.set("edit", tab.edit.clone());
+            let _ = tt.set("beside", tab.beside);
+            let _ = tt.set("name", tab.name.clone());
+            let _ = tt.set("pinned", tab.pinned);
+            let _ = tabs.set(i + 1, tt);
+        }
+        let _ = t.set("tabs", tabs);
+        match f.call::<Option<mlua::Table>>(t) {
+            Ok(Some(o)) => {
+                let tab_of = |v: mlua::Table| crate::layout_file::LayoutTab {
+                    shell: v.get("shell").ok(),
+                    cwd: v.get("cwd").ok(),
+                    run: v.get("run").ok(),
+                    page: v.get("page").ok(),
+                    edit: v.get("edit").ok(),
+                    beside: v.get::<usize>("beside").ok(),
+                    name: v.get("name").ok(),
+                    pinned: v.get("pinned").unwrap_or(false),
+                };
+                crate::layout_file::Layout {
+                    space: o.get("space").ok().or(l.space),
+                    tabs: o.get::<mlua::Table>("tabs").map(|list| list.sequence_values::<mlua::Table>().filter_map(|r| r.ok()).map(tab_of).collect()).unwrap_or(l.tabs),
+                    hatch: l.hatch,
+                }
+            }
+            Ok(None) => l,
+            Err(e) => {
+                tracing::warn!("rules on_open_layout: {e}");
+                l
+            }
+        }
+    }
+
     /// The `skills` table: name → { prompt, context = {"shell","block","page","tabs","editor","memory"} }.
     pub fn skills(&self) -> Vec<crate::askctx::Skill> {
         let Ok(t) = self.lua.globals().get::<mlua::Table>("skills") else { return Vec::new() };

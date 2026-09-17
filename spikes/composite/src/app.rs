@@ -37,6 +37,8 @@ pub enum PaletteMode {
     Url,
     /// Shift+F2: name this window.
     Rename,
+    /// SAVE LAYOUT: a name for profile/layouts/<name>.nus.luau.
+    SaveLayout,
     /// Name a tab; its icon (an emoji, or any short string).
     RenameTab(usize),
     IconTab(usize),
@@ -60,6 +62,9 @@ pub enum Action {
     BlockGist(String),
     /// A skill, with a subject typed after its name.
     Skill(usize, String),
+    OpenLayout(String),
+    SaveLayout(String),
+    OpenPalette(PaletteMode),
     /// Type a command into the focused (or a new) terminal and run it.
     RunInShell(String),
     ToggleSplit,
@@ -806,6 +811,10 @@ pub struct App {
     pub closed: Vec<Closed>,
     /// Local assistants on PATH: (name, command template with {q}).
     pub llm_tools: Vec<(String, String)>,
+    /// A layout file found in a shell's cwd, offered as a chip; folders already offered.
+    pub layout_offer: Option<(std::path::PathBuf, Instant)>,
+    pub layout_offer_hit: Option<Rect>,
+    pub layout_offered: std::collections::HashSet<std::path::PathBuf>,
     /// Skills from rules.luau: saved prompts with their own context.
     pub skills: Vec<crate::askctx::Skill>,
     pub skills_src_len: usize,
@@ -1011,6 +1020,9 @@ impl App {
             selected: Default::default(),
             closed: Vec::new(),
             llm_tools: discover_llm_tools(),
+            layout_offer: None,
+            layout_offer_hit: None,
+            layout_offered: std::collections::HashSet::new(),
             skills: Vec::new(),
             skills_src_len: usize::MAX,
             ports: Vec::new(),
@@ -1404,6 +1416,11 @@ impl App {
         self.prompt_lsp_tick();
         self.ports_tick();
         self.sync_taskbar_progress();
+        self.offer_layout_here();
+        if self.layout_offer.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs() > 12) {
+            self.layout_offer = None;
+            self.dirty = true;
+        }
         // Skills follow the rules file.
         if self.skills_src_len != self.rules.source.len() {
             self.skills_src_len = self.rules.source.len();
@@ -1452,6 +1469,13 @@ impl App {
                         }
                     }
                     crate::settings::Then::Shell => {}
+                    crate::settings::Then::Layout => {
+                        let saved = crate::layout_file::saved();
+                        let pick = saved.iter().find(|(n, _)| *n == self.behavior.then_layout).or(saved.first()).map(|(_, p)| p.clone());
+                        if let Some(p) = pick {
+                            self.open_layout(&p);
+                        }
+                    }
                 }
             }
             if self.behavior.atlas != crate::settings::AtlasMode::Planet {
@@ -3105,7 +3129,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder" };
+            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -3165,6 +3189,7 @@ impl App {
                 y += row_h;
             }
         }
+        self.draw_layout_offer(&mut scene, w);
         self.draw_board_overlay(&mut scene, w, h);
         self.draw_start(&mut scene);
         self.draw_tip(&mut scene, w, h);
@@ -3297,6 +3322,32 @@ impl App {
         scene.rect(r, fade(t.paper, a));
         scene.outline(r, self.px(m::HAIRLINE), fade(t.ink, a));
         self.fonts.draw(scene, Style { color: fade(t.ink, a), ..label }, r.x + pad_x, r.y + ch / 2.0 + self.px(m::LABEL_PX) / 2.0 - self.px(2.0), &text);
+    }
+
+    /// A layout file in this folder: a chip under the strip — a stack icon
+    /// and the file's name — for twelve seconds. Click opens it.
+    fn draw_layout_offer(&mut self, scene: &mut Scene, w: f32) {
+        let Some((path, at)) = self.layout_offer.clone() else { return };
+        let age = at.elapsed().as_secs_f32();
+        let a = if age < 0.25 { age / 0.25 } else if age > 11.4 { ((12.0 - age) / 0.6).clamp(0.0, 1.0) } else { 1.0 };
+        let t = self.theme.clone();
+        let label = self.label();
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let text = format!("{} · OPEN THIS LAYOUT", name.trim_end_matches(".nus.luau").to_uppercase());
+        let isz = self.px(14.0);
+        let tw = self.fonts.measure(label, &text);
+        let ch = self.px(26.0);
+        let cw = tw + isz + self.px(30.0);
+        let c = self.content_rect();
+        let r = Rect::new((c.x + c.w - cw) / 2.0 + c.x / 2.0, c.y + self.px(10.0), cw, ch);
+        scene.layer(None);
+        scene.rect(Rect::new(r.x + self.px(3.0), r.y + self.px(3.0), r.w, r.h), fade(t.ink, a));
+        scene.rect(r, fade(t.paper, a));
+        scene.outline(r, self.px(m::HAIRLINE), fade(t.ink, a));
+        self.fonts.draw_icon(scene, nus_render::text::icons::STACK, isz, r.x + self.px(10.0), r.y + (ch - isz) / 2.0, fade(self.surface.signal, a));
+        self.fonts.draw(scene, Style { color: fade(t.ink, a), ..label }, r.x + isz + self.px(20.0), r.y + ch / 2.0 + self.px(m::LABEL_PX) / 2.0 - self.px(2.0), &text);
+        self.layout_offer_hit = Some(r);
+        let _ = w;
     }
 
     /// A progress state as (fraction, colour): error red, warning gold,
@@ -5113,6 +5164,14 @@ impl App {
                         rows.push(row("</>", "this block · gist through gh".into(), Action::BlockGist(pg)));
                     }
                 }
+                if q.is_empty() || hit("layout") || hit("workspace") || hit("session") {
+                    rows.push(row("::", "save this window as a layout".into(), Action::OpenPalette(PaletteMode::SaveLayout)));
+                    for (name, path) in crate::layout_file::saved() {
+                        if q.is_empty() || hit(&name) || hit("layout") {
+                            rows.push(row("::", format!("layout · {name}"), Action::OpenLayout(path.display().to_string())));
+                        }
+                    }
+                }
                 if hit("hatch") || hit("quick") {
                     rows.push(row("::", format!("hatch · the quick terminal · {}", self.behavior.hatch_hotkey.label().to_lowercase()), Action::Hatch));
                     rows.push(row("::", format!("hoist this tab into the hatch · {}", key("↑", true)), Action::Hoist));
@@ -5230,6 +5289,14 @@ impl App {
                     rows.push(row("·", format!("name this window · now “{}” · empty = automatic", self.window_name()), Action::RenameWindow(String::new())));
                 } else {
                     rows.push(row("→", format!("call this window “{q}”"), Action::RenameWindow(q.to_string())));
+                }
+            }
+            PaletteMode::SaveLayout => {
+                let n = self.tabs.iter().filter(|t| t.peek.is_none() && !t.hatch).count();
+                if q.is_empty() {
+                    rows.push(row("·", format!("save this window's {n} tabs as a layout · type a name"), Action::SaveLayout(self.space_name.clone())));
+                } else {
+                    rows.push(row("→", format!("save as profile/layouts/{q}.nus.luau"), Action::SaveLayout(q.to_string())));
                 }
             }
             PaletteMode::RenameTab(i) => {
@@ -5354,6 +5421,17 @@ impl App {
             Action::Compact => self.toggle_compact(),
             Action::Focus => self.toggle_focus(),
             Action::Ask => self.toggle_ask(),
+            Action::OpenLayout(p) => {
+                if self.behavior.then_layout.is_empty() {
+                    if let Some(n) = std::path::Path::new(&p).file_name().and_then(|n| n.to_str()) {
+                        self.behavior.then_layout = n.trim_end_matches(".nus.luau").to_string();
+                        self.save_prefs();
+                    }
+                }
+                self.open_layout(std::path::Path::new(&p));
+            }
+            Action::SaveLayout(n) => self.save_layout(&n),
+            Action::OpenPalette(m) => self.open_palette(m),
             Action::Skill(i, subject) => {
                 if let Some(t) = self.ask_term() {
                     if t.ask.is_none() {
@@ -6957,6 +7035,16 @@ impl App {
         }
         if self.board_mouse(button, state, x, y) {
             return;
+        }
+        if pressed && button == MouseButton::Left {
+            if let (Some(r), Some((p, _))) = (self.layout_offer_hit, self.layout_offer.clone()) {
+                if r.contains(x, y) {
+                    self.layout_offer = None;
+                    self.layout_offer_hit = None;
+                    self.open_layout(&p);
+                    return;
+                }
+            }
         }
         if self.editor_mouse(button, state, x, y) {
             return;

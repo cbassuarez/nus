@@ -714,6 +714,10 @@ impl App {
             self.notice(&format!("not a file · {}", path.display()));
             return;
         }
+        if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".nus.luau")) {
+            self.open_layout(path);
+            return;
+        }
         let active = self.active;
         let existing = self.tabs.get(active).and_then(|t| {
             if matches!(t.left, Pane::Editor(_)) {

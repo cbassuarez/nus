@@ -86,9 +86,22 @@ impl App {
             }
             "open" => {
                 let Some(url) = s("url") else { return Err("open needs url".into()) };
+                if url.ends_with(".nus.luau") && std::path::Path::new(&url).is_file() {
+                    self.open_layout(std::path::Path::new(&url));
+                    return Ok(json!({ "tab": self.active + 1, "layout": true }));
+                }
                 let new_tab = !b("split");
                 self.open_url(&url, new_tab);
                 Ok(json!({ "tab": self.active + 1 }))
+            }
+            "layout" => {
+                match s("save") {
+                    Some(name) => {
+                        self.save_layout(&name);
+                        Ok(Value::Null)
+                    }
+                    None => Ok(json!({ "layouts": crate::layout_file::saved().iter().map(|(n, p)| json!({ "name": n, "path": p.display().to_string() })).collect::<Vec<_>>(), "current": crate::layout_file::render(&self.current_layout()) })),
+                }
             }
             "edit" => {
                 let Some(p) = s("path") else { return Err("edit needs path".into()) };

@@ -24,6 +24,7 @@ pub enum Saved {
     Page { url: String, title: String },
     File { path: String },
     Ports,
+    Layout { path: String },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,6 +78,7 @@ fn saved_to_json(s: &Saved) -> serde_json::Value {
         Saved::Page { url, title } => serde_json::json!({ "kind": "page", "url": url, "title": title }),
         Saved::File { path } => serde_json::json!({ "kind": "file", "path": path }),
         Saved::Ports => serde_json::json!({ "kind": "ports" }),
+        Saved::Layout { path } => serde_json::json!({ "kind": "layout", "path": path }),
     }
 }
 
@@ -87,6 +89,7 @@ fn saved_from_json(v: &serde_json::Value) -> Option<Saved> {
         "page" => Some(Saved::Page { url: s("url"), title: s("title") }),
         "file" => Some(Saved::File { path: s("path") }),
         "ports" => Some(Saved::Ports),
+        "layout" => Some(Saved::Layout { path: s("path") }),
         _ => None,
     }
 }
@@ -216,6 +219,7 @@ impl App {
                 Saved::Shell { profile } => (profile.clone(), "shell".to_string()),
                 Saved::File { path } => (std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), "file".to_string()),
                 Saved::Ports => ("ports".to_string(), "board".to_string()),
+                Saved::Layout { path } => (std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().trim_end_matches(".nus.luau").to_string()).unwrap_or_default(), "layout".to_string()),
                 Saved::Page { url, title } => {
                     let host = url.split("//").nth(1).unwrap_or(url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
                     (if title.is_empty() { host.clone() } else { title.clone() }, host)
@@ -252,6 +256,7 @@ impl App {
             StartRow::Recent(Saved::Page { url, .. }) => self.open_url(&url, true),
             StartRow::Recent(Saved::File { path }) => self.open_file(std::path::Path::new(&path), false),
             StartRow::Recent(Saved::Ports) => self.expand_board(),
+            StartRow::Recent(Saved::Layout { path }) => self.open_layout(std::path::Path::new(&path)),
             StartRow::Recent(Saved::Shell { profile }) => {
                 let idx = self.profiles.iter().position(|p| p.name == profile).unwrap_or(self.behavior.default_profile);
                 self.new_tab(idx);
@@ -287,7 +292,7 @@ impl App {
                     e.open(std::path::Path::new(path)).ok().map(|_| Pane::Editor(e))
                 }
                 Some(Saved::Ports) => Some(Pane::Ports(crate::ports::PortsPane { rect: nus_render::Rect::new(0.0, 0.0, 1.0, 1.0) })),
-                None => None,
+                Some(Saved::Layout { .. }) | None => None,
             };
             let Some(left) = left else {
                 ids.push(None);
@@ -304,7 +309,7 @@ impl App {
                     e.open(std::path::Path::new(path)).ok().map(|_| Pane::Editor(e))
                 }
                 Some(Saved::Ports) => Some(Pane::Ports(crate::ports::PortsPane { rect: nus_render::Rect::new(0.0, 0.0, 1.0, 1.0) })),
-                None => None,
+                Some(Saved::Layout { .. }) | None => None,
             };
             let mut tab = self.make_tab(left, right);
             tab.pinned = t.pinned;
@@ -502,6 +507,7 @@ impl App {
                 StartRow::Recent(Saved::Shell { .. }) => icons::TERMINAL,
                 StartRow::Recent(Saved::File { .. }) => icons::CODE,
                 StartRow::Recent(Saved::Ports) => icons::PORTS,
+                StartRow::Recent(Saved::Layout { .. }) => icons::STACK,
                 StartRow::Fresh => icons::PLUS,
             };
             let base_r = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);

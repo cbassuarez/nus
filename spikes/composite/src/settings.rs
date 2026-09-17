@@ -261,6 +261,8 @@ pub enum Then {
     Restore,
     Shell,
     LastPage,
+    /// The layout named in `then_layout` (a name under profile/layouts).
+    Layout,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
@@ -313,6 +315,9 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    /// THEN · LAYOUT: which saved layout opens at launch.
+    #[serde(default)]
+    pub then_layout: String,
     /// The assistant's default context, as chip keys (shell, block, page, tabs, editor, memory).
     #[serde(default = "default_ask_ctx")]
     pub ask_ctx: Vec<String>,
@@ -491,6 +496,7 @@ impl Default for Behavior {
             progress_sidebar: true,
             progress_taskbar: true,
             ask_ctx: default_ask_ctx(),
+            then_layout: String::new(),
             ports_grouping: PortsGrouping::Origin,
             ports_open: PortsOpen::Split,
             ports_poll: 1,
@@ -2089,7 +2095,15 @@ impl App {
                             ("RESTORE LAST SESSION".into(), Hit::Then(Then::Restore), b.then == Then::Restore),
                             ("A NEW SHELL".into(), Hit::Then(Then::Shell), b.then == Then::Shell),
                             ("THE LAST PAGE".into(), Hit::Then(Then::LastPage), b.then == Then::LastPage),
+                            (if b.then_layout.is_empty() { "A LAYOUT".to_string() } else { format!("LAYOUT · {}", b.then_layout.to_uppercase()) }, Hit::Then(Then::Layout), b.then == Then::Layout),
                         ]),
+                    ),
+                    (
+                        "".into(),
+                        Info({
+                            let names: Vec<String> = crate::layout_file::saved().into_iter().map(|(n, _)| n).collect();
+                            if names.is_empty() { "layouts: save one from the palette (save this window as a layout) or write a .nus.luau · a folder with one offers it when a shell lands there".into() } else { format!("layouts: {} · pick which with the palette's layout rows; the first is used when none is picked", names.join(" · ")) }
+                        }),
                     ),
                     (
                         "ATLAS".into(),
