@@ -136,6 +136,12 @@ impl App {
                 S::DlOpen(i) => format!("download {}", i + 1),
                 S::Fold(i) => format!("{} {}", if self.collapsed.contains(&self.tabs[i].id) { "unfold" } else { "fold" }, self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::Settings => "settings".into(),
+                S::TabRename(i) => format!("rename tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
+                S::TabIcon(_) => "tab icon".into(),
+                S::TabColour(_, 0) => "tab colour: none".into(),
+                S::TabColour(_, k) => format!("tab colour {}", crate::surface::SWATCHES.get(k - 1).map(|s| s.0).unwrap_or("")),
+                S::TabPin(i) => (if self.tabs.get(i).map(|t| t.pinned).unwrap_or(false) { "unpin tab" } else { "pin tab" }).into(),
+                S::TabClose(i) => format!("close tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
             };
             let id = fresh(&mut map, Target::Side(hit));
             let mut n = Node::new(Role::Button);

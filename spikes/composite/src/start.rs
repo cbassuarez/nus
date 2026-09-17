@@ -31,6 +31,10 @@ pub struct SavedTab {
     pub pinned: bool,
     /// Index of the parent tab in the session, for stacks.
     pub parent: Option<usize>,
+    pub name: Option<String>,
+    pub emoji: Option<String>,
+    /// A colour the user chose, as #rrggbb.
+    pub colour: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -84,6 +88,9 @@ impl Session {
                 right: t.get("right").and_then(saved_from_json),
                 pinned: t.get("pinned").and_then(|p| p.as_bool()).unwrap_or(false),
                 parent: t.get("parent").and_then(|p| p.as_u64()).map(|p| p as usize),
+                name: t.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                emoji: t.get("emoji").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                colour: t.get("colour").and_then(|v| v.as_str()).map(|s| s.to_string()),
             })
             .collect();
         Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize })
@@ -99,6 +106,9 @@ impl Session {
                     "right": t.right.as_ref().map(saved_to_json),
                     "pinned": t.pinned,
                     "parent": t.parent,
+                    "name": t.name,
+                    "emoji": t.emoji,
+                    "colour": t.colour,
                 })
             })
             .collect();
@@ -255,6 +265,13 @@ impl App {
             };
             let mut tab = self.make_tab(left, right);
             tab.pinned = t.pinned;
+            tab.name = t.name.clone();
+            tab.emoji = t.emoji.clone();
+            if let Some(c) = t.colour.as_deref().and_then(crate::surface::parse_hex) {
+                tab.tint = Some(c);
+                tab.look.signal = Some(c);
+                tab.look.bg = Some(App::tab_tint(self.theme.mode, c));
+            }
             if let Some(p) = t.parent.and_then(|p| ids.get(p).copied().flatten()) {
                 tab.parent = Some(p);
             }
@@ -283,7 +300,7 @@ impl App {
         let tabs: Vec<SavedTab> = self
             .tabs
             .iter()
-            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), pinned: t.pinned, parent: t.parent.and_then(index_of) })
+            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex) })
             .filter(|t| t.left.is_some())
             .collect();
         Session { tabs, active: self.active }.save();
@@ -479,8 +496,8 @@ mod tests {
     fn session_json_roundtrip() {
         let s = Session {
             tabs: vec![
-                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), pinned: true, parent: None },
-                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, pinned: false, parent: Some(0) },
+                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()) },
+                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None },
             ],
             active: 1,
         };
@@ -494,6 +511,10 @@ mod tests {
         assert_eq!(back.tabs.len(), 2);
         assert_eq!(back.tabs[1].parent, Some(0));
         assert!(back.tabs[0].pinned);
+        assert_eq!(back.tabs[0].name.as_deref(), Some("deploy notes"));
+        assert_eq!(back.tabs[0].emoji.as_deref(), Some("📌"));
+        assert_eq!(back.tabs[0].colour.as_deref(), Some("#2e7d32"));
+        assert!(back.tabs[1].name.is_none());
         assert_eq!(back.active, 1);
         assert_eq!(s.summary(), "1 shell · 2 pages");
     }

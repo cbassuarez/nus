@@ -30,6 +30,7 @@ pub enum Act {
     LoginItem,
     NewWindow,
     Rename,
+    RenameTab,
     Close,
     Scroll(f32),
 }
@@ -138,11 +139,12 @@ impl App {
             row("ESC", "Little nus", "links from other apps open in a small floating window; Ctrl+Shift+O keeps one as a tab", None),
         ];
         let windows = vec![
-            row("F2", "Name this window", format!("“{}” · auto-named from the git root or the host; the name is in the title bar and Alt-Tab", self.window_name()), Some(("RENAME", Act::Rename))),
+            row("SHIFT+F2", "Name this window", format!("“{}” · auto-named from the git root or the host; the name is in the title bar and Alt-Tab", self.window_name()), Some(("RENAME", Act::Rename))),
             row("CTRL+N", "New window", "windows own their tabs; the rail or the header lists them", Some(("OPEN ONE", Act::NewWindow))),
             row("CTRL+1–9", "Tabs by number", "Ctrl+` goes back to the last one; Ctrl+PgUp / PgDn walk them", None),
             row(k("S"), "The sidebar", "pin it, or let it slide in from the edge · BAR or RAIL header under settings", None),
-            row("", "Stacks", "pages a page opens sit under it; one level, collapse with a click", None),
+            row("F2", "Name a tab", "right-click a tab for its menu: rename, an emoji or short string as its icon, a colour, pin, close", Some(("RENAME THIS TAB", Act::RenameTab))),
+            row("", "Stacks", "pages a page opens sit under it, as deep as they go; fold with the caret, Ctrl+Shift+- folds all; drag a tab onto another to nest it", None),
             row("", "Rules", "profile/rules.luau colours new tabs and windows, boosts pages, picks sounds", Some(("OPEN RULES", Act::Rules))),
         ];
         let look = vec![
@@ -346,6 +348,7 @@ impl App {
             }
             Act::NewWindow => self.new_window_request = true,
             Act::Rename => self.open_palette(PaletteMode::Rename),
+            Act::RenameTab => self.open_palette(PaletteMode::RenameTab(self.active)),
             Act::Close => self.dismiss_hints(),
             Act::Scroll(_) => {}
         }

@@ -35,8 +35,11 @@ pub enum PaletteMode {
     New,
     /// ⌘L: navigate the browser pane.
     Url,
-    /// F2: name this window.
+    /// Shift+F2: name this window.
     Rename,
+    /// Name a tab; its icon (an emoji, or any short string).
+    RenameTab(usize),
+    IconTab(usize),
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -60,6 +63,9 @@ pub enum Action {
     NewWindow,
     Welcome,
     FoldAll,
+    NameTab(usize, String),
+    IconTab(usize, String),
+    ColourTab(usize, Option<nus_render::Color>),
 }
 
 pub use crate::surface::Shell;
@@ -262,6 +268,13 @@ pub enum SideHit {
     Look,
     /// A download in the footer list.
     DlOpen(usize),
+    /// The tab menu's rows.
+    TabRename(usize),
+    TabIcon(usize),
+    /// A swatch by number; 0 is none.
+    TabColour(usize, usize),
+    TabPin(usize),
+    TabClose(usize),
     /// The caret on a node: fold or unfold its subtree.
     Fold(usize),
     /// Hot swapper rows.
@@ -341,6 +354,12 @@ pub struct Tab {
     pub pinned: bool,
     /// When this tab was last shown, for sleeping and archiving.
     pub last_active: Instant,
+    /// The user's name for the tab (beats the pane's title) and icon (an
+    /// emoji or any short string, drawn in place of the favicon).
+    pub name: Option<String>,
+    pub emoji: Option<String>,
+    /// A colour the user chose; it beats the rules' and survives a theme.
+    pub tint: Option<nus_render::Color>,
     /// Colours the rules gave this tab.
     pub look: Overrides,
 }
@@ -354,6 +373,13 @@ impl Tab {
     /// (title, detail) for a compact sidebar row: detail is cwd/host for a
     /// shell, the site for a page.
     pub(crate) fn row_text(&self) -> (String, String) {
+        if let Some(n) = &self.name {
+            let host = match &self.left {
+                Pane::Web(w) => w.tab.shared.borrow().url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").to_string(),
+                _ => String::new(),
+            };
+            return (n.clone(), host);
+        }
         match &self.left {
             Pane::Term(t) => (t.title.clone(), String::new()),
             Pane::Web(w) => {
@@ -375,6 +401,9 @@ impl Tab {
         }
     }
     pub(crate) fn title(&self) -> String {
+        if let Some(n) = &self.name {
+            return n.clone();
+        }
         let name = |p: &Pane| match p {
             Pane::Term(t) => t.title.clone(),
             Pane::Web(w) => {
@@ -461,6 +490,10 @@ pub struct App {
     /// Tabs whose subtree is folded, by id; and a row being dragged:
     /// (tab index, grab offset, current y).
     pub collapsed: std::collections::HashSet<u64>,
+    /// A right-clicked row's menu: (tab index, y), and its rise.
+    pub tab_menu: Option<(usize, f32)>,
+    pub tab_menu_anim: Anim,
+    pub tab_menu_last: Option<(usize, f32)>,
     pub drag: Option<(usize, f32, f32)>,
     pub drag_armed: Option<(usize, f32, f32)>,
     /// A right-click asked for a paste; answered in tick.
@@ -651,6 +684,9 @@ impl App {
             next_row_hot: false,
             registered_tabs: usize::MAX,
             collapsed: std::collections::HashSet::new(),
+            tab_menu: None,
+            tab_menu_anim: Anim::at(0.0),
+            tab_menu_last: None,
             drag: None,
             drag_armed: None,
             paste_request: false,
@@ -1134,7 +1170,7 @@ impl App {
                 }
             }
         }
-        if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() || self.look_anim.active() || self.dl_anim.active() {
+        if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() || self.look_anim.active() || self.dl_anim.active() || self.tab_menu_anim.active() {
             self.dirty = true;
         }
         // A blinking cursor wants a frame at each half period.
@@ -2571,7 +2607,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name" };
+            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -2943,12 +2979,17 @@ impl App {
                 Pane::Web(w) => w.favicon.as_ref().map(|(_, b)| b.clone()),
                 _ => None,
             };
-            match fav {
-                Some(b) => {
+            match (&tab.emoji, fav) {
+                (Some(e), _) => {
+                    let st = Style { font: self.f.ui, px: self.px(14.0), color: if active { ink } else { t.dim }, tracking: 0.0 };
+                    let ew = self.fonts.measure(st, e);
+                    self.fonts.draw(scene, st, x + ((isz - ew) / 2.0).max(0.0), base, e);
+                }
+                (None, Some(b)) => {
                     scene.texture(Rect::new(x, iy, isz, isz), b, None);
                     scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
                 }
-                None => {
+                (None, None) => {
                     self.fonts.draw_icon(scene, icon, isz, x, iy, if active { ink } else { t.dim });
                 }
             }
@@ -3246,6 +3287,32 @@ impl App {
                 self.reveal_download(i);
             }
             SideHit::Fold(i) => self.toggle_fold(i),
+            SideHit::TabRename(i) => {
+                self.close_menus();
+                self.open_palette(PaletteMode::RenameTab(i));
+            }
+            SideHit::TabIcon(i) => {
+                self.close_menus();
+                self.open_palette(PaletteMode::IconTab(i));
+            }
+            SideHit::TabColour(i, k) => {
+                let c = if k == 0 { None } else { crate::surface::SWATCHES.get(k - 1).map(|s| s.1) };
+                self.run(Action::ColourTab(i, c));
+            }
+            SideHit::TabPin(i) => {
+                self.close_menus();
+                if let Some(t) = self.tabs.get_mut(i) {
+                    t.pinned = !t.pinned;
+                }
+                self.layout();
+                self.save_session();
+            }
+            SideHit::TabClose(i) => {
+                self.close_menus();
+                self.selected.clear();
+                self.activate(i);
+                self.close_tabs(false);
+            }
             SideHit::Settings => self.open_settings(),
         }
         self.dirty = true;
@@ -3475,7 +3542,7 @@ impl App {
                 y += row;
             }
             for (icon, text, key, hit) in [
-                (nus_render::text::icons::PENCIL, "RENAME", "F2", SideHit::Rename),
+                (nus_render::text::icons::PENCIL, "RENAME", "SHIFT+F2", SideHit::Rename),
                 (nus_render::text::icons::PLUS, "NEW WINDOW", "CTRL N", SideHit::NewWindow),
             ] {
                 let cell = Rect::new(sb.x, y, sb.w, row);
@@ -3499,6 +3566,9 @@ impl App {
         }
         if self.dl_menu || self.dl_anim.active() {
             self.draw_downloads_menu(scene, sb);
+        }
+        if self.tab_menu.is_some() || self.tab_menu_anim.active() {
+            self.draw_tab_menu(scene, sb);
         }
         if self.look_menu || self.look_anim.active() {
             self.draw_look_menu(scene, sb);
@@ -3634,6 +3704,91 @@ impl App {
         }
     }
 
+    /// A chosen tab colour's paper: mostly the theme's black or white.
+    pub(crate) fn tab_tint(mode: nus_render::Mode, c: nus_render::Color) -> nus_render::Color {
+        let dark = mode == nus_render::Mode::Ink;
+        crate::surface::mix(c, if dark { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] }, 0.88)
+    }
+
+    /// The tab's menu: name, icon, a row of colours, pin, close.
+    fn draw_tab_menu(&mut self, scene: &mut Scene, sb: Rect) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let paper = self.paper();
+        let label = self.label();
+        let k = self.tab_menu_anim.value();
+        let Some((i, top)) = self.tab_menu.or(self.tab_menu_last) else { return };
+        if i >= self.tabs.len() {
+            return;
+        }
+        let live = self.tab_menu.is_some();
+        let (mx, my) = self.mouse;
+        let row = self.px(30.0);
+        let h_full = row * 4.0 + self.px(40.0);
+        let h = h_full * k;
+        // Rises from under the row; flips up when there's no room below.
+        let y0 = if top + h_full > sb.bottom() - self.px(m::FOOT_H) { top - row - h_full } else { top };
+        let r = Rect::new(sb.x + self.px(6.0), y0, sb.w - self.px(12.0), h);
+        scene.layer(Some(r));
+        scene.rect(Rect::new(r.x + self.px(3.0), r.y + self.px(3.0), r.w, r.h), fade(ink, 0.6));
+        scene.rect(r, paper);
+        scene.outline(r, self.px(m::STRUCTURE), ink);
+        let mut y = y0 + self.px(2.0);
+        let mut item = |me: &mut Self, scene: &mut Scene, icon: (&'static str, &'static str), text: &str, key: &str, hit: SideHit, y: f32| {
+            let cell = Rect::new(r.x, y, r.w, row);
+            let hot = cell.contains(mx, my) && live;
+            if hot {
+                scene.rect(cell, t.tint);
+            }
+            let isz = me.px(12.0);
+            me.fonts.draw_icon(scene, icon, isz, r.x + me.px(12.0), y + ((row - isz) / 2.0).round(), ink);
+            me.fonts.draw(scene, label, r.x + me.px(32.0), y + me.px(19.0), text);
+            if !key.is_empty() {
+                let kw = me.fonts.measure(label, key);
+                me.fonts.draw(scene, Style { color: t.dim, ..label }, r.right() - me.px(12.0) - kw, y + me.px(19.0), key);
+            }
+            if live {
+                me.side_hits.push((cell, hit));
+            }
+        };
+        item(self, scene, nus_render::text::icons::TAG, "RENAME", "F2", SideHit::TabRename(i), y);
+        y += row;
+        item(self, scene, nus_render::text::icons::SMILEY, "ICON", "", SideHit::TabIcon(i), y);
+        y += row;
+        // Colours: none, then the swatches.
+        let sq = self.px(14.0);
+        let mut cx = r.x + self.px(12.0);
+        let cy = y + ((self.px(40.0) - sq) / 2.0).round();
+        let cur = self.tabs[i].tint;
+        let none = Rect::new(cx, cy, sq, sq);
+        scene.outline(none, self.px(1.0), ink);
+        self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, self.px(9.0), none.x + self.px(2.5), none.y + self.px(2.5), ink);
+        if live {
+            self.side_hits.push((Rect::new(none.x - 2.0, y, sq + 6.0, self.px(40.0)), SideHit::TabColour(i, 0)));
+        }
+        cx += sq + self.px(8.0);
+        for (k, &(_, c)) in crate::surface::SWATCHES.iter().enumerate() {
+            let sw = Rect::new(cx, cy, sq, sq);
+            scene.rect(sw, c);
+            if cur == Some(c) {
+                scene.outline(Rect::new(sw.x - 2.0, sw.y - 2.0, sq + 4.0, sq + 4.0), self.px(1.5), ink);
+            }
+            if live {
+                self.side_hits.push((Rect::new(sw.x - 2.0, y, sq + 6.0, self.px(40.0)), SideHit::TabColour(i, k + 1)));
+            }
+            cx += sq + self.px(8.0);
+        }
+        y += self.px(40.0);
+        let pinned = self.tabs[i].pinned;
+        item(self, scene, nus_render::text::icons::PIN, if pinned { "UNPIN" } else { "PIN" }, "", SideHit::TabPin(i), y);
+        y += row;
+        item(self, scene, nus_render::text::icons::CLOSE, "CLOSE", "CTRL+SHIFT+W", SideHit::TabClose(i), y);
+        scene.layer(None);
+        if live {
+            self.tab_menu_last = Some((i, top));
+        }
+    }
+
     pub(crate) fn open_win_menu(&mut self) {
         self.kinds_menu = false;
         self.win_menu = true;
@@ -3704,6 +3859,10 @@ impl App {
     }
 
     pub(crate) fn close_menus(&mut self) {
+        if self.tab_menu.is_some() {
+            self.tab_menu = None;
+            self.tab_menu_anim.go(0.0, self.motion.dur(100.0));
+        }
         if self.dl_menu {
             self.dl_menu = false;
             self.dl_anim.go(0.0, self.motion.dur(100.0));
@@ -4226,6 +4385,25 @@ impl App {
                     rows.push(row("→", format!("call this window “{q}”"), Action::RenameWindow(q.to_string())));
                 }
             }
+            PaletteMode::RenameTab(i) => {
+                let now = self.tabs.get(i).map(|t| t.title()).unwrap_or_default();
+                if q.is_empty() {
+                    rows.push(row("·", format!("name this tab · now “{now}” · empty = the page's own"), Action::NameTab(i, String::new())));
+                } else {
+                    rows.push(row("→", format!("call this tab “{q}”"), Action::NameTab(i, q.to_string())));
+                }
+            }
+            PaletteMode::IconTab(i) => {
+                if !q.is_empty() {
+                    rows.push(row("→", format!("{q}  as the icon"), Action::IconTab(i, q.chars().take(2).collect())));
+                }
+                rows.push(row("·", "none · back to the favicon".into(), Action::IconTab(i, String::new())));
+                for (e, n) in [("📌", "pin"), ("🔥", "fire"), ("📚", "books"), ("🧪", "lab"), ("🐛", "bug"), ("🎨", "art"), ("🧭", "compass"), ("💬", "chat"), ("✅", "done"), ("⭐", "star"), ("🧰", "tools"), ("🌿", "green"), ("🚀", "ship"), ("🏗", "build"), ("🔒", "private"), ("🎧", "music")] {
+                    if q.is_empty() || n.contains(&q.to_lowercase()) {
+                        rows.push(row(e, n.to_string(), Action::IconTab(i, e.to_string())));
+                    }
+                }
+            }
         }
         rows
     }
@@ -4301,6 +4479,30 @@ impl App {
             Action::NewWindow => self.new_window_request = true,
             Action::Welcome => self.open_welcome(),
             Action::FoldAll => self.fold_all(),
+            Action::NameTab(i, n) => {
+                if let Some(t) = self.tabs.get_mut(i) {
+                    t.name = if n.trim().is_empty() { None } else { Some(n.trim().to_string()) };
+                }
+                self.save_session();
+                self.dirty = true;
+            }
+            Action::IconTab(i, e) => {
+                if let Some(t) = self.tabs.get_mut(i) {
+                    t.emoji = if e.trim().is_empty() { None } else { Some(e.trim().to_string()) };
+                }
+                self.save_session();
+                self.dirty = true;
+            }
+            Action::ColourTab(i, c) => {
+                let mode = self.theme.mode;
+                if let Some(t) = self.tabs.get_mut(i) {
+                    t.tint = c;
+                    t.look.signal = c;
+                    t.look.bg = c.map(|c| Self::tab_tint(mode, c));
+                }
+                self.save_session();
+                self.dirty = true;
+            }
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
             Action::NewBrowser(url) => {
                 self.tick_hint(1);
@@ -4445,8 +4647,9 @@ impl App {
         if pressed && code == Some(KeyCode::F1) && !ctrl && !shift {
             return self.open_welcome();
         }
-        if pressed && code == Some(KeyCode::F2) && !ctrl && !shift && self.palette.is_none() {
-            return self.open_palette(PaletteMode::Rename);
+        // F2 names the tab; Shift+F2 the window.
+        if pressed && code == Some(KeyCode::F2) && !ctrl && self.palette.is_none() {
+            return if shift { self.open_palette(PaletteMode::Rename) } else { self.open_palette(PaletteMode::RenameTab(self.active)) };
         }
         if pressed && code == Some(KeyCode::KeyN) && ctrl && !shift && self.palette.is_none() {
             return self.run(Action::NewWindow);
@@ -4711,7 +4914,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let look = self.look_for(&left, None);
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), look }
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, look }
     }
 
     /// Ask the rules what a new tab looks like.
@@ -5480,16 +5683,24 @@ impl App {
         }
 
         // A menu is up: a click elsewhere closes it.
-        if pressed && (self.win_menu || self.kinds_menu || self.dl_menu) {
-            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::DlOpen(_) | SideHit::Downloads));
+        if pressed && (self.win_menu || self.kinds_menu || self.dl_menu || self.tab_menu.is_some()) {
+            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::DlOpen(_) | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_)));
             if !on_menu {
                 self.close_menus();
             }
         }
-        // Right-click on NEW TAB fans out the kinds.
+        // Right-click on NEW TAB fans out the kinds; on a row, the tab's menu.
         if pressed && button == MouseButton::Right && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             if self.side_hits.iter().any(|(r, h)| *h == SideHit::NewShell && r.contains(x, y)) {
                 self.open_kinds_menu();
+                return;
+            }
+            let g = self.sidebar_geometry();
+            if let Some(&(i, ry, rh)) = g.rows.iter().find(|&&(_, ry, rh)| y >= ry && y < ry + rh) {
+                self.close_menus();
+                self.tab_menu = Some((i, ry + rh));
+                self.tab_menu_anim.replay(0.0, 1.0, self.motion.dur(140.0));
+                self.dirty = true;
             }
             return;
         }

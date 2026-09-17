@@ -485,6 +485,8 @@ pub mod icons {
     icon!(COPY, "copy");
     icon!(CHECK, "check");
     icon!(PENCIL, "pencil-simple");
+    icon!(SMILEY, "smiley");
+    icon!(TAG, "tag");
     icon!(SHUFFLE, "shuffle");
     icon!(SUN, "sun");
     icon!(MOON, "moon");
