@@ -142,6 +142,7 @@ impl App {
                 S::TabColour(_, k) => format!("tab colour {}", crate::surface::SWATCHES.get(k - 1).map(|s| s.0).unwrap_or("")),
                 S::TabPin(i) => (if self.tabs.get(i).map(|t| t.pinned).unwrap_or(false) { "unpin tab" } else { "pin tab" }).into(),
                 S::TabClose(i) => format!("close tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
+                S::TabTile(i) => (if self.is_tiled(i) && self.selected.is_empty() { "untile" } else { "tile with the selected tabs" }).into(),
             };
             let id = fresh(&mut map, Target::Side(hit));
             let mut n = Node::new(Role::Button);

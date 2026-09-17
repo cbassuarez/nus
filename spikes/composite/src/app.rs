@@ -65,6 +65,9 @@ pub enum Action {
     FoldAll,
     NameTab(usize, String),
     IconTab(usize, String),
+    Tile,
+    Untile,
+    TileSwap,
     ColourTab(usize, Option<nus_render::Color>),
 }
 
@@ -275,6 +278,8 @@ pub enum SideHit {
     TabColour(usize, usize),
     TabPin(usize),
     TabClose(usize),
+    /// Tile this tab with the selection, or untile it.
+    TabTile(usize),
     /// The caret on a node: fold or unfold its subtree.
     Fold(usize),
     /// Hot swapper rows.
@@ -496,6 +501,11 @@ pub struct App {
     pub tab_menu_last: Option<(usize, f32)>,
     pub drag: Option<(usize, f32, f32)>,
     pub drag_armed: Option<(usize, f32, f32)>,
+    /// Two to four tabs sharing the content, and a divider being dragged.
+    pub tiling: Option<crate::tiles::Tiling>,
+    pub tile_drag: Option<crate::tiles::Divider>,
+    /// The pointer is a resize arrow over a divider.
+    pub resize_cursor: Option<crate::tiles::Divider>,
     /// A right-click asked for a paste; answered in tick.
     pub paste_request: bool,
     /// Downloads list in the footer.
@@ -687,6 +697,9 @@ impl App {
             tab_menu: None,
             tab_menu_anim: Anim::at(0.0),
             tab_menu_last: None,
+            tiling: None,
+            tile_drag: None,
+            resize_cursor: None,
             drag: None,
             drag_armed: None,
             paste_request: false,
@@ -1010,6 +1023,13 @@ impl App {
         let pad_y = self.px(16.0);
         let scale = self.scale;
         let narrow = self.width_class() == Width::Narrow;
+        // Shells follow their pane a beat later (a size only if it changed).
+        if self.resize_due.is_none() {
+            self.resize_due = Some(Instant::now() + std::time::Duration::from_millis(80));
+        }
+        if self.layout_tiles() {
+            return;
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let off = Rect::new(-4.0 * c.w - c.x, c.y, c.w, c.h);
         let (left_rect, right_rect) = if tab.right.is_some() && narrow {
@@ -1029,44 +1049,9 @@ impl App {
             (c, None)
         };
         let split = tab.right.is_some();
-        let place = |pane: &mut Pane, r: Rect| match pane {
-            Pane::Term(t) => {
-                t.rect = r;
-                t.show_header = split;
-                let header = if split { header } else { 0.0 };
-                let area = Rect::new(r.x + pad_x, r.y + header + pad_y, r.w - 2.0 * pad_x, r.h - header - 2.0 * pad_y);
-                t.origin = (area.x, area.y);
-                let _ = area; // terminal size is applied by `apply_term_resizes`
-            }
-            Pane::Settings(s) => s.rect = r,
-            Pane::Hints(h) => h.rect = r,
-            Pane::Web(w) => {
-                w.rect = r;
-                let url_row = (6.0 * 2.0 + 22.0) * scale;
-                let tools_row = (8.0 * 2.0 + 13.0 + 1.0) * scale;
-                let avail = r.h - url_row.round() - 1.0 - tools_row.round();
-                let dt_h = if w.devtools.is_some() { (avail * 0.42).round() } else { 0.0 };
-                w.page = Rect::new(r.x, r.y + url_row.round() + 1.0, r.w, avail - dt_h);
-                w.dt_rect = Rect::new(r.x, w.page.bottom() + 1.0, r.w, dt_h - 1.0);
-                {
-                    let mut s = w.tab.shared.borrow_mut();
-                    s.origin = (w.page.x, w.page.y);
-                    s.scale = scale;
-                }
-                w.tab.resized((w.page.w / scale).floor(), (w.page.h / scale).floor());
-                if let Some(d) = &w.devtools {
-                    {
-                        let mut s = d.shared.borrow_mut();
-                        s.origin = (w.dt_rect.x, w.dt_rect.y);
-                        s.scale = scale;
-                    }
-                    d.resized((w.dt_rect.w / scale).floor(), (w.dt_rect.h.max(1.0) / scale).floor());
-                }
-            }
-        };
-        place(&mut tab.left, left_rect);
+        place_pane(&mut tab.left, left_rect, header, pad_x, pad_y, scale, split);
         if let (Some(r), Some(rr)) = (tab.right.as_mut(), right_rect) {
-            place(r, rr);
+            place_pane(r, rr, header, pad_x, pad_y, scale, split);
         }
         self.dirty = true;
     }
@@ -2482,7 +2467,8 @@ impl App {
         let has_right = self.tabs[active].right.is_some();
         // Split rule.
         let narrow = self.width_class() == Width::Narrow;
-        if has_right && !narrow {
+        let tiled = self.draw_tiling(&mut scene);
+        if has_right && !narrow && !tiled {
             let r = match &self.tabs[active].right {
                 Some(Pane::Term(p)) => p.rect,
                 Some(Pane::Web(p)) => p.rect,
@@ -2495,7 +2481,7 @@ impl App {
         let n = self.tab_label(active);
         let look = self.tabs[active].look.clone();
         let mut tabs = std::mem::take(&mut self.tabs);
-        {
+        if !tiled {
             let tab = &mut tabs[active];
             let left_focused = !(focus_right && has_right);
             if !(narrow && has_right && !left_focused) {
@@ -2892,6 +2878,7 @@ impl App {
         let row_h = self.side_header_h();
 
         let g = self.sidebar_geometry();
+        let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids.clone()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
 
         // Pinned row.
@@ -2997,6 +2984,11 @@ impl App {
             // Right side: × on hover, else a signal dot when waiting, else a
             // collapsed stack's count.
             let mut right = sb.right() - pad_x;
+            if tiled_ids.contains(&tab.id) {
+                let tsz = self.px(11.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::TILES, tsz, right - tsz, y + (row_h - tsz) / 2.0, if active { ink } else { t.dim });
+                right -= tsz + self.px(8.0);
+            }
             if hovered {
                 let cx = right - isz;
                 self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, cx, iy, ink);
@@ -3298,6 +3290,16 @@ impl App {
             SideHit::TabColour(i, k) => {
                 let c = if k == 0 { None } else { crate::surface::SWATCHES.get(k - 1).map(|s| s.1) };
                 self.run(Action::ColourTab(i, c));
+            }
+            SideHit::TabTile(i) => {
+                self.close_menus();
+                if self.selected.iter().any(|&k| k != i) {
+                    self.selected.insert(i);
+                    self.activate(i);
+                    self.tile_selected();
+                } else {
+                    self.untile();
+                }
             }
             SideHit::TabPin(i) => {
                 self.close_menus();
@@ -3724,7 +3726,16 @@ impl App {
         let live = self.tab_menu.is_some();
         let (mx, my) = self.mouse;
         let row = self.px(30.0);
-        let h_full = row * 4.0 + self.px(40.0);
+        // A tile row when there's a selection to tile with, or a tiling to leave.
+        let others: Vec<usize> = self.selected.iter().copied().filter(|&k| k != i && k < self.tabs.len()).collect();
+        let tile_row: Option<String> = if !others.is_empty() {
+            Some(format!("TILE {}", (others.len() + 1).min(4)))
+        } else if self.is_tiled(i) {
+            Some("UNTILE".into())
+        } else {
+            None
+        };
+        let h_full = row * (4.0 + if tile_row.is_some() { 1.0 } else { 0.0 }) + self.px(40.0);
         let h = h_full * k;
         // Rises from under the row; flips up when there's no room below.
         let y0 = if top + h_full > sb.bottom() - self.px(m::FOOT_H) { top - row - h_full } else { top };
@@ -3779,6 +3790,10 @@ impl App {
             cx += sq + self.px(8.0);
         }
         y += self.px(40.0);
+        if let Some(text) = &tile_row {
+            item(self, scene, nus_render::text::icons::TILES, text, if text == "UNTILE" { "" } else { "CTRL+SHIFT+D" }, SideHit::TabTile(i), y);
+            y += row;
+        }
         let pinned = self.tabs[i].pinned;
         item(self, scene, nus_render::text::icons::PIN, if pinned { "UNPIN" } else { "PIN" }, "", SideHit::TabPin(i), y);
         y += row;
@@ -4032,7 +4047,7 @@ impl App {
         }
     }
 
-    fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides, split: bool) {
+    pub(crate) fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides, split: bool) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
@@ -4323,10 +4338,13 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 12] = [
+                let actions: [(String, Action); 15] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
+                    (format!("tile the selected tabs · {} with rows selected", key("D", true)), Action::Tile),
+                    ("untile · one tab in the content again".to_string(), Action::Untile),
+                    ("swap tiles · CTRL+ALT+SHIFT+→".to_string(), Action::TileSwap),
                     (format!("close tab · {}", key("W", true)), Action::CloseTab),
                     (format!("sidebar · {}", key("S", true)), Action::ToggleSidebar),
                     (
@@ -4479,6 +4497,9 @@ impl App {
             Action::NewWindow => self.new_window_request = true,
             Action::Welcome => self.open_welcome(),
             Action::FoldAll => self.fold_all(),
+            Action::Tile => self.tile_selected(),
+            Action::Untile => self.untile(),
+            Action::TileSwap => self.tile_swap(1),
             Action::NameTab(i, n) => {
                 if let Some(t) = self.tabs.get_mut(i) {
                     t.name = if n.trim().is_empty() { None } else { Some(n.trim().to_string()) };
@@ -4654,6 +4675,17 @@ impl App {
         if pressed && code == Some(KeyCode::KeyN) && ctrl && !shift && self.palette.is_none() {
             return self.run(Action::NewWindow);
         }
+        // Tiles: Ctrl+Alt+arrows walk them, with Shift they swap.
+        if pressed && ctrl && alt && self.tiling_shown() {
+            let dir = match code {
+                Some(KeyCode::ArrowLeft) | Some(KeyCode::ArrowUp) => Some(-1),
+                Some(KeyCode::ArrowRight) | Some(KeyCode::ArrowDown) => Some(1),
+                _ => None,
+            };
+            if let Some(d) = dir {
+                return if shift { self.tile_swap(d) } else { self.tile_focus(d) };
+            }
+        }
         if pressed && app {
             match code {
                 Some(KeyCode::Minus) => return self.fold_all(),
@@ -4668,7 +4700,7 @@ impl App {
                 Some(KeyCode::KeyL) => return self.open_palette(PaletteMode::Url),
                 Some(KeyCode::KeyW) => return self.close_tabs(false),
                 Some(KeyCode::KeyZ) => return self.reopen_closed(),
-                Some(KeyCode::KeyD) => return self.toggle_split(),
+                Some(KeyCode::KeyD) => return self.divide(),
                 Some(KeyCode::KeyR) => return self.toggle_reader(),
                 Some(KeyCode::KeyS) => {
                     self.sidebar = !self.sidebar;
@@ -5275,7 +5307,8 @@ impl App {
                 self.pip = None;
             }
         }
-        if prev != i && self.pip.is_none() {
+        let together = self.is_tiled(prev) && self.is_tiled(i);
+        if prev != i && self.pip.is_none() && !together {
             if let Some(right) = self.playing_video(prev) {
                 self.request_pip(prev, right);
             }
@@ -5481,6 +5514,7 @@ impl App {
         self.play_event("tab.close");
         for &i in targets.iter().rev() {
             let tab = self.tabs.remove(i);
+            self.tile_forget(tab.id);
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
                 Pane::Web(w) => Closed::Web(w.tab.shared.borrow().url.clone()),
@@ -5504,7 +5538,7 @@ impl App {
         }
     }
 
-    fn toggle_split(&mut self) {
+    pub(crate) fn toggle_split(&mut self) {
         let tab = &mut self.tabs[self.active];
         if tab.right.is_some() {
             tab.right = None;
@@ -5558,6 +5592,19 @@ impl App {
         if let Some(d) = self.drag.as_mut() {
             d.2 = y;
             self.dirty = true;
+        }
+        if self.tile_drag.is_some() {
+            self.tile_drag_to(x, y);
+        }
+        // A resize arrow over a divider (or while dragging one).
+        let want = self.tile_drag.or_else(|| self.divider_at(x, y));
+        if want != self.resize_cursor {
+            self.resize_cursor = want;
+            match want {
+                Some(crate::tiles::Divider::X) => self.window.set_cursor(winit::window::CursorIcon::ColResize),
+                Some(crate::tiles::Divider::Y) => self.window.set_cursor(winit::window::CursorIcon::RowResize),
+                None => self.pointer_request = Some(self.cursor.pointer),
+            }
         }
         if !self.sidebar_pinned() && self.sidebar_hoverable() {
             let c = self.content_rect();
@@ -5684,7 +5731,7 @@ impl App {
 
         // A menu is up: a click elsewhere closes it.
         if pressed && (self.win_menu || self.kinds_menu || self.dl_menu || self.tab_menu.is_some()) {
-            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::DlOpen(_) | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_)));
+            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::DlOpen(_) | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_)));
             if !on_menu {
                 self.close_menus();
             }
@@ -5771,6 +5818,18 @@ impl App {
             return;
         }
 
+        // Tiles: grab a divider, or focus the tile under the pointer.
+        if pressed && button == MouseButton::Left {
+            if let Some(d) = self.divider_at(x, y) {
+                self.tile_drag = Some(d);
+                return;
+            }
+            if let Some(i) = self.tile_at(x, y) {
+                if i != self.active {
+                    self.activate(i);
+                }
+            }
+        }
         // Panes: focus, and forward to the browser.
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let mut hit_right = None;
@@ -5804,6 +5863,11 @@ impl App {
         if !pressed && button == MouseButton::Left {
             self.term_release_scroll();
             self.drag_armed = None;
+            if self.tile_drag.take().is_some() {
+                self.apply_term_resizes(true);
+                self.save_session();
+                return;
+            }
             if let Some((i, _, _)) = self.drag.take() {
                 self.drop_row(i, y);
                 return;
@@ -5933,6 +5997,11 @@ impl App {
 
     pub fn wheel(&mut self, delta: MouseScrollDelta) {
         let (x, y) = self.mouse;
+        if let Some(i) = self.tile_at(x, y) {
+            if i != self.active {
+                self.activate(i);
+            }
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             match p {
@@ -6350,4 +6419,44 @@ pub(crate) fn subtree_of(tabs: &[Tab], i: usize) -> Vec<usize> {
         }
     }
     out
+}
+
+/// Give a pane its rectangle. A split (or tiled) terminal shows its header
+/// strip; a page lays out its URL row, page, DevTools and tools row.
+pub(crate) fn place_pane(pane: &mut Pane, r: Rect, header: f32, pad_x: f32, pad_y: f32, scale: f32, split: bool) {
+    match pane {
+        Pane::Term(t) => {
+            t.rect = r;
+            t.show_header = split;
+            let header = if split { header } else { 0.0 };
+            let area = Rect::new(r.x + pad_x, r.y + header + pad_y, r.w - 2.0 * pad_x, r.h - header - 2.0 * pad_y);
+            t.origin = (area.x, area.y);
+            let _ = area; // terminal size is applied by `apply_term_resizes`
+        }
+        Pane::Settings(s) => s.rect = r,
+        Pane::Hints(h) => h.rect = r,
+        Pane::Web(w) => {
+            w.rect = r;
+            let url_row = (6.0 * 2.0 + 22.0) * scale;
+            let tools_row = (8.0 * 2.0 + 13.0 + 1.0) * scale;
+            let avail = r.h - url_row.round() - 1.0 - tools_row.round();
+            let dt_h = if w.devtools.is_some() { (avail * 0.42).round() } else { 0.0 };
+            w.page = Rect::new(r.x, r.y + url_row.round() + 1.0, r.w, avail - dt_h);
+            w.dt_rect = Rect::new(r.x, w.page.bottom() + 1.0, r.w, dt_h - 1.0);
+            {
+                let mut s = w.tab.shared.borrow_mut();
+                s.origin = (w.page.x, w.page.y);
+                s.scale = scale;
+            }
+            w.tab.resized((w.page.w / scale).floor(), (w.page.h / scale).floor());
+            if let Some(d) = &w.devtools {
+                {
+                    let mut s = d.shared.borrow_mut();
+                    s.origin = (w.dt_rect.x, w.dt_rect.y);
+                    s.scale = scale;
+                }
+                d.resized((w.dt_rect.w / scale).floor(), (w.dt_rect.h.max(1.0) / scale).floor());
+            }
+        }
+    }
 }

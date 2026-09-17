@@ -41,6 +41,8 @@ pub struct SavedTab {
 pub struct Session {
     pub tabs: Vec<SavedTab>,
     pub active: usize,
+    /// Tiled tabs by index, in tiling order (empty = none).
+    pub tiles: Vec<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,7 +95,8 @@ impl Session {
                 colour: t.get("colour").and_then(|v| v.as_str()).map(|s| s.to_string()),
             })
             .collect();
-        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize })
+        let tiles = v.get("tiles").and_then(|t| t.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect()).unwrap_or_default();
+        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize, tiles })
     }
 
     pub fn save(&self) {
@@ -112,7 +115,7 @@ impl Session {
                 })
             })
             .collect();
-        let v = serde_json::json!({ "tabs": tabs, "active": self.active, "saved": now() });
+        let v = serde_json::json!({ "tabs": tabs, "active": self.active, "tiles": self.tiles, "saved": now() });
         let _ = std::fs::create_dir_all(profile_dir());
         let _ = std::fs::write(profile_dir().join("session.json"), serde_json::to_string_pretty(&v).unwrap_or_default());
     }
@@ -281,6 +284,10 @@ impl App {
         let n = self.tabs.len();
         if n > 0 {
             let first_new = n - ids.iter().filter(|i| i.is_some()).count();
+            let tiled: Vec<u64> = sess.tiles.iter().filter_map(|&k| ids.get(k).copied().flatten()).collect();
+            if tiled.len() >= 2 {
+                self.tiling = Some(crate::tiles::Tiling { ids: tiled, x: 0.5, y: 0.5 });
+            }
             self.activate((first_new + sess.active).min(n - 1));
         }
         self.layout();
@@ -303,7 +310,8 @@ impl App {
             .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex) })
             .filter(|t| t.left.is_some())
             .collect();
-        Session { tabs, active: self.active }.save();
+        let tiles = self.tiling.as_ref().map(|t| t.ids.iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
+        Session { tabs, active: self.active, tiles }.save();
     }
 
     /// Remember a page or shell in the recent list (deduped, newest first).
@@ -500,6 +508,7 @@ mod tests {
                 SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None },
             ],
             active: 1,
+            tiles: vec![0, 1],
         };
         let dir = std::env::temp_dir().join(format!("nus-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("profile")).unwrap();
@@ -516,6 +525,7 @@ mod tests {
         assert_eq!(back.tabs[0].colour.as_deref(), Some("#2e7d32"));
         assert!(back.tabs[1].name.is_none());
         assert_eq!(back.active, 1);
+        assert_eq!(back.tiles, vec![0, 1]);
         assert_eq!(s.summary(), "1 shell · 2 pages");
     }
 }

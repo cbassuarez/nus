@@ -143,6 +143,7 @@ impl App {
             row("CTRL+N", "New window", "windows own their tabs; the rail or the header lists them", Some(("OPEN ONE", Act::NewWindow))),
             row("CTRL+1–9", "Tabs by number", "Ctrl+` goes back to the last one; Ctrl+PgUp / PgDn walk them", None),
             row(k("S"), "The sidebar", "pin it, or let it slide in from the edge · BAR or RAIL header under settings", None),
+            row(k("D"), "Tiles", "Ctrl+click two to four rows, then tile them: side by side, an L, or a grid · drag the rules · Ctrl+Alt+arrows walk the tiles, with Shift they swap", None),
             row("F2", "Name a tab", "right-click a tab for its menu: rename, an emoji or short string as its icon, a colour, pin, close", Some(("RENAME THIS TAB", Act::RenameTab))),
             row("", "Stacks", "pages a page opens sit under it, as deep as they go; fold with the caret, Ctrl+Shift+- folds all; drag a tab onto another to nest it", None),
             row("", "Rules", "profile/rules.luau colours new tabs and windows, boosts pages, picks sounds", Some(("OPEN RULES", Act::Rules))),

@@ -9,6 +9,7 @@ mod webui;
 mod welcome;
 mod themes;
 mod windows;
+mod tiles;
 mod anim;
 mod app;
 mod browser;
