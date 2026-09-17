@@ -181,6 +181,12 @@ pub struct WebPane {
     pub remembered: String,
     /// When the current load began (for the ready cue).
     pub load_since: Option<Instant>,
+    /// Find in page, while the band is up.
+    pub find: Option<crate::webui::Find>,
+    /// The permission band's ALLOW / DENY chips.
+    pub perm_hits: Vec<(Rect, bool)>,
+    /// Blanked for being idle; the URL to come back to.
+    pub asleep: Option<String>,
 }
 
 pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::icons::CONSOLE), ("network", nus_render::text::icons::NETWORK), ("elements", nus_render::text::icons::CODE)];
@@ -250,6 +256,8 @@ pub enum SideHit {
     Rail(usize),
     /// The look chip in the footer: opens the hot swapper.
     Look,
+    /// A download in the footer list.
+    DlOpen(usize),
     /// Hot swapper rows.
     LookPreset(usize),
     LookQuick(Quick),
@@ -325,6 +333,8 @@ pub struct Tab {
     pub right: Option<Pane>,
     pub focus_right: bool,
     pub pinned: bool,
+    /// When this tab was last shown, for sleeping and archiving.
+    pub last_active: Instant,
     /// Colours the rules gave this tab.
     pub look: Overrides,
 }
@@ -444,6 +454,10 @@ pub struct App {
     pub registered_tabs: usize,
     /// A right-click asked for a paste; answered in tick.
     pub paste_request: bool,
+    /// Downloads list in the footer.
+    pub dl_menu: bool,
+    pub dl_anim: Anim,
+    pub last_tend: Instant,
     /// When the window was last resized, for the cols × rows overlay.
     pub resized_at: Option<Instant>,
     pub hovers: std::collections::HashMap<u64, Hover>,
@@ -619,6 +633,9 @@ impl App {
             next_row_hot: false,
             registered_tabs: usize::MAX,
             paste_request: false,
+            dl_menu: false,
+            dl_anim: Anim::at(0.0),
+            last_tend: Instant::now(),
             resized_at: None,
             hovers: std::collections::HashMap::new(),
             look_tab: 0,
@@ -813,6 +830,9 @@ impl App {
             favicon: None,
             dt_panel: 0,
             remembered: String::new(),
+            find: None,
+            perm_hits: Vec::new(),
+            asleep: None,
             load_since: None,
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -1040,6 +1060,7 @@ impl App {
         if self.registered_tabs != usize::MAX && self.registered_tabs != self.tabs.len() {
             self.register_window();
         }
+        self.tend_idle_tabs();
         if self.paste_request {
             self.paste_request = false;
             self.paste_into_shell();
@@ -1081,7 +1102,7 @@ impl App {
                 }
             }
         }
-        if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() || self.look_anim.active() {
+        if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() || self.look_anim.active() || self.dl_anim.active() {
             self.dirty = true;
         }
         // A blinking cursor wants a frame at each half period.
@@ -2938,7 +2959,7 @@ impl App {
         let mut rx = sb.right() - pad_x;
         for (icon, hit, lit, motion, k) in [
             (nus_render::text::icons::SETTINGS, SideHit::Settings, true, IconMotion::Spin(30.0), 1),
-            (nus_render::text::icons::DOWNLOAD, SideHit::Downloads, false, IconMotion::Bob, 2),
+            (nus_render::text::icons::DOWNLOAD, SideHit::Downloads, crate::browser::DOWNLOADS.lock().map(|l| l.iter().any(|d| !d.done && !d.cancelled)).unwrap_or(false), IconMotion::Bob, 2),
             (nus_render::text::icons::HISTORY, SideHit::Closed, !self.closed.is_empty(), IconMotion::Spin(-40.0), 3),
         ] {
             rx -= isz;
@@ -3089,7 +3110,19 @@ impl App {
                     input.push_str("reopen");
                 }
             }
-            SideHit::Downloads => {}
+            SideHit::Downloads => {
+                if self.dl_menu {
+                    self.close_menus();
+                } else {
+                    self.close_menus();
+                    self.dl_menu = true;
+                    self.dl_anim.replay(0.0, 1.0, self.motion.dur(160.0));
+                }
+            }
+            SideHit::DlOpen(i) => {
+                self.close_menus();
+                self.reveal_download(i);
+            }
             SideHit::Settings => self.open_settings(),
         }
         self.dirty = true;
@@ -3341,6 +3374,9 @@ impl App {
             scene.hline(sb.x, top + h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
             scene.layer(None);
         }
+        if self.dl_menu || self.dl_anim.active() {
+            self.draw_downloads_menu(scene, sb);
+        }
         if self.look_menu || self.look_anim.active() {
             self.draw_look_menu(scene, sb);
         }
@@ -3542,6 +3578,10 @@ impl App {
     }
 
     pub(crate) fn close_menus(&mut self) {
+        if self.dl_menu {
+            self.dl_menu = false;
+            self.dl_anim.go(0.0, self.motion.dur(100.0));
+        }
         if self.look_menu {
             self.look_menu = false;
             self.look_anim.go(0.0, self.motion.dur(100.0));
@@ -3833,6 +3873,7 @@ impl App {
                 }
                 let _ = loading;
                 self.draw_load_bar(scene, p.page, p, look.signal);
+                self.draw_web_overlays(scene, p);
                 if let Some(d) = &p.devtools {
                     {
                         let s = d.shared.borrow();
@@ -4018,6 +4059,9 @@ impl App {
                         rows.push(row("::", format!("{label} → localhost:{}", p.port), Action::NewBrowser(format!("http://localhost:{}/", p.port))));
                     }
                 }
+                if !q.is_empty() {
+                    rows.extend(self.history_rows(input, true, 5));
+                }
                 if q.is_empty() {
                     rows.push(row("→", "browser · type a URL or search terms".into(), Action::NewBrowser(String::new())));
                 } else {
@@ -4027,6 +4071,9 @@ impl App {
             PaletteMode::Url => {
                 if !q.is_empty() {
                     self.query_rows(input, &mut rows, false);
+                    rows.extend(self.history_rows(input, false, 6));
+                } else {
+                    rows.extend(self.history_rows("", false, 8));
                 }
             }
             PaletteMode::Rename => {
@@ -4170,6 +4217,9 @@ impl App {
             return;
         }
         // Find and hints take the keys while they're up.
+        if self.web_mode_key(ev) {
+            return;
+        }
         if self.term_mode_key(ev) {
             return;
         }
@@ -4257,7 +4307,7 @@ impl App {
             match code {
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
-                Some(KeyCode::KeyF) => return self.term_search_open(),
+                Some(KeyCode::KeyF) => return self.search_open(),
                 Some(KeyCode::KeyO) => return self.term_hints_open(),
                 Some(KeyCode::KeyC) => return self.copy_selection_or_output(),
                 Some(KeyCode::KeyV) => return self.paste_into_shell(),
@@ -4512,7 +4562,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let look = self.look_for(&left, None);
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false, look }
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), look }
     }
 
     /// Ask the rules what a new tab looks like.
@@ -4658,6 +4708,7 @@ impl App {
         if i >= self.tabs.len() {
             return;
         }
+        self.wake_tab(i);
         let prev = self.active;
         if let Some(p) = &self.pip {
             if p.tab == i {
@@ -4686,7 +4737,7 @@ impl App {
     }
 
     /// Keep `mru`/`selected` valid after `tabs[i]` was removed.
-    fn tab_removed(&mut self, i: usize) {
+    pub(crate) fn tab_removed(&mut self, i: usize) {
         if let Some(p) = self.pip.as_mut() {
             if p.tab == i {
                 self.pip = None;
@@ -5064,8 +5115,8 @@ impl App {
         }
 
         // A menu is up: a click elsewhere closes it.
-        if pressed && (self.win_menu || self.kinds_menu) {
-            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds));
+        if pressed && (self.win_menu || self.kinds_menu || self.dl_menu) {
+            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::DlOpen(_) | SideHit::Downloads));
             if !on_menu {
                 self.close_menus();
             }
@@ -5178,6 +5229,9 @@ impl App {
             self.term_release_scroll();
         }
         if self.term_mouse(button, state, x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.web_band_click(x, y) {
             return;
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };

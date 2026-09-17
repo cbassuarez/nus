@@ -5,6 +5,7 @@ mod access;
 mod shell;
 mod termui;
 mod predict;
+mod webui;
 mod windows;
 mod anim;
 mod app;

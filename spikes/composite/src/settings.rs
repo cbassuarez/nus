@@ -194,6 +194,22 @@ pub struct Behavior {
     /// Ghost the history entry that continues what's typed; Right/End accepts.
     #[serde(default = "default_true")]
     pub predict: bool,
+    /// Refuse requests to known ad and tracker hosts.
+    #[serde(default = "default_true")]
+    pub block_content: bool,
+    /// Blank an idle page after this many minutes (0 = never).
+    #[serde(default = "default_sleep")]
+    pub sleep_after_min: u32,
+    /// Archive an idle page tab into recently closed after this many hours (0 = never).
+    #[serde(default = "default_archive")]
+    pub archive_after_h: u32,
+}
+
+fn default_sleep() -> u32 {
+    30
+}
+fn default_archive() -> u32 {
+    12
 }
 
 fn default_true() -> bool {
@@ -238,6 +254,9 @@ impl Default for Behavior {
             shell_integration: true,
             highlight: true,
             predict: true,
+            block_content: true,
+            sleep_after_min: 30,
+            archive_after_h: 12,
         }
     }
 }
@@ -325,6 +344,9 @@ pub enum Hit {
     /// Set the selected token to this colour.
     TokSet(Color),
     ShellInt(bool),
+    Block(bool),
+    SleepAfter(u32),
+    ArchiveAfter(u32),
     Highlight(bool),
     Predict(bool),
     HdrStyle(HeaderStyle),
@@ -576,6 +598,9 @@ impl App {
             Hit::TokSel(t) => format!("edit {:?}", t).to_lowercase(),
             Hit::TokSet(c) => format!("set to {}", surface::hex(c)),
             Hit::ShellInt(b) => if b { "shell integration auto".into() } else { "shell integration off".into() },
+            Hit::Block(b) => if b { "content blocking on".into() } else { "content blocking off".into() },
+            Hit::SleepAfter(n) => if n == 0 { "never sleep tabs".into() } else { format!("sleep after {n} minutes") },
+            Hit::ArchiveAfter(n) => if n == 0 { "never archive".into() } else { format!("archive after {n} hours") },
             Hit::Highlight(b) => if b { "highlight the command line".into() } else { "plain command line".into() },
             Hit::Predict(b) => if b { "predictions on".into() } else { "predictions off".into() },
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
@@ -847,6 +872,12 @@ impl App {
             }
             Hit::TokSet(c) => self.set_tok(c),
             Hit::ShellInt(b) => self.behavior.shell_integration = b,
+            Hit::Block(b) => {
+                self.behavior.block_content = b;
+                crate::browser::BLOCKING.store(b, std::sync::atomic::Ordering::Relaxed);
+            }
+            Hit::SleepAfter(n) => self.behavior.sleep_after_min = n,
+            Hit::ArchiveAfter(n) => self.behavior.archive_after_h = n,
             Hit::Highlight(b) => self.behavior.highlight = b,
             Hit::Predict(b) => self.behavior.predict = b,
             Hit::HdrStyle(s) => {
@@ -1739,6 +1770,15 @@ impl App {
             ],
             4 => vec![
                 (
+                    "SLEEP IDLE PAGES".into(),
+                    Choice(vec![("NEVER".into(), Hit::SleepAfter(0), self.behavior.sleep_after_min == 0), ("10 MIN".into(), Hit::SleepAfter(10), self.behavior.sleep_after_min == 10), ("30 MIN".into(), Hit::SleepAfter(30), self.behavior.sleep_after_min == 30), ("2 H".into(), Hit::SleepAfter(120), self.behavior.sleep_after_min == 120)]),
+                ),
+                (
+                    "ARCHIVE IDLE PAGES".into(),
+                    Choice(vec![("NEVER".into(), Hit::ArchiveAfter(0), self.behavior.archive_after_h == 0), ("12 H".into(), Hit::ArchiveAfter(12), self.behavior.archive_after_h == 12), ("24 H".into(), Hit::ArchiveAfter(24), self.behavior.archive_after_h == 24), ("A WEEK".into(), Hit::ArchiveAfter(168), self.behavior.archive_after_h == 168)]),
+                ),
+                ("".into(), Info("a sleeping page keeps its place and wakes when shown · archived pages go to recently closed · pinned tabs and shells never".into())),
+                (
                     "LINKS FROM PAGES".into(),
                     Choice(vec![
                         ("IN THE STACK".into(), Hit::Links(Links::Stack), self.behavior.links == Links::Stack),
@@ -1804,6 +1844,11 @@ impl App {
                 v
             }
             6 => vec![
+                (
+                    "CONTENT BLOCKING".into(),
+                    Choice(vec![("ON".into(), Hit::Block(true), self.behavior.block_content), ("OFF".into(), Hit::Block(false), !self.behavior.block_content)]),
+                ),
+                ("".into(), Info(format!("{} hosts refused · ads, trackers, analytics · add yours to profile/blocklist.txt", crate::browser::blocklist_len()))),
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),

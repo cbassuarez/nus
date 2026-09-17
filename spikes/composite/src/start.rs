@@ -43,6 +43,8 @@ pub struct Session {
 pub struct Recent {
     pub item: Saved,
     pub when: u64,
+    /// How many times it was visited (pages) or opened (shells).
+    pub visits: u32,
 }
 
 fn profile_dir() -> std::path::PathBuf {
@@ -126,7 +128,7 @@ pub fn load_recent() -> Vec<Recent> {
     v.as_array()
         .map(|a| {
             a.iter()
-                .filter_map(|r| Some(Recent { item: saved_from_json(r)?, when: r.get("when").and_then(|w| w.as_u64()).unwrap_or(0) }))
+                .filter_map(|r| Some(Recent { item: saved_from_json(r)?, when: r.get("when").and_then(|w| w.as_u64()).unwrap_or(0), visits: r.get("visits").and_then(|v| v.as_u64()).unwrap_or(1) as u32 }))
                 .collect()
         })
         .unwrap_or_default()
@@ -138,6 +140,7 @@ pub fn save_recent(list: &[Recent]) {
         .map(|r| {
             let mut j = saved_to_json(&r.item);
             j["when"] = serde_json::json!(r.when);
+            j["visits"] = serde_json::json!(r.visits);
             j
         })
         .collect();
@@ -293,13 +296,16 @@ impl App {
                 return;
             }
         }
-        self.recent.retain(|r| match (&r.item, &item) {
-            (Saved::Page { url: a, .. }, Saved::Page { url: b, .. }) => a != b,
-            (Saved::Shell { profile: a }, Saved::Shell { profile: b }) => a != b,
-            _ => true,
-        });
-        self.recent.insert(0, Recent { item, when: now() });
-        self.recent.truncate(200);
+        let same = |r: &Recent| match (&r.item, &item) {
+            (Saved::Page { url: a, .. }, Saved::Page { url: b, .. }) => a == b,
+            (Saved::Shell { profile: a }, Saved::Shell { profile: b }) => a == b,
+            _ => false,
+        };
+        let visits = self.recent.iter().find(|r| same(r)).map(|r| r.visits + 1).unwrap_or(1);
+        self.recent.retain(|r| !same(r));
+        self.recent.insert(0, Recent { item, when: now(), visits });
+        // History for the palette: keep plenty; the atlas shows the top anyway.
+        self.recent.truncate(2000);
         save_recent(&self.recent);
     }
 

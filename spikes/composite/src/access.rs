@@ -132,6 +132,7 @@ impl App {
                 S::LookStudio => "open the look studio".into(),
                 S::Closed => "recently closed".into(),
                 S::Downloads => "downloads".into(),
+                S::DlOpen(i) => format!("download {}", i + 1),
                 S::Settings => "settings".into(),
             };
             let id = fresh(&mut map, Target::Side(hit));

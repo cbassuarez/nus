@@ -43,6 +43,120 @@ pub struct Shared {
     /// The page's favicon, straight-alpha BGRA, once downloaded.
     pub favicon: Option<Favicon>,
     pub favicon_url: String,
+    /// Find in page: (matches, active ordinal), from the find handler.
+    pub find: Option<(i32, i32)>,
+    /// Requests refused by content blocking on this page.
+    pub blocked: u32,
+    /// A permission the page asked for, waiting on the band.
+    pub permission: Option<PermissionAsk>,
+    /// A <select> (or other popup widget): where it is and its texture.
+    pub select: SelectPopup,
+}
+
+/// A permission prompt or a media-access request, one at a time.
+pub struct PermissionAsk {
+    pub origin: String,
+    /// What was asked, in words.
+    pub what: String,
+    pub kind: AskKind,
+}
+
+pub enum AskKind {
+    Prompt(PermissionPromptCallback),
+    Media(MediaAccessCallback, u32),
+}
+
+#[derive(Default)]
+pub struct SelectPopup {
+    pub shown: bool,
+    /// Logical px, relative to the view.
+    pub rect: (i32, i32, i32, i32),
+    pub bind: Option<Arc<wgpu::BindGroup>>,
+}
+
+/// A download, as the footer shows it. Downloads outlive tabs, so they
+/// live in one list for the process.
+#[derive(Clone, Debug)]
+pub struct Download {
+    pub id: u32,
+    pub name: String,
+    pub path: String,
+    pub url: String,
+    pub received: i64,
+    pub total: i64,
+    pub done: bool,
+    pub cancelled: bool,
+}
+
+pub static DOWNLOADS: std::sync::Mutex<Vec<Download>> = std::sync::Mutex::new(Vec::new());
+
+/// Content blocking: on/off and the hosts to refuse. Built-in list plus
+/// profile/blocklist.txt (one host per line; `||host^` lines work too).
+pub static BLOCKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static BLOCKLIST: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+
+const BUILTIN_BLOCKLIST: &[&str] = &[
+    "doubleclick.net", "googlesyndication.com", "googleadservices.com", "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+    "adservice.google.com", "pagead2.googlesyndication.com", "facebook.net", "connect.facebook.net", "ads.linkedin.com", "px.ads.linkedin.com",
+    "adnxs.com", "adsrvr.org", "taboola.com", "outbrain.com", "criteo.com", "criteo.net", "scorecardresearch.com", "quantserve.com",
+    "hotjar.com", "mouseflow.com", "fullstory.com", "clarity.ms", "bat.bing.com", "amazon-adsystem.com", "moatads.com", "pubmatic.com",
+    "rubiconproject.com", "openx.net", "casalemedia.com", "bidswitch.net", "chartbeat.com", "newrelic.com", "nr-data.net", "segment.io",
+    "mixpanel.com", "optimizely.com", "sentry.io", "bugsnag.com", "yieldmo.com", "sharethrough.com", "media.net", "zedo.com", "adform.net",
+];
+
+fn blocklist() -> &'static std::sync::RwLock<std::collections::HashSet<String>> {
+    BLOCKLIST.get_or_init(|| {
+        let mut set: std::collections::HashSet<String> = BUILTIN_BLOCKLIST.iter().map(|s| s.to_string()).collect();
+        let path = std::env::current_dir().unwrap_or_default().join("profile").join("blocklist.txt");
+        if let Ok(text) = std::fs::read_to_string(path) {
+            for line in text.lines() {
+                let l = line.trim();
+                if l.is_empty() || l.starts_with('!') || l.starts_with('#') {
+                    continue;
+                }
+                let host = l.trim_start_matches("||").split(['^', '/', '$']).next().unwrap_or("").trim();
+                if !host.is_empty() && !host.contains('*') {
+                    set.insert(host.to_lowercase());
+                }
+            }
+        }
+        std::sync::RwLock::new(set)
+    })
+}
+
+/// Would this URL's host be refused? Any parent domain on the list counts.
+pub fn blocked(url: &str) -> bool {
+    if !BLOCKING.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let host = url.split("//").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("").split('@').next_back().unwrap_or("").split(':').next().unwrap_or("").to_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    let list = blocklist().read().unwrap();
+    let mut h = host.as_str();
+    loop {
+        if list.contains(h) {
+            return true;
+        }
+        match h.find('.') {
+            Some(i) => h = &h[i + 1..],
+            None => return false,
+        }
+    }
+}
+
+pub fn blocklist_len() -> usize {
+    blocklist().read().unwrap().len()
+}
+
+/// Where downloads go: ~/Downloads, else the profile.
+pub fn downloads_dir() -> std::path::PathBuf {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).map(std::path::PathBuf::from);
+    match home {
+        Ok(h) if h.join("Downloads").is_dir() => h.join("Downloads"),
+        _ => std::env::current_dir().unwrap_or_default().join("profile").join("downloads"),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -223,6 +337,22 @@ wrap_render_handler! {
             1
         }
 
+        fn on_popup_show(&self, _browser: Option<&mut Browser>, show: ::std::os::raw::c_int) {
+            let mut s = self.osr.shared.borrow_mut();
+            s.select.shown = show != 0;
+            if show == 0 {
+                s.select.bind = None;
+            }
+            s.paints += 1;
+        }
+
+        fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
+            if let Some(r) = rect {
+                let mut s = self.osr.shared.borrow_mut();
+                s.select.rect = (r.x, r.y, r.width, r.height);
+            }
+        }
+
         fn on_accelerated_paint(
             &self,
             _browser: Option<&mut Browser>,
@@ -231,18 +361,21 @@ wrap_render_handler! {
             info: Option<&AcceleratedPaintInfo>,
         ) {
             let Some(info) = info else { return };
-            if type_ != PaintElementType::default() {
-                return; // popups (select dropdowns) not composited in this spike
-            }
+            let popup = type_ != PaintElementType::default();
             use cef::osr_texture_import::shared_texture_handle::SharedTextureHandle;
             let handle = SharedTextureHandle::new(info);
             match handle.import_texture(&self.osr.device) {
                 Ok(texture) => {
                     let bind = (self.osr.bind_texture)(&texture);
                     let mut s = self.osr.shared.borrow_mut();
-                    s.bind = Some(bind);
-                    if s.paints == 0 {
-                        tracing::info!("first paint +{}ms", s.created.elapsed().as_millis());
+                    if popup {
+                        // A <select> dropdown or similar widget, composited over the page.
+                        s.select.bind = Some(bind);
+                    } else {
+                        s.bind = Some(bind);
+                        if s.paints == 0 {
+                            tracing::info!("first paint +{}ms", s.created.elapsed().as_millis());
+                        }
                     }
                     s.paints += 1;
                 }
@@ -486,11 +619,169 @@ wrap_life_span_handler! {
 /// The DevTools frontend for a page, in a windowless browser of our own.
 pub type DevToolsView = BrowserTab;
 
+wrap_find_handler! {
+    pub struct FindBuilder {
+        display: Display,
+    }
+
+    impl FindHandler {
+        fn on_find_result(&self, _browser: Option<&mut Browser>, _identifier: ::std::os::raw::c_int, count: ::std::os::raw::c_int, _selection_rect: Option<&Rect>, active_match_ordinal: ::std::os::raw::c_int, _final_update: ::std::os::raw::c_int) {
+            let mut s = self.display.shared.borrow_mut();
+            s.find = Some((count, active_match_ordinal));
+            s.paints += 1;
+        }
+    }
+}
+
+wrap_download_handler! {
+    pub struct DownloadBuilder {
+        display: Display,
+    }
+
+    impl DownloadHandler {
+        fn on_before_download(&self, _browser: Option<&mut Browser>, download_item: Option<&mut DownloadItem>, suggested_name: Option<&CefString>, callback: Option<&mut BeforeDownloadCallback>) -> ::std::os::raw::c_int {
+            let Some(item) = download_item else { return 0 };
+            let name = suggested_name.map(|s| s.to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "download".into());
+            // ~/Downloads/name, numbered when taken.
+            let dir = downloads_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let mut path = dir.join(&name);
+            let mut n = 1;
+            while path.exists() {
+                n += 1;
+                let (stem, ext) = match name.rsplit_once('.') { Some((s, e)) => (s.to_string(), format!(".{e}")), None => (name.clone(), String::new()) };
+                path = dir.join(format!("{stem} ({n}){ext}"));
+            }
+            let d = Download { id: item.id(), name: name.clone(), path: path.to_string_lossy().to_string(), url: CefString::from(&item.url()).to_string(), received: 0, total: item.total_bytes(), done: false, cancelled: false };
+            DOWNLOADS.lock().unwrap().push(d);
+            if let Some(cb) = callback {
+                cb.cont(Some(&path.to_string_lossy().as_ref().into()), 0);
+            }
+            self.display.shared.borrow_mut().paints += 1;
+            1
+        }
+
+        fn on_download_updated(&self, _browser: Option<&mut Browser>, download_item: Option<&mut DownloadItem>, _callback: Option<&mut DownloadItemCallback>) {
+            let Some(item) = download_item else { return };
+            let id = item.id();
+            let mut list = DOWNLOADS.lock().unwrap();
+            if let Some(d) = list.iter_mut().find(|d| d.id == id) {
+                d.received = item.received_bytes();
+                d.total = item.total_bytes();
+                d.done = item.is_complete() != 0;
+                d.cancelled = item.is_canceled() != 0;
+                let p = CefString::from(&item.full_path()).to_string();
+                if !p.is_empty() {
+                    d.path = p;
+                }
+            }
+            self.display.shared.borrow_mut().paints += 1;
+        }
+    }
+}
+
+/// The permission types, in words for the band.
+fn permission_words(mask: u32) -> String {
+    let names: &[(u32, &str)] = &[
+        (PermissionRequestTypes::CAMERA_STREAM.get_raw() as u32, "camera"),
+        (PermissionRequestTypes::MIC_STREAM.get_raw() as u32, "microphone"),
+        (PermissionRequestTypes::GEOLOCATION.get_raw() as u32, "location"),
+        (PermissionRequestTypes::NOTIFICATIONS.get_raw() as u32, "notifications"),
+        (PermissionRequestTypes::CLIPBOARD.get_raw() as u32, "the clipboard"),
+        (PermissionRequestTypes::MIDI_SYSEX.get_raw() as u32, "midi"),
+        (PermissionRequestTypes::MULTIPLE_DOWNLOADS.get_raw() as u32, "multiple downloads"),
+        (PermissionRequestTypes::POINTER_LOCK.get_raw() as u32, "pointer lock"),
+        (PermissionRequestTypes::KEYBOARD_LOCK.get_raw() as u32, "keyboard lock"),
+        (PermissionRequestTypes::IDLE_DETECTION.get_raw() as u32, "idle detection"),
+        (PermissionRequestTypes::LOCAL_FONTS.get_raw() as u32, "your fonts"),
+        (PermissionRequestTypes::DISK_QUOTA.get_raw() as u32, "more storage"),
+    ];
+    let mut out: Vec<&str> = names.iter().filter(|(bit, _)| mask & *bit != 0).map(|(_, n)| *n).collect();
+    if out.is_empty() {
+        out.push("a permission");
+    }
+    out.join(" and ")
+}
+
+wrap_permission_handler! {
+    pub struct PermissionBuilder {
+        display: Display,
+    }
+
+    impl PermissionHandler {
+        fn on_request_media_access_permission(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, requesting_origin: Option<&CefString>, requested_permissions: u32, callback: Option<&mut MediaAccessCallback>) -> ::std::os::raw::c_int {
+            let Some(cb) = callback else { return 0 };
+            let origin = requesting_origin.map(|s| s.to_string()).unwrap_or_default();
+            let video = requested_permissions & MediaAccessPermissionTypes::DEVICE_VIDEO_CAPTURE.get_raw() as u32 != 0;
+            let audio = requested_permissions & MediaAccessPermissionTypes::DEVICE_AUDIO_CAPTURE.get_raw() as u32 != 0;
+            let what = match (video, audio) { (true, true) => "camera and microphone", (true, false) => "camera", (false, true) => "microphone", _ => "screen capture" }.to_string();
+            let mut s = self.display.shared.borrow_mut();
+            s.permission = Some(PermissionAsk { origin, what, kind: AskKind::Media(cb.clone(), requested_permissions) });
+            s.paints += 1;
+            1
+        }
+
+        fn on_show_permission_prompt(&self, _browser: Option<&mut Browser>, _prompt_id: u64, requesting_origin: Option<&CefString>, requested_permissions: u32, callback: Option<&mut PermissionPromptCallback>) -> ::std::os::raw::c_int {
+            let Some(cb) = callback else { return 0 };
+            let origin = requesting_origin.map(|s| s.to_string()).unwrap_or_default();
+            let mut s = self.display.shared.borrow_mut();
+            s.permission = Some(PermissionAsk { origin, what: permission_words(requested_permissions), kind: AskKind::Prompt(cb.clone()) });
+            s.paints += 1;
+            1
+        }
+
+        fn on_dismiss_permission_prompt(&self, _browser: Option<&mut Browser>, _prompt_id: u64, _result: PermissionRequestResult) {
+            let mut s = self.display.shared.borrow_mut();
+            s.permission = None;
+            s.paints += 1;
+        }
+    }
+}
+
+wrap_resource_request_handler! {
+    pub struct BlockBuilder {
+        display: Display,
+    }
+
+    impl ResourceRequestHandler {
+        fn on_before_resource_load(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _callback: Option<&mut Callback>) -> ReturnValue {
+            let Some(req) = request else { return ReturnValue::CONTINUE };
+            let url = CefString::from(&req.url()).to_string();
+            if blocked(&url) {
+                let mut s = self.display.shared.borrow_mut();
+                s.blocked += 1;
+                return ReturnValue::CANCEL;
+            }
+            ReturnValue::CONTINUE
+        }
+    }
+}
+
+wrap_request_handler! {
+    pub struct RequestBuilder {
+        display: Display,
+    }
+
+    impl RequestHandler {
+        fn resource_request_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, is_navigation: ::std::os::raw::c_int, _is_download: ::std::os::raw::c_int, _request_initiator: Option<&CefString>, _disable_default_handling: Option<&mut ::std::os::raw::c_int>) -> Option<ResourceRequestHandler> {
+            // Never block the navigation itself, only what the page pulls in.
+            if is_navigation != 0 || !BLOCKING.load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
+            Some(BlockBuilder::new(self.display.clone()))
+        }
+    }
+}
+
 wrap_client! {
     pub struct ClientBuilder {
         render: RenderHandler,
         display: DisplayHandler,
         life: LifeSpanHandler,
+        find: FindHandler,
+        download: DownloadHandler,
+        permission: PermissionHandler,
+        request: RequestHandler,
     }
 
     impl Client {
@@ -502,6 +793,18 @@ wrap_client! {
         }
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
             Some(self.life.clone())
+        }
+        fn find_handler(&self) -> Option<FindHandler> {
+            Some(self.find.clone())
+        }
+        fn download_handler(&self) -> Option<DownloadHandler> {
+            Some(self.download.clone())
+        }
+        fn permission_handler(&self) -> Option<PermissionHandler> {
+            Some(self.permission.clone())
+        }
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(self.request.clone())
         }
     }
 }
@@ -540,6 +843,10 @@ impl BrowserTab {
                 shared: shared.clone(),
             }),
             LifeBuilder::new(Display { shared: shared.clone() }),
+            FindBuilder::new(Display { shared: shared.clone() }),
+            DownloadBuilder::new(Display { shared: shared.clone() }),
+            PermissionBuilder::new(Display { shared: shared.clone() }),
+            RequestBuilder::new(Display { shared: shared.clone() }),
         );
         // The global context: one cookie jar and cache for the Space. (v1 gives
         // each Space its own, with cache_path under the profile.)
@@ -569,6 +876,31 @@ impl BrowserTab {
 
     pub fn host(&self) -> Option<BrowserHost> {
         self.browser.host()
+    }
+
+    /// Find in page; `next` continues the same search.
+    pub fn find(&self, text: &str, forward: bool, next: bool) {
+        if let Some(h) = self.host() {
+            h.find(Some(&text.into()), forward as i32, 0, next as i32);
+        }
+    }
+
+    pub fn stop_find(&self) {
+        if let Some(h) = self.host() {
+            h.stop_finding(1);
+        }
+        self.shared.borrow_mut().find = None;
+    }
+
+    /// Answer the page's permission ask.
+    pub fn answer_permission(&self, allow: bool) {
+        let ask = self.shared.borrow_mut().permission.take();
+        if let Some(ask) = ask {
+            match ask.kind {
+                AskKind::Prompt(cb) => cb.cont(if allow { PermissionRequestResult::ACCEPT } else { PermissionRequestResult::DENY }),
+                AskKind::Media(cb, perms) => cb.cont(if allow { perms } else { 0 }),
+            }
+        }
     }
 
     /// Send a DevTools protocol command; returns its message id.
