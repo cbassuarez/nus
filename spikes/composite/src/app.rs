@@ -379,6 +379,62 @@ pub struct Hover {
     pub alpha: Anim,
     pub pulse: Anim,
     pub hot: bool,
+    /// When the pointer arrived, for the tooltip's rest.
+    pub since: Instant,
+}
+
+/// A tooltip waiting to be drawn: the icon's rect, the words, when the
+/// pointer settled on it.
+#[derive(Clone, Debug)]
+pub struct Tip {
+    pub anchor: Rect,
+    pub text: String,
+    pub since: Instant,
+}
+
+/// What each icon says when the pointer rests on it. Keys as `hover_key`
+/// makes them; an icon without words shows nothing.
+pub fn tip_for(key: u64) -> Option<&'static str> {
+    let table: &[(&str, usize, &str)] = &[
+        ("winctl", CrumbHit::Close as usize, "close the window"),
+        ("winctl", CrumbHit::Maximize as usize, "maximize"),
+        ("winctl", CrumbHit::Minimize as usize, "minimize"),
+        ("sidebar", 0, "sidebar · ctrl+shift+s"),
+        ("search", 0, "search · ctrl+k"),
+        ("atlas", 0, "atlas · windows and spaces"),
+        ("cluster", CrumbHit::Ports as usize, "ports · ctrl+shift+p"),
+        ("cluster", CrumbHit::Assistant as usize, "ask · ctrl+shift+?"),
+        ("cluster", CrumbHit::Pip as usize, "picture in picture"),
+        ("cluster", CrumbHit::Waiting as usize, "tabs waiting on you"),
+        ("foot", 0, "new tab · ctrl+shift+t"),
+        ("foot", 1, "settings · ctrl+shift+,"),
+        ("foot", 2, "downloads"),
+        ("foot", 3, "recently closed"),
+        ("look", 0, "the look studio"),
+        ("quick", 0, "shuffle the look"),
+        ("quick", 1, "rotate the ramp"),
+        ("quick", 2, "ink · paper"),
+        ("quick", 3, "texture"),
+        ("quick", 4, "reset the look"),
+        ("compact-new", 0, "new tab"),
+        ("compact-settings", 0, "settings"),
+        ("blockchip", 0, "copy this block's output"),
+        ("blockchip", 1, "run this command again"),
+        ("pane", 0, "move · drag onto a tab"),
+        ("pane", 1, "swap the panes"),
+        ("pane", 2, "solo this pane"),
+        ("pane", 3, "to its own tab"),
+        ("pane", 4, "close this pane"),
+        ("pane", 10, "move · drag onto a tab"),
+        ("pane", 11, "swap the panes"),
+        ("pane", 12, "solo this pane"),
+        ("pane", 13, "to its own tab"),
+        ("pane", 14, "close this pane"),
+        ("hatch", 0, "land · ctrl+shift+↓"),
+        ("hatch", 1, "pin"),
+        ("hatch", 2, "hide · esc"),
+    ];
+    table.iter().find(|(n, i, _)| hover_key(n, *i) == key).map(|(_, _, w)| *w)
 }
 
 pub fn hover_key(name: &str, n: usize) -> u64 {
@@ -631,6 +687,8 @@ pub struct App {
     /// When the window was last resized, for the cols × rows overlay.
     pub resized_at: Option<Instant>,
     pub hovers: std::collections::HashMap<u64, Hover>,
+    /// The icon under the pointer this frame, with its words; drawn last.
+    pub tip: Option<Tip>,
     pub look_tab: usize,
     /// The theme's tab-colour rule, read by rules.luau as ctx.tab_colours.
     pub tab_colours: String,
@@ -853,6 +911,7 @@ impl App {
             last_tend: Instant::now(),
             resized_at: None,
             hovers: std::collections::HashMap::new(),
+            tip: None,
             look_tab: 0,
             tab_colours: "family".into(),
             look_menu: false,
@@ -3023,6 +3082,7 @@ impl App {
         }
         self.draw_board_overlay(&mut scene, w, h);
         self.draw_start(&mut scene);
+        self.draw_tip(&mut scene, w, h);
         self.draw_splash(&mut scene);
         self.scene = scene;
     }
@@ -3076,12 +3136,22 @@ impl App {
         let dur_in = self.motion.dur(80.0);
         let dur_out = self.motion.dur(140.0);
         let pulse_dur = self.motion.dur(260.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: Instant::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, if hot { dur_in } else { dur_out });
             if hot {
                 h.pulse.replay(0.0, 1.0, pulse_dur);
+                h.since = Instant::now();
+            }
+        }
+        if hot {
+            let since = h.since;
+            if let Some(words) = tip_for(key) {
+                self.tip = Some(Tip { anchor: hit, text: words.to_string(), since });
+                if since.elapsed().as_millis() < 700 {
+                    self.dirty = true;
+                }
             }
         }
         let a = h.alpha.value();
@@ -3109,6 +3179,36 @@ impl App {
         } else {
             self.fonts.draw_icon_moved(scene, icon, px, x, y + dy, color, angle, scale);
         }
+    }
+
+    /// The tooltip: a ruled caps chip under (or over) the icon, after the
+    /// pointer has rested on it half a second. Cleared every frame; the
+    /// icon that is hot sets it again.
+    pub(crate) fn draw_tip(&mut self, scene: &mut Scene, w: f32, h: f32) {
+        let Some(tip) = self.tip.take() else { return };
+        let age = tip.since.elapsed().as_secs_f32();
+        if age < 0.5 || self.palette.is_some() || self.board.open || self.start.is_some() {
+            return;
+        }
+        let a = ((age - 0.5) / 0.12).clamp(0.0, 1.0);
+        let t = self.theme.clone();
+        let label = self.label();
+        let text = tip.text.caps();
+        let tw = self.fonts.measure(label, &text);
+        let pad_x = self.px(8.0);
+        let ch = self.px(22.0);
+        let cw = tw + pad_x * 2.0;
+        // Below the icon, centred; above when there's no room; kept on screen.
+        let mut x = (tip.anchor.x + tip.anchor.w / 2.0 - cw / 2.0).round();
+        x = x.clamp(self.px(6.0), (w - cw - self.px(6.0)).max(self.px(6.0)));
+        let below = tip.anchor.bottom() + self.px(6.0);
+        let y = if below + ch + self.px(6.0) > h { tip.anchor.y - self.px(6.0) - ch } else { below };
+        let r = Rect::new(x, y, cw, ch);
+        scene.layer(None);
+        scene.rect(Rect::new(r.x + self.px(3.0), r.y + self.px(3.0), r.w, r.h), fade(t.ink, a));
+        scene.rect(r, fade(t.paper, a));
+        scene.outline(r, self.px(m::HAIRLINE), fade(t.ink, a));
+        self.fonts.draw(scene, Style { color: fade(t.ink, a), ..label }, r.x + pad_x, r.y + ch / 2.0 + self.px(m::LABEL_PX) / 2.0 - self.px(2.0), &text);
     }
 
     /// The rail's width right now (0 when off or hidden).
@@ -3531,7 +3631,7 @@ impl App {
         let key = hover_key("look", 0);
         let dur_in = self.motion.dur(160.0);
         let dur_out = self.motion.dur(220.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, if hot { dur_in } else { dur_out });

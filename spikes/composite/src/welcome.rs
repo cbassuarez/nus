@@ -281,7 +281,7 @@ impl App {
                     let hot = b.contains(mx, my);
                     let key = hover_key("welcome", (row_top as i64).unsigned_abs() as usize);
                     let lift = {
-                        let h = self.hovers.entry(key).or_insert_with(|| crate::app::Hover { alpha: crate::anim::Anim::at(0.0), pulse: crate::anim::Anim::at(1.0), hot: false });
+                        let h = self.hovers.entry(key).or_insert_with(|| crate::app::Hover { alpha: crate::anim::Anim::at(0.0), pulse: crate::anim::Anim::at(1.0), hot: false, since: std::time::Instant::now() });
                         if hot != h.hot {
                             h.hot = hot;
                             h.alpha.go(if hot { 1.0 } else { 0.0 }, 120.0);

@@ -1398,7 +1398,7 @@ impl App {
         let (mx, my) = self.mouse;
         let hot = r.contains(mx, my);
         let dur = self.motion.dur(120.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
@@ -1439,7 +1439,7 @@ impl App {
         let (mx, my) = self.mouse;
         let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(6.0)).contains(mx, my);
         let dur = self.motion.dur(140.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
