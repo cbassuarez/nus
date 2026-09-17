@@ -33,18 +33,20 @@ pub enum Act {
     RenameTab,
     Close,
     Scroll(f32),
+    /// GET or REMOVE an optional tool by id.
+    Bundle(String),
 }
 
 /// One row: chord (may be empty), title, what it does, an optional action.
 struct Row {
     chord: String,
-    title: &'static str,
+    title: String,
     what: String,
     act: Option<(&'static str, Act)>,
 }
 
-fn row(chord: impl Into<String>, title: &'static str, what: impl Into<String>, act: Option<(&'static str, Act)>) -> Row {
-    Row { chord: chord.into(), title, what: what.into(), act }
+fn row(chord: impl Into<String>, title: impl Into<String>, what: impl Into<String>, act: Option<(&'static str, Act)>) -> Row {
+    Row { chord: chord.into(), title: title.into(), what: what.into(), act }
 }
 
 /// The platform's chord prefix in words.
@@ -165,8 +167,27 @@ impl App {
             row("F11", "Fullscreen", "the sidebar follows the rule you set for it", None),
         ];
         let _ = (LOOK_PRESETS, RULES);
+        // Optional tools: what the machine could have, fetched on request.
+        use crate::bundles::State;
+        let tools: Vec<Row> = crate::bundles::list()
+            .into_iter()
+            .map(|b| {
+                let state = self.bundle_state(&b);
+                let (status, button): (String, Option<&'static str>) = match &state {
+                    State::Installed => ("installed".into(), Some("REMOVE")),
+                    State::Fetching => ("fetching…".into(), None),
+                    State::Failed(e) => (format!("failed · {e}"), Some("TRY AGAIN")),
+                    State::Soon => ("coming with the first release".into(), None),
+                    State::NoPlatform => ("not for this platform yet".into(), None),
+                    State::Absent => (format!("about {} MB · profile/{}", b.size_mb, if b.into.is_empty() { "—".to_string() } else { b.into.clone() }), Some("GET")),
+                };
+                let what = format!("{} · {}", b.about, status);
+                row(b.kind.to_uppercase(), b.name.clone(), what, button.map(|w| (w, Act::Bundle(b.id.clone()))))
+            })
+            .collect();
         vec![
             ("START HERE", "What's on, what isn't, and where to change it.", start),
+            ("OPTIONAL TOOLS", "Do you want these? Nothing arrives unless you say; each is a folder under profile/ you can delete.", tools),
             ("THE SHELL", "Prompt marks make the shell legible: blocks, jumps, hints, predictions.", shell),
             ("PAGES", "A browser under the same carapace, with the same rules.", pages),
             ("WINDOWS AND TABS", "A window owns its tabs. Everyone knows what a window is.", windows),
@@ -360,6 +381,7 @@ impl App {
             Act::Rename => self.open_palette(PaletteMode::Rename),
             Act::RenameTab => self.open_palette(PaletteMode::RenameTab(self.active)),
             Act::Close => self.dismiss_hints(),
+            Act::Bundle(id) => self.bundle_toggle(&id),
             Act::Scroll(_) => {}
         }
         self.dirty = true;

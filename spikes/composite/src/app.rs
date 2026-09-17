@@ -574,6 +574,8 @@ pub struct App {
     /// Focus mode: no strip, no sidebar, no rows — the panes alone.
     pub focus: bool,
     pub focus_hint: Option<Instant>,
+    /// Optional tools being fetched, and how they ended.
+    pub jobs: crate::bundles::Jobs,
     /// Folders under the tabs: plain ones (saved pages) and live ones.
     pub folders: Vec<crate::folders::Folder>,
     pub next_folder_id: u64,
@@ -781,6 +783,7 @@ impl App {
             containers: crate::containers::load(),
             focus: false,
             focus_hint: None,
+            jobs: crate::bundles::Jobs::new(),
             folders: Vec::new(),
             next_folder_id: 100,
             live: crate::folders::start(),
@@ -1270,6 +1273,7 @@ impl App {
         self.tend_shells();
         self.tend_ask();
         self.tend_scrolling();
+        self.tend_bundles();
         // A held NEW TAB fans the kinds out.
         if let Some((at, SideHit::NewShell)) = self.press {
             if at.elapsed().as_millis() >= 240 && !self.kinds_menu {

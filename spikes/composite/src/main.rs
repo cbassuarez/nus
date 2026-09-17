@@ -20,6 +20,7 @@ mod smear;
 mod syntax;
 mod panes;
 mod scrolling;
+mod bundles;
 mod anim;
 mod app;
 mod browser;

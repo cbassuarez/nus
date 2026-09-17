@@ -1,0 +1,62 @@
+[
+  {
+    "id": "rust-analyzer",
+    "name": "rust-analyzer",
+    "kind": "lsp",
+    "about": "the Rust language server, for the editor pane when it lands",
+    "size_mb": 45,
+    "into": "bin",
+    "platforms": {
+      "windows-x64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-pc-windows-msvc.zip", "unpack": "zip" },
+      "windows-arm64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-aarch64-pc-windows-msvc.zip", "unpack": "zip" },
+      "macos-arm64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-aarch64-apple-darwin.gz", "unpack": "gz", "file": "rust-analyzer" },
+      "macos-x64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-apple-darwin.gz", "unpack": "gz", "file": "rust-analyzer" },
+      "linux-x64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz", "unpack": "gz", "file": "rust-analyzer" }
+    }
+  },
+  {
+    "id": "grammar-rust",
+    "name": "tree-sitter · rust",
+    "kind": "grammar",
+    "about": "Rust colouring for code blocks and files",
+    "size_mb": 2,
+    "into": "grammars/rust",
+    "soon": true
+  },
+  {
+    "id": "grammar-python",
+    "name": "tree-sitter · python",
+    "kind": "grammar",
+    "about": "Python colouring for code blocks and files",
+    "size_mb": 1,
+    "into": "grammars/python",
+    "soon": true
+  },
+  {
+    "id": "grammar-javascript",
+    "name": "tree-sitter · javascript",
+    "kind": "grammar",
+    "about": "JavaScript and TypeScript colouring",
+    "size_mb": 2,
+    "into": "grammars/javascript",
+    "soon": true
+  },
+  {
+    "id": "grammar-json",
+    "name": "tree-sitter · json",
+    "kind": "grammar",
+    "about": "JSON colouring, for output and files",
+    "size_mb": 1,
+    "into": "grammars/json",
+    "soon": true
+  },
+  {
+    "id": "copilot-cli",
+    "name": "GitHub Copilot CLI",
+    "kind": "tool",
+    "about": "an ask backend through gh (needs a Copilot subscription); gh fetches it on first use",
+    "size_mb": 60,
+    "into": "",
+    "command": ["gh", "copilot", "--", "--version"]
+  }
+]

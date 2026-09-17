@@ -513,3 +513,42 @@ first; a global hotkey on the machine swallowed it before winit saw it.)
 **The sidebar drew at 10 fps.** fit() trimmed a character at a time and
 measured every step; it bisects now and widths are cached. 83 fps in a
 debug build.
+
+## Panes, tools, scrolling, conformance (settled 2026-09-17, fourteenth pass)
+
+**Split panes.** Nothing shows until the pointer nears a pane's corner;
+then MOVE (drag onto a sidebar row, or NEW TAB), SWAP, SOLO, TO A TAB,
+CLOSE bloom out of it on a proximity field and fade as it leaves —
+never persistent. The rule between the panes lights as you near it and
+drags; the width is the tab's. TABS · PANE CONTROLS: NEAR or NEVER.
+
+**The caret is Neovide's.** A port of its cursor renderer: four
+critically damped springs, the leading corners fast and the trailing
+ones slow, drawn as one quad. TRAIL is Neovide's trail_size.
+
+**Syntax is tree-sitter.** Bash and PowerShell grammars ride in the
+binary for the prompt line and the ask panel's blocks; any other grammar
+loads from profile/grammars/<name>/ (the library `tree-sitter build`
+makes, plus highlights.scm). LSP waits for an editor pane; the crates
+are lsp-types and lsp-server when it comes.
+
+**Optional tools.** The welcome page's OPTIONAL TOOLS section is the
+first boot's question: language servers, grammars, assistant CLIs,
+each fetched only on GET (curl, then unzip/gunzip into profile/), each
+a folder you can delete. assets/bundles.json is the list;
+profile/bundles.json adds to it. Grammar bundles wait on the release
+pipeline that builds them.
+
+**Scrolling.** The shell scrolls on neoscroll's curves — a line at a
+time on an eased clock, more ticks extending the trip; Shift+PgUp/
+PgDn and Ctrl+Shift+Home/End ride the same curve. Pages keep
+Chromium's smooth scrolling, switchable.
+
+**Conformance.** TERM=xterm-256color, COLORTERM=truecolor,
+TERM_PROGRAM=nus; DA1/DA2; XTVERSION answers `nus <version>`;
+XTGETTCAP answers TN, RGB/Tc, colors, setrgbf/b, Ms, Ss/Se, Smulx and
+refuses the rest; OSC 8, 52, 133, 7, 9;4, 1337; the kitty keyboard
+protocol; synchronized output (2026); bracketed paste; focus events.
+Not claimed: sixel (DA1 omits 4). Next for adoption: a terminfo entry
+(`nus`) shipped and TERM=nus once tools know it, vttest/esctest runs,
+and a `nus` CLI (open a URL or a file, `nus ask`).
