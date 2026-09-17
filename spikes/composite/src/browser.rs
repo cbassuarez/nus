@@ -36,6 +36,8 @@ pub struct Shared {
     /// A page asked for a new window (target=_blank, window.open); the app
     /// opens it as a tab in this tab's stack.
     pub popup: Option<String>,
+    /// The link under the pointer (Chromium's status message), for peeks.
+    pub hover_url: String,
     pub created: Created,
     /// Results of CDP calls made with `devtools`, by message id; the app
     /// drains the ones it asked for.
@@ -412,6 +414,10 @@ wrap_display_handler! {
             if let Some(t) = title {
                 self.d.shared.borrow_mut().title = t.to_string();
             }
+        }
+
+        fn on_status_message(&self, _browser: Option<&mut Browser>, value: Option<&CefString>) {
+            self.d.shared.borrow_mut().hover_url = value.map(|v| v.to_string()).unwrap_or_default();
         }
 
         fn on_address_change(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {

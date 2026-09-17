@@ -303,9 +303,9 @@ impl App {
             }
             _ => None,
         };
-        let index_of = |id: u64| self.tabs.iter().position(|t| t.id == id);
-        let tabs: Vec<SavedTab> = self
-            .tabs
+        let listed: Vec<&crate::app::Tab> = self.tabs.iter().filter(|t| t.peek.is_none()).collect();
+        let index_of = |id: u64| listed.iter().position(|t| t.id == id);
+        let tabs: Vec<SavedTab> = listed
             .iter()
             .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex) })
             .filter(|t| t.left.is_some())

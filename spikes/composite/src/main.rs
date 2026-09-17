@@ -10,6 +10,7 @@ mod welcome;
 mod themes;
 mod windows;
 mod tiles;
+mod peek;
 mod anim;
 mod app;
 mod browser;

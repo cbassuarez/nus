@@ -68,6 +68,7 @@ pub enum Action {
     Tile,
     Untile,
     TileSwap,
+    KeepPeek,
     ColourTab(usize, Option<nus_render::Color>),
 }
 
@@ -365,6 +366,8 @@ pub struct Tab {
     pub emoji: Option<String>,
     /// A colour the user chose; it beats the rules' and survives a theme.
     pub tint: Option<nus_render::Color>,
+    /// A peek: a floating page over the tab with this id; not in the sidebar.
+    pub peek: Option<u64>,
     /// Colours the rules gave this tab.
     pub look: Overrides,
 }
@@ -506,6 +509,7 @@ pub struct App {
     pub tile_drag: Option<crate::tiles::Divider>,
     /// The pointer is a resize arrow over a divider.
     pub resize_cursor: Option<crate::tiles::Divider>,
+    pub peek_anim: Anim,
     /// A right-click asked for a paste; answered in tick.
     pub paste_request: bool,
     /// Downloads list in the footer.
@@ -700,6 +704,7 @@ impl App {
             tiling: None,
             tile_drag: None,
             resize_cursor: None,
+            peek_anim: Anim::at(0.0),
             drag: None,
             drag_armed: None,
             paste_request: false,
@@ -1027,10 +1032,24 @@ impl App {
         if self.resize_due.is_none() {
             self.resize_due = Some(Instant::now() + std::time::Duration::from_millis(80));
         }
-        if self.layout_tiles() {
+        if self.layout_tiles() || self.layout_peek() {
             return;
         }
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let _ = (split_w, rule, header, pad_x, pad_y, scale, narrow);
+        let active = self.active;
+        self.layout_tab(active, c);
+    }
+
+    /// Lay tab `i` out in `c`: its pane, or its two panes with the split.
+    pub(crate) fn layout_tab(&mut self, i: usize, c: Rect) {
+        let split_w = self.px(m::SPLIT);
+        let rule = self.px(m::STRUCTURE);
+        let header = self.header_h();
+        let pad_x = self.px(18.0);
+        let pad_y = self.px(16.0);
+        let scale = self.scale;
+        let narrow = self.width_class() == Width::Narrow;
+        let Some(tab) = self.tabs.get_mut(i) else { return };
         let off = Rect::new(-4.0 * c.w - c.x, c.y, c.w, c.h);
         let (left_rect, right_rect) = if tab.right.is_some() && narrow {
             // No split below 900px: the focused pane takes the content, the
@@ -2467,7 +2486,7 @@ impl App {
         let has_right = self.tabs[active].right.is_some();
         // Split rule.
         let narrow = self.width_class() == Width::Narrow;
-        let tiled = self.draw_tiling(&mut scene);
+        let tiled = self.draw_tiling(&mut scene) || self.draw_peek(&mut scene);
         if has_right && !narrow && !tiled {
             let r = match &self.tabs[active].right {
                 Some(Pane::Term(p)) => p.rect,
@@ -2842,7 +2861,7 @@ impl App {
         let mut y = sb.y + space_row + pinned_h;
         let mut rows = Vec::new();
         for i in 0..self.tabs.len() {
-            if self.tabs[i].pinned {
+            if self.tabs[i].pinned || self.tabs[i].peek.is_some() {
                 continue;
             }
             let hidden = !self.row_visible(i);
@@ -4338,12 +4357,13 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 15] = [
+                let actions: [(String, Action); 16] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
                     (format!("tile the selected tabs · {} with rows selected", key("D", true)), Action::Tile),
                     ("untile · one tab in the content again".to_string(), Action::Untile),
+                    ("keep the peek · CTRL+ENTER · into the stack".to_string(), Action::KeepPeek),
                     ("swap tiles · CTRL+ALT+SHIFT+→".to_string(), Action::TileSwap),
                     (format!("close tab · {}", key("W", true)), Action::CloseTab),
                     (format!("sidebar · {}", key("S", true)), Action::ToggleSidebar),
@@ -4497,6 +4517,7 @@ impl App {
             Action::NewWindow => self.new_window_request = true,
             Action::Welcome => self.open_welcome(),
             Action::FoldAll => self.fold_all(),
+            Action::KeepPeek => self.keep_peek(),
             Action::Tile => self.tile_selected(),
             Action::Untile => self.untile(),
             Action::TileSwap => self.tile_swap(1),
@@ -4674,6 +4695,15 @@ impl App {
         }
         if pressed && code == Some(KeyCode::KeyN) && ctrl && !shift && self.palette.is_none() {
             return self.run(Action::NewWindow);
+        }
+        // A peek: Esc closes it, Ctrl+Enter keeps it.
+        if pressed && self.peeking().is_some() && self.palette.is_none() {
+            if code == Some(KeyCode::Escape) && !ctrl && !shift {
+                return self.close_peek();
+            }
+            if code == Some(KeyCode::Enter) && ctrl && !shift {
+                return self.keep_peek();
+            }
         }
         // Tiles: Ctrl+Alt+arrows walk them, with Shift they swap.
         if pressed && ctrl && alt && self.tiling_shown() {
@@ -4946,11 +4976,11 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let look = self.look_for(&left, None);
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, look }
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, peek: None, look }
     }
 
     /// Ask the rules what a new tab looks like.
-    fn look_for(&self, left: &Pane, parent: Option<&Overrides>) -> Overrides {
+    pub(crate) fn look_for(&self, left: &Pane, parent: Option<&Overrides>) -> Overrides {
         let (kind, profile) = match left {
             Pane::Term(t) => ("terminal", self.profiles.get(t.profile).map(|p| p.name.as_str()).unwrap_or("")),
             Pane::Web(_) => ("page", ""),
@@ -5818,6 +5848,31 @@ impl App {
             return;
         }
 
+        // Peek: Alt+click on a link floats it; a click on the scrim closes.
+        if pressed && button == MouseButton::Left {
+            if let Some((_, _)) = self.peeking() {
+                if !self.peek_rect().contains(x, y) && self.content_rect().contains(x, y) {
+                    self.close_peek();
+                    return;
+                }
+            } else if self.mods.alt_key() {
+                let active = self.active;
+                let link = self.tabs.get(active).and_then(|t| {
+                    let p = if t.focus_right && t.right.is_some() { t.right.as_ref().unwrap() } else { &t.left };
+                    match p {
+                        Pane::Web(w) if w.page.contains(x, y) => {
+                            let u = w.tab.shared.borrow().hover_url.clone();
+                            if u.starts_with("http") { Some(u) } else { None }
+                        }
+                        _ => None,
+                    }
+                });
+                if let Some(u) = link {
+                    self.open_peek(active, &u);
+                    return;
+                }
+            }
+        }
         // Tiles: grab a divider, or focus the tile under the pointer.
         if pressed && button == MouseButton::Left {
             if let Some(d) = self.divider_at(x, y) {

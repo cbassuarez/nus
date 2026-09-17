@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use nus_render::text::Style;
-use nus_render::{Rect, Scene, Theme};
+use nus_render::{Rect, Scene};
 use winit::event::{ElementState, MouseButton};
 
 use crate::app::{fade, hover_key, App, IconMotion, Pane, TermPane};
