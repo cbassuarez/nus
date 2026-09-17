@@ -182,6 +182,9 @@ pub struct TermPane {
     /// the last cell it heard about, so motion reports once per cell.
     pub mouse_held: Option<nus_vt::input::MouseButton>,
     pub mouse_last: Option<(usize, usize)>,
+    /// The prompt line's language server, once tried.
+    pub plsp: Option<crate::prompt_lsp::LineLsp>,
+    pub plsp_tried: bool,
     pub chip_hits: Vec<(Rect, usize)>,
     pub hover_block: u64,
     /// Terminal images as textures, by image id; rebuilt when the term's
@@ -644,6 +647,8 @@ pub struct App {
     pub start: Option<crate::start::Start>,
     pub splash: Option<crate::splash::Splash>,
     pub start_shown: bool,
+    /// NUS_TYPE: text typed into the first shell once it has a prompt (a test hook).
+    pub typed_once: bool,
     pub last_session: Option<crate::start::Session>,
     pub recent: Vec<crate::start::Recent>,
     /// Signature of the last saved session, to save only on change.
@@ -880,6 +885,7 @@ impl App {
             palette: None,
             palette_sel: 0,
             profiles: nus_pty::Profile::discover(),
+            typed_once: false,
             mru: vec![0],
             selected: Default::default(),
             closed: Vec::new(),
@@ -898,7 +904,9 @@ impl App {
         // A second window: one shell, no splash, no session restore, no name.
         let onboarded = App::onboarded();
         let split = !secondary && onboarded;
-        let term = app.new_term_pane(split, 0)?;
+        // NUS_SHELL=<profile name> picks the first shell (a test hook).
+        let first = std::env::var("NUS_SHELL").ok().and_then(|n| app.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(&n))).unwrap_or(0);
+        let term = app.new_term_pane(split, first)?;
         let right = if secondary || !onboarded {
             None
         } else {
@@ -998,6 +1006,8 @@ impl App {
             scroll_drag: false,
             mouse_held: None,
             mouse_last: None,
+            plsp: None,
+            plsp_tried: false,
             chip_hits: Vec::new(),
             hover_block: 0,
             image_tex: std::collections::HashMap::new(),
@@ -1251,6 +1261,27 @@ impl App {
         self.drain_popups();
         self.poll_lsp();
         self.editor_tick();
+        self.prompt_lsp_tick();
+        // NUS_TYPE="text" types into the first shell at its first prompt;
+        // NUS_SHELL=<profile> picks which shell the first tab runs.
+        if !self.typed_once {
+            if let Ok(text) = std::env::var("NUS_TYPE") {
+                let text = text.replace("\n", "\r");
+                // The first shell at a prompt, brought to the front.
+                let at = self.tabs.iter().position(|t| matches!(&t.left, Pane::Term(t) if t.term.at_prompt()));
+                if let Some(i) = at {
+                    if i != self.active {
+                        self.activate(i);
+                    }
+                    if let Some(Pane::Term(t)) = self.tabs.get_mut(i).map(|t| &mut t.left) {
+                        let _ = t.pty.write(text.as_bytes());
+                    }
+                    self.typed_once = true;
+                }
+            } else {
+                self.typed_once = true;
+            }
+        }
         self.apply_boosts();
         self.poll_reader();
         self.sync_favicons();
@@ -5126,6 +5157,9 @@ impl App {
             return;
         }
         if self.term_mode_key(ev) {
+            return;
+        }
+        if self.prompt_lsp_key(ev) {
             return;
         }
         if self.ask_key(ev) {

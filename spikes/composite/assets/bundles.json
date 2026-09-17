@@ -3,7 +3,7 @@
     "id": "rust-analyzer",
     "name": "rust-analyzer",
     "kind": "lsp",
-    "about": "the Rust language server, for the editor pane when it lands",
+    "about": "the Rust language server: hover, completion, diagnostics, go to definition, format on save",
     "size_mb": 45,
     "into": "bin",
     "platforms": {
@@ -15,40 +15,101 @@
     }
   },
   {
-    "id": "grammar-rust",
-    "name": "tree-sitter · rust",
-    "kind": "grammar",
-    "about": "Rust colouring for code blocks and files",
-    "size_mb": 2,
-    "into": "grammars/rust",
-    "soon": true
+    "id": "powershell-editor-services",
+    "name": "PowerShell Editor Services",
+    "kind": "lsp",
+    "about": "the PowerShell language server, for .ps1 files and the PowerShell prompt line",
+    "size_mb": 30,
+    "into": "bin/pses",
+    "platforms": {
+      "windows-x64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
+      "windows-arm64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
+      "macos-arm64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
+      "macos-x64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
+      "linux-x64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" }
+    }
   },
   {
-    "id": "grammar-python",
-    "name": "tree-sitter · python",
-    "kind": "grammar",
-    "about": "Python colouring for code blocks and files",
-    "size_mb": 1,
-    "into": "grammars/python",
-    "soon": true
+    "id": "bash-language-server",
+    "name": "bash-language-server",
+    "kind": "lsp",
+    "about": "the shell language server, for .sh files and the bash/zsh prompt line · through npm",
+    "size_mb": 20,
+    "into": "",
+    "command": ["npm", "install", "-g", "bash-language-server"]
   },
   {
-    "id": "grammar-javascript",
-    "name": "tree-sitter · javascript",
-    "kind": "grammar",
-    "about": "JavaScript and TypeScript colouring",
-    "size_mb": 2,
-    "into": "grammars/javascript",
-    "soon": true
+    "id": "typescript-language-server",
+    "name": "typescript-language-server",
+    "kind": "lsp",
+    "about": "TypeScript and JavaScript · through npm",
+    "size_mb": 60,
+    "into": "",
+    "command": ["npm", "install", "-g", "typescript", "typescript-language-server"]
   },
   {
-    "id": "grammar-json",
-    "name": "tree-sitter · json",
-    "kind": "grammar",
-    "about": "JSON colouring, for output and files",
-    "size_mb": 1,
-    "into": "grammars/json",
-    "soon": true
+    "id": "pyright",
+    "name": "pyright",
+    "kind": "lsp",
+    "about": "the Python language server · through npm",
+    "size_mb": 30,
+    "into": "",
+    "command": ["npm", "install", "-g", "pyright"]
+  },
+  {
+    "id": "vscode-langservers",
+    "name": "json · css · html servers",
+    "kind": "lsp",
+    "about": "the servers VS Code ships for JSON, CSS and HTML · through npm",
+    "size_mb": 25,
+    "into": "",
+    "command": ["npm", "install", "-g", "vscode-langservers-extracted"]
+  },
+  {
+    "id": "yaml-language-server",
+    "name": "yaml-language-server",
+    "kind": "lsp",
+    "about": "YAML, with schemas · through npm",
+    "size_mb": 15,
+    "into": "",
+    "command": ["npm", "install", "-g", "yaml-language-server"]
+  },
+  {
+    "id": "gopls",
+    "name": "gopls",
+    "kind": "lsp",
+    "about": "the Go language server · through go install",
+    "size_mb": 30,
+    "into": "",
+    "command": ["go", "install", "golang.org/x/tools/gopls@latest"]
+  },
+  {
+    "id": "taplo",
+    "name": "taplo",
+    "kind": "lsp",
+    "about": "the TOML language server",
+    "size_mb": 8,
+    "into": "bin",
+    "platforms": {
+      "windows-x64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-windows-x86_64.zip", "unpack": "zip" },
+      "macos-arm64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-darwin-aarch64.gz", "unpack": "gz", "file": "taplo" },
+      "macos-x64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-darwin-x86_64.gz", "unpack": "gz", "file": "taplo" },
+      "linux-x64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-linux-x86_64.gz", "unpack": "gz", "file": "taplo" }
+    }
+  },
+  {
+    "id": "marksman",
+    "name": "marksman",
+    "kind": "lsp",
+    "about": "the Markdown language server: links, headings, references",
+    "size_mb": 40,
+    "into": "bin",
+    "platforms": {
+      "windows-x64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman.exe", "unpack": "none", "file": "marksman.exe" },
+      "macos-arm64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-macos", "unpack": "none", "file": "marksman" },
+      "macos-x64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-macos", "unpack": "none", "file": "marksman" },
+      "linux-x64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-linux-x64", "unpack": "none", "file": "marksman" }
+    }
   },
   {
     "id": "copilot-cli",

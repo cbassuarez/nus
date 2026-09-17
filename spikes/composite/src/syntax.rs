@@ -73,6 +73,13 @@ fn load(name: &str) -> Option<Loaded> {
     let built_in = match name {
         "bash" | "sh" | "zsh" | "shell" => Some((Language::new(tree_sitter_bash::LANGUAGE), "bash", tree_sitter_bash::HIGHLIGHT_QUERY, "", "")),
         "powershell" | "pwsh" | "ps1" => Some((Language::new(tree_sitter_powershell::LANGUAGE), "powershell", tree_sitter_powershell::HIGHLIGHTS_QUERY, "", "")),
+        "rust" => Some((Language::new(tree_sitter_rust::LANGUAGE), "rust", tree_sitter_rust::HIGHLIGHTS_QUERY, tree_sitter_rust::INJECTIONS_QUERY, "")),
+        "python" => Some((Language::new(tree_sitter_python::LANGUAGE), "python", tree_sitter_python::HIGHLIGHTS_QUERY, "", "")),
+        "javascript" | "js" => Some((Language::new(tree_sitter_javascript::LANGUAGE), "javascript", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::INJECTIONS_QUERY, tree_sitter_javascript::LOCALS_QUERY)),
+        "typescript" | "ts" => Some((Language::new(tree_sitter_typescript::LANGUAGE_TYPESCRIPT), "typescript", tree_sitter_typescript::HIGHLIGHTS_QUERY, "", tree_sitter_typescript::LOCALS_QUERY)),
+        "json" => Some((Language::new(tree_sitter_json::LANGUAGE), "json", tree_sitter_json::HIGHLIGHTS_QUERY, "", "")),
+        "go" => Some((Language::new(tree_sitter_go::LANGUAGE), "go", tree_sitter_go::HIGHLIGHTS_QUERY, "", "")),
+        "toml" => Some((Language::new(tree_sitter_toml_ng::LANGUAGE), "toml", tree_sitter_toml_ng::HIGHLIGHTS_QUERY, "", "")),
         _ => None,
     };
     if let Some((language, n, hl, inj, loc)) = built_in {
@@ -104,7 +111,7 @@ pub fn has(name: &str) -> bool {
 /// The grammars available: the built-in two plus every folder in
 /// profile/grammars that loads.
 pub fn available() -> Vec<String> {
-    let mut v = vec!["bash".to_string(), "powershell".to_string()];
+    let mut v: Vec<String> = ["bash", "powershell", "rust", "python", "javascript", "typescript", "json", "go", "toml"].iter().map(|s| s.to_string()).collect();
     if let Ok(rd) = std::fs::read_dir(grammars_dir()) {
         for e in rd.flatten() {
             if e.path().is_dir() {

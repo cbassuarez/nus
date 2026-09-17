@@ -146,7 +146,7 @@ impl TermPane {
 impl App {
     /// Colour the command line's tokens and draw the ghost prediction.
     pub(crate) fn draw_prompt_line(&mut self, scene: &mut Scene, p: &TermPane, paper: nus_render::Color) {
-        if !self.behavior.shell_integration || (!self.behavior.highlight && !self.behavior.predict) {
+        if !self.behavior.shell_integration || (!self.behavior.highlight && !self.behavior.predict && self.behavior.prompt_lsp == crate::settings::PromptLsp::Off) {
             return;
         }
         let Some((col0, typed)) = p.typed() else { return };
@@ -183,6 +183,7 @@ impl App {
                 self.fonts.draw(scene, Style { font, px, color, tracking: 0.0 }, x, base, &text);
             }
         }
+        let mut history_ghost = false;
         if self.behavior.predict {
             if let Some(rest) = p.prediction() {
                 let x = p.origin.0 + cur.col as f32 * cw;
@@ -190,9 +191,11 @@ impl App {
                 let rest: String = rest.chars().take(cols_left).collect();
                 if !rest.is_empty() {
                     self.fonts.draw(scene, Style { font, px, color: fade(t.ink, 0.38), tracking: 0.0 }, x, base, &rest);
+                    history_ghost = true;
                 }
             }
         }
+        self.draw_prompt_lsp(scene, p, col0, &typed, history_ghost);
     }
 
     /// Right or End at the end of the line accepts the prediction. Returns

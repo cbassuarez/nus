@@ -22,6 +22,18 @@ pub enum Links {
     NewTab,
 }
 
+/// How loud the prompt line's language server is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum PromptLsp {
+    Off,
+    /// A dotted underline for a diagnostic, hover for the message;
+    /// completions ride the ghost and Tab accepts.
+    #[default]
+    Quiet,
+    /// A small completion list under the caret.
+    Menu,
+}
+
 /// Where a URL typed at a prompt goes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum PromptUrl {
@@ -204,6 +216,9 @@ pub struct Behavior {
     /// The editor formats through the language server on Ctrl+S.
     #[serde(default = "default_true")]
     pub format_on_save: bool,
+    /// The prompt line's language server: quiet, a menu, or off.
+    #[serde(default)]
+    pub prompt_lsp: PromptLsp,
     /// Ghost the history entry that continues what's typed; Right/End accepts.
     #[serde(default = "default_true")]
     pub predict: bool,
@@ -322,6 +337,7 @@ impl Default for Behavior {
             shell_integration: true,
             highlight: true,
             format_on_save: true,
+            prompt_lsp: PromptLsp::Quiet,
             predict: true,
             block_content: true,
             sleep_after_min: 30,
@@ -438,6 +454,8 @@ pub enum Hit {
     MiddlePaste(bool),
     Osc52(Osc52),
     Predict(bool),
+    PromptLsp(PromptLsp),
+    FormatOnSave(bool),
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
     HdrDateline(bool),
@@ -706,6 +724,8 @@ impl App {
             Hit::MiddlePaste(b) => if b { "middle click pastes".into() } else { "middle click does nothing".into() },
             Hit::Osc52(o) => format!("osc 52 {:?}", o).to_lowercase(),
             Hit::Predict(b) => if b { "predictions on".into() } else { "predictions off".into() },
+            Hit::PromptLsp(m) => match m { PromptLsp::Quiet => "prompt lsp quiet".into(), PromptLsp::Menu => "prompt lsp menu".into(), PromptLsp::Off => "prompt lsp off".into() },
+            Hit::FormatOnSave(b) => if b { "format on save".into() } else { "save as is".into() },
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
             Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
             Hit::HdrDateline(b) => if b { "dateline on".into() } else { "dateline off".into() },
@@ -1002,6 +1022,8 @@ impl App {
             Hit::MiddlePaste(b) => self.behavior.middle_paste = b,
             Hit::Osc52(o) => self.behavior.osc52 = o,
             Hit::Predict(b) => self.behavior.predict = b,
+            Hit::PromptLsp(m) => self.behavior.prompt_lsp = m,
+            Hit::FormatOnSave(b) => self.behavior.format_on_save = b,
             Hit::HdrStyle(s) => {
                 self.header.style = s;
                 if s == HeaderStyle::Rail && self.header.style != s {
@@ -1989,6 +2011,20 @@ impl App {
                     Choice(vec![("HIGHLIGHT".into(), Hit::Highlight(!self.behavior.highlight), self.behavior.highlight), ("PREDICT".into(), Hit::Predict(!self.behavior.predict), self.behavior.predict)]),
                 ));
                 v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens coloured as you type; the history entry that continues your line ghosts after the caret, Right or End accepts".into())));
+                let pl = self.behavior.prompt_lsp;
+                v.insert(3, (
+                    "PROMPT LSP".into(),
+                    Choice(vec![
+                        ("QUIET".into(), Hit::PromptLsp(PromptLsp::Quiet), pl == PromptLsp::Quiet),
+                        ("MENU".into(), Hit::PromptLsp(PromptLsp::Menu), pl == PromptLsp::Menu),
+                        ("OFF".into(), Hit::PromptLsp(PromptLsp::Off), pl == PromptLsp::Off),
+                    ]),
+                ));
+                v.insert(4, ("".into(), Info("bash-language-server or PowerShell Editor Services (GET them on the welcome page) read the line as you type: quiet underlines a problem and ghosts a completion, Tab accepts; menu lists them under the caret".into())));
+                v.insert(5, (
+                    "EDITOR".into(),
+                    Choice(vec![("FORMAT ON SAVE".into(), Hit::FormatOnSave(!self.behavior.format_on_save), self.behavior.format_on_save)]),
+                ));
                 v.insert(3, (
                     "CLIPBOARD".into(),
                     Choice(vec![

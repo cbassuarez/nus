@@ -447,6 +447,8 @@ pub enum Pending {
     Completion { uri: Url },
     Definition { uri: Url },
     Format { uri: Url, then_save: bool },
+    /// A completion for a shell's prompt line.
+    PromptCompletion { uri: Url },
 }
 
 pub struct Find {
@@ -2076,9 +2078,15 @@ pub fn buffer_with<'a>(
     tab: &'a mut crate::app::Tab,
     uri: &Url,
 ) -> Option<(&'a mut EditorPane, usize)> {
+    // Servers spell file URIs their own way (`c%3A` for `C:`, case), so
+    // match on the path, not the string.
+    let want = uri.to_file_path().ok().map(|p| p.to_string_lossy().to_lowercase());
     for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
         if let Pane::Editor(e) = p {
-            if let Some(i) = e.buffers.iter().position(|b| b.uri.as_ref() == Some(uri)) {
+            if let Some(i) = e.buffers.iter().position(|b| {
+                b.uri.as_ref() == Some(uri)
+                    || (want.is_some() && b.path.as_ref().map(|p| p.to_string_lossy().to_lowercase()) == want)
+            }) {
                 return Some((e, i));
             }
         }

@@ -35,10 +35,25 @@ pub struct Servers {
 
 /// Where the profile's fetched tools live.
 pub fn bin_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join("profile")
-        .join("bin")
+    std::env::current_dir().unwrap_or_default().join("profile").join("bin")
+}
+
+/// PowerShell Editor Services: the bundle unzips to bin/pses; the server
+/// is its Start-EditorServices.ps1 run by pwsh (or Windows PowerShell).
+fn pses_launch() -> Option<(PathBuf, Vec<String>)> {
+    let dir = bin_dir().join("pses");
+    let script = ["PowerShellEditorServices/Start-EditorServices.ps1", "Start-EditorServices.ps1"].iter().map(|s| dir.join(s)).find(|p| p.is_file())?;
+    let host = nus_lsp::registry::resolve("pwsh", None).or_else(|| nus_lsp::registry::resolve("powershell", None))?;
+    let profile = std::env::current_dir().unwrap_or_default().join("profile");
+    let args: Vec<String> = [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", &script.display().to_string(),
+        "-Stdio", "-HostName", "nus", "-HostProfileId", "nus", "-HostVersion", env!("CARGO_PKG_VERSION"),
+        "-BundledModulesPath", &dir.display().to_string(),
+        "-LogPath", &profile.join("pses.log").display().to_string(),
+        "-SessionDetailsPath", &profile.join("pses-session.json").display().to_string(),
+        "-LogLevel", "Warning",
+    ].iter().map(|s| s.to_string()).collect();
+    Some((host, args))
 }
 
 impl App {
@@ -46,6 +61,13 @@ impl App {
     fn lsp_key_for(&mut self, path: &Path) -> Option<String> {
         let server = nus_lsp::registry::server_for(path)?;
         let root = nus_lsp::registry::root_for(server, path);
+        self.lsp_key_for_server(server, &root, false)
+    }
+
+    /// The key for `server` at `root`, spawning it on first use. `quiet`
+    /// keeps a missing server out of the notices (the prompt line asks
+    /// every shell).
+    pub(crate) fn lsp_key_for_server(&mut self, server: &nus_lsp::registry::Server, root: &Path, quiet: bool) -> Option<String> {
         let key = format!("{}@{}", server.command, root.display());
         if self.lsp.map.contains_key(&key) {
             return Some(key);
@@ -53,38 +75,41 @@ impl App {
         if self.lsp.failed.contains_key(&key) {
             return None;
         }
-        let Some(bin) = nus_lsp::registry::resolve(server.command, Some(&bin_dir())) else {
-            self.lsp.failed.insert(
-                key.clone(),
-                format!(
-                    "{} not installed · GET it on the welcome page",
-                    server.command
-                ),
-            );
-            self.notice(&format!(
-                "{} not installed · GET it on the welcome page",
-                server.command
-            ));
-            return None;
+        let missing = format!("{} not installed · GET it on the welcome page", server.command);
+        let (bin, args): (PathBuf, Vec<String>) = if server.command == "powershell-editor-services" {
+            // A script, not a binary: Start-EditorServices.ps1 through pwsh.
+            match pses_launch() {
+                Some(v) => v,
+                None => {
+                    self.lsp.failed.insert(key.clone(), missing.clone());
+                    if !quiet {
+                        self.notice(&missing);
+                    }
+                    return None;
+                }
+            }
+        } else {
+            match nus_lsp::registry::resolve(server.command, Some(&bin_dir())) {
+                Some(bin) => (bin, server.args.iter().map(|s| s.to_string()).collect()),
+                None => {
+                    self.lsp.failed.insert(key.clone(), missing.clone());
+                    if !quiet {
+                        self.notice(&missing);
+                    }
+                    return None;
+                }
+            }
         };
-        let args: Vec<String> = server.args.iter().map(|s| s.to_string()).collect();
-        match Client::spawn(server.command, &bin, &args, &root) {
+        match Client::spawn(server.command, &bin, &args, root) {
             Ok((client, rx)) => {
-                self.lsp.map.insert(
-                    key.clone(),
-                    Server {
-                        client,
-                        rx,
-                        status: "starting".into(),
-                        log: Vec::new(),
-                        gone: false,
-                    },
-                );
+                self.lsp.map.insert(key.clone(), Server { client, rx, status: "starting".into(), log: Vec::new(), gone: false });
                 Some(key)
             }
             Err(e) => {
                 self.lsp.failed.insert(key.clone(), e.to_string());
-                self.notice(&format!("{}: {e}", server.command));
+                if !quiet {
+                    self.notice(&format!("{}: {e}", server.command));
+                }
                 None
             }
         }
@@ -351,6 +376,9 @@ impl App {
                         self.lsp_open_all(&key);
                     }
                     Event::Diagnostics(p) => {
+                        if self.prompt_lsp_diags(&p.uri, p.diagnostics.clone()) {
+                            continue;
+                        }
                         for tab in &mut self.tabs {
                             if let Some((e, i)) = buffer_with(tab, &p.uri) {
                                 e.buffers[i].diags = p.diagnostics.clone();
@@ -497,18 +525,23 @@ impl App {
         let result = match result {
             Ok(v) => v,
             Err(e) => {
-                if let Pending::Format {
-                    then_save: true, ..
-                } = p
-                {
-                    self.editor_write();
-                } else {
-                    self.notice(&format!("server: {e}"));
+                match p {
+                    Pending::Format { then_save: true, .. } => self.editor_write(),
+                    Pending::PromptCompletion { .. } => {}
+                    _ => self.notice(&format!("server: {e}")),
                 }
                 return;
             }
         };
         match p {
+            Pending::PromptCompletion { uri } => {
+                let items: Vec<lt::CompletionItem> = match Client::parse::<lt::CompletionResponse>(result) {
+                    Some(lt::CompletionResponse::Array(a)) => a,
+                    Some(lt::CompletionResponse::List(l)) => l.items,
+                    None => Vec::new(),
+                };
+                self.prompt_lsp_items(&uri, items);
+            }
             Pending::Hover { uri, at } => {
                 let Some(h): Option<lt::Hover> = Client::parse(result) else {
                     return;

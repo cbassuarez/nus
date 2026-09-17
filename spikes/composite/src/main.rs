@@ -23,6 +23,7 @@ mod scrolling;
 mod bundles;
 mod editor;
 mod lsp_host;
+mod prompt_lsp;
 mod anim;
 mod app;
 mod browser;

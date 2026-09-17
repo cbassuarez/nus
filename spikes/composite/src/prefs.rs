@@ -55,6 +55,12 @@ impl App {
         if let Some(b) = p.behavior {
             self.behavior = b;
         }
+        // NUS_SHELL=<profile name> picks the shell new tabs run (a test hook).
+        if let Ok(name) = std::env::var("NUS_SHELL") {
+            if let Some(i) = self.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(&name)) {
+                self.behavior.default_profile = i;
+            }
+        }
         if let Some(p) = p.sidebar_pinned {
             self.sidebar = p;
         }

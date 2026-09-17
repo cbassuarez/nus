@@ -229,6 +229,23 @@ impl Profile {
                     env: Vec::new(),
                 });
             }
+            // Git for Windows brings a bash; offer it when it's there.
+            for dir in [
+                r"C:\Program Files\Git\bin",
+                r"C:\Program Files (x86)\Git\bin",
+            ] {
+                let bash = std::path::Path::new(dir).join("bash.exe");
+                if bash.is_file() {
+                    out.push(Profile {
+                        name: "git bash".into(),
+                        program: bash.display().to_string(),
+                        args: vec!["--login".into(), "-i".into()],
+                        cwd: None,
+                        env: Vec::new(),
+                    });
+                    break;
+                }
+            }
             if let Ok(o) = std::process::Command::new("wsl.exe")
                 .args(["-l", "-q"])
                 .output()
