@@ -112,7 +112,7 @@ fn talks_to_a_server() {
         caps.hover_provider,
         Some(HoverProviderCapability::Simple(true))
     );
-    client.initialized(caps);
+    client.initialized(*caps);
     assert!(client.is_ready());
 
     let uri = Url::from_file_path(root.join("x.rs")).unwrap();

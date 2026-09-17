@@ -30,7 +30,7 @@ pub type RequestId = i64;
 #[derive(Debug)]
 pub enum Event {
     /// `initialize` answered; the server is ready for documents.
-    Initialized(ServerCapabilities),
+    Initialized(Box<ServerCapabilities>),
     /// The answer to one of our requests: the method we sent, and its
     /// result or the server's error.
     Response {
@@ -605,7 +605,7 @@ fn handle_incoming(
                     .cloned()
                     .and_then(|c| serde_json::from_value(c).ok())
                     .unwrap_or_default();
-                let _ = ev.send(Event::Initialized(caps));
+                let _ = ev.send(Event::Initialized(Box::new(caps)));
                 return;
             }
             let result = match msg.get("error") {
