@@ -330,7 +330,7 @@ impl Gpu {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Rows are padded to 256 bytes for the copy.
-        let stride = (w * 4 + 255) / 256 * 256;
+        let stride = (w * 4).div_ceil(256) * 256;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("snapshot readback"),
             size: (stride * h) as u64,
