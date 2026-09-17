@@ -99,11 +99,20 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
   passing through; termui tests cover hint scanning and labels;
   predict tests cover token classes.
 
+- **Container contexts.** `request_context_create_context` with a
+  `cache_path` wants a direct child of `root_cache_path` (Chrome's
+  profile manager refuses deeper paths with "Cannot create profile"),
+  and the context initialises asynchronously: `create_browser_sync`
+  against it returns None until `on_request_context_initialized`. The
+  spike pumps `do_message_loop_work` until then (36ms in practice).
+- **Hit order.** `side_hits` are drawn in order; menus come last, so
+  the click resolver walks them in reverse.
+- **Layered scrims.** A scrim over the panes must reset the open layer
+  (`scene.layer(None)`) first, or it inherits the last pane's clip.
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
-- CEF popup surfaces (`<select>` dropdowns) are not composited.
 - Colour emoji (RGBA atlas), Sixel, output folding, custom hint regexes.
-- Space-owned browser profiles (one request context per Space; the spike uses the global one).
 - Window transparency on Windows (needs a DirectComposition swapchain).
 - Single instance over a named pipe / unix socket (loopback TCP here).
 - Reader mode images (captions only here) and link following.

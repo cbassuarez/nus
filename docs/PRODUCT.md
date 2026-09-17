@@ -422,3 +422,67 @@ checklist and TRY buttons that do the thing; F1, the palette, settings.
 real form; downloads and permission bands were built to the CEF
 contract but not exercised by hand; colour emoji want an RGBA atlas;
 Sixel is not decoded; command output folding; hints with custom regex.
+
+## Tier two (settled 2026-09-16, twelfth pass)
+
+The ten from the research report, in the order asked, all built.
+
+**Stock themes.** Thirteen originals and seven ports, each a theme
+across paper, ink, page, sixteen ANSI colours, the surface, cursor,
+loading bar, sounds and a tab-colour wish for the rules; a contrast
+audit is a test.
+
+**The tab tree.** Stacks nest as deep as they go; a caret folds, Ctrl+
+Shift+- folds all; a row drags onto another to nest under it, or
+between rows to move.
+
+**Name, icon, colour per tab.** Right-click a row: RENAME (F2, through
+the palette; Shift+F2 now names the window), ICON (an emoji or any
+short string in the favicon's place), a row of swatches (the user's
+tint beats the rules' and survives a theme), PIN, CLOSE, TILE, SAVE TO
+FOLDER. All of it in the session.
+
+**Tiles.** Ctrl+click rows, Ctrl+Shift+D: two side by side, three as an
+L, four as a grid. A tiling belongs to its tabs and shows whenever one
+is active; dividers drag; Ctrl+Alt+arrows walk, with Shift swap; a
+closed tile re-tiles the rest.
+
+**Peek.** Alt+click a link: it floats over the page behind a scrim.
+Esc or a click outside closes it; Ctrl+Enter keeps it in the stack. A
+peek is a tab the sidebar doesn't list, so every pane path serves it.
+
+**Compact.** Ctrl+Shift+B: a 48px column of icons, the top strip hidden
+until the pointer reaches the top edge, the hovered row's name beside
+the column.
+
+**Chains, and settings in the palette.** A `chains` table in
+rules.luau names lists of palette commands ("open <url>", "run <cmd>",
+"tile", anything the palette takes); every settings row is a palette
+row that opens settings there.
+
+**Folders.** Under the tabs: GITHUB (open pull requests involving you,
+from `gh`, off the main thread), PORTS (what's listening), lists from
+rules.luau (`folders`, static or a function), and your own (SAVE TO
+FOLDER; a saved page never archives). Items open in place or go to the
+tab that has them.
+
+**The site panel.** The gear at the end of a URL row, per host: zoom
+(remembered), autoplay, JavaScript, cookies (block or clear), boosts,
+blocking, and the permissions the site was given — band answers are
+remembered and answered without asking next time, each forgettable.
+
+**Focus.** Ctrl+Shift+F11: the page or shell alone in the window.
+
+**Containers.** Named cookie jars, one CEF request context each under
+profile/container-<name>; a window's container colours its square and
+names its title, new pages open in it, a new window inherits it; a
+page can be reopened in another; the palette makes new ones.
+
+**Learned on the way.** A CEF request context with its own cache must
+be a direct child of the root cache path, and its profile initialises
+a few pumps later — the first browser in it waits for
+`on_request_context_initialized`. Sidebar hits resolve topmost-last so
+a menu over the folders wins. `layout()` now schedules the shells'
+resize itself (a split terminal used to keep its old size). SendKeys
+cannot deliver Ctrl+Alt+arrow chords; keybd_event with the arrow's
+scancode and the extended flag can.
