@@ -645,6 +645,12 @@ wrap_download_handler! {
     }
 
     impl DownloadHandler {
+        // The wrapper's default is 0: every download refused. Allow them all;
+        // on_before_download picks the path.
+        fn can_download(&self, _browser: Option<&mut Browser>, _url: Option<&CefString>, _request_method: Option<&CefString>) -> ::std::os::raw::c_int {
+            1
+        }
+
         fn on_before_download(&self, _browser: Option<&mut Browser>, download_item: Option<&mut DownloadItem>, suggested_name: Option<&CefString>, callback: Option<&mut BeforeDownloadCallback>) -> ::std::os::raw::c_int {
             let Some(item) = download_item else { return 0 };
             let name = suggested_name.map(|s| s.to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "download".into());
