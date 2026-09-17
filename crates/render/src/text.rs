@@ -494,6 +494,10 @@ pub mod icons {
     icon!(LINK, "link");
     icon!(PLUS, "plus");
     icon!(MINUS, "minus");
+    icon!(ARROWS_OUT, "arrows-out-cardinal");
+    icon!(SWAP, "arrows-left-right");
+    icon!(SOLO, "corners-out");
+    icon!(TO_TAB, "arrow-square-out");
     icon!(ENTER, "key-return");
     icon!(HASH, "hash");
     icon!(MORE, "dots-three");

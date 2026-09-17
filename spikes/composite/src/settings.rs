@@ -225,6 +225,12 @@ pub struct Behavior {
     /// What programs in the shell may do with the clipboard through OSC 52.
     #[serde(default)]
     pub osc52: Osc52,
+    /// The cluster at a split pane's corner: on hover, always, never.
+    #[serde(default)]
+    pub pane_controls: crate::panes::Controls,
+    /// The rule between a split's panes drags to resize.
+    #[serde(default = "default_true")]
+    pub pane_divider: bool,
 }
 
 /// OSC 52: tmux, neovim and friends setting (and reading) the clipboard.
@@ -307,6 +313,8 @@ impl Default for Behavior {
             copy_on_select: false,
             middle_paste: false,
             osc52: Osc52::Write,
+            pane_controls: crate::panes::Controls::Hover,
+            pane_divider: true,
         }
     }
 }
@@ -402,6 +410,8 @@ pub enum Hit {
     ArchiveAfter(u32),
     Highlight(bool),
     CopyOnSelect(bool),
+    PaneControls(crate::panes::Controls),
+    PaneDivider(bool),
     MiddlePaste(bool),
     Osc52(Osc52),
     Predict(bool),
@@ -665,6 +675,8 @@ impl App {
             Hit::ArchiveAfter(n) => if n == 0 { "never archive".into() } else { format!("archive after {n} hours") },
             Hit::Highlight(b) => if b { "highlight the command line".into() } else { "plain command line".into() },
             Hit::CopyOnSelect(b) => if b { "copy on select on".into() } else { "copy on select off".into() },
+            Hit::PaneControls(c) => format!("pane controls {:?}", c).to_lowercase(),
+            Hit::PaneDivider(b) => if b { "pane divider drags".into() } else { "pane divider fixed".into() },
             Hit::MiddlePaste(b) => if b { "middle click pastes".into() } else { "middle click does nothing".into() },
             Hit::Osc52(o) => format!("osc 52 {:?}", o).to_lowercase(),
             Hit::Predict(b) => if b { "predictions on".into() } else { "predictions off".into() },
@@ -953,6 +965,8 @@ impl App {
             Hit::ArchiveAfter(n) => self.behavior.archive_after_h = n,
             Hit::Highlight(b) => self.behavior.highlight = b,
             Hit::CopyOnSelect(b) => self.behavior.copy_on_select = b,
+            Hit::PaneControls(c) => self.behavior.pane_controls = c,
+            Hit::PaneDivider(b) => self.behavior.pane_divider = b,
             Hit::MiddlePaste(b) => self.behavior.middle_paste = b,
             Hit::Osc52(o) => self.behavior.osc52 = o,
             Hit::Predict(b) => self.behavior.predict = b,
@@ -1878,6 +1892,19 @@ impl App {
                 ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
             ],
             4 => vec![
+                (
+                    "PANE CONTROLS".into(),
+                    Choice(vec![
+                        ("ON HOVER".into(), Hit::PaneControls(crate::panes::Controls::Hover), self.behavior.pane_controls == crate::panes::Controls::Hover),
+                        ("ALWAYS".into(), Hit::PaneControls(crate::panes::Controls::Always), self.behavior.pane_controls == crate::panes::Controls::Always),
+                        ("NEVER".into(), Hit::PaneControls(crate::panes::Controls::Never), self.behavior.pane_controls == crate::panes::Controls::Never),
+                    ]),
+                ),
+                (
+                    "PANE DIVIDER".into(),
+                    Choice(vec![("DRAGS".into(), Hit::PaneDivider(true), self.behavior.pane_divider), ("FIXED".into(), Hit::PaneDivider(false), !self.behavior.pane_divider)]),
+                ),
+                ("".into(), Info("a split pane's corner: move (drag onto a sidebar row, or NEW TAB), swap, solo, to a tab of its own, close · the rule between the panes drags".into())),
                 (
                     "SLEEP IDLE PAGES".into(),
                     Choice(vec![("NEVER".into(), Hit::SleepAfter(0), self.behavior.sleep_after_min == 0), ("10 MIN".into(), Hit::SleepAfter(10), self.behavior.sleep_after_min == 10), ("30 MIN".into(), Hit::SleepAfter(30), self.behavior.sleep_after_min == 30), ("2 H".into(), Hit::SleepAfter(120), self.behavior.sleep_after_min == 120)]),

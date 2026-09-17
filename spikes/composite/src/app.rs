@@ -401,6 +401,10 @@ pub struct Tab {
     pub tint: Option<nus_render::Color>,
     /// A peek: a floating page over the tab with this id; not in the sidebar.
     pub peek: Option<u64>,
+    /// The right pane's width in logical px, once dragged.
+    pub split_w: Option<f32>,
+    /// One pane alone; the other waits off screen.
+    pub solo: bool,
     /// Colours the rules gave this tab.
     pub look: Overrides,
 }
@@ -558,6 +562,10 @@ pub struct App {
     pub peek_anim: Anim,
     /// The compact column's hovered row, for its tooltip after the panes.
     pub compact_tip: Option<(usize, f32)>,
+    /// Split pane controls (this frame), a pane in hand, the rule being dragged.
+    pub pane_hits: Vec<(Rect, crate::panes::PaneHit)>,
+    pub pane_drag: Option<(usize, bool, f32, f32)>,
+    pub split_drag: bool,
     /// This window's container (new pages open in it), and the list.
     pub container: String,
     pub containers: Vec<crate::containers::Container>,
@@ -764,6 +772,9 @@ impl App {
             resize_cursor: None,
             peek_anim: Anim::at(0.0),
             compact_tip: None,
+            pane_hits: Vec::new(),
+            pane_drag: None,
+            split_drag: false,
             container: crate::containers::PERSONAL.to_string(),
             containers: crate::containers::load(),
             focus: false,
@@ -1156,13 +1167,13 @@ impl App {
 
     /// Lay tab `i` out in `c`: its pane, or its two panes with the split.
     pub(crate) fn layout_tab(&mut self, i: usize, c: Rect) {
-        let split_w = self.px(m::SPLIT);
+        let split_w = self.split_width(i, c.w);
         let rule = self.px(m::STRUCTURE);
         let header = self.header_h();
         let pad_x = self.px(18.0);
         let pad_y = self.px(16.0);
         let scale = self.scale;
-        let narrow = self.width_class() == Width::Narrow;
+        let narrow = self.width_class() == Width::Narrow || self.tabs.get(i).is_some_and(|t| t.solo);
         let Some(tab) = self.tabs.get_mut(i) else { return };
         let off = Rect::new(-4.0 * c.w - c.x, c.y, c.w, c.h);
         let (left_rect, right_rect) = if tab.right.is_some() && narrow {
@@ -2685,7 +2696,7 @@ impl App {
         let focus_right = self.tabs[active].focus_right;
         let has_right = self.tabs[active].right.is_some();
         // Split rule.
-        let narrow = self.width_class() == Width::Narrow;
+        let narrow = self.width_class() == Width::Narrow || self.tabs[active].solo;
         let tiled = self.draw_tiling(&mut scene) || self.draw_peek(&mut scene);
         if has_right && !narrow && !tiled {
             let r = match &self.tabs[active].right {
@@ -2699,6 +2710,7 @@ impl App {
         }
         let n = self.tab_label(active);
         let look = self.tabs[active].look.clone();
+        self.pane_hits.clear();
         let mut tabs = std::mem::take(&mut self.tabs);
         if !tiled {
             let tab = &mut tabs[active];
@@ -2710,6 +2722,21 @@ impl App {
             if let Some(r) = tab.right.as_mut() {
                 if !(narrow && left_focused) {
                     self.draw_pane(&mut scene, r, &n, !left_focused, &look, true);
+                }
+            }
+            // The pane controls, over each pane that's on screen.
+            let solo = tab.solo;
+            let narrow_now = narrow || solo;
+            if tab.right.is_some() {
+                let lr = tab.left.rect();
+                let rr = tab.right.as_ref().map(|r| r.rect());
+                if !(narrow_now && !left_focused) {
+                    self.draw_pane_controls(&mut scene, lr, false, true);
+                }
+                if let Some(rr) = rr {
+                    if !(narrow_now && left_focused) {
+                        self.draw_pane_controls(&mut scene, rr, true, true);
+                    }
                 }
             }
         }
@@ -2789,6 +2816,7 @@ impl App {
 
         self.draw_compact_tip(&mut scene);
         self.draw_focus_hint(&mut scene);
+        self.draw_pane_drag(&mut scene);
         // In compact mode the strip rides over the content when summoned.
         if self.compact() && self.strip_shown() {
             self.draw_strip(&mut scene);
@@ -5429,7 +5457,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let look = self.look_for(&left, None);
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, peek: None, look }
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, peek: None, split_w: None, solo: false, look }
     }
 
     /// Ask the rules what a new tab looks like.
@@ -6085,8 +6113,14 @@ impl App {
         if self.tile_drag.is_some() {
             self.tile_drag_to(x, y);
         }
+        if self.split_drag {
+            self.split_drag_to(x);
+        }
+        if self.pane_drag.is_some() {
+            self.dirty = true;
+        }
         // A resize arrow over a divider (or while dragging one).
-        let want = self.tile_drag.or_else(|| self.divider_at(x, y));
+        let want = self.tile_drag.or_else(|| self.divider_at(x, y)).or_else(|| if self.split_drag || self.split_divider_at(x, y) { Some(crate::tiles::Divider::X) } else { None });
         if want != self.resize_cursor {
             self.resize_cursor = want;
             match want {
@@ -6332,6 +6366,14 @@ impl App {
                 }
             }
         }
+        // Split panes: the corner cluster, or the rule between them.
+        if pressed && button == MouseButton::Left && self.pane_click(x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.split_divider_at(x, y) {
+            self.split_drag = true;
+            return;
+        }
         // Tiles: grab a divider, or focus the tile under the pointer.
         if pressed && button == MouseButton::Left {
             if let Some(d) = self.divider_at(x, y) {
@@ -6380,6 +6422,16 @@ impl App {
             if self.tile_drag.take().is_some() {
                 self.apply_term_resizes(true);
                 self.save_session();
+                return;
+            }
+            if self.split_drag {
+                self.split_drag = false;
+                self.apply_term_resizes(true);
+                self.save_session();
+                return;
+            }
+            if self.pane_drag.is_some() {
+                self.pane_drop(x, y);
                 return;
             }
             if let Some((i, _, _)) = self.drag.take() {

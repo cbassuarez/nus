@@ -18,6 +18,7 @@ mod containers;
 mod ask;
 mod smear;
 mod syntax;
+mod panes;
 mod anim;
 mod app;
 mod browser;
