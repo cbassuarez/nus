@@ -27,7 +27,7 @@ use crate::app::{Caps, App, WebPane};
 pub enum Claim {
     /// We are the instance: URLs from later launches arrive here; the
     /// port other processes reach us on.
-    Primary(Receiver<String>, u16),
+    Primary(Receiver<Inbound>, u16),
     /// Another instance took the URLs; exit.
     HandedOff,
 }
@@ -36,9 +36,16 @@ fn instance_file() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_default().join("profile").join("instance")
 }
 
+/// What the instance port delivers: a URL to open (or "raise"), or a
+/// remote-control request with its reply channel.
+pub enum Inbound {
+    Url(String),
+    Request(crate::remote::Request),
+}
+
 /// Claim the instance, handing `urls` to a running one if there is one.
 pub fn claim(urls: &[String]) -> Claim {
-    if let Ok(port) = std::fs::read_to_string(instance_file()).map(|s| s.trim().to_string()) {
+    if let Ok(port) = std::fs::read_to_string(instance_file()).map(|s| s.lines().next().unwrap_or("").trim().to_string()) {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap_or(0))) {
             let mut ok = true;
             for u in urls {
@@ -52,19 +59,23 @@ pub fn claim(urls: &[String]) -> Claim {
             }
         }
     }
-    let (rx, port) = listen(urls);
+    let token = crate::remote::new_token();
+    let (rx, port) = listen(urls, token.clone());
     if port != 0 {
         let _ = std::fs::create_dir_all(instance_file().parent().unwrap());
-        let _ = std::fs::write(instance_file(), port.to_string());
+        // The port on the first line, the token on the second; the CLI reads both.
+        let _ = std::fs::write(instance_file(), format!("{port}\n{token}\n"));
     }
     Claim::Primary(rx, port)
 }
 
-/// Listen on a loopback port for URLs and "raise"; `urls` are queued first.
-pub fn listen(urls: &[String]) -> (Receiver<String>, u16) {
+/// Listen on a loopback port for URLs and "raise" (one per line, from
+/// another launch) and for remote-control requests (JSON lines carrying
+/// the token; one reply per request); `urls` are queued first.
+pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16) {
     let (tx, rx) = channel();
     for u in urls {
-        let _ = tx.send(u.clone());
+        let _ = tx.send(Inbound::Url(u.clone()));
     }
     let mut port = 0;
     match TcpListener::bind("127.0.0.1:0") {
@@ -72,17 +83,54 @@ pub fn listen(urls: &[String]) -> (Receiver<String>, u16) {
             port = l.local_addr().map(|a| a.port()).unwrap_or(0);
             std::thread::spawn(move || {
                 for conn in l.incoming().flatten() {
-                    let r = BufReader::new(conn);
-                    for line in r.lines().map_while(Result::ok) {
-                        // Only what another nus would say: a URL, a file, or "raise".
-                        // Anything else (a port probe, a stray HTTP request) is noise.
-                        let ok = line == "raise" || line.starts_with("file://") || crate::app::strict_url(&line).is_some() || line.starts_with("http");
-                        if ok {
-                            let _ = tx.send(line);
-                        } else {
-                            break;
+                    let tx = tx.clone();
+                    let token = token.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Write as _;
+                        let mut w = match conn.try_clone() {
+                            Ok(w) => w,
+                            Err(_) => return,
+                        };
+                        let r = BufReader::new(conn);
+                        for line in r.lines().map_while(Result::ok) {
+                            if line.starts_with('{') {
+                                let v: serde_json::Value = match serde_json::from_str(&line) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        let _ = writeln!(w, "{}", serde_json::json!({ "ok": false, "error": format!("bad json: {e}") }));
+                                        continue;
+                                    }
+                                };
+                                if v.get("token").and_then(|t| t.as_str()) != Some(token.as_str()) {
+                                    let _ = writeln!(w, "{}", serde_json::json!({ "ok": false, "error": "bad token" }));
+                                    break;
+                                }
+                                let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                                let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                                let (reply_tx, reply_rx) = channel();
+                                if tx.send(Inbound::Request(crate::remote::Request { cmd, args, reply: reply_tx })).is_err() {
+                                    break;
+                                }
+                                match reply_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                                    Ok(answer) => {
+                                        let _ = writeln!(w, "{answer}");
+                                    }
+                                    Err(_) => {
+                                        let _ = writeln!(w, "{}", serde_json::json!({ "ok": false, "error": "no answer" }));
+                                    }
+                                }
+                                continue;
+                            }
+                            // Only what another nus would say: a URL, a file, or "raise".
+                            // Anything else (a port probe, a stray HTTP request) is noise.
+                            let ok = line == "raise" || line.starts_with("file://") || crate::app::strict_url(&line).is_some() || line.starts_with("http");
+                            if ok {
+                                let _ = tx.send(Inbound::Url(line));
+                            } else {
+                                break;
+                            }
                         }
-                    }
+                    });
                 }
             });
         }

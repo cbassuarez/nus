@@ -1,0 +1,200 @@
+{
+    "commit":  "734925c",
+    "taken":  "2026-09-17 14:26",
+    "exe":  "debug",
+    "scale":  1.25,
+    "window":  {
+                   "logical":  [
+                                   1280,
+                                   800
+                               ],
+                   "px":  [
+                              1600,
+                              1000
+                          ]
+               },
+    "shots":  [
+                  {
+                      "name":  "ask",
+                      "face":  "ink",
+                      "file":  "ask-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "ask",
+                      "face":  "paper",
+                      "file":  "ask-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "atlas",
+                      "face":  "ink",
+                      "file":  "atlas-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "atlas",
+                      "face":  "paper",
+                      "file":  "atlas-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "compact",
+                      "face":  "ink",
+                      "file":  "compact-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "compact",
+                      "face":  "paper",
+                      "file":  "compact-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "devtools",
+                      "face":  "ink",
+                      "file":  "devtools-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "devtools",
+                      "face":  "paper",
+                      "file":  "devtools-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "hero-page",
+                      "face":  "ink",
+                      "file":  "hero-page-ink.png",
+                      "width":  649,
+                      "height":  862
+                  },
+                  {
+                      "name":  "hero-page",
+                      "face":  "paper",
+                      "file":  "hero-page-paper.png",
+                      "width":  649,
+                      "height":  862
+                  },
+                  {
+                      "name":  "palette",
+                      "face":  "ink",
+                      "file":  "palette-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "palette",
+                      "face":  "paper",
+                      "file":  "palette-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "ports",
+                      "face":  "ink",
+                      "file":  "ports-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "ports",
+                      "face":  "paper",
+                      "file":  "ports-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "prompt",
+                      "face":  "ink",
+                      "file":  "prompt-ink.png",
+                      "width":  646,
+                      "height":  420
+                  },
+                  {
+                      "name":  "prompt",
+                      "face":  "paper",
+                      "file":  "prompt-paper.png",
+                      "width":  646,
+                      "height":  420
+                  },
+                  {
+                      "name":  "theme-catppuccin",
+                      "face":  "ink",
+                      "file":  "theme-catppuccin-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "theme-catppuccin",
+                      "face":  "paper",
+                      "file":  "theme-catppuccin-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "theme-gruvbox",
+                      "face":  "ink",
+                      "file":  "theme-gruvbox-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "theme-gruvbox",
+                      "face":  "paper",
+                      "file":  "theme-gruvbox-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "theme-nord",
+                      "face":  "ink",
+                      "file":  "theme-nord-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "theme-nord",
+                      "face":  "paper",
+                      "file":  "theme-nord-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "theme-rose-pine",
+                      "face":  "ink",
+                      "file":  "theme-rose-pine-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "theme-rose-pine",
+                      "face":  "paper",
+                      "file":  "theme-rose-pine-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "window",
+                      "face":  "ink",
+                      "file":  "window-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "window",
+                      "face":  "paper",
+                      "file":  "window-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  }
+              ]
+}

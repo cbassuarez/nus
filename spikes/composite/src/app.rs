@@ -1384,6 +1384,13 @@ impl App {
         self.editor_tick();
         self.prompt_lsp_tick();
         self.ports_tick();
+        // Commands the rules asked for.
+        let queued: Vec<(String, serde_json::Value)> = std::mem::take(&mut *self.rules.queued.borrow_mut());
+        for (cmd, args) in queued {
+            if let Err(e) = self.remote(&cmd, &args) {
+                tracing::warn!("rules nus.run({cmd}): {e}");
+            }
+        }
         // NUS_TYPE="text" types into the first shell at its first prompt;
         // NUS_SHELL=<profile> picks which shell the first tab runs.
         if !self.typed_once {

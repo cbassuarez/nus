@@ -530,6 +530,10 @@ folders = {
   },
 }
 
+-- nus.run(cmd, args): anything the nus command can do, from a rule —
+-- nus.run("open", { url = "http://localhost:5173/", split = true }),
+-- nus.run("theme", { name = "darkroom" }), nus.run("hatch", { ["do"] = "show" }).
+
 -- on_block(b): a command finished. b has cmd, exit, lines, cwd. Return
 -- { fold = true } to fold its output, { notify = true } to be told when
 -- you're elsewhere. Long test runs fold themselves; failures notify.
@@ -599,6 +603,30 @@ end
 ];
 
 /// The Luau state: loaded from the rules file, re-read on demand.
+/// A Luau value as JSON, for `nus.run` args (tables → objects or arrays).
+fn lua_to_json(lua: &mlua::Lua, v: mlua::Value) -> serde_json::Value {
+    match v {
+        mlua::Value::Nil => serde_json::Value::Null,
+        mlua::Value::Boolean(b) => serde_json::Value::Bool(b),
+        mlua::Value::Integer(i) => serde_json::Value::from(i),
+        mlua::Value::Number(n) => serde_json::Value::from(n),
+        mlua::Value::String(s) => serde_json::Value::String(s.to_str().map(|s| s.to_string()).unwrap_or_default()),
+        mlua::Value::Table(t) => {
+            let is_array = t.raw_len() > 0;
+            if is_array {
+                serde_json::Value::Array(t.sequence_values::<mlua::Value>().filter_map(|v| v.ok()).map(|v| lua_to_json(lua, v)).collect())
+            } else {
+                let mut m = serde_json::Map::new();
+                for (k, v) in t.pairs::<String, mlua::Value>().filter_map(|p| p.ok()) {
+                    m.insert(k, lua_to_json(lua, v));
+                }
+                serde_json::Value::Object(m)
+            }
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
 /// What `on_block` asked for.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockVerdict {
@@ -611,6 +639,9 @@ pub struct Rules {
     pub path: PathBuf,
     pub status: String,
     pub source: String,
+    /// Commands a rule asked for through `nus.run(cmd, args)`; the app
+    /// answers them after the hook returns (rules run on the app's thread).
+    pub queued: std::rc::Rc<std::cell::RefCell<Vec<(String, serde_json::Value)>>>,
 }
 
 impl Rules {
@@ -640,7 +671,7 @@ impl Rules {
             };
             let _ = std::fs::write(&path, format!("{}\n{}", src.trim_end(), block.trim_end()));
         }
-        let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new() };
+        let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new(), queued: Default::default() };
         r.reload();
         r
     }
@@ -661,7 +692,7 @@ impl Rules {
     }
 
     pub fn from_source(source: &str) -> Rules {
-        let mut r = Rules { lua: mlua::Lua::new(), path: PathBuf::new(), status: String::new(), source: String::new() };
+        let mut r = Rules { lua: mlua::Lua::new(), path: PathBuf::new(), status: String::new(), source: String::new(), queued: Default::default() };
         r.apply(source.to_string());
         r
     }
@@ -690,6 +721,25 @@ impl Rules {
             "family",
             lua.create_function(|_, (h, i): (String, i64)| Ok(parse_hex(&h).map(|c| hex(family(c)[(i.clamp(1, 5) - 1) as usize])))).unwrap(),
         );
+        // nus.run(cmd, args): the remote-control verbs, from a rule. Queued
+        // and answered once the hook returns; no reply comes back to Luau.
+        {
+            let queued = self.queued.clone();
+            let nus = lua.create_table().unwrap();
+            let _ = nus.set(
+                "run",
+                lua.create_function(move |lua, (cmd, args): (String, Option<mlua::Table>)| {
+                    let v: serde_json::Value = match args {
+                        Some(t) => lua_to_json(lua, mlua::Value::Table(t)),
+                        None => serde_json::Value::Null,
+                    };
+                    queued.borrow_mut().push((cmd, v));
+                    Ok(())
+                })
+                .unwrap(),
+            );
+            let _ = g.set("nus", nus);
+        }
         // The hour, for time-of-day rules (no os library in the sandbox).
         let hour = std::process::Command::new(if cfg!(target_os = "windows") { "cmd" } else { "date" })
             .args(if cfg!(target_os = "windows") { vec!["/c", "echo %TIME%"] } else { vec!["+%H"] })

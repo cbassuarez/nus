@@ -1,0 +1,99 @@
+# The shot list for nus.dev.
+#
+# scripts/shots.ps1 hands this to the app as NUS_SHOT, once per face. The app
+# runs it on its own event loop and photographs itself from its own texture —
+# nothing here is OS input. The verbs are documented in
+# spikes/composite/src/shot.rs; {repo} is filled in by the driver.
+#
+# Each `shot NAME` writes NAME-<face>.png. The optional numbers are a crop as
+# fractions of the window: x y w h. The window is 1280×800 logical.
+
+wait 3000
+shell cd {repo}
+wait 800
+
+# The shell beside a page — the site itself on localhost, hazard tape and all.
+url http://localhost:8000/
+wait 4500
+shot window
+
+# The browser pane's content only, tape included, on a page that is plainly a
+# page: it goes inside the hero's HTML chrome, so no chrome in the crop.
+url http://localhost:8000/docs/architecture/
+wait 3500
+shot hero-page 0.594 0.088 0.406 0.862
+url http://localhost:8000/
+wait 3500
+
+# The ports board.
+board
+wait 1500
+shot ports
+close
+
+# Devtools composited beside the page.
+devtools
+wait 3000
+shot devtools
+devtools
+wait 500
+
+# Compact, with a row hovered.
+compact
+wait 700
+hover 40 200
+wait 500
+shot compact
+compact
+wait 500
+
+# Four stock themes on the same window.
+theme nord
+wait 1200
+shot theme-nord
+theme gruvbox
+wait 1200
+shot theme-gruvbox
+theme catppuccin
+wait 1200
+shot theme-catppuccin
+theme rosé pine
+wait 1200
+shot theme-rose-pine
+theme broadsheet
+wait 1200
+
+# The atlas over a launch — the previous run's session.
+atlas
+wait 1500
+shot atlas
+close
+
+# The prompt line: a command into history, then a ghost after the caret.
+shell git log --oneline -5
+wait 2000
+line git lo
+wait 700
+shot prompt 0.19 0.088 0.404 0.42
+erase 6
+wait 600
+
+# The palette mid-query: the history row, then open-or-search.
+palette go git lo
+wait 500
+shot palette
+close
+
+# Ask, beside a command that failed — in a shell of its own. Needs an
+# assistant on PATH (claude, codex, copilot, ollama), and spends one real query.
+newshell
+wait 2500
+shell cd {repo}
+wait 800
+shell git checkout nope
+wait 2500
+ask why did that last command fail?
+wait 30000
+shot ask
+close
+quit

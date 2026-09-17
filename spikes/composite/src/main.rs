@@ -28,6 +28,7 @@ mod ports;
 mod hatch;
 mod blocks;
 mod blockpage;
+mod remote;
 mod hotkey;
 mod anim;
 mod app;
@@ -496,8 +497,19 @@ fn main() -> ExitCode {
             let focused = host.focused;
             let idx = host.apps.iter().position(|a| Some(a.window.id()) == focused).or(if host.apps.is_empty() { None } else { Some(0) });
             if let Some(a) = idx.and_then(|i| host.apps.get_mut(i)) {
-                for url in rx.try_iter() {
-                    a.open_little(&url);
+                for inbound in rx.try_iter() {
+                    match inbound {
+                        little::Inbound::Url(url) => {
+                            a.open_little(&url);
+                        }
+                        little::Inbound::Request(req) => {
+                            let answer = match a.remote(&req.cmd, &req.args) {
+                                Ok(result) => serde_json::json!({ "ok": true, "result": result }),
+                                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                            };
+                            let _ = req.reply.send(answer);
+                        }
+                    }
                     a.dirty = true;
                 }
             }

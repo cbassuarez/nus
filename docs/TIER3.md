@@ -266,7 +266,20 @@ By value per week, honest:
 7. **Tab tidy** (8) — dedupe is a day; the sheet is a week.
 8. **Theme hot-swap** (7) — a few days, mostly 4's verb.
 
-Design questions the pass should ask seb (short list): fold by click on
-the lamp or by chord only; where the share page opens; the assistant's
-default context; whether TIDY is ever automatic; Luau vs KDL for layouts
-(Luau assumed); whether the CLI is a separate binary or `composite --cli`.
+## Settled 2026-09-17 (seb, via the question tool)
+
+- Blocks fold by **clicking the lamp or Ctrl+Shift+←**; folded = one ruled
+  line `cmd · N lines · time · lamp`.
+- Share a block **beside the shell** as a reader-style page (`nus://block/<id>`):
+  command as heading, output as pre, caps dateline; copy-as-markdown, save
+  HTML, gist via `gh` — as icons.
+- Assistant default context: **shell + focused block + the split's page**;
+  chips (icons) add ALL TABS / EDITOR.
+- Tidy **suggests only, never acts**; dedupe chips are the one automatic thing.
+- The CLI is a **separate `nus` binary** in `crates/cli`.
+- Layouts are **Luau** (`.nus.luau`).
+- OSC 10/11 from a shell: a **setting** — CHIP (default: the pane changes,
+  a chip offers APPLY TO THE LOOK) · ALWAYS · PANE ONLY.
+- **General rule for the pass: icons instead of labels wherever an icon is
+  unambiguous.** Chips carry an icon first; words only where an icon would
+  need explaining.

@@ -645,3 +645,23 @@ nus and the settings say so.
 
 **Settings — HATCH:** LOOK · HOTKEY · SIZE · MONITOR · AUTOHIDE · SPACES.
 
+## Blocks, remote control (settled 2026-09-17, seventeenth pass)
+
+**Blocks.** Every command is a block over its OSC 133 marks. A lamp on the
+prompt's row in the gutter: green ran, red failed, dim unknown, breathing
+signal while it runs. Click the lamp (or Ctrl+Shift+←/→) to fold the output
+to one ruled line — cmd · N lines · lamp. Ctrl+↑/↓ walk the blocks; Ctrl+A
+twice selects a block's output, thrice everything; Ctrl+Shift+/ filters
+by command. Hover a block: share · run again · copy. Share writes a
+Broadsheet page (command as heading, output as pre, caps dateline) and
+opens it beside the shell; the palette offers copy-as-markdown and a gist
+through gh. TERMINAL · BLOCKS: LAMPS, FOLD NEVER / OVER 50 / OVER 200.
+Rules: `on_block(b)` → `{ fold, notify }`.
+
+**Remote control.** A JSON-lines protocol on the instance port with a
+per-launch token (both in `profile/instance`): ls · open · edit · launch ·
+split · send-text · focus · close · theme · look · ports · hatch · block ·
+ask · raise · version. The `nus` command (`crates/cli`) speaks it, and a
+bare `nus <file>` or `nus <url>` opens it. Rules call `nus.run(cmd, args)`;
+the app answers after the hook returns.
+

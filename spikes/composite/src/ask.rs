@@ -262,6 +262,19 @@ impl App {
         self.dirty = true;
     }
 
+    /// A question from remote control: the panel opens with it and sends.
+    pub(crate) fn ask_from_remote(&mut self, q: &str) {
+        let Some(t) = self.ask_term() else { return };
+        if t.ask.is_none() {
+            t.ask = Some(Ask::new());
+        }
+        if let Some(ask) = t.ask.as_mut() {
+            ask.input = q.to_string();
+        }
+        self.layout();
+        self.ask_send();
+    }
+
     /// Send the field: the prompt gets the shell, OS, cwd and the last
     /// command's tail; a worker runs the backend.
     pub(crate) fn ask_send(&mut self) {
