@@ -74,7 +74,14 @@ pub fn listen(urls: &[String]) -> (Receiver<String>, u16) {
                 for conn in l.incoming().flatten() {
                     let r = BufReader::new(conn);
                     for line in r.lines().map_while(Result::ok) {
-                        let _ = tx.send(line);
+                        // Only what another nus would say: a URL, a file, or "raise".
+                        // Anything else (a port probe, a stray HTTP request) is noise.
+                        let ok = line == "raise" || line.starts_with("file://") || crate::app::strict_url(&line).is_some() || line.starts_with("http");
+                        if ok {
+                            let _ = tx.send(line);
+                        } else {
+                            break;
+                        }
                     }
                 }
             });

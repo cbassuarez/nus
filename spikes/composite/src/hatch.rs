@@ -102,7 +102,8 @@ impl App {
             return;
         }
         if self.hatch.is_none() {
-            self.hatch_request = true;
+            let (home, size, _) = self.hatch_geometry();
+            self.hatch_request = Some((home, size));
             return;
         }
         self.place_hatch();
@@ -139,7 +140,7 @@ impl App {
         let look = self.behavior.hatch_look;
         let scale = window.scale_factor() as f32;
         self.hatch = Some(Hatch {
-            window,
+            window: window.clone(),
             target,
             scene: Scene::new(),
             look,
@@ -152,8 +153,8 @@ impl App {
             slide: crate::anim::Anim::at(0.0),
             hiding: false,
             mon: (0, 0, 1920, 1080, scale),
-            home: (0, 0),
-            size: (960, 400),
+            home: window.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0)),
+            size: (window.inner_size().width, window.inner_size().height),
             frac: self.behavior.hatch_size as f32 / 100.0,
             lip_drag: None,
             frame_drag: None,
@@ -163,12 +164,14 @@ impl App {
         self.show_hatch();
     }
 
-    /// Pick the monitor and size the window for the look.
-    fn place_hatch(&mut self) {
+    /// Where the hatch goes and how big, for the look and the monitor
+    /// setting: (home, size, monitor) in physical px.
+    fn hatch_geometry(&self) -> ((i32, i32), (u32, u32), (i32, i32, u32, u32, f32)) {
         let which = self.behavior.hatch_monitor;
         let main = self.window.clone();
-        let Some(h) = self.hatch.as_mut() else { return };
-        let monitors: Vec<winit::monitor::MonitorHandle> = h.window.available_monitors().collect();
+        let look = self.behavior.hatch_look;
+        let frac = self.hatch.as_ref().map(|h| h.frac).unwrap_or(self.behavior.hatch_size as f32 / 100.0);
+        let monitors: Vec<winit::monitor::MonitorHandle> = main.available_monitors().collect();
         let pick = match which {
             HatchMonitor::Pointer => crate::hotkey::pointer().and_then(|(x, y)| {
                 monitors.iter().find(|mo| {
@@ -180,28 +183,35 @@ impl App {
             HatchMonitor::Foreground => main.current_monitor().and_then(|cm| monitors.iter().find(|mo| mo.position() == cm.position())),
             HatchMonitor::Primary => None,
         };
-        let mo = pick.cloned().or_else(|| h.window.primary_monitor()).or_else(|| monitors.first().cloned());
-        let Some(mo) = mo else { return };
+        let mo = pick.cloned().or_else(|| main.primary_monitor()).or_else(|| monitors.first().cloned());
+        let Some(mo) = mo else { return ((0, 0), (960, 400), (0, 0, 1920, 1080, 1.0)) };
         let (mx, my) = (mo.position().x, mo.position().y);
         let (mw, mh) = (mo.size().width, mo.size().height);
         let scale = mo.scale_factor() as f32;
-        h.mon = (mx, my, mw, mh, scale);
-        match h.look {
+        let (size, home) = match look {
             HatchLook::Sheet => {
                 let w = ((960.0 * scale) as u32).min(mw.saturating_sub((32.0 * scale) as u32));
-                let hh = ((mh as f32 * h.frac) as u32).clamp((160.0 * scale) as u32, mh - (40.0 * scale) as u32);
-                h.size = (w, hh);
-                h.home = (mx + (mw as i32 - w as i32) / 2, my);
+                let hh = ((mh as f32 * frac) as u32).clamp((160.0 * scale) as u32, mh - (40.0 * scale) as u32);
+                ((w, hh), (mx + (mw as i32 - w as i32) / 2, my))
             }
             HatchLook::Card => {
                 let w = (mw as f32 * 0.7) as u32;
                 let hh = (mh as f32 * 0.6) as u32;
-                h.size = (w, hh);
-                h.home = (mx + (mw as i32 - w as i32) / 2, my + (mh as i32 - hh as i32) / 2);
+                ((w, hh), (mx + (mw as i32 - w as i32) / 2, my + (mh as i32 - hh as i32) / 2))
             }
-        }
-        let _ = h.window.request_inner_size(winit::dpi::PhysicalSize::new(h.size.0, h.size.1));
-        h.window.set_outer_position(winit::dpi::PhysicalPosition::new(h.home.0, h.home.1));
+        };
+        (home, size, (mx, my, mw, mh, scale))
+    }
+
+    /// Pick the monitor and size the window for the look.
+    fn place_hatch(&mut self) {
+        let (home, size, mon) = self.hatch_geometry();
+        let Some(h) = self.hatch.as_mut() else { return };
+        h.mon = mon;
+        h.home = home;
+        h.size = size;
+        let _ = h.window.request_inner_size(winit::dpi::PhysicalSize::new(size.0, size.1));
+        h.window.set_outer_position(winit::dpi::PhysicalPosition::new(home.0, home.1));
     }
 
     /// Where the window is right now on its slide.
@@ -322,6 +332,7 @@ impl App {
     pub fn hatch_resized(&mut self, w: u32, h: u32) {
         if let Some(hat) = self.hatch.as_mut() {
             hat.target.resize(&self.gpu.device, w, h);
+            hat.size = (w, h);
         }
         self.hatch_layout();
         self.apply_term_resizes(true);

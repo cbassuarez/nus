@@ -265,17 +265,17 @@ impl ApplicationHandler<UserEvent> for Host {
                 Err(e) => tracing::warn!("little window: {e}"),
             }
         }
-        if a.hatch_request {
-            a.hatch_request = false;
+        if let Some(((x, y), (w, h))) = a.hatch_request.take() {
             #[allow(unused_mut)]
             let mut attrs = Window::default_attributes()
                 .with_title("nus · hatch")
                 .with_window_icon(icon_default())
                 .with_decorations(false)
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
-                .with_resizable(false)
+                .with_resizable(true)
                 .with_visible(false)
-                .with_inner_size(winit::dpi::PhysicalSize::new(960u32, 400u32));
+                .with_position(winit::dpi::PhysicalPosition::new(x, y))
+                .with_inner_size(winit::dpi::PhysicalSize::new(w, h));
             #[cfg(windows)]
             {
                 use winit::platform::windows::WindowAttributesExtWindows;

@@ -550,7 +550,8 @@ pub struct App {
     pub little_request: Option<String>,
     /// The hatch (quick terminal) window, and the ask to make one.
     pub hatch: Option<crate::hatch::Hatch>,
-    pub hatch_request: bool,
+    /// Ask the host for the hatch window: where and how big (physical px).
+    pub hatch_request: Option<((i32, i32), (u32, u32))>,
     pub hotkey: Option<crate::hotkey::Hotkey>,
     pub little_pos: (f32, f32),
     /// URLs handed over by later launches (see little::claim).
@@ -795,7 +796,7 @@ impl App {
             little: None,
             little_request: None,
             hatch: None,
-            hatch_request: false,
+            hatch_request: None,
             hotkey: None,
             little_pos: (0.0, 0.0),
             urls_rx: None,
@@ -2682,13 +2683,18 @@ impl App {
         }
         cluster.push((if waiting > 0 { nus_render::text::icons::BELL_BOLD } else { nus_render::text::icons::BELL }, if waiting > 0 { waiting.to_string() } else { String::new() }, CrumbHit::Waiting, waiting > 0));
         }
-        // The new-port line rides left of the cluster for six seconds.
-        if self.board.toast.is_some() {
-            let tw = self.draw_ports_toast(scene, rx - self.px(6.0), lbase);
-            rx -= tw;
-        }
+        // A new port: the ports icon glows signal for six seconds — no words;
+        // the line itself lives in the board's foot and the hatch's.
+        let toast_glow = self.board.toast.as_ref().map(|(_, at, _)| {
+            let age = at.elapsed().as_secs_f32();
+            if age < 0.25 { age / 0.25 } else if age > 5.4 { ((6.0 - age) / 0.6).clamp(0.0, 1.0) } else { 1.0 }
+        });
         for (icon, count, hit, lit) in cluster {
             let color = if lit { ink } else { t.dim };
+            let color = match (hit, toast_glow) {
+                (CrumbHit::Ports, Some(g)) => crate::surface::mix(color, self.surface.signal, g),
+                _ => color,
+            };
             if !count.is_empty() {
                 let cw = self.fonts.measure(label, &count);
                 rx -= cw;

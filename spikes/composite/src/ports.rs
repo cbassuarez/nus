@@ -751,7 +751,7 @@ impl App {
         let mut auto_tunnel: Vec<Key> = Vec::new();
         for k in &arrived {
             let Some(r) = self.board.row(k).cloned() else { continue };
-            if matches!(r.key, Key::Port { proto: Proto::Tcp, .. }) && self.behavior.ports_probe && !self.board.probed.contains(&r.port) {
+            if matches!(r.key, Key::Port { proto: Proto::Tcp, .. }) && self.behavior.ports_probe && !self.board.probed.contains(&r.port) && r.pid != me {
                 probe_now.push(r.port);
             }
             if matches!(r.group, Group::Mine | Group::Others) && matches!(r.key, Key::Port { proto: Proto::Tcp, .. }) {
@@ -787,7 +787,7 @@ impl App {
         }
         // Probes for ports we already had when the board first woke.
         if self.board.polls == 1 && self.behavior.ports_probe {
-            let first: Vec<u16> = self.board.rows.iter().filter(|r| matches!(r.key, Key::Port { proto: Proto::Tcp, .. }) && r.group != Group::System).map(|r| r.port).collect();
+            let first: Vec<u16> = self.board.rows.iter().filter(|r| matches!(r.key, Key::Port { proto: Proto::Tcp, .. }) && r.group != Group::System && r.pid != me).map(|r| r.port).collect();
             for p in &first {
                 self.board.probed.insert(*p);
             }
@@ -1592,17 +1592,6 @@ impl App {
         scene.layer(None);
     }
 
-    /// The toast beside the ports icon in the header. Returns its width.
-    pub(crate) fn draw_ports_toast(&mut self, scene: &mut Scene, right: f32, y_base: f32) -> f32 {
-        let Some((text, at, _)) = self.board.toast.clone() else { return 0.0 };
-        let age = at.elapsed().as_secs_f32();
-        let a = if age < 0.25 { age / 0.25 } else if age > 5.4 { ((6.0 - age) / 0.6).clamp(0.0, 1.0) } else { 1.0 };
-        let label = self.label();
-        let st = Style { color: fade(self.surface.signal, a), ..label };
-        let w = self.fonts.measure(label, &text);
-        self.fonts.draw(scene, st, right - w, y_base, &text);
-        w + self.px(10.0)
-    }
 }
 
 fn ease_out(x: f32) -> f32 {
