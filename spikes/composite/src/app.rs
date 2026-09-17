@@ -108,6 +108,7 @@ pub struct TermPane {
     pub grid: GridRenderer,
     pub title: String,
     pub profile: usize,
+    pub profile_name: String,
     pub rect: Rect,
     pub origin: (f32, f32),
     /// The pane strip (profile · size) shows only when the tab is split;
@@ -147,6 +148,8 @@ pub struct TermPane {
     /// images_gen moves.
     pub image_tex: std::collections::HashMap<u32, Arc<wgpu::BindGroup>>,
     pub images_gen: u64,
+    /// Commands run under this profile, oldest first (profile/history).
+    pub history: Vec<String>,
     /// Name of the running process when a close is awaiting confirmation.
     pub confirm_close: Option<String>,
     /// Rang the bell while not being looked at.
@@ -756,8 +759,9 @@ impl App {
             term,
             pty,
             grid,
-            title: profile.name,
+            title: profile.name.clone(),
             profile: profile_index,
+            profile_name: profile.name.clone(),
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             origin: (0.0, 0.0),
             show_header: split,
@@ -781,6 +785,7 @@ impl App {
             hover_block: 0,
             image_tex: std::collections::HashMap::new(),
             images_gen: 0,
+            history: crate::predict::load_history(&profile.name),
             line: String::new(),
             line_ok: true,
             confirm_close: None,
@@ -1930,6 +1935,14 @@ impl App {
                                     }
                                     nus_vt::MarkKind::CommandEnd(exit) => {
                                         t.last_exit = exit;
+                                        // Remember the command for predictions.
+                                        if let Some(b) = t.term.marks.iter().rev().find(|m| m.kind == nus_vt::MarkKind::CommandStart) {
+                                            let cmd = t.term.command_text(b);
+                                            if !cmd.is_empty() && t.history.last() != Some(&cmd) {
+                                                crate::predict::append_history(&t.profile_name, &cmd);
+                                                t.history.push(cmd);
+                                            }
+                                        }
                                         if let Some(since) = t.running_since.take() {
                                             // A command that took a while: say so when
                                             // the user is elsewhere, badge it either way.
@@ -3742,6 +3755,7 @@ impl App {
                     let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
                     scene.rect(clip, [bg[0], bg[1], bg[2], a]);
                 }
+                let pane_paper = look.bg.unwrap_or(self.paper());
                 let look = self.cursor_look(p, focused, look.signal);
                 let gliding = !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) && (p.cur_x.active() || p.cur_y.active());
                 let mut lk = look;
@@ -3753,6 +3767,7 @@ impl App {
                     self.draw_moving_cursor(scene, p, look);
                 }
                 self.draw_term_images(scene, p);
+                self.draw_prompt_line(scene, p, pane_paper);
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
                 let _ = p.term.grid_mut().take_damage();
@@ -4325,6 +4340,14 @@ impl App {
             if self.cursor.hide_while_typing && !self.pointer_hidden && matches!(self.tabs.get_mut(self.active).map(|t| t.focused()), Some(Pane::Term(_))) {
                 self.window.set_cursor_visible(false);
                 self.pointer_hidden = true;
+            }
+        }
+        // Right / End at the end of the line takes the prediction.
+        if pressed && !ctrl && !alt && !sup && !shift {
+            if let Some(k) = vt_key(&ev.logical_key) {
+                if self.accept_prediction(k) {
+                    return;
+                }
             }
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };

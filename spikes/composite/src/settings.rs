@@ -188,6 +188,12 @@ pub struct Behavior {
     /// Shells get prompt marks, cwd and exit codes injected at spawn.
     #[serde(default = "default_true")]
     pub shell_integration: bool,
+    /// Colour the command line's tokens as you type.
+    #[serde(default = "default_true")]
+    pub highlight: bool,
+    /// Ghost the history entry that continues what's typed; Right/End accepts.
+    #[serde(default = "default_true")]
+    pub predict: bool,
 }
 
 fn default_true() -> bool {
@@ -230,6 +236,8 @@ impl Default for Behavior {
             atlas: AtlasMode::Planet,
             outside: Outside::Little,
             shell_integration: true,
+            highlight: true,
+            predict: true,
         }
     }
 }
@@ -317,6 +325,8 @@ pub enum Hit {
     /// Set the selected token to this colour.
     TokSet(Color),
     ShellInt(bool),
+    Highlight(bool),
+    Predict(bool),
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
     HdrDateline(bool),
@@ -566,6 +576,8 @@ impl App {
             Hit::TokSel(t) => format!("edit {:?}", t).to_lowercase(),
             Hit::TokSet(c) => format!("set to {}", surface::hex(c)),
             Hit::ShellInt(b) => if b { "shell integration auto".into() } else { "shell integration off".into() },
+            Hit::Highlight(b) => if b { "highlight the command line".into() } else { "plain command line".into() },
+            Hit::Predict(b) => if b { "predictions on".into() } else { "predictions off".into() },
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
             Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
             Hit::HdrDateline(b) => if b { "dateline on".into() } else { "dateline off".into() },
@@ -835,6 +847,8 @@ impl App {
             }
             Hit::TokSet(c) => self.set_tok(c),
             Hit::ShellInt(b) => self.behavior.shell_integration = b,
+            Hit::Highlight(b) => self.behavior.highlight = b,
+            Hit::Predict(b) => self.behavior.predict = b,
             Hit::HdrStyle(s) => {
                 self.header.style = s;
                 if s == HeaderStyle::Rail && self.header.style != s {
@@ -1763,6 +1777,11 @@ impl App {
                 )];
                 // Shell integration: what each shell gets.
                 v.insert(0, ("".into(), Info("prompt marks · cwd · exit codes · new tabs open where you are · jump to prompts · copy a command's output".into())));
+                v.insert(1, (
+                    "COMMAND LINE".into(),
+                    Choice(vec![("HIGHLIGHT".into(), Hit::Highlight(!self.behavior.highlight), self.behavior.highlight), ("PREDICT".into(), Hit::Predict(!self.behavior.predict), self.behavior.predict)]),
+                ));
+                v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens coloured as you type; the history entry that continues your line ghosts after the caret, Right or End accepts".into())));
                 v.insert(0, (
                     "SHELL INTEGRATION".into(),
                     Choice(vec![("AUTO".into(), Hit::ShellInt(true), self.behavior.shell_integration), ("OFF".into(), Hit::ShellInt(false), !self.behavior.shell_integration)]),
