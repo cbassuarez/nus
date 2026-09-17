@@ -512,6 +512,8 @@ pub mod icons {
     icon!(CHAT, "chat-circle-dots");
     icon!(COOKIE, "cookie");
     icon!(FOLDER, "folder-open");
+    icon!(FOLDER_SIMPLE, "folder-simple");
+    icon!(GITHUB, "github-logo");
     icon!(SHIELD, "shield-check");
     icon!(DOWNLOAD, "download-simple");
     icon!(OPEN_EXTERNAL, "arrow-square-out");

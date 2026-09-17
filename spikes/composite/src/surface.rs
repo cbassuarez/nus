@@ -519,6 +519,16 @@ chains = {
   review = { "new terminal", "run git status", "open https://github.com/pulls", "tile" },
   docs = { "open https://docs.rs", "open https://developer.mozilla.org", "tile" },
 }
+
+-- folders: live folders in the sidebar, under the tabs. Each is a list of
+-- { title, url, detail } or a function returning one (polled each minute;
+-- os_hour is there for time-of-day lists). GITHUB and PORTS are built in.
+folders = {
+  reading = {
+    { title = "Rust std", url = "https://doc.rust-lang.org/std/", detail = "docs" },
+    { title = "MDN", url = "https://developer.mozilla.org/", detail = "web" },
+  },
+}
 "##;
 
 /// Starter rule sets the RULES page can write (each replaces new_tab and
@@ -590,13 +600,16 @@ impl Rules {
             let _ = std::fs::create_dir_all(path.parent().unwrap());
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
-        // Older files get the chains example appended, once.
-        if let Ok(src) = std::fs::read_to_string(&path) {
-            if !src.contains("chains") {
-                if let Some(k) = DEFAULT_RULES.find("-- chains:") {
-                    let _ = std::fs::write(&path, format!("{}\n{}", src.trim_end(), &DEFAULT_RULES[k..]));
-                }
+        // Older files get the chains and folders examples appended, once each.
+        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:")] {
+            let Ok(src) = std::fs::read_to_string(&path) else { break };
+            if src.contains(word) {
+                continue;
             }
+            let Some(k) = DEFAULT_RULES.find(marker) else { continue };
+            let block = &DEFAULT_RULES[k..];
+            let block = if word == "chains" { block.split("-- folders:").next().unwrap_or(block) } else { block };
+            let _ = std::fs::write(&path, format!("{}\n{}", src.trim_end(), block.trim_end()));
         }
         let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new() };
         r.reload();
@@ -669,11 +682,42 @@ impl Rules {
                 if n > 0 {
                     names.push(format!("{n} chain{}", if n == 1 { "" } else { "s" }));
                 }
+                let n = g.get::<mlua::Table>("folders").map(|t| t.pairs::<String, mlua::Value>().count()).unwrap_or(0);
+                if n > 0 {
+                    names.push(format!("{n} folder{}", if n == 1 { "" } else { "s" }));
+                }
                 format!("ok · {}", names.join(" "))
             }
             Err(e) => first_line(&e.to_string()),
         };
         self.lua = lua;
+    }
+
+    /// The `folders` table: name → items (a list, or a function returning
+    /// one), sorted by name.
+    pub fn folders(&self) -> Vec<(String, Vec<crate::folders::Item>)> {
+        let Ok(t) = self.lua.globals().get::<mlua::Table>("folders") else { return Vec::new() };
+        let item = |v: mlua::Table| -> Option<crate::folders::Item> {
+            let url: String = v.get("url").ok()?;
+            let title: String = v.get("title").unwrap_or_else(|_| url.clone());
+            let detail: String = v.get("detail").unwrap_or_default();
+            Some(crate::folders::Item { title, url, detail })
+        };
+        let mut out: Vec<(String, Vec<crate::folders::Item>)> = t
+            .pairs::<String, mlua::Value>()
+            .filter_map(|p| p.ok())
+            .filter_map(|(name, v)| {
+                let list: mlua::Table = match v {
+                    mlua::Value::Table(t) => t,
+                    mlua::Value::Function(f) => f.call::<mlua::Table>(()).ok()?,
+                    _ => return None,
+                };
+                let items: Vec<crate::folders::Item> = list.sequence_values::<mlua::Table>().filter_map(|r| r.ok()).filter_map(item).collect();
+                Some((name, items))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     /// The `chains` table: name → steps, sorted by name.
@@ -765,7 +809,7 @@ impl Rules {
     }
 }
 
-fn first_line(s: &str) -> String {
+pub(crate) fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").trim().to_string()
 }
 

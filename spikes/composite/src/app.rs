@@ -40,6 +40,8 @@ pub enum PaletteMode {
     /// Name a tab; its icon (an emoji, or any short string).
     RenameTab(usize),
     IconTab(usize),
+    /// Pick a folder for tab i's page, or name a new one.
+    Folder(usize),
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -72,6 +74,9 @@ pub enum Action {
     Compact,
     /// Run a named chain from rules.luau.
     Chain(String),
+    SaveToFolder(usize, usize),
+    OpenItem(usize, usize),
+    SaveToNewFolder(usize, String),
     /// Open settings at a section (and a LOOK tab).
     SettingsAt(usize, Option<usize>),
     ColourTab(usize, Option<nus_render::Color>),
@@ -286,6 +291,12 @@ pub enum SideHit {
     TabClose(usize),
     /// Tile this tab with the selection, or untile it.
     TabTile(usize),
+    /// Save this tab's page into a folder (the palette picks which).
+    TabFolder(usize),
+    /// A folder's head (fold), an item (open), an item's × (remove).
+    Folder(usize),
+    FolderItem(usize, usize),
+    FolderDrop(usize, usize),
     /// The caret on a node: fold or unfold its subtree.
     Fold(usize),
     /// Hot swapper rows.
@@ -517,6 +528,10 @@ pub struct App {
     pub peek_anim: Anim,
     /// The compact column's hovered row, for its tooltip after the panes.
     pub compact_tip: Option<(usize, f32)>,
+    /// Folders under the tabs: plain ones (saved pages) and live ones.
+    pub folders: Vec<crate::folders::Folder>,
+    pub next_folder_id: u64,
+    pub live: crate::folders::Live,
     /// A right-click asked for a paste; answered in tick.
     pub paste_request: bool,
     /// Downloads list in the footer.
@@ -713,6 +728,9 @@ impl App {
             resize_cursor: None,
             peek_anim: Anim::at(0.0),
             compact_tip: None,
+            folders: Vec::new(),
+            next_folder_id: 100,
+            live: crate::folders::start(),
             drag: None,
             drag_armed: None,
             paste_request: false,
@@ -822,6 +840,7 @@ impl App {
         app.set_mode(mode);
         app.layout();
         app.apply_term_resizes(true);
+        app.load_folders();
         app.refresh_icon();
         app.load_avatar();
         if app.behavior.startup_sound {
@@ -1150,6 +1169,7 @@ impl App {
             self.paste_request = false;
             self.paste_into_shell();
         }
+        self.tend_folders();
         // A held NEW TAB fans the kinds out.
         if let Some((at, SideHit::NewShell)) = self.press {
             if at.elapsed().as_millis() >= 240 && !self.kinds_menu {
@@ -2646,7 +2666,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon" };
+            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -3136,6 +3156,11 @@ impl App {
             }
             self.side_hits.push((r, SideHit::NewShell));
         }
+        // Folders, under the tabs, down to the footer.
+        let folders_top = g.next_y + if self.header.next_row { row_h } else { 0.0 };
+        scene.layer(Some(Rect::new(sb.x, folders_top, sb.w, (g.foot_y - folders_top).max(0.0))));
+        self.draw_folders(scene, sb, folders_top, g.foot_y - self.px(4.0));
+        scene.layer(None);
 
         // Footer: one row of verbs. Avatar · new tab · recently closed · downloads · settings.
         let fy = g.foot_y;
@@ -3350,6 +3375,13 @@ impl App {
                 let c = if k == 0 { None } else { crate::surface::SWATCHES.get(k - 1).map(|s| s.1) };
                 self.run(Action::ColourTab(i, c));
             }
+            SideHit::TabFolder(i) => {
+                self.close_menus();
+                self.open_palette(PaletteMode::Folder(i));
+            }
+            SideHit::Folder(fi) => self.toggle_folder(fi),
+            SideHit::FolderItem(fi, k) => self.open_item(fi, k),
+            SideHit::FolderDrop(fi, k) => self.remove_from_folder(fi, k),
             SideHit::TabTile(i) => {
                 self.close_menus();
                 if self.selected.iter().any(|&k| k != i) {
@@ -3794,7 +3826,8 @@ impl App {
         } else {
             None
         };
-        let h_full = row * (4.0 + if tile_row.is_some() { 1.0 } else { 0.0 }) + self.px(40.0);
+        let page = matches!(self.tabs[i].left, Pane::Web(_));
+        let h_full = row * (4.0 + if tile_row.is_some() { 1.0 } else { 0.0 } + if page { 1.0 } else { 0.0 }) + self.px(40.0);
         let h = h_full * k;
         // Rises from under the row; flips up when there's no room below.
         let y0 = if top + h_full > sb.bottom() - self.px(m::FOOT_H) { top - row - h_full } else { top };
@@ -3851,6 +3884,10 @@ impl App {
         y += self.px(40.0);
         if let Some(text) = &tile_row {
             item(self, scene, nus_render::text::icons::TILES, text, if text == "UNTILE" { "" } else { "CTRL+SHIFT+D" }, SideHit::TabTile(i), y);
+            y += row;
+        }
+        if page {
+            item(self, scene, nus_render::text::icons::FOLDER_SIMPLE, "SAVE TO FOLDER", "", SideHit::TabFolder(i), y);
             y += row;
         }
         let pinned = self.tabs[i].pinned;
@@ -4504,6 +4541,16 @@ impl App {
                         rows.push(row("·", label, a));
                     }
                 }
+                // Folder items, by title or folder name.
+                if !q.is_empty() {
+                    for (fi, f) in self.folders.iter().enumerate() {
+                        for (k, it) in f.items.iter().enumerate() {
+                            if hit(&it.title) || hit(&f.name) || hit(&it.detail) {
+                                rows.push(row("▸", format!("{} · {} · {}", f.name, it.title, it.detail), Action::OpenItem(fi, k)));
+                            }
+                        }
+                    }
+                }
                 // Chains from rules.luau: "chain <name>" or the name.
                 for (name, steps) in self.rules.chains() {
                     let label = format!("chain {name} · {}", steps.join(" → "));
@@ -4565,6 +4612,18 @@ impl App {
                     rows.push(row("·", format!("name this tab · now “{now}” · empty = the page's own"), Action::NameTab(i, String::new())));
                 } else {
                     rows.push(row("→", format!("call this tab “{q}”"), Action::NameTab(i, q.to_string())));
+                }
+            }
+            PaletteMode::Folder(i) => {
+                for (fi, f) in self.folders.iter().enumerate() {
+                    if f.kind == crate::folders::Kind::Plain && hit(&f.name) {
+                        rows.push(row("▸", format!("{} · {} saved", f.name, f.items.len()), Action::SaveToFolder(i, fi)));
+                    }
+                }
+                if !q.is_empty() {
+                    rows.push(row("+", format!("new folder “{}”", q.to_uppercase()), Action::SaveToNewFolder(i, q.to_string())));
+                } else if !self.folders.iter().any(|f| f.kind == crate::folders::Kind::Plain) {
+                    rows.push(row("+", "new folder · type a name".into(), Action::SaveToNewFolder(i, "SAVED".into())));
                 }
             }
             PaletteMode::IconTab(i) => {
@@ -4656,6 +4715,12 @@ impl App {
             Action::KeepPeek => self.keep_peek(),
             Action::Compact => self.toggle_compact(),
             Action::Chain(name) => self.run_chain(&name),
+            Action::SaveToFolder(i, fi) => self.save_to_folder(i, fi),
+            Action::OpenItem(fi, k) => self.open_item(fi, k),
+            Action::SaveToNewFolder(i, name) => {
+                let fi = self.new_folder(&name);
+                self.save_to_folder(i, fi);
+            }
             Action::SettingsAt(sec, tab) => self.open_settings_at(sec, tab),
             Action::Tile => self.tile_selected(),
             Action::Untile => self.untile(),
@@ -5907,7 +5972,7 @@ impl App {
 
         // A menu is up: a click elsewhere closes it.
         if pressed && (self.win_menu || self.kinds_menu || self.dl_menu || self.tab_menu.is_some()) {
-            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::DlOpen(_) | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_)));
+            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::DlOpen(_) | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_) | SideHit::TabFolder(_)));
             if !on_menu {
                 self.close_menus();
             }
@@ -5947,7 +6012,7 @@ impl App {
         if pressed && button == MouseButton::Left && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             let sb = self.sidebar_rect();
             let g = self.sidebar_geometry();
-            if let Some(&(_, hit)) = self.side_hits.iter().find(|(r, _)| r.contains(x, y)) {
+            if let Some(&(_, hit)) = self.side_hits.iter().rev().find(|(r, _)| r.contains(x, y)) {
                 self.side_action(hit, true);
                 self.dirty = true;
                 return;
@@ -6315,7 +6380,7 @@ fn discover_llm_tools() -> Vec<(String, String)> {
     v
 }
 
-const SYSTEM_PROCS: &[&str] = &["system", "svchost", "lsass", "wininit", "services", "spoolsv", "dns", "rpcbind", "systemd", "cupsd", "launchd", "rapportd", "controlce", "sharingd"];
+pub(crate) const SYSTEM_PROCS: &[&str] = &["system", "svchost", "lsass", "wininit", "services", "spoolsv", "dns", "rpcbind", "systemd", "cupsd", "launchd", "rapportd", "controlce", "sharingd"];
 
 /// Local/private destinations get the safety tape.
 fn is_local(url: &str) -> bool {

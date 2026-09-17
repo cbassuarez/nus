@@ -142,6 +142,10 @@ impl App {
                 S::TabColour(_, k) => format!("tab colour {}", crate::surface::SWATCHES.get(k - 1).map(|s| s.0).unwrap_or("")),
                 S::TabPin(i) => (if self.tabs.get(i).map(|t| t.pinned).unwrap_or(false) { "unpin tab" } else { "pin tab" }).into(),
                 S::TabClose(i) => format!("close tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
+                S::TabFolder(_) => "save to a folder".into(),
+                S::Folder(fi) => format!("folder {}", self.folders.get(fi).map(|f| f.name.clone()).unwrap_or_default()),
+                S::FolderItem(fi, k) => self.folders.get(fi).and_then(|f| f.items.get(k)).map(|i| i.title.clone()).unwrap_or_default(),
+                S::FolderDrop(_, _) => "remove from folder".into(),
                 S::TabTile(i) => (if self.is_tiled(i) && self.selected.is_empty() { "untile" } else { "tile with the selected tabs" }).into(),
             };
             let id = fresh(&mut map, Target::Side(hit));

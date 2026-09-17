@@ -260,8 +260,13 @@ impl App {
         let sleep_after = self.behavior.sleep_after_min;
         let archive_after = self.behavior.archive_after_h;
         let mut archive: Vec<usize> = Vec::new();
+        let kept: Vec<String> = self.folders.iter().filter(|f| f.kind == crate::folders::Kind::Plain).flat_map(|f| f.items.iter().map(|i| i.url.clone())).collect();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             if i == self.active || tab.pinned {
+                continue;
+            }
+            // A page kept in a folder never archives.
+            if matches!(&tab.left, Pane::Web(w) if kept.contains(&w.tab.shared.borrow().url)) {
                 continue;
             }
             let idle_min = tab.last_active.elapsed().as_secs_f32() / 60.0;

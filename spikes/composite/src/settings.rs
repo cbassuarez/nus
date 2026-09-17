@@ -708,7 +708,10 @@ impl App {
             Hit::PromptUrl(p) => self.behavior.prompt_url = p,
             Hit::CloseAsks(a) => self.behavior.close_asks = a,
             Hit::DefaultProfile(i) => self.behavior.default_profile = i,
-            Hit::ReloadRules => self.rules.reload(),
+            Hit::ReloadRules => {
+                self.rules.reload();
+                self.refresh_rules_folders();
+            }
             Hit::OpenRules => {
                 let path = self.rules.path.to_string_lossy().to_string();
                 let cmd = if cfg!(target_os = "windows") {
@@ -723,6 +726,7 @@ impl App {
             Hit::ResetRules => {
                 let _ = std::fs::write(&self.rules.path, surface::DEFAULT_RULES);
                 self.rules.reload();
+                self.refresh_rules_folders();
             }
             Hit::Tile(k) => {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
