@@ -344,6 +344,7 @@ pub enum Hit {
     /// Set the selected token to this colour.
     TokSet(Color),
     ShellInt(bool),
+    Welcome,
     Block(bool),
     SleepAfter(u32),
     ArchiveAfter(u32),
@@ -598,6 +599,7 @@ impl App {
             Hit::TokSel(t) => format!("edit {:?}", t).to_lowercase(),
             Hit::TokSet(c) => format!("set to {}", surface::hex(c)),
             Hit::ShellInt(b) => if b { "shell integration auto".into() } else { "shell integration off".into() },
+            Hit::Welcome => "open the welcome page".into(),
             Hit::Block(b) => if b { "content blocking on".into() } else { "content blocking off".into() },
             Hit::SleepAfter(n) => if n == 0 { "never sleep tabs".into() } else { format!("sleep after {n} minutes") },
             Hit::ArchiveAfter(n) => if n == 0 { "never archive".into() } else { format!("archive after {n} hours") },
@@ -872,6 +874,7 @@ impl App {
             }
             Hit::TokSet(c) => self.set_tok(c),
             Hit::ShellInt(b) => self.behavior.shell_integration = b,
+            Hit::Welcome => self.open_welcome(),
             Hit::Block(b) => {
                 self.behavior.block_content = b;
                 crate::browser::BLOCKING.store(b, std::sync::atomic::Ordering::Relaxed);
@@ -1951,6 +1954,7 @@ impl App {
                 ("PREV / NEXT".into(), Info(key("PGUP / PGDN", false))),
                 ("SETTINGS".into(), Info(key(",", false))),
                 ("FULLSCREEN".into(), Info("F11".into())),
+                ("WELCOME".into(), Buttons(vec![("THE TOUR · F1".into(), icons::BOOK, Hit::Welcome)])),
             ],
             _ => vec![
                 ("CHANNEL".into(), Info("GitHub Releases · self-update (v1)".into())),

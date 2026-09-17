@@ -14,6 +14,7 @@ use crate::settings::Hit;
 #[derive(Clone, Copy, Debug)]
 pub enum Target {
     Crumb(CrumbHit),
+    Welcome(usize),
     Side(crate::app::SideHit),
     Row(usize),
     Setting(Hit, f32),
@@ -138,6 +139,16 @@ impl App {
             let id = fresh(&mut map, Target::Side(hit));
             let mut n = Node::new(Role::Button);
             n.set_label(label);
+            n.set_bounds(bounds(r));
+            n.add_action(Action::Click);
+            nodes.push((id, n));
+            side_kids.push(id);
+        }
+        // The welcome page's buttons.
+        for (i, (r, act)) in self.welcome_hits.clone().into_iter().enumerate() {
+            let id = fresh(&mut map, Target::Welcome(i));
+            let mut n = Node::new(Role::Button);
+            n.set_label(format!("welcome {:?}", act).to_lowercase());
             n.set_bounds(bounds(r));
             n.add_action(Action::Click);
             nodes.push((id, n));
@@ -306,6 +317,11 @@ impl App {
                 self.activate(i);
             }
             (Action::Click, Target::Side(h)) => self.side_action(h, false),
+            (Action::Click, Target::Welcome(i)) => {
+                if let Some((_, act)) = self.welcome_hits.get(i).cloned() {
+                    self.welcome_act(act);
+                }
+            }
             (Action::Click, Target::Setting(hit, x)) => {
                 self.apply_setting(hit, x);
                 self.save_prefs();

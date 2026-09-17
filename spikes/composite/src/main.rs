@@ -6,6 +6,7 @@ mod shell;
 mod termui;
 mod predict;
 mod webui;
+mod welcome;
 mod windows;
 mod anim;
 mod app;

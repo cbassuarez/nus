@@ -58,6 +58,7 @@ pub enum Action {
     Pip,
     RenameWindow(String),
     NewWindow,
+    Welcome,
 }
 
 pub use crate::surface::Shell;
@@ -216,6 +217,8 @@ pub const WIDE: f32 = 1200.0;
 /// as they happen. Lives in `App::hints`; this is just its rect.
 pub struct HintsPane {
     pub rect: Rect,
+    /// Content scroll, physical px.
+    pub scroll: f32,
 }
 
 pub const HINTS: [(&str, &str); 5] = [
@@ -528,6 +531,11 @@ pub struct App {
     /// Onboarding ticks (see HINTS); the panel leaves once all five are set.
     pub hints: [bool; 5],
     pub hint_hits: Vec<(Rect, usize)>,
+    /// The welcome page's controls, the icon texture, a demo waiting.
+    pub welcome_hits: Vec<(Rect, crate::welcome::Act)>,
+    pub welcome_icon_tex: Option<((nus_render::Mode, nus_render::Color), Arc<wgpu::BindGroup>)>,
+    pub welcome_pending: Option<(crate::welcome::Act, Instant)>,
+    pub welcome_reach: f32,
     /// Closing a stack's parent asks first: the parent's index.
     pub confirm_stack: Option<usize>,
     pub window_focused: bool,
@@ -685,6 +693,10 @@ impl App {
             next_id: 1,
             hints: App::load_hints(),
             hint_hits: Vec::new(),
+            welcome_hits: Vec::new(),
+            welcome_icon_tex: None,
+            welcome_pending: None,
+            welcome_reach: 0.0,
             confirm_stack: None,
             window_focused: true,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
@@ -707,17 +719,22 @@ impl App {
         };
         app.ordinal = ordinal;
         // A second window: one shell, no splash, no session restore, no name.
-        let split = !secondary;
+        let onboarded = App::onboarded();
+        let split = !secondary && onboarded;
         let term = app.new_term_pane(split, 0)?;
-        let right = if secondary {
+        let right = if secondary || !onboarded {
             None
-        } else if App::onboarded() {
-            app.new_web_pane("https://docs.rs/wgpu/latest/wgpu/").map(Pane::Web)
         } else {
-            Some(Pane::Hints(HintsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0) }))
+            app.new_web_pane("https://docs.rs/wgpu/latest/wgpu/").map(Pane::Web)
         };
         let first = app.make_tab(Pane::Term(term), right);
         app.tabs.push(first);
+        // First launch: the welcome page as its own tab, in front.
+        if !secondary && !onboarded {
+            let w = app.make_tab(Pane::Hints(HintsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), scroll: 0.0 }), None);
+            app.tabs.push(w);
+            app.active = 1;
+        }
         app.apply_prefs(crate::prefs::Prefs::load());
         if secondary {
             app.splash = None;
@@ -1061,6 +1078,7 @@ impl App {
             self.register_window();
         }
         self.tend_idle_tabs();
+        self.welcome_tick();
         if self.paste_request {
             self.paste_request = false;
             self.paste_into_shell();
@@ -1255,7 +1273,7 @@ impl App {
 
     /// Ctrl+Shift+R: extract the focused page's article and set it in
     /// Newsreader over the page; again to go back.
-    fn toggle_reader(&mut self) {
+    pub(crate) fn toggle_reader(&mut self) {
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let pane = match (&tab.left, tab.focus_right) {
             (_, true) if tab.right.is_some() => tab.right.as_mut().unwrap(),
@@ -3602,7 +3620,7 @@ impl App {
     }
 
     /// Ctrl+, — open (or switch to) the settings tab.
-    fn open_settings(&mut self) {
+    pub(crate) fn open_settings(&mut self) {
         self.refresh_register_note();
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
             return self.activate(i);
@@ -3665,6 +3683,15 @@ impl App {
             if matches!(t.right, Some(Pane::Hints(_))) {
                 t.right = None;
                 t.focus_right = false;
+            }
+        }
+        // As a tab: close it, back to the last tab.
+        if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Hints(_))) {
+            if self.tabs.len() > 1 {
+                self.tabs.remove(i);
+                self.tab_removed(i);
+                let next = self.mru.first().copied().unwrap_or(0).min(self.tabs.len() - 1);
+                self.activate(next);
             }
         }
         self.layout();
@@ -3750,7 +3777,9 @@ impl App {
             }
             Pane::Hints(p) => {
                 let r = p.rect;
-                self.draw_hints(scene, r);
+                let scroll = p.scroll;
+                let reach = self.draw_welcome(scene, r, scroll);
+                self.welcome_reach = reach;
             }
             Pane::Term(p) => {
                 let r = p.rect;
@@ -3998,6 +4027,9 @@ impl App {
         let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
         match mode {
             PaletteMode::Go => {
+                if hit("welcome") || hit("help") || hit("tour") {
+                    rows.push(row("?", "welcome · the tour of nus (F1)".into(), Action::Welcome));
+                }
                 // Recent commands from the focused shell: run again.
                 if let Some(tab) = self.tabs.get(self.active) {
                     if let Pane::Term(t) = &tab.left {
@@ -4128,7 +4160,7 @@ impl App {
         tab.focus_right = false;
     }
 
-    fn open_palette(&mut self, mode: PaletteMode) {
+    pub(crate) fn open_palette(&mut self, mode: PaletteMode) {
         if mode == PaletteMode::Go {
             self.tick_hint(0);
         }
@@ -4156,6 +4188,7 @@ impl App {
                 self.dirty = true;
             }
             Action::NewWindow => self.new_window_request = true,
+            Action::Welcome => self.open_welcome(),
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
             Action::NewBrowser(url) => {
                 self.tick_hint(1);
@@ -4296,6 +4329,9 @@ impl App {
         };
         if pressed && code == Some(KeyCode::F11) && !ctrl && !shift {
             return self.toggle_fullscreen();
+        }
+        if pressed && code == Some(KeyCode::F1) && !ctrl && !shift {
+            return self.open_welcome();
         }
         if pressed && code == Some(KeyCode::F2) && !ctrl && !shift && self.palette.is_none() {
             return self.open_palette(PaletteMode::Rename);
@@ -5181,13 +5217,9 @@ impl App {
             return;
         }
 
-        // Onboarding foot: skip / close.
-        if pressed && button == MouseButton::Left && self.hints_open() {
-            if let Some(&(_, k)) = self.hint_hits.iter().find(|(r, _)| r.contains(x, y)) {
-                if k == usize::MAX {
-                    return self.dismiss_hints();
-                }
-            }
+        // The welcome page's controls.
+        if pressed && button == MouseButton::Left && self.hints_open() && self.welcome_click(x, y) {
+            return;
         }
 
         // Settings: chips, sliders, swatches, buttons.
@@ -5378,6 +5410,15 @@ impl App {
                     };
                     let max = (self.settings_reach - s.rect.h).max(0.0);
                     s.scroll = (s.scroll - dy).clamp(0.0, max);
+                    self.dirty = true;
+                }
+                Pane::Hints(h) if h.rect.contains(x, y) => {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y * 60.0 * self.scale,
+                        MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                    let max = (self.welcome_reach - h.rect.h).max(0.0);
+                    h.scroll = (h.scroll - dy).clamp(0.0, max);
                     self.dirty = true;
                 }
                 Pane::Web(w) if w.page.contains(x, y) && w.reader.is_some() => {
