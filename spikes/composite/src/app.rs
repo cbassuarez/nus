@@ -58,6 +58,8 @@ pub enum Action {
     Hoist,
     BlockMarkdown(String),
     BlockGist(String),
+    /// A skill, with a subject typed after its name.
+    Skill(usize, String),
     /// Type a command into the focused (or a new) terminal and run it.
     RunInShell(String),
     ToggleSplit,
@@ -804,6 +806,9 @@ pub struct App {
     pub closed: Vec<Closed>,
     /// Local assistants on PATH: (name, command template with {q}).
     pub llm_tools: Vec<(String, String)>,
+    /// Skills from rules.luau: saved prompts with their own context.
+    pub skills: Vec<crate::askctx::Skill>,
+    pub skills_src_len: usize,
     /// Listening ports, refreshed when the palette opens.
     pub ports: Vec<nus_pty::ListeningPort>,
 
@@ -1006,6 +1011,8 @@ impl App {
             selected: Default::default(),
             closed: Vec::new(),
             llm_tools: discover_llm_tools(),
+            skills: Vec::new(),
+            skills_src_len: usize::MAX,
             ports: Vec::new(),
             mods: ModifiersState::empty(),
             mouse: (0.0, 0.0),
@@ -1397,6 +1404,11 @@ impl App {
         self.prompt_lsp_tick();
         self.ports_tick();
         self.sync_taskbar_progress();
+        // Skills follow the rules file.
+        if self.skills_src_len != self.rules.source.len() {
+            self.skills_src_len = self.rules.source.len();
+            self.skills = self.rules.skills();
+        }
         // Commands the rules asked for.
         let queued: Vec<(String, serde_json::Value)> = std::mem::take(&mut *self.rules.queued.borrow_mut());
         for (cmd, args) in queued {
@@ -5273,6 +5285,15 @@ impl App {
         } else {
             rows.push(row("?", text, open(url)));
         }
+        // A skill by name: `ask explain`, `ask port 5173`.
+        if let Some(rest) = q.strip_prefix("ask ").map(str::trim) {
+            let (name, subject) = rest.split_once(' ').map(|(a, b)| (a, b.trim())).unwrap_or((rest, ""));
+            for (i, sk) in self.skills.iter().enumerate() {
+                if sk.name.starts_with(name) {
+                    rows.push(row("*", format!("ask · {} · {}", sk.name, crate::app::fit_cmd(&sk.prompt, 50)), Action::Skill(i, subject.to_string())));
+                }
+            }
+        }
         rows.push(row("*", format!("ask chatgpt “{q}”"), open(format!("https://chatgpt.com/?q={}", enc(q)))));
         rows.push(row("*", format!("ask claude “{q}”"), open(format!("https://claude.ai/new?q={}", enc(q)))));
         for (name, template) in &self.llm_tools {
@@ -5333,6 +5354,18 @@ impl App {
             Action::Compact => self.toggle_compact(),
             Action::Focus => self.toggle_focus(),
             Action::Ask => self.toggle_ask(),
+            Action::Skill(i, subject) => {
+                if let Some(t) = self.ask_term() {
+                    if t.ask.is_none() {
+                        t.ask = Some(crate::ask::Ask::new());
+                    }
+                    if let Some(a) = t.ask.as_mut() {
+                        a.input = subject;
+                    }
+                }
+                self.layout();
+                self.ask_send_with(Some(i));
+            }
             Action::Container(n) => self.set_container(&n),
             Action::NewContainer(n) => self.new_container(&n),
             Action::ReopenIn(n) => self.reopen_in(&n),

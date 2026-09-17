@@ -30,6 +30,7 @@ mod blocks;
 mod blockpage;
 mod remote;
 mod taskbar;
+mod askctx;
 mod hotkey;
 mod anim;
 mod app;

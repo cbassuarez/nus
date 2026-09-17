@@ -530,6 +530,17 @@ folders = {
   },
 }
 
+-- skills: saved prompts for the assistant, each a chip in the panel and a
+-- palette row (ask <name>). context picks what goes along: shell, block,
+-- page, tabs, editor, memory. Leave it out to use the chips as they are.
+skills = {
+  explain = { prompt = "Explain what went wrong in the command in focus and how to fix it.", context = { "shell", "block" } },
+  summarize = { prompt = "Summarize the page beside the shell in five lines.", context = { "page" } },
+  commit = { prompt = "Write a conventional commit message for the staged changes; run `git diff --staged` first if you need to.", context = { "shell", "block" } },
+  compare = { prompt = "Compare the open tabs: what each is for and which to read first.", context = { "tabs" } },
+  port = { prompt = "What is running on the port named in the question, and how do I stop or restart it?", context = { "shell", "block" } },
+}
+
 -- nus.run(cmd, args): anything the nus command can do, from a rule —
 -- nus.run("open", { url = "http://localhost:5173/", split = true }),
 -- nus.run("theme", { name = "darkroom" }), nus.run("hatch", { ["do"] = "show" }).
@@ -656,7 +667,7 @@ impl Rules {
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
         // Older files get the chains and folders examples appended, once each.
-        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("on_block", "-- on_block(b):"), ("ports", "-- ports:")] {
+        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("skills", "-- skills:"), ("on_block", "-- on_block(b):"), ("ports", "-- ports:")] {
             let Ok(src) = std::fs::read_to_string(&path) else { break };
             if src.contains(word) {
                 continue;
@@ -665,7 +676,8 @@ impl Rules {
             let block = &DEFAULT_RULES[k..];
             let block = match word {
                 "chains" => block.split("-- folders:").next().unwrap_or(block),
-                "folders" => block.split("-- on_block(b):").next().unwrap_or(block),
+                "folders" => block.split("-- skills:").next().unwrap_or(block),
+                "skills" => block.split("-- nus.run(cmd, args):").next().unwrap_or(block),
                 "on_block" => block.split("-- ports:").next().unwrap_or(block),
                 _ => block,
             };
@@ -844,6 +856,31 @@ impl Rules {
                 Overrides::default()
             }
         }
+    }
+
+    /// The `skills` table: name → { prompt, context = {"shell","block","page","tabs","editor","memory"} }.
+    pub fn skills(&self) -> Vec<crate::askctx::Skill> {
+        let Ok(t) = self.lua.globals().get::<mlua::Table>("skills") else { return Vec::new() };
+        let mut out: Vec<crate::askctx::Skill> = t
+            .pairs::<String, mlua::Table>()
+            .filter_map(|p| p.ok())
+            .filter_map(|(name, v)| {
+                let prompt: String = v.get("prompt").ok()?;
+                let context: Vec<crate::askctx::Ctx> = v
+                    .get::<mlua::Table>("context")
+                    .ok()
+                    .map(|c| {
+                        c.sequence_values::<String>()
+                            .filter_map(|s| s.ok())
+                            .filter_map(|s| crate::askctx::Ctx::ALL.iter().copied().find(|c| c.key() == s))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(crate::askctx::Skill { name, prompt, context })
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// The `on_progress` hook: a shell's progress finished or errored.

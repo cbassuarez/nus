@@ -108,6 +108,10 @@ fn default_ports_poll() -> u8 {
     1
 }
 
+fn default_ask_ctx() -> Vec<String> {
+    vec!["shell".into(), "block".into(), "page".into()]
+}
+
 pub fn default_hidden_processes() -> Vec<String> {
     crate::app::SYSTEM_PROCS.iter().map(|s| s.to_string()).collect()
 }
@@ -309,6 +313,9 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    /// The assistant's default context, as chip keys (shell, block, page, tabs, editor, memory).
+    #[serde(default = "default_ask_ctx")]
+    pub ask_ctx: Vec<String>,
     /// OSC 9;4 progress: in the sidebar row and strip crumb, on the taskbar button.
     #[serde(default = "default_true")]
     pub progress_sidebar: bool,
@@ -483,6 +490,7 @@ impl Default for Behavior {
             fold_over: 0,
             progress_sidebar: true,
             progress_taskbar: true,
+            ask_ctx: default_ask_ctx(),
             ports_grouping: PortsGrouping::Origin,
             ports_open: PortsOpen::Split,
             ports_poll: 1,
@@ -623,6 +631,8 @@ pub enum Hit {
     FoldOver(u32),
     ProgressSidebar(bool),
     ProgressTaskbar(bool),
+    AskCtx(crate::askctx::Ctx),
+    ForgetMemory,
     PortsGrouping(PortsGrouping),
     PortsOpen(PortsOpen),
     PortsPoll(u8),
@@ -916,6 +926,8 @@ impl App {
             Hit::FoldOver(n) => if n == 0 { "never fold on its own".into() } else { format!("fold output over {n} lines") },
             Hit::ProgressSidebar(b) => if b { "progress in the sidebar".into() } else { "progress in the pane only".into() },
             Hit::ProgressTaskbar(b) => if b { "progress on the taskbar".into() } else { "taskbar left alone".into() },
+            Hit::AskCtx(c) => format!("ask context · {}", c.key()),
+            Hit::ForgetMemory => "memory cleared".into(),
             Hit::PortsGrouping(g) => g.name().into(),
             Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
             Hit::PortsPoll(n) => format!("poll every {n}s"),
@@ -1233,6 +1245,17 @@ impl App {
             Hit::FoldOver(n) => self.behavior.fold_over = n,
             Hit::ProgressSidebar(b) => self.behavior.progress_sidebar = b,
             Hit::ProgressTaskbar(b) => self.behavior.progress_taskbar = b,
+            Hit::AskCtx(c) => {
+                let k = c.key().to_string();
+                if let Some(i) = self.behavior.ask_ctx.iter().position(|x| *x == k) {
+                    self.behavior.ask_ctx.remove(i);
+                } else {
+                    self.behavior.ask_ctx.push(k);
+                }
+            }
+            Hit::ForgetMemory => {
+                let _ = std::fs::write(std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), "");
+            }
             Hit::PortsGrouping(g) => self.behavior.ports_grouping = g,
             Hit::PortsOpen(o) => self.behavior.ports_open = o,
             Hit::PortsPoll(n) => self.behavior.ports_poll = n,
@@ -2486,6 +2509,20 @@ impl App {
                 v.extend(self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.caps()), Info(c.clone()))));
                 if self.llm_tools.is_empty() {
                     v.push(("LOCAL".into(), Info("none on PATH (claude, codex, ollama are detected)".into())));
+                }
+                let on = |c: crate::askctx::Ctx| self.behavior.ask_ctx.iter().any(|k| k == c.key());
+                v.push((
+                    "GOES ALONG".into(),
+                    Choice(crate::askctx::Ctx::ALL.iter().map(|&c| (c.key().to_uppercase(), Hit::AskCtx(c), on(c))).collect()),
+                ));
+                v.push(("".into(), Info("the default chips on a new panel: this shell, the block in focus, the page beside · tabs and the editor are a tap away · a skill's own context overrides".into())));
+                let mem = crate::askctx::read_memory();
+                let n = mem.lines().filter(|l| !l.trim().is_empty()).count();
+                v.push(("MEMORY".into(), Choice(vec![(format!("{n} LINE{} · FORGET ALL", if n == 1 { "" } else { "S" }), Hit::ForgetMemory, false)])));
+                v.push(("".into(), Info(if n == 0 { "nothing remembered yet · the book on an answer keeps its first line in profile/memory.md".into() } else { crate::app::fit_cmd(&mem.replace('\n', " · "), 160) })));
+                let skills = self.rules.skills();
+                if !skills.is_empty() {
+                    v.push(("SKILLS".into(), Info(skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(" · ") + " · from rules.luau · chips in the panel, ask <name> in the palette")));
                 }
                 v.push(("WEB · CHATGPT".into(), Info("https://chatgpt.com/?q=…".into())));
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));

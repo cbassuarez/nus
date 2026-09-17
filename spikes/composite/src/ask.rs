@@ -11,7 +11,7 @@
 //! ANTHROPIC_API_KEY is set. NUS_ASK_CMD overrides with any command that
 //! reads the prompt on stdin and prints markdown.
 
-use crate::app::{Caps, App, Pane, TermPane};
+use crate::app::{IconMotion, Caps, App, Pane, TermPane};
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
 use std::sync::mpsc::{channel, Receiver};
@@ -39,6 +39,12 @@ pub enum AskHit {
     Insert(usize, usize),
     Run(usize, usize),
     Copy(usize, usize),
+    /// A context chip: toggles what goes along.
+    Ctx(crate::askctx::Ctx),
+    /// A skill chip: its prompt, sent with its context.
+    Skill(usize),
+    /// REMEMBER on a turn: the answer's first line goes to memory.
+    Remember(usize),
 }
 
 pub struct Ask {
@@ -51,11 +57,28 @@ pub struct Ask {
     pub rect: Rect,
     /// Copied block, for the moment's CHIP feedback.
     pub copied: Option<(usize, usize, Instant)>,
+    /// What goes along with a question.
+    pub ctx: Vec<crate::askctx::Ctx>,
+    /// A question waiting on the page's text: the eval id, title, url,
+    /// the question, the gathered rest, when it was asked.
+    pub gathering: Option<(i32, String, String, String, crate::askctx::Gathered, Instant, Option<String>)>,
+    /// Turns that went to memory.
+    pub remembered: Vec<usize>,
 }
 
 impl Ask {
     pub fn new() -> Ask {
-        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None }
+        Ask::with_ctx(vec![crate::askctx::Ctx::Shell, crate::askctx::Ctx::Block, crate::askctx::Ctx::Page])
+    }
+
+    /// A panel with the settings' default chips.
+    pub fn from_keys(keys: &[String]) -> Ask {
+        let ctx: Vec<crate::askctx::Ctx> = crate::askctx::Ctx::ALL.iter().copied().filter(|c| keys.iter().any(|k| k == c.key())).collect();
+        Ask::with_ctx(ctx)
+    }
+
+    pub fn with_ctx(ctx: Vec<crate::askctx::Ctx>) -> Ask {
+        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, ctx, gathering: None, remembered: Vec::new() }
     }
 }
 
@@ -251,11 +274,12 @@ impl App {
 
     /// Ctrl+Shift+?: open the panel (and focus its field), or close it.
     pub(crate) fn toggle_ask(&mut self) {
+        let keys = self.behavior.ask_ctx.clone();
         let Some(t) = self.ask_term() else { return };
         if t.ask.is_some() {
             t.ask = None;
         } else {
-            t.ask = Some(Ask::new());
+            t.ask = Some(Ask::from_keys(&keys));
         }
         self.play_event("toggle");
         self.layout();
@@ -264,9 +288,10 @@ impl App {
 
     /// A question from remote control: the panel opens with it and sends.
     pub(crate) fn ask_from_remote(&mut self, q: &str) {
+        let keys = self.behavior.ask_ctx.clone();
         let Some(t) = self.ask_term() else { return };
         if t.ask.is_none() {
-            t.ask = Some(Ask::new());
+            t.ask = Some(Ask::from_keys(&keys));
         }
         if let Some(ask) = t.ask.as_mut() {
             ask.input = q.to_string();
@@ -278,55 +303,103 @@ impl App {
     /// Send the field: the prompt gets the shell, OS, cwd and the last
     /// command's tail; a worker runs the backend.
     pub(crate) fn ask_send(&mut self) {
-        let backend = backends().into_iter().next();
-        let profile = self.tabs.get(self.active).and_then(|t| match &t.left {
-            Pane::Term(p) => self.profiles.get(p.profile).map(|p| p.name.clone()),
-            _ => None,
-        }).unwrap_or_else(|| "shell".into());
-        let Some(t) = self.ask_term() else { return };
-        let Some(ask) = t.ask.as_mut() else { return };
-        let q = ask.input.trim().to_string();
-        if q.is_empty() || ask.pending.is_some() {
-            return;
-        }
-        let Some(backend) = backend else {
-            ask.turns.push(Turn { q: q.clone(), blocks: Vec::new(), error: Some("no assistant on this machine · claude, codex, copilot, ollama, or ANTHROPIC_API_KEY".into()) });
-            ask.input.clear();
+        self.ask_send_with(None);
+    }
+
+    /// Send the field, or a skill's prompt with the field as its subject.
+    /// The context the chips ask for goes along; the page's text arrives
+    /// a tick later, so the prompt is built in `tend_ask`.
+    pub(crate) fn ask_send_with(&mut self, skill: Option<usize>) {
+        let sk = skill.and_then(|i| self.skills.get(i).cloned());
+        let (q, ctx, skill_prompt) = {
+            let Some(t) = self.ask_term() else { return };
+            let Some(ask) = t.ask.as_mut() else { return };
+            if ask.pending.is_some() || ask.gathering.is_some() {
+                return;
+            }
+            let q = ask.input.trim().to_string();
+            let ctx = match &sk {
+                Some(sk) if !sk.context.is_empty() => sk.context.clone(),
+                _ => ask.ctx.clone(),
+            };
+            if q.is_empty() && sk.is_none() {
+                return;
+            }
+            (q, ctx, sk.map(|s| s.prompt))
+        };
+        if backends().is_empty() {
+            if let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) {
+                ask.turns.push(Turn { q: q.clone(), blocks: Vec::new(), error: Some("no assistant on this machine · claude, codex, copilot, ollama, or ANTHROPIC_API_KEY".into()) });
+                ask.input.clear();
+            }
             self.dirty = true;
             return;
-        };
-        // Context: the last command and the tail of its output.
-        let last = t.term.marks.iter().rev().find(|m| m.kind == nus_vt::MarkKind::CommandStart).map(|m| (t.term.command_text(m), t.term.output_text(m)));
-        let cwd = t.cwd.clone().unwrap_or_default();
-        let os = if cfg!(windows) { "Windows 11" } else if cfg!(target_os = "macos") { "macOS" } else { "Linux" };
-        let mut prompt = format!(
-            "You are a terminal assistant inside a {profile} shell on {os}. The user's working directory is {cwd}.\n\
-             Answer the question below for this exact shell. Reply with at most three fenced code blocks, each one complete command (or short script) ready to paste, \
-             each preceded by one short line saying what it does. No preamble, no closing remarks, no headings.\n"
-        );
-        if let Some((cmd, out)) = last {
-            if !cmd.trim().is_empty() {
-                let tail: Vec<&str> = out.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect();
-                prompt.push_str(&format!("\nThe last command was:\n{}\nIts output ended with:\n{}\n", cmd.trim(), tail.join("\n")));
-            }
         }
-        prompt.push_str(&format!("\nQuestion: {q}\n"));
+        let gathered = self.gather_context(&ctx);
+        let page = if ctx.contains(&crate::askctx::Ctx::Page) { self.request_page_text() } else { None };
+        let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) else { return };
+        ask.input.clear();
+        let shown = match &skill_prompt {
+            Some(p) if q.is_empty() => p.chars().take(80).collect(),
+            _ => q.clone(),
+        };
+        ask.turns.push(Turn { q: shown, blocks: Vec::new(), error: None });
+        match page {
+            Some((id, title, url)) => ask.gathering = Some((id, title, url, q, gathered, Instant::now(), skill_prompt)),
+            None => ask.gathering = Some((-1, String::new(), String::new(), q, gathered, Instant::now(), skill_prompt)),
+        }
+        self.play_event("control.press");
+        self.dirty = true;
+    }
+
+    /// The gathered context is complete (or the page timed out): build
+    /// the prompt and fire the backend.
+    fn ask_fire(&mut self, q: String, mut g: crate::askctx::Gathered, page: Option<(String, String, String)>, skill_prompt: Option<String>) {
+        let Some(backend) = backends().into_iter().next() else { return };
+        if let Some(p) = page {
+            g.page = Some(p);
+        }
+        let mut prompt = String::from(
+            "You are the assistant inside nus, a terminal that is also a browser. Answer for exactly this situation. \
+             Reply with at most three fenced code blocks when a command is the answer, each one complete and ready to paste, each preceded by one short line saying what it does; \
+             answer in short plain prose otherwise. No preamble, no closing remarks, no headings.\n\n",
+        );
+        prompt.push_str(&g.render());
+        match (skill_prompt, q.is_empty()) {
+            (Some(p), true) => prompt.push_str(&format!("\nTask: {p}\n")),
+            (Some(p), false) => prompt.push_str(&format!("\nTask: {p}\nAbout: {q}\n")),
+            (None, _) => prompt.push_str(&format!("\nQuestion: {q}\n")),
+        }
         let (tx, rx) = channel();
         let b = backend.clone();
         let p = prompt.clone();
         std::thread::spawn(move || {
             let _ = tx.send(run(&b, &p));
         });
-        ask.pending = Some((rx, Instant::now(), backend.name.clone()));
-        ask.input.clear();
-        ask.turns.push(Turn { q, blocks: Vec::new(), error: None });
-        self.play_event("control.press");
+        if let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) {
+            ask.pending = Some((rx, Instant::now(), backend.name.clone()));
+        }
         self.dirty = true;
     }
 
     /// Once a loop: answers that have arrived.
     pub(crate) fn tend_ask(&mut self) {
         let mut changed = false;
+        // A question waiting on the page's text.
+        let waiting = self.ask_term().and_then(|t| t.ask.as_ref()).and_then(|a| a.gathering.as_ref().map(|g| (g.0, g.5)));
+        if let Some((id, since)) = waiting {
+            let text = if id >= 0 { self.take_page_text(id) } else { Some(String::new()) };
+            let timed_out = since.elapsed().as_millis() > 1500;
+            if text.is_some() || timed_out {
+                if let Some((_, title, url, q, g, _, sk)) = self.ask_term().and_then(|t| t.ask.as_mut()).and_then(|a| a.gathering.take()) {
+                    let page = match text {
+                        Some(t) if id >= 0 && !t.is_empty() => Some((title, url, t)),
+                        _ => None,
+                    };
+                    self.ask_fire(q, g, page, sk);
+                }
+            }
+        }
         for tab in self.tabs.iter_mut() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 let Pane::Term(t) = p else { continue };
@@ -426,6 +499,7 @@ impl App {
         let hit = ask.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h);
         let mut typed: Option<(String, bool)> = None;
         let mut copy: Option<String> = None;
+        let mut sound: Option<&'static str> = None;
         match hit {
             Some(AskHit::Field) | None => ask.focus = true,
             Some(AskHit::Close) => {
@@ -446,13 +520,44 @@ impl App {
                     ask.copied = Some((ti, bi, Instant::now()));
                 }
             }
+            Some(AskHit::Ctx(c)) => {
+                if let Some(i) = ask.ctx.iter().position(|x| *x == c) {
+                    ask.ctx.remove(i);
+                } else {
+                    ask.ctx.push(c);
+                }
+                sound = Some("toggle");
+            }
+            Some(AskHit::Skill(i)) => {
+                self.ask_send_with(Some(i));
+                return true;
+            }
+            Some(AskHit::Remember(ti)) => {
+                // The first prose line of the answer, or the question.
+                let line = ask.turns.get(ti).and_then(|t| {
+                    t.blocks.iter().find_map(|b| match b {
+                        Block::Prose(s) => Some(s.lines().next().unwrap_or("").to_string()),
+                        _ => None,
+                    })
+                }).filter(|s| !s.is_empty()).or_else(|| ask.turns.get(ti).map(|t| t.q.clone()));
+                if let Some(l) = line {
+                    crate::askctx::remember(&l);
+                    if !ask.remembered.contains(&ti) {
+                        ask.remembered.push(ti);
+                    }
+                }
+                sound = Some("copied");
+            }
         }
         if let Some((text, run)) = typed {
             // One line goes to the prompt as is; more lines go as one paste.
             let text = text.replace("\r\n", "\n");
             let bytes = if run { format!("{text}\r") } else { text.clone() };
             let _ = t.pty.write(bytes.replace('\n', "\r").as_bytes());
-            self.play_event("control.release");
+            sound = Some("control.release");
+        }
+        if let Some(s) = sound {
+            self.play_event(s);
         }
         if let Some(text) = copy {
             if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -509,8 +614,12 @@ impl App {
         self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, cx, pr.y + ((head_h - isz) / 2.0).round(), if Rect::new(cx - 6.0, pr.y, isz + 12.0, head_h).contains(mx, my) { ink } else { t.dim });
         ask.hits.push((Rect::new(cx - self.px(8.0), pr.y, isz + self.px(16.0), head_h), AskHit::Close));
         scene.hline(pr.x, pr.y + head_h, pr.w, self.px(m::STRUCTURE), ink);
+        // The chips: what goes along, and the skills.
+        let ctx_now = ask.ctx.clone();
+        let (chips_h, chip_hits) = self.draw_ask_chips(scene, &ctx_now, pr.x + pad, pr.y + head_h + self.px(6.0), pr.w - 2.0 * pad);
+        ask.hits.extend(chip_hits);
         // The field.
-        let fy = pr.y + head_h + self.px(8.0);
+        let fy = pr.y + head_h + self.px(8.0) + chips_h;
         let field = Rect::new(pr.x + pad, fy, pr.w - 2.0 * pad, self.px(28.0));
         let lit = ask.focus && focused;
         scene.outline(field, self.px(if lit { m::STRUCTURE } else { m::HAIRLINE }), if lit { ink } else { t.dim });
@@ -666,23 +775,25 @@ impl App {
                         }
                         scene.layer(Some(view));
                         y += card_h;
-                        // Chips: INSERT · RUN · COPY, and the language, dim.
+                        // Chips: insert · run · copy as icons (the tooltip says which), and the language, dim.
                         let cy = y + self.px(4.0);
                         let ch = self.px(18.0);
                         let mut cx = card.x;
                         let copied = ask.copied.is_some_and(|(a, b, at)| a == ti && b == bi && at.elapsed().as_secs_f32() < 1.2);
-                        for (word, hit) in [("INSERT", AskHit::Insert(ti, bi)), ("RUN", AskHit::Run(ti, bi)), (if copied { "COPIED" } else { "COPY" }, AskHit::Copy(ti, bi))] {
-                            let ww = self.fonts.measure(label, word);
-                            let chip = Rect::new(cx, cy, ww + self.px(14.0), ch);
+                        let isz = self.px(13.0);
+                        for (k, icon, words, hit) in [
+                            (0usize, nus_render::text::icons::ENTER, "insert at the prompt", AskHit::Insert(ti, bi)),
+                            (1, nus_render::text::icons::TERMINAL_BOLD, "run it", AskHit::Run(ti, bi)),
+                            (2, if copied { nus_render::text::icons::CHECK } else { nus_render::text::icons::COPY }, "copy", AskHit::Copy(ti, bi)),
+                        ] {
+                            let chip = Rect::new(cx, cy, isz + self.px(12.0), ch);
                             let hot = chip.contains(mx, my);
+                            self.icon_button(scene, icon, isz, chip.x + self.px(6.0), cy + (ch - isz) / 2.0, if copied && k == 2 { self.surface.signal } else { ink }, chip, crate::app::hover_key("askchip", ti * 100 + bi * 10 + k), IconMotion::Pop);
                             if hot {
-                                scene.rect(chip, ink);
-                            } else {
-                                scene.outline(chip, self.px(m::HAIRLINE), t.dim);
+                                self.tip_words(chip, words);
                             }
-                            self.fonts.draw(scene, Style { color: if hot { t.paper } else { ink }, ..label }, chip.x + self.px(7.0), cy + self.px(13.0), word);
                             ask.hits.push((chip, hit));
-                            cx += chip.w + self.px(6.0);
+                            cx += chip.w + self.px(4.0);
                         }
                         if !lang.is_empty() {
                             let lw = self.fonts.measure(dim, &lang.caps());
@@ -691,6 +802,17 @@ impl App {
                         y += ch + self.px(4.0) + self.px(8.0);
                     }
                 }
+            }
+            // REMEMBER: the answer's first line into memory, as a book icon at the turn's end.
+            if !turn.blocks.is_empty() && turn.error.is_none() {
+                let isz = self.px(13.0);
+                let chip = Rect::new(pr.right() - pad - isz - self.px(8.0), y - self.px(2.0), isz + self.px(8.0), self.px(18.0));
+                let done = ask.remembered.contains(&ti);
+                self.icon_button(scene, nus_render::text::icons::BOOK, isz, chip.x + self.px(4.0), chip.y + self.px(2.0), if done { self.surface.signal } else { t.dim }, chip, crate::app::hover_key("askmem", ti), IconMotion::Pop);
+                if chip.contains(mx, my) {
+                    self.tip_words(chip, if done { "remembered" } else { "remember this" });
+                }
+                ask.hits.push((chip, AskHit::Remember(ti)));
             }
             if turn.error.is_some() {
                 for l in next_lines(ti, usize::MAX - 1) {
