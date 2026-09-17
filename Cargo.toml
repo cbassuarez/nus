@@ -27,6 +27,9 @@ fontdb = "0.24"
 adblock = "0.13"
 # config
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
+# language
+lsp-types = "0.95"
+ropey = "1.6"
 # misc
 anyhow = "1"
 thiserror = "2"
