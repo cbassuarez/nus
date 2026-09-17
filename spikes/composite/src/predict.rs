@@ -158,8 +158,16 @@ impl App {
         let px = p.grid.px;
         let t = self.theme.clone();
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
+        // The shell's own grammar (tree-sitter) colours the line; the regex
+        // tokens fill in flags and paths, and stand in for shells without one.
+        let lang = self.profiles.get(p.profile).map(|pr| crate::shell::kind_of(&pr.program)).map(|k| match k {
+            crate::shell::Kind::PowerShell => "powershell",
+            crate::shell::Kind::Bash | crate::shell::Kind::Zsh | crate::shell::Kind::Fish | crate::shell::Kind::Other => "bash",
+            _ => "",
+        }).unwrap_or("");
         if self.behavior.highlight && !typed.trim().is_empty() {
-            for (start, len, class) in tokens(&typed) {
+            let spans = if lang.is_empty() { tokens(&typed) } else { crate::syntax::command_line(lang, &typed) };
+            for (start, len, class) in spans {
                 let color = match class {
                     Tok::Command => ansi(4),
                     Tok::Flag => ansi(6),

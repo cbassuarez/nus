@@ -611,13 +611,44 @@ impl App {
                         let shown = wrap_code(text, cols_fit);
                         let n = shown.len().max(1) as f32;
                         let card_h = n * code_line_h + self.px(12.0);
+                        // The grammar's colours, per original line, when there is one.
+                        let lang_key = match lang.to_ascii_lowercase().as_str() {
+                            "" => "bash",
+                            "sh" | "shell" | "zsh" | "console" => "bash",
+                            "pwsh" | "ps1" | "ps" => "powershell",
+                            other => other,
+                        }
+                        .to_string();
+                        let coloured: Vec<Vec<(usize, usize, crate::predict::Tok)>> = text.lines().map(|l| crate::syntax::spans(&lang_key, l).unwrap_or_default()).collect();
                         let card = Rect::new(pr.x + pad, y, inner_w, card_h);
                         scene.rect(card, crate::surface::mix(paper, ink, 0.06));
                         scene.outline(card, self.px(m::HAIRLINE), fade(t.dim, 0.6));
                         scene.layer(Some(card));
                         let mut ly = y + self.px(6.0) + self.px(12.0);
-                        for line in &shown {
-                            self.fonts.draw(scene, mono, card.x + self.px(8.0), ly, line);
+                        let cell = self.fonts.measure(mono, "M").max(1.0);
+                        for (piece, li, off) in &shown {
+                            self.fonts.draw(scene, mono, card.x + self.px(8.0), ly, piece);
+                            // Coloured runs over the plain line: monospace, so x is a column.
+                            let indent = if *off > 0 { 2 } else { 0 };
+                            let plen = piece.chars().count().saturating_sub(indent);
+                            for &(a, l, class) in coloured.get(*li).map(|v| v.as_slice()).unwrap_or(&[]) {
+                                let (s0, s1) = (a.max(*off), (a + l).min(off + plen));
+                                if s1 <= s0 {
+                                    continue;
+                                }
+                                let color = match class {
+                                    crate::predict::Tok::Command => crate::theme_edit::from_rgb(t.ansi[4]),
+                                    crate::predict::Tok::Flag => crate::theme_edit::from_rgb(t.ansi[6]),
+                                    crate::predict::Tok::Str => crate::theme_edit::from_rgb(t.ansi[2]),
+                                    crate::predict::Tok::Num => crate::theme_edit::from_rgb(t.ansi[5]),
+                                    crate::predict::Tok::Op => crate::theme_edit::from_rgb(t.ansi[3]),
+                                    _ => continue,
+                                };
+                                let run: String = piece.chars().skip(indent + (s0 - off)).take(s1 - s0).collect();
+                                let x = card.x + self.px(8.0) + (indent + (s0 - off)) as f32 * cell;
+                                scene.rect(Rect::new(x, ly - self.px(11.0), (s1 - s0) as f32 * cell, code_line_h), crate::surface::mix(paper, ink, 0.06));
+                                self.fonts.draw(scene, Style { color, ..mono }, x, ly, &run);
+                            }
                             ly += code_line_h;
                         }
                         scene.layer(Some(view));
@@ -673,14 +704,15 @@ fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {
     crate::app::fade(c, k)
 }
 
-/// Code lines cut to `cols` characters; continuation lines carry a hanging
-/// indent of two spaces so a wrapped command still reads as one.
-fn wrap_code(text: &str, cols: usize) -> Vec<String> {
+/// Code lines cut to `cols` characters as (piece, line index, char offset
+/// into that line); continuation pieces carry a hanging indent of two
+/// spaces so a wrapped command still reads as one.
+fn wrap_code(text: &str, cols: usize) -> Vec<(String, usize, usize)> {
     let mut out = Vec::new();
-    for line in text.lines() {
+    for (li, line) in text.lines().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         if chars.len() <= cols {
-            out.push(line.to_string());
+            out.push((line.to_string(), li, 0));
             continue;
         }
         let mut start = 0;
@@ -689,7 +721,7 @@ fn wrap_code(text: &str, cols: usize) -> Vec<String> {
             let room = if first { cols } else { cols.saturating_sub(2).max(1) };
             let end = (start + room).min(chars.len());
             let piece: String = chars[start..end].iter().collect();
-            out.push(if first { piece } else { format!("  {piece}") });
+            out.push((if first { piece } else { format!("  {piece}") }, li, start));
             first = false;
             start = end;
         }
@@ -728,7 +760,7 @@ Count:
     #[test]
     fn code_wraps_with_a_hanging_indent() {
         let w = wrap_code("abcdefghij", 6);
-        assert_eq!(w, vec!["abcdef", "  ghij"]);
-        assert_eq!(wrap_code("ok", 6), vec!["ok"]);
+        assert_eq!(w, vec![("abcdef".to_string(), 0, 0), ("  ghij".to_string(), 0, 6)]);
+        assert_eq!(wrap_code("ok", 6), vec![("ok".to_string(), 0, 0)]);
     }
 }

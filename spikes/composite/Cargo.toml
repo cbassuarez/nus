@@ -27,6 +27,13 @@ tracing = "0.1"
 accesskit = "0.25.0"
 accesskit_winit = "0.34.0"
 arboard = "3"
+# Syntax: tree-sitter for the command line and code blocks. Bash and
+# PowerShell ride in the binary; more grammars load from profile/grammars.
+tree-sitter = "0.27"
+tree-sitter-highlight = "0.27"
+tree-sitter-bash = "0.25"
+tree-sitter-powershell = "0.26"
+libloading = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
