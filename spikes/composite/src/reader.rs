@@ -3,6 +3,7 @@
 //! no site scripts, our measure, our rules. Ctrl+Shift+R toggles it over
 //! a browser pane; the page keeps living underneath.
 
+use crate::app::Caps;
 use nus_render::text::{FontId, Style};
 use nus_render::{Rect, Scene};
 
@@ -265,7 +266,7 @@ impl Reader {
                 }
                 Block::Image(alt, _) => {
                     let text = if alt.is_empty() { "image".to_string() } else { format!("image · {alt}") };
-                    push(Kind::Caption, st(f.mono, measure::CAPTION), &text.to_uppercase(), 0.0, width, px(measure::CAPTION * 1.6), &mut y, &mut self.lines);
+                    push(Kind::Caption, st(f.mono, measure::CAPTION), &text.caps(), 0.0, width, px(measure::CAPTION * 1.6), &mut y, &mut self.lines);
                     y += px(10.0);
                 }
                 Block::Caption(x) => {

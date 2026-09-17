@@ -2527,7 +2527,7 @@ impl App {
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
                 Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
             };
-            let title = format!("{} {}", self.tab_label(self.active), title).to_uppercase();
+            let title = format!("{} {}", self.tab_label(self.active), title).caps();
             let tw = self.fonts.measure(label, &title);
             let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..label };
             self.fonts.draw_icon(scene, icon, ic, x, iy, ink);
@@ -2926,7 +2926,7 @@ impl App {
         scene.layer(None);
         let text_w: f32 = parts
             .iter()
-            .map(|(s, b)| self.fonts.measure(if *b { strong } else { label }, &s.to_uppercase()))
+            .map(|(s, b)| self.fonts.measure(if *b { strong } else { label }, &s.caps()))
             .sum::<f32>()
             + gap * (parts.len() as f32 - 1.0);
         let box_h = pady * 2.0 + self.px(m::LABEL_PX);
@@ -2937,7 +2937,7 @@ impl App {
         let mut px = r.x + padx;
         let by = r.y + pady + self.px(m::LABEL_PX) - self.px(2.0);
         for (s, b) in parts {
-            px += self.fonts.draw(scene, if *b { strong } else { label }, px, by, &s.to_uppercase()) + gap;
+            px += self.fonts.draw(scene, if *b { strong } else { label }, px, by, &s.caps()) + gap;
         }
     }
 
@@ -3681,7 +3681,7 @@ impl App {
             } else {
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.container_colour());
                 let bg = if hot || self.win_menu { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.6) } else { self.paper() };
-                self.marquee(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), sb.w - self.px(60.0), &name.to_uppercase(), hot, bg, hover_key("mast", 1));
+                self.marquee(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), sb.w - self.px(60.0), &name.caps(), hot, bg, hover_key("mast", 1));
             }
             let csz = self.px(12.0);
             let ca = if hot || self.win_menu { 1.0 } else { 0.0 };
@@ -3704,7 +3704,7 @@ impl App {
         if self.header.dateline {
             let dh = self.px(16.0);
             let dl = Style { color: t.dim, px: self.px(10.0), ..label };
-            let text = self.dateline().to_uppercase();
+            let text = self.dateline().caps();
             let dy = if !bar || masthead { y - self.px(6.0) } else { y };
             let dl_hot = Rect::new(sb.x, dy, sb.w, self.px(16.0)).contains(mx, my) && vis;
             let bg = self.paper();
@@ -3730,7 +3730,7 @@ impl App {
                 scene.rect(Rect::new(x + self.px(12.0), y + self.px(10.0), self.px(10.0), self.px(10.0)), self.surface.signal);
                 if self.header.show_name {
                     let bg = if hot || self.win_menu { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.6) } else { self.paper() };
-                    self.marquee(scene, label, x + self.px(30.0), y + self.px(19.0), cw - self.px(48.0), &name.to_uppercase(), hot, bg, hover_key("mast", 2));
+                    self.marquee(scene, label, x + self.px(30.0), y + self.px(19.0), cw - self.px(48.0), &name.caps(), hot, bg, hover_key("mast", 2));
                     let csz = self.px(11.0);
                     self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, x + cw - self.px(10.0) - csz, y + ((rh - csz) / 2.0).round(), t.dim);
                 }
@@ -3822,7 +3822,7 @@ impl App {
                     right -= csz + self.px(8.0);
                 }
                 self.fonts.draw(scene, Style { color: t.dim, ..label }, right - tw, base, &tabs);
-                let text = self.fit(st, &e.name.to_uppercase(), right - tw - self.px(8.0) - (sb.x + self.px(30.0)));
+                let text = self.fit(st, &e.name.caps(), right - tw - self.px(8.0) - (sb.x + self.px(30.0)));
                 self.fonts.draw(scene, st, sb.x + self.px(30.0), base, &text);
                 scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
                 if self.win_menu {
@@ -3882,7 +3882,7 @@ impl App {
                 let color = self.rules.new_tab(&ctx).signal.unwrap_or(self.surface.signal);
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), color);
                 let st = if i == self.behavior.default_profile { strong } else { label };
-                self.fonts.draw(scene, st, sb.x + self.px(30.0), y + self.px(19.0), &p.name.to_uppercase());
+                self.fonts.draw(scene, st, sb.x + self.px(30.0), y + self.px(19.0), &p.name.caps());
                 if i == self.behavior.default_profile {
                     let d = "DEFAULT";
                     let dw = self.fonts.measure(label, d);
@@ -4446,7 +4446,7 @@ impl App {
                     self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, isz, x, base - isz + self.px(2.0), ink);
                     x += isz + self.px(8.0);
                     let _ = n;
-                    x += self.fonts.draw(scene, strong, x, base, &p.title.to_uppercase()) + self.px(14.0);
+                    x += self.fonts.draw(scene, strong, x, base, &p.title.caps()) + self.px(14.0);
                     let dims = format!("{}×{}", p.term.cols(), p.term.rows());
                     let dw = self.fonts.measure(label, &dims);
                     let dx = r.right() - self.px(m::HEADER_PAD_X) - dw;
@@ -4465,7 +4465,7 @@ impl App {
                     let inv_l = Style { color: t.paper, ..self.label() };
                     let by = cr.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
                     let mut x = cr.x + self.px(m::HEADER_PAD_X);
-                    x += self.fonts.draw(scene, inv, x, by, &format!("{} IS RUNNING", proc_name.to_uppercase())) + self.px(14.0);
+                    x += self.fonts.draw(scene, inv, x, by, &format!("{} IS RUNNING", proc_name.caps())) + self.px(14.0);
                     x += self.fonts.draw(scene, inv_l, x, by, "CLOSE ANYWAY?") + self.px(14.0);
                     x += self.fonts.draw(scene, inv, x, by, "ENTER") + self.px(14.0);
                     self.fonts.draw(scene, inv_l, x, by, "· ESC CANCELS");
@@ -4804,7 +4804,7 @@ impl App {
                     }
                     let name = q.trim_start_matches("container").trim();
                     if !name.is_empty() && !self.containers.iter().any(|c| c.name.eq_ignore_ascii_case(name)) {
-                        rows.push(row("+", format!("new container “{}” · its own cookies and sign-ins", name.to_uppercase()), Action::NewContainer(name.to_string())));
+                        rows.push(row("+", format!("new container “{}” · its own cookies and sign-ins", name.caps()), Action::NewContainer(name.to_string())));
                     }
                 }
                 // Folder items, by title or folder name.
@@ -4887,7 +4887,7 @@ impl App {
                     }
                 }
                 if !q.is_empty() {
-                    rows.push(row("+", format!("new folder “{}”", q.to_uppercase()), Action::SaveToNewFolder(i, q.to_string())));
+                    rows.push(row("+", format!("new folder “{}”", q.caps()), Action::SaveToNewFolder(i, q.to_string())));
                 } else if !self.folders.iter().any(|f| f.kind == crate::folders::Kind::Plain) {
                     rows.push(row("+", "new folder · type a name".into(), Action::SaveToNewFolder(i, "SAVED".into())));
                 }
@@ -7200,4 +7200,43 @@ fn base64_encode(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Names and titles read in Caps: the first letter of each word up, the
+/// rest as they came ("wgpu - Rust" → "Wgpu - Rust"; an ALLCAPS word is
+/// brought down to Caps).
+pub trait Caps {
+    fn caps(&self) -> String;
+}
+
+impl Caps for str {
+    fn caps(&self) -> String {
+        let mut out = String::with_capacity(self.len());
+        for word in self.split_inclusive(char::is_whitespace) {
+            let letters: Vec<char> = word.chars().filter(|c| c.is_alphabetic()).collect();
+            let all_caps = !letters.is_empty() && letters.iter().all(|c| c.is_uppercase());
+            let mut first = true;
+            for ch in word.chars() {
+                if ch.is_alphabetic() {
+                    if first {
+                        out.extend(ch.to_uppercase());
+                        first = false;
+                    } else if all_caps {
+                        out.extend(ch.to_lowercase());
+                    } else {
+                        out.push(ch);
+                    }
+                } else {
+                    out.push(ch);
+                }
+            }
+        }
+        out
+    }
+}
+
+impl Caps for String {
+    fn caps(&self) -> String {
+        self.as_str().caps()
+    }
 }

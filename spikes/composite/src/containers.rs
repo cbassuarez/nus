@@ -5,6 +5,7 @@
 //! new pages open in it; a new window inherits it. A page can be
 //! reopened in another container from the palette.
 
+use crate::app::Caps;
 use crate::app::App;
 use cef::rc::Rc;
 use cef::{ImplRequestContextHandler, RequestContextHandler, WrapRequestContextHandler};
@@ -119,7 +120,7 @@ impl App {
 
     /// A new container, coloured from the swatches in turn; switches to it.
     pub(crate) fn new_container(&mut self, name: &str) {
-        let name = name.trim().to_uppercase();
+        let name = name.trim().caps();
         if name.is_empty() {
             return;
         }

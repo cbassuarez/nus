@@ -5,7 +5,7 @@
 //! request handlers read the same table, so blocking and cookies apply
 //! as the page loads.
 
-use crate::app::{App, Pane, WebPane};
+use crate::app::{Caps, App, Pane, WebPane};
 use cef::{ImplBrowserHost, ImplCookieManager};
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
@@ -200,7 +200,7 @@ impl App {
         let pad = self.px(14.0);
         let mut y = r.y + self.px(8.0);
         // Head: the host.
-        let head = if host.is_empty() { "THIS PAGE".to_string() } else { host.to_uppercase() };
+        let head = if host.is_empty() { "THIS PAGE".to_string() } else { host.caps() };
         let head = self.fit(strong, &head, r.w - 2.0 * pad);
         self.fonts.draw(scene, Style { color: ink, ..strong }, r.x + pad, y + self.px(16.0), &head);
         y += self.px(26.0);
@@ -298,7 +298,7 @@ impl App {
                 scene.rect(cell, t.tint);
             }
             let base = y + self.px(17.0);
-            let text = format!("{}  ·  {}", what.to_uppercase(), if *allow { "ALLOWED" } else { "DENIED" });
+            let text = format!("{}  ·  {}", what.caps(), if *allow { "ALLOWED" } else { "DENIED" });
             self.fonts.draw(scene, Style { color: ink, ..label }, r.x + pad, base, &text);
             let isz = self.px(11.0);
             self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, r.right() - pad - isz, y + (self.px(26.0) - isz) / 2.0, if hot { ink } else { t.dim });

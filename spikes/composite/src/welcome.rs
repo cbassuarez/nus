@@ -10,7 +10,7 @@ use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 use std::sync::Arc;
 
-use crate::app::{fade, hover_key, App, IconMotion, Pane, PaletteMode};
+use crate::app::{Caps, fade, hover_key, App, IconMotion, Pane, PaletteMode};
 use nus_render::theme::metric as m;
 
 /// What a welcome-page control does.
@@ -182,7 +182,7 @@ impl App {
                     State::Absent => (format!("about {} MB · profile/{}", b.size_mb, if b.into.is_empty() { "—".to_string() } else { b.into.clone() }), Some("GET")),
                 };
                 let what = format!("{} · {}", b.about, status);
-                row(b.kind.to_uppercase(), b.name.clone(), what, button.map(|w| (w, Act::Bundle(b.id.clone()))))
+                row(b.kind.caps(), b.name.clone(), what, button.map(|w| (w, Act::Bundle(b.id.clone()))))
             })
             .collect();
         vec![
@@ -268,7 +268,7 @@ impl App {
                 if let Some((bt, _)) = &rw.act {
                     avail -= self.fonts.measure(strong, bt) + self.px(40.0);
                 }
-                self.fonts.draw(scene, Style { color: ink, ..strong }, tx, y + self.px(15.0), &rw.title.to_uppercase());
+                self.fonts.draw(scene, Style { color: ink, ..strong }, tx, y + self.px(15.0), &rw.title.caps());
                 let mut wy = y + self.px(34.0);
                 for l in crate::reader::wrap(&self.fonts, ui, &rw.what, avail) {
                     self.fonts.draw(scene, Style { color: fade(ink, 0.82), ..ui }, tx, wy, &l);

@@ -4,7 +4,7 @@
 //! SIDEBAR. The rows are the same rows, so clicks, drags, selection and
 //! the tab menu all work unchanged; titles show as a tooltip on hover.
 
-use crate::app::{hover_key, App, IconMotion, SideHit};
+use crate::app::{Caps, hover_key, App, IconMotion, SideHit};
 use nus_render::text::icons;
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
@@ -152,9 +152,9 @@ impl App {
             let (title, detail) = self.tabs[i].row_text();
             let ui = self.ui();
             let label = self.label();
-            let text = title.to_uppercase();
+            let text = title.caps();
             let tw = self.fonts.measure(ui, &text);
-            let dw = if detail.is_empty() { 0.0 } else { self.fonts.measure(label, &detail.to_uppercase()) };
+            let dw = if detail.is_empty() { 0.0 } else { self.fonts.measure(label, &detail.caps()) };
             let w = tw.max(dw) + self.px(24.0);
             let h = if detail.is_empty() { self.px(28.0) } else { self.px(44.0) };
             let x = if self.sidebar_right() { sb.x - w - self.px(6.0) } else { sb.right() + self.px(6.0) };
@@ -165,7 +165,7 @@ impl App {
             scene.outline(r, self.px(m::STRUCTURE), ink);
             self.fonts.draw(scene, Style { color: ink, ..ui }, r.x + self.px(12.0), r.y + self.px(19.0), &text);
             if !detail.is_empty() {
-                self.fonts.draw(scene, Style { color: t.dim, ..label }, r.x + self.px(12.0), r.y + self.px(36.0), &detail.to_uppercase());
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, r.x + self.px(12.0), r.y + self.px(36.0), &detail.caps());
             }
         }
     }

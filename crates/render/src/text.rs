@@ -465,8 +465,14 @@ impl FontSystem {
             color,
             tracking,
         } = s;
+        // Labels (the tracked style) read in Caps, never ALLCAPS.
+        let text = if tracking > 0.0 {
+            caps(text)
+        } else {
+            text.to_string()
+        };
         let mut pen = x;
-        for g in self.shape(font, px, text) {
+        for g in self.shape(font, px, &text) {
             if let Some(a) = self.glyph(g.font, px, g.id) {
                 scene.push(Instance::glyph(
                     (pen + g.x_offset + a.left as f32).round(),
@@ -484,6 +490,13 @@ impl FontSystem {
 
     /// Width of `text` without drawing it.
     pub fn measure(&self, s: Style, text: &str) -> f32 {
+        let capped;
+        let text = if s.tracking > 0.0 {
+            capped = caps(text);
+            capped.as_str()
+        } else {
+            text
+        };
         let key = (
             s.font.0,
             s.px.to_bits(),
@@ -737,5 +750,57 @@ mod tests {
             "\u{2318}",
         );
         assert!(w > 0.0);
+    }
+}
+
+/// ALLCAPS words become Caps: "NEW TAB" → "New Tab", "CTRL+SHIFT+D" →
+/// "Ctrl+Shift+D", "OSC 52" → "Osc 52". A word with any lowercase letter
+/// is left alone (names, paths, domains); so are digits and symbols.
+pub fn caps(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for word in text.split_inclusive(char::is_whitespace) {
+        let body = word.trim_end_matches(char::is_whitespace);
+        let tail = &word[body.len()..];
+        let letters: Vec<char> = body.chars().filter(|c| c.is_alphabetic()).collect();
+        let all_caps = !letters.is_empty() && letters.iter().all(|c| c.is_uppercase());
+        if !all_caps {
+            out.push_str(word);
+            continue;
+        }
+        // Sub-words at + / - · keep their own first letter up (key chords).
+        let mut first = true;
+        for ch in body.chars() {
+            if ch.is_alphabetic() {
+                if first {
+                    out.push(ch);
+                    first = false;
+                } else {
+                    out.extend(ch.to_lowercase());
+                }
+            } else {
+                out.push(ch);
+                if matches!(ch, '+' | '/' | '-' | '·') {
+                    first = true;
+                }
+            }
+        }
+        out.push_str(tail);
+    }
+    out
+}
+
+#[cfg(test)]
+mod caps_tests {
+    use super::caps;
+
+    #[test]
+    fn allcaps_words_become_caps() {
+        assert_eq!(caps("NEW TAB"), "New Tab");
+        assert_eq!(caps("CTRL+SHIFT+D"), "Ctrl+Shift+D");
+        assert_eq!(caps("OSC 52 · F2"), "Osc 52 · F2");
+        assert_eq!(caps("rules.luau"), "rules.luau");
+        assert_eq!(caps("std - Rust"), "std - Rust");
+        assert_eq!(caps("×"), "×");
+        assert_eq!(caps("POWERSHELL  70×34"), "Powershell  70×34");
     }
 }

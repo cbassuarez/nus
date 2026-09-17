@@ -17,7 +17,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key as WKey, KeyCode, NamedKey, PhysicalKey};
 use winit::window::Window;
 
-use crate::app::{App, WebPane};
+use crate::app::{Caps, App, WebPane};
 
 // ── Single instance ──────────────────────────────────────────────────────
 // The first instance listens on a loopback port written to
@@ -212,7 +212,7 @@ impl App {
         x += isz + 8.0 * scale;
         let shown = if title.is_empty() { url.clone() } else { title.clone() };
         let maxw = l.keep.x - 14.0 * scale - x;
-        let mut s: String = shown.to_uppercase();
+        let mut s: String = shown.caps();
         while !s.is_empty() && self.fonts.measure(label, &format!("{s}…")) > maxw {
             s.pop();
         }

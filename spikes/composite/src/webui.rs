@@ -9,7 +9,7 @@ use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 use winit::event::ElementState;
 
-use crate::app::{hover_key, App, IconMotion, Pane, SideHit, WebPane};
+use crate::app::{Caps, hover_key, App, IconMotion, Pane, SideHit, WebPane};
 use crate::browser::DOWNLOADS;
 use nus_render::theme::metric as m;
 
@@ -110,10 +110,10 @@ impl App {
             let inv = Style { color: t.paper, ..strong };
             let inv_l = Style { color: t.paper, ..label };
             let by = br.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
-            let host = origin.split("//").nth(1).unwrap_or(&origin).trim_end_matches('/').to_uppercase();
+            let host = origin.split("//").nth(1).unwrap_or(&origin).trim_end_matches('/').caps();
             let mut x = br.x + self.px(m::HEADER_PAD_X);
             x += self.fonts.draw(scene, inv, x, by, &host) + self.px(10.0);
-            x += self.fonts.draw(scene, inv_l, x, by, &format!("ASKS FOR {}", what.to_uppercase())) + self.px(18.0);
+            x += self.fonts.draw(scene, inv_l, x, by, &format!("ASKS FOR {}", what.caps())) + self.px(18.0);
             for (word, allow) in [("ALLOW", true), ("DENY", false)] {
                 let ww = self.fonts.measure(inv, word) + self.px(20.0);
                 let chip = Rect::new(x, br.y + self.px(6.0), ww, bh - self.px(12.0));
@@ -204,7 +204,7 @@ impl App {
         self.fonts.draw(scene, Style { color: ink, ..strong }, sb.x + self.px(12.0), y + self.px(17.0), "DOWNLOADS");
         let dir = crate::browser::downloads_dir();
         let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-        let where_ = dir.to_string_lossy().replace(&home, "~").replace(char::from(92), "/").to_uppercase();
+        let where_ = dir.to_string_lossy().replace(&home, "~").replace(char::from(92), "/").caps();
         let ww = self.fonts.measure(cap_st, &where_);
         self.fonts.draw(scene, cap_st, sb.right() - self.px(12.0) - ww, y + self.px(17.0), &where_);
         y += cap;
@@ -220,7 +220,7 @@ impl App {
             let isz = self.px(14.0);
             let icon = if d.done { nus_render::text::icons::CHECK } else if d.cancelled { nus_render::text::icons::CLOSE } else { nus_render::text::icons::DOWNLOAD };
             self.icon_button(scene, icon, isz, sb.x + self.px(12.0), y + self.px(8.0), if d.done { ink } else { t.dim }, cell, hover_key("dl", i), IconMotion::Bob);
-            let name = self.fit(Style { color: ink, ..strong }, &d.name.to_uppercase(), sb.w - self.px(48.0));
+            let name = self.fit(Style { color: ink, ..strong }, &d.name.caps(), sb.w - self.px(48.0));
             self.fonts.draw(scene, Style { color: ink, ..strong }, sb.x + self.px(34.0), y + self.px(18.0), &name);
             // Progress: a rule that fills; done shows size, cancelled says so.
             let bar = Rect::new(sb.x + self.px(34.0), y + self.px(28.0), sb.w - self.px(46.0), self.px(2.0));

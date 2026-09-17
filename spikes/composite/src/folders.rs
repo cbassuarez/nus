@@ -6,7 +6,7 @@
 //! that returns one). Clicking an item opens it, or goes to the tab that
 //! already has it.
 
-use crate::app::{hover_key, App, IconMotion, Pane, SideHit};
+use crate::app::{Caps, hover_key, App, IconMotion, Pane, SideHit};
 use nus_render::text::icons;
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
@@ -154,7 +154,7 @@ impl App {
             let open = open_before.get(&name).copied().unwrap_or(true);
             let id = self.next_folder_id;
             self.next_folder_id += 1;
-            self.folders.push(Folder { id, name: name.to_uppercase(), kind: Kind::Rules, items, open, note: String::new() });
+            self.folders.push(Folder { id, name: name.caps(), kind: Kind::Rules, items, open, note: String::new() });
         }
     }
 
@@ -237,7 +237,7 @@ impl App {
     pub(crate) fn new_folder(&mut self, name: &str) -> usize {
         let id = self.next_folder_id;
         self.next_folder_id += 1;
-        let name = if name.trim().is_empty() { "SAVED".to_string() } else { name.trim().to_uppercase() };
+        let name = if name.trim().is_empty() { "SAVED".to_string() } else { name.trim().caps() };
         self.folders.push(Folder { id, name, kind: Kind::Plain, items: Vec::new(), open: true, note: String::new() });
         self.save_folders();
         self.folders.len() - 1
@@ -343,7 +343,7 @@ impl App {
                     x += isz + self.px(8.0);
                     x += self.fonts.draw(scene, Style { color: ink, ..strong }, x, base, &f.name) + self.px(8.0);
                     // The note, dim, fitted to what's left.
-                    let note = if f.kind == Kind::Plain { format!("{}", f.items.len()) } else { f.note.to_uppercase() };
+                    let note = if f.kind == Kind::Plain { format!("{}", f.items.len()) } else { f.note.caps() };
                     let avail = sb.right() - pad_x - x;
                     let note = self.fit(Style { color: t.dim, ..label }, &note, avail);
                     self.fonts.draw(scene, Style { color: t.dim, ..label }, x, base, &note);
@@ -376,11 +376,11 @@ impl App {
                     }
                     let st = Style { color: if hot { ink } else { crate::app::fade(ink, 0.82) }, ..ui };
                     let dst = Style { color: t.dim, ..label };
-                    let dw = if it.detail.is_empty() { 0.0 } else { self.fonts.measure(dst, &it.detail.to_uppercase()).min((right - x) * 0.38) };
+                    let dw = if it.detail.is_empty() { 0.0 } else { self.fonts.measure(dst, &it.detail.caps()).min((right - x) * 0.38) };
                     let title = self.fit(st, &it.title, right - x - dw - self.px(8.0));
                     let tw = self.fonts.draw(scene, st, x, base, &title);
                     if dw > 0.0 {
-                        let d = self.fit(dst, &it.detail.to_uppercase(), right - (x + tw + self.px(8.0)));
+                        let d = self.fit(dst, &it.detail.caps(), right - (x + tw + self.px(8.0)));
                         self.fonts.draw(scene, dst, x + tw + self.px(8.0), base, &d);
                     }
                     self.side_hits.push((Rect::new(cell.x, cell.y, right - cell.x, cell.h), SideHit::FolderItem(fi, k)));

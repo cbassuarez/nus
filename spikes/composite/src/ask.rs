@@ -11,7 +11,7 @@
 //! ANTHROPIC_API_KEY is set. NUS_ASK_CMD overrides with any command that
 //! reads the prompt on stdin and prints markdown.
 
-use crate::app::{App, Pane, TermPane};
+use crate::app::{Caps, App, Pane, TermPane};
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
 use std::sync::mpsc::{channel, Receiver};
@@ -489,7 +489,7 @@ impl App {
         let wm = Style { font: self.f.wordmark, px: self.px(18.0), color: ink, tracking: 0.0 };
         let mut x = pr.x + pad;
         x += self.fonts.draw(scene, wm, x, base + self.px(1.0), "ask") + self.px(10.0);
-        let who = backends().into_iter().next().map(|b| b.name.to_uppercase()).unwrap_or_else(|| "NO ASSISTANT".into());
+        let who = backends().into_iter().next().map(|b| b.name.caps()).unwrap_or_else(|| "NO ASSISTANT".into());
         self.fonts.draw(scene, Style { color: t.dim, ..label }, x, base, &who);
         let isz = self.px(12.0);
         let cx = pr.right() - pad - isz;
@@ -672,8 +672,8 @@ impl App {
                             cx += chip.w + self.px(6.0);
                         }
                         if !lang.is_empty() {
-                            let lw = self.fonts.measure(dim, &lang.to_uppercase());
-                            self.fonts.draw(scene, dim, card.right() - lw, cy + self.px(13.0), &lang.to_uppercase());
+                            let lw = self.fonts.measure(dim, &lang.caps());
+                            self.fonts.draw(scene, dim, card.right() - lw, cy + self.px(13.0), &lang.caps());
                         }
                         y += ch + self.px(4.0) + self.px(8.0);
                     }

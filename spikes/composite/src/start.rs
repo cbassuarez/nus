@@ -13,7 +13,7 @@ use winit::event::{ElementState, MouseButton};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use crate::anim::{base, Anim};
-use crate::app::{App, Pane};
+use crate::app::{Caps, App, Pane};
 
 // ── Session and recent ───────────────────────────────────────────────────
 
@@ -441,7 +441,7 @@ impl App {
         let big = Style { font: self.f.wordmark, px: self.px(26.0), color: ink, tracking: 0.0 };
         let ww = self.fonts.draw(scene, big, hx + isz + self.px(12.0), r.y + head_h / 2.0 + self.px(9.0), "atlas");
         let greet = match &self.last_session {
-            Some(s) if !s.tabs.is_empty() => format!("LAST TIME · {}", s.summary().to_uppercase()),
+            Some(s) if !s.tabs.is_empty() => format!("LAST TIME · {}", s.summary().caps()),
             _ => "LAST SESSION · RECENT PAGES AND SHELLS".to_string(),
         };
         let gx = hx + isz + self.px(12.0) + ww + self.px(16.0);
@@ -480,12 +480,12 @@ impl App {
             self.fonts.draw_icon(scene, icon, self.px(16.0), x, base_r - self.px(16.0) + self.px(3.0), fg);
             x += self.px(16.0) + self.px(12.0);
             let ds = Style { color: if on { Theme::with_alpha(t.paper, 0.7) } else { t.dim }, ..label };
-            let dw = if detail.is_empty() { 0.0 } else { self.fonts.measure(ds, &detail.to_uppercase()) + self.px(12.0) };
+            let dw = if detail.is_empty() { 0.0 } else { self.fonts.measure(ds, &detail.caps()) + self.px(12.0) };
             let st_row = if matches!(row, StartRow::Restore) { Style { color: fg, ..ui_strong } } else { Style { color: fg, ..ui } };
             let tfit = self.fit(st_row, title, r.right() - self.px(18.0) - dw - x);
             self.fonts.draw(scene, st_row, x, base_r, &tfit);
             if !detail.is_empty() {
-                self.fonts.draw(scene, ds, r.right() - self.px(18.0) - dw + self.px(12.0), base_r, &detail.to_uppercase());
+                self.fonts.draw(scene, ds, r.right() - self.px(18.0) - dw + self.px(12.0), base_r, &detail.caps());
             }
             if !on {
                 scene.hline(r.x, y + row_h - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), t.tint);

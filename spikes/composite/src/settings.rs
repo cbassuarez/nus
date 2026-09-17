@@ -5,7 +5,7 @@
 //! way in; the RULES section shows it and reloads it.
 
 use crate::anim::Anim;
-use crate::app::{fade, hover_key, Hover};
+use crate::app::{Caps, fade, hover_key, Hover};
 use crate::app::{App, Pane, SettingsPane};
 use crate::anim::{BarColor, BarStyle};
 use crate::surface::{self, Fullscreen, HoverFrom, OpacityOn, Shell, Side, TextureKind, TextureOn, SWATCHES};
@@ -1405,7 +1405,7 @@ impl App {
                 let ink = self.theme.ink;
                 let presets = surface::presets();
                 let mut preset_chips: Vec<(String, Hit, bool)> =
-                    presets.iter().enumerate().map(|(k, p)| (p.name.to_uppercase(), Hit::Preset(k), p.name == self.preset_name)).collect();
+                    presets.iter().enumerate().map(|(k, p)| (p.name.caps(), Hit::Preset(k), p.name == self.preset_name)).collect();
                 preset_chips.push(("+ SAVE AS…".into(), Hit::SavePreset, false));
                 let sig: Vec<(Option<Color>, Hit, bool)> =
                     SWATCHES[..6].iter().map(|&(_, c)| (Some(c), Hit::Signal(c), c == self.surface.signal)).collect();
@@ -1451,7 +1451,7 @@ impl App {
                 ];
                 if editing {
                     let what = match self.tok_sel { TokSel::Signal => "signal".to_string(), TokSel::Stop(i) => format!("stop {}", i + 1), _ => String::new() };
-                    v.push((format!("{} HUE", what.to_uppercase()), Slider(self::Slider::Hue, self.slider_value(self::Slider::Hue), format!("{}°", (surface::to_hsl(self.tok_color()).0 * 360.0).round()))));
+                    v.push((format!("{} HUE", what.caps()), Slider(self::Slider::Hue, self.slider_value(self::Slider::Hue), format!("{}°", (surface::to_hsl(self.tok_color()).0 * 360.0).round()))));
                     v.push(("SATURATION".into(), Slider(self::Slider::Sat, self.slider_value(self::Slider::Sat), format!("{}%", (surface::to_hsl(self.tok_color()).1 * 100.0).round()))));
                     v.push(("LIGHTNESS".into(), Slider(self::Slider::Light, self.slider_value(self::Slider::Light), format!("{}% · {}", (surface::to_hsl(self.tok_color()).2 * 100.0).round(), hex(self.tok_color())))));
                     v.push(("TRAY".into(), Tokens(tray, false)));
@@ -1492,7 +1492,7 @@ impl App {
                     ),
                     (
                         "TEXTURE".into(),
-                        Choice(TextureKind::ALL.iter().map(|&k| (k.name().to_uppercase(), Hit::TexKind(k), k == self.surface.texture_kind)).collect()),
+                        Choice(TextureKind::ALL.iter().map(|&k| (k.name().caps(), Hit::TexKind(k), k == self.surface.texture_kind)).collect()),
                     ),
                     (
                         "STRENGTH".into(),
@@ -1519,7 +1519,7 @@ impl App {
                     ),
                     (
                         "CARAPACE".into(),
-                        Choice(Shell::ALL.iter().map(|&s| (s.name().to_uppercase(), Hit::Shell(s), s == self.surface.shell)).collect()),
+                        Choice(Shell::ALL.iter().map(|&s| (s.name().caps(), Hit::Shell(s), s == self.surface.shell)).collect()),
                     ),
                     (
                         "WIDTH".into(),
@@ -1568,7 +1568,7 @@ impl App {
                 let c_dim = contrast(t.dim, t.paper);
                 let c_sig = contrast(self.surface.signal, t.paper);
                 let imports = crate::theme_edit::imports();
-                let mut import_chips: Vec<(String, Hit, bool)> = imports.iter().enumerate().map(|(k, i)| (format!("{} · {}", i.name, i.format).to_uppercase(), Hit::Import(k), false)).collect();
+                let mut import_chips: Vec<(String, Hit, bool)> = imports.iter().enumerate().map(|(k, i)| (format!("{} · {}", i.name, i.format).caps(), Hit::Import(k), false)).collect();
                 if import_chips.is_empty() {
                     import_chips.push(("DROP GHOSTTY · WINDOWS TERMINAL · VS CODE · BASE16 FILES INTO PROFILE/THEMES".into(), Hit::OpenThemes, false));
                 }
@@ -1602,7 +1602,7 @@ impl App {
                 ];
                 let picker = |v: &mut Vec<(String, Control)>, what: String, me: &Self| {
                     let (h, sa, l) = surface::to_hsl(me.tok_color());
-                    v.push((format!("{} HUE", what.to_uppercase()), Slider(self::Slider::Hue, me.slider_value(self::Slider::Hue), format!("{}°", (h * 360.0).round()))));
+                    v.push((format!("{} HUE", what.caps()), Slider(self::Slider::Hue, me.slider_value(self::Slider::Hue), format!("{}°", (h * 360.0).round()))));
                     v.push(("SATURATION".into(), Slider(self::Slider::Sat, me.slider_value(self::Slider::Sat), format!("{}%", (sa * 100.0).round()))));
                     v.push(("LIGHTNESS".into(), Slider(self::Slider::Light, me.slider_value(self::Slider::Light), format!("{}% · {}", (l * 100.0).round(), hx(me.tok_color())))));
                 };
@@ -1619,7 +1619,7 @@ impl App {
                     v.push(("TRAY".into(), Tokens(tray, false)));
                 }
                 v.extend(vec![
-                    ("FAMILY".into(), Choice(Family::ALL.iter().map(|&f| (f.name().to_uppercase(), Hit::Family(f), f == self.theme_edit.family)).chain(std::iter::once(("IMPORTED".to_string(), Hit::Family(Family::Imported), self.theme_edit.family == Family::Imported))).collect())),
+                    ("FAMILY".into(), Choice(Family::ALL.iter().map(|&f| (f.name().caps(), Hit::Family(f), f == self.theme_edit.family)).chain(std::iter::once(("IMPORTED".to_string(), Hit::Family(Family::Imported), self.theme_edit.family == Family::Imported))).collect())),
                     ("SATURATION".into(), Slider(self::Slider::Saturation, self.slider_value(self::Slider::Saturation), format!("{}%", (self.theme_edit.saturation * 100.0).round()))),
                     ("PROOF".into(), Proof(proof)),
                     ("BRIGHTS".into(), Proof(brights)),
@@ -1742,7 +1742,7 @@ impl App {
                 for chunk in (0..crate::sound::NAMES.len()).collect::<Vec<_>>().chunks(6) {
                     rows.push((
                         if chunk[0] == 0 { "THE PALETTE".into() } else { "".into() },
-                        Choice(chunk.iter().map(|&i| (crate::sound::NAMES[i].to_uppercase(), Hit::Play(i), false)).collect()),
+                        Choice(chunk.iter().map(|&i| (crate::sound::NAMES[i].caps(), Hit::Play(i), false)).collect()),
                     ));
                 }
                 rows.push(("".into(), Info("what plays when · QUIET silences an event · NEXT walks the palette".into())));
@@ -1751,13 +1751,13 @@ impl App {
                     let mut chips = vec![("QUIET".into(), Hit::EventCue(e, usize::MAX), cur.is_none())];
                     if let Some(c) = &cur {
                         let ci = crate::sound::NAMES.iter().position(|n| n == c).unwrap_or(0);
-                        chips.push((c.to_uppercase(), Hit::EventCue(e, ci), true));
+                        chips.push((c.to_string(), Hit::EventCue(e, ci), true));
                     }
                     chips.push(("NEXT ▸".into(), Hit::EventNext(e), false));
                     if !note.is_empty() {
-                        chips.push((note.to_uppercase(), Hit::EventNext(e), false));
+                        chips.push((note.caps(), Hit::EventNext(e), false));
                     }
-                    rows.push((ev.replace('.', " · ").to_uppercase(), Choice(chips)));
+                    rows.push((ev.replace('.', " · ").caps(), Choice(chips)));
                 }
                 rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
                 rows
@@ -1770,7 +1770,7 @@ impl App {
                     let mut v = vec![("OFF".into(), Hit::EventCue(ev, usize::MAX), launch_cue.is_none() || !b.startup_sound)];
                     for name in ["arrival", "chime", "bloom", "ready"] {
                         let ci = crate::sound::NAMES.iter().position(|n| *n == name).unwrap_or(0);
-                        v.push((name.to_uppercase(), Hit::EventCue(ev, ci), b.startup_sound && launch_cue.as_deref() == Some(name)));
+                        v.push((name.caps(), Hit::EventCue(ev, ci), b.startup_sound && launch_cue.as_deref() == Some(name)));
                     }
                     v
                 };
@@ -1974,7 +1974,7 @@ impl App {
                         self.profiles
                             .iter()
                             .enumerate()
-                            .map(|(i, p)| (p.name.to_uppercase(), Hit::DefaultProfile(i), i == self.behavior.default_profile))
+                            .map(|(i, p)| (p.name.caps(), Hit::DefaultProfile(i), i == self.behavior.default_profile))
                             .collect(),
                     ),
                 )];
@@ -2003,7 +2003,7 @@ impl App {
                 v.insert(5, ("".into(), Info("tmux, neovim and ssh sessions put text on your clipboard through OSC 52; reading it back is off unless you say so · copy keeps the selection, paste is bracketed and asks when it's many lines".into())));
                 v.insert(6, (
                     "SCROLL".into(),
-                    Choice(crate::scrolling::Easing::ALL.iter().map(|&e| (e.name().to_uppercase(), Hit::ScrollEasing(e), e == self.behavior.scroll_easing)).collect()),
+                    Choice(crate::scrolling::Easing::ALL.iter().map(|&e| (e.name().caps(), Hit::ScrollEasing(e), e == self.behavior.scroll_easing)).collect()),
                 ));
                 v.insert(7, (
                     "WHEEL".into(),
@@ -2016,10 +2016,10 @@ impl App {
                 ));
                 for (n, p) in self.profiles.iter().enumerate().take(6) {
                     let kind = crate::shell::kind_of(&p.program);
-                    v.insert(2 + n, (p.name.to_uppercase(), Info(crate::shell::describe(kind).into())));
+                    v.insert(2 + n, (p.name.caps(), Info(crate::shell::describe(kind).into())));
                 }
                 for p in &self.profiles {
-                    v.push((format!("PROFILE · {}", p.name.to_uppercase()), Info(format!("{} {}", p.program, p.args.join(" ")))));
+                    v.push((format!("PROFILE · {}", p.name.caps()), Info(format!("{} {}", p.program, p.args.join(" ")))));
                 }
                 v.push((
                     "AVATAR".into(),
@@ -2044,7 +2044,7 @@ impl App {
                 ("".into(), Info("Chromium's own smooth scrolling for wheels and keys; trackpads are pixel-precise either way · takes effect at the next start".into())),
                 (
                     "LOADING BAR".into(),
-                    Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
+                    Choice(BarStyle::ALL.iter().map(|&b| (b.name().caps(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
                 ),
                 (
                     "STATUS".into(),
@@ -2095,7 +2095,7 @@ impl App {
                 let asks = crate::ask::backends();
                 let mut v: Vec<(String, Control)> = Vec::new();
                 v.push(("ASK".into(), Info(format!("Ctrl+Shift+? beside a shell · {}", if asks.is_empty() { "no assistant found · claude, codex, copilot, ollama on PATH, or ANTHROPIC_API_KEY (curl)".to_string() } else { asks.iter().map(|b| format!("{} ({})", b.name, b.how)).collect::<Vec<_>>().join(" · ") }))));
-                v.extend(self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))));
+                v.extend(self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.caps()), Info(c.clone()))));
                 if self.llm_tools.is_empty() {
                     v.push(("LOCAL".into(), Info("none on PATH (claude, codex, ollama are detected)".into())));
                 }
@@ -2126,7 +2126,7 @@ impl App {
                 vec![
                 ("FILE".into(), Info(self.rules.path.to_string_lossy().to_string())),
                 ("STATUS".into(), Info(self.rules.status.clone())),
-                ("START FROM".into(), Choice(surface::STARTERS.iter().enumerate().map(|(k, (n, _))| (n.to_uppercase(), Hit::Starter(k), false)).collect())),
+                ("START FROM".into(), Choice(surface::STARTERS.iter().enumerate().map(|(k, (n, _))| (n.caps(), Hit::Starter(k), false)).collect())),
                 ("".into(), Info("a starter replaces new_tab and new_space; on_page and on_event are kept".into())),
                 ("NOW".into(), Tabs(preview)),
                 ("TRY".into(), Info("new_tab { kind = \"terminal\", index = 4 } →".into())),

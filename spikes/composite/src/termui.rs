@@ -11,7 +11,7 @@ use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 use winit::event::{ElementState, MouseButton};
 
-use crate::app::{fade, hover_key, App, IconMotion, Pane, TermPane};
+use crate::app::{Caps, fade, hover_key, App, IconMotion, Pane, TermPane};
 use nus_render::theme::metric as m;
 
 /// A selection between two absolute positions, in one of three zones.
@@ -464,11 +464,11 @@ impl App {
                 let x = p.origin.0 + item.col as f32 * cw;
                 let y = p.origin.1 + (item.line - top) as f32 * ch;
                 scene.rect(Rect::new(x, y, item.len as f32 * cw, ch), fade(self.surface.signal, 0.18));
-                let lw = self.fonts.measure(chip, &item.label.to_uppercase()) + self.px(8.0);
+                let lw = self.fonts.measure(chip, &item.label.caps()) + self.px(8.0);
                 let lr = Rect::new(x - self.px(2.0), y - self.px(2.0), lw, ch.min(self.px(18.0)));
                 scene.rect(Rect::new(lr.x + self.px(2.0), lr.y + self.px(2.0), lr.w, lr.h), ink);
                 scene.rect(lr, if item.kind == HintKind::Url { self.surface.signal } else { ink });
-                self.fonts.draw(scene, chip, lr.x + self.px(4.0), lr.y + lr.h * 0.75, &item.label.to_uppercase());
+                self.fonts.draw(scene, chip, lr.x + self.px(4.0), lr.y + lr.h * 0.75, &item.label.caps());
             }
         }
         // Blocks: hover a block and a gutter rule plus chips appear.
