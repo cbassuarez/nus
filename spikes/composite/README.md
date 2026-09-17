@@ -110,6 +110,12 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - **Layered scrims.** A scrim over the panes must reset the open layer
   (`scene.layer(None)`) first, or it inherits the last pane's clip.
 
+- **ConPTY eats APC.** Kitty graphics (`ESC _ G … ESC \`) never
+  reach nus-vt through ConPTY on Windows 11: the host re-renders output
+  through its own parser and drops APC. OSC 133/7/9;4 do pass. The
+  decoder is covered by tests; on a raw pty (macOS/Linux) it is untried;
+  on Windows it waits for ConPTY passthrough.
+
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - Colour emoji (RGBA atlas), Sixel, output folding, custom hint regexes.
