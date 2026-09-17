@@ -196,6 +196,47 @@ impl Term {
         let mut start = 0;
         let mut i = 0;
         while i < bytes.len() {
+            // Queries vte doesn't carry: XTVERSION (CSI > q) and XTGETTCAP
+            // (DCS + q … ST). Answered here and kept from vte.
+            if bytes[i] == 0x1b && i + 1 < bytes.len() {
+                if bytes[i + 1] == b'[' && (bytes[i + 2..].starts_with(b">q") || bytes[i + 2..].starts_with(b">0q")) {
+                    let len = if bytes[i + 2..].starts_with(b">q") { 4 } else { 5 };
+                    self.feed(&bytes[start..i]);
+                    self.respond(format!("\x1bP>|nus {}\x1b\\", env!("CARGO_PKG_VERSION")));
+                    i += len;
+                    start = i;
+                    continue;
+                }
+                if bytes[i + 1] == b'P' && bytes[i + 2..].starts_with(b"+q") {
+                    // The payload runs to ST; if it isn't here yet, wait for more.
+                    let body = i + 4;
+                    let mut j = body;
+                    let mut end = None;
+                    while j + 1 < bytes.len() {
+                        if bytes[j] == 0x1b && bytes[j + 1] == b'\\' {
+                            end = Some(j);
+                            break;
+                        }
+                        j += 1;
+                    }
+                    match end {
+                        Some(e) => {
+                            self.feed(&bytes[start..i]);
+                            let payload = bytes[body..e].to_vec();
+                            self.xtgettcap(&payload);
+                            i = e + 2;
+                            start = i;
+                            continue;
+                        }
+                        None if bytes.len() - i < 512 => {
+                            self.feed(&bytes[start..i]);
+                            self.pending_osc = bytes[i..].to_vec();
+                            return;
+                        }
+                        None => {}
+                    }
+                }
+            }
             // ESC ] or C1 OSC; ESC _ APC (Kitty graphics).
             let apc = bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'_';
             let osc_at = if bytes[i] == 0x1b && i + 1 < bytes.len() && (bytes[i + 1] == b']' || apc) {
@@ -321,6 +362,43 @@ impl Term {
             let pct: u8 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
             self.progress = if state == 0 { None } else { Some((state, pct.min(100))) };
             self.events.push(Event::Progress(state, pct.min(100)));
+        }
+    }
+
+    /// XTGETTCAP: hex-encoded capability names, `;`-separated. Known ones
+    /// come back as `DCS 1 + r name=value ST`, the rest as `DCS 0 + r ST`.
+    fn xtgettcap(&mut self, payload: &[u8]) {
+        fn unhex(s: &[u8]) -> Option<String> {
+            let mut out = Vec::with_capacity(s.len() / 2);
+            for pair in s.chunks(2) {
+                let h = std::str::from_utf8(pair).ok()?;
+                out.push(u8::from_str_radix(h, 16).ok()?);
+            }
+            String::from_utf8(out).ok()
+        }
+        fn hex(s: &str) -> String {
+            s.bytes().map(|b| format!("{b:02X}")).collect()
+        }
+        for name in payload.split(|&b| b == b';') {
+            let Some(cap) = unhex(name) else { continue };
+            let value: Option<String> = match cap.as_str() {
+                "TN" | "name" => Some("xterm-256color".into()),
+                "RGB" | "Tc" => Some(String::new()),
+                "colors" | "Co" => Some("256".into()),
+                "setrgbf" => Some("\x1b[38:2:%p1%d:%p2%d:%p3%dm".into()),
+                "setrgbb" => Some("\x1b[48:2:%p1%d:%p2%d:%p3%dm".into()),
+                "Ms" => Some("\x1b]52;%p1%s;%p2%s\x1b\\".into()),
+                "Ss" => Some("\x1b[%p1%d q".into()),
+                "Se" => Some("\x1b[2 q".into()),
+                "Smulx" => Some("\x1b[4:%p1%dm".into()),
+                "bce" | "km" | "npc" => Some(String::new()),
+                _ => None,
+            };
+            match value {
+                Some(v) if v.is_empty() => self.respond(format!("\x1bP1+r{}\x1b\\", hex(&cap))),
+                Some(v) => self.respond(format!("\x1bP1+r{}={}\x1b\\", hex(&cap), hex(&v))),
+                None => self.respond(format!("\x1bP0+r{}\x1b\\", hex(&cap))),
+            }
         }
     }
 
@@ -1058,7 +1136,8 @@ impl Handler for Term {
 
     fn identify_terminal(&mut self, intermediate: Option<char>) {
         match intermediate {
-            None => self.respond(b"\x1b[?62;22c"), // VT220 with ANSI color
+            // VT220 with ANSI colour (22); 4 would claim sixel, which isn't here.
+            None => self.respond(b"\x1b[?62;22c"),
             Some('>') => self.respond(b"\x1b[>1;10;0c"),
             _ => {}
         }
@@ -1554,6 +1633,23 @@ impl Handler for Term {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn xtversion_and_xtgettcap_answer() {
+        let mut t = Term::new(80, 24, 0);
+        t.advance(b"\x1b[>q");
+        let r = String::from_utf8(t.take_responses()).unwrap();
+        assert!(r.starts_with("\x1bP>|nus "), "{r:?}");
+        // "TN" and "Tc" and an unknown "zz", hex-encoded, one DCS.
+        t.advance(b"\x1bP+q544e;5463;7a7a\x1b\\");
+        let r = String::from_utf8(t.take_responses()).unwrap();
+        assert!(r.contains("\x1bP1+r544E=") && r.contains("\x1bP1+r5463\x1b\\") && r.contains("\x1bP0+r7A7A"), "{r:?}");
+        // Split across chunks.
+        t.advance(b"\x1bP+q5247");
+        t.advance(b"42\x1b\\");
+        let r = String::from_utf8(t.take_responses()).unwrap();
+        assert!(r.contains("1+r524742"), "{r:?}");
+    }
     use super::*;
 
     fn term(cols: usize, rows: usize) -> Term {
