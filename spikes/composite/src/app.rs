@@ -501,6 +501,15 @@ impl Tab {
         w(&self.left) || self.right.as_ref().is_some_and(w)
     }
 
+    /// The shell's OSC 9;4 progress: (state, percent), the left pane's first.
+    pub(crate) fn progress(&self) -> Option<(u8, u8)> {
+        let p = |p: &Pane| match p {
+            Pane::Term(t) => t.progress,
+            _ => None,
+        };
+        p(&self.left).or_else(|| self.right.as_ref().and_then(p))
+    }
+
     /// (title, detail) for a compact sidebar row: detail is cwd/host for a
     /// shell, the site for a page.
     pub(crate) fn row_text(&self) -> (String, String) {
@@ -701,6 +710,8 @@ pub struct App {
     /// The icon under the pointer this frame, with its words; drawn last.
     pub tip: Option<Tip>,
     pub tip_since: Option<Instant>,
+    /// What the taskbar button last showed, so it's only told on change.
+    pub taskbar_shown: Option<(u8, u8)>,
     /// Block pages we wrote, by their file URL, for copy-as-markdown and gist.
     pub block_pages: std::collections::HashMap<String, crate::blockpage::BlockPage>,
     pub look_tab: usize,
@@ -929,6 +940,7 @@ impl App {
             hovers: std::collections::HashMap::new(),
             tip: None,
             tip_since: None,
+            taskbar_shown: None,
             block_pages: std::collections::HashMap::new(),
             look_tab: 0,
             tab_colours: "family".into(),
@@ -1384,6 +1396,7 @@ impl App {
         self.editor_tick();
         self.prompt_lsp_tick();
         self.ports_tick();
+        self.sync_taskbar_progress();
         // Commands the rules asked for.
         let queued: Vec<(String, serde_json::Value)> = std::mem::take(&mut *self.rules.queued.borrow_mut());
         for (cmd, args) in queued {
@@ -2505,7 +2518,14 @@ impl App {
                                 changed = true;
                             }
                             nus_vt::Event::Progress(state, pct) => {
+                                let was = t.progress;
                                 t.progress = if state == 0 { None } else { Some((state, pct)) };
+                                // The rules hear a finish or an error once.
+                                let finished = matches!(t.progress, Some((1, 100))) && was != Some((1, 100));
+                                let errored = matches!(t.progress, Some((2, _))) && !matches!(was, Some((2, _)));
+                                if finished || errored {
+                                    self.rules.on_progress(if errored { "error" } else { "done" }, &t.title);
+                                }
                                 changed = true;
                             }
                             _ => {}
@@ -2741,6 +2761,10 @@ impl App {
             let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..label };
             self.fonts.draw_icon(scene, icon, ic, x, iy, ink);
             self.fonts.draw(scene, fade, x + ic + self.px(8.0), lbase, &title);
+            if let (Some((state, pct)), true) = (self.tabs.get(self.active).and_then(|t| t.progress()), self.behavior.progress_sidebar) {
+                let (v, color) = self.progress_look(state, pct);
+                scene.rect(Rect::new(x, strip.bottom() - self.px(2.0), (ic + p8 + tw) * v, self.px(2.0)), color);
+            }
             segment(&mut self.crumb_hits, &mut x, ic + p8 + tw, CrumbHit::Tab);
         }
         // Right side: status cluster, search, sidebar, window controls.
@@ -3263,6 +3287,32 @@ impl App {
         self.fonts.draw(scene, Style { color: fade(t.ink, a), ..label }, r.x + pad_x, r.y + ch / 2.0 + self.px(m::LABEL_PX) / 2.0 - self.px(2.0), &text);
     }
 
+    /// A progress state as (fraction, colour): error red, warning gold,
+    /// indeterminate a marquee that keeps the frame alive.
+    pub(crate) fn progress_look(&mut self, state: u8, pct: u8) -> (f32, nus_render::Color) {
+        let t = &self.theme;
+        let v = if state == 3 { (self.started.elapsed().as_secs_f32() * 0.5) % 1.0 } else { pct as f32 / 100.0 };
+        let color = match state {
+            2 => self.surface.signal,
+            4 => crate::theme_edit::from_rgb(t.ansi[3]),
+            _ => t.ink,
+        };
+        if state == 3 {
+            self.dirty = true;
+        }
+        (v, color)
+    }
+
+    /// The taskbar button follows the active tab's progress (Windows).
+    pub(crate) fn sync_taskbar_progress(&mut self) {
+        let cur = if self.behavior.progress_taskbar { self.tabs.get(self.active).and_then(|t| t.progress()) } else { None };
+        if cur == self.taskbar_shown {
+            return;
+        }
+        self.taskbar_shown = cur;
+        crate::taskbar::set_progress(&self.window, cur);
+    }
+
     /// The rail's width right now (0 when off or hidden).
     pub(crate) fn rail_w(&self) -> f32 {
         if self.header.style != crate::settings::HeaderStyle::Rail || self.compact() {
@@ -3558,6 +3608,12 @@ impl App {
             let st = Style { color: if active { ink } else { Theme::with_alpha(ink, 0.82) }, ..st };
             let tab_id = tab.id;
             self.marquee(scene, st, x, base, right - x, &title, active || hovered, row_bg, hover_key("row", tab_id as usize));
+            // The shell's progress (OSC 9;4): a line under the title.
+            if let (Some((state, pct)), true) = (tab.progress(), self.behavior.progress_sidebar) {
+                let (v, color) = self.progress_look(state, pct);
+                let py = y + row_h - self.px(3.0);
+                scene.rect(Rect::new(x, py, (right - x) * v, self.px(2.0)), color);
+            }
             scene.layer(None);
         }
         self.tabs = tabs;

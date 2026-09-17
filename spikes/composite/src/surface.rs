@@ -846,6 +846,18 @@ impl Rules {
         }
     }
 
+    /// The `on_progress` hook: a shell's progress finished or errored.
+    /// `on_progress({ state = "done"|"error", tab = "<title>" })`.
+    pub fn on_progress(&self, state: &str, tab: &str) {
+        let Ok(f) = self.lua.globals().get::<mlua::Function>("on_progress") else { return };
+        let t = self.lua.create_table().unwrap();
+        let _ = t.set("state", state);
+        let _ = t.set("tab", tab);
+        if let Err(e) = f.call::<()>(t) {
+            tracing::warn!("rules on_progress: {e}");
+        }
+    }
+
     /// The `on_block` hook: a command finished. `b` has cmd, exit, lines,
     /// cwd, seconds. Return nothing, or `{ fold = true|false, notify = true }`.
     pub fn on_block(&self, b: &crate::blocks::Block, cwd: &str) -> BlockVerdict {

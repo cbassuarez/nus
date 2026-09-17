@@ -309,6 +309,11 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    /// OSC 9;4 progress: in the sidebar row and strip crumb, on the taskbar button.
+    #[serde(default = "default_true")]
+    pub progress_sidebar: bool,
+    #[serde(default = "default_true")]
+    pub progress_taskbar: bool,
     /// Blocks: lamps in the gutter, and output longer than this folds itself (0 = never).
     #[serde(default = "default_true")]
     pub blocks: bool,
@@ -476,6 +481,8 @@ impl Default for Behavior {
             prompt_lsp: PromptLsp::Quiet,
             blocks: true,
             fold_over: 0,
+            progress_sidebar: true,
+            progress_taskbar: true,
             ports_grouping: PortsGrouping::Origin,
             ports_open: PortsOpen::Split,
             ports_poll: 1,
@@ -614,6 +621,8 @@ pub enum Hit {
     FormatOnSave(bool),
     Blocks(bool),
     FoldOver(u32),
+    ProgressSidebar(bool),
+    ProgressTaskbar(bool),
     PortsGrouping(PortsGrouping),
     PortsOpen(PortsOpen),
     PortsPoll(u8),
@@ -905,6 +914,8 @@ impl App {
             Hit::FormatOnSave(b) => if b { "format on save".into() } else { "save as is".into() },
             Hit::Blocks(b) => if b { "block lamps on".into() } else { "block lamps off".into() },
             Hit::FoldOver(n) => if n == 0 { "never fold on its own".into() } else { format!("fold output over {n} lines") },
+            Hit::ProgressSidebar(b) => if b { "progress in the sidebar".into() } else { "progress in the pane only".into() },
+            Hit::ProgressTaskbar(b) => if b { "progress on the taskbar".into() } else { "taskbar left alone".into() },
             Hit::PortsGrouping(g) => g.name().into(),
             Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
             Hit::PortsPoll(n) => format!("poll every {n}s"),
@@ -1220,6 +1231,8 @@ impl App {
             Hit::FormatOnSave(b) => self.behavior.format_on_save = b,
             Hit::Blocks(b) => self.behavior.blocks = b,
             Hit::FoldOver(n) => self.behavior.fold_over = n,
+            Hit::ProgressSidebar(b) => self.behavior.progress_sidebar = b,
+            Hit::ProgressTaskbar(b) => self.behavior.progress_taskbar = b,
             Hit::PortsGrouping(g) => self.behavior.ports_grouping = g,
             Hit::PortsOpen(o) => self.behavior.ports_open = o,
             Hit::PortsPoll(n) => self.behavior.ports_poll = n,
@@ -2260,8 +2273,15 @@ impl App {
                         ("OVER 200".into(), Hit::FoldOver(200), fo == 200),
                     ]),
                 ));
-                v.insert(7, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
-                v.insert(8, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
+                v.insert(7, (
+                    "PROGRESS".into(),
+                    Choice(vec![
+                        ("SIDEBAR · CRUMB".into(), Hit::ProgressSidebar(!self.behavior.progress_sidebar), self.behavior.progress_sidebar),
+                        ("TASKBAR".into(), Hit::ProgressTaskbar(!self.behavior.progress_taskbar), self.behavior.progress_taskbar),
+                    ]),
+                ));
+                v.insert(8, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
+                v.insert(9, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
                 v.insert(3, (
                     "CLIPBOARD".into(),
                     Choice(vec![

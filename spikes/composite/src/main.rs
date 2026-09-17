@@ -29,6 +29,7 @@ mod hatch;
 mod blocks;
 mod blockpage;
 mod remote;
+mod taskbar;
 mod hotkey;
 mod anim;
 mod app;
