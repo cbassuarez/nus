@@ -176,6 +176,10 @@ pub struct TermPane {
     pub clicks: Option<crate::termui::Clicks>,
     pub scrollbar: Option<Rect>,
     pub scroll_drag: bool,
+    /// Mouse reporting: the button the application was told is down, and
+    /// the last cell it heard about, so motion reports once per cell.
+    pub mouse_held: Option<nus_vt::input::MouseButton>,
+    pub mouse_last: Option<(usize, usize)>,
     pub chip_hits: Vec<(Rect, usize)>,
     pub hover_block: u64,
     /// Terminal images as textures, by image id; rebuilt when the term's
@@ -969,6 +973,8 @@ impl App {
             clicks: None,
             scrollbar: None,
             scroll_drag: false,
+            mouse_held: None,
+            mouse_last: None,
             chip_hits: Vec::new(),
             hover_block: 0,
             image_tex: std::collections::HashMap::new(),
@@ -6104,6 +6110,16 @@ impl App {
         self.mods = m;
     }
 
+    /// The held modifiers as the VT crate spells them.
+    pub(crate) fn vt_mods(&self) -> Mods {
+        let mut mods = Mods::empty();
+        mods.set(Mods::SHIFT, self.mods.shift_key());
+        mods.set(Mods::CTRL, self.mods.control_key());
+        mods.set(Mods::ALT, self.mods.alt_key());
+        mods.set(Mods::SUPER, self.mods.super_key());
+        mods
+    }
+
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
         let was = self.mouse;
         self.mouse = (x, y);
@@ -6620,6 +6636,8 @@ impl App {
         }
         let wheel_lines = self.behavior.wheel_lines as f32;
         let easing = self.behavior.scroll_easing;
+        let shift = self.mods.shift_key();
+        let mods = self.vt_mods();
         let motion = self.motion.clone();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
@@ -6629,6 +6647,24 @@ impl App {
                         MouseScrollDelta::LineDelta(_, y) => y * wheel_lines,
                         MouseScrollDelta::PixelDelta(p) => p.y as f32 / t.grid.cell_size().1,
                     };
+                    if t.wants_mouse() && !shift {
+                        use nus_vt::input::{MouseAction, MouseButton};
+                        let b = if lines > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+                        let n = (lines.abs().round() as usize).clamp(1, 10);
+                        for _ in 0..n {
+                            t.report_mouse(b, MouseAction::Press, mods, x, y);
+                        }
+                        continue;
+                    }
+                    if t.term.modes().contains(nus_vt::Modes::ALT_SCREEN)
+                        && t.term.modes().contains(nus_vt::Modes::ALTERNATE_SCROLL)
+                    {
+                        // Alternate scroll (1007): the wheel is arrow keys.
+                        let key: &[u8] = if lines > 0.0 { b"\x1b[A" } else { b"\x1b[B" };
+                        let n = (lines.abs().round() as usize).clamp(1, 10);
+                        let _ = t.pty.write(&key.repeat(n));
+                        continue;
+                    }
                     crate::scrolling::scroll_shell(t, lines, easing, &motion);
                     self.dirty = true;
                 }
@@ -6976,6 +7012,48 @@ pub(crate) fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {
 }
 
 impl TermPane {
+    /// Whether the application asked for the mouse (any of 1000/1002/1003).
+    pub fn wants_mouse(&self) -> bool {
+        self.term.modes().intersects(nus_vt::Modes::ANY_MOUSE)
+    }
+
+    /// Report a mouse event to the application, xterm-style, when it asked
+    /// for one. `x, y` are window pixels. Returns true when a report went.
+    pub fn report_mouse(&mut self, button: nus_vt::input::MouseButton, action: nus_vt::input::MouseAction, mods: Mods, x: f32, y: f32) -> bool {
+        use nus_vt::input::{MouseAction, MouseButton};
+        if !self.wants_mouse() {
+            return false;
+        }
+        let (cw, ch) = self.grid.cell_size();
+        let grid = self.term.grid();
+        let col = ((x - self.origin.0) / cw).floor().clamp(0.0, grid.cols() as f32 - 1.0) as usize;
+        let row = ((y - self.origin.1) / ch).floor().clamp(0.0, grid.rows() as f32 - 1.0) as usize;
+        let px = ((x - self.origin.0).max(0.0) as u32, (y - self.origin.1).max(0.0) as u32);
+        let button = match (action, button) {
+            (MouseAction::Motion, MouseButton::None) => self.mouse_held.unwrap_or(MouseButton::None),
+            _ => button,
+        };
+        if action == MouseAction::Motion {
+            if self.mouse_last == Some((col, row)) {
+                return true;
+            }
+        }
+        let bytes = input::encode_mouse(button, action, mods, (col, row), px, self.term.modes());
+        match action {
+            MouseAction::Press if !matches!(button, MouseButton::WheelUp | MouseButton::WheelDown | MouseButton::WheelLeft | MouseButton::WheelRight) => {
+                self.mouse_held = Some(button);
+            }
+            MouseAction::Release => self.mouse_held = None,
+            _ => {}
+        }
+        self.mouse_last = Some((col, row));
+        if bytes.is_empty() {
+            return false;
+        }
+        let _ = self.pty.write(&bytes);
+        true
+    }
+
     /// Write pasted text, bracketed when the program asked for it.
     pub fn write_paste(&mut self, text: &str) {
         let bracketed = self.term.modes().contains(nus_vt::Modes::BRACKETED_PASTE);

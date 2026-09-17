@@ -198,6 +198,7 @@ impl App {
         let copy_on_select = self.behavior.copy_on_select;
         let middle_paste = self.behavior.middle_paste;
         let mut middle = false;
+        let vt_mods = self.vt_mods();
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let mut acted = false;
         let mut open_url: Option<String> = None;
@@ -205,6 +206,31 @@ impl App {
         let mut run: Option<String> = None;
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             let Pane::Term(t) = p else { continue };
+            // The application asked for the mouse: it gets presses in its
+            // pane and the release wherever it lands. Shift keeps the click
+            // for us (xterm's convention), so selection still works.
+            if t.wants_mouse() && !shift {
+                use nus_vt::input::{MouseAction, MouseButton as B};
+                let b = match button {
+                    MouseButton::Left => Some(B::Left),
+                    MouseButton::Middle => Some(B::Middle),
+                    MouseButton::Right => Some(B::Right),
+                    _ => None,
+                };
+                if let Some(b) = b {
+                    if pressed && t.rect.contains(x, y) && t.scrollbar.is_none_or(|s| !s.contains(x, y)) {
+                        t.sel = None;
+                        t.report_mouse(b, MouseAction::Press, vt_mods, x, y);
+                        acted = true;
+                        continue;
+                    }
+                    if !pressed && t.mouse_held == Some(b) {
+                        t.report_mouse(b, MouseAction::Release, vt_mods, x, y);
+                        acted = true;
+                        continue;
+                    }
+                }
+            }
             // Release ends a drag anywhere.
             if !pressed && button == MouseButton::Left {
                 if let Some(sel) = t.sel.as_mut() {
@@ -358,9 +384,18 @@ impl App {
 
     /// Drag updates: selection head, scrollbar thumb.
     pub(crate) fn term_drag(&mut self, x: f32, y: f32) {
+        let vt_mods = self.vt_mods();
+        let shift = self.mods.shift_key();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             let Pane::Term(t) = p else { continue };
+            if t.wants_mouse() && !shift && (t.mouse_held.is_some() || t.rect.contains(x, y)) {
+                use nus_vt::input::{MouseAction, MouseButton};
+                if t.mouse_held.is_some() || t.term.modes().contains(nus_vt::Modes::MOUSE_ANY) {
+                    t.report_mouse(MouseButton::None, MouseAction::Motion, vt_mods, x, y);
+                    continue;
+                }
+            }
             if t.scroll_drag {
                 if let Some(track) = t.scrollbar {
                     let grid = t.term.grid();

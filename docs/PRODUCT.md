@@ -547,8 +547,15 @@ Chromium's smooth scrolling, switchable.
 **Conformance.** TERM=xterm-256color, COLORTERM=truecolor,
 TERM_PROGRAM=nus; DA1/DA2; XTVERSION answers `nus <version>`;
 XTGETTCAP answers TN, RGB/Tc, colors, setrgbf/b, Ms, Ss/Se, Smulx and
-refuses the rest; OSC 8, 52, 133, 7, 9;4, 1337; the kitty keyboard
-protocol; synchronized output (2026); bracketed paste; focus events.
-Not claimed: sixel (DA1 omits 4). Next for adoption: a terminfo entry
-(`nus`) shipped and TERM=nus once tools know it, vttest/esctest runs,
-and a `nus` CLI (open a URL or a file, `nus ask`).
+refuses the rest; DA3; DECXCPR; XTWINOPS 11/13/14/16/18/19/22/23;
+DECRQSS for SGR, DECSTBM, DECSCUSR, DECSCL, DECSCA; OSC 8, 52, 133, 7,
+9;4, 1337; the kitty keyboard protocol; synchronized output (2026);
+bracketed paste; focus events. Sixel (DA1 claims 4; XTSMGRAPHICS
+answers colours and geometry) lands as an image placement like Kitty and
+iTerm2 pictures. Mouse reporting: 1000/1002/1003 with X10, UTF-8 (1005),
+SGR (1006) and SGR-pixel (1016) encodings; Shift keeps the click for
+selection; the wheel reports when the application has the mouse, is
+arrow keys under alternate scroll (1007), and scrolls us otherwise. Next
+for adoption: a terminfo entry (`nus`) shipped and TERM=nus once tools
+know it, vttest/esctest runs, and a `nus` CLI (open a URL or a file,
+`nus ask`).

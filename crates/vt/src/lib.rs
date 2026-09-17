@@ -6,6 +6,7 @@ pub mod grid;
 pub mod images;
 pub mod input;
 pub mod palette;
+pub mod sixel;
 pub mod term;
 
 pub use cell::{Cell, Color, Flags};

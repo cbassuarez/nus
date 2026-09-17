@@ -33,6 +33,8 @@ bitflags! {
         const ALT_SCREEN        = 1 << 14;
         const ALTERNATE_SCROLL  = 1 << 15;
         const APP_KEYPAD        = 1 << 16;
+        /// DECSET 1016: SGR reports in pixels, not cells.
+        const MOUSE_SGR_PIXEL   = 1 << 17;
 
         const ANY_MOUSE = Self::MOUSE_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_ANY.bits();
     }
@@ -213,8 +215,112 @@ impl Term {
                     start = i;
                     continue;
                 }
-                if bytes[i + 1] == b'P' && bytes[i + 2..].starts_with(b"+q") {
-                    // The payload runs to ST; if it isn't here yet, wait for more.
+                // XTWINOPS reports vte doesn't carry: CSI 11 / 13 / 16 / 19 t.
+                if bytes[i + 1] == b'[' && i + 2 < bytes.len() && bytes[i + 2].is_ascii_digit() {
+                    let mut j = i + 2;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b't' {
+                        let op: u32 = std::str::from_utf8(&bytes[i + 2..j])
+                            .unwrap_or("")
+                            .parse()
+                            .unwrap_or(0);
+                        if matches!(op, 11 | 13 | 16 | 19) {
+                            self.feed(&bytes[start..i]);
+                            self.xtwinops(op);
+                            i = j + 1;
+                            start = i;
+                            continue;
+                        }
+                    }
+                }
+                // DECXCPR: CSI ? 6 n answers with the page too.
+                if bytes[i + 1] == b'[' && bytes[i + 2..].starts_with(b"?6n") {
+                    self.feed(&bytes[start..i]);
+                    let row = if self.modes.contains(Modes::ORIGIN) {
+                        self.cursor.row - self.scroll_top
+                    } else {
+                        self.cursor.row
+                    };
+                    self.respond(format!("\x1b[?{};{};1R", row + 1, self.cursor.col + 1));
+                    i += 5;
+                    start = i;
+                    continue;
+                }
+                // XTSMGRAPHICS: CSI ? Pi ; Pa ; Pv S — colours (1) and geometry (2).
+                if bytes[i + 1] == b'[' && bytes[i + 2..].starts_with(b"?") {
+                    let mut j = i + 3;
+                    while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b'S' {
+                        let params: Vec<u32> = std::str::from_utf8(&bytes[i + 3..j])
+                            .unwrap_or("")
+                            .split(';')
+                            .map(|p| p.parse().unwrap_or(0))
+                            .collect();
+                        self.feed(&bytes[start..i]);
+                        self.xtsmgraphics(&params);
+                        i = j + 1;
+                        start = i;
+                        continue;
+                    }
+                }
+                // Sixel: DCS P1;P2;P3 q … ST.
+                if bytes[i + 1] == b'P' {
+                    let mut j = i + 2;
+                    while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
+                        j += 1;
+                    }
+                    if j < bytes.len()
+                        && bytes[j] == b'q'
+                        && j > i + 1
+                        && (j == i + 2 || bytes[i + 2].is_ascii_digit() || bytes[i + 2] == b';')
+                    {
+                        let params: Vec<u32> = std::str::from_utf8(&bytes[i + 2..j])
+                            .unwrap_or("")
+                            .split(';')
+                            .map(|p| p.parse().unwrap_or(0))
+                            .collect();
+                        let body = j + 1;
+                        let mut k = body;
+                        let mut end = None;
+                        while k < bytes.len() {
+                            if bytes[k] == 0x9c
+                                || (bytes[k] == 0x1b
+                                    && k + 1 < bytes.len()
+                                    && bytes[k + 1] == b'\\')
+                            {
+                                end = Some((k, if bytes[k] == 0x9c { k + 1 } else { k + 2 }));
+                                break;
+                            }
+                            k += 1;
+                        }
+                        match end {
+                            Some((e, after)) => {
+                                self.feed(&bytes[start..i]);
+                                self.sixel(&params, &bytes[body..e]);
+                                i = after;
+                                start = i;
+                                continue;
+                            }
+                            None if bytes.len() - i < 64 * 1024 * 1024 => {
+                                // Sixels can be large; wait for the rest.
+                                self.feed(&bytes[start..i]);
+                                self.pending_osc = bytes[i..].to_vec();
+                                return;
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                if bytes[i + 1] == b'P'
+                    && (bytes[i + 2..].starts_with(b"+q") || bytes[i + 2..].starts_with(b"$q"))
+                {
+                    // XTGETTCAP or DECRQSS. The payload runs to ST; if it
+                    // isn't here yet, wait for more.
+                    let rqss = bytes[i + 2] == b'$';
                     let body = i + 4;
                     let mut j = body;
                     let mut end = None;
@@ -229,7 +335,11 @@ impl Term {
                         Some(e) => {
                             self.feed(&bytes[start..i]);
                             let payload = bytes[body..e].to_vec();
-                            self.xtgettcap(&payload);
+                            if rqss {
+                                self.decrqss(&payload);
+                            } else {
+                                self.xtgettcap(&payload);
+                            }
                             i = e + 2;
                             start = i;
                             continue;
@@ -402,6 +512,132 @@ impl Term {
             };
             self.events.push(Event::Progress(state, pct.min(100)));
         }
+    }
+
+    /// A sixel picture at the cursor, as an image placement.
+    fn sixel(&mut self, params: &[u32], data: &[u8]) {
+        let Some(pic) = crate::sixel::decode(params, data) else {
+            return;
+        };
+        self.next_image_id += 1;
+        let id = self.next_image_id;
+        self.images.push(crate::images::Image {
+            id,
+            width: pic.width,
+            height: pic.height,
+            rgba: pic.rgba,
+        });
+        // Sixel scrolling mode (DECSDM off, the default): the cursor ends
+        // on the line after the picture.
+        self.place_image(id, 0, 0, false);
+    }
+
+    /// XTSMGRAPHICS (CSI ? Pi ; Pa ; Pv S): read the colour register count
+    /// (1) or the sixel geometry (2); set requests answer with what is.
+    fn xtsmgraphics(&mut self, params: &[u32]) {
+        let item = params.first().copied().unwrap_or(0);
+        match item {
+            1 => self.respond("\x1b[?1;0;256S"),
+            2 => {
+                let w = self.cell_px.0.max(1) as usize * self.primary.cols();
+                let h = self.cell_px.1.max(1) as usize * self.primary.rows();
+                self.respond(format!("\x1b[?2;0;{w};{h}S"));
+            }
+            _ => self.respond(format!("\x1b[?{item};1S")),
+        }
+    }
+
+    /// The XTWINOPS reports beyond 14/18: window state (11), position
+    /// (13), cell size (16), screen size in characters (19).
+    fn xtwinops(&mut self, op: u32) {
+        match op {
+            11 => self.respond(b"\x1b[1t"),
+            13 => self.respond(b"\x1b[3;0;0t"),
+            16 => self.respond(format!(
+                "\x1b[6;{};{}t",
+                self.cell_px.1.max(1),
+                self.cell_px.0.max(1)
+            )),
+            19 => self.respond(format!("\x1b[9;{};{}t", self.rows(), self.cols())),
+            _ => {}
+        }
+    }
+
+    /// DECRQSS (DCS $ q Pt ST): report a setting as the sequence that
+    /// would set it — SGR, DECSTBM, DECSCUSR, DECSCL, DECSCA. Valid
+    /// answers are `DCS 1 $ r … ST` (xterm's reading), the rest `DCS 0 $ r ST`.
+    fn decrqss(&mut self, what: &[u8]) {
+        let value = match what {
+            b"m" => Some(format!("{}m", self.sgr_params())),
+            b"r" => Some(format!(
+                "{};{}r",
+                self.scroll_top + 1,
+                self.scroll_bottom + 1
+            )),
+            b" q" => {
+                let s = self.cursor_style;
+                let n = match (s.shape, s.blinking) {
+                    (CursorShape::Block, true) => 1,
+                    (CursorShape::Block, false) => 2,
+                    (CursorShape::Underline, true) => 3,
+                    (CursorShape::Underline, false) => 4,
+                    (CursorShape::Beam, true) => 5,
+                    (CursorShape::Beam, false) => 6,
+                    _ => 1,
+                };
+                Some(format!("{n} q"))
+            }
+            b"\"p" => Some("64;1\"p".to_string()),
+            b"\"q" => Some("0\"q".to_string()),
+            _ => None,
+        };
+        match value {
+            Some(v) => self.respond(format!("\x1bP1$r{v}\x1b\\")),
+            None => self.respond(b"\x1bP0$r\x1b\\"),
+        }
+    }
+
+    /// The current attributes as SGR parameters (`0;1;38:2::r:g:b…`).
+    fn sgr_params(&self) -> String {
+        use crate::cell::{Color, Flags};
+        let t = &self.cursor.template;
+        let mut p = vec!["0".to_string()];
+        let f = t.flags;
+        for (flag, n) in [
+            (Flags::BOLD, "1"),
+            (Flags::DIM, "2"),
+            (Flags::ITALIC, "3"),
+            (Flags::UNDERLINE, "4"),
+            (Flags::DOUBLE_UL, "4:2"),
+            (Flags::UNDERCURL, "4:3"),
+            (Flags::DOTTED_UL, "4:4"),
+            (Flags::DASHED_UL, "4:5"),
+            (Flags::BLINK, "5"),
+            (Flags::INVERSE, "7"),
+            (Flags::HIDDEN, "8"),
+            (Flags::STRIKE, "9"),
+        ] {
+            if f.contains(flag) {
+                p.push(n.to_string());
+            }
+        }
+        let color = |base: u8, c: Color| -> Option<String> {
+            match c {
+                Color::Default => None,
+                Color::Indexed(i) if i < 8 && base == 30 => Some((30 + i).to_string()),
+                Color::Indexed(i) if i < 8 && base == 40 => Some((40 + i).to_string()),
+                Color::Indexed(i) if i < 16 && base == 30 => Some((90 + i - 8).to_string()),
+                Color::Indexed(i) if i < 16 && base == 40 => Some((100 + i - 8).to_string()),
+                Color::Indexed(i) => Some(format!("{}:5:{i}", base + 8)),
+                Color::Rgb(r, g, b) => Some(format!("{}:2::{r}:{g}:{b}", base + 8)),
+            }
+        };
+        p.extend(color(30, t.fg));
+        p.extend(color(40, t.bg));
+        if let Some(ul) = t.ul {
+            p.extend(color(50, ul));
+        }
+        p.join(";")
     }
 
     /// XTGETTCAP: hex-encoded capability names, `;`-separated. Known ones
@@ -1085,6 +1321,10 @@ impl Term {
                 }
                 return;
             }
+            PrivateMode::Unknown(1016) => {
+                self.modes.set(Modes::MOUSE_SGR_PIXEL, on);
+                return;
+            }
             PrivateMode::Unknown(_) => return,
         };
         match named {
@@ -1148,6 +1388,7 @@ impl Term {
                 M::SyncUpdate => return 2,
             },
             PrivateMode::Unknown(47) | PrivateMode::Unknown(1047) => Modes::ALT_SCREEN,
+            PrivateMode::Unknown(1016) => Modes::MOUSE_SGR_PIXEL,
             PrivateMode::Unknown(_) => return 0,
         };
         if self.modes.contains(flag) {
@@ -1285,9 +1526,11 @@ impl Handler for Term {
 
     fn identify_terminal(&mut self, intermediate: Option<char>) {
         match intermediate {
-            // VT220 with ANSI colour (22); 4 would claim sixel, which isn't here.
-            None => self.respond(b"\x1b[?62;22c"),
+            // VT220 with sixel (4) and ANSI colour (22).
+            None => self.respond(b"\x1b[?62;4;22c"),
             Some('>') => self.respond(b"\x1b[>1;10;0c"),
+            // DA3: a unit id; we have none, so all zeros.
+            Some('=') => self.respond(b"\x1bP!|00000000\x1b\\"),
             _ => {}
         }
     }
@@ -1803,6 +2046,24 @@ fn percent_decode(s: &str) -> String {
 mod tests {
 
     #[test]
+    fn a_sixel_becomes_a_placement() {
+        let mut t = Term::new(80, 24, 100);
+        t.advance(b"\x1bP0;1q#1;2;100;0;0!8~-!8~\x1b\\after");
+        assert_eq!(t.images.len(), 1);
+        assert_eq!((t.images[0].width, t.images[0].height), (8, 12));
+        assert_eq!(t.placements.len(), 1);
+        // Split across chunks, too.
+        t.advance(b"\x1bP0;1q#2;2;0;0;100");
+        t.advance(b"~~~~\x1b\\");
+        assert_eq!(t.images.len(), 2);
+        // The geometry query answers in pixels.
+        t.take_responses();
+        t.advance(b"\x1b[?2;1;0S");
+        let r = String::from_utf8(t.take_responses()).unwrap();
+        assert!(r.starts_with("\x1b[?2;0;"), "{r:?}");
+    }
+
+    #[test]
     fn xtversion_and_xtgettcap_answer() {
         let mut t = Term::new(80, 24, 0);
         t.advance(b"\x1b[>q");
@@ -2046,7 +2307,28 @@ mod tests {
     fn responses_dsr_and_da() {
         let mut t = term(10, 5);
         feed(&mut t, "\x1b[3;4H\x1b[6n\x1b[c");
-        assert_eq!(t.take_responses(), b"\x1b[3;4R\x1b[?62;22c");
+        assert_eq!(t.take_responses(), b"\x1b[3;4R\x1b[?62;4;22c");
+        feed(&mut t, "\x1b[?6n\x1b[=c");
+        assert_eq!(t.take_responses(), b"\x1b[?3;4;1R\x1bP!|00000000\x1b\\");
+    }
+
+    #[test]
+    fn xtwinops_reports_and_decrqss() {
+        let mut t = term(10, 5);
+        t.cell_px = (8, 16);
+        feed(&mut t, "\x1b[16t\x1b[19t\x1b[11t");
+        assert_eq!(t.take_responses(), b"\x1b[6;16;8t\x1b[9;5;10t\x1b[1t");
+        feed(
+            &mut t,
+            "\x1b[1;4m\x1b[38;2;1;2;3m\x1b[2;4r\x1bP$qm\x1b\\\x1bP$qr\x1b\\\x1bP$qx\x1b\\",
+        );
+        assert_eq!(
+            String::from_utf8(t.take_responses()).unwrap(),
+            "\x1bP1$r0;1;4;38:2::1:2:3m\x1b\\\x1bP1$r2;4r\x1b\\\x1bP0$r\x1b\\"
+        );
+        feed(&mut t, "\x1b[?1016h\x1b[?1016$p");
+        assert_eq!(t.take_responses(), b"\x1b[?1016;1$y");
+        assert!(t.modes().contains(Modes::MOUSE_SGR_PIXEL));
     }
 
     #[test]

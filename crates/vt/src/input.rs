@@ -196,6 +196,132 @@ fn legacy_char(c: char, mods: Mods) -> Vec<u8> {
     out
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+    WheelLeft,
+    WheelRight,
+    /// Motion with no button held (mode 1003 only).
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Release,
+    /// The pointer moved with `button` held (or none, in mode 1003).
+    Motion,
+}
+
+/// Encode a mouse event per the modes the application set. `cell` is
+/// 0-based (column, row) in the viewport; `px` is the pointer's 0-based
+/// pixel offset inside the text area, for mode 1016. Returns nothing when
+/// no mouse mode is on, or the mode doesn't want this event.
+pub fn encode_mouse(
+    button: MouseButton,
+    action: MouseAction,
+    mods: Mods,
+    cell: (usize, usize),
+    px: (u32, u32),
+    modes: Modes,
+) -> Vec<u8> {
+    if !modes.intersects(Modes::ANY_MOUSE) {
+        return Vec::new();
+    }
+    if action == MouseAction::Motion {
+        let wants = if button == MouseButton::None {
+            modes.contains(Modes::MOUSE_ANY)
+        } else {
+            modes.intersects(Modes::MOUSE_MOTION | Modes::MOUSE_ANY)
+        };
+        if !wants {
+            return Vec::new();
+        }
+    }
+    let wheel = matches!(
+        button,
+        MouseButton::WheelUp
+            | MouseButton::WheelDown
+            | MouseButton::WheelLeft
+            | MouseButton::WheelRight
+    );
+    // Wheels only press; X10 mode (1000) only reports presses.
+    if wheel && action != MouseAction::Press {
+        return Vec::new();
+    }
+    let mut cb: u32 = match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+        MouseButton::None => 3,
+        MouseButton::WheelUp => 64,
+        MouseButton::WheelDown => 65,
+        MouseButton::WheelLeft => 66,
+        MouseButton::WheelRight => 67,
+    };
+    if mods.contains(Mods::SHIFT) {
+        cb += 4;
+    }
+    if mods.contains(Mods::ALT) {
+        cb += 8;
+    }
+    if mods.contains(Mods::CTRL) {
+        cb += 16;
+    }
+    if action == MouseAction::Motion {
+        cb += 32;
+    }
+    if modes.contains(Modes::MOUSE_SGR) || modes.contains(Modes::MOUSE_SGR_PIXEL) {
+        let (x, y) = if modes.contains(Modes::MOUSE_SGR_PIXEL) {
+            (px.0 + 1, px.1 + 1)
+        } else {
+            (cell.0 as u32 + 1, cell.1 as u32 + 1)
+        };
+        let fin = if action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
+        return format!("[<{cb};{x};{y}{fin}").into_bytes();
+    }
+    if action == MouseAction::Release {
+        cb = (cb & !3) | 3;
+    }
+    let mut out = b"[M".to_vec();
+    let coord = |v: usize, out: &mut Vec<u8>| {
+        let v = v as u32 + 1 + 32;
+        if modes.contains(Modes::MOUSE_UTF8) {
+            if v > 2047 {
+                return false;
+            }
+            let mut b = [0u8; 4];
+            out.extend_from_slice(
+                char::from_u32(v)
+                    .unwrap_or(' ')
+                    .encode_utf8(&mut b)
+                    .as_bytes(),
+            );
+            true
+        } else {
+            if v > 255 {
+                return false;
+            }
+            out.push(v as u8);
+            true
+        }
+    };
+    out.push((cb + 32) as u8);
+    if !coord(cell.0, &mut out) || !coord(cell.1, &mut out) {
+        // Out of the encoding's range: X10 can't say it, so say nothing.
+        return Vec::new();
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +393,52 @@ mod tests {
             KeyboardModes::NO_MODE,
         );
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn mouse_reports() {
+        use MouseAction as A;
+        use MouseButton as B;
+        let m = Modes::MOUSE_CLICK;
+        assert_eq!(
+            encode_mouse(B::Left, A::Press, Mods::empty(), (0, 0), (0, 0), m),
+            b"[M !!"
+        );
+        assert_eq!(
+            encode_mouse(B::Left, A::Release, Mods::empty(), (0, 0), (0, 0), m),
+            b"[M#!!"
+        );
+        assert!(encode_mouse(B::Left, A::Motion, Mods::empty(), (1, 1), (0, 0), m).is_empty());
+        assert!(encode_mouse(
+            B::Left,
+            A::Press,
+            Mods::empty(),
+            (1, 1),
+            (0, 0),
+            Modes::empty()
+        )
+        .is_empty());
+        let sgr = Modes::MOUSE_ANY | Modes::MOUSE_SGR;
+        assert_eq!(
+            encode_mouse(B::Right, A::Press, Mods::CTRL, (9, 4), (0, 0), sgr),
+            b"[<18;10;5M"
+        );
+        assert_eq!(
+            encode_mouse(B::Left, A::Release, Mods::empty(), (9, 4), (0, 0), sgr),
+            b"[<0;10;5m"
+        );
+        assert_eq!(
+            encode_mouse(B::None, A::Motion, Mods::empty(), (2, 3), (0, 0), sgr),
+            b"[<35;3;4M"
+        );
+        assert_eq!(
+            encode_mouse(B::WheelUp, A::Press, Mods::empty(), (0, 0), (0, 0), sgr),
+            b"[<64;1;1M"
+        );
+        let pix = sgr | Modes::MOUSE_SGR_PIXEL;
+        assert_eq!(
+            encode_mouse(B::Left, A::Press, Mods::empty(), (0, 0), (17, 33), pix),
+            b"[<0;18;34M"
+        );
     }
 }
