@@ -12,6 +12,7 @@
 //!   wait 800                   milliseconds
 //!   url http://localhost:8000/ open in the split, as the URL rule does
 //!   tab https://…              open as a new tab
+//!   newshell                   a new shell tab, in front
 //!   shell git status           type into the shell at its prompt and run
 //!   line cargo te              type into the shell without running
 //!   palette go cargo te        the palette (go | new | url) with a query
@@ -24,7 +25,7 @@
 //!   shot window                capture the whole window
 //!   shot hero 0.5 0.06 0.5 0.94   capture a fraction [x y w h] of it
 //!   focus shell | page         which half of the split has the focus
-//!   cancel                     Ctrl+C to the shell: a clean prompt again
+//!   erase 8                    backspaces to the shell, undoing a `line`
 //!   close                      the palette, ask, board and atlas, whichever is up
 //!   quit                       (implicit at the end)
 
@@ -99,9 +100,16 @@ impl App {
             }
             "url" => self.open_url(rest, false),
             "tab" => self.open_url(rest, true),
+            "newshell" => {
+                let p = self.behavior.default_profile;
+                self.run(crate::app::Action::NewTerminal(p));
+            }
             "shell" => self.shot_type(&format!("{rest}\r")),
             "line" => self.shot_type(rest),
-            "cancel" => self.shot_type(""),
+            "erase" => {
+                let n: usize = rest.parse().unwrap_or(1);
+                self.shot_type(&"".repeat(n));
+            }
             "focus" => {
                 if let Some(t) = self.tabs.get_mut(self.active) {
                     t.focus_right = rest == "page" && t.right.is_some();

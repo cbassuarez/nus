@@ -557,6 +557,7 @@ pub mod icons {
     icon!(CARET_DOWN, "caret-down");
     icon!(STACK, "stack");
     icon!(LINK, "link");
+    icon!(SHARE, "share-network");
     icon!(PLUS, "plus");
     icon!(MINUS, "minus");
     icon!(ARROWS_OUT, "arrows-out-cardinal");

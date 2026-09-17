@@ -56,6 +56,8 @@ pub enum Action {
     Board,
     Hatch,
     Hoist,
+    BlockMarkdown(String),
+    BlockGist(String),
     /// Type a command into the focused (or a new) terminal and run it.
     RunInShell(String),
     ToggleSplit,
@@ -190,6 +192,15 @@ pub struct TermPane {
     pub plsp: Option<crate::prompt_lsp::LineLsp>,
     pub plsp_tried: bool,
     pub chip_hits: Vec<(Rect, usize)>,
+    /// Blocks: folded output ranges (absolute lines), the display list they
+    /// make, the block walked to, the filter, the lamps' hit rects.
+    pub folds: Vec<(u64, u64)>,
+    pub view: Vec<nus_vt::grid::Display>,
+    pub view_key: Option<(u64, usize, usize, Option<(u64, u64)>)>,
+    pub block_sel: Option<u64>,
+    pub block_filter: Option<String>,
+    pub lamp_hits: Vec<(Rect, u64)>,
+    pub select_all_at: Option<Instant>,
     pub hover_block: u64,
     /// Terminal images as textures, by image id; rebuilt when the term's
     /// images_gen moves.
@@ -689,6 +700,9 @@ pub struct App {
     pub hovers: std::collections::HashMap<u64, Hover>,
     /// The icon under the pointer this frame, with its words; drawn last.
     pub tip: Option<Tip>,
+    pub tip_since: Option<Instant>,
+    /// Block pages we wrote, by their file URL, for copy-as-markdown and gist.
+    pub block_pages: std::collections::HashMap<String, crate::blockpage::BlockPage>,
     pub look_tab: usize,
     /// The theme's tab-colour rule, read by rules.luau as ctx.tab_colours.
     pub tab_colours: String,
@@ -914,6 +928,8 @@ impl App {
             resized_at: None,
             hovers: std::collections::HashMap::new(),
             tip: None,
+            tip_since: None,
+            block_pages: std::collections::HashMap::new(),
             look_tab: 0,
             tab_colours: "family".into(),
             look_menu: false,
@@ -1107,6 +1123,13 @@ impl App {
             plsp: None,
             plsp_tried: false,
             chip_hits: Vec::new(),
+            folds: Vec::new(),
+            view: Vec::new(),
+            view_key: None,
+            block_sel: None,
+            block_filter: None,
+            lamp_hits: Vec::new(),
+            select_all_at: None,
             hover_block: 0,
             image_tex: std::collections::HashMap::new(),
             images_gen: 0,
@@ -1754,8 +1777,12 @@ impl App {
         let rows = grid.rows();
         let top = grid.abs_of_display(0);
         let bottom = top + rows as u64;
+        let folds = p.folds.clone();
         for pl in &p.term.placements {
             if pl.line >= bottom || pl.line + pl.rows as u64 <= top {
+                continue;
+            }
+            if folds.iter().any(|&(s, e)| pl.line >= s && pl.line < e) {
                 continue;
             }
             let Some(bg) = p.image_tex.get(&pl.image) else { continue };
@@ -1781,11 +1808,9 @@ impl App {
         let rows = grid.rows();
         let label = self.label();
         if self.behavior.shell_integration && !p.term.marks.is_empty() {
-            let top = grid.abs_of_display(0);
-            let bottom = top + rows as u64;
-            let marks: Vec<nus_vt::Mark> = p.term.marks.iter().copied().filter(|m| m.line >= top && m.line < bottom).collect();
+            let marks: Vec<nus_vt::Mark> = p.term.marks.clone();
             for m in &marks {
-                let row = (m.line - top) as usize;
+                let Some(row) = p.row_of_line(m.line) else { continue };
                 let y = p.origin.1 + row as f32 * ch;
                 match m.kind {
                     nus_vt::MarkKind::PromptStart if row > 0 => {
@@ -1793,9 +1818,9 @@ impl App {
                     }
                     nus_vt::MarkKind::CommandEnd(Some(code)) if code != 0 => {
                         // The failed command's line is the previous B mark's.
-                        if let Some(b) = p.term.marks.iter().rev().find(|x| x.kind == nus_vt::MarkKind::CommandStart && x.line < m.line) {
-                            if b.line >= top {
-                                let by = p.origin.1 + (b.line - top) as f32 * ch;
+                        if let Some(b) = marks.iter().rev().find(|x| x.kind == nus_vt::MarkKind::CommandStart && x.line < m.line) {
+                            if let Some(brow) = p.row_of_line(b.line) {
+                                let by = p.origin.1 + brow as f32 * ch;
                                 let text = format!("× {code}");
                                 let tw = self.fonts.measure(label, &text);
                                 let bx = r.right() - self.px(18.0) - tw;
@@ -1806,7 +1831,7 @@ impl App {
                     _ => {}
                 }
             }
-            let _ = cw;
+            let _ = (cw, rows);
         }
         // A long command just finished: a badge that fades over four seconds.
         if let Some((exit, when)) = p.done {
@@ -2366,6 +2391,7 @@ impl App {
 
     /// Drain PTYs, tick terminals, detect URLs. Returns true if anything changed.
     pub fn pump(&mut self) -> bool {
+        let fold_over = self.behavior.fold_over;
         let mut changed = false;
         let mut detected = None;
         let mut bell = false;
@@ -2450,6 +2476,18 @@ impl App {
                                             }
                                         }
                                         t.progress = None;
+                                        // The block is complete: auto-fold long output, ask the rules.
+                                        if let Some(b) = t.blocks().last().cloned() {
+                                            let verdict = self.rules.on_block(&b, t.term.cwd.as_deref().unwrap_or(""));
+                                            let fold = verdict.fold.unwrap_or(fold_over > 0 && b.lines() > fold_over as u64);
+                                            if fold && !t.is_folded(&b) {
+                                                t.toggle_fold(&b);
+                                            }
+                                            if verdict.notify && (i != self.active || !self.window.has_focus()) {
+                                                t.waiting = true;
+                                                bell = true;
+                                            }
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -3189,7 +3227,10 @@ impl App {
     /// pointer has rested on it half a second. Cleared every frame; the
     /// icon that is hot sets it again.
     pub(crate) fn draw_tip(&mut self, scene: &mut Scene, w: f32, h: f32) {
-        let Some(tip) = self.tip.take() else { return };
+        let Some(tip) = self.tip.take() else {
+            self.tip_since = None;
+            return;
+        };
         let age = tip.since.elapsed().as_secs_f32();
         if age < 0.5 || self.palette.is_some() || self.board.open || self.start.is_some() {
             return;
@@ -4714,11 +4755,13 @@ impl App {
                 if gliding {
                     lk.visible = false;
                 }
-                p.grid.draw_with(scene, &mut self.fonts, &p.term, p.origin, focused, lk);
+                let view = p.view().to_vec();
+                p.grid.draw_view(scene, &mut self.fonts, &p.term, p.origin, focused, lk, &view);
                 if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
                     self.draw_moving_cursor(scene, p, look);
                 }
                 self.draw_term_images(scene, p);
+                self.draw_block_layer(scene, p, r, hh);
                 self.draw_prompt_line(scene, p, pane_paper);
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
@@ -4988,6 +5031,12 @@ impl App {
                 }
                 if q.is_empty() || hit("ports") || hit("board") {
                     rows.push(row("::", format!("ports · the board · {}", key("P", true)), Action::Board));
+                }
+                if let Some(pg) = self.focused_block_page() {
+                    if q.is_empty() || hit("block") || hit("markdown") || hit("gist") {
+                        rows.push(row("</>", "this block · copy as markdown".into(), Action::BlockMarkdown(pg.clone())));
+                        rows.push(row("</>", "this block · gist through gh".into(), Action::BlockGist(pg)));
+                    }
                 }
                 if hit("hatch") || hit("quick") {
                     rows.push(row("::", format!("hatch · the quick terminal · {}", self.behavior.hatch_hotkey.label().to_lowercase()), Action::Hatch));
@@ -5269,6 +5318,27 @@ impl App {
             Action::Board => self.open_board(),
             Action::Hatch => self.toggle_hatch(),
             Action::Hoist => self.hoist(),
+            Action::BlockMarkdown(u) => {
+                if let Some(p) = self.block_pages.get(&u) {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(p.markdown());
+                    }
+                    self.notice("copied as markdown");
+                }
+            }
+            Action::BlockGist(u) => {
+                if let Some(p) = self.block_pages.get(&u).cloned() {
+                    match crate::blockpage::gist(&p.markdown()) {
+                        Ok(url) => {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(url.clone());
+                            }
+                            self.notice(&format!("gist · {url} · copied"));
+                        }
+                        Err(e) => self.notice(&format!("gist failed · {e}")),
+                    }
+                }
+            }
             Action::RunInShell(cmd) => self.run_in_shell(&cmd),
             Action::ToggleSplit => self.toggle_split(),
             Action::CloseTab => self.close_tabs(false),
@@ -5331,6 +5401,9 @@ impl App {
             return;
         }
         if self.prompt_lsp_key(ev) {
+            return;
+        }
+        if self.palette.is_none() && self.blocks_key(ev) {
             return;
         }
         if self.ask_key(ev) {
@@ -6792,6 +6865,9 @@ impl App {
         if self.editor_mouse(button, state, x, y) {
             return;
         }
+        if pressed && button == MouseButton::Left && self.lamp_click(x, y) {
+            return;
+        }
         if self.term_mouse(button, state, x, y) {
             return;
         }
@@ -7139,6 +7215,16 @@ fn detect_localhost(term: &Term) -> Option<(usize, usize, String)> {
 
 /// The whole line is a URL: a scheme, `localhost[:port]`, or `host.tld` with a
 /// known TLD. Bare words and anything with shell syntax never qualify.
+/// A command trimmed for a one-line label.
+pub(crate) fn fit_cmd(cmd: &str, max: usize) -> String {
+    let one: String = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= max {
+        one
+    } else {
+        format!("{}…", one.chars().take(max.saturating_sub(1)).collect::<String>())
+    }
+}
+
 /// `nus <file>` or `edit <file>` typed at a prompt, resolved against the
 /// shell's cwd; only an existing file counts.
 pub(crate) fn file_at_prompt(line: &str, cwd: Option<&str>) -> Option<std::path::PathBuf> {

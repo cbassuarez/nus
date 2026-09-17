@@ -114,10 +114,28 @@ impl GridRenderer {
         focused: bool,
         look: CursorLook,
     ) {
+        let view = term.grid().display_lines(&[]);
+        self.draw_view(scene, fonts, term, origin, focused, look, &view);
+    }
+
+    /// `draw_with`, through a display list: folded rows are skipped (the
+    /// host draws them), the rest come from their absolute lines.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_view(
+        &mut self,
+        scene: &mut Scene,
+        fonts: &mut FontSystem,
+        term: &Term,
+        origin: (f32, f32),
+        focused: bool,
+        look: CursorLook,
+        view: &[nus_vt::grid::Display],
+    ) {
         let (cw, ch) = self.cell_size();
         let baseline = self.metrics.baseline;
         let grid = term.grid();
         let rows = grid.rows();
+        let cursor_abs = grid.abs_row(term.cursor().row);
         let palette = &term.palette;
         let cursor = *term.cursor();
         let show_cursor =
@@ -135,9 +153,12 @@ impl GridRenderer {
             fg: Vec::new(),
         });
 
+        let empty = nus_vt::grid::Row::blank(grid.cols(), &nus_vt::cell::Cell::default());
         for r in 0..rows {
-            let row = grid.visible_row(r);
-            let cursor_here = show_cursor && r == cursor.row;
+            let (row, cursor_here) = match view.get(r) {
+                Some(nus_vt::grid::Display::Line(abs)) => (grid.row_abs(*abs).unwrap_or(&empty), show_cursor && *abs == cursor_abs),
+                _ => (&empty, false),
+            };
             let mut h = std::hash::DefaultHasher::new();
             for c in &row.cells {
                 c.ch.hash(&mut h);

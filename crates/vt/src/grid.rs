@@ -59,6 +59,14 @@ pub enum Loc {
     History(usize),
 }
 
+/// One display row of a folded view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Display {
+    Line(u64),
+    /// A folded range `(start, end)`, end exclusive, drawn as one row.
+    Fold(u64, u64),
+}
+
 impl Grid {
     pub fn new(cols: usize, rows: usize, max_scrollback: usize) -> Grid {
         let template = Cell::default();
@@ -101,6 +109,34 @@ impl Grid {
             Loc::Visible(r) => Some(&self.lines[r]),
             Loc::History(i) => Some(&self.scrollback[i]),
         }
+    }
+
+    /// What each display row shows once folded ranges are skipped: the
+    /// absolute line, or the fold that stands in for a range. `folds` are
+    /// `(start, end)` absolute lines, end exclusive, sorted; the fold's row
+    /// is drawn by the host (a ruled line for the block) and the lines
+    /// inside are not drawn at all. The view starts at the line
+    /// `display_offset` puts at the top and runs until `rows` are filled.
+    pub fn display_lines(&self, folds: &[(u64, u64)]) -> Vec<Display> {
+        let rows = self.rows;
+        let mut out = Vec::with_capacity(rows);
+        let mut line = self.abs_of_display(0);
+        let last = self.history_total + rows as u64;
+        while out.len() < rows && line < last {
+            match folds.iter().find(|&&(s, e)| line >= s && line < e) {
+                Some(&(s, e)) => {
+                    if line == s {
+                        out.push(Display::Fold(s, e));
+                    }
+                    line = e;
+                }
+                None => {
+                    out.push(Display::Line(line));
+                    line += 1;
+                }
+            }
+        }
+        out
     }
 
     /// The viewer's row `r` as an absolute line, honouring `display_offset`.
@@ -323,5 +359,29 @@ impl Grid {
             .map(|r| r.text())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    #[test]
+    fn folds_collapse_ranges_into_one_row() {
+        let mut g = Grid::new(4, 4, 100);
+        // Push six lines into history so abs lines 0..6 exist, 6..10 visible.
+        for _ in 0..6 {
+            g.scroll_up(0, 3, 1, &Cell::default(), true);
+        }
+        assert_eq!(g.abs_row(0), 6);
+        g.scroll_display(6);
+        // View starts at abs 0; fold 1..4 → rows: 0, F(1,4), 4, 5.
+        let v = g.display_lines(&[(1, 4)]);
+        assert_eq!(v, vec![Display::Line(0), Display::Fold(1, 4), Display::Line(4), Display::Line(5)]);
+        // No folds: plain lines.
+        assert_eq!(g.display_lines(&[]), vec![Display::Line(0), Display::Line(1), Display::Line(2), Display::Line(3)]);
+        // A fold starting above the view is skipped without a row.
+        g.scroll_display(-2);
+        assert_eq!(g.display_lines(&[(1, 4)])[0], Display::Line(4));
     }
 }

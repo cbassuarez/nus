@@ -181,13 +181,12 @@ pub fn labels(n: usize) -> Vec<String> {
 
 impl App {
     /// Pointer → (absolute line, col) in a terminal pane.
-    fn term_cell(p: &TermPane, x: f32, y: f32) -> (u64, usize) {
+    fn term_cell(p: &mut TermPane, x: f32, y: f32) -> (u64, usize) {
         let (cw, ch) = p.grid.cell_size();
-        let grid = p.term.grid();
+        let cols = p.term.cols();
         let col = ((x - p.origin.0) / cw).floor().max(0.0) as usize;
         let row = ((y - p.origin.1) / ch).floor().max(0.0) as usize;
-        let row = row.min(grid.rows().saturating_sub(1));
-        (grid.abs_of_display(row), col.min(grid.cols().saturating_sub(1)))
+        (p.line_near_row(row), col.min(cols.saturating_sub(1)))
     }
 
     /// Mouse in a terminal pane. Returns true when consumed.
@@ -205,6 +204,7 @@ impl App {
         let mut open_file: Option<std::path::PathBuf> = None;
         let mut copy: Option<String> = None;
         let mut run: Option<String> = None;
+        let mut share: Option<u64> = None;
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             let Pane::Term(t) = p else { continue };
             // The application asked for the mouse: it gets presses in its
@@ -275,6 +275,7 @@ impl App {
                     let _ = r;
                     match kind {
                         0 => copy = Some(t.block_output_text(t.hover_block)),
+                        2 => share = Some(t.hover_block),
                         _ => run = Some(t.block_cmd_text(t.hover_block)),
                     }
                     acted = true;
@@ -373,6 +374,10 @@ impl App {
             self.open_file(&p, true);
             return true;
         }
+        if let Some(s) = share {
+            self.share_block(s);
+            return true;
+        }
         if middle {
             self.paste_into_shell();
             return true;
@@ -437,10 +442,10 @@ impl App {
             } else if row_f >= grid.rows() as f32 {
                 t.term.grid_mut().scroll_display(-1);
             }
-            let grid = t.term.grid();
-            let row = row_f.floor().clamp(0.0, grid.rows() as f32 - 1.0) as usize;
-            let col = ((x - t.origin.0) / cw).floor().clamp(0.0, grid.cols() as f32 - 1.0) as usize;
-            let head = (grid.abs_of_display(row), col);
+            let (rows, cols) = (t.term.rows(), t.term.cols());
+            let row = row_f.floor().clamp(0.0, rows as f32 - 1.0) as usize;
+            let col = ((x - t.origin.0) / cw).floor().clamp(0.0, cols as f32 - 1.0) as usize;
+            let head = (t.line_near_row(row), col);
             if let Some(sel) = t.sel.as_mut() {
                 if sel.head != head {
                     sel.head = head;
@@ -472,12 +477,20 @@ impl App {
         let top = grid.abs_of_display(0);
         let label = self.label();
         let (mx, my) = self.mouse;
+        let view = p.view().to_vec();
+        let line_at = |row: usize| -> Option<u64> {
+            match view.get(row) {
+                Some(nus_vt::grid::Display::Line(l)) => Some(*l),
+                _ => None,
+            }
+        };
+        let row_at = |line: u64| -> Option<usize> { view.iter().position(|d| matches!(d, nus_vt::grid::Display::Line(l) if *l == line)) };
 
         // Selection: an ink wash over the cells.
         if let Some(sel) = &p.sel {
             let (a, b) = sel.bounds(&p.term);
             for row in 0..rows {
-                let line = top + row as u64;
+                let Some(line) = line_at(row) else { continue };
                 if line < a.0 || line > b.0 {
                     continue;
                 }
@@ -493,11 +506,9 @@ impl App {
         // Search matches: outlined; the current one filled.
         if let Some(s) = &p.search {
             for (i, &(line, col, len)) in s.matches.iter().enumerate() {
-                if line < top || line >= top + rows as u64 {
-                    continue;
-                }
+                let Some(row) = row_at(line) else { continue };
                 let x = p.origin.0 + col as f32 * cw;
-                let y = p.origin.1 + (line - top) as f32 * ch;
+                let y = p.origin.1 + row as f32 * ch;
                 let rr = Rect::new(x, y, len as f32 * cw, ch);
                 if i == s.current {
                     scene.rect(rr, fade(self.surface.signal, 0.35));
@@ -509,11 +520,12 @@ impl App {
         if let Some(h) = &p.hints {
             let chip = Style { color: t.paper, ..self.label_strong() };
             for item in &h.items {
-                if !item.label.starts_with(&h.typed) || item.line < top || item.line >= top + rows as u64 {
+                if !item.label.starts_with(&h.typed) {
                     continue;
                 }
+                let Some(row) = row_at(item.line) else { continue };
                 let x = p.origin.0 + item.col as f32 * cw;
-                let y = p.origin.1 + (item.line - top) as f32 * ch;
+                let y = p.origin.1 + row as f32 * ch;
                 scene.rect(Rect::new(x, y, item.len as f32 * cw, ch), fade(self.surface.signal, 0.18));
                 let lw = self.fonts.measure(chip, &item.label.caps()) + self.px(8.0);
                 let lr = Rect::new(x - self.px(2.0), y - self.px(2.0), lw, ch.min(self.px(18.0)));
@@ -528,15 +540,20 @@ impl App {
             let (line, _) = Self::term_cell(p, mx, my);
             if let Some((start, end, cmd, exit)) = p.term.block_at(line) {
                 p.hover_block = start;
-                let y0 = p.origin.1 + (start.max(top) - top) as f32 * ch;
-                let y1 = p.origin.1 + (end.min(top + rows as u64) - top) as f32 * ch;
+                let view = p.view().to_vec();
+                let first = view.iter().position(|d| match d { nus_vt::grid::Display::Line(l) => *l >= start, nus_vt::grid::Display::Fold(s, _) => *s >= start });
+                let last = view.iter().rposition(|d| match d { nus_vt::grid::Display::Line(l) => *l < end, nus_vt::grid::Display::Fold(s, _) => *s < end });
+                let (y0, y1) = match (first, last) {
+                    (Some(f), Some(l)) if l >= f => (p.origin.1 + f as f32 * ch, p.origin.1 + (l + 1) as f32 * ch),
+                    _ => (0.0, 0.0),
+                };
                 if y1 > y0 && !cmd.is_empty() {
                     scene.rect(Rect::new(r.x + self.px(8.0), y0, self.px(2.0), y1 - y0 - self.px(2.0)), fade(if exit.is_some_and(|e| e != 0) { self.surface.signal } else { ink }, 0.5));
-                    // Chips at the block's top right: copy output · run again.
+                    // Chips at the block's top right: share · run again · copy output.
                     let isz = self.px(14.0);
                     let mut cx = r.right() - self.px(18.0) - isz;
                     let cy = y0 + self.px(2.0);
-                    for (k, icon, motion) in [(1usize, nus_render::text::icons::RELOAD, IconMotion::Spin(90.0)), (0usize, nus_render::text::icons::COPY, IconMotion::Pop)] {
+                    for (k, icon, motion) in [(2usize, nus_render::text::icons::SHARE, IconMotion::Pop), (1usize, nus_render::text::icons::RELOAD, IconMotion::Spin(90.0)), (0usize, nus_render::text::icons::COPY, IconMotion::Pop)] {
                         let hit = Rect::new(cx - self.px(6.0), cy - self.px(4.0), isz + self.px(12.0), isz + self.px(8.0));
                         scene.push(nus_render::Instance::rounded(hit, self.px(4.0), fade(self.paper(), 0.92)));
                         self.icon_button(scene, icon, isz, cx, cy, ink, hit, hover_key("blockchip", k), motion);
@@ -639,11 +656,11 @@ impl App {
     pub(crate) fn term_hints_open(&mut self) {
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         if let Pane::Term(t) = tab.focused() {
+            let view = t.view().to_vec();
             let grid = t.term.grid();
-            let top = grid.abs_of_display(0);
             let mut items = Vec::new();
-            for row in 0..grid.rows() {
-                let line = top + row as u64;
+            for (row, d) in view.iter().enumerate() {
+                let nus_vt::grid::Display::Line(line) = *d else { continue };
                 let Some(r) = grid.row_abs(line) else { continue };
                 let text = r.text();
                 for (col, len, kind) in scan_hints(&text) {

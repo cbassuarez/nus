@@ -292,20 +292,7 @@ impl Gpu {
 
     /// Draw a scene into `target`. Returns false if the surface wasn't available.
     pub fn render(&mut self, target: &mut Target, scene: &Scene, clear: [f32; 4]) -> bool {
-        let all = scene.instances();
-        if all.len() > self.instance_cap {
-            self.instance_cap = all.len().next_power_of_two();
-            self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("instances"),
-                size: (std::mem::size_of::<Instance>() * self.instance_cap) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        if !all.is_empty() {
-            self.queue
-                .write_buffer(&self.instances, 0, bytemuck::cast_slice(all));
-        }
+        self.upload_instances(scene);
         let frame = match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
@@ -320,11 +307,95 @@ impl Gpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.pass(&mut encoder, &view, target.size, scene, clear);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.present(frame);
+        true
+    }
+
+    /// The scene into an offscreen texture, read back as RGBA8 rows: the
+    /// app photographing itself, from its own texture rather than the OS.
+    pub fn snapshot(&mut self, size: (u32, u32), scene: &Scene, clear: [f32; 4]) -> Vec<u8> {
+        self.upload_instances(scene);
+        let (w, h) = size;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("snapshot"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Rows are padded to 256 bytes for the copy.
+        let stride = (w * 4 + 255) / 256 * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("snapshot readback"),
+            size: (stride * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.pass(&mut encoder, &view, size, scene, clear);
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = rx.recv();
+        let data = slice.get_mapped_range().expect("snapshot readback mapped");
+        let bgra = matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for row in 0..h {
+            let r = &data[(row * stride) as usize..(row * stride + w * 4) as usize];
+            for px in r.chunks(4) {
+                if bgra {
+                    out.extend_from_slice(&[px[2], px[1], px[0], 255]);
+                } else {
+                    out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                }
+            }
+        }
+        drop(data);
+        buffer.unmap();
+        out
+    }
+
+    fn upload_instances(&mut self, scene: &Scene) {
+        let all = scene.instances();
+        if all.len() > self.instance_cap {
+            self.instance_cap = all.len().next_power_of_two();
+            self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("instances"),
+                size: (std::mem::size_of::<Instance>() * self.instance_cap) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        if !all.is_empty() {
+            self.queue
+                .write_buffer(&self.instances, 0, bytemuck::cast_slice(all));
+        }
+    }
+
+    /// One render pass of `scene` into `view`, cleared to `clear`.
+    fn pass(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), scene: &Scene, clear: [f32; 4]) {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -340,7 +411,7 @@ impl Gpu {
                 ..Default::default()
             });
             pass.set_pipeline(&self.pipeline);
-            let (sw, sh) = target.size;
+            let (sw, sh) = size;
             pass.set_immediates(0, bytemuck::cast_slice(&[sw as f32, sh as f32]));
             pass.set_vertex_buffer(0, self.instances.slice(..));
             for layer in scene.layers() {
@@ -368,9 +439,6 @@ impl Gpu {
                 pass.draw(0..6, layer.range.start as u32..layer.range.end as u32);
             }
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.queue.present(frame);
-        true
     }
 }
 

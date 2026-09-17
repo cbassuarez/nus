@@ -530,6 +530,14 @@ folders = {
   },
 }
 
+-- on_block(b): a command finished. b has cmd, exit, lines, cwd. Return
+-- { fold = true } to fold its output, { notify = true } to be told when
+-- you're elsewhere. Long test runs fold themselves; failures notify.
+function on_block(b)
+  if b.cmd:find("^cargo test") and b.lines > 40 then return { fold = true } end
+  if b.exit ~= 0 and b.exit ~= -1 then return { notify = true } end
+end
+
 -- ports: the board asks this for every port it finds. p has port, pid,
 -- process, command, cwd, exposed, mine, udp. Return nothing, or a table:
 -- name, tint ("#rrggbb"), open ("split" | "tab" | "peek" — when it
@@ -591,6 +599,13 @@ end
 ];
 
 /// The Luau state: loaded from the rules file, re-read on demand.
+/// What `on_block` asked for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BlockVerdict {
+    pub fold: Option<bool>,
+    pub notify: bool,
+}
+
 pub struct Rules {
     lua: mlua::Lua,
     pub path: PathBuf,
@@ -610,7 +625,7 @@ impl Rules {
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
         // Older files get the chains and folders examples appended, once each.
-        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("ports", "-- ports:")] {
+        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("on_block", "-- on_block(b):"), ("ports", "-- ports:")] {
             let Ok(src) = std::fs::read_to_string(&path) else { break };
             if src.contains(word) {
                 continue;
@@ -619,7 +634,8 @@ impl Rules {
             let block = &DEFAULT_RULES[k..];
             let block = match word {
                 "chains" => block.split("-- folders:").next().unwrap_or(block),
-                "folders" => block.split("-- ports:").next().unwrap_or(block),
+                "folders" => block.split("-- on_block(b):").next().unwrap_or(block),
+                "on_block" => block.split("-- ports:").next().unwrap_or(block),
                 _ => block,
             };
             let _ = std::fs::write(&path, format!("{}\n{}", src.trim_end(), block.trim_end()));
@@ -776,6 +792,25 @@ impl Rules {
             Err(e) => {
                 tracing::warn!("rules new_tab: {e}");
                 Overrides::default()
+            }
+        }
+    }
+
+    /// The `on_block` hook: a command finished. `b` has cmd, exit, lines,
+    /// cwd, seconds. Return nothing, or `{ fold = true|false, notify = true }`.
+    pub fn on_block(&self, b: &crate::blocks::Block, cwd: &str) -> BlockVerdict {
+        let Ok(f) = self.lua.globals().get::<mlua::Function>("on_block") else { return BlockVerdict::default() };
+        let t = self.lua.create_table().unwrap();
+        let _ = t.set("cmd", b.cmd.as_str());
+        let _ = t.set("exit", b.exit.unwrap_or(-1));
+        let _ = t.set("lines", b.lines());
+        let _ = t.set("cwd", cwd);
+        match f.call::<Option<mlua::Table>>(t) {
+            Ok(Some(o)) => BlockVerdict { fold: o.get::<bool>("fold").ok(), notify: o.get::<bool>("notify").unwrap_or(false) },
+            Ok(None) => BlockVerdict::default(),
+            Err(e) => {
+                tracing::warn!("rules on_block: {e}");
+                BlockVerdict::default()
             }
         }
     }

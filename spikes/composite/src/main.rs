@@ -26,6 +26,8 @@ mod lsp_host;
 mod prompt_lsp;
 mod ports;
 mod hatch;
+mod blocks;
+mod blockpage;
 mod hotkey;
 mod anim;
 mod app;
