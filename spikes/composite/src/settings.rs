@@ -313,7 +313,7 @@ impl Default for Behavior {
             copy_on_select: false,
             middle_paste: false,
             osc52: Osc52::Write,
-            pane_controls: crate::panes::Controls::Hover,
+            pane_controls: crate::panes::Controls::Near,
             pane_divider: true,
         }
     }
@@ -1895,8 +1895,7 @@ impl App {
                 (
                     "PANE CONTROLS".into(),
                     Choice(vec![
-                        ("ON HOVER".into(), Hit::PaneControls(crate::panes::Controls::Hover), self.behavior.pane_controls == crate::panes::Controls::Hover),
-                        ("ALWAYS".into(), Hit::PaneControls(crate::panes::Controls::Always), self.behavior.pane_controls == crate::panes::Controls::Always),
+                        ("NEAR THE CORNER".into(), Hit::PaneControls(crate::panes::Controls::Near), self.behavior.pane_controls == crate::panes::Controls::Near),
                         ("NEVER".into(), Hit::PaneControls(crate::panes::Controls::Never), self.behavior.pane_controls == crate::panes::Controls::Never),
                     ]),
                 ),
@@ -1904,7 +1903,7 @@ impl App {
                     "PANE DIVIDER".into(),
                     Choice(vec![("DRAGS".into(), Hit::PaneDivider(true), self.behavior.pane_divider), ("FIXED".into(), Hit::PaneDivider(false), !self.behavior.pane_divider)]),
                 ),
-                ("".into(), Info("a split pane's corner: move (drag onto a sidebar row, or NEW TAB), swap, solo, to a tab of its own, close · the rule between the panes drags".into())),
+                ("".into(), Info("nothing shows until the pointer nears a pane's corner; then move (drag onto a sidebar row, or NEW TAB), swap, solo, to a tab of its own, close bloom out of it · the rule between the panes lights as you near it and drags".into())),
                 (
                     "SLEEP IDLE PAGES".into(),
                     Choice(vec![("NEVER".into(), Hit::SleepAfter(0), self.behavior.sleep_after_min == 0), ("10 MIN".into(), Hit::SleepAfter(10), self.behavior.sleep_after_min == 10), ("30 MIN".into(), Hit::SleepAfter(30), self.behavior.sleep_after_min == 30), ("2 H".into(), Hit::SleepAfter(120), self.behavior.sleep_after_min == 120)]),

@@ -1,9 +1,11 @@
-//! Pane controls for a split tab: a cluster at each pane's top-right —
-//! SWAP, SOLO (this pane alone, the other parked), TO A TAB (out into
-//! its own), CLOSE — shown on hover (or always, or never, under TABS ·
-//! PANES); the rule between the panes drags to resize; the move handle
-//! drags a pane onto a sidebar row to make it that tab's other pane, or
-//! onto NEW TAB for a tab of its own.
+//! Pane controls for a split tab. Nothing is drawn until the pointer
+//! nears a pane's top-right corner; then five glyphs bloom out of it, one
+//! after another, on a proximity field (closer is clearer) — MOVE (drag
+//! onto a sidebar row to make it that tab's other pane, or onto NEW TAB),
+//! SWAP, SOLO (this pane alone, the other parked), TO A TAB, CLOSE — and
+//! fade as the pointer leaves. Never persistent. The rule between the
+//! panes lights in the signal as the pointer nears it and drags to
+//! resize. TABS · PANE CONTROLS: NEAR, or NEVER.
 
 use crate::app::{App, Pane, SideHit};
 use nus_render::text::icons;
@@ -12,10 +14,27 @@ use nus_render::{Rect, Scene};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Controls {
+    /// Bloom as the pointer nears the corner.
     #[default]
-    Hover,
-    Always,
+    Near,
     Never,
+}
+
+/// How far from the corner the field reaches, logical px.
+pub const REACH: f32 = 150.0;
+
+/// A smooth step, 1 at the corner and 0 at the reach.
+fn field(d: f32, reach: f32) -> f32 {
+    let t = (d / reach).clamp(0.0, 1.0);
+    let t = 1.0 - t;
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Distance from a point to a rect (0 inside).
+fn dist(r: Rect, x: f32, y: f32) -> f32 {
+    let dx = (r.x - x).max(0.0).max(x - r.right());
+    let dy = (r.y - y).max(0.0).max(y - r.bottom());
+    (dx * dx + dy * dy).sqrt()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -175,14 +194,26 @@ impl App {
         self.save_session();
     }
 
-    /// The cluster over a pane's top-right; hits into `self.pane_hits`.
+    /// The corner's field: 0 far away, 1 at the cluster.
+    fn corner_field(&self, r: Rect) -> f32 {
+        let (mx, my) = self.mouse;
+        if !self.window_focused || !r.contains(mx, my) && dist(r, mx, my) > self.px(REACH) {
+            return 0.0;
+        }
+        let cell = self.px(22.0);
+        let cy = r.y + self.px(36.0) + self.px(4.0);
+        let bar = Rect::new(r.right() - self.px(6.0) - 5.0 * cell, cy, 5.0 * cell, cell);
+        field(dist(bar, mx, my), self.px(REACH))
+    }
+
+    /// The glyphs at a pane's top-right, on the field; hits into
+    /// `self.pane_hits` once they're legible.
     pub(crate) fn draw_pane_controls(&mut self, scene: &mut Scene, r: Rect, right: bool, split: bool) {
         if !split || self.behavior.pane_controls == Controls::Never || self.focus {
             return;
         }
-        let (mx, my) = self.mouse;
-        let hovered = r.contains(mx, my) && self.window_focused;
-        if self.behavior.pane_controls == Controls::Hover && !hovered && self.pane_drag.is_none() {
+        let k = if self.pane_drag.is_some() { 1.0 } else { self.corner_field(r) };
+        if k <= 0.02 {
             return;
         }
         let t = self.theme.clone();
@@ -190,12 +221,12 @@ impl App {
         let isz = self.px(12.0);
         let cell = self.px(22.0);
         let n = 5.0;
-        // Under the pane's own header row, at the corner, over the content.
         let cy = r.y + self.px(36.0) + self.px(4.0);
         let cx0 = r.right() - self.px(6.0) - n * cell;
-        let bar = Rect::new(cx0, cy, n * cell, cell);
-        scene.rect(bar, crate::app::fade(self.paper(), 0.92));
-        scene.outline(bar, self.px(m::HAIRLINE), crate::app::fade(t.dim, 0.7));
+        // A soft paper wash under the glyphs so they read over anything,
+        // no box; it fades with the field.
+        let wash = Rect::new(cx0 - self.px(4.0), cy - self.px(2.0), n * cell + self.px(8.0), cell + self.px(4.0));
+        scene.push(nus_render::Instance::rounded(wash, self.px(6.0), crate::app::fade(self.paper(), 0.82 * k)));
         let solo = self.tabs.get(self.active).is_some_and(|t| t.solo);
         let items = [
             (icons::ARROWS_OUT, PaneHit::Move(right), crate::app::IconMotion::Still),
@@ -204,14 +235,52 @@ impl App {
             (icons::TO_TAB, PaneHit::ToTab(right), crate::app::IconMotion::Bob),
             (icons::CLOSE, PaneHit::Close(right), crate::app::IconMotion::Spin(90.0)),
         ];
-        for (k, (icon, hit, motion)) in items.into_iter().enumerate() {
-            let c = Rect::new(cx0 + k as f32 * cell, cy, cell, cell);
+        for (i, (icon, hit, motion)) in items.into_iter().enumerate() {
+            // Each glyph blooms a beat after the one nearer the corner: the
+            // field is a little further along for the ones at the far end.
+            let stagger = 1.0 - (4 - i) as f32 * 0.12;
+            let ki = ((k - (1.0 - stagger)) / stagger).clamp(0.0, 1.0);
+            if ki <= 0.01 {
+                continue;
+            }
+            let rise = (1.0 - ki) * self.px(6.0);
+            let c = Rect::new(cx0 + i as f32 * cell, cy, cell, cell);
             let on = matches!(hit, PaneHit::Solo(_)) && solo;
-            let color = if on { self.surface.signal } else { ink };
-            self.icon_button(scene, icon, isz, c.x + (cell - isz) / 2.0, c.y + (cell - isz) / 2.0, color, c, crate::app::hover_key("pane", k + if right { 10 } else { 0 }), motion);
-            self.pane_hits.push((c, hit));
+            let color = crate::app::fade(if on { self.surface.signal } else { ink }, ki);
+            self.icon_button(scene, icon, isz, c.x + (cell - isz) / 2.0, c.y + (cell - isz) / 2.0 + rise, color, c, crate::app::hover_key("pane", i + if right { 10 } else { 0 }), motion);
+            if ki > 0.5 {
+                self.pane_hits.push((c, hit));
+            }
         }
-        self.dirty |= hovered;
+    }
+
+    /// The rule between the panes: hairline ink, and the signal swelling
+    /// under it as the pointer nears (or drags it).
+    pub(crate) fn draw_split_rule(&mut self, scene: &mut Scene, rr: Rect) {
+        let t = self.theme.clone();
+        let rule = self.px(m::STRUCTURE);
+        let x = rr.x - rule;
+        scene.vline(x, rr.y, rr.h, rule, t.ink);
+        if !self.behavior.pane_divider || self.focus {
+            return;
+        }
+        let (mx, my) = self.mouse;
+        let near = if self.split_drag { 1.0 } else if my >= rr.y && my <= rr.bottom() { field((mx - x).abs(), self.px(28.0)) } else { 0.0 };
+        if near > 0.02 {
+            let w = rule + self.px(2.0) * near;
+            scene.rect(Rect::new(x - (w - rule) / 2.0, rr.y, w, rr.h), crate::app::fade(self.surface.signal, near));
+        }
+    }
+
+    /// Is the pointer anywhere a pane control might change? (Redraw then.)
+    pub(crate) fn near_pane_controls(&self, x: f32, y: f32) -> bool {
+        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let Some(r) = tab.right.as_ref() else { return false };
+        let reach = self.px(REACH) + self.px(40.0);
+        let rr = r.rect();
+        let lr = tab.left.rect();
+        let corner = |p: Rect| Rect::new(p.right() - self.px(130.0), p.y, self.px(130.0), self.px(70.0));
+        dist(corner(lr), x, y) < reach || dist(corner(rr), x, y) < reach || (x - rr.x).abs() < self.px(40.0)
     }
 
     /// A click on the cluster; the move handle arms a drag. Returns true

@@ -2699,14 +2699,8 @@ impl App {
         let narrow = self.width_class() == Width::Narrow || self.tabs[active].solo;
         let tiled = self.draw_tiling(&mut scene) || self.draw_peek(&mut scene);
         if has_right && !narrow && !tiled {
-            let r = match &self.tabs[active].right {
-                Some(Pane::Term(p)) => p.rect,
-                Some(Pane::Web(p)) => p.rect,
-                Some(Pane::Settings(p)) => p.rect,
-                Some(Pane::Hints(p)) => p.rect,
-                None => unreachable!(),
-            };
-            scene.vline(r.x - self.px(m::STRUCTURE), r.y, r.h, self.px(m::STRUCTURE), ink);
+            let r = self.tabs[active].right.as_ref().map(|p| p.rect()).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+            self.draw_split_rule(&mut scene, r);
         }
         let n = self.tab_label(active);
         let look = self.tabs[active].look.clone();
@@ -6116,7 +6110,7 @@ impl App {
         if self.split_drag {
             self.split_drag_to(x);
         }
-        if self.pane_drag.is_some() {
+        if self.pane_drag.is_some() || self.near_pane_controls(x, y) || self.near_pane_controls(was.0, was.1) {
             self.dirty = true;
         }
         // A resize arrow over a divider (or while dragging one).

@@ -151,7 +151,7 @@ impl App {
             row(k("?"), "Ask", "a small panel beside the shell: one line in, a few commands out — INSERT at the prompt, RUN, or COPY; the shell, folder and last output go along · claude, codex, copilot, ollama or ANTHROPIC_API_KEY", None),
             row(k("K"), "Chains", "named lists of palette commands in rules.luau — open pages, run commands, tile — and every settings row, by name", None),
             row("ALT+CLICK", "Peek", "a link floats over the page instead of leaving it · Esc closes, Ctrl+Enter keeps it in the stack", None),
-            row("", "Split panes", "hover a pane's corner: move (drag it onto a sidebar row, or NEW TAB), swap, solo, to its own tab, close · drag the rule between the panes · TABS · PANE CONTROLS", None),
+            row("", "Split panes", "near a pane's corner the controls bloom: move (drag it onto a sidebar row, or NEW TAB), swap, solo, to its own tab, close · the rule between the panes lights as you near it and drags", None),
             row(k("D"), "Tiles", "Ctrl+click two to four rows, then tile them: side by side, an L, or a grid · drag the rules · Ctrl+Alt+arrows walk the tiles, with Shift they swap", None),
             row("F2", "Name a tab", "right-click a tab for its menu: rename, an emoji or short string as its icon, a colour, pin, close", Some(("RENAME THIS TAB", Act::RenameTab))),
             row("", "Stacks", "pages a page opens sit under it, as deep as they go; fold with the caret, Ctrl+Shift+- folds all; drag a tab onto another to nest it", None),
