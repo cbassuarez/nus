@@ -70,6 +70,10 @@ pub enum Action {
     TileSwap,
     KeepPeek,
     Compact,
+    /// Run a named chain from rules.luau.
+    Chain(String),
+    /// Open settings at a section (and a LOOK tab).
+    SettingsAt(usize, Option<usize>),
     ColourTab(usize, Option<nus_render::Color>),
 }
 
@@ -3957,6 +3961,86 @@ impl App {
     }
 
     /// Ctrl+, — open (or switch to) the settings tab.
+    /// Every settings row as a palette label, with where it lives.
+    pub(crate) fn settings_rows_for_palette(&self) -> Vec<(String, Action)> {
+        use crate::settings::{LOOK_TABS, SECTIONS};
+        let mut out = Vec::new();
+        for (sec, (name, _)) in SECTIONS.iter().enumerate() {
+            out.push((format!("settings · {name}"), Action::SettingsAt(sec, None)));
+            if sec == crate::settings::SEC_LOOK {
+                for (k, tab) in LOOK_TABS.iter().enumerate() {
+                    out.push((format!("settings · {name} · {tab}"), Action::SettingsAt(sec, Some(k))));
+                }
+                continue;
+            }
+            for (label, _) in self.settings_labels(sec) {
+                if !label.is_empty() {
+                    out.push((format!("settings · {name} · {label}"), Action::SettingsAt(sec, None)));
+                }
+            }
+        }
+        out
+    }
+
+    /// Open settings on a section, and on a LOOK tab when given.
+    pub(crate) fn open_settings_at(&mut self, sec: usize, tab: Option<usize>) {
+        self.open_settings();
+        if let Some(t) = tab {
+            self.look_tab = t;
+        }
+        if let Some(Pane::Settings(p)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+            p.section = sec;
+            p.scroll = 0.0;
+            p.drill = true;
+        }
+        self.dirty = true;
+    }
+
+    /// Run a chain: each step through the palette, in order. Pages and
+    /// shells the chain opens are remembered so "tile" can tile them and
+    /// "run" reaches the newest shell.
+    pub(crate) fn run_chain(&mut self, name: &str) {
+        let Some((_, steps)) = self.rules.chains().into_iter().find(|(n, _)| n == name) else { return };
+        let mut opened: Vec<u64> = Vec::new();
+        for step in steps {
+            let step = step.trim();
+            let lower = step.to_lowercase();
+            if let Some(url) = lower.strip_prefix("open ") {
+                let url = step[step.len() - url.len()..].trim();
+                let (url, _) = Self::url_or_search(url);
+                self.open_url(&url, true);
+                opened.push(self.tabs[self.active].id);
+            } else if let Some(cmd) = lower.strip_prefix("run ") {
+                let cmd = step[step.len() - cmd.len()..].trim().to_string();
+                // The newest shell the chain opened, else the focused one.
+                if let Some(i) = opened.iter().rev().filter_map(|id| self.tabs.iter().position(|t| t.id == *id)).find(|&i| matches!(self.tabs[i].left, Pane::Term(_))) {
+                    self.activate(i);
+                }
+                self.run_in_shell(&cmd);
+            } else if lower == "tile" {
+                let idx: Vec<usize> = opened.iter().filter_map(|id| self.tabs.iter().position(|t| t.id == *id)).collect();
+                if idx.len() >= 2 {
+                    self.selected = idx.iter().copied().collect();
+                    self.activate(idx[0]);
+                    self.tile_selected();
+                }
+            } else if lower == "new terminal" || lower == "new shell" {
+                self.new_tab(self.behavior.default_profile);
+                opened.push(self.tabs[self.active].id);
+            } else {
+                let rows = self.palette_rows(PaletteMode::Go, step);
+                if let Some(r) = rows.first() {
+                    let a = r.action.clone();
+                    if matches!(a, Action::Chain(_)) {
+                        continue; // no chains from chains
+                    }
+                    self.run(a);
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
     pub(crate) fn open_settings(&mut self) {
         self.refresh_register_note();
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
@@ -4420,6 +4504,21 @@ impl App {
                         rows.push(row("·", label, a));
                     }
                 }
+                // Chains from rules.luau: "chain <name>" or the name.
+                for (name, steps) in self.rules.chains() {
+                    let label = format!("chain {name} · {}", steps.join(" → "));
+                    if hit(&label) || q == "chains" {
+                        rows.push(row("»", label, Action::Chain(name.clone())));
+                    }
+                }
+                // Settings rows: every section and its rows, by name.
+                if !q.is_empty() {
+                    for (r, a) in self.settings_rows_for_palette() {
+                        if hit(&r) {
+                            rows.push(row("⚙", r, a));
+                        }
+                    }
+                }
                 if !q.is_empty() {
                     self.query_rows(input, &mut rows, false);
                 }
@@ -4556,6 +4655,8 @@ impl App {
             Action::FoldAll => self.fold_all(),
             Action::KeepPeek => self.keep_peek(),
             Action::Compact => self.toggle_compact(),
+            Action::Chain(name) => self.run_chain(&name),
+            Action::SettingsAt(sec, tab) => self.open_settings_at(sec, tab),
             Action::Tile => self.tile_selected(),
             Action::Untile => self.untile(),
             Action::TileSwap => self.tile_swap(1),

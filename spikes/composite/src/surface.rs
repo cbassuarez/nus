@@ -507,6 +507,18 @@ function on_page(ctx)
     return { css = "body { font-family: 'IBM Plex Mono', ui-monospace, monospace; }" }
   end
 end
+
+-- chains: named lists of palette commands, run in order from the palette
+-- ("chain review"). A step is anything the palette accepts, plus:
+--   "open <url>"      a page in a new tab
+--   "run <command>"   typed into the newest shell the chain opened (or
+--                     the focused one), with Enter
+--   "tile"            tiles the tabs the chain opened (up to four)
+--   "compact" / "sidebar" / "new terminal" / "welcome" …
+chains = {
+  review = { "new terminal", "run git status", "open https://github.com/pulls", "tile" },
+  docs = { "open https://docs.rs", "open https://developer.mozilla.org", "tile" },
+}
 "##;
 
 /// Starter rule sets the RULES page can write (each replaces new_tab and
@@ -578,6 +590,14 @@ impl Rules {
             let _ = std::fs::create_dir_all(path.parent().unwrap());
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
+        // Older files get the chains example appended, once.
+        if let Ok(src) = std::fs::read_to_string(&path) {
+            if !src.contains("chains") {
+                if let Some(k) = DEFAULT_RULES.find("-- chains:") {
+                    let _ = std::fs::write(&path, format!("{}\n{}", src.trim_end(), &DEFAULT_RULES[k..]));
+                }
+            }
+        }
         let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new() };
         r.reload();
         r
@@ -644,12 +664,29 @@ impl Rules {
         self.status = match lua.load(&self.source).set_name("rules.luau").exec() {
             Ok(()) => {
                 let has = |n: &str| g.get::<mlua::Function>(n).is_ok();
-                let names: Vec<&str> = ["new_tab", "new_space", "on_page", "on_event"].into_iter().filter(|n| has(n)).collect();
+                let mut names: Vec<String> = ["new_tab", "new_space", "on_page", "on_event"].into_iter().filter(|n| has(n)).map(String::from).collect();
+                let n = g.get::<mlua::Table>("chains").map(|t| t.pairs::<String, mlua::Value>().count()).unwrap_or(0);
+                if n > 0 {
+                    names.push(format!("{n} chain{}", if n == 1 { "" } else { "s" }));
+                }
                 format!("ok · {}", names.join(" "))
             }
             Err(e) => first_line(&e.to_string()),
         };
         self.lua = lua;
+    }
+
+    /// The `chains` table: name → steps, sorted by name.
+    pub fn chains(&self) -> Vec<(String, Vec<String>)> {
+        let Ok(t) = self.lua.globals().get::<mlua::Table>("chains") else { return Vec::new() };
+        let mut out: Vec<(String, Vec<String>)> = t
+            .pairs::<String, mlua::Table>()
+            .filter_map(|p| p.ok())
+            .map(|(name, steps)| (name, steps.sequence_values::<String>().filter_map(|s| s.ok()).collect()))
+            .filter(|(_, s): &(String, Vec<String>)| !s.is_empty())
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     pub fn new_tab(&self, ctx: &TabCtx) -> Overrides {

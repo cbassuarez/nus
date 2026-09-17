@@ -1257,6 +1257,11 @@ impl App {
         scene.outline(win, self.px(m::STRUCTURE), ink);
     }
 
+    /// The row labels of a section, for the palette.
+    pub(crate) fn settings_labels(&self, section: usize) -> Vec<(String, ())> {
+        self.rows_for(section).into_iter().map(|(l, _)| (l, ())).collect()
+    }
+
     fn rows_for(&self, section: usize) -> Vec<(String, Control)> {
         use Control::*;
         let hex = surface::hex;
