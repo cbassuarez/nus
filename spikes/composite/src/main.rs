@@ -24,6 +24,7 @@ mod bundles;
 mod editor;
 mod lsp_host;
 mod prompt_lsp;
+mod ports;
 mod anim;
 mod app;
 mod browser;

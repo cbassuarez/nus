@@ -23,6 +23,7 @@ pub enum Saved {
     Shell { profile: String },
     Page { url: String, title: String },
     File { path: String },
+    Ports,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -73,6 +74,7 @@ fn saved_to_json(s: &Saved) -> serde_json::Value {
         Saved::Shell { profile } => serde_json::json!({ "kind": "shell", "profile": profile }),
         Saved::Page { url, title } => serde_json::json!({ "kind": "page", "url": url, "title": title }),
         Saved::File { path } => serde_json::json!({ "kind": "file", "path": path }),
+        Saved::Ports => serde_json::json!({ "kind": "ports" }),
     }
 }
 
@@ -82,6 +84,7 @@ fn saved_from_json(v: &serde_json::Value) -> Option<Saved> {
         "shell" => Some(Saved::Shell { profile: s("profile") }),
         "page" => Some(Saved::Page { url: s("url"), title: s("title") }),
         "file" => Some(Saved::File { path: s("path") }),
+        "ports" => Some(Saved::Ports),
         _ => None,
     }
 }
@@ -208,6 +211,7 @@ impl App {
             let (title, detail) = match &r.item {
                 Saved::Shell { profile } => (profile.clone(), "shell".to_string()),
                 Saved::File { path } => (std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), "file".to_string()),
+                Saved::Ports => ("ports".to_string(), "board".to_string()),
                 Saved::Page { url, title } => {
                     let host = url.split("//").nth(1).unwrap_or(url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
                     (if title.is_empty() { host.clone() } else { title.clone() }, host)
@@ -243,6 +247,7 @@ impl App {
             StartRow::Restore => self.restore_session(),
             StartRow::Recent(Saved::Page { url, .. }) => self.open_url(&url, true),
             StartRow::Recent(Saved::File { path }) => self.open_file(std::path::Path::new(&path), false),
+            StartRow::Recent(Saved::Ports) => self.expand_board(),
             StartRow::Recent(Saved::Shell { profile }) => {
                 let idx = self.profiles.iter().position(|p| p.name == profile).unwrap_or(self.behavior.default_profile);
                 self.new_tab(idx);
@@ -277,6 +282,7 @@ impl App {
                     let mut e = crate::editor::EditorPane::new(nus_render::Rect::new(0.0, 0.0, 1.0, 1.0));
                     e.open(std::path::Path::new(path)).ok().map(|_| Pane::Editor(e))
                 }
+                Some(Saved::Ports) => Some(Pane::Ports(crate::ports::PortsPane { rect: nus_render::Rect::new(0.0, 0.0, 1.0, 1.0) })),
                 None => None,
             };
             let Some(left) = left else {
@@ -293,6 +299,7 @@ impl App {
                     let mut e = crate::editor::EditorPane::new(nus_render::Rect::new(0.0, 0.0, 1.0, 1.0));
                     e.open(std::path::Path::new(path)).ok().map(|_| Pane::Editor(e))
                 }
+                Some(Saved::Ports) => Some(Pane::Ports(crate::ports::PortsPane { rect: nus_render::Rect::new(0.0, 0.0, 1.0, 1.0) })),
                 None => None,
             };
             let mut tab = self.make_tab(left, right);
@@ -332,6 +339,7 @@ impl App {
                 Some(Saved::Page { url: s.url.clone(), title: s.title.clone() })
             }
             Pane::Editor(e) => e.buf().and_then(|b| b.path.as_ref()).map(|p| Saved::File { path: p.display().to_string() }),
+            Pane::Ports(_) => Some(Saved::Ports),
             _ => None,
         };
         let listed: Vec<&crate::app::Tab> = self.tabs.iter().filter(|t| t.peek.is_none()).collect();
@@ -488,6 +496,7 @@ impl App {
                 StartRow::Recent(Saved::Page { .. }) => icons::GLOBE,
                 StartRow::Recent(Saved::Shell { .. }) => icons::TERMINAL,
                 StartRow::Recent(Saved::File { .. }) => icons::CODE,
+                StartRow::Recent(Saved::Ports) => icons::PORTS,
                 StartRow::Fresh => icons::PLUS,
             };
             let base_r = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);

@@ -22,6 +22,67 @@ pub enum Links {
     NewTab,
 }
 
+/// How the ports board groups its rows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum PortsGrouping {
+    /// MINE · OTHERS · SYSTEM · CONNECTIONS · DOCKER.
+    #[default]
+    Origin,
+    Port,
+    Process,
+}
+
+impl PortsGrouping {
+    pub fn name(self) -> &'static str {
+        match self {
+            PortsGrouping::Origin => "by origin",
+            PortsGrouping::Port => "by port",
+            PortsGrouping::Process => "by process",
+        }
+    }
+    pub fn next(self) -> PortsGrouping {
+        match self {
+            PortsGrouping::Origin => PortsGrouping::Port,
+            PortsGrouping::Port => PortsGrouping::Process,
+            PortsGrouping::Process => PortsGrouping::Origin,
+        }
+    }
+}
+
+/// Where OPEN on a port row goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum PortsOpen {
+    Tab,
+    #[default]
+    Split,
+    Peek,
+}
+
+/// When KILL asks first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum KillConfirm {
+    /// Only for processes nus didn't start.
+    #[default]
+    System,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Tunnel {
+    #[default]
+    Cloudflared,
+    Ngrok,
+}
+
+fn default_ports_poll() -> u8 {
+    1
+}
+
+pub fn default_hidden_processes() -> Vec<String> {
+    crate::app::SYSTEM_PROCS.iter().map(|s| s.to_string()).collect()
+}
+
 /// How loud the prompt line's language server is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum PromptLsp {
@@ -219,6 +280,33 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    // The ports board.
+    #[serde(default)]
+    pub ports_grouping: PortsGrouping,
+    #[serde(default)]
+    pub ports_open: PortsOpen,
+    /// Seconds between polls while the board is open (10 s when closed).
+    #[serde(default = "default_ports_poll")]
+    pub ports_poll: u8,
+    #[serde(default = "default_true")]
+    pub ports_toast: bool,
+    #[serde(default)]
+    pub ports_show_system: bool,
+    #[serde(default)]
+    pub ports_show_udp: bool,
+    #[serde(default = "default_true")]
+    pub ports_show_connections: bool,
+    #[serde(default = "default_true")]
+    pub ports_show_docker: bool,
+    #[serde(default)]
+    pub ports_kill_confirm: KillConfirm,
+    #[serde(default = "default_true")]
+    pub ports_probe: bool,
+    #[serde(default)]
+    pub ports_tunnel: Tunnel,
+    /// Process names the board hides (the system set to start).
+    #[serde(default = "default_hidden_processes")]
+    pub ports_hidden: Vec<String>,
     /// Ghost the history entry that continues what's typed; Right/End accepts.
     #[serde(default = "default_true")]
     pub predict: bool,
@@ -338,6 +426,18 @@ impl Default for Behavior {
             highlight: true,
             format_on_save: true,
             prompt_lsp: PromptLsp::Quiet,
+            ports_grouping: PortsGrouping::Origin,
+            ports_open: PortsOpen::Split,
+            ports_poll: 1,
+            ports_toast: true,
+            ports_show_system: false,
+            ports_show_udp: false,
+            ports_show_connections: true,
+            ports_show_docker: true,
+            ports_kill_confirm: KillConfirm::System,
+            ports_probe: true,
+            ports_tunnel: Tunnel::Cloudflared,
+            ports_hidden: default_hidden_processes(),
             predict: true,
             block_content: true,
             sleep_after_min: 30,
@@ -456,6 +556,15 @@ pub enum Hit {
     Predict(bool),
     PromptLsp(PromptLsp),
     FormatOnSave(bool),
+    PortsGrouping(PortsGrouping),
+    PortsOpen(PortsOpen),
+    PortsPoll(u8),
+    PortsToast(bool),
+    PortsShow(u8, bool),
+    PortsKill(KillConfirm),
+    PortsProbe(bool),
+    PortsTunnel(Tunnel),
+    PortsHidden,
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
     HdrDateline(bool),
@@ -510,7 +619,7 @@ pub enum TokSel {
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 11] = [
+pub const SECTIONS: [(&str, (&str, &str)); 12] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
@@ -518,6 +627,7 @@ pub const SECTIONS: [(&str, (&str, &str)); 11] = [
     ("TABS", icons::SQUARES),
     ("TERMINAL", icons::TERMINAL),
     ("BROWSER", icons::GLOBE),
+    ("PORTS", icons::PORTS),
     ("ASSISTANTS", icons::ASSISTANT),
     ("RULES", icons::CODE),
     ("KEYS", icons::KEYBOARD),
@@ -529,7 +639,8 @@ pub const SEC_SOUND: usize = 1;
 pub const SEC_STARTUP: usize = 2;
 pub const SEC_TERMINAL: usize = 5;
 pub const SEC_BROWSER: usize = 6;
-pub const RULES: usize = 8;
+pub const SEC_PORTS: usize = 7;
+pub const RULES: usize = 9;
 
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
@@ -726,6 +837,15 @@ impl App {
             Hit::Predict(b) => if b { "predictions on".into() } else { "predictions off".into() },
             Hit::PromptLsp(m) => match m { PromptLsp::Quiet => "prompt lsp quiet".into(), PromptLsp::Menu => "prompt lsp menu".into(), PromptLsp::Off => "prompt lsp off".into() },
             Hit::FormatOnSave(b) => if b { "format on save".into() } else { "save as is".into() },
+            Hit::PortsGrouping(g) => g.name().into(),
+            Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
+            Hit::PortsPoll(n) => format!("poll every {n}s"),
+            Hit::PortsToast(b) => if b { "new-port toast on".into() } else { "new-port toast off".into() },
+            Hit::PortsShow(k, b) => format!("{} {}", ["system", "udp", "connections", "docker"][(k as usize).min(3)], if b { "shown" } else { "hidden" }),
+            Hit::PortsKill(k) => format!("ask before kill: {:?}", k).to_lowercase(),
+            Hit::PortsProbe(b) => if b { "probe on".into() } else { "probe off".into() },
+            Hit::PortsTunnel(t) => format!("tunnel: {:?}", t).to_lowercase(),
+            Hit::PortsHidden => "hidden processes reset".into(),
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
             Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
             Hit::HdrDateline(b) => if b { "dateline on".into() } else { "dateline off".into() },
@@ -1024,6 +1144,20 @@ impl App {
             Hit::Predict(b) => self.behavior.predict = b,
             Hit::PromptLsp(m) => self.behavior.prompt_lsp = m,
             Hit::FormatOnSave(b) => self.behavior.format_on_save = b,
+            Hit::PortsGrouping(g) => self.behavior.ports_grouping = g,
+            Hit::PortsOpen(o) => self.behavior.ports_open = o,
+            Hit::PortsPoll(n) => self.behavior.ports_poll = n,
+            Hit::PortsToast(b) => self.behavior.ports_toast = b,
+            Hit::PortsShow(k, b) => match k {
+                0 => self.behavior.ports_show_system = b,
+                1 => self.behavior.ports_show_udp = b,
+                2 => self.behavior.ports_show_connections = b,
+                _ => self.behavior.ports_show_docker = b,
+            },
+            Hit::PortsKill(k) => self.behavior.ports_kill_confirm = k,
+            Hit::PortsProbe(b) => self.behavior.ports_probe = b,
+            Hit::PortsTunnel(t) => self.behavior.ports_tunnel = t,
+            Hit::PortsHidden => self.behavior.ports_hidden = default_hidden_processes(),
             Hit::HdrStyle(s) => {
                 self.header.style = s;
                 if s == HeaderStyle::Rail && self.header.style != s {
@@ -2132,6 +2266,57 @@ impl App {
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
             7 => {
+                let b = &self.behavior;
+                let g = b.ports_grouping;
+                vec![
+                    ("".into(), Info(format!("{} · the board: what's listening, who owns it, what to do about it", key("P", true)))),
+                    ("GROUPING".into(), Choice(vec![
+                        ("ORIGIN".into(), Hit::PortsGrouping(PortsGrouping::Origin), g == PortsGrouping::Origin),
+                        ("PORT".into(), Hit::PortsGrouping(PortsGrouping::Port), g == PortsGrouping::Port),
+                        ("PROCESS".into(), Hit::PortsGrouping(PortsGrouping::Process), g == PortsGrouping::Process),
+                    ])),
+                    ("".into(), Info("origin: MINE (ports your shells started) · OTHERS · SYSTEM · CONNECTIONS · DOCKER".into())),
+                    ("OPEN IN".into(), Choice(vec![
+                        ("TAB".into(), Hit::PortsOpen(PortsOpen::Tab), b.ports_open == PortsOpen::Tab),
+                        ("SPLIT".into(), Hit::PortsOpen(PortsOpen::Split), b.ports_open == PortsOpen::Split),
+                        ("PEEK".into(), Hit::PortsOpen(PortsOpen::Peek), b.ports_open == PortsOpen::Peek),
+                    ])),
+                    ("POLL WHILE OPEN".into(), Choice(vec![
+                        ("1 S".into(), Hit::PortsPoll(1), b.ports_poll == 1),
+                        ("5 S".into(), Hit::PortsPoll(5), b.ports_poll == 5),
+                        ("10 S".into(), Hit::PortsPoll(10), b.ports_poll == 10),
+                    ])),
+                    ("NEW-PORT TOAST".into(), Choice(vec![
+                        ("ON".into(), Hit::PortsToast(true), b.ports_toast),
+                        ("OFF".into(), Hit::PortsToast(false), !b.ports_toast),
+                    ])),
+                    ("".into(), Info(format!("a line beside the ports icon for 6 s when something starts listening · {} opens it", key("O", true)))),
+                    ("SHOW".into(), Choice(vec![
+                        ("SYSTEM".into(), Hit::PortsShow(0, !b.ports_show_system), b.ports_show_system),
+                        ("UDP".into(), Hit::PortsShow(1, !b.ports_show_udp), b.ports_show_udp),
+                        ("CONNECTIONS".into(), Hit::PortsShow(2, !b.ports_show_connections), b.ports_show_connections),
+                        ("DOCKER".into(), Hit::PortsShow(3, !b.ports_show_docker), b.ports_show_docker),
+                    ])),
+                    ("ASK BEFORE KILL".into(), Choice(vec![
+                        ("SYSTEM".into(), Hit::PortsKill(KillConfirm::System), b.ports_kill_confirm == KillConfirm::System),
+                        ("ALWAYS".into(), Hit::PortsKill(KillConfirm::Always), b.ports_kill_confirm == KillConfirm::Always),
+                        ("NEVER".into(), Hit::PortsKill(KillConfirm::Never), b.ports_kill_confirm == KillConfirm::Never),
+                    ])),
+                    ("".into(), Info("kill is graceful first, force after 3 s; a DYING lamp in between".into())),
+                    ("PROBE".into(), Choice(vec![
+                        ("ON".into(), Hit::PortsProbe(true), b.ports_probe),
+                        ("OFF".into(), Hit::PortsProbe(false), !b.ports_probe),
+                    ])),
+                    ("".into(), Info("one GET / to a new port for its status, title and framework · it is a request to your server".into())),
+                    ("TUNNEL".into(), Choice(vec![
+                        ("CLOUDFLARED".into(), Hit::PortsTunnel(Tunnel::Cloudflared), b.ports_tunnel == Tunnel::Cloudflared),
+                        ("NGROK".into(), Hit::PortsTunnel(Tunnel::Ngrok), b.ports_tunnel == Tunnel::Ngrok),
+                    ])),
+                    ("HIDDEN PROCESSES".into(), Choice(vec![(format!("{} NAMES · RESET", b.ports_hidden.len()), Hit::PortsHidden, false)])),
+                    ("".into(), Info("edit the list in prefs.json · rules.luau's `ports` names, tints, auto-opens, tunnels, hides and watches by port or process".into())),
+                ]
+            }
+            8 => {
                 let asks = crate::ask::backends();
                 let mut v: Vec<(String, Control)> = Vec::new();
                 v.push(("ASK".into(), Info(format!("Ctrl+Shift+? beside a shell · {}", if asks.is_empty() { "no assistant found · claude, codex, copilot, ollama on PATH, or ANTHROPIC_API_KEY (curl)".to_string() } else { asks.iter().map(|b| format!("{} ({})", b.name, b.how)).collect::<Vec<_>>().join(" · ") }))));
@@ -2143,7 +2328,7 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            8 => {
+            9 => {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
                 let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
@@ -2182,7 +2367,7 @@ impl App {
                 ),
             ]
             }
-            9 => vec![
+            10 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
                 ("URL".into(), Info(key("L", true))),
@@ -2216,9 +2401,10 @@ impl App {
             4 => format!("links → {:?}", self.behavior.links).to_lowercase(),
             5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
             6 => format!("{} bar · google", self.load_bar.style.name()),
-            7 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
-            8 => self.rules.status.clone(),
-            9 => "chords".into(),
+            7 => format!("{} · {}", self.behavior.ports_grouping.name(), if self.behavior.ports_toast { "toast on" } else { "toast off" }),
+            8 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            9 => self.rules.status.clone(),
+            10 => "chords".into(),
             _ => "github releases".into(),
         }
     }

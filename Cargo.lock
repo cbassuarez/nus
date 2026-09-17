@@ -1432,6 +1432,7 @@ dependencies = [
  "nus-vt",
  "portable-pty",
  "serde",
+ "serde_json",
  "tracing",
  "windows",
 ]

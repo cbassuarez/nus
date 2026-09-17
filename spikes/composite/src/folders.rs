@@ -272,6 +272,11 @@ impl App {
     }
 
     pub(crate) fn toggle_folder(&mut self, fi: usize) {
+        // The live PORTS folder's head is the board.
+        if self.folders.get(fi).is_some_and(|f| f.kind == Kind::Ports) {
+            self.open_board();
+            return;
+        }
         if let Some(f) = self.folders.get_mut(fi) {
             f.open = !f.open;
         }

@@ -529,6 +529,15 @@ folders = {
     { title = "MDN", url = "https://developer.mozilla.org/", detail = "web" },
   },
 }
+
+-- ports: the board asks this for every port it finds. p has port, pid,
+-- process, command, cwd, exposed, mine, udp. Return nothing, or a table:
+-- name, tint ("#rrggbb"), open ("split" | "tab" | "peek" — when it
+-- appears), tunnel (true), hide (true), watch (true).
+function ports(p)
+  if p.port == 5173 then return { name = "vite", open = "split" } end
+  if p.process == "node" and p.exposed then return { tint = "#d9a400" } end
+end
 "##;
 
 /// Starter rule sets the RULES page can write (each replaces new_tab and
@@ -601,14 +610,18 @@ impl Rules {
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
         // Older files get the chains and folders examples appended, once each.
-        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:")] {
+        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("ports", "-- ports:")] {
             let Ok(src) = std::fs::read_to_string(&path) else { break };
             if src.contains(word) {
                 continue;
             }
             let Some(k) = DEFAULT_RULES.find(marker) else { continue };
             let block = &DEFAULT_RULES[k..];
-            let block = if word == "chains" { block.split("-- folders:").next().unwrap_or(block) } else { block };
+            let block = match word {
+                "chains" => block.split("-- folders:").next().unwrap_or(block),
+                "folders" => block.split("-- ports:").next().unwrap_or(block),
+                _ => block,
+            };
             let _ = std::fs::write(&path, format!("{}\n{}", src.trim_end(), block.trim_end()));
         }
         let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new() };
@@ -763,6 +776,38 @@ impl Rules {
             Err(e) => {
                 tracing::warn!("rules new_tab: {e}");
                 Overrides::default()
+            }
+        }
+    }
+
+    /// The `ports` hook: given a row's facts, what to call it and do with it.
+    /// `ports = function(p) if p.port == 5173 then return { name = "vite", open = "split" } end end`
+    pub fn ports(&self, row: &crate::ports::Row) -> crate::ports::Rule {
+        let Ok(f) = self.lua.globals().get::<mlua::Function>("ports") else { return crate::ports::Rule::default() };
+        let t = self.lua.create_table().unwrap();
+        let _ = t.set("port", row.port);
+        let _ = t.set("pid", row.pid);
+        let _ = t.set("process", row.process.as_str());
+        let _ = t.set("command", row.cmdline.as_str());
+        let _ = t.set("exposed", row.exposed);
+        let _ = t.set("mine", row.group == crate::ports::Group::Mine);
+        let _ = t.set("udp", row.proto == nus_pty::ports::Proto::Udp);
+        if let Some(c) = &row.cwd {
+            let _ = t.set("cwd", c.as_str());
+        }
+        match f.call::<Option<mlua::Table>>(t) {
+            Ok(Some(o)) => crate::ports::Rule {
+                name: o.get::<String>("name").ok(),
+                tint: o.get::<String>("tint").ok().and_then(|s| parse_hex(&s)),
+                open: o.get::<String>("open").ok(),
+                tunnel: o.get::<bool>("tunnel").unwrap_or(false),
+                hide: o.get::<bool>("hide").unwrap_or(false),
+                watch: o.get::<bool>("watch").unwrap_or(false),
+            },
+            Ok(None) => crate::ports::Rule::default(),
+            Err(e) => {
+                tracing::warn!("rules ports: {e}");
+                crate::ports::Rule::default()
             }
         }
     }

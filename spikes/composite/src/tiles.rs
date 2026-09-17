@@ -32,6 +32,7 @@ impl Pane {
             Pane::Settings(s) => s.rect,
             Pane::Hints(h) => h.rect,
             Pane::Editor(e) => e.rect,
+            Pane::Ports(p) => p.rect,
         }
     }
 }

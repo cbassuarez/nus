@@ -1,6 +1,8 @@
 //! nus-pty — shell profiles and PTY sessions on top of `portable-pty`
 //! (ConPTY on Windows, openpty elsewhere).
 
+pub mod ports;
+
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread;

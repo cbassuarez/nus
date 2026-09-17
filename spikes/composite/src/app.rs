@@ -19,7 +19,7 @@ use crate::UserEvent;
 const SCROLLBACK: usize = 10_000;
 
 /// Platform key label: "⌘K" on macOS, "CTRL+K" elsewhere. `shift` adds ⇧ / SHIFT+.
-fn key(k: &str, shift: bool) -> String {
+pub(crate) fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
         format!("⌘{}{}", if shift { "⇧" } else { "" }, k)
     } else {
@@ -52,6 +52,8 @@ pub enum Action {
     OpenInPane(String),
     /// A file, in the editor.
     OpenFile(String),
+    /// The ports board.
+    Board,
     /// Type a command into the focused (or a new) terminal and run it.
     RunInShell(String),
     ToggleSplit,
@@ -284,6 +286,7 @@ pub enum Pane {
     Settings(SettingsPane),
     Hints(HintsPane),
     Editor(crate::editor::EditorPane),
+    Ports(crate::ports::PortsPane),
 }
 
 /// Sidebar click targets besides tab rows.
@@ -443,6 +446,7 @@ impl Tab {
                 Pane::Settings(_) => ("settings".into(), String::new()),
                 Pane::Hints(_) => ("welcome".into(), String::new()),
                 Pane::Editor(e) => (e.title(), e.buf().and_then(|b| b.path.as_ref()).and_then(|p| p.parent()).map(|p| p.display().to_string()).unwrap_or_default()),
+                Pane::Ports(_) => ("ports".into(), String::new()),
             }
         };
         let (main, other) = self.panes();
@@ -495,6 +499,7 @@ impl Tab {
             Pane::Settings(_) => "settings".into(),
             Pane::Hints(_) => "welcome".into(),
             Pane::Editor(e) => e.title(),
+            Pane::Ports(_) => "ports".into(),
         };
         let (main, other) = self.panes();
         match other {
@@ -600,6 +605,8 @@ pub struct App {
     pub folders: Vec<crate::folders::Folder>,
     /// Language servers, and the editor's FILES folder root and open dirs.
     pub lsp: crate::lsp_host::Servers,
+    /// The ports board (airport control).
+    pub board: crate::ports::Board,
     pub files_root: Option<std::path::PathBuf>,
     pub files_open: std::collections::HashSet<std::path::PathBuf>,
     /// Editor click counting: when, where, how many.
@@ -814,6 +821,7 @@ impl App {
             jobs: crate::bundles::Jobs::new(),
             folders: Vec::new(),
             lsp: Default::default(),
+            board: crate::ports::Board::new(),
             files_root: None,
             files_open: Default::default(),
             click_at: None,
@@ -1262,6 +1270,7 @@ impl App {
         self.poll_lsp();
         self.editor_tick();
         self.prompt_lsp_tick();
+        self.ports_tick();
         // NUS_TYPE="text" types into the first shell at its first prompt;
         // NUS_SHELL=<profile> picks which shell the first tab runs.
         if !self.typed_once {
@@ -2589,6 +2598,7 @@ impl App {
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
                 Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
                 Pane::Editor(e) => (nus_render::text::icons::CODE, e.title()),
+                Pane::Ports(_) => (nus_render::text::icons::PORTS, "ports".into()),
             };
             let title = format!("{} {}", self.tab_label(self.active), title).caps();
             let tw = self.fonts.measure(label, &title);
@@ -2644,6 +2654,11 @@ impl App {
             cluster.push((nus_render::text::icons::PIP, String::new(), CrumbHit::Pip, true));
         }
         cluster.push((if waiting > 0 { nus_render::text::icons::BELL_BOLD } else { nus_render::text::icons::BELL }, if waiting > 0 { waiting.to_string() } else { String::new() }, CrumbHit::Waiting, waiting > 0));
+        }
+        // The new-port line rides left of the cluster for six seconds.
+        if self.board.toast.is_some() {
+            let tw = self.draw_ports_toast(scene, rx - self.px(6.0), lbase);
+            rx -= tw;
         }
         for (icon, count, hit, lit) in cluster {
             let color = if lit { ink } else { t.dim };
@@ -2973,6 +2988,7 @@ impl App {
                 y += row_h;
             }
         }
+        self.draw_board_overlay(&mut scene, w, h);
         self.draw_start(&mut scene);
         self.draw_splash(&mut scene);
         self.scene = scene;
@@ -3288,6 +3304,7 @@ impl App {
                 Pane::Settings(_) => nus_render::text::icons::SETTINGS,
                 Pane::Hints(_) => nus_render::text::icons::HOME,
                 Pane::Editor(_) => nus_render::text::icons::CODE,
+                Pane::Ports(_) => nus_render::text::icons::PORTS,
             };
             let row_bg = if active { crate::surface::mix(self.paper(), ink, t.tint[3]) } else if hovered { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.5) } else { self.paper() };
             let isz = self.px(15.0);
@@ -4503,6 +4520,13 @@ impl App {
                 let r = p.rect;
                 self.draw_editor(scene, p, r, focused);
             }
+            Pane::Ports(p) => {
+                let r = p.rect;
+                let t = self.theme.clone();
+                scene.rect(r, t.paper);
+                self.board.rect = r;
+                self.draw_board(scene, r, false);
+            }
             Pane::Term(p) => {
                 let r = p.rect;
                 let hh = if p.show_header { self.header_h() } else { 0.0 };
@@ -4825,9 +4849,12 @@ impl App {
                         rows.push(row(&self.tab_label(i), format!("{} · switch to tab", t.title()), Action::SwitchTab(i)));
                     }
                 }
+                if q.is_empty() || hit("ports") || hit("board") {
+                    rows.push(row("::", format!("ports · the board · {}", key("P", true)), Action::Board));
+                }
                 for p in &self.ports {
                     let label = format!("port {} · {}", p.port, if p.process.is_empty() { "?" } else { &p.process });
-                    if q.is_empty() || hit(&label) || q == "local" || q == "ports" {
+                    if hit(&label) || q == "local" {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
@@ -5098,6 +5125,7 @@ impl App {
             }
             Action::OpenInPane(url) => self.open_url(&url, false),
             Action::OpenFile(p) => self.open_file(std::path::Path::new(&p), false),
+            Action::Board => self.open_board(),
             Action::RunInShell(cmd) => self.run_in_shell(&cmd),
             Action::ToggleSplit => self.toggle_split(),
             Action::CloseTab => self.close_tabs(false),
@@ -5163,6 +5191,9 @@ impl App {
             return;
         }
         if self.ask_key(ev) {
+            return;
+        }
+        if self.palette.is_none() && !app && self.board_key(ev) {
             return;
         }
         if self.palette.is_none() && !app && self.editor_key(ev) {
@@ -5281,11 +5312,28 @@ impl App {
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
                 Some(KeyCode::KeyF) => return self.search_open(),
-                Some(KeyCode::KeyO) => return self.term_hints_open(),
+                Some(KeyCode::KeyO) => {
+                    // While a new-port line shows, O opens that port; else hints.
+                    if let Some((_, _, k)) = self.board.toast.clone() {
+                        self.board.toast = None;
+                        self.ports_act(&k, crate::ports::Act::Open);
+                        return;
+                    }
+                    return self.term_hints_open();
+                }
                 Some(KeyCode::KeyC) => return self.copy_selection_or_output(),
                 Some(KeyCode::KeyV) => return self.paste_into_shell(),
                 Some(KeyCode::KeyT) => return self.open_palette(PaletteMode::New),
                 Some(KeyCode::KeyK) => return self.open_palette(PaletteMode::Go),
+                Some(KeyCode::KeyP) => {
+                    if self.board.open {
+                        self.close_board();
+                    } else {
+                        self.open_board();
+                    }
+                    return;
+                }
+
                 Some(KeyCode::KeyL) => return self.open_palette(PaletteMode::Url),
                 Some(KeyCode::KeyW) => return self.close_tabs(false),
                 Some(KeyCode::KeyZ) => return self.reopen_closed(),
@@ -5390,7 +5438,7 @@ impl App {
         let motion = self.motion.clone();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
-            Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) => {}
+            Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) => {}
             Pane::Term(t) => {
                 // Shift+PgUp / PgDn: a page of scrollback, on the curve
                 // (unless the program asked for the keys, as in an alternate screen).
@@ -5590,6 +5638,7 @@ impl App {
             Pane::Settings(_) => ("settings", ""),
             Pane::Hints(_) => ("welcome", ""),
             Pane::Editor(_) => ("editor", ""),
+            Pane::Ports(_) => ("ports", ""),
         };
         let host = match left {
             Pane::Web(w) => {
@@ -6152,7 +6201,7 @@ impl App {
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
                 Pane::Web(w) => Closed::Web(w.tab.shared.borrow().url.clone()),
-                Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) => {
+                Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) => {
                     self.tab_removed(i);
                     continue;
                 }
@@ -6334,12 +6383,7 @@ impl App {
                 self.sidebar = !self.sidebar;
                 self.layout();
             }
-            CrumbHit::Ports => {
-                self.open_palette(PaletteMode::Go);
-                if let Some((_, input)) = self.palette.as_mut() {
-                    input.push_str("port");
-                }
-            }
+            CrumbHit::Ports => self.open_board(),
             CrumbHit::Assistant => {
                 self.open_palette(PaletteMode::Go);
                 if let Some((_, input)) = self.palette.as_mut() {
@@ -6529,6 +6573,7 @@ impl App {
             Pane::Settings(s) => s.rect.contains(x, y),
             Pane::Hints(s) => s.rect.contains(x, y),
             Pane::Editor(e) => e.rect.contains(x, y),
+            Pane::Ports(p) => p.rect.contains(x, y),
         };
         if let Some(r) = &tab.right {
             let hit = match r {
@@ -6537,6 +6582,7 @@ impl App {
                 Pane::Settings(s) => s.rect.contains(x, y),
                 Pane::Hints(s) => s.rect.contains(x, y),
                 Pane::Editor(e) => e.rect.contains(x, y),
+                Pane::Ports(p) => p.rect.contains(x, y),
             };
             if hit {
                 hit_right = Some(true);
@@ -6576,6 +6622,9 @@ impl App {
             }
         }
         if pressed && button == MouseButton::Left && self.ask_click(x, y) {
+            return;
+        }
+        if self.board_mouse(button, state, x, y) {
             return;
         }
         if self.editor_mouse(button, state, x, y) {
@@ -6675,7 +6724,7 @@ impl App {
                     }
                     w.tab.focus(is_right == focus_right);
                 }
-                Pane::Term(_) | Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) => {}
+                Pane::Term(_) | Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) => {}
             }
         }
         self.mouse_down_in_web = down_in_web;
@@ -6731,6 +6780,9 @@ impl App {
             MouseScrollDelta::PixelDelta(p) => p.y as f32,
         };
         if self.ask_wheel(x, y, dy_px) {
+            return;
+        }
+        if self.board_wheel(x, y, dy_px) {
             return;
         }
         let wheel_lines = self.behavior.wheel_lines as f32;
@@ -7280,6 +7332,7 @@ pub(crate) fn place_pane_bare(pane: &mut Pane, r: Rect, header: f32, pad_x: f32,
         Pane::Settings(s) => s.rect = r,
         Pane::Hints(h) => h.rect = r,
         Pane::Editor(e) => e.rect = r,
+        Pane::Ports(p) => p.rect = r,
         Pane::Web(w) => {
             w.rect = r;
             w.bare = bare;
@@ -7356,6 +7409,9 @@ impl App {
             }
             Pane::Editor(_) => {
                 self.fonts.draw_icon(scene, nus_render::text::icons::CODE, size, x, y, color);
+            }
+            Pane::Ports(_) => {
+                self.fonts.draw_icon(scene, nus_render::text::icons::PORTS, size, x, y, color);
             }
         }
     }

@@ -210,6 +210,12 @@ impl App {
                         n.set_bounds(bounds(s.rect));
                         n
                     }
+                    Pane::Ports(p) => {
+                        let mut n = Node::new(Role::Document);
+                        n.set_label("ports");
+                        n.set_bounds(bounds(p.rect));
+                        n
+                    }
                     Pane::Editor(e) => {
                         let mut n = Node::new(Role::Document);
                         n.set_label(format!("editor · {}", e.title()));
