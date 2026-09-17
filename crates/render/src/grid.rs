@@ -237,7 +237,7 @@ impl GridRenderer {
                 }
                 if !self.text.trim().is_empty() {
                     for g in fonts.shape(self.font, self.px, &self.text) {
-                        let Some(a) = fonts.glyph(self.font, self.px, g.id) else {
+                        let Some(a) = fonts.glyph(g.font, self.px, g.id) else {
                             continue;
                         };
                         let c = self.col_of[g.cluster as usize];

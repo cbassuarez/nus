@@ -132,6 +132,14 @@ pub struct Term {
     pub progress: Option<(u8, u8)>,
     /// Bytes of an OSC that ended past the last chunk.
     pending_osc: Vec<u8>,
+    /// Terminal images: decoded once, placed at absolute lines.
+    pub images: Vec<crate::images::Image>,
+    pub placements: Vec<crate::images::Placement>,
+    /// A chunked Kitty transmission still arriving.
+    pending_image: Option<crate::images::Pending>,
+    /// Bumps when images or placements change, so the host re-syncs textures.
+    pub images_gen: u64,
+    next_image_id: u32,
 }
 
 impl Term {
@@ -163,6 +171,11 @@ impl Term {
             cwd: None,
             progress: None,
             pending_osc: Vec::new(),
+            images: Vec::new(),
+            placements: Vec::new(),
+            pending_image: None,
+            images_gen: 0,
+            next_image_id: 1 << 24,
         }
     }
 
@@ -183,8 +196,9 @@ impl Term {
         let mut start = 0;
         let mut i = 0;
         while i < bytes.len() {
-            // ESC ] or C1 OSC.
-            let osc_at = if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b']' {
+            // ESC ] or C1 OSC; ESC _ APC (Kitty graphics).
+            let apc = bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'_';
+            let osc_at = if bytes[i] == 0x1b && i + 1 < bytes.len() && (bytes[i + 1] == b']' || apc) {
                 Some((i, i + 2))
             } else if bytes[i] == 0x9d {
                 Some((i, i + 1))
@@ -195,10 +209,14 @@ impl Term {
                 i += 1;
                 continue;
             };
-            // Only the OSCs we care about; anything else passes straight through.
+            // Only the sequences we care about; anything else passes straight through.
             let rest = &bytes[body..];
-            let ours = rest.starts_with(b"133;") || rest.starts_with(b"7;") || rest.starts_with(b"9;4;");
-            if !ours && rest.len() >= 4 {
+            let ours = if apc { rest.starts_with(b"G") } else { rest.starts_with(b"133;") || rest.starts_with(b"7;") || rest.starts_with(b"9;4;") || rest.starts_with(b"1337;File=") };
+            if !ours && rest.len() >= 10 {
+                i += 1;
+                continue;
+            }
+            if apc && !ours && !rest.is_empty() {
                 i += 1;
                 continue;
             }
@@ -221,7 +239,7 @@ impl Term {
                 j += 1;
             }
             let Some((pay_end, seq_end)) = end else {
-                if j >= bytes.len() && (ours || rest.len() < 4) {
+                if j >= bytes.len() && (ours || rest.len() < 10) {
                     // Ends in a later chunk: feed what came before, keep the rest.
                     self.feed(&bytes[start..at]);
                     self.pending_osc = bytes[at..].to_vec();
@@ -233,8 +251,15 @@ impl Term {
             if ours {
                 self.feed(&bytes[start..at]);
                 let payload = bytes[body..pay_end].to_vec();
-                self.integration_osc(&payload);
-                start = at;
+                if apc {
+                    self.graphics_apc(&payload);
+                } else if payload.starts_with(b"1337;File=") {
+                    self.iterm_image(&payload[b"1337;File=".len()..]);
+                } else {
+                    self.integration_osc(&payload);
+                }
+                // Image payloads never reach vte; the rest does.
+                start = if apc || payload.starts_with(b"1337;") { seq_end } else { at };
             }
             i = seq_end;
         }
@@ -297,6 +322,152 @@ impl Term {
             self.progress = if state == 0 { None } else { Some((state, pct.min(100))) };
             self.events.push(Event::Progress(state, pct.min(100)));
         }
+    }
+
+    /// Kitty graphics: `G<controls>;<base64>`.
+    fn graphics_apc(&mut self, payload: &[u8]) {
+        use crate::images::{control_num, control_str, kitty_controls, Pending};
+        let payload = &payload[1..];
+        let (ctl, data) = match payload.iter().position(|&b| b == b';') {
+            Some(p) => (&payload[..p], &payload[p + 1..]),
+            None => (payload, &payload[..0]),
+        };
+        let c = kitty_controls(&String::from_utf8_lossy(ctl));
+        let action = control_str(&c, 'a').unwrap_or("t").to_string();
+        let quiet = control_num(&c, 'q', 0) as u8;
+        let id = control_num(&c, 'i', 0) as u32;
+        let more = control_num(&c, 'm', 0) == 1;
+        let respond = |me: &mut Term, id: u32, msg: &str| {
+            if quiet == 0 || (quiet == 1 && msg != "OK") {
+                if id != 0 {
+                    me.responses.extend_from_slice(format!("\x1b_Gi={id};{msg}\x1b\\").as_bytes());
+                }
+            }
+        };
+        match action.as_str() {
+            "q" => {
+                respond(self, id, "OK");
+            }
+            "d" => {
+                let what = control_str(&c, 'd').unwrap_or("a");
+                match what {
+                    "i" | "I" => {
+                        let target = control_num(&c, 'i', 0) as u32;
+                        self.placements.retain(|p| p.image != target);
+                        if what == "I" {
+                            self.images.retain(|im| im.id != target);
+                        }
+                    }
+                    _ => self.placements.clear(),
+                }
+                self.images_gen += 1;
+            }
+            "p" => {
+                if self.images.iter().any(|im| im.id == id) {
+                    self.place_image(id, control_num(&c, 'c', 0) as usize, control_num(&c, 'r', 0) as usize, control_num(&c, 'C', 0) == 1);
+                    respond(self, id, "OK");
+                } else {
+                    respond(self, id, "ENOENT:no image with that id");
+                }
+            }
+            _ => {
+                // t / T: transmit (and display). Chunks accumulate until m=0.
+                let mut pending = self.pending_image.take().unwrap_or_else(|| Pending {
+                    id,
+                    format: control_num(&c, 'f', 32) as u32,
+                    width: control_num(&c, 's', 0) as u32,
+                    height: control_num(&c, 'v', 0) as u32,
+                    data: Vec::new(),
+                    display: action == "T",
+                    cols: control_num(&c, 'c', 0) as usize,
+                    rows: control_num(&c, 'r', 0) as usize,
+                    quiet,
+                });
+                pending.data.extend_from_slice(data);
+                if more {
+                    self.pending_image = Some(pending);
+                    return;
+                }
+                let bytes = crate::images::base64_decode(&pending.data);
+                let decoded = match pending.format {
+                    100 => crate::images::decode_png(&bytes),
+                    f => crate::images::decode_raw(f, pending.width, pending.height, &bytes).map(|rgba| (pending.width, pending.height, rgba)),
+                };
+                let Some((w, h, rgba)) = decoded else {
+                    respond(self, pending.id, "EINVAL:could not decode");
+                    return;
+                };
+                let id = if pending.id == 0 { self.next_image_id += 1; self.next_image_id } else { pending.id };
+                self.images.retain(|im| im.id != id);
+                self.images.push(crate::images::Image { id, width: w, height: h, rgba });
+                self.trim_images();
+                if pending.display {
+                    self.place_image(id, pending.cols, pending.rows, false);
+                }
+                self.images_gen += 1;
+                respond(self, pending.id, "OK");
+            }
+        }
+    }
+
+    /// Keep image memory under 64 MB: oldest first, placements with them.
+    fn trim_images(&mut self) {
+        let mut total: usize = self.images.iter().map(|im| im.rgba.len()).sum();
+        while total > 64 * 1024 * 1024 && !self.images.is_empty() {
+            let gone = self.images.remove(0);
+            total -= gone.rgba.len();
+            self.placements.retain(|p| p.image != gone.id);
+        }
+    }
+
+    /// Put an image at the cursor and move past it (unless `keep_cursor`).
+    fn place_image(&mut self, id: u32, cols: usize, rows: usize, keep_cursor: bool) {
+        let Some(im) = self.images.iter().find(|im| im.id == id) else { return };
+        let (cw, ch) = (self.cell_px.0.max(1) as f32, self.cell_px.1.max(1) as f32);
+        let cols = if cols > 0 { cols } else { (im.width as f32 / cw).ceil().max(1.0) as usize };
+        let rows = if rows > 0 { rows } else { (im.height as f32 / ch).ceil().max(1.0) as usize };
+        let cols = cols.min(self.primary.cols().max(1));
+        let line = self.primary.abs_row(self.cursor.row);
+        let col = self.cursor.col;
+        self.placements.push(crate::images::Placement { image: id, line, col, cols, rows });
+        self.images_gen += 1;
+        if !keep_cursor {
+            for _ in 1..rows {
+                Handler::linefeed(self);
+            }
+            self.cursor.col = (col + cols).min(self.primary.cols().saturating_sub(1));
+            self.cursor.wrap_next = false;
+        }
+    }
+
+    /// iTerm2 inline image: `<args>:<base64>`.
+    fn iterm_image(&mut self, payload: &[u8]) {
+        use crate::images::{iterm_args, iterm_size};
+        let Some(colon) = payload.iter().position(|&b| b == b':') else { return };
+        let args = iterm_args(&String::from_utf8_lossy(&payload[..colon]));
+        let inline = args.iter().any(|(k, v)| k == "inline" && v == "1");
+        if !inline {
+            return;
+        }
+        let bytes = crate::images::base64_decode(&payload[colon + 1..]);
+        let Some((w, h, rgba)) = crate::images::decode_png(&bytes) else { return };
+        self.next_image_id += 1;
+        let id = self.next_image_id;
+        self.images.push(crate::images::Image { id, width: w, height: h, rgba });
+        self.trim_images();
+        let width = args.iter().find(|(k, _)| k == "width").map(|(_, v)| v.as_str());
+        let height = args.iter().find(|(k, _)| k == "height").map(|(_, v)| v.as_str());
+        let cols = iterm_size(width, w, self.cell_px.0, self.primary.cols()).unwrap_or(0);
+        let rows = iterm_size(height, h, self.cell_px.1, self.primary.rows()).unwrap_or(0);
+        // Keep the aspect when only one side is given.
+        let (cols, rows) = match (cols, rows) {
+            (0, 0) => (0, 0),
+            (c, 0) => (c, ((c as f32 * self.cell_px.0 as f32) * h as f32 / w as f32 / self.cell_px.1.max(1) as f32).ceil().max(1.0) as usize),
+            (0, r) => (((r as f32 * self.cell_px.1 as f32) * w as f32 / h as f32 / self.cell_px.0.max(1) as f32).ceil().max(1.0) as usize, r),
+            (c, r) => (c, r),
+        };
+        self.place_image(id, cols, rows, false);
+        self.images_gen += 1;
     }
 
     /// The output of a command: rows after its C mark up to its D mark
@@ -1427,6 +1598,44 @@ mod tests {
         feed(&mut t, "\x1b]0;my title\x07hi");
         assert_eq!(t.grid().row(0).text().trim_end(), "hi");
         assert!(t.marks.is_empty());
+    }
+
+    #[test]
+    fn kitty_raw_rgba_image_places_and_moves_the_cursor() {
+        let mut t = term(20, 6);
+        t.cell_px = (8, 16);
+        // 2×2 RGBA, chunked over two APCs; 16px wide → 2 cols, 32px → 2 rows when sized in px.
+        let px: Vec<u8> = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        let b64 = {
+            const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut out = String::new();
+            for chunk in px.chunks(3) {
+                let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+                let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+                out.push(T[(n >> 18) as usize & 63] as char);
+                out.push(T[(n >> 12) as usize & 63] as char);
+                out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+                out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+            }
+            out
+        };
+        let (a, b) = b64.split_at(8);
+        feed(&mut t, &format!("x\x1b_Ga=T,f=32,s=2,v=2,i=3,c=4,r=2,m=1;{a}\x1b\\"));
+        assert!(t.images.is_empty());
+        feed(&mut t, &format!("\x1b_Gm=0;{b}\x1b\\y"));
+        assert_eq!(t.images.len(), 1);
+        assert_eq!(t.images[0].rgba, px);
+        assert_eq!(t.placements.len(), 1);
+        let pl = t.placements[0];
+        assert_eq!((pl.line, pl.col, pl.cols, pl.rows), (0, 1, 4, 2));
+        // Cursor moved past the image: row 1, col 5, and "y" landed there.
+        assert_eq!(t.grid().row(1).text().trim_end(), "     y");
+        let resp = String::from_utf8_lossy(&t.take_responses()).to_string();
+        assert!(resp.contains("Gi=3;OK"), "{resp:?}");
+        // Delete all placements keeps the image.
+        feed(&mut t, "\x1b_Ga=d\x1b\\");
+        assert!(t.placements.is_empty());
+        assert_eq!(t.images.len(), 1);
     }
 
     #[test]

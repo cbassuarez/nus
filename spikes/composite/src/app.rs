@@ -143,6 +143,10 @@ pub struct TermPane {
     pub scroll_drag: bool,
     pub chip_hits: Vec<(Rect, usize)>,
     pub hover_block: u64,
+    /// Terminal images as textures, by image id; rebuilt when the term's
+    /// images_gen moves.
+    pub image_tex: std::collections::HashMap<u32, Arc<wgpu::BindGroup>>,
+    pub images_gen: u64,
     /// Name of the running process when a close is awaiting confirmation.
     pub confirm_close: Option<String>,
     /// Rang the bell while not being looked at.
@@ -775,6 +779,8 @@ impl App {
             scroll_drag: false,
             chip_hits: Vec::new(),
             hover_block: 0,
+            image_tex: std::collections::HashMap::new(),
+            images_gen: 0,
             line: String::new(),
             line_ok: true,
             confirm_close: None,
@@ -1306,6 +1312,62 @@ impl App {
                 }
                 (px, (0, 0))
             }
+        }
+    }
+
+    /// Terminal images (Kitty / iTerm2): uploaded once per image, drawn at
+    /// their placements' cells.
+    fn draw_term_images(&mut self, scene: &mut Scene, p: &mut TermPane) {
+        if p.term.placements.is_empty() && p.image_tex.is_empty() {
+            return;
+        }
+        if p.images_gen != p.term.images_gen {
+            p.images_gen = p.term.images_gen;
+            // Drop textures of images that are gone; upload new ones.
+            let live: std::collections::HashSet<u32> = p.term.images.iter().map(|im| im.id).collect();
+            p.image_tex.retain(|id, _| live.contains(id));
+            for im in &p.term.images {
+                if p.image_tex.contains_key(&im.id) {
+                    continue;
+                }
+                let bgra: Vec<u8> = im.rgba.chunks(4).flat_map(|px| [px[2], px[1], px[0], px[3]]).collect();
+                let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("term image"),
+                    size: wgpu::Extent3d { width: im.width, height: im.height, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                self.gpu.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &bgra,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(im.width * 4), rows_per_image: Some(im.height) },
+                    wgpu::Extent3d { width: im.width, height: im.height, depth_or_array_layers: 1 },
+                );
+                p.image_tex.insert(im.id, (self.bind_texture)(&tex));
+            }
+        }
+        let (cw, ch) = p.grid.cell_size();
+        let grid = p.term.grid();
+        let rows = grid.rows();
+        let top = grid.abs_of_display(0);
+        let bottom = top + rows as u64;
+        for pl in &p.term.placements {
+            if pl.line >= bottom || pl.line + pl.rows as u64 <= top {
+                continue;
+            }
+            let Some(bg) = p.image_tex.get(&pl.image) else { continue };
+            let x = p.origin.0 + pl.col as f32 * cw;
+            let y = p.origin.1 + (pl.line as i64 - top as i64) as f32 * ch;
+            let r = Rect::new(x, y, pl.cols as f32 * cw, pl.rows as f32 * ch);
+            scene.texture(r, bg.clone(), None);
+        }
+        if !p.term.placements.is_empty() {
+            // Texture draws start a new layer; restore the pane clip.
+            scene.layer(Some(Rect::new(p.rect.x, p.rect.y, p.rect.w, p.rect.h)));
         }
     }
 
@@ -3690,6 +3752,7 @@ impl App {
                 if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
                     self.draw_moving_cursor(scene, p, look);
                 }
+                self.draw_term_images(scene, p);
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
                 let _ = p.term.grid_mut().take_damage();

@@ -12,3 +12,4 @@ vte.workspace = true
 bitflags.workspace = true
 unicode-width.workspace = true
 tracing.workspace = true
+png = "0.17"

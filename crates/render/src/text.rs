@@ -64,6 +64,8 @@ pub struct Style {
 #[derive(Clone, Copy, Debug)]
 pub struct ShapedGlyph {
     pub id: u16,
+    /// The face that has this glyph: the requested one, or a fallback.
+    pub font: FontId,
     /// Byte offset into the shaped text.
     pub cluster: u32,
     pub x_advance: f32,
@@ -94,9 +96,25 @@ pub struct FontSystem {
     shelf_h: u32,
     /// Pending atlas uploads: (x, y, w, h, data).
     pub uploads: Vec<(u32, u32, u32, u32, Vec<u8>)>,
-    db: Option<fontdb::Database>,
+    db: std::cell::RefCell<Option<fontdb::Database>>,
     icons: HashMap<IconKey, Option<AtlasGlyph>>,
+    /// System faces for what the bundled fonts lack — symbols, emoji,
+    /// other scripts — loaded the first time a glyph is missing. They
+    /// live behind a RefCell so shaping (and measuring) stays `&self`.
+    extra: std::cell::RefCell<Vec<Face>>,
+    fallbacks: std::cell::RefCell<Option<Vec<FontId>>>,
 }
+
+/// Font ids at or above this index the `extra` (fallback) faces.
+const EXTRA_BASE: u16 = 0x8000;
+
+/// Families tried, in order, for characters the main font lacks.
+#[cfg(target_os = "windows")]
+const FALLBACK_FAMILIES: &[&str] = &["Cascadia Mono", "Consolas", "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", "Segoe UI Historic", "Microsoft YaHei", "Yu Gothic UI", "Malgun Gothic", "Nirmala UI"];
+#[cfg(target_os = "macos")]
+const FALLBACK_FAMILIES: &[&str] = &["Menlo", "Apple Symbols", "Apple Color Emoji", "Helvetica Neue", "PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo"];
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const FALLBACK_FAMILIES: &[&str] = &["DejaVu Sans Mono", "Noto Sans Mono", "Noto Sans Symbols2", "Noto Sans Symbols", "Noto Color Emoji", "DejaVu Sans", "Noto Sans CJK SC", "Noto Sans"];
 
 impl FontSystem {
     pub fn new() -> FontSystem {
@@ -108,9 +126,75 @@ impl FontSystem {
             shelf_y: 0,
             shelf_h: 0,
             uploads: Vec::new(),
-            db: None,
+            db: std::cell::RefCell::new(None),
             icons: HashMap::new(),
+            extra: std::cell::RefCell::new(Vec::new()),
+            fallbacks: std::cell::RefCell::new(None),
         }
+    }
+
+    /// Run `f` on a face, primary or fallback.
+    fn with_face<R>(&self, font: FontId, f: impl FnOnce(&Face) -> R) -> R {
+        if font.0 >= EXTRA_BASE {
+            let extra = self.extra.borrow();
+            f(&extra[(font.0 - EXTRA_BASE) as usize])
+        } else {
+            f(&self.faces[font.0 as usize])
+        }
+    }
+
+    /// Load a system family as a fallback face, if it exists.
+    fn try_load_fallback(&self, family: &str) -> Option<FontId> {
+        {
+            let mut db = self.db.borrow_mut();
+            if db.is_none() {
+                let mut d = fontdb::Database::new();
+                d.load_system_fonts();
+                *db = Some(d);
+            }
+        }
+        let db = self.db.borrow();
+        let db = db.as_ref()?;
+        let id = db.query(&fontdb::Query { families: &[fontdb::Family::Name(family)], ..Default::default() })?;
+        let face = db.face(id)?;
+        let index = face.index;
+        let data = match &face.source {
+            fontdb::Source::File(p) => std::fs::read(p).ok(),
+            fontdb::Source::Binary(b) => Some(b.as_ref().as_ref().to_vec()),
+            fontdb::Source::SharedFile(_, b) => Some(b.as_ref().as_ref().to_vec()),
+        }?;
+        let data: &'static [u8] = Box::leak(data.into_boxed_slice());
+        let hb = rustybuzz::Face::from_slice(data, index)?;
+        let font = FontRef::from_index(data, index as usize)?;
+        let units_per_em = font.metrics(&[]).units_per_em as f32;
+        let mut extra = self.extra.borrow_mut();
+        extra.push(Face { data, index, hb, units_per_em });
+        Some(FontId(EXTRA_BASE + (extra.len() - 1) as u16))
+    }
+
+    fn fallbacks(&self) -> Vec<FontId> {
+        if let Some(f) = self.fallbacks.borrow().as_ref() {
+            return f.clone();
+        }
+        let mut out = Vec::new();
+        for fam in FALLBACK_FAMILIES {
+            if let Some(id) = self.try_load_fallback(fam) {
+                out.push(id);
+            }
+        }
+        tracing::info!("font fallbacks: {} of {} families", out.len(), FALLBACK_FAMILIES.len());
+        *self.fallbacks.borrow_mut() = Some(out.clone());
+        out
+    }
+
+    /// A face among the fallbacks that has `ch`.
+    fn fallback_for(&self, ch: char) -> Option<FontId> {
+        for id in self.fallbacks() {
+            if self.swash(id).charmap().map(ch) != 0 {
+                return Some(id);
+            }
+        }
+        None
     }
 
     pub fn load_bytes(&mut self, data: &'static [u8], index: u32) -> Result<FontId> {
@@ -128,11 +212,16 @@ impl FontSystem {
 
     /// Load a system font by family name, or fall back to `fallback`.
     pub fn load_system(&mut self, family: &str, fallback: FontId) -> FontId {
-        let db = self.db.get_or_insert_with(|| {
-            let mut db = fontdb::Database::new();
-            db.load_system_fonts();
-            db
-        });
+        {
+            let mut db = self.db.borrow_mut();
+            if db.is_none() {
+                let mut d = fontdb::Database::new();
+                d.load_system_fonts();
+                *db = Some(d);
+            }
+        }
+        let guard = self.db.borrow();
+        let Some(db) = guard.as_ref() else { return fallback };
         let id = db.query(&fontdb::Query {
             families: &[fontdb::Family::Name(family)],
             ..Default::default()
@@ -151,6 +240,7 @@ impl FontSystem {
             fontdb::Source::SharedFile(_, b) => Some(b.as_ref().as_ref().to_vec()),
         };
         let Some(data) = data else { return fallback };
+        drop(guard);
         let data: &'static [u8] = Box::leak(data.into_boxed_slice());
         match self.load_bytes(data, index) {
             Ok(f) => {
@@ -162,8 +252,7 @@ impl FontSystem {
     }
 
     fn swash(&self, font: FontId) -> FontRef<'static> {
-        let f = &self.faces[font.0 as usize];
-        FontRef::from_index(f.data, f.index as usize).expect("parsed at load")
+        self.with_face(font, |f| FontRef::from_index(f.data, f.index as usize).expect("parsed at load"))
     }
 
     pub fn metrics(&self, font: FontId, px: f32) -> Metrics {
@@ -183,8 +272,8 @@ impl FontSystem {
         }
     }
 
-    pub fn shape(&self, font: FontId, px: f32, text: &str) -> Vec<ShapedGlyph> {
-        let face = &self.faces[font.0 as usize];
+    fn shape_one(&self, font: FontId, px: f32, text: &str, cluster_base: u32) -> Vec<ShapedGlyph> {
+        self.with_face(font, |face| {
         let mut buf = rustybuzz::UnicodeBuffer::new();
         buf.push_str(text);
         buf.guess_segment_properties();
@@ -200,12 +289,55 @@ impl FontSystem {
             .zip(out.glyph_positions())
             .map(|(i, p)| ShapedGlyph {
                 id: i.glyph_id as u16,
-                cluster: i.cluster,
+                font,
+                cluster: i.cluster + cluster_base,
                 x_advance: p.x_advance as f32 * s,
                 x_offset: p.x_offset as f32 * s,
                 y_offset: p.y_offset as f32 * s,
             })
             .collect()
+        })
+    }
+
+    /// Shape with `font`; runs it has no glyphs for are reshaped with the
+    /// first fallback face that has them.
+    pub fn shape(&self, font: FontId, px: f32, text: &str) -> Vec<ShapedGlyph> {
+        let glyphs = self.shape_one(font, px, text, 0);
+        if !glyphs.iter().any(|g| g.id == 0) {
+            return glyphs;
+        }
+        // Byte ranges of missing clusters, merged when adjacent.
+        let bytes: Vec<u32> = {
+            let mut b: Vec<u32> = text.char_indices().map(|(i, _)| i as u32).collect();
+            b.push(text.len() as u32);
+            b
+        };
+        let cluster_end = |c: u32| bytes.iter().copied().find(|&x| x > c).unwrap_or(text.len() as u32);
+        let mut out: Vec<ShapedGlyph> = Vec::with_capacity(glyphs.len());
+        let mut i = 0;
+        while i < glyphs.len() {
+            if glyphs[i].id != 0 {
+                out.push(glyphs[i]);
+                i += 1;
+                continue;
+            }
+            let start = glyphs[i].cluster;
+            let mut end = cluster_end(start);
+            let mut j = i + 1;
+            while j < glyphs.len() && glyphs[j].id == 0 {
+                end = end.max(cluster_end(glyphs[j].cluster));
+                j += 1;
+            }
+            let (s, e) = (start as usize, end as usize);
+            let run = &text[s..e];
+            let first = run.chars().next().unwrap_or(' ');
+            match self.fallback_for(first) {
+                Some(fb) => out.extend(self.shape_one(fb, px, run, start)),
+                None => out.extend(glyphs[i..j].iter().copied()),
+            }
+            i = j;
+        }
+        out
     }
 
     pub fn glyph(&mut self, font: FontId, px: f32, id: u16) -> Option<AtlasGlyph> {
@@ -284,7 +416,7 @@ impl FontSystem {
         } = s;
         let mut pen = x;
         for g in self.shape(font, px, text) {
-            if let Some(a) = self.glyph(font, px, g.id) {
+            if let Some(a) = self.glyph(g.font, px, g.id) {
                 scene.push(Instance::glyph(
                     (pen + g.x_offset + a.left as f32).round(),
                     (baseline - g.y_offset - a.top as f32).round(),
@@ -488,4 +620,27 @@ impl FontSystem {
 struct IconKey {
     name: &'static str,
     px_x64: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_glyphs_come_from_a_fallback_face() {
+        let mut fonts = FontSystem::new();
+        let plex = fonts.load_bytes(bundled::PLEX_MONO, 0).unwrap();
+        // Plex Mono has the letters; the command sign and the emoji it does not.
+        let glyphs = fonts.shape(plex, 13.0, "a \u{2318} b \u{1F600}");
+        assert!(glyphs.iter().all(|g| g.id != 0 || g.font != plex), "every glyph resolved or reshaped: {glyphs:?}");
+        let resolved = glyphs.iter().filter(|g| g.font != plex && g.id != 0).count();
+        // On a machine with system fonts, both symbols resolve; on a bare CI box at least the code runs.
+        if fonts.fallbacks().is_empty() {
+            return;
+        }
+        assert!(resolved >= 1, "a fallback face supplied the symbol: {glyphs:?}");
+        // Measuring still works through fallbacks and stays &self.
+        let w = fonts.measure(Style { font: plex, px: 13.0, color: [0.0; 4], tracking: 0.0 }, "\u{2318}");
+        assert!(w > 0.0);
+    }
 }
