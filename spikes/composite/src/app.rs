@@ -149,6 +149,8 @@ pub struct TermPane {
     pub cur_y: Anim,
     /// Recent cursor positions (cells) for the comet, newest last.
     pub trail: Vec<(f32, f32, Instant)>,
+    /// The smeared caret's four corners (Neovide's cursor, ported).
+    pub smear: crate::smear::Smear,
     /// What has been typed at the current prompt, for the URL rule.
     pub line: String,
     /// False once an editing key made `line` unreliable; reset on Enter.
@@ -935,6 +937,7 @@ impl App {
             cur_x: Anim::at(0.0),
             cur_y: Anim::at(0.0),
             trail: Vec::new(),
+            smear: crate::smear::Smear::new(),
             line_col: None,
             cwd: None,
             progress: None,
@@ -1832,6 +1835,27 @@ impl App {
                 self.dirty = true;
             }
         }
+        if self.cursor.motion == CursorMotion::Smear {
+            // Neovide's cursor: four springs, a quad. The trail slider is
+            // its trail_size; the lengths follow the motion register.
+            let (sh, pct) = match shape {
+                nus_vt::CursorShape::Beam => (crate::smear::Shape::Vertical, (look.weight / cw).clamp(0.05, 1.0)),
+                nus_vt::CursorShape::Underline => (crate::smear::Shape::Horizontal, (look.weight / ch).clamp(0.05, 1.0)),
+                _ => (crate::smear::Shape::Block, 1.0),
+            };
+            p.smear.set_destination((p.origin.0 + tx * cw, p.origin.1 + ty * ch));
+            let s = crate::smear::Settings {
+                animation_length: self.motion.dur(150.0).max(0.001),
+                short_animation_length: self.motion.dur(40.0).max(0.001),
+                trail_size: self.cursor.smear.clamp(0.0, 1.0),
+            };
+            let animating = p.smear.animate(&s, sh, pct, (cw, ch), self.motion.reduced());
+            if animating {
+                p.smear.draw(scene, Theme::with_alpha(color, 0.95));
+                self.dirty = true;
+            }
+            return;
+        }
         if gliding {
             scene.rect(rect_at(x, y), Theme::with_alpha(color, 0.9));
             self.dirty = true;
@@ -1848,6 +1872,9 @@ impl App {
         self.theme_edit.family = Family::Imported;
         self.theme_edit.saturation = 1.0;
         self.cursor.color = t.cursor;
+        if let Some(m) = t.cursor_motion {
+            self.cursor.motion = m;
+        }
         self.load_bar.style = t.bar;
         self.load_bar.color = t.bar_color;
         for (event, cue) in &t.sounds {
@@ -1876,6 +1903,7 @@ impl App {
             name: name.to_string(),
             story: format!("saved from {} on {}", self.preset_name, chrono_date()),
             port: false,
+            cursor_motion: Some(self.cursor.motion),
             paper: face(&paper),
             ink: face(&ink),
             surface: self.surface.clone(),
@@ -2185,6 +2213,26 @@ impl App {
                             nus_vt::Event::Title(title) => {
                                 t.title = short_title(&title);
                                 changed = true;
+                            }
+                            nus_vt::Event::ClipboardStore(_, b64) => {
+                                if self.behavior.osc52 != crate::settings::Osc52::Off {
+                                    let bytes = nus_vt::images::base64_decode(&b64);
+                                    if let Ok(text) = String::from_utf8(bytes) {
+                                        if !text.is_empty() {
+                                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                let _ = cb.set_text(text);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            nus_vt::Event::ClipboardLoad(which) => {
+                                if self.behavior.osc52 == crate::settings::Osc52::ReadWrite {
+                                    let text = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok()).unwrap_or_default();
+                                    let sel = if which == 0 { 'c' } else { which as char };
+                                    let reply = format!("\x1b]52;{sel};{}\x1b\\", base64_encode(text.as_bytes()));
+                                    let _ = t.pty.write(reply.as_bytes());
+                                }
                             }
                             nus_vt::Event::Bell => {
                                 if i != self.active || !self.window.has_focus() {
@@ -4402,7 +4450,7 @@ impl App {
                 }
                 let pane_paper = look.bg.unwrap_or(self.paper());
                 let look = self.cursor_look(p, focused, look.signal);
-                let gliding = !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) && (p.cur_x.active() || p.cur_y.active());
+                let gliding = !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) && (p.cur_x.active() || p.cur_y.active() || p.smear.animating);
                 let mut lk = look;
                 if gliding {
                     lk.visible = false;
@@ -7056,4 +7104,21 @@ impl App {
         self.save_session();
         self.dirty = true;
     }
+}
+
+/// Standard base64, for OSC 52 replies.
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |a, &b| (a << 8) | b as u32) << (8 * (3 - chunk.len()));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(T[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }

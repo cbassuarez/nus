@@ -16,6 +16,7 @@ mod folders;
 mod sites;
 mod containers;
 mod ask;
+mod smear;
 mod anim;
 mod app;
 mod browser;

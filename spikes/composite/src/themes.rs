@@ -48,6 +48,9 @@ pub struct StockTheme {
     pub ink: Face,
     pub surface: Surface,
     pub cursor: CursorColor,
+    /// The theme's cursor motion, when it has a view (jump, glide, comet, smear).
+    #[serde(default)]
+    pub cursor_motion: Option<crate::settings::CursorMotion>,
     pub bar: BarStyle,
     pub bar_color: BarColor,
     /// event → cue, for the events the theme has a voice on.
@@ -93,6 +96,7 @@ fn theme(name: &str, story: &str, paper: Face, ink: Face, surface: Surface, curs
         name: name.into(),
         story: story.into(),
         port: false,
+        cursor_motion: None,
         paper,
         ink,
         surface,

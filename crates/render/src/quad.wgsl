@@ -124,6 +124,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if in.kind == 0u {
         return in.color;
     }
+    if in.kind == 12u {
+        // A convex quad: four corners inside the instance box, c0 in params,
+        // c1 and c2 as two u16 each in uv.z / uv.w (seen here as bytes), c3
+        // in color2's bytes. Signed distance to the polygon gives the edge.
+        let c0 = in.params * in.size;
+        let c1 = vec2(in.stop3.r * 255.0 + in.stop3.g * 255.0 * 256.0, in.stop3.b * 255.0 + in.stop3.a * 255.0 * 256.0) / 65535.0 * in.size;
+        let c2 = vec2(in.stop4.r * 255.0 + in.stop4.g * 255.0 * 256.0, in.stop4.b * 255.0 + in.stop4.a * 255.0 * 256.0) / 65535.0 * in.size;
+        let c3 = vec2(in.color2.r * 255.0 + in.color2.g * 255.0 * 256.0, in.color2.b * 255.0 + in.color2.a * 255.0 * 256.0) / 65535.0 * in.size;
+        let centre = (c0 + c1 + c2 + c3) * 0.25;
+        var corners = array<vec2<f32>, 4>(c0, c1, c2, c3);
+        var sd = -1.0e9;
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let a = corners[i];
+            let b = corners[(i + 1u) % 4u];
+            let e = b - a;
+            let len = max(length(e), 1.0e-4);
+            var n = vec2(e.y, -e.x) / len;
+            if dot(n, centre - a) > 0.0 {
+                n = -n;
+            }
+            sd = max(sd, dot(n, in.local - a));
+        }
+        let cov = 1.0 - smoothstep(-0.75, 0.75, sd);
+        return vec4(in.color.rgb, in.color.a * cov);
+    }
     // Textures: `extra` is time in ms (0 = still). Grain reseeds like film;
     // the patterns drift slowly. Each texture yields a value in 0..1 and a
     // light/dark tone; `texture_out` masks it to a rounded stroke when the

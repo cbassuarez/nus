@@ -93,6 +93,9 @@ pub enum CursorMotion {
     Jump,
     Glide,
     Comet,
+    /// Neovide's smear: the body stretches from where it was to where it
+    /// goes, the tail catching up a beat behind the head.
+    Smear,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
@@ -115,11 +118,18 @@ pub struct CursorPrefs {
     pub hollow_unfocused: bool,
     pub pointer: Pointer,
     pub hide_while_typing: bool,
+    /// Neovide's trail_size: how far the smear's tail lags its head, 0..1.
+    #[serde(default = "default_smear")]
+    pub smear: f32,
+}
+
+fn default_smear() -> f32 {
+    1.0
 }
 
 impl Default for CursorPrefs {
     fn default() -> Self {
-        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Ink, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true }
+        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Ink, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true, smear: 1.0 }
     }
 }
 
@@ -206,6 +216,26 @@ pub struct Behavior {
     /// The page's status at the end of its tools row: a lamp, the word, or nothing.
     #[serde(default)]
     pub status: Status,
+    /// A selection in the shell copies itself as it ends.
+    #[serde(default)]
+    pub copy_on_select: bool,
+    /// The middle button pastes into the shell.
+    #[serde(default)]
+    pub middle_paste: bool,
+    /// What programs in the shell may do with the clipboard through OSC 52.
+    #[serde(default)]
+    pub osc52: Osc52,
+}
+
+/// OSC 52: tmux, neovim and friends setting (and reading) the clipboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Osc52 {
+    Off,
+    /// Programs may set the clipboard; reading it back is refused.
+    #[default]
+    Write,
+    /// Programs may set it and read it.
+    ReadWrite,
 }
 
 /// How a page says it's live, loading, local or asleep.
@@ -274,6 +304,9 @@ impl Default for Behavior {
             sleep_after_min: 30,
             archive_after_h: 12,
             status: Status::Lamp,
+            copy_on_select: false,
+            middle_paste: false,
+            osc52: Osc52::Write,
         }
     }
 }
@@ -298,6 +331,7 @@ pub enum Slider {
     Saturation,
     BlinkPeriod,
     CurWeight,
+    Smear,
     Hue,
     Sat,
     Light,
@@ -367,6 +401,9 @@ pub enum Hit {
     SleepAfter(u32),
     ArchiveAfter(u32),
     Highlight(bool),
+    CopyOnSelect(bool),
+    MiddlePaste(bool),
+    Osc52(Osc52),
     Predict(bool),
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
@@ -481,6 +518,7 @@ impl App {
             Slider::ShellWidth => (self.surface.shell_width - 1.0) / 11.0,
             Slider::Radius => self.surface.shell_radius / 24.0,
             Slider::Grace => self.sidebar_rules.grace_ms as f32 / 1000.0,
+            Slider::Smear => self.cursor.smear,
             Slider::Motion => self.motion.register,
             Slider::BarThickness => (self.load_bar.thickness - 1.0) / 5.0,
             Slider::BarChase => (self.load_bar.chase - 2.0) / 14.0,
@@ -508,6 +546,7 @@ impl App {
             Slider::ShellWidth => self.surface.shell_width = (1.0 + v * 11.0).round(),
             Slider::Radius => self.surface.shell_radius = (v * 24.0).round(),
             Slider::Grace => self.sidebar_rules.grace_ms = (v * 1000.0).round() as u64,
+            Slider::Smear => self.cursor.smear = v.clamp(0.1, 0.9),
             Slider::Motion => self.motion.register = v,
             Slider::BarThickness => self.load_bar.thickness = (1.0 + v * 5.0).round(),
             Slider::BarChase => self.load_bar.chase = (2.0 + v * 14.0).round(),
@@ -625,6 +664,9 @@ impl App {
             Hit::SleepAfter(n) => if n == 0 { "never sleep tabs".into() } else { format!("sleep after {n} minutes") },
             Hit::ArchiveAfter(n) => if n == 0 { "never archive".into() } else { format!("archive after {n} hours") },
             Hit::Highlight(b) => if b { "highlight the command line".into() } else { "plain command line".into() },
+            Hit::CopyOnSelect(b) => if b { "copy on select on".into() } else { "copy on select off".into() },
+            Hit::MiddlePaste(b) => if b { "middle click pastes".into() } else { "middle click does nothing".into() },
+            Hit::Osc52(o) => format!("osc 52 {:?}", o).to_lowercase(),
             Hit::Predict(b) => if b { "predictions on".into() } else { "predictions off".into() },
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
             Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
@@ -910,6 +952,9 @@ impl App {
             Hit::SleepAfter(n) => self.behavior.sleep_after_min = n,
             Hit::ArchiveAfter(n) => self.behavior.archive_after_h = n,
             Hit::Highlight(b) => self.behavior.highlight = b,
+            Hit::CopyOnSelect(b) => self.behavior.copy_on_select = b,
+            Hit::MiddlePaste(b) => self.behavior.middle_paste = b,
+            Hit::Osc52(o) => self.behavior.osc52 = o,
             Hit::Predict(b) => self.behavior.predict = b,
             Hit::HdrStyle(s) => {
                 self.header.style = s;
@@ -1610,9 +1655,11 @@ impl App {
                             ("JUMP".into(), Hit::CurMotion(CursorMotion::Jump), c.motion == CursorMotion::Jump),
                             ("GLIDE".into(), Hit::CurMotion(CursorMotion::Glide), c.motion == CursorMotion::Glide),
                             ("COMET".into(), Hit::CurMotion(CursorMotion::Comet), c.motion == CursorMotion::Comet),
+                            ("SMEAR".into(), Hit::CurMotion(CursorMotion::Smear), c.motion == CursorMotion::Smear),
                         ]),
                     ),
-                    ("".into(), Info("glide eases between cells on the motion register; comet leaves a short ink trail".into())),
+                    ("".into(), Info("glide eases between cells on the motion register; comet leaves a short ink trail; smear stretches the body the way neovide does".into())),
+                    ("TRAIL".into(), Slider(self::Slider::Smear, self.slider_value(self::Slider::Smear), format!("{:.0}% · neovide's trail_size: how far the tail lags the head (smear only)", c.smear * 100.0))),
                     ("WEIGHT".into(), Slider(self::Slider::CurWeight, self.slider_value(self::Slider::CurWeight), format!("{}px · beam and underline", c.weight))),
                     (
                         "POINTER".into(),
@@ -1884,6 +1931,22 @@ impl App {
                     Choice(vec![("HIGHLIGHT".into(), Hit::Highlight(!self.behavior.highlight), self.behavior.highlight), ("PREDICT".into(), Hit::Predict(!self.behavior.predict), self.behavior.predict)]),
                 ));
                 v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens coloured as you type; the history entry that continues your line ghosts after the caret, Right or End accepts".into())));
+                v.insert(3, (
+                    "CLIPBOARD".into(),
+                    Choice(vec![
+                        ("COPY ON SELECT".into(), Hit::CopyOnSelect(!self.behavior.copy_on_select), self.behavior.copy_on_select),
+                        ("MIDDLE CLICK PASTES".into(), Hit::MiddlePaste(!self.behavior.middle_paste), self.behavior.middle_paste),
+                    ]),
+                ));
+                v.insert(4, (
+                    "OSC 52".into(),
+                    Choice(vec![
+                        ("OFF".into(), Hit::Osc52(Osc52::Off), self.behavior.osc52 == Osc52::Off),
+                        ("PROGRAMS MAY SET IT".into(), Hit::Osc52(Osc52::Write), self.behavior.osc52 == Osc52::Write),
+                        ("SET AND READ".into(), Hit::Osc52(Osc52::ReadWrite), self.behavior.osc52 == Osc52::ReadWrite),
+                    ]),
+                ));
+                v.insert(5, ("".into(), Info("tmux, neovim and ssh sessions put text on your clipboard through OSC 52; reading it back is off unless you say so · copy keeps the selection, paste is bracketed and asks when it's many lines".into())));
                 v.insert(0, (
                     "SHELL INTEGRATION".into(),
                     Choice(vec![("AUTO".into(), Hit::ShellInt(true), self.behavior.shell_integration), ("OFF".into(), Hit::ShellInt(false), !self.behavior.shell_integration)]),

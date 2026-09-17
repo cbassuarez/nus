@@ -125,6 +125,36 @@ impl Instance {
 
 impl Instance {
     /// Diagonal hazard tape as a stroke of `thickness` inside `r`.
+    /// A convex quad through four corners (clockwise or counter), in
+    /// pixels. Corners ride inside the bounding box as 16-bit fractions.
+    pub fn quad(corners: [[f32; 2]; 4], color: Color) -> Instance {
+        let min_x = corners.iter().map(|c| c[0]).fold(f32::INFINITY, f32::min);
+        let min_y = corners.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
+        let max_x = corners.iter().map(|c| c[0]).fold(f32::NEG_INFINITY, f32::max);
+        let max_y = corners.iter().map(|c| c[1]).fold(f32::NEG_INFINITY, f32::max);
+        // A pixel of slack so the anti-aliased edge isn't clipped.
+        let (x, y) = (min_x.floor() - 1.0, min_y.floor() - 1.0);
+        let (w, h) = ((max_x - x).ceil() + 1.0, (max_y - y).ceil() + 1.0);
+        let norm = |c: [f32; 2]| ((c[0] - x) / w, (c[1] - y) / h);
+        let pack16 = |c: [f32; 2]| -> u32 {
+            let (nx, ny) = norm(c);
+            let a = (nx.clamp(0.0, 1.0) * 65535.0).round() as u32;
+            let b = (ny.clamp(0.0, 1.0) * 65535.0).round() as u32;
+            a | (b << 16)
+        };
+        let (c0x, c0y) = norm(corners[0]);
+        Instance {
+            pos: [x, y],
+            size: [w, h],
+            uv: [c0x, c0y, f32::from_bits(pack16(corners[1])), f32::from_bits(pack16(corners[2]))],
+            color,
+            kind: 12,
+            color2: pack16(corners[3]),
+            phase: 0.0,
+            extra: 0,
+        }
+    }
+
     pub fn hazard(r: Rect, thickness: f32, a: Color, b: Color, period: f32) -> Instance {
         Instance {
             pos: [r.x, r.y],

@@ -195,6 +195,9 @@ impl App {
         let pressed = state == ElementState::Pressed;
         let shift = self.mods.shift_key();
         let ctrl = self.mods.control_key();
+        let copy_on_select = self.behavior.copy_on_select;
+        let middle_paste = self.behavior.middle_paste;
+        let mut middle = false;
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let mut acted = false;
         let mut open_url: Option<String> = None;
@@ -208,8 +211,18 @@ impl App {
                     if sel.dragging {
                         sel.dragging = false;
                         acted = true;
+                        if copy_on_select {
+                            let text = t.selection_text();
+                            if !text.trim().is_empty() {
+                                copy = Some(text);
+                            }
+                        }
                     }
                 }
+                continue;
+            }
+            if pressed && button == MouseButton::Middle && middle_paste && t.rect.contains(x, y) {
+                middle = true;
                 continue;
             }
             if !t.rect.contains(x, y) {
@@ -317,6 +330,10 @@ impl App {
         }
         if let Some(u) = open_url {
             self.open_url(&u, true);
+        }
+        if middle {
+            self.paste_into_shell();
+            return true;
         }
         if let Some(text) = copy {
             if !text.is_empty() {
