@@ -486,3 +486,30 @@ a menu over the folders wins. `layout()` now schedules the shells'
 resize itself (a split terminal used to keep its old size). SendKeys
 cannot deliver Ctrl+Alt+arrow chords; keybd_event with the arrow's
 scancode and the extended flag can.
+
+## Icons, status, ask (settled 2026-09-17, thirteenth pass)
+
+**Site icons.** A page without a favicon gets a letter tile — the
+host's first letter on a square in one of the signal's family — never
+the generic globe; a favicon can't linger from the previous site.
+
+**What's in the tab.** The row names the focused pane and badges the
+split's other pane's kind at the icon's corner; the title follows. A
+shell that exits leaves: the other pane takes the tab, a lone shell's
+tab closes.
+
+**The status lamp.** LIVE was a word; it's a lamp now — signal while
+loading, ink when live, hazard stripes when local, hollow while asleep
+— with BROWSER · STATUS choosing lamp, lamp + word, word, or none.
+
+**Ask.** Ctrl+Shift+? beside a shell: one line in, a few command blocks
+out, each with INSERT (at the prompt), RUN, COPY. The shell, folder and
+the last command's output go along. Not a chat; the last turns scroll.
+Backends are what the machine has: claude -p, codex exec, the Copilot
+CLI if installed, ollama, or the Anthropic API through curl with
+ANTHROPIC_API_KEY; NUS_ASK_CMD for anything else. (Ctrl+Shift+A was
+first; a global hotkey on the machine swallowed it before winit saw it.)
+
+**The sidebar drew at 10 fps.** fit() trimmed a character at a time and
+measured every step; it bisects now and widths are cached. 83 fps in a
+debug build.

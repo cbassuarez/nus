@@ -73,6 +73,7 @@ pub enum Action {
     KeepPeek,
     Compact,
     Focus,
+    Ask,
     /// This window's container; a new one; the page again in one.
     Container(String),
     NewContainer(String),
@@ -135,6 +136,8 @@ pub struct TermPane {
     pub grid: GridRenderer,
     pub title: String,
     pub profile: usize,
+    /// The ask panel beside this shell, while open.
+    pub ask: Option<crate::ask::Ask>,
     pub profile_name: String,
     pub rect: Rect,
     pub origin: (f32, f32),
@@ -939,6 +942,7 @@ impl App {
             last_exit: None,
             done: None,
             confirm_paste: None,
+            ask: None,
             sel: None,
             search: None,
             hints: None,
@@ -1247,6 +1251,7 @@ impl App {
         }
         self.tend_folders();
         self.tend_shells();
+        self.tend_ask();
         // A held NEW TAB fans the kinds out.
         if let Some((at, SideHit::NewShell)) = self.press {
             if at.elapsed().as_millis() >= 240 && !self.kinds_menu {
@@ -2106,7 +2111,8 @@ impl App {
                 if let Pane::Term(t) = p {
                     let r = t.rect;
                     let header = if t.show_header { header } else { 0.0 };
-                    let area = Rect::new(r.x + pad_x, r.y + header + pad_y, r.w - 2.0 * pad_x, r.h - header - 2.0 * pad_y);
+                    let ask_w = if t.ask.is_some() { (crate::ask::PANEL_W * self.scale).min(r.w * 0.6) } else { 0.0 };
+                    let area = Rect::new(r.x + pad_x, r.y + header + pad_y, r.w - 2.0 * pad_x - ask_w, r.h - header - 2.0 * pad_y);
                     let (cols, rows) = t.grid.grid_size(area);
                     if (cols, rows) != (t.term.cols(), t.term.rows()) {
                         t.term.resize(cols, rows);
@@ -4411,6 +4417,9 @@ impl App {
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
                 let _ = p.term.grid_mut().take_damage();
                 scene.layer(None);
+                if p.ask.is_some() {
+                    self.draw_ask(scene, p, Rect::new(r.x, r.y + hh, r.w, r.h - hh), focused);
+                }
             }
             Pane::Web(p) => {
                 let r = p.rect;
@@ -4676,7 +4685,7 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 18] = [
+                let actions: [(String, Action); 19] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
@@ -4685,6 +4694,7 @@ impl App {
                     ("keep the peek · CTRL+ENTER · into the stack".to_string(), Action::KeepPeek),
                     (format!("compact sidebar · {} · icons only, the strip hides", key("B", true)), Action::Compact),
                     (format!("{} · CTRL+SHIFT+F11 · the page alone in the window", if self.focus { "leave focus" } else { "focus" }), Action::Focus),
+                    (format!("ask · {} · a question beside this shell, commands back", key("?", true)), Action::Ask),
                     ("swap tiles · CTRL+ALT+SHIFT+→".to_string(), Action::TileSwap),
                     (format!("close tab · {}", key("W", true)), Action::CloseTab),
                     (format!("sidebar · {}", key("S", true)), Action::ToggleSidebar),
@@ -4893,6 +4903,7 @@ impl App {
             Action::KeepPeek => self.keep_peek(),
             Action::Compact => self.toggle_compact(),
             Action::Focus => self.toggle_focus(),
+            Action::Ask => self.toggle_ask(),
             Action::Container(n) => self.set_container(&n),
             Action::NewContainer(n) => self.new_container(&n),
             Action::ReopenIn(n) => self.reopen_in(&n),
@@ -4996,6 +5007,9 @@ impl App {
             return;
         }
         if self.term_mode_key(ev) {
+            return;
+        }
+        if self.ask_key(ev) {
             return;
         }
         if let Some((_, input)) = self.palette.as_mut() {
@@ -5121,6 +5135,7 @@ impl App {
                 Some(KeyCode::KeyZ) => return self.reopen_closed(),
                 Some(KeyCode::KeyD) => return self.divide(),
                 Some(KeyCode::KeyB) => return self.toggle_compact(),
+                Some(KeyCode::KeyA) | Some(KeyCode::Slash) => return self.toggle_ask(),
                 Some(KeyCode::KeyR) => return self.toggle_reader(),
                 Some(KeyCode::KeyS) => {
                     self.sidebar = !self.sidebar;
@@ -6324,6 +6339,9 @@ impl App {
                 return;
             }
         }
+        if pressed && button == MouseButton::Left && self.ask_click(x, y) {
+            return;
+        }
         if self.term_mouse(button, state, x, y) {
             return;
         }
@@ -6468,6 +6486,13 @@ impl App {
             if i != self.active {
                 self.activate(i);
             }
+        }
+        let dy_px = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y * 40.0,
+            MouseScrollDelta::PixelDelta(p) => p.y as f32,
+        };
+        if self.ask_wheel(x, y, dy_px) {
+            return;
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {

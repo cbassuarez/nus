@@ -148,6 +148,7 @@ impl App {
             row(k("S"), "The sidebar", "pin it, or let it slide in from the edge · BAR or RAIL header under settings", None),
             row("", "Site panel", "the gear at the end of a page's URL row: zoom (remembered), autoplay, JavaScript, cookies, boosts, blocking and the permissions this site was given · per host", None),
             row("", "Folders", "under the tabs: GITHUB (open pull requests, via gh), PORTS (what's listening), lists from rules.luau, and your own — SAVE TO FOLDER in a page's menu; a saved page never archives", None),
+            row(k("?"), "Ask", "a small panel beside the shell: one line in, a few commands out — INSERT at the prompt, RUN, or COPY; the shell, folder and last output go along · claude, codex, copilot, ollama or ANTHROPIC_API_KEY", None),
             row(k("K"), "Chains", "named lists of palette commands in rules.luau — open pages, run commands, tile — and every settings row, by name", None),
             row("ALT+CLICK", "Peek", "a link floats over the page instead of leaving it · Esc closes, Ctrl+Enter keeps it in the stack", None),
             row(k("D"), "Tiles", "Ctrl+click two to four rows, then tile them: side by side, an L, or a grid · drag the rules · Ctrl+Alt+arrows walk the tiles, with Shift they swap", None),

@@ -1961,9 +1961,11 @@ impl App {
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
             7 => {
-                let mut v: Vec<(String, Control)> =
-                    self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))).collect();
-                if v.is_empty() {
+                let asks = crate::ask::backends();
+                let mut v: Vec<(String, Control)> = Vec::new();
+                v.push(("ASK".into(), Info(format!("Ctrl+Shift+? beside a shell · {}", if asks.is_empty() { "no assistant found · claude, codex, copilot, ollama on PATH, or ANTHROPIC_API_KEY (curl)".to_string() } else { asks.iter().map(|b| format!("{} ({})", b.name, b.how)).collect::<Vec<_>>().join(" · ") }))));
+                v.extend(self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.to_uppercase()), Info(c.clone()))));
+                if self.llm_tools.is_empty() {
                     v.push(("LOCAL".into(), Info("none on PATH (claude, codex, ollama are detected)".into())));
                 }
                 v.push(("WEB · CHATGPT".into(), Info("https://chatgpt.com/?q=…".into())));
