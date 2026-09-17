@@ -55,7 +55,7 @@ impl App {
         // Render the icon at this progress (a 256² CPU raster; ~40 frames).
         let need = sp.tex.as_ref().map(|(p, _)| (*p - progress).abs() > 0.004).unwrap_or(true);
         if need {
-            let n = self.surface.base.unwrap_or(self.theme.ink);
+            let n = self.theme.ink;
             let rgba = nus_render::icon::app_icon_at(SIZE, n, self.surface.signal, progress);
             let bgra: Vec<u8> = rgba.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
             let tex = self.device.create_texture(&wgpu::TextureDescriptor {

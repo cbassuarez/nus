@@ -36,6 +36,7 @@ mod prefs;
 mod reader;
 mod settings;
 mod sound;
+mod shot;
 mod splash;
 mod start;
 mod surface;
@@ -98,7 +99,8 @@ impl Host {
         // The icon from the first frame: Broadsheet ink and signal until
         // the app redraws it in the live colours.
         let icon = {
-            let rgba = nus_render::icon::app_icon(64, nus_render::theme::hex(0x141414), nus_render::theme::hex(0xc8102e));
+            let ink = if os_dark() { nus_render::theme::Theme::ink().ink } else { nus_render::theme::Theme::paper().ink };
+            let rgba = nus_render::icon::app_icon(64, ink, nus_render::theme::hex(0xc8102e));
             winit::window::Icon::from_rgba(rgba, 64, 64).ok()
         };
         let mut attrs = Window::default_attributes()
@@ -107,6 +109,9 @@ impl Host {
             .with_decorations(false)
             .with_transparent(true)
             .with_visible(false)
+            // Photographing itself (NUS_SHOT): come up without taking the
+            // focus, so whatever the user is typing keeps going where it was.
+            .with_active(std::env::var_os("NUS_SHOT").is_none())
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
         match start {
             settings::WindowStart::Last => {
@@ -479,6 +484,10 @@ fn main() -> ExitCode {
         if let PumpStatus::Exit(code) = status {
             break code;
         }
+        // A NUS_SHOT script that has run out: leave, the pictures are on disk.
+        if host.apps.iter().any(|a| a.shot.as_ref().is_some_and(|s| s.done)) {
+            break 0;
+        }
         host.share_registry();
         // URLs from other launches go to the window the user was last in.
         if let Some(rx) = urls_rx.as_ref() {
@@ -496,6 +505,7 @@ fn main() -> ExitCode {
                 a.register_window();
             }
             a.tick();
+            a.shot_tick();
             a.process_requests();
             a.apply_term_resizes(false);
             a.begin_frames();
@@ -529,8 +539,28 @@ fn main() -> ExitCode {
     ExitCode::from(code as u8)
 }
 
-/// The bundled icon for secondary windows, before the app recolours it.
+/// The bundled icon for secondary windows, before the app recolours it:
+/// the n in the saved theme's ink, so a dark theme never gets a black n.
 fn icon_default() -> Option<winit::window::Icon> {
-    let rgba = nus_render::icon::app_icon(64, nus_render::theme::hex(0x141414), nus_render::theme::hex(0xc8102e));
+    let ink = if os_dark() { nus_render::theme::Theme::ink().ink } else { nus_render::theme::Theme::paper().ink };
+    let rgba = nus_render::icon::app_icon(64, ink, nus_render::theme::hex(0xc8102e));
     winit::window::Icon::from_rgba(rgba, 64, 64).ok()
+}
+
+/// Does the OS want dark apps? Windows reads the personalization key;
+/// elsewhere we assume light until the window can tell us.
+fn os_dark() -> bool {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("reg")
+            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "/v", "AppsUseLightTheme"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("0x0"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }

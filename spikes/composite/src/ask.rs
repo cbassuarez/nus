@@ -241,7 +241,7 @@ pub fn parse(md: &str) -> Vec<Block> {
 
 impl App {
     /// The shell the panel belongs to: the focused terminal.
-    fn ask_term(&mut self) -> Option<&mut TermPane> {
+    pub(crate) fn ask_term(&mut self) -> Option<&mut TermPane> {
         let tab = self.tabs.get_mut(self.active)?;
         match tab.focused() {
             Pane::Term(t) => Some(t),

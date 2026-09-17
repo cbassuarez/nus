@@ -74,7 +74,7 @@ impl App {
                 return Some(b.clone());
             }
         }
-        let n = self.surface.base.unwrap_or(self.theme.ink);
+        let n = self.theme.ink;
         let size = 256;
         let rgba = nus_render::icon::app_icon(size, n, self.surface.signal);
         let bgra: Vec<u8> = rgba.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();

@@ -720,6 +720,8 @@ pub struct App {
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
     pub splash: Option<crate::splash::Splash>,
+    /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
+    pub shot: Option<crate::shot::Shot>,
     pub start_shown: bool,
     /// NUS_TYPE: text typed into the first shell once it has a prompt (a test hook).
     pub typed_once: bool,
@@ -934,6 +936,7 @@ impl App {
             sound: crate::sound::Sound::new(crate::sound::SoundPrefs::default()),
             start: None,
             splash: Some(crate::splash::Splash::new()),
+            shot: crate::shot::Shot::from_env(),
             start_shown: false,
             last_session: crate::start::Session::load(),
             recent: crate::start::load_recent(),
@@ -2152,10 +2155,10 @@ impl App {
         self.avatar = Some((self.bind_texture)(&tex));
     }
 
-    /// The window icon follows the surface: the n in the base colour (ink
-    /// when there is none), the band in the signal.
+    /// The window icon follows the theme: the n in ink (so it reads on
+    /// either paper), the band in the signal.
     pub(crate) fn refresh_icon(&self) {
-        let n = self.surface.base.unwrap_or(self.theme.ink);
+        let n = self.theme.ink;
         let rgba = nus_render::icon::app_icon(64, n, self.surface.signal);
         if let Ok(icon) = winit::window::Icon::from_rgba(rgba, 64, 64) {
             self.window.set_window_icon(Some(icon.clone()));
@@ -2544,6 +2547,7 @@ impl App {
             [p[0] * a, p[1] * a, p[2] * a, a]
         };
         self.gpu.render(&mut self.target, &self.scene, clear);
+        self.shot_capture(clear);
         self.frames += 1;
         // NUS_FPS=1 logs the frame rate once a second.
         if std::env::var("NUS_FPS").is_ok() {
@@ -5200,7 +5204,7 @@ impl App {
         self.dirty = true;
     }
 
-    fn run(&mut self, action: Action) {
+    pub(crate) fn run(&mut self, action: Action) {
         match action {
             Action::SwitchTab(i) => self.activate(i),
             Action::NewTerminal(p) => self.new_tab(p),
@@ -6194,7 +6198,7 @@ impl App {
     }
 
     /// Open or close DevTools for the focused browser pane.
-    fn toggle_devtools(&mut self) {
+    pub(crate) fn toggle_devtools(&mut self) {
         let device = self.device.clone();
         let binder = self.bind_texture.clone();
         let scale = self.scale;
