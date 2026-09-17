@@ -54,6 +54,8 @@ pub enum Action {
     OpenFile(String),
     /// The ports board.
     Board,
+    Hatch,
+    Hoist,
     /// Type a command into the focused (or a new) terminal and run it.
     RunInShell(String),
     ToggleSplit,
@@ -416,6 +418,8 @@ pub struct Tab {
     pub tint: Option<nus_render::Color>,
     /// A peek: a floating page over the tab with this id; not in the sidebar.
     pub peek: Option<u64>,
+    /// Lives in the hatch (the quick terminal), not the sidebar.
+    pub hatch: bool,
     /// The right pane's width in logical px, once dragged.
     pub split_w: Option<f32>,
     /// One pane alone; the other waits off screen.
@@ -544,6 +548,10 @@ pub struct App {
     /// Little nus: the floating window for links from outside.
     pub little: Option<crate::little::Little>,
     pub little_request: Option<String>,
+    /// The hatch (quick terminal) window, and the ask to make one.
+    pub hatch: Option<crate::hatch::Hatch>,
+    pub hatch_request: bool,
+    pub hotkey: Option<crate::hotkey::Hotkey>,
     pub little_pos: (f32, f32),
     /// URLs handed over by later launches (see little::claim).
     pub urls_rx: Option<std::sync::mpsc::Receiver<String>>,
@@ -736,9 +744,15 @@ impl App {
         let wordmark = fonts.load_bytes(nus_render::text::bundled::NEWSREADER_ITALIC, 0)?;
         let serif = fonts.load_bytes(nus_render::text::bundled::NEWSREADER, 0)?;
         let term_font = ui;
-        let theme = match window.theme() {
-            Some(winit::window::Theme::Light) => Theme::paper(),
-            _ => Theme::ink(),
+        // NUS_MODE=paper|ink fixes the face regardless of the OS (a test hook,
+        // so screenshots can be taken in both without flipping Windows).
+        let theme = match std::env::var("NUS_MODE").ok().as_deref() {
+            Some("paper") => Theme::paper(),
+            Some("ink") => Theme::ink(),
+            _ => match window.theme() {
+                Some(winit::window::Theme::Light) => Theme::paper(),
+                _ => Theme::ink(),
+            },
         };
         let device = gpu.device.clone();
         let bind_texture: Rc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>> = {
@@ -780,6 +794,9 @@ impl App {
             palette_hits: Vec::new(),
             little: None,
             little_request: None,
+            hatch: None,
+            hatch_request: false,
+            hotkey: None,
             little_pos: (0.0, 0.0),
             urls_rx: None,
             register_note: String::new(),
@@ -929,6 +946,16 @@ impl App {
             app.active = 1;
         }
         app.apply_prefs(crate::prefs::Prefs::load());
+        // The hatch's global hotkey: the first window registers it; a
+        // second Space shares it (main routes the event to the focused one).
+        if !secondary {
+            app.hotkey = Some(crate::hotkey::Hotkey::register(app.behavior.hatch_hotkey, app.proxy.clone()));
+            if let Some(k) = &app.hotkey {
+                if !k.status.is_empty() {
+                    tracing::warn!("hatch hotkey: {}", k.status);
+                }
+            }
+        }
         if secondary {
             app.splash = None;
             app.start_shown = true;
@@ -3177,13 +3204,13 @@ impl App {
     pub(crate) fn sidebar_geometry(&self) -> SidebarGeom {
         let sb = self.list_rect();
         let space_row = self.side_header_h();
-        let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned).collect();
+        let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned && !self.tabs[i].hatch).collect();
         let pinned_h = if pinned.is_empty() { 0.0 } else { self.px(8.0) * 2.0 + self.px(m::UI_PX) + self.px(m::STRUCTURE) };
         let row = self.px(m::ROW_H);
         let mut y = sb.y + space_row + pinned_h;
         let mut rows = Vec::new();
         for i in 0..self.tabs.len() {
-            if self.tabs[i].pinned || self.tabs[i].peek.is_some() {
+            if self.tabs[i].pinned || self.tabs[i].peek.is_some() || self.tabs[i].hatch {
                 continue;
             }
             let hidden = !self.row_visible(i);
@@ -4852,6 +4879,10 @@ impl App {
                 if q.is_empty() || hit("ports") || hit("board") {
                     rows.push(row("::", format!("ports · the board · {}", key("P", true)), Action::Board));
                 }
+                if hit("hatch") || hit("quick") {
+                    rows.push(row("::", format!("hatch · the quick terminal · {}", self.behavior.hatch_hotkey.label().to_lowercase()), Action::Hatch));
+                    rows.push(row("::", format!("hoist this tab into the hatch · {}", key("↑", true)), Action::Hoist));
+                }
                 for p in &self.ports {
                     let label = format!("port {} · {}", p.port, if p.process.is_empty() { "?" } else { &p.process });
                     if hit(&label) || q == "local" {
@@ -5126,6 +5157,8 @@ impl App {
             Action::OpenInPane(url) => self.open_url(&url, false),
             Action::OpenFile(p) => self.open_file(std::path::Path::new(&p), false),
             Action::Board => self.open_board(),
+            Action::Hatch => self.toggle_hatch(),
+            Action::Hoist => self.hoist(),
             Action::RunInShell(cmd) => self.run_in_shell(&cmd),
             Action::ToggleSplit => self.toggle_split(),
             Action::CloseTab => self.close_tabs(false),
@@ -5325,6 +5358,7 @@ impl App {
                 Some(KeyCode::KeyV) => return self.paste_into_shell(),
                 Some(KeyCode::KeyT) => return self.open_palette(PaletteMode::New),
                 Some(KeyCode::KeyK) => return self.open_palette(PaletteMode::Go),
+                Some(KeyCode::ArrowUp) => return self.hoist(),
                 Some(KeyCode::KeyP) => {
                     if self.board.open {
                         self.close_board();
@@ -5376,6 +5410,10 @@ impl App {
             }
             match code {
                 Some(KeyCode::Comma) => return self.open_settings(),
+                Some(KeyCode::Backquote) if self.hotkey.as_ref().is_none_or(|k| !k.status.is_empty()) && self.behavior.hatch_hotkey == crate::hotkey::Chord::CtrlGrave => {
+                    // No OS hotkey here: the chord summons the hatch from inside nus.
+                    return self.toggle_hatch();
+                }
                 Some(KeyCode::Backquote) => {
                     self.tick_hint(4);
                     if let Some(&prev) = self.mru.get(1) {
@@ -5627,7 +5665,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let look = self.look_for(&left, None);
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, peek: None, split_w: None, solo: false, look }
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look }
     }
 
     /// Ask the rules what a new tab looks like.
@@ -5981,6 +6019,20 @@ impl App {
     /// Make tab `i` active and record it as most recently used.
     pub fn activate(&mut self, i: usize) {
         if i >= self.tabs.len() {
+            return;
+        }
+        // The hatch's tab is never the sidebar's active one: a cycle that
+        // lands on it steps past.
+        if self.tabs[i].hatch {
+            let n = self.tabs.len();
+            let dir = if i >= self.active { 1 } else { n - 1 };
+            let mut j = (i + dir) % n;
+            for _ in 0..n {
+                if !self.tabs[j].hatch {
+                    return self.activate(j);
+                }
+                j = (j + dir) % n;
+            }
             return;
         }
         self.wake_tab(i);

@@ -25,6 +25,8 @@ mod editor;
 mod lsp_host;
 mod prompt_lsp;
 mod ports;
+mod hatch;
+mod hotkey;
 mod anim;
 mod app;
 mod browser;
@@ -57,6 +59,8 @@ use app::App;
 pub enum UserEvent {
     Wake,
     Access(accesskit_winit::Event),
+    /// The global hotkey: summon (or hide) the hatch.
+    Hatch,
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
@@ -80,7 +84,7 @@ struct Host {
 
 impl Host {
     fn app_index(&self, id: WindowId) -> Option<usize> {
-        self.apps.iter().position(|a| a.window.id() == id || a.little.as_ref().is_some_and(|l| l.window.id() == id) || a.pip.as_ref().is_some_and(|p| p.window.id() == id))
+        self.apps.iter().position(|a| a.window.id() == id || a.little.as_ref().is_some_and(|l| l.window.id() == id) || a.pip.as_ref().is_some_and(|p| p.window.id() == id) || a.hatch.as_ref().is_some_and(|h| h.window.id() == id))
     }
 
     /// Open a window: the first as the prefs say, later ones next to the
@@ -184,6 +188,20 @@ impl ApplicationHandler<UserEvent> for Host {
                     a.dirty = true;
                 }
             }
+            UserEvent::Hatch => {
+                // One up already: that Space's hatch toggles. Else the
+                // focused Space's (or the first, when one hatch serves all).
+                let up = self.apps.iter().position(|a| a.hatch.as_ref().is_some_and(|h| h.visible && !h.hiding));
+                let i = up.or_else(|| {
+                    if self.apps.first().is_some_and(|a| a.behavior.hatch_spaces == settings::HatchSpaces::One) {
+                        return Some(0);
+                    }
+                    self.focused.and_then(|id| self.apps.iter().position(|a| a.window.id() == id))
+                }).or(if self.apps.is_empty() { None } else { Some(0) });
+                if let Some(a) = i.and_then(|i| self.apps.get_mut(i)) {
+                    a.toggle_hatch();
+                }
+            }
             UserEvent::Access(e) => {
                 let Some(i) = self.apps.iter().position(|a| a.window.id() == e.window_id) else { return };
                 let a = &mut self.apps[i];
@@ -247,6 +265,27 @@ impl ApplicationHandler<UserEvent> for Host {
                 Err(e) => tracing::warn!("little window: {e}"),
             }
         }
+        if a.hatch_request {
+            a.hatch_request = false;
+            #[allow(unused_mut)]
+            let mut attrs = Window::default_attributes()
+                .with_title("nus · hatch")
+                .with_window_icon(icon_default())
+                .with_decorations(false)
+                .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+                .with_resizable(false)
+                .with_visible(false)
+                .with_inner_size(winit::dpi::PhysicalSize::new(960u32, 400u32));
+            #[cfg(windows)]
+            {
+                use winit::platform::windows::WindowAttributesExtWindows;
+                attrs = attrs.with_skip_taskbar(true);
+            }
+            match event_loop.create_window(attrs) {
+                Ok(w) => a.attach_hatch(Arc::new(w)),
+                Err(e) => tracing::warn!("hatch window: {e}"),
+            }
+        }
         if let Some((tab, right)) = a.pip_request.take() {
             let attrs = Window::default_attributes()
                 .with_title("nus · pip")
@@ -274,6 +313,27 @@ impl ApplicationHandler<UserEvent> for Host {
             if let WindowEvent::Focused(true) = event {
                 self.focused = Some(id);
             }
+        }
+        if a.hatch.as_ref().is_some_and(|h| h.window.id() == id) {
+            match event {
+                WindowEvent::CloseRequested => a.hide_hatch(),
+                WindowEvent::Focused(f) => a.hatch_focus(f),
+                WindowEvent::Resized(s) => a.hatch_resized(s.width, s.height),
+                WindowEvent::ModifiersChanged(m) => a.hatch_modifiers(m.state()),
+                WindowEvent::KeyboardInput { event, .. } => a.hatch_key(&event),
+                WindowEvent::CursorMoved { position, .. } => a.hatch_cursor((position.x as f32, position.y as f32)),
+                WindowEvent::MouseInput { state, button, .. } => {
+                    let pos = a.hatch.as_ref().map(|h| h.pos).unwrap_or((0.0, 0.0));
+                    a.hatch_mouse(button, state, pos);
+                }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    let pos = a.hatch.as_ref().map(|h| h.pos).unwrap_or((0.0, 0.0));
+                    a.hatch_wheel(delta, pos);
+                }
+                WindowEvent::RedrawRequested => a.hatch_frame(),
+                _ => {}
+            }
+            return;
         }
         if a.little.as_ref().is_some_and(|l| l.window.id() == id) {
             match event {
@@ -326,7 +386,7 @@ impl ApplicationHandler<UserEvent> for Host {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => a.set_scale(scale_factor as f32),
             WindowEvent::Moved(p) => a.window_moved(p.x, p.y),
             WindowEvent::ThemeChanged(t) => {
-                if a.behavior.follow_os_theme {
+                if a.behavior.follow_os_theme && std::env::var_os("NUS_MODE").is_none() {
                     let mode = match t {
                         winit::window::Theme::Light => nus_render::Mode::Paper,
                         winit::window::Theme::Dark => nus_render::Mode::Ink,
@@ -441,6 +501,10 @@ fn main() -> ExitCode {
             a.begin_frames();
             a.pip_frame();
             a.little_frame();
+            a.hatch_frame();
+            if a.dirty {
+                a.hatch_redraw();
+            }
             // pump() consumes the change it reports, so latch it into dirty
             // rather than letting redraw() pump a second time and see nothing.
             if a.pump() {

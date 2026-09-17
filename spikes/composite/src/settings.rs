@@ -22,6 +22,35 @@ pub enum Links {
     NewTab,
 }
 
+/// The hatch's look: a sheet from the top edge, or a framed card, centred.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum HatchLook {
+    #[default]
+    Sheet,
+    Card,
+}
+
+/// Which monitor the hatch lands on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum HatchMonitor {
+    #[default]
+    Pointer,
+    Foreground,
+    Primary,
+}
+
+/// One hatch per Space (follows the Space you're in), or one for all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum HatchSpaces {
+    #[default]
+    Follow,
+    One,
+}
+
+fn default_hatch_size() -> u8 {
+    40
+}
+
 /// How the ports board groups its rows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum PortsGrouping {
@@ -307,6 +336,20 @@ pub struct Behavior {
     /// Process names the board hides (the system set to start).
     #[serde(default = "default_hidden_processes")]
     pub ports_hidden: Vec<String>,
+    // The hatch.
+    #[serde(default)]
+    pub hatch_look: HatchLook,
+    #[serde(default)]
+    pub hatch_hotkey: crate::hotkey::Chord,
+    /// The sheet's height as a percentage of the monitor.
+    #[serde(default = "default_hatch_size")]
+    pub hatch_size: u8,
+    #[serde(default)]
+    pub hatch_monitor: HatchMonitor,
+    #[serde(default = "default_true")]
+    pub hatch_autohide: bool,
+    #[serde(default)]
+    pub hatch_spaces: HatchSpaces,
     /// Ghost the history entry that continues what's typed; Right/End accepts.
     #[serde(default = "default_true")]
     pub predict: bool,
@@ -438,6 +481,12 @@ impl Default for Behavior {
             ports_probe: true,
             ports_tunnel: Tunnel::Cloudflared,
             ports_hidden: default_hidden_processes(),
+            hatch_look: HatchLook::Sheet,
+            hatch_hotkey: crate::hotkey::Chord::CtrlGrave,
+            hatch_size: 40,
+            hatch_monitor: HatchMonitor::Pointer,
+            hatch_autohide: true,
+            hatch_spaces: HatchSpaces::Follow,
             predict: true,
             block_content: true,
             sleep_after_min: 30,
@@ -565,6 +614,12 @@ pub enum Hit {
     PortsProbe(bool),
     PortsTunnel(Tunnel),
     PortsHidden,
+    HatchLook(HatchLook),
+    HatchHotkey(crate::hotkey::Chord),
+    HatchSize(u8),
+    HatchMonitor(HatchMonitor),
+    HatchAutohide(bool),
+    HatchSpaces(HatchSpaces),
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
     HdrDateline(bool),
@@ -619,7 +674,7 @@ pub enum TokSel {
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 12] = [
+pub const SECTIONS: [(&str, (&str, &str)); 13] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
@@ -628,6 +683,7 @@ pub const SECTIONS: [(&str, (&str, &str)); 12] = [
     ("TERMINAL", icons::TERMINAL),
     ("BROWSER", icons::GLOBE),
     ("PORTS", icons::PORTS),
+    ("HATCH", icons::TERMINAL),
     ("ASSISTANTS", icons::ASSISTANT),
     ("RULES", icons::CODE),
     ("KEYS", icons::KEYBOARD),
@@ -640,7 +696,8 @@ pub const SEC_STARTUP: usize = 2;
 pub const SEC_TERMINAL: usize = 5;
 pub const SEC_BROWSER: usize = 6;
 pub const SEC_PORTS: usize = 7;
-pub const RULES: usize = 9;
+pub const SEC_HATCH: usize = 8;
+pub const RULES: usize = 10;
 
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
@@ -846,6 +903,12 @@ impl App {
             Hit::PortsProbe(b) => if b { "probe on".into() } else { "probe off".into() },
             Hit::PortsTunnel(t) => format!("tunnel: {:?}", t).to_lowercase(),
             Hit::PortsHidden => "hidden processes reset".into(),
+            Hit::HatchLook(l) => format!("the {:?}", l).to_lowercase(),
+            Hit::HatchHotkey(c) => c.label().to_lowercase(),
+            Hit::HatchSize(n) => format!("{n}% tall"),
+            Hit::HatchMonitor(m) => format!("on the {:?} monitor", m).to_lowercase(),
+            Hit::HatchAutohide(b) => if b { "hides when you look away".into() } else { "stays up".into() },
+            Hit::HatchSpaces(s) => match s { HatchSpaces::Follow => "one hatch per space".into(), HatchSpaces::One => "one hatch for all".into() },
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
             Hit::HdrMasthead(b) => if b { "masthead title".into() } else { "caps title".into() },
             Hit::HdrDateline(b) => if b { "dateline on".into() } else { "dateline off".into() },
@@ -1158,6 +1221,21 @@ impl App {
             Hit::PortsProbe(b) => self.behavior.ports_probe = b,
             Hit::PortsTunnel(t) => self.behavior.ports_tunnel = t,
             Hit::PortsHidden => self.behavior.ports_hidden = default_hidden_processes(),
+            Hit::HatchLook(l) => {
+                self.behavior.hatch_look = l;
+                self.hatch_settings_changed();
+            }
+            Hit::HatchHotkey(c) => {
+                self.behavior.hatch_hotkey = c;
+                self.hatch_settings_changed();
+            }
+            Hit::HatchSize(n) => {
+                self.behavior.hatch_size = n;
+                self.hatch_settings_changed();
+            }
+            Hit::HatchMonitor(m) => self.behavior.hatch_monitor = m,
+            Hit::HatchAutohide(b) => self.behavior.hatch_autohide = b,
+            Hit::HatchSpaces(s) => self.behavior.hatch_spaces = s,
             Hit::HdrStyle(s) => {
                 self.header.style = s;
                 if s == HeaderStyle::Rail && self.header.style != s {
@@ -2317,6 +2395,46 @@ impl App {
                 ]
             }
             8 => {
+                let b = &self.behavior;
+                let hk = self.hotkey.as_ref().map(|k| k.status.clone()).unwrap_or_else(|| "not registered".into());
+                let status = if hk.is_empty() { format!("{} summons it from anywhere", b.hatch_hotkey.label()) } else { format!("{} · {} inside nus", hk, b.hatch_hotkey.label()) };
+                vec![
+                    ("".into(), Info("the quick terminal: a tab of this Space that lives above every window · hoist a tab up, land it down".into())),
+                    ("LOOK".into(), Choice(vec![
+                        ("SHEET".into(), Hit::HatchLook(HatchLook::Sheet), b.hatch_look == HatchLook::Sheet),
+                        ("CARD".into(), Hit::HatchLook(HatchLook::Card), b.hatch_look == HatchLook::Card),
+                    ])),
+                    ("".into(), Info("sheet: 960 wide from the top edge, the band as a lip you drag · card: 70% centred, framed by the carapace, drag the frame".into())),
+                    ("HOTKEY".into(), Choice(vec![
+                        ("CTRL+`".into(), Hit::HatchHotkey(crate::hotkey::Chord::CtrlGrave), b.hatch_hotkey == crate::hotkey::Chord::CtrlGrave),
+                        (crate::hotkey::Chord::SuperGrave.label().into(), Hit::HatchHotkey(crate::hotkey::Chord::SuperGrave), b.hatch_hotkey == crate::hotkey::Chord::SuperGrave),
+                        ("CTRL+SHIFT+SPACE".into(), Hit::HatchHotkey(crate::hotkey::Chord::CtrlShiftSpace), b.hatch_hotkey == crate::hotkey::Chord::CtrlShiftSpace),
+                    ])),
+                    ("".into(), Info(status)),
+                    ("SIZE".into(), Choice(vec![
+                        ("30%".into(), Hit::HatchSize(30), b.hatch_size == 30),
+                        ("40%".into(), Hit::HatchSize(40), b.hatch_size == 40),
+                        ("50%".into(), Hit::HatchSize(50), b.hatch_size == 50),
+                        ("60%".into(), Hit::HatchSize(60), b.hatch_size == 60),
+                    ])),
+                    ("MONITOR".into(), Choice(vec![
+                        ("POINTER".into(), Hit::HatchMonitor(HatchMonitor::Pointer), b.hatch_monitor == HatchMonitor::Pointer),
+                        ("FOREGROUND".into(), Hit::HatchMonitor(HatchMonitor::Foreground), b.hatch_monitor == HatchMonitor::Foreground),
+                        ("PRIMARY".into(), Hit::HatchMonitor(HatchMonitor::Primary), b.hatch_monitor == HatchMonitor::Primary),
+                    ])),
+                    ("AUTOHIDE".into(), Choice(vec![
+                        ("ON".into(), Hit::HatchAutohide(true), b.hatch_autohide),
+                        ("OFF".into(), Hit::HatchAutohide(false), !b.hatch_autohide),
+                    ])),
+                    ("".into(), Info(format!("hides when it loses focus unless pinned · {} pins · esc hides", key("↑", true)))),
+                    ("SPACES".into(), Choice(vec![
+                        ("FOLLOW".into(), Hit::HatchSpaces(HatchSpaces::Follow), b.hatch_spaces == HatchSpaces::Follow),
+                        ("ONE FOR ALL".into(), Hit::HatchSpaces(HatchSpaces::One), b.hatch_spaces == HatchSpaces::One),
+                    ])),
+                    ("".into(), Info(format!("chords: {} hoists the tab you're on · {} lands the hatch's tab", key("↑", true), key("↓", true)))),
+                ]
+            }
+            9 => {
                 let asks = crate::ask::backends();
                 let mut v: Vec<(String, Control)> = Vec::new();
                 v.push(("ASK".into(), Info(format!("Ctrl+Shift+? beside a shell · {}", if asks.is_empty() { "no assistant found · claude, codex, copilot, ollama on PATH, or ANTHROPIC_API_KEY (curl)".to_string() } else { asks.iter().map(|b| format!("{} ({})", b.name, b.how)).collect::<Vec<_>>().join(" · ") }))));
@@ -2328,7 +2446,7 @@ impl App {
                 v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
                 v
             }
-            9 => {
+            10 => {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
                 let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
@@ -2367,7 +2485,7 @@ impl App {
                 ),
             ]
             }
-            10 => vec![
+            11 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
                 ("URL".into(), Info(key("L", true))),
@@ -2402,9 +2520,10 @@ impl App {
             5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
             6 => format!("{} bar · google", self.load_bar.style.name()),
             7 => format!("{} · {}", self.behavior.ports_grouping.name(), if self.behavior.ports_toast { "toast on" } else { "toast off" }),
-            8 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
-            9 => self.rules.status.clone(),
-            10 => "chords".into(),
+            8 => format!("{:?} · {}", self.behavior.hatch_look, self.behavior.hatch_hotkey.label()).to_lowercase(),
+            9 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            10 => self.rules.status.clone(),
+            11 => "chords".into(),
             _ => "github releases".into(),
         }
     }

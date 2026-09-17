@@ -39,6 +39,8 @@ pub struct SavedTab {
     pub colour: Option<String>,
     /// The page's container (pages only).
     pub container: Option<String>,
+    /// Lives in the hatch.
+    pub hatch: bool,
     /// The right pane's width, once dragged.
     pub split: Option<f32>,
 }
@@ -107,6 +109,7 @@ impl Session {
                 colour: t.get("colour").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 container: t.get("container").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 split: t.get("split").and_then(|v| v.as_f64()).map(|v| v as f32),
+                hatch: t.get("hatch").and_then(|v| v.as_bool()).unwrap_or(false),
             })
             .collect();
         let tiles = v.get("tiles").and_then(|t| t.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect()).unwrap_or_default();
@@ -129,6 +132,7 @@ impl Session {
                     "colour": t.colour,
                     "container": t.container,
                     "split": t.split,
+                    "hatch": t.hatch,
                 })
             })
             .collect();
@@ -307,6 +311,7 @@ impl App {
             tab.name = t.name.clone();
             tab.emoji = t.emoji.clone();
             tab.split_w = t.split;
+            tab.hatch = t.hatch;
             if let Some(c) = t.colour.as_deref().and_then(crate::surface::parse_hex) {
                 tab.tint = Some(c);
                 tab.look.signal = Some(c);
@@ -346,7 +351,7 @@ impl App {
         let index_of = |id: u64| listed.iter().position(|t| t.id == id);
         let tabs: Vec<SavedTab> = listed
             .iter()
-            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w })
+            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch })
             .filter(|t| t.left.is_some())
             .collect();
         let tiles = self.tiling.as_ref().map(|t| t.ids.iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
@@ -545,8 +550,8 @@ mod tests {
     fn session_json_roundtrip() {
         let s = Session {
             tabs: vec![
-                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), container: Some("WORK".into()), split: None },
-                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, container: None, split: None },
+                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), container: Some("WORK".into()), split: None, hatch: false },
+                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, container: None, split: None, hatch: false },
             ],
             active: 1,
             tiles: vec![0, 1],

@@ -613,3 +613,35 @@ by port or process: name, tint, auto-open in a split when it appears,
 auto-tunnel, hide, watch. Rules for power users; the settings for those
 who can't be bothered.
 
+## The hatch (settled 2026-09-17, sixteenth pass)
+
+**The quick terminal is the hatch.** A second, borderless, always-on-top
+window of the Space, summoned by a global hotkey — Ctrl+` by default;
+Win+` or Ctrl+Shift+Space — that works whether or not nus is in front,
+onto the monitor under the pointer (or the foreground window's, or the
+primary). What it shows is a real tab of the Space that lives up there
+instead of in the sidebar: HOIST the tab you're on (Ctrl+Shift+↑) and it
+goes up, whatever was up comes down; LAND (Ctrl+Shift+↓) brings the
+hatch's tab down as a normal tab, focused. A hatch with nothing in it
+opens a fresh shell in the active shell's cwd. Blocks, marks, ports, ask,
+the prompt LSP, a split — all of it works up there, because it is the
+same pane machinery.
+
+**Two looks, sheet default.** The SHEET: 960 wide from the top edge of
+the monitor, no top border, 2px edges, 40% tall (SIZE: 30–60%), the
+Space's band as a lip along its foot that you drag to resize; the
+masthead reads *quick* · the Space's square · the tab's title, with
+LAND · PIN · ESC on the right; the foot carries the ports toast or the
+hotkey's status. The CARD: 70% × 60% centred, the carapace as a 22px
+frame around the content (the one surface texture belongs on), a short
+signal mark in the frame's foot; drag the frame to move, the corner to
+resize. Both ride in on the motion register (the sheet drops, the card
+settles) and hide the same way. AUTOHIDE (default on) hides it when it
+loses focus unless pinned; Esc hides. SPACES: FOLLOW (one hatch per
+Space; the hotkey goes to the Space you were last in) or ONE FOR ALL.
+Where the OS won't give a global hotkey (macOS until the Accessibility
+permission lands; Linux until the portal), the same chord works inside
+nus and the settings say so.
+
+**Settings — HATCH:** LOOK · HOTKEY · SIZE · MONITOR · AUTOHIDE · SPACES.
+
