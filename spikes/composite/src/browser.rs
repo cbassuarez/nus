@@ -425,7 +425,13 @@ wrap_display_handler! {
             if let (true, Some(u)) = (main, url) {
                 let mut s = self.d.shared.borrow_mut();
                 tracing::info!("address {} +{}ms", u, s.created.elapsed().as_millis());
-                s.url = u.to_string();
+                let u = u.to_string();
+                // A new site: the old favicon must not linger on it.
+                if crate::sites::host_of(&u) != crate::sites::host_of(&s.url) {
+                    s.favicon = None;
+                    s.favicon_url.clear();
+                }
+                s.url = u;
             }
         }
 

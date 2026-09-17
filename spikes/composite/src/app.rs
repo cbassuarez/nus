@@ -409,23 +409,26 @@ impl Tab {
     /// (title, detail) for a compact sidebar row: detail is cwd/host for a
     /// shell, the site for a page.
     pub(crate) fn row_text(&self) -> (String, String) {
-        if let Some(n) = &self.name {
-            let host = match &self.left {
-                Pane::Web(w) => w.tab.shared.borrow().url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").to_string(),
-                _ => String::new(),
-            };
-            return (n.clone(), host);
-        }
-        match &self.left {
-            Pane::Term(t) => (t.title.clone(), String::new()),
-            Pane::Web(w) => {
-                let s = w.tab.shared.borrow();
-                let host = s.url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
-                let title = if s.title.is_empty() { host.clone() } else { s.title.clone() };
-                (title, host)
+        // The focused pane names the row; a split's other pane is the detail.
+        let text = |p: &Pane| -> (String, String) {
+            match p {
+                Pane::Term(t) => (t.title.clone(), String::new()),
+                Pane::Web(w) => {
+                    let s = w.tab.shared.borrow();
+                    let host = crate::sites::host_of(&s.url);
+                    let title = if s.title.is_empty() { host.clone() } else { s.title.clone() };
+                    (title, host)
+                }
+                Pane::Settings(_) => ("settings".into(), String::new()),
+                Pane::Hints(_) => ("welcome".into(), String::new()),
             }
-            Pane::Settings(_) => ("settings".into(), String::new()),
-            Pane::Hints(_) => ("welcome".into(), String::new()),
+        };
+        let (main, other) = self.panes();
+        let (title, detail) = text(main);
+        let title = self.name.clone().unwrap_or(title);
+        match other {
+            Some(o) => (title, text(o).0),
+            None => (title, detail),
         }
     }
 
@@ -434,6 +437,15 @@ impl Tab {
             self.right.as_mut().unwrap()
         } else {
             &mut self.left
+        }
+    }
+
+    /// The focused pane, and the other one when the tab is split.
+    pub(crate) fn panes(&self) -> (&Pane, Option<&Pane>) {
+        match (&self.right, self.focus_right) {
+            (Some(r), true) => (r, Some(&self.left)),
+            (Some(r), false) => (&self.left, Some(r)),
+            (None, _) => (&self.left, None),
         }
     }
     pub(crate) fn title(&self) -> String {
@@ -453,9 +465,10 @@ impl Tab {
             Pane::Settings(_) => "settings".into(),
             Pane::Hints(_) => "welcome".into(),
         };
-        match &self.right {
-            Some(r) => format!("{} | {}", name(&self.left), name(r)),
-            None => name(&self.left),
+        let (main, other) = self.panes();
+        match other {
+            Some(o) => format!("{} | {}", name(main), name(o)),
+            None => name(main),
         }
     }
 }
@@ -1233,6 +1246,7 @@ impl App {
             self.paste_into_shell();
         }
         self.tend_folders();
+        self.tend_shells();
         // A held NEW TAB fans the kinds out.
         if let Some((at, SideHit::NewShell)) = self.press {
             if at.elapsed().as_millis() >= 240 && !self.kinds_menu {
@@ -1988,7 +2002,12 @@ impl App {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 let Pane::Web(w) = p else { continue };
                 let fav = w.tab.shared.borrow().favicon.clone();
-                let Some(f) = fav else { continue };
+                let Some(f) = fav else {
+                    if w.favicon.take().is_some() {
+                        changed = true;
+                    }
+                    continue;
+                };
                 if w.favicon.as_ref().is_some_and(|(u, _)| *u == f.url) {
                     continue;
                 }
@@ -2400,14 +2419,14 @@ impl App {
             let dim_ui = Style { color: t.dim, ..ui };
             let maxw = (strip.w * 0.42).min(self.px(640.0));
             let start = x;
-            match fav {
-                Some(b) => {
-                    scene.texture(Rect::new(x, iy, ic, ic), b, None);
-                    scene.layer(None);
+            let _ = fav;
+            {
+                let tab = std::mem::take(&mut self.tabs);
+                if let Some(t) = tab.get(self.active) {
+                    let (main, _) = t.panes();
+                    self.draw_pane_icon(scene, main, x, iy, ic, ink, None);
                 }
-                None => {
-                    self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, ic, x, iy, ink);
-                }
+                self.tabs = tab;
             }
             x += ic + self.px(8.0);
             let shown_title = if title.is_empty() { host.clone() } else { title.clone() };
@@ -3122,24 +3141,26 @@ impl App {
                 Pane::Settings(_) => nus_render::text::icons::SETTINGS,
                 Pane::Hints(_) => nus_render::text::icons::HOME,
             };
+            let row_bg = if active { crate::surface::mix(self.paper(), ink, t.tint[3]) } else if hovered { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.5) } else { self.paper() };
             let isz = self.px(15.0);
             let iy = y + ((row_h - isz) / 2.0).round();
-            let fav = match &tab.left {
-                Pane::Web(w) => w.favicon.as_ref().map(|(_, b)| b.clone()),
-                _ => None,
-            };
-            match (&tab.emoji, fav) {
-                (Some(e), _) => {
+            let _ = icon;
+            match &tab.emoji {
+                Some(e) => {
                     let st = Style { font: self.f.ui, px: self.px(14.0), color: if active { ink } else { t.dim }, tracking: 0.0 };
                     let ew = self.fonts.measure(st, e);
                     self.fonts.draw(scene, st, x + ((isz - ew) / 2.0).max(0.0), base, e);
                 }
-                (None, Some(b)) => {
-                    scene.texture(Rect::new(x, iy, isz, isz), b, None);
-                    scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
-                }
-                (None, None) => {
-                    self.fonts.draw_icon(scene, icon, isz, x, iy, if active { ink } else { t.dim });
+                None => {
+                    let (main, other) = tab.panes();
+                    self.draw_pane_icon(scene, main, x, iy, isz, if active { ink } else { t.dim }, Some(Rect::new(sb.x, y, sb.w, h)));
+                    if let Some(o) = other {
+                        // The split's other pane, as a badge at the corner.
+                        let bsz = self.px(9.0);
+                        let br = Rect::new(x + isz - bsz + self.px(2.0), iy + isz - bsz + self.px(2.0), bsz, bsz);
+                        scene.rect(Rect::new(br.x - self.px(1.5), br.y - self.px(1.5), bsz + self.px(3.0), bsz + self.px(3.0)), row_bg);
+                        self.draw_pane_icon(scene, o, br.x, br.y, bsz, if active { ink } else { t.dim }, Some(Rect::new(sb.x, y, sb.w, h)));
+                    }
                 }
             }
             x += isz + self.px(10.0);
@@ -3185,7 +3206,6 @@ impl App {
             let (title, _) = tab.row_text();
             let st = if active { ui_strong } else { ui };
             let st = Style { color: if active { ink } else { Theme::with_alpha(ink, 0.82) }, ..st };
-            let row_bg = if active { crate::surface::mix(self.paper(), ink, t.tint[3]) } else if hovered { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.5) } else { self.paper() };
             let tab_id = tab.id;
             self.marquee(scene, st, x, base, right - x, &title, active || hovered, row_bg, hover_key("row", tab_id as usize));
             scene.layer(None);
@@ -4505,18 +4525,43 @@ impl App {
                 }
                 let words = p.reader.as_ref().map(|r| r.article.words());
                 let reading = words.map(|n| format!("{n} WORDS"));
-                let (icon, word) = if let Some(rw) = reading.as_deref() {
-                    (nus_render::text::icons::BOOK_TEXT, rw)
-                } else if local {
-                    (nus_render::text::icons::HARD_HAT, "LOCAL")
-                } else {
-                    (nus_render::text::icons::BROADCAST, "LIVE")
-                };
-                let lw = self.fonts.measure(label, word);
-                rx -= lw;
-                self.fonts.draw(scene, label, rx, base, word);
-                rx -= isz + self.px(6.0);
-                self.fonts.draw_icon(scene, icon, isz, rx, base - isz + self.px(2.0), if local { self.surface.signal } else { ink });
+                let asleep = p.asleep.is_some();
+                let status = self.behavior.status;
+                use crate::settings::Status;
+                if let Some(rw) = reading.as_deref() {
+                    // Reader: the book and the count, whatever the status style.
+                    let lw = self.fonts.measure(label, rw);
+                    rx -= lw;
+                    self.fonts.draw(scene, label, rx, base, rw);
+                    rx -= isz + self.px(6.0);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::BOOK_TEXT, isz, rx, base - isz + self.px(2.0), ink);
+                } else if status != Status::None {
+                    let word = if asleep { "ASLEEP" } else if loading { "LOADING" } else if local { "LOCAL" } else { "LIVE" };
+                    if matches!(status, Status::Word | Status::Both) {
+                        let lw = self.fonts.measure(label, word);
+                        rx -= lw;
+                        self.fonts.draw(scene, Style { color: if asleep { t.dim } else { ink }, ..label }, rx, base, word);
+                        rx -= self.px(8.0);
+                    }
+                    if matches!(status, Status::Lamp | Status::Both) {
+                        // The lamp: a 7px dot. Loading breathes in the signal; live is
+                        // ink; local wears the hazard; asleep is hollow.
+                        let d = self.px(7.0);
+                        rx -= d;
+                        let lr = Rect::new(rx, base - d + self.px(1.0), d, d);
+                        if asleep {
+                            scene.push(nus_render::Instance::stroke(lr, d / 2.0, self.px(1.0), t.dim, None, 0.0));
+                        } else if loading {
+                            let k = 0.55 + 0.45 * (self.started.elapsed().as_secs_f32() * 4.0).sin().abs();
+                            scene.push(nus_render::Instance::rounded(lr, d / 2.0, fade(self.surface.signal, k)));
+                            self.dirty = true;
+                        } else if local {
+                            scene.push(nus_render::Instance::hazard(lr, self.px(1.5), self.surface.signal, ink, self.px(3.0)));
+                        } else {
+                            scene.push(nus_render::Instance::rounded(lr, d / 2.0, ink));
+                        }
+                    }
+                }
                 }
             }
         }
@@ -6887,5 +6932,103 @@ pub(crate) fn place_pane_bare(pane: &mut Pane, r: Rect, header: f32, pad_x: f32,
                 d.resized((w.dt_rect.w / scale).floor(), (w.dt_rect.h.max(1.0) / scale).floor());
             }
         }
+    }
+}
+
+impl App {
+    /// A pane's icon at `size`: a page's favicon, else a letter tile for
+    /// its host (the first letter on a square in a colour the host picks
+    /// from the signal's family), else the kind's icon. `clip` restores a
+    /// layer after a texture draw.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_pane_icon(&mut self, scene: &mut Scene, pane: &Pane, x: f32, y: f32, size: f32, color: nus_render::Color, clip: Option<Rect>) {
+        match pane {
+            Pane::Web(w) => {
+                if let Some((_, b)) = w.favicon.as_ref() {
+                    scene.texture(Rect::new(x, y, size, size), b.clone(), None);
+                    scene.layer(clip);
+                    return;
+                }
+                let host = crate::sites::host_of(&w.tab.shared.borrow().url);
+                let first = host.chars().find(|c| c.is_alphanumeric());
+                match first {
+                    Some(c) => {
+                        // The colour: one of the signal's family, by the host.
+                        let k = host.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize)) % 5;
+                        let fill = crate::surface::family(self.surface.signal)[k];
+                        let fill = [fill[0], fill[1], fill[2], 1.0];
+                        // The letter in whichever of paper and ink reads on the fill.
+                        let lum = 0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2];
+                        let (paper, ink) = (self.theme.paper, self.theme.ink);
+                        let plum = 0.2126 * paper[0] + 0.7152 * paper[1] + 0.0722 * paper[2];
+                        let letter = if (lum - plum).abs() > 0.35 { paper } else { ink };
+                        scene.push(nus_render::Instance::rounded(Rect::new(x, y, size, size), (size * 0.2).round().max(2.0), fill));
+                        let st = Style { font: self.f.strong, px: (size * 0.72).round(), color: letter, tracking: 0.0 };
+                        let ch = c.to_uppercase().to_string();
+                        let cw = self.fonts.measure(st, &ch);
+                        self.fonts.draw(scene, st, x + ((size - cw) / 2.0).round(), y + (size * 0.78).round(), &ch);
+                    }
+                    None => {
+                        self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, size, x, y, color);
+                    }
+                }
+            }
+            Pane::Term(_) => {
+                self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, size, x, y, color);
+            }
+            Pane::Settings(_) => {
+                self.fonts.draw_icon(scene, nus_render::text::icons::SETTINGS, size, x, y, color);
+            }
+            Pane::Hints(_) => {
+                self.fonts.draw_icon(scene, nus_render::text::icons::HOME, size, x, y, color);
+            }
+        }
+    }
+
+    /// Shells that have exited: the pane goes. A split's other pane takes
+    /// the tab; a lone shell's tab closes (a new shell if it was the last).
+    pub(crate) fn tend_shells(&mut self) {
+        let mut gone: Vec<(usize, bool)> = Vec::new();
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            for (right, p) in std::iter::once((false, &mut tab.left)).chain(tab.right.as_mut().map(|r| (true, r))) {
+                if let Pane::Term(t) = p {
+                    if t.pty.exit_code().is_some() {
+                        gone.push((i, right));
+                    }
+                }
+            }
+        }
+        if gone.is_empty() {
+            return;
+        }
+        for &(i, right) in gone.iter().rev() {
+            let Some(tab) = self.tabs.get_mut(i) else { continue };
+            if right {
+                tab.right = None;
+                tab.focus_right = false;
+            } else if let Some(r) = tab.right.take() {
+                tab.left = r;
+                tab.focus_right = false;
+            } else {
+                // A lone shell: the tab closes.
+                let was_active = i == self.active;
+                let tab = self.tabs.remove(i);
+                self.tile_forget(tab.id);
+                self.tab_removed(i);
+                if self.tabs.is_empty() {
+                    let p = self.behavior.default_profile;
+                    self.new_tab(p);
+                } else if was_active {
+                    let next = self.mru.first().copied().unwrap_or(0).min(self.tabs.len() - 1);
+                    self.activate(next);
+                } else if self.active > i {
+                    self.active -= 1;
+                }
+                continue;
+            }
+        }
+        self.layout();
+        self.save_session();
+        self.dirty = true;
     }
 }

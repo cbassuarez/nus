@@ -203,6 +203,22 @@ pub struct Behavior {
     /// Archive an idle page tab into recently closed after this many hours (0 = never).
     #[serde(default = "default_archive")]
     pub archive_after_h: u32,
+    /// The page's status at the end of its tools row: a lamp, the word, or nothing.
+    #[serde(default)]
+    pub status: Status,
+}
+
+/// How a page says it's live, loading, local or asleep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Status {
+    /// A small lamp: signal while loading, ink when live, hazard when local, hollow asleep.
+    #[default]
+    Lamp,
+    /// The lamp and the word.
+    Both,
+    /// The word alone (LIVE · LOCAL · ASLEEP).
+    Word,
+    None,
 }
 
 fn default_sleep() -> u32 {
@@ -257,6 +273,7 @@ impl Default for Behavior {
             block_content: true,
             sleep_after_min: 30,
             archive_after_h: 12,
+            status: Status::Lamp,
         }
     }
 }
@@ -346,6 +363,7 @@ pub enum Hit {
     ShellInt(bool),
     Welcome,
     Block(bool),
+    StatusStyle(Status),
     SleepAfter(u32),
     ArchiveAfter(u32),
     Highlight(bool),
@@ -603,6 +621,7 @@ impl App {
             Hit::ShellInt(b) => if b { "shell integration auto".into() } else { "shell integration off".into() },
             Hit::Welcome => "open the welcome page".into(),
             Hit::Block(b) => if b { "content blocking on".into() } else { "content blocking off".into() },
+            Hit::StatusStyle(s) => format!("page status {:?}", s).to_lowercase(),
             Hit::SleepAfter(n) => if n == 0 { "never sleep tabs".into() } else { format!("sleep after {n} minutes") },
             Hit::ArchiveAfter(n) => if n == 0 { "never archive".into() } else { format!("archive after {n} hours") },
             Hit::Highlight(b) => if b { "highlight the command line".into() } else { "plain command line".into() },
@@ -887,6 +906,7 @@ impl App {
                 self.behavior.block_content = b;
                 crate::browser::BLOCKING.store(b, std::sync::atomic::Ordering::Relaxed);
             }
+            Hit::StatusStyle(s) => self.behavior.status = s,
             Hit::SleepAfter(n) => self.behavior.sleep_after_min = n,
             Hit::ArchiveAfter(n) => self.behavior.archive_after_h = n,
             Hit::Highlight(b) => self.behavior.highlight = b,
@@ -1895,6 +1915,16 @@ impl App {
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().to_uppercase(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
                 ),
+                (
+                    "STATUS".into(),
+                    Choice(vec![
+                        ("LAMP".into(), Hit::StatusStyle(Status::Lamp), self.behavior.status == Status::Lamp),
+                        ("LAMP + WORD".into(), Hit::StatusStyle(Status::Both), self.behavior.status == Status::Both),
+                        ("WORD".into(), Hit::StatusStyle(Status::Word), self.behavior.status == Status::Word),
+                        ("NONE".into(), Hit::StatusStyle(Status::None), self.behavior.status == Status::None),
+                    ]),
+                ),
+                ("".into(), Info("the lamp at the end of the tools row: signal while loading, ink when live, hazard stripes when local, hollow while asleep".into())),
                 (
                     "BAR COLOUR".into(),
                     Choice(vec![

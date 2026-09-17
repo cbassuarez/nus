@@ -4,7 +4,7 @@
 //! SIDEBAR. The rows are the same rows, so clicks, drags, selection and
 //! the tab menu all work unchanged; titles show as a tooltip on hover.
 
-use crate::app::{hover_key, App, IconMotion, Pane, SideHit};
+use crate::app::{hover_key, App, IconMotion, SideHit};
 use nus_render::text::icons;
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
@@ -178,21 +178,13 @@ impl App {
             self.fonts.draw(scene, st, x + ((isz - ew) / 2.0).max(0.0), y + isz - self.px(2.0), e);
             return;
         }
-        let fav = match &tab.left {
-            Pane::Web(w) => w.favicon.as_ref().map(|(_, b)| b.clone()),
-            _ => None,
-        };
-        if let Some(b) = fav {
-            scene.texture(Rect::new(x, y, isz, isz), b, None);
-            scene.layer(None);
-            return;
+        let (main, other) = tab.panes();
+        self.draw_pane_icon(scene, main, x, y, isz, color, None);
+        if let Some(o) = other {
+            let bsz = self.px(8.0);
+            let br = Rect::new(x + isz - bsz + self.px(2.0), y + isz - bsz + self.px(2.0), bsz, bsz);
+            scene.rect(Rect::new(br.x - self.px(1.5), br.y - self.px(1.5), bsz + self.px(3.0), bsz + self.px(3.0)), self.paper());
+            self.draw_pane_icon(scene, o, br.x, br.y, bsz, color, None);
         }
-        let icon = match &tab.left {
-            Pane::Term(_) => icons::TERMINAL,
-            Pane::Web(_) => icons::GLOBE,
-            Pane::Settings(_) => icons::SETTINGS,
-            Pane::Hints(_) => icons::HOME,
-        };
-        self.fonts.draw_icon(scene, icon, isz, x, y, color);
     }
 }
