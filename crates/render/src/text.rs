@@ -478,6 +478,7 @@ pub mod icons {
     icon!(STACK, "stack");
     icon!(LINK, "link");
     icon!(PLUS, "plus");
+    icon!(MINUS, "minus");
     icon!(ENTER, "key-return");
     icon!(HASH, "hash");
     icon!(MORE, "dots-three");

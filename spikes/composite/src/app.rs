@@ -207,6 +207,9 @@ pub struct WebPane {
     pub find: Option<crate::webui::Find>,
     /// The permission band's ALLOW / DENY chips.
     pub perm_hits: Vec<(Rect, bool)>,
+    /// The site panel (the gear at the end of the URL row), and its controls.
+    pub site_panel: bool,
+    pub site_hits: Vec<(Rect, crate::sites::SiteHit)>,
     /// Blanked for being idle; the URL to come back to.
     pub asleep: Option<String>,
 }
@@ -943,7 +946,7 @@ impl App {
             dt_panel: 0,
             remembered: String::new(),
             find: None,
-            perm_hits: Vec::new(),
+            perm_hits: Vec::new(), site_panel: false, site_hits: Vec::new(),
             asleep: None,
             load_since: None,
             devtools: None,
@@ -1332,7 +1335,10 @@ impl App {
                     if url.is_empty() || w.boosted == key {
                         continue;
                     }
-                    let boost = self.rules.on_page(&url);
+                    let host = crate::sites::host_of(&url);
+                    let sp = crate::sites::prefs(&host);
+                    self.apply_site(w, &url, loading);
+                    let boost = if sp.boosts { self.rules.on_page(&url) } else { crate::surface::Boost::default() };
                     jobs.push((i, right, key, boost));
                 }
             }
@@ -4317,9 +4323,20 @@ impl App {
                 }
                 x += self.px(4.0);
                 // Reader: the book, lit while on. DevTools: the bug, lit while open.
-                let dw = isz * 2.0 + self.px(14.0);
+                let dw = isz * 3.0 + self.px(28.0);
                 let bug_x = r.right() - self.px(14.0) - isz;
                 let book_x = bug_x - self.px(14.0) - isz;
+                let gear_x = book_x - self.px(14.0) - isz;
+                {
+                    let host = crate::sites::host_of(&url);
+                    let tuned = !crate::sites::prefs(&host).is_default();
+                    if p.site_panel {
+                        scene.rect(Rect::new(gear_x - self.px(6.0), r.y + self.px(6.0), isz + self.px(12.0), self.px(22.0)), ink);
+                        self.fonts.draw_icon(scene, nus_render::text::icons::SETTINGS, isz, gear_x, iy, t.paper);
+                    } else {
+                        self.fonts.draw_icon(scene, nus_render::text::icons::SETTINGS, isz, gear_x, iy, if tuned { self.surface.signal } else { ink });
+                    }
+                }
                 if p.reader.is_some() {
                     scene.rect(Rect::new(book_x - self.px(6.0), r.y + self.px(6.0), isz + self.px(12.0), self.px(22.0)), ink);
                     self.fonts.draw_icon(scene, nus_render::text::icons::BOOK_TEXT, isz, book_x, iy, t.paper);
@@ -6145,6 +6162,9 @@ impl App {
         if pressed && button == MouseButton::Left && self.web_band_click(x, y) {
             return;
         }
+        if pressed && button == MouseButton::Left && self.site_click(x, y) {
+            return;
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let scale = self.scale;
         let mods = cef_mods(self.mods);
@@ -6152,6 +6172,7 @@ impl App {
         let mut open_url_palette = false;
         let mut toggle_devtools = false;
         let mut toggle_reader = false;
+        let mut toggle_site: Option<bool> = None;
         let mut switch_panel: Option<(bool, usize)> = None;
         let mut focus_dt: Option<(bool, bool)> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
@@ -6171,6 +6192,8 @@ impl App {
                             toggle_devtools = true;
                         } else if x > w.rect.right() - 74.0 * scale {
                             toggle_reader = true;
+                        } else if x > w.rect.right() - 104.0 * scale {
+                            toggle_site = Some(is_right);
                         } else {
                             open_url_palette = true;
                         }
@@ -6255,6 +6278,16 @@ impl App {
         }
         if toggle_reader {
             self.toggle_reader();
+        }
+        if let Some(right) = toggle_site {
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                if let Some(Pane::Web(w)) = pane {
+                    w.site_panel = !w.site_panel;
+                }
+            }
+            self.play_event("toggle");
+            self.dirty = true;
         }
         if open_url_palette {
             self.open_palette(PaletteMode::Url);

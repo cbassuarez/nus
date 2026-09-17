@@ -13,6 +13,7 @@ mod tiles;
 mod peek;
 mod compact;
 mod folders;
+mod sites;
 mod anim;
 mod app;
 mod browser;

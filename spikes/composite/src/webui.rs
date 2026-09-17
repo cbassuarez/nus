@@ -75,8 +75,10 @@ impl App {
         true
     }
 
-    /// The find band, the permission band and the select popup, over a page.
+    /// The find band, the permission band, the select popup and the site
+    /// panel, over a page.
     pub(crate) fn draw_web_overlays(&mut self, scene: &mut Scene, w: &mut WebPane) {
+        self.draw_site_panel(scene, w);
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
@@ -158,6 +160,12 @@ impl App {
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             let Pane::Web(w) = p else { continue };
             if let Some(&(_, allow)) = w.perm_hits.iter().find(|(r, _)| r.contains(x, y)) {
+                if let Some(ask) = w.tab.shared.borrow().permission.as_ref() {
+                    let host = crate::sites::host_of(&ask.origin);
+                    for word in ask.what.split(" and ") {
+                        crate::sites::remember(&host, word.trim(), allow);
+                    }
+                }
                 w.tab.answer_permission(allow);
                 self.play_event("toggle");
                 self.dirty = true;

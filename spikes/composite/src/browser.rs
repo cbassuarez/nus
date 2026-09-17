@@ -721,6 +721,10 @@ wrap_permission_handler! {
             let video = requested_permissions & MediaAccessPermissionTypes::DEVICE_VIDEO_CAPTURE.get_raw() as u32 != 0;
             let audio = requested_permissions & MediaAccessPermissionTypes::DEVICE_AUDIO_CAPTURE.get_raw() as u32 != 0;
             let what = match (video, audio) { (true, true) => "camera and microphone", (true, false) => "camera", (false, true) => "microphone", _ => "screen capture" }.to_string();
+            if let Some(allow) = crate::sites::remembered(&crate::sites::host_of(&origin), &what) {
+                cb.cont(if allow { requested_permissions } else { 0 });
+                return 1;
+            }
             let mut s = self.display.shared.borrow_mut();
             s.permission = Some(PermissionAsk { origin, what, kind: AskKind::Media(cb.clone(), requested_permissions) });
             s.paints += 1;
@@ -730,8 +734,13 @@ wrap_permission_handler! {
         fn on_show_permission_prompt(&self, _browser: Option<&mut Browser>, _prompt_id: u64, requesting_origin: Option<&CefString>, requested_permissions: u32, callback: Option<&mut PermissionPromptCallback>) -> ::std::os::raw::c_int {
             let Some(cb) = callback else { return 0 };
             let origin = requesting_origin.map(|s| s.to_string()).unwrap_or_default();
+            let what = permission_words(requested_permissions);
+            if let Some(allow) = crate::sites::remembered(&crate::sites::host_of(&origin), &what) {
+                cb.cont(if allow { PermissionRequestResult::ACCEPT } else { PermissionRequestResult::DENY });
+                return 1;
+            }
             let mut s = self.display.shared.borrow_mut();
-            s.permission = Some(PermissionAsk { origin, what: permission_words(requested_permissions), kind: AskKind::Prompt(cb.clone()) });
+            s.permission = Some(PermissionAsk { origin, what, kind: AskKind::Prompt(cb.clone()) });
             s.paints += 1;
             1
         }
@@ -747,11 +756,20 @@ wrap_permission_handler! {
 wrap_resource_request_handler! {
     pub struct BlockBuilder {
         display: Display,
+        navigation: bool,
     }
 
     impl ResourceRequestHandler {
-        fn on_before_resource_load(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _callback: Option<&mut Callback>) -> ReturnValue {
+        fn on_before_resource_load(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _callback: Option<&mut Callback>) -> ReturnValue {
+            // Never block the navigation itself, only what the page pulls in.
+            if self.navigation {
+                return ReturnValue::CONTINUE;
+            }
             let Some(req) = request else { return ReturnValue::CONTINUE };
+            let page = browser.and_then(|b| b.main_frame()).map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
+            if !crate::sites::prefs(&crate::sites::host_of(&page)).blocking {
+                return ReturnValue::CONTINUE;
+            }
             let url = CefString::from(&req.url()).to_string();
             if blocked(&url) {
                 let mut s = self.display.shared.borrow_mut();
@@ -759,6 +777,28 @@ wrap_resource_request_handler! {
                 return ReturnValue::CANCEL;
             }
             ReturnValue::CONTINUE
+        }
+
+        fn cookie_access_filter(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>) -> Option<CookieAccessFilter> {
+            let page = browser.and_then(|b| b.main_frame()).map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
+            if crate::sites::prefs(&crate::sites::host_of(&page)).cookies {
+                return None;
+            }
+            Some(NoCookies::new())
+        }
+    }
+}
+
+// The site's cookies are off: none sent, none kept.
+wrap_cookie_access_filter! {
+    pub struct NoCookies;
+
+    impl CookieAccessFilter {
+        fn can_send_cookie(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
+            0
+        }
+        fn can_save_cookie(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, _response: Option<&mut Response>, _cookie: Option<&Cookie>) -> ::std::os::raw::c_int {
+            0
         }
     }
 }
@@ -770,11 +810,7 @@ wrap_request_handler! {
 
     impl RequestHandler {
         fn resource_request_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, is_navigation: ::std::os::raw::c_int, _is_download: ::std::os::raw::c_int, _request_initiator: Option<&CefString>, _disable_default_handling: Option<&mut ::std::os::raw::c_int>) -> Option<ResourceRequestHandler> {
-            // Never block the navigation itself, only what the page pulls in.
-            if is_navigation != 0 || !BLOCKING.load(std::sync::atomic::Ordering::Relaxed) {
-                return None;
-            }
-            Some(BlockBuilder::new(self.display.clone()))
+            Some(BlockBuilder::new(self.display.clone(), is_navigation != 0))
         }
     }
 }
