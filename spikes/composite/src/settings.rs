@@ -439,7 +439,7 @@ enum Control {
     /// The studio's tab strip.
     Strip(Vec<(String, Hit, bool)>),
     /// Preset cards: name, ramp, signal, hit, current.
-    Cards(Vec<(String, Vec<Color>, Color, f32, Hit, bool)>),
+    Cards(Vec<(String, Vec<Color>, Color, f32, Hit, bool, Option<(Color, Color, Color, Color)>)>),
     /// Token tiles: name, colour (None = dashed "none/add"), caption, hit, selected, big.
     Tokens(Vec<(String, Option<Color>, String, Hit, bool)>, bool),
     Info(String),
@@ -578,8 +578,8 @@ impl App {
             Hit::ResetRules => "reset rules to default".into(),
             Hit::Reduce(None) => "reduce motion follows the OS".into(),
             Hit::Reduce(Some(r)) => format!("reduce motion {}", if r { "on" } else { "off" }),
-            Hit::Preset(k) => format!("preset {}", surface::presets().get(k).map(|p| p.name.clone()).unwrap_or_default()),
-            Hit::SavePreset => "save this surface as a preset".into(),
+            Hit::Preset(k) => format!("theme {}", crate::themes::all().get(k).map(|p| p.name.clone()).unwrap_or_default()),
+            Hit::SavePreset => "save the look as a theme".into(),
             Hit::OpenPresets => "open the presets folder".into(),
             Hit::StopSel(i) => format!("stop {}", i + 1),
             Hit::StopAdd => "add a stop".into(),
@@ -743,18 +743,15 @@ impl App {
                 self.register_note = "unregistered".into();
             }
             Hit::Preset(k) => {
-                if let Some(p) = surface::presets().get(k) {
-                    self.surface = p.surface.clone();
-                    self.preset_name = p.name.clone();
-                    self.refresh_icon();
-                    self.layout();
+                if let Some(t) = crate::themes::all().get(k).cloned() {
+                    self.apply_theme(&t);
                 }
             }
             Hit::SavePreset => {
-                let n = surface::presets().len() + 1;
+                let n = crate::themes::all().len() + 1;
                 let name = format!("mine-{n}");
-                let p = surface::Preset { name: name.clone(), surface: self.surface.clone() };
-                if surface::save_preset(&p).is_ok() {
+                let t = self.current_theme(&name);
+                if crate::themes::save(&t).is_ok() {
                     self.preset_name = name;
                 }
             }
@@ -1078,7 +1075,8 @@ impl App {
 
     /// A preset card: the ramp as its face, the signal as a chip, the name
     /// set in Newsreader; hard shadow, ink outline.
-    fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool, faces: Option<(Color, Color, Color, Color)>) {
         let t = self.theme.clone();
         let ink = t.ink;
         let key = hover_key("card", r.y as usize * 4096 + r.x as usize);
@@ -1114,6 +1112,21 @@ impl App {
             let chip = self.px(12.0);
             scene.rect(Rect::new(card.x + self.px(12.0), card.bottom() - strip_h + (strip_h - chip) / 2.0, chip, chip), signal);
             scene.outline(Rect::new(card.x + self.px(12.0), card.bottom() - strip_h + (strip_h - chip) / 2.0, chip, chip), self.px(1.0), ink);
+            // The two faces as tiny pages: paper with an ink line, ink with a paper line.
+            if let Some((pp, pi, ip, ii)) = faces {
+                let pw = self.px(22.0);
+                let ph = self.px(28.0);
+                let mut fx = card.right() - self.px(12.0) - pw;
+                for (bg, fg) in [(ip, ii), (pp, pi)] {
+                    let pr = Rect::new(fx, card.y + self.px(10.0), pw, ph);
+                    scene.rect(pr, bg);
+                    scene.outline(pr, self.px(1.0), ink);
+                    for k in 0..3 {
+                        scene.rect(Rect::new(pr.x + self.px(4.0), pr.y + self.px(6.0) + k as f32 * self.px(6.0), pw - self.px(8.0) - if k == 2 { self.px(6.0) } else { 0.0 }, self.px(2.0)), fg);
+                    }
+                    fx -= pw + self.px(6.0);
+                }
+            }
         }
         let wm = Style { font: self.f.wordmark, px: self.px(19.0), color: ink, tracking: 0.0 };
         let ny = if ramp.is_empty() { card.bottom() - self.px(14.0) } else { card.bottom() - self.px(10.0) };
@@ -1248,18 +1261,21 @@ impl App {
                 let mut v: Vec<(String, Control)> = vec![("".into(), Studio), ("".into(), Strip(strip))];
                 let rest: Vec<(String, Control)> = match tab {
                     LOOK_PRESETS => {
-                        let ink_c = self.theme.ink;
-                        let presets = surface::presets();
-                        let mut cards: Vec<(String, Vec<Color>, Color, f32, Hit, bool)> = presets
-                            .iter()
-                            .enumerate()
-                            .map(|(k, p)| (p.name.clone(), p.surface.ramp(ink_c), p.surface.signal, p.surface.angle, Hit::Preset(k), p.name == self.preset_name))
-                            .collect();
-                        cards.push(("save as…".into(), Vec::new(), self.surface.signal, 0.0, Hit::SavePreset, false));
+                        let themes = crate::themes::all();
+                        let card = |k: usize, t: &crate::themes::StockTheme| -> (String, Vec<Color>, Color, f32, Hit, bool, Option<(Color, Color, Color, Color)>) {
+                            let ramp = t.surface.ramp(t.ink.ink);
+                            (t.name.clone(), ramp, t.surface.signal, t.surface.angle, Hit::Preset(k), t.name == self.preset_name, Some((t.paper.paper, t.paper.ink, t.ink.paper, t.ink.ink)))
+                        };
+                        let mut originals: Vec<_> = themes.iter().enumerate().filter(|(_, t)| !t.port).map(|(k, t)| card(k, t)).collect();
+                        originals.push(("save as…".into(), Vec::new(), self.surface.signal, 0.0, Hit::SavePreset, false, None));
+                        let ports: Vec<_> = themes.iter().enumerate().filter(|(_, t)| t.port).map(|(k, t)| card(k, t)).collect();
+                        let current = themes.iter().find(|t| t.name == self.preset_name).map(|t| t.story.clone()).unwrap_or_else(|| "edited from a theme · SAVE AS keeps it".into());
                         vec![
-                            ("PRESETS".into(), Cards(cards)),
-                            ("".into(), Info("a preset is the whole surface: signal, stops, base, texture, carapace · saved ones live in profile/surfaces".into())),
-                            ("".into(), Buttons(vec![("OPEN PRESETS FOLDER".into(), icons::FOLDER, Hit::OpenPresets)])),
+                            ("THEMES".into(), Cards(originals)),
+                            ("".into(), Info(current)),
+                            ("PORTS".into(), Cards(ports)),
+                            ("".into(), Info("a theme is the whole look: both faces' tokens and sixteens, the carapace, the cursor, the bar, a few sounds · saved ones live in profile/themes".into())),
+                            ("".into(), Buttons(vec![("OPEN THEMES FOLDER".into(), icons::FOLDER, Hit::OpenThemes)])),
                         ]
                     }
                     LOOK_SURFACE => {
@@ -1905,7 +1921,7 @@ impl App {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
                 let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
-                    self.rules.new_tab(&surface::TabCtx { kind, index, profile: "powershell", space: &self.space_name, space_signal: self.surface.signal, theme, host, parent })
+                    self.rules.new_tab(&surface::TabCtx { kind, index, profile: "powershell", space: &self.space_name, space_signal: self.surface.signal, theme, host, parent, tab_colours: &self.tab_colours })
                 };
                 let a = mk("terminal", 0, "", None);
                 let b = mk("terminal", 1, "", None);
@@ -2175,13 +2191,13 @@ impl App {
                     let mut x = cx;
                     let mut cy = y + cap_h;
                     let mut n = 0;
-                    for (name, ramp, signal, angle, hit, on) in cards {
+                    for (name, ramp, signal, angle, hit, on, faces) in cards {
                         if n > 0 && n % per_row == 0 {
                             x = cx;
                             cy += card_h + self.px(8.0) + gap;
                         }
                         let card = Rect::new(x, cy, card_w, card_h);
-                        self.draw_card(scene, card, &name, &ramp, signal, angle, on);
+                        self.draw_card(scene, card, &name, &ramp, signal, angle, on, faces);
                         self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(6.0)), hit));
                         x += card_w + gap;
                         n += 1;

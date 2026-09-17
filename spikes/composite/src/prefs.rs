@@ -23,6 +23,7 @@ pub struct Prefs {
     pub cursor: Option<crate::settings::CursorPrefs>,
     pub header: Option<crate::settings::HeaderPrefs>,
     pub window_name: Option<String>,
+    pub tab_colours: Option<String>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -69,6 +70,9 @@ impl App {
         if let Some(h) = p.header {
             self.header = h;
         }
+        if let Some(t) = p.tab_colours {
+            self.tab_colours = t;
+        }
         if self.ordinal == 0 {
             self.window_named = p.window_name;
         }
@@ -87,6 +91,7 @@ impl App {
             theme: Some(self.theme_edit.clone()),
             cursor: Some(self.cursor.clone()),
             header: Some(self.header.clone()),
+            tab_colours: Some(self.tab_colours.clone()),
             window_name: if self.ordinal == 0 { self.window_named.clone() } else { None },
         };
         let _ = std::fs::create_dir_all(path().parent().unwrap());

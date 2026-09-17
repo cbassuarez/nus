@@ -7,6 +7,7 @@ mod termui;
 mod predict;
 mod webui;
 mod welcome;
+mod themes;
 mod windows;
 mod anim;
 mod app;

@@ -128,7 +128,7 @@ impl App {
                 S::NewWindow | S::RailNew => "new window".into(),
                 S::Rail(k) => format!("window {}", self.windows.get(k).map(|e| e.name.clone()).unwrap_or_else(|| self.window_name())),
                 S::Look => "look: hot swap".into(),
-                S::LookPreset(k) => format!("preset {}", crate::surface::presets().get(k).map(|p| p.name.clone()).unwrap_or_default()),
+                S::LookPreset(k) => format!("theme {}", crate::themes::all().into_iter().filter(|t| !t.port).nth(k).map(|p| p.name).unwrap_or_default()),
                 S::LookQuick(q) => format!("quick {:?}", q).to_lowercase(),
                 S::LookStudio => "open the look studio".into(),
                 S::Closed => "recently closed".into(),

@@ -438,6 +438,8 @@ pub struct TabCtx<'a> {
     /// The page's host, "" for shells.
     pub host: &'a str,
     pub parent: Option<&'a Overrides>,
+    /// The theme's rule: "family" | "wheel" | "same".
+    pub tab_colours: &'a str,
 }
 
 pub const DEFAULT_RULES: &str = r##"-- nus rules · Luau, sandboxed. Edit, save, and the settings tab reloads it.
@@ -457,14 +459,25 @@ pub const DEFAULT_RULES: &str = r##"-- nus rules · Luau, sandboxed. Edit, save,
 
 -- Example: every new terminal gets its own background hue, and pages opened
 -- from it (its stack) stay in the same family, a touch lighter.
+-- ctx.tab_colours is the theme's wish: "family" (tints and shades of the
+-- signal), "wheel" (round the hue wheel from the signal), "same" (every
+-- tab the signal). Themes set it; you can ignore it.
 function new_tab(ctx)
   if ctx.parent then
     return { bg = ctx.parent.bg and mix(ctx.parent.bg, "#ffffff", 0.06) or nil,
              signal = ctx.parent.signal }
   end
   if ctx.kind == "terminal" then
-    local turn = (ctx.index - 1) * 0.11
+    if ctx.tab_colours == "same" then
+      return { signal = ctx.signal }
+    end
     local light = ctx.theme == "ink" and 0.11 or 0.93
+    if ctx.tab_colours == "family" then
+      local step = ((ctx.index - 1) % 5) + 1
+      return { bg = mix(family(ctx.signal, step), ctx.theme == "ink" and "#000000" or "#ffffff", 0.86),
+               signal = family(ctx.signal, step) }
+    end
+    local turn = (ctx.index - 1) * 0.11
     return { bg = hsl(turn, 0.18, light), signal = hue(ctx.signal, turn) }
   end
 end
@@ -646,6 +659,7 @@ impl Rules {
         let _ = t.set("signal", hex(ctx.space_signal));
         let _ = t.set("theme", ctx.theme);
         let _ = t.set("host", ctx.host);
+        let _ = t.set("tab_colours", ctx.tab_colours);
         if let Some(p) = ctx.parent {
             let pt = self.lua.create_table().unwrap();
             if let Some(bg) = p.bg {
@@ -735,10 +749,10 @@ mod tests {
     fn default_rules_run() {
         let r = Rules::from_source(DEFAULT_RULES);
         assert!(r.status.starts_with("ok"), "{}", r.status);
-        let ctx = TabCtx { kind: "terminal", index: 1, profile: "pwsh", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: None };
+        let ctx = TabCtx { kind: "terminal", index: 1, profile: "pwsh", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: None, tab_colours: "family" };
         let o = r.new_tab(&ctx);
         assert!(o.bg.is_some() && o.signal.is_some());
-        let child = TabCtx { kind: "page", index: 1, profile: "", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: Some(&o) };
+        let child = TabCtx { kind: "page", index: 1, profile: "", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: Some(&o), tab_colours: "family" };
         let c = r.new_tab(&child);
         assert_eq!(c.signal, o.signal);
         assert!(r.new_tab(&TabCtx { kind: "page", parent: None, ..ctx }).bg.is_none());
@@ -755,7 +769,7 @@ mod tests {
     fn sandbox_blocks_io() {
         let r = Rules::from_source("function new_tab(c) return { bg = tostring(io) } end");
         assert!(r.status.starts_with("ok"));
-        let ctx = TabCtx { kind: "terminal", index: 0, profile: "", space: "", space_signal: [0.0; 4], theme: "ink", host: "", parent: None };
+        let ctx = TabCtx { kind: "terminal", index: 0, profile: "", space: "", space_signal: [0.0; 4], theme: "ink", host: "", parent: None, tab_colours: "family" };
         assert_eq!(r.new_tab(&ctx).bg, None);
     }
 }

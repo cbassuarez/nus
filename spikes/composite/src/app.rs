@@ -465,6 +465,8 @@ pub struct App {
     pub resized_at: Option<Instant>,
     pub hovers: std::collections::HashMap<u64, Hover>,
     pub look_tab: usize,
+    /// The theme's tab-colour rule, read by rules.luau as ctx.tab_colours.
+    pub tab_colours: String,
     pub look_menu: bool,
     pub look_anim: Anim,
     /// The callout's rect while shown, and when the pointer left it.
@@ -647,6 +649,7 @@ impl App {
             resized_at: None,
             hovers: std::collections::HashMap::new(),
             look_tab: 0,
+            tab_colours: "family".into(),
             look_menu: false,
             look_anim: Anim::at(0.0),
             look_rect: None,
@@ -1663,6 +1666,56 @@ impl App {
         if gliding {
             scene.rect(rect_at(x, y), Theme::with_alpha(color, 0.9));
             self.dirty = true;
+        }
+    }
+
+    /// Put a whole theme on: surface, both faces, cursor colour, bar, sounds.
+    pub(crate) fn apply_theme(&mut self, t: &crate::themes::StockTheme) {
+        use crate::theme_edit::{Family, ModeEdit};
+        self.surface = t.surface.clone();
+        let face = |f: &crate::themes::Face| ModeEdit { paper: Some(f.paper), ink: Some(f.ink), page: Some(f.page), ansi: f.ansi };
+        self.theme_edit.paper = face(&t.paper);
+        self.theme_edit.ink = face(&t.ink);
+        self.theme_edit.family = Family::Imported;
+        self.theme_edit.saturation = 1.0;
+        self.cursor.color = t.cursor;
+        self.load_bar.style = t.bar;
+        self.load_bar.color = t.bar_color;
+        for (event, cue) in &t.sounds {
+            self.sound.prefs.map.insert(event.clone(), cue.clone());
+        }
+        self.tab_colours = t.tab_colours.clone();
+        self.preset_name = t.name.clone();
+        // A theme drawn for one face comes up in that face unless the OS is followed.
+        if !self.behavior.follow_os_theme {
+            let mode = if t.prefers_ink { nus_render::Mode::Ink } else { nus_render::Mode::Paper };
+            self.set_mode(mode);
+        }
+        self.rebuild_theme();
+        self.refresh_icon();
+        self.layout();
+        self.save_prefs();
+        self.dirty = true;
+    }
+
+    /// The look right now as a theme, for SAVE AS.
+    pub(crate) fn current_theme(&self, name: &str) -> crate::themes::StockTheme {
+        let paper = self.theme_edit.build(nus_render::Mode::Paper, self.surface.signal);
+        let ink = self.theme_edit.build(nus_render::Mode::Ink, self.surface.signal);
+        let face = |t: &Theme| crate::themes::Face { paper: t.paper, ink: t.ink, page: t.page, ansi: Some(t.ansi.map(crate::theme_edit::from_rgb)) };
+        crate::themes::StockTheme {
+            name: name.to_string(),
+            story: format!("saved from {} on {}", self.preset_name, chrono_date()),
+            port: false,
+            paper: face(&paper),
+            ink: face(&ink),
+            surface: self.surface.clone(),
+            cursor: self.cursor.color,
+            bar: self.load_bar.style,
+            bar_color: self.load_bar.color,
+            sounds: Vec::new(),
+            tab_colours: self.tab_colours.clone(),
+            prefers_ink: self.theme.mode == nus_render::Mode::Ink,
         }
     }
 
@@ -3116,9 +3169,12 @@ impl App {
                 self.look_tab = crate::settings::LOOK_PRESETS;
             }
             SideHit::LookPreset(k) => {
-                self.apply_setting(crate::settings::Hit::Preset(k), 0.0);
+                // The callout lists originals only; map to the full list.
+                let all = crate::themes::all();
+                if let Some(t) = all.iter().filter(|t| !t.port).nth(k).cloned() {
+                    self.apply_theme(&t);
+                }
                 self.play_event("toggle");
-                self.save_prefs();
             }
             SideHit::LookQuick(q) => self.quick_look(q),
 
@@ -3414,7 +3470,7 @@ impl App {
                     scene.rect(cell, t.tint);
                 }
                 let sq = self.px(10.0);
-                let ctx = TabCtx { kind: "terminal", index: self.tabs.len(), profile: &p.name, space: &self.space_name, space_signal: self.surface.signal, theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, host: "", parent: None };
+                let ctx = TabCtx { kind: "terminal", index: self.tabs.len(), profile: &p.name, space: &self.space_name, space_signal: self.surface.signal, theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, host: "", parent: None, tab_colours: &self.tab_colours };
                 let color = self.rules.new_tab(&ctx).signal.unwrap_or(self.surface.signal);
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), color);
                 let st = if i == self.behavior.default_profile { strong } else { label };
@@ -3464,7 +3520,7 @@ impl App {
             return;
         }
         let (mx, my) = self.mouse;
-        let presets = crate::surface::presets();
+        let presets: Vec<crate::themes::StockTheme> = crate::themes::all().into_iter().filter(|t| !t.port).collect();
         let live = self.look_menu;
         let Some(chip) = self.side_hits.iter().find(|(_, h)| *h == SideHit::Look).map(|(r, _)| *r) else { return };
         let sq = self.px(14.0);
@@ -3499,7 +3555,8 @@ impl App {
             let tile = Rect::new(cx, cy, sq, sq);
             let on = p.name == self.preset_name;
             let hot = tile.contains(mx, my) && live;
-            let ramp = p.surface.ramp(ink_c);
+            let ramp = p.surface.ramp(p.ink.ink);
+            let _ = ink_c;
             if hot {
                 scene.push(nus_render::Instance::rounded(Rect::new(tile.x - 2.0, tile.y - 2.0, sq + 4.0, sq + 4.0), radius, fade(ink, 0.25 * a)));
             }
@@ -3586,8 +3643,10 @@ impl App {
                 }
             }
             Quick::Reset => {
-                let k = crate::surface::presets().iter().position(|p| p.name == self.preset_name).unwrap_or(0);
-                self.apply_setting(Hit::Preset(k), 0.0);
+                let all = crate::themes::all();
+                if let Some(t) = all.iter().find(|t| t.name == self.preset_name).or(all.first()).cloned() {
+                    self.apply_theme(&t);
+                }
             }
         }
         self.play_event("toggle");
@@ -4626,6 +4685,7 @@ impl App {
             theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" },
             host: &host,
             parent,
+            tab_colours: &self.tab_colours,
         })
     }
 
@@ -5752,4 +5812,22 @@ impl TermPane {
         }
         let _ = self.pty.write(&out);
     }
+}
+
+/// Today, for a saved theme's story (no chrono: from the epoch by hand).
+fn chrono_date() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let days = secs / 86400;
+    // Civil from days (Howard Hinnant's algorithm).
+    let z = days as i64 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
