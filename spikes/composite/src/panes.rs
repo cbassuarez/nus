@@ -335,6 +335,7 @@ impl App {
                 Pane::Web(w) => w.tab.shared.borrow().title.clone(),
                 Pane::Settings(_) => "settings".into(),
                 Pane::Hints(_) => "welcome".into(),
+                Pane::Editor(e) => e.title(),
             }
         }).unwrap_or_default();
         let strong = self.label_strong();

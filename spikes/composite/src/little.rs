@@ -85,11 +85,21 @@ pub fn listen(urls: &[String]) -> (Receiver<String>, u16) {
 }
 
 /// URLs on the command line (anything that parses as http(s) or a bare host).
+/// URLs and files from the command line: `composite <url>` opens a little
+/// window, `composite <file>` opens the editor (as `file://…`).
 pub fn urls_from_args() -> Vec<String> {
     std::env::args()
         .skip(1)
         .filter(|a| !a.starts_with("--"))
-        .filter_map(|a| crate::app::strict_url(&a).or_else(|| if a.starts_with("http") { Some(a.clone()) } else { None }))
+        .filter_map(|a| {
+            let p = std::path::Path::new(&a);
+            if p.is_file() {
+                let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                let abs = abs.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+                return Some(format!("file://{abs}"));
+            }
+            crate::app::strict_url(&a).or_else(|| if a.starts_with("http") { Some(a.clone()) } else { None })
+        })
         .collect()
 }
 
@@ -115,6 +125,11 @@ impl App {
     /// A URL handed in from outside: open it little, or raise the window.
     pub fn open_little(&mut self, url: &str) {
         if url == "raise" {
+            self.window.focus_window();
+            return;
+        }
+        if let Some(p) = url.strip_prefix("file://") {
+            self.open_file(std::path::Path::new(p), false);
             self.window.focus_window();
             return;
         }

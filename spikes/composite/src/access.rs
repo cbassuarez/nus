@@ -210,6 +210,12 @@ impl App {
                         n.set_bounds(bounds(s.rect));
                         n
                     }
+                    Pane::Editor(e) => {
+                        let mut n = Node::new(Role::Document);
+                        n.set_label(format!("editor · {}", e.title()));
+                        n.set_bounds(bounds(e.rect));
+                        n
+                    }
                     Pane::Hints(h) => {
                         let mut n = Node::new(Role::Document);
                         n.set_label("five things to try");

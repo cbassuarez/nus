@@ -201,6 +201,9 @@ pub struct Behavior {
     /// Colour the command line's tokens as you type.
     #[serde(default = "default_true")]
     pub highlight: bool,
+    /// The editor formats through the language server on Ctrl+S.
+    #[serde(default = "default_true")]
+    pub format_on_save: bool,
     /// Ghost the history entry that continues what's typed; Right/End accepts.
     #[serde(default = "default_true")]
     pub predict: bool,
@@ -318,6 +321,7 @@ impl Default for Behavior {
             outside: Outside::Little,
             shell_integration: true,
             highlight: true,
+            format_on_save: true,
             predict: true,
             block_content: true,
             sleep_after_min: 30,

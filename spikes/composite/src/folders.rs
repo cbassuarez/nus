@@ -27,6 +27,8 @@ pub enum Kind {
     Github,
     Ports,
     Rules,
+    /// The editor's project tree.
+    Files,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +262,9 @@ impl App {
     /// Open an item: the tab that has it, else a new page.
     pub(crate) fn open_item(&mut self, fi: usize, k: usize) {
         let Some(it) = self.folders.get(fi).and_then(|f| f.items.get(k)).cloned() else { return };
+        if self.files_click(&it.url) {
+            return;
+        }
         if let Some(i) = self.tabs.iter().position(|t| t.peek.is_none() && matches!(&t.left, Pane::Web(w) if w.tab.shared.borrow().url == it.url)) {
             return self.activate(i);
         }
@@ -337,6 +342,7 @@ impl App {
                         Kind::Github => icons::GITHUB,
                         Kind::Ports => icons::PORTS,
                         Kind::Rules => icons::CODE,
+                        Kind::Files => icons::FOLDER,
                         Kind::Plain => icons::FOLDER_SIMPLE,
                     };
                     self.icon_button(scene, icon, isz, x, iy, ink, cell, hover_key("folder", f.id as usize), IconMotion::Bob);

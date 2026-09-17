@@ -202,6 +202,7 @@ impl App {
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let mut acted = false;
         let mut open_url: Option<String> = None;
+        let mut open_file: Option<std::path::PathBuf> = None;
         let mut copy: Option<String> = None;
         let mut run: Option<String> = None;
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
@@ -287,6 +288,17 @@ impl App {
                     if let Some(hit) = h.items.iter().find(|i| i.line == line && col >= i.col && col < i.col + i.len) {
                         match hit.kind {
                             HintKind::Url => open_url = Some(hit.text.clone()),
+                            HintKind::Path => {
+                                // An existing file opens in the editor; else the text is copied.
+                                let cwd = t.term.cwd.clone();
+                                let p = std::path::Path::new(&hit.text);
+                                let p = if p.is_absolute() { p.to_path_buf() } else { cwd.map(|c| std::path::Path::new(&c).join(p)).unwrap_or_else(|| p.to_path_buf()) };
+                                if p.is_file() {
+                                    open_file = Some(p);
+                                } else {
+                                    copy = Some(hit.text.clone());
+                                }
+                            }
                             _ => copy = Some(hit.text.clone()),
                         }
                     }
@@ -356,6 +368,10 @@ impl App {
         }
         if let Some(u) = open_url {
             self.open_url(&u, true);
+        }
+        if let Some(p) = open_file {
+            self.open_file(&p, true);
+            return true;
         }
         if middle {
             self.paste_into_shell();

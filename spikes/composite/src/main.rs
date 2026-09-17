@@ -21,6 +21,8 @@ mod syntax;
 mod panes;
 mod scrolling;
 mod bundles;
+mod editor;
+mod lsp_host;
 mod anim;
 mod app;
 mod browser;

@@ -31,6 +31,7 @@ impl Pane {
             Pane::Web(w) => w.rect,
             Pane::Settings(s) => s.rect,
             Pane::Hints(h) => h.rect,
+            Pane::Editor(e) => e.rect,
         }
     }
 }

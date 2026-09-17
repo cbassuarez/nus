@@ -50,6 +50,8 @@ pub enum Action {
     NewTerminal(usize),
     NewBrowser(String),
     OpenInPane(String),
+    /// A file, in the editor.
+    OpenFile(String),
     /// Type a command into the focused (or a new) terminal and run it.
     RunInShell(String),
     ToggleSplit,
@@ -278,6 +280,7 @@ pub enum Pane {
     Web(WebPane),
     Settings(SettingsPane),
     Hints(HintsPane),
+    Editor(crate::editor::EditorPane),
 }
 
 /// Sidebar click targets besides tab rows.
@@ -436,6 +439,7 @@ impl Tab {
                 }
                 Pane::Settings(_) => ("settings".into(), String::new()),
                 Pane::Hints(_) => ("welcome".into(), String::new()),
+                Pane::Editor(e) => (e.title(), e.buf().and_then(|b| b.path.as_ref()).and_then(|p| p.parent()).map(|p| p.display().to_string()).unwrap_or_default()),
             }
         };
         let (main, other) = self.panes();
@@ -452,6 +456,14 @@ impl Tab {
             self.right.as_mut().unwrap()
         } else {
             &mut self.left
+        }
+    }
+
+    pub(crate) fn focused_ref(&self) -> &Pane {
+        if self.focus_right && self.right.is_some() {
+            self.right.as_ref().unwrap()
+        } else {
+            &self.left
         }
     }
 
@@ -479,6 +491,7 @@ impl Tab {
             }
             Pane::Settings(_) => "settings".into(),
             Pane::Hints(_) => "welcome".into(),
+            Pane::Editor(e) => e.title(),
         };
         let (main, other) = self.panes();
         match other {
@@ -582,6 +595,12 @@ pub struct App {
     pub jobs: crate::bundles::Jobs,
     /// Folders under the tabs: plain ones (saved pages) and live ones.
     pub folders: Vec<crate::folders::Folder>,
+    /// Language servers, and the editor's FILES folder root and open dirs.
+    pub lsp: crate::lsp_host::Servers,
+    pub files_root: Option<std::path::PathBuf>,
+    pub files_open: std::collections::HashSet<std::path::PathBuf>,
+    /// Editor click counting: when, where, how many.
+    pub click_at: Option<(Instant, (f32, f32), u32)>,
     pub next_folder_id: u64,
     pub live: crate::folders::Live,
     /// A right-click asked for a paste; answered in tick.
@@ -789,6 +808,10 @@ impl App {
             focus_hint: None,
             jobs: crate::bundles::Jobs::new(),
             folders: Vec::new(),
+            lsp: Default::default(),
+            files_root: None,
+            files_open: Default::default(),
+            click_at: None,
             next_folder_id: 100,
             live: crate::folders::start(),
             drag: None,
@@ -1226,6 +1249,8 @@ impl App {
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
         self.drain_popups();
+        self.poll_lsp();
+        self.editor_tick();
         self.apply_boosts();
         self.poll_reader();
         self.sync_favicons();
@@ -2532,6 +2557,7 @@ impl App {
                 Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
                 Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
+                Pane::Editor(e) => (nus_render::text::icons::CODE, e.title()),
             };
             let title = format!("{} {}", self.tab_label(self.active), title).caps();
             let tw = self.fonts.measure(label, &title);
@@ -3230,6 +3256,7 @@ impl App {
                 Pane::Web(_) => nus_render::text::icons::GLOBE,
                 Pane::Settings(_) => nus_render::text::icons::SETTINGS,
                 Pane::Hints(_) => nus_render::text::icons::HOME,
+                Pane::Editor(_) => nus_render::text::icons::CODE,
             };
             let row_bg = if active { crate::surface::mix(self.paper(), ink, t.tint[3]) } else if hovered { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.5) } else { self.paper() };
             let isz = self.px(15.0);
@@ -4441,6 +4468,10 @@ impl App {
                 let reach = self.draw_welcome(scene, r, scroll);
                 self.welcome_reach = reach;
             }
+            Pane::Editor(p) => {
+                let r = p.rect;
+                self.draw_editor(scene, p, r, focused);
+            }
             Pane::Term(p) => {
                 let r = p.rect;
                 let hh = if p.show_header { self.header_h() } else { 0.0 };
@@ -4922,6 +4953,9 @@ impl App {
         let enc = |s: &str| s.replace(' ', "+").replace('&', "%26").replace('#', "%23");
         let is_url = strict_url(q).is_some() || q.contains("://");
         let (url, text) = Self::url_or_search(q);
+        if let Some(p) = local_file(q) {
+            rows.push(row("</>", format!("{} · open in the editor", p.display()), Action::OpenFile(p.display().to_string())));
+        }
         if is_url {
             rows.push(row("→", text, open(url)));
             rows.push(row("?", format!("search “{q}”"), open(format!("https://www.google.com/search?q={}", enc(q)))));
@@ -5032,6 +5066,7 @@ impl App {
                 self.open_url(&url, true)
             }
             Action::OpenInPane(url) => self.open_url(&url, false),
+            Action::OpenFile(p) => self.open_file(std::path::Path::new(&p), false),
             Action::RunInShell(cmd) => self.run_in_shell(&cmd),
             Action::ToggleSplit => self.toggle_split(),
             Action::CloseTab => self.close_tabs(false),
@@ -5094,6 +5129,9 @@ impl App {
             return;
         }
         if self.ask_key(ev) {
+            return;
+        }
+        if self.palette.is_none() && !app && self.editor_key(ev) {
             return;
         }
         if let Some((_, input)) = self.palette.as_mut() {
@@ -5318,7 +5356,7 @@ impl App {
         let motion = self.motion.clone();
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
-            Pane::Settings(_) | Pane::Hints(_) => {}
+            Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) => {}
             Pane::Term(t) => {
                 // Shift+PgUp / PgDn: a page of scrollback, on the curve
                 // (unless the program asked for the keys, as in an alternate screen).
@@ -5375,6 +5413,26 @@ impl App {
                 if pressed {
                     match (key, ctrl || alt || sup) {
                         (Key::Enter, false) => {
+                            // `nus <file>` / `edit <file>` at a prompt: the editor, not the shell.
+                            if t.line_ok {
+                                if let Some(path) = file_at_prompt(&t.line, t.term.cwd.as_deref()) {
+                                    let clear: &[u8] = if t.title.to_lowercase().contains("powershell")
+                                        || t.title.to_lowercase().contains("pwsh")
+                                        || t.title.to_lowercase() == "cmd"
+                                    {
+                                        b"\x1b"
+                                    } else {
+                                        b"\x15"
+                                    };
+                                    let _ = t.pty.write(clear);
+                                    t.line.clear();
+                                    t.line_col = None;
+                                    t.line_ok = true;
+                                    let split = self.behavior.prompt_url != crate::settings::PromptUrl::NewTab;
+                                    self.open_file(&path, split);
+                                    return;
+                                }
+                            }
                             if t.line_ok {
                                 if let Some(url) = strict_url(&t.line) {
                                     let clear: &[u8] = if t.title.to_lowercase().contains("powershell")
@@ -5497,6 +5555,7 @@ impl App {
             Pane::Web(_) => ("page", ""),
             Pane::Settings(_) => ("settings", ""),
             Pane::Hints(_) => ("welcome", ""),
+            Pane::Editor(_) => ("editor", ""),
         };
         let host = match left {
             Pane::Web(w) => {
@@ -6059,7 +6118,7 @@ impl App {
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
                 Pane::Web(w) => Closed::Web(w.tab.shared.borrow().url.clone()),
-                Pane::Settings(_) | Pane::Hints(_) => {
+                Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) => {
                     self.tab_removed(i);
                     continue;
                 }
@@ -6140,6 +6199,7 @@ impl App {
             self.pointer_hidden = false;
         }
         self.term_drag(x, y);
+        self.editor_motion(x, y);
         if let Some((i, off, y0)) = self.drag_armed {
             if (y - y0).abs() > self.px(4.0) {
                 self.drag_armed = None;
@@ -6434,13 +6494,15 @@ impl App {
             Pane::Web(w) => w.rect.contains(x, y),
             Pane::Settings(s) => s.rect.contains(x, y),
             Pane::Hints(s) => s.rect.contains(x, y),
+            Pane::Editor(e) => e.rect.contains(x, y),
         };
         if let Some(r) = &tab.right {
             let hit = match r {
                 Pane::Term(t) => t.rect.contains(x, y),
                 Pane::Web(w) => w.rect.contains(x, y),
                 Pane::Settings(s) => s.rect.contains(x, y),
-            Pane::Hints(s) => s.rect.contains(x, y),
+                Pane::Hints(s) => s.rect.contains(x, y),
+                Pane::Editor(e) => e.rect.contains(x, y),
             };
             if hit {
                 hit_right = Some(true);
@@ -6480,6 +6542,9 @@ impl App {
             }
         }
         if pressed && button == MouseButton::Left && self.ask_click(x, y) {
+            return;
+        }
+        if self.editor_mouse(button, state, x, y) {
             return;
         }
         if self.term_mouse(button, state, x, y) {
@@ -6576,7 +6641,7 @@ impl App {
                     }
                     w.tab.focus(is_right == focus_right);
                 }
-                Pane::Term(_) | Pane::Settings(_) | Pane::Hints(_) => {}
+                Pane::Term(_) | Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) => {}
             }
         }
         self.mouse_down_in_web = down_in_web;
@@ -6683,6 +6748,15 @@ impl App {
                     };
                     let max = (self.settings_reach - s.rect.h).max(0.0);
                     s.scroll = (s.scroll - dy).clamp(0.0, max);
+                    self.dirty = true;
+                }
+                Pane::Editor(e) if e.rect.contains(x, y) => {
+                    let lines = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => (y * wheel_lines).round() as i64,
+                        MouseScrollDelta::PixelDelta(p) => (p.y as f32 / e.cell.1).round() as i64,
+                    };
+                    e.scroll_by(lines);
+                    e.hover = None;
                     self.dirty = true;
                 }
                 Pane::Hints(h) if h.rect.contains(x, y) => {
@@ -6817,6 +6891,39 @@ fn detect_localhost(term: &Term) -> Option<(usize, usize, String)> {
 
 /// The whole line is a URL: a scheme, `localhost[:port]`, or `host.tld` with a
 /// known TLD. Bare words and anything with shell syntax never qualify.
+/// `nus <file>` or `edit <file>` typed at a prompt, resolved against the
+/// shell's cwd; only an existing file counts.
+pub(crate) fn file_at_prompt(line: &str, cwd: Option<&str>) -> Option<std::path::PathBuf> {
+    let s = line.trim();
+    let rest = s.strip_prefix("nus ").or_else(|| s.strip_prefix("edit "))?.trim();
+    if rest.is_empty() || rest.starts_with('-') {
+        return None;
+    }
+    let rest = rest.trim_matches(['"', '\'']);
+    let p = std::path::Path::new(rest);
+    let p = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::path::Path::new(cwd?).join(p)
+    };
+    p.is_file().then_some(p)
+}
+
+/// An absolute path (or ~/) to an existing file.
+pub(crate) fn local_file(q: &str) -> Option<std::path::PathBuf> {
+    let q = q.trim().trim_matches('"');
+    let p = if let Some(rest) = q.strip_prefix("~/").or_else(|| q.strip_prefix("~\\")) {
+        std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(|h| std::path::PathBuf::from(h).join(rest))?
+    } else {
+        let p = std::path::PathBuf::from(q);
+        if !p.is_absolute() {
+            return None;
+        }
+        p
+    };
+    p.is_file().then_some(p)
+}
+
 pub(crate) fn strict_url(line: &str) -> Option<String> {
     let s = line.trim();
     if s.is_empty() || s.contains(char::is_whitespace) || s.contains(|c| "|&;<>$`'\"()".contains(c)) {
@@ -7138,6 +7245,7 @@ pub(crate) fn place_pane_bare(pane: &mut Pane, r: Rect, header: f32, pad_x: f32,
         }
         Pane::Settings(s) => s.rect = r,
         Pane::Hints(h) => h.rect = r,
+        Pane::Editor(e) => e.rect = r,
         Pane::Web(w) => {
             w.rect = r;
             w.bare = bare;
@@ -7211,6 +7319,9 @@ impl App {
             }
             Pane::Hints(_) => {
                 self.fonts.draw_icon(scene, nus_render::text::icons::HOME, size, x, y, color);
+            }
+            Pane::Editor(_) => {
+                self.fonts.draw_icon(scene, nus_render::text::icons::CODE, size, x, y, color);
             }
         }
     }
