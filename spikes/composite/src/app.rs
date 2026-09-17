@@ -59,6 +59,7 @@ pub enum Action {
     RenameWindow(String),
     NewWindow,
     Welcome,
+    FoldAll,
 }
 
 pub use crate::surface::Shell;
@@ -261,6 +262,8 @@ pub enum SideHit {
     Look,
     /// A download in the footer list.
     DlOpen(usize),
+    /// The caret on a node: fold or unfold its subtree.
+    Fold(usize),
     /// Hot swapper rows.
     LookPreset(usize),
     LookQuick(Quick),
@@ -455,6 +458,11 @@ pub struct App {
     pub rail_anim: Anim,
     pub next_row_hot: bool,
     pub registered_tabs: usize,
+    /// Tabs whose subtree is folded, by id; and a row being dragged:
+    /// (tab index, grab offset, current y).
+    pub collapsed: std::collections::HashSet<u64>,
+    pub drag: Option<(usize, f32, f32)>,
+    pub drag_armed: Option<(usize, f32, f32)>,
     /// A right-click asked for a paste; answered in tick.
     pub paste_request: bool,
     /// Downloads list in the footer.
@@ -642,6 +650,9 @@ impl App {
             rail_anim: Anim::at(0.0),
             next_row_hot: false,
             registered_tabs: usize::MAX,
+            collapsed: std::collections::HashSet::new(),
+            drag: None,
+            drag_armed: None,
             paste_request: false,
             dl_menu: false,
             dl_anim: Anim::at(0.0),
@@ -2812,7 +2823,7 @@ impl App {
             if self.tabs[i].pinned {
                 continue;
             }
-            let hidden = self.tabs[i].parent.is_some() && !self.stack_open(self.stack_root(i));
+            let hidden = !self.row_visible(i);
             let want = if hidden { 0.0 } else { row };
             // Animated height while a stack unfolds; otherwise the target.
             let h = match self.row_anims.get(&self.tabs[i].id) {
@@ -2880,13 +2891,16 @@ impl App {
         // Tab rows: icon · title · (hover ×). Waiting shows a signal dot.
         let pad_x = self.px(m::ROW_PAD_X);
         let labels: Vec<String> = g.rows.iter().map(|&(i, _, _)| self.tab_label_of(&tabs, i)).collect();
+        let depths: Vec<usize> = g.rows.iter().map(|&(i, _, _)| depth_of(&tabs, i)).collect();
         let row_h = self.px(m::ROW_H);
         for (k, &(i, y, h)) in g.rows.iter().enumerate() {
             let tab = &tabs[i];
             let waiting = tab.waiting();
             let child = tab.parent.is_some();
-            let stack: Vec<usize> = if child { Vec::new() } else { (0..tabs.len()).filter(|&j| tabs[j].parent == Some(tab.id)).collect() };
-            let open = !stack.is_empty() && (i == self.active || stack.contains(&self.active));
+            let depth = depths[k];
+            let stack: Vec<usize> = (0..tabs.len()).filter(|&j| tabs[j].parent == Some(tab.id)).collect();
+            let folded = self.collapsed.contains(&tab.id);
+            let open = !stack.is_empty() && !folded;
             let active = i == self.active;
             let hovered = self.hover_row == Some(i);
             if active {
@@ -2902,11 +2916,13 @@ impl App {
             }
             let base = y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0);
             let mut x = sb.x + pad_x;
-            // A dim numeral for the first nine stacks; children hang off a rule.
+            // A dim numeral for the first nine trees; a rule per level for the rest.
             let numw = self.px(18.0);
             if child {
-                scene.vline(x + self.px(5.0), y, row_h, self.px(m::HAIRLINE), t.dim);
-                x += numw;
+                for d in 0..depth {
+                    scene.vline(x + self.px(5.0) + d as f32 * self.px(12.0), y, row_h, self.px(m::HAIRLINE), t.dim);
+                }
+                x += numw + (depth.saturating_sub(1)) as f32 * self.px(12.0);
             } else {
                 let n: usize = labels[k].parse().unwrap_or(99);
                 if n <= 9 {
@@ -2949,12 +2965,17 @@ impl App {
                 let d = self.px(7.0);
                 scene.rect(Rect::new(right - d, y + (row_h - d) / 2.0, d, d), self.surface.signal);
                 right -= d + self.px(8.0);
-            } else if !stack.is_empty() && !open {
-                let tag = format!("{}", stack.len());
+            } else if !stack.is_empty() {
+                // A node: its count and a caret; click the caret to fold or unfold.
+                let all = subtree_of(&tabs, i).len();
+                let tag = format!("{all}");
                 let tw = self.fonts.measure(label, &tag);
                 let csz = self.px(11.0);
+                let icon = if open { nus_render::text::icons::CARET_DOWN } else { nus_render::text::icons::CARET_RIGHT };
                 self.fonts.draw(scene, dim, right - tw, base - self.px(1.0), &tag);
-                self.fonts.draw_icon(scene, nus_render::text::icons::CARET_RIGHT, csz, right - tw - csz - self.px(2.0), y + (row_h - csz) / 2.0, t.dim);
+                let cx = right - tw - csz - self.px(2.0);
+                self.fonts.draw_icon(scene, icon, csz, cx, y + (row_h - csz) / 2.0, t.dim);
+                self.side_hits.push((Rect::new(cx - self.px(8.0), y, tw + csz + self.px(16.0), row_h), SideHit::Fold(i)));
                 right -= tw + csz + self.px(10.0);
             }
             let (title, _) = tab.row_text();
@@ -2967,6 +2988,33 @@ impl App {
         }
         self.tabs = tabs;
 
+        // A row being dragged: the others part, the ghost follows the pointer.
+        if let Some((di, off, dy)) = self.drag {
+            if let Some(&(_, _, _)) = g.rows.iter().find(|&&(t, _, _)| t == di) {
+                let (mx, my) = self.mouse;
+                let _ = mx;
+                // Drop marker: a signal rule between rows, or a tint on the row it nests under.
+                if let Some(&(j, ry, rh)) = g.rows.iter().find(|&&(_, ry, rh)| my >= ry && my < ry + rh) {
+                    if j != di {
+                        let frac = (my - ry) / rh;
+                        if (0.3..0.7).contains(&frac) {
+                            scene.outline(Rect::new(sb.x + self.px(6.0), ry + self.px(2.0), sb.w - self.px(12.0), rh - self.px(4.0)), self.px(m::STRUCTURE), self.surface.signal);
+                        } else {
+                            let ly = if frac < 0.3 { ry } else { ry + rh };
+                            scene.rect(Rect::new(sb.x + self.px(12.0), ly - self.px(1.0), sb.w - self.px(24.0), self.px(2.0)), self.surface.signal);
+                        }
+                    }
+                }
+                let ghost = Rect::new(sb.x + self.px(4.0), dy - off, sb.w - self.px(8.0), row_h);
+                scene.rect(Rect::new(ghost.x + self.px(3.0), ghost.y + self.px(3.0), ghost.w, ghost.h), fade(ink, 0.5));
+                scene.rect(ghost, self.paper());
+                scene.outline(ghost, self.px(m::STRUCTURE), ink);
+                let title = self.tabs[di].title();
+                let st = ui_strong;
+                let text = self.fit(st, &title, ghost.w - self.px(24.0));
+                self.fonts.draw(scene, st, ghost.x + self.px(12.0), ghost.y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0), &text);
+            }
+        }
         // The next ruled row is NEW TAB: a ghost plus where the tab will appear.
         if self.header.next_row && g.next_y + row_h <= g.foot_y {
             let r = Rect::new(sb.x, g.next_y, sb.w, row_h);
@@ -3197,6 +3245,7 @@ impl App {
                 self.close_menus();
                 self.reveal_download(i);
             }
+            SideHit::Fold(i) => self.toggle_fold(i),
             SideHit::Settings => self.open_settings(),
         }
         self.dirty = true;
@@ -4086,6 +4135,9 @@ impl App {
         let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
         match mode {
             PaletteMode::Go => {
+                if hit("fold") || hit("collapse") || hit("stacks") {
+                    rows.push(row("▾", "fold every stack · again unfolds (ctrl+shift+-)".into(), Action::FoldAll));
+                }
                 if hit("welcome") || hit("help") || hit("tour") {
                     rows.push(row("?", "welcome · the tour of nus (F1)".into(), Action::Welcome));
                 }
@@ -4248,6 +4300,7 @@ impl App {
             }
             Action::NewWindow => self.new_window_request = true,
             Action::Welcome => self.open_welcome(),
+            Action::FoldAll => self.fold_all(),
             Action::NewBrowser(url) if url.is_empty() => self.open_palette(PaletteMode::New),
             Action::NewBrowser(url) => {
                 self.tick_hint(1);
@@ -4400,6 +4453,7 @@ impl App {
         }
         if pressed && app {
             match code {
+                Some(KeyCode::Minus) => return self.fold_all(),
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
                 Some(KeyCode::KeyF) => return self.search_open(),
@@ -4696,11 +4750,194 @@ impl App {
     // number: Ctrl+N goes to whichever member was used last.
 
     /// Index of the stack's top-level tab.
+    /// The top of the tree `i` is in.
     fn stack_root(&self, i: usize) -> usize {
-        match self.tabs[i].parent {
-            Some(pid) => self.tabs.iter().position(|t| t.id == pid).unwrap_or(i),
-            None => i,
+        let mut cur = i;
+        for _ in 0..64 {
+            match self.tabs[cur].parent {
+                Some(pid) => match self.tabs.iter().position(|t| t.id == pid) {
+                    Some(p) if p != cur => cur = p,
+                    _ => return cur,
+                },
+                None => return cur,
+            }
         }
+        cur
+    }
+
+    /// How deep `i` sits: 0 at the top.
+    pub(crate) fn depth(&self, i: usize) -> usize {
+        let mut d = 0;
+        let mut cur = i;
+        while let Some(pid) = self.tabs[cur].parent {
+            match self.tabs.iter().position(|t| t.id == pid) {
+                Some(p) if p != cur && d < 64 => {
+                    cur = p;
+                    d += 1;
+                }
+                _ => break,
+            }
+        }
+        d
+    }
+
+    /// Every descendant of `i`, in tab order.
+    pub(crate) fn subtree(&self, i: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut frontier = vec![self.tabs[i].id];
+        while let Some(id) = frontier.pop() {
+            for j in 0..self.tabs.len() {
+                if self.tabs[j].parent == Some(id) && !out.contains(&j) {
+                    out.push(j);
+                    frontier.push(self.tabs[j].id);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// A row shows unless an ancestor is folded, or its tree isn't the
+    /// active one (stacks unfold only while one of their members is active).
+    pub(crate) fn row_visible(&self, i: usize) -> bool {
+        let mut cur = i;
+        while let Some(pid) = self.tabs[cur].parent {
+            let Some(p) = self.tabs.iter().position(|t| t.id == pid) else { break };
+            if self.collapsed.contains(&pid) {
+                return false;
+            }
+            if p == cur {
+                break;
+            }
+            cur = p;
+        }
+        self.tabs[i].parent.is_none() || self.stack_open(self.stack_root(i))
+    }
+
+    /// Where a dragged row lands: onto the middle of a row nests under it,
+    /// the edges reorder at that row's level.
+    pub(crate) fn drop_row(&mut self, i: usize, y: f32) {
+        let g = self.sidebar_geometry();
+        let Some(&(j, ry, rh)) = g.rows.iter().find(|&&(_, ry, rh)| y >= ry && y < ry + rh) else {
+            // Below everything: to the top level, at the end.
+            if y > g.rows.last().map(|r| r.1 + r.2).unwrap_or(0.0) {
+                self.reparent(i, None, None);
+            }
+            return;
+        };
+        if j == i {
+            return;
+        }
+        let frac = (y - ry) / rh;
+        if (0.3..0.7).contains(&frac) {
+            self.reparent(i, Some(j), None);
+        } else if frac < 0.3 {
+            let parent = self.tabs[j].parent.and_then(|pid| self.tabs.iter().position(|t| t.id == pid));
+            self.reparent(i, parent, Some(j));
+        } else {
+            // After j: before j's next sibling if any, else the parent's end.
+            let parent = self.tabs[j].parent.and_then(|pid| self.tabs.iter().position(|t| t.id == pid));
+            let sub = self.subtree(j);
+            let last = sub.last().copied().unwrap_or(j);
+            let next = (last + 1..self.tabs.len()).find(|&k| self.tabs[k].parent == self.tabs[j].parent);
+            self.reparent(i, parent, next);
+        }
+        self.play_event("toggle");
+    }
+
+    /// Fold or unfold a node's subtree.
+    pub(crate) fn toggle_fold(&mut self, i: usize) {
+        let id = self.tabs[i].id;
+        if !self.collapsed.remove(&id) {
+            self.collapsed.insert(id);
+            // Folding away the active tab lands on the fold.
+            if self.subtree(i).contains(&self.active) {
+                self.activate(i);
+            }
+        }
+        self.layout();
+        self.dirty = true;
+    }
+
+    /// Fold every tree; a second call unfolds them all.
+    pub(crate) fn fold_all(&mut self) {
+        let parents: Vec<u64> = (0..self.tabs.len()).filter(|&i| !self.children(i).is_empty()).map(|i| self.tabs[i].id).collect();
+        if parents.iter().all(|id| self.collapsed.contains(id)) {
+            self.collapsed.clear();
+        } else {
+            for id in parents {
+                self.collapsed.insert(id);
+            }
+            let root = self.stack_root(self.active);
+            self.activate(root);
+        }
+        self.layout();
+        self.dirty = true;
+    }
+
+    /// Move tab `i` under `new_parent` (None = top level), placed after
+    /// its new siblings; children come along.
+    pub(crate) fn reparent(&mut self, i: usize, new_parent: Option<usize>, before: Option<usize>) {
+        if let Some(p) = new_parent {
+            if p == i || self.subtree(i).contains(&p) {
+                return;
+            }
+        }
+        let moving_ids: Vec<u64> = std::iter::once(i).chain(self.subtree(i)).map(|k| self.tabs[k].id).collect();
+        let parent_id = new_parent.map(|p| self.tabs[p].id);
+        let before_id = before.map(|b| self.tabs[b].id);
+        let active_id = self.tabs[self.active].id;
+        // Lift the moving subtree out.
+        let mut moving: Vec<Tab> = Vec::new();
+        let mut rest: Vec<Tab> = Vec::new();
+        for t in self.tabs.drain(..) {
+            if moving_ids.contains(&t.id) {
+                moving.push(t);
+            } else {
+                rest.push(t);
+            }
+        }
+        if let Some(first) = moving.first_mut() {
+            first.parent = parent_id;
+        }
+        // Where it goes: before `before`, else after the last descendant of the parent, else the end.
+        let at = if let Some(bid) = before_id {
+            rest.iter().position(|t| t.id == bid).unwrap_or(rest.len())
+        } else if let Some(pid) = parent_id {
+            // After the parent and everything under it.
+            let mut ids = vec![pid];
+            let mut last = rest.iter().position(|t| t.id == pid).map(|p| p + 1).unwrap_or(rest.len());
+            loop {
+                let mut grew = false;
+                for (k, t) in rest.iter().enumerate() {
+                    if let Some(par) = t.parent {
+                        if ids.contains(&par) && !ids.contains(&t.id) {
+                            ids.push(t.id);
+                            last = last.max(k + 1);
+                            grew = true;
+                        }
+                    }
+                }
+                if !grew {
+                    break;
+                }
+            }
+            last
+        } else {
+            rest.len()
+        };
+        let mut tabs = rest;
+        for (k, t) in moving.into_iter().enumerate() {
+            tabs.insert(at + k, t);
+        }
+        self.tabs = tabs;
+        // Indices moved; rebuild what points at them.
+        self.active = self.tabs.iter().position(|t| t.id == active_id).unwrap_or(0);
+        self.mru = vec![self.active];
+        self.selected.clear();
+        self.pip = None;
+        self.layout();
+        self.dirty = true;
     }
 
     fn children(&self, root: usize) -> Vec<usize> {
@@ -4710,7 +4947,7 @@ impl App {
 
     /// Stacks unfold only while one of their members is active.
     fn stack_open(&self, root: usize) -> bool {
-        self.stack_root(self.active) == root
+        self.stack_root(self.active) == root && !self.collapsed.contains(&self.tabs[root].id)
     }
 
     fn top_level(&self) -> Vec<usize> {
@@ -4724,17 +4961,39 @@ impl App {
     }
 
     fn tab_label_of(&self, tabs: &[Tab], i: usize) -> String {
-        let root = match tabs[i].parent {
-            Some(pid) => tabs.iter().position(|t| t.id == pid).unwrap_or(i),
-            None => i,
-        };
+        let mut root = i;
+        for _ in 0..64 {
+            match tabs[root].parent {
+                Some(pid) => match tabs.iter().position(|t| t.id == pid) {
+                    Some(p) if p != root => root = p,
+                    _ => break,
+                },
+                None => break,
+            }
+        }
         let n = (0..tabs.len()).filter(|&j| tabs[j].parent.is_none()).position(|j| j == root).map(|p| p + 1).unwrap_or(0);
         if root == i {
             format!("{n:02}")
         } else {
-            let id = tabs[root].id;
-            let k = (0..tabs.len()).filter(|&j| tabs[j].parent == Some(id)).position(|j| j == i).unwrap_or(0);
-            format!("{n:02}·{}", (b'a' + (k % 26) as u8) as char)
+            // Letters down the branch: 01·b·a.
+            let mut chain: Vec<char> = Vec::new();
+            let mut cur = i;
+            for _ in 0..8 {
+                let Some(pid) = tabs[cur].parent else { break };
+                let k = (0..tabs.len()).filter(|&j| tabs[j].parent == Some(pid)).position(|j| j == cur).unwrap_or(0);
+                chain.push((b'a' + (k % 26) as u8) as char);
+                match tabs.iter().position(|t| t.id == pid) {
+                    Some(p) if p != cur => cur = p,
+                    _ => break,
+                }
+            }
+            chain.reverse();
+            let mut s = format!("{n:02}");
+            for c in chain {
+                s.push('·');
+                s.push(c);
+            }
+            s
         }
     }
 
@@ -4748,13 +5007,15 @@ impl App {
 
     /// Open `url` as a page in the stack of tab `source`.
     pub(crate) fn open_in_stack(&mut self, source: usize, url: &str) {
-        let root = self.stack_root(source);
+        // A page opened from a page nests under it: the tree grows with depth.
+        let root = source;
         let Some(w) = self.new_web_pane(url) else { return };
         let mut tab = self.make_tab(Pane::Web(w), None);
         tab.parent = Some(self.tabs[root].id);
         let parent_look = self.tabs[root].look.clone();
         tab.look = self.look_for(&tab.left, Some(&parent_look));
-        let at = self.children(root).last().copied().unwrap_or(root) + 1;
+        self.collapsed.remove(&self.tabs[root].id);
+        let at = self.subtree(root).last().copied().unwrap_or(root) + 1;
         self.tabs.insert(at, tab);
         // Indices after `at` shifted by one.
         for t in self.mru.iter_mut() {
@@ -4974,16 +5235,14 @@ impl App {
             }
             v
         };
-        // A parent takes its children along.
+        // A parent takes its whole subtree along.
         for i in targets.clone() {
-            if self.tabs[i].parent.is_none() {
-                targets.extend(self.children(i));
-            }
+            targets.extend(self.subtree(i));
         }
         targets.sort_unstable();
         targets.dedup();
         if !force {
-            if let Some(&root) = targets.iter().find(|&&i| self.tabs[i].parent.is_none() && !self.children(i).is_empty()) {
+            if let Some(&root) = targets.iter().find(|&&i| !self.children(i).is_empty()) {
                 self.confirm_stack = Some(root);
                 self.active = root;
                 self.band_anim.replay(0.0, 1.0, self.motion.dur(base::BAND));
@@ -5087,6 +5346,16 @@ impl App {
             self.pointer_hidden = false;
         }
         self.term_drag(x, y);
+        if let Some((i, off, y0)) = self.drag_armed {
+            if (y - y0).abs() > self.px(4.0) {
+                self.drag_armed = None;
+                self.drag = Some((i, off, y));
+            }
+        }
+        if let Some(d) = self.drag.as_mut() {
+            d.2 = y;
+            self.dirty = true;
+        }
         if !self.sidebar_pinned() && self.sidebar_hoverable() {
             let c = self.content_rect();
             let sb = self.sidebar_rect();
@@ -5271,6 +5540,10 @@ impl App {
                 } else {
                     self.selected.clear();
                     self.activate(i);
+                    // Armed: a few px of travel starts a drag.
+                    if let Some(&(_, ry, _)) = g.rows.iter().find(|&&(t, _, _)| t == i) {
+                        self.drag_armed = Some((i, y - ry, y));
+                    }
                 }
                 self.dirty = true;
             }
@@ -5319,6 +5592,11 @@ impl App {
         let focus_right = tab.focus_right;
         if !pressed && button == MouseButton::Left {
             self.term_release_scroll();
+            self.drag_armed = None;
+            if let Some((i, _, _)) = self.drag.take() {
+                self.drop_row(i, y);
+                return;
+            }
         }
         if self.term_mouse(button, state, x, y) {
             return;
@@ -5830,4 +6108,35 @@ fn chrono_date() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Depth of tab `i` in a tab list (0 at the top).
+pub(crate) fn depth_of(tabs: &[Tab], i: usize) -> usize {
+    let mut d = 0;
+    let mut cur = i;
+    while let Some(pid) = tabs[cur].parent {
+        match tabs.iter().position(|t| t.id == pid) {
+            Some(p) if p != cur && d < 64 => {
+                cur = p;
+                d += 1;
+            }
+            _ => break,
+        }
+    }
+    d
+}
+
+/// Every descendant of tab `i` in a tab list.
+pub(crate) fn subtree_of(tabs: &[Tab], i: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut frontier = vec![tabs[i].id];
+    while let Some(id) = frontier.pop() {
+        for j in 0..tabs.len() {
+            if tabs[j].parent == Some(id) && !out.contains(&j) {
+                out.push(j);
+                frontier.push(tabs[j].id);
+            }
+        }
+    }
+    out
 }

@@ -134,6 +134,7 @@ impl App {
                 S::Closed => "recently closed".into(),
                 S::Downloads => "downloads".into(),
                 S::DlOpen(i) => format!("download {}", i + 1),
+                S::Fold(i) => format!("{} {}", if self.collapsed.contains(&self.tabs[i].id) { "unfold" } else { "fold" }, self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::Settings => "settings".into(),
             };
             let id = fresh(&mut map, Target::Side(hit));
