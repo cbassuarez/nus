@@ -320,7 +320,11 @@ impl Gpu {
         let (w, h) = size;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("snapshot"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -342,9 +346,25 @@ impl Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         self.pass(&mut encoder, &view, size, scene, clear);
         encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(std::iter::once(encoder.finish()));
         let slice = buffer.slice(..);
@@ -355,7 +375,10 @@ impl Gpu {
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         let _ = rx.recv();
         let data = slice.get_mapped_range().expect("snapshot readback mapped");
-        let bgra = matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let bgra = matches!(
+            self.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for row in 0..h {
             let r = &data[(row * stride) as usize..(row * stride + w * 4) as usize];
@@ -390,7 +413,14 @@ impl Gpu {
     }
 
     /// One render pass of `scene` into `view`, cleared to `clear`.
-    fn pass(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, size: (u32, u32), scene: &Scene, clear: [f32; 4]) {
+    fn pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size: (u32, u32),
+        scene: &Scene,
+        clear: [f32; 4],
+    ) {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),

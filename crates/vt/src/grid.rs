@@ -377,9 +377,25 @@ mod fold_tests {
         g.scroll_display(6);
         // View starts at abs 0; fold 1..4 → rows: 0, F(1,4), 4, 5.
         let v = g.display_lines(&[(1, 4)]);
-        assert_eq!(v, vec![Display::Line(0), Display::Fold(1, 4), Display::Line(4), Display::Line(5)]);
+        assert_eq!(
+            v,
+            vec![
+                Display::Line(0),
+                Display::Fold(1, 4),
+                Display::Line(4),
+                Display::Line(5)
+            ]
+        );
         // No folds: plain lines.
-        assert_eq!(g.display_lines(&[]), vec![Display::Line(0), Display::Line(1), Display::Line(2), Display::Line(3)]);
+        assert_eq!(
+            g.display_lines(&[]),
+            vec![
+                Display::Line(0),
+                Display::Line(1),
+                Display::Line(2),
+                Display::Line(3)
+            ]
+        );
         // A fold starting above the view is skipped without a row.
         g.scroll_display(-2);
         assert_eq!(g.display_lines(&[(1, 4)])[0], Display::Line(4));

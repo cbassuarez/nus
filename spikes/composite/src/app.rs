@@ -727,6 +727,9 @@ pub struct App {
     /// The icon under the pointer this frame, with its words; drawn last.
     pub tip: Option<Tip>,
     pub tip_since: Option<Instant>,
+    /// The automatic window name and what it was computed from.
+    pub auto_name: std::cell::RefCell<Option<String>>,
+    pub auto_name_key: Option<(Option<String>, Vec<String>)>,
     /// What the taskbar button last showed, so it's only told on change.
     pub taskbar_shown: Option<(u8, u8)>,
     /// Block pages we wrote, by their file URL, for copy-as-markdown and gist.
@@ -968,6 +971,8 @@ impl App {
             hovers: std::collections::HashMap::new(),
             tip: None,
             tip_since: None,
+            auto_name: std::cell::RefCell::new(None),
+            auto_name_key: None,
             taskbar_shown: None,
             block_pages: std::collections::HashMap::new(),
             look_tab: 0,
@@ -1440,6 +1445,7 @@ impl App {
         self.sync_taskbar_progress();
         self.offer_layout_here();
         self.tidy_tick();
+        self.refresh_auto_name();
         // Dedupe: does the active tab's page live elsewhere already?
         let active = self.active;
         let dup = self.duplicate_of(active).filter(|_| !self.dedupe_kept.contains(&self.tabs[active].id));
@@ -3556,18 +3562,41 @@ impl App {
                 return n.clone();
             }
         }
-        if let Some(root) = git_root_name(self.focused_cwd().map(std::path::PathBuf::from)) {
-            return self.unique_name(root);
+        // The automatic name is cached: it's derived from the filesystem and
+        // the tabs, and it must not change under the pointer between frames.
+        self.auto_name.borrow().clone().unwrap_or_else(|| "nus".into())
+    }
+
+    /// Recompute the automatic window name when what it's made of changed:
+    /// the focused cwd, or the set of tabs. Ties between hosts go to the
+    /// earliest tab, so the answer is stable.
+    pub(crate) fn refresh_auto_name(&mut self) {
+        let cwd = self.focused_cwd();
+        let hosts: Vec<String> = self.tabs.iter().filter(|t| t.peek.is_none() && !t.hatch).map(|t| t.row_text().1).collect();
+        let key = (cwd.clone(), hosts.clone());
+        if self.auto_name_key.as_ref() == Some(&key) {
+            return;
         }
-        let mut hosts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for t in &self.tabs {
-            let (_, host) = t.row_text();
-            if !host.is_empty() {
-                *hosts.entry(host).or_default() += 1;
+        self.auto_name_key = Some(key);
+        let base = match git_root_name(cwd.map(std::path::PathBuf::from)) {
+            Some(root) => root,
+            None => {
+                // The most common host; a tie goes to the one seen first.
+                let mut counts: Vec<(String, usize)> = Vec::new();
+                for h in hosts.into_iter().filter(|h| !h.is_empty()) {
+                    match counts.iter_mut().find(|(k, _)| *k == h) {
+                        Some((_, n)) => *n += 1,
+                        None => counts.push((h, 1)),
+                    }
+                }
+                counts.into_iter().max_by(|a, b| a.1.cmp(&b.1)).map(|(h, _)| h).unwrap_or_else(|| "nus".into())
             }
+        };
+        let name = self.unique_name(base);
+        if self.auto_name.borrow().as_deref() != Some(name.as_str()) {
+            *self.auto_name.borrow_mut() = Some(name);
+            self.dirty = true;
         }
-        let base = hosts.into_iter().max_by_key(|(_, n)| *n).map(|(h, _)| h).unwrap_or_else(|| "nus".into());
-        self.unique_name(base)
     }
 
     /// Another, earlier window already called that? Number this one.

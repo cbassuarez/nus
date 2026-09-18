@@ -33,22 +33,42 @@ fn instance_file() -> PathBuf {
     // Beside the executable, then the working directory: the app writes
     // profile/instance under its own cwd.
     let candidates = [
-        std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("profile").join("instance"))),
-        std::env::current_dir().ok().map(|d| d.join("profile").join("instance")),
-        std::env::current_dir().ok().map(|d| d.join("spikes").join("composite").join("profile").join("instance")),
+        std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("profile").join("instance"))),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("profile").join("instance")),
+        std::env::current_dir().ok().map(|d| {
+            d.join("spikes")
+                .join("composite")
+                .join("profile")
+                .join("instance")
+        }),
     ];
-    candidates.into_iter().flatten().find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("profile/instance"))
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("profile/instance"))
 }
 
 fn connect() -> Result<(TcpStream, String), String> {
-    let text = std::fs::read_to_string(instance_file()).map_err(|_| "nus is not running (no profile/instance)".to_string())?;
+    let text = std::fs::read_to_string(instance_file())
+        .map_err(|_| "nus is not running (no profile/instance)".to_string())?;
     let mut lines = text.lines();
-    let port: u16 = lines.next().unwrap_or("").trim().parse().map_err(|_| "profile/instance has no port".to_string())?;
+    let port: u16 = lines
+        .next()
+        .unwrap_or("")
+        .trim()
+        .parse()
+        .map_err(|_| "profile/instance has no port".to_string())?;
     let token = lines.next().unwrap_or("").trim().to_string();
     if token.is_empty() {
         return Err("this nus predates remote control · restart it".into());
     }
-    let s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("nus is not answering on {port}: {e}"))?;
+    let s = TcpStream::connect(("127.0.0.1", port))
+        .map_err(|e| format!("nus is not answering on {port}: {e}"))?;
     Ok((s, token))
 }
 
@@ -63,7 +83,11 @@ fn call(cmd: &str, args: Value) -> Result<Value, String> {
     if v.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(v.get("result").cloned().unwrap_or(Value::Null))
     } else {
-        Err(v.get("error").and_then(Value::as_str).unwrap_or("unknown error").to_string())
+        Err(v
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error")
+            .to_string())
     }
 }
 
@@ -79,7 +103,10 @@ fn parse(args: &[String]) -> (Vec<String>, serde_json::Map<String, Value>) {
             let takes_value = matches!(k, "tab" | "profile" | "cwd" | "run" | "signal" | "which");
             if takes_value && i + 1 < args.len() {
                 let v = &args[i + 1];
-                let val = v.parse::<u64>().map(Value::from).unwrap_or_else(|_| Value::String(v.clone()));
+                let val = v
+                    .parse::<u64>()
+                    .map(Value::from)
+                    .unwrap_or_else(|_| Value::String(v.clone()));
                 opts.insert(key, val);
                 i += 2;
                 continue;
@@ -97,22 +124,48 @@ fn print_ls(v: &Value) {
     let space = v.get("space").and_then(Value::as_str).unwrap_or("");
     let theme = v.get("theme").and_then(Value::as_str).unwrap_or("");
     println!("{space} · {theme}");
-    for t in v.get("tabs").and_then(Value::as_array).into_iter().flatten() {
-        let active = if t.get("active").and_then(Value::as_bool) == Some(true) { "*" } else { " " };
+    for t in v
+        .get("tabs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let active = if t.get("active").and_then(Value::as_bool) == Some(true) {
+            "*"
+        } else {
+            " "
+        };
         let label = t.get("label").and_then(Value::as_str).unwrap_or("");
         let title = t.get("title").and_then(Value::as_str).unwrap_or("");
-        let hatch = if t.get("hatch").and_then(Value::as_bool) == Some(true) { " · hatch" } else { "" };
+        let hatch = if t.get("hatch").and_then(Value::as_bool) == Some(true) {
+            " · hatch"
+        } else {
+            ""
+        };
         let pane = |p: &Value| -> String {
             match p.get("kind").and_then(Value::as_str) {
-                Some("shell") => format!("shell {}", p.get("cwd").and_then(Value::as_str).unwrap_or("")),
-                Some("page") => format!("page {}", p.get("url").and_then(Value::as_str).unwrap_or("")),
-                Some("editor") => format!("editor {}", p.get("path").and_then(Value::as_str).unwrap_or("")),
+                Some("shell") => format!(
+                    "shell {}",
+                    p.get("cwd").and_then(Value::as_str).unwrap_or("")
+                ),
+                Some("page") => format!(
+                    "page {}",
+                    p.get("url").and_then(Value::as_str).unwrap_or("")
+                ),
+                Some("editor") => format!(
+                    "editor {}",
+                    p.get("path").and_then(Value::as_str).unwrap_or("")
+                ),
                 Some(k) => k.to_string(),
                 None => String::new(),
             }
         };
         let left = t.get("left").map(pane).unwrap_or_default();
-        let right = t.get("right").filter(|r| !r.is_null()).map(|r| format!(" | {}", pane(r))).unwrap_or_default();
+        let right = t
+            .get("right")
+            .filter(|r| !r.is_null())
+            .map(|r| format!(" | {}", pane(r)))
+            .unwrap_or_default();
         println!("{active} {label}  {title}{hatch}\n     {left}{right}");
     }
 }
@@ -134,7 +187,9 @@ fn main() -> ExitCode {
         }
         "edit" => {
             let p = rest.join(" ");
-            let abs = std::fs::canonicalize(&p).map(|a| a.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(p);
+            let abs = std::fs::canonicalize(&p)
+                .map(|a| a.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+                .unwrap_or(p);
             opts.insert("path".into(), Value::String(abs));
             ("edit", Value::Object(opts))
         }
@@ -176,21 +231,33 @@ fn main() -> ExitCode {
             ("look", Value::Object(opts))
         }
         "hatch" => {
-            opts.insert("do".into(), Value::String(rest.first().cloned().unwrap_or_else(|| "toggle".into())));
+            opts.insert(
+                "do".into(),
+                Value::String(rest.first().cloned().unwrap_or_else(|| "toggle".into())),
+            );
             ("hatch", Value::Object(opts))
         }
         "ssh" => {
-            opts.insert("host".into(), Value::String(rest.first().cloned().unwrap_or_default()));
+            opts.insert(
+                "host".into(),
+                Value::String(rest.first().cloned().unwrap_or_default()),
+            );
             ("ssh", Value::Object(opts))
         }
         "layout" => {
             if rest.first().map(String::as_str) == Some("save") {
-                opts.insert("save".into(), Value::String(rest.get(1).cloned().unwrap_or_else(|| "layout".into())));
+                opts.insert(
+                    "save".into(),
+                    Value::String(rest.get(1).cloned().unwrap_or_else(|| "layout".into())),
+                );
             }
             ("layout", Value::Object(opts))
         }
         "block" => {
-            opts.insert("which".into(), Value::String(rest.first().cloned().unwrap_or_else(|| "last".into())));
+            opts.insert(
+                "which".into(),
+                Value::String(rest.first().cloned().unwrap_or_else(|| "last".into())),
+            );
             ("block", Value::Object(opts))
         }
         "ask" => {
@@ -204,7 +271,9 @@ fn main() -> ExitCode {
         other => {
             // A bare file or URL: open it, as `nus <file>` at a prompt does.
             if std::path::Path::new(other).is_file() {
-                let abs = std::fs::canonicalize(other).map(|a| a.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(other.to_string());
+                let abs = std::fs::canonicalize(other)
+                    .map(|a| a.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+                    .unwrap_or(other.to_string());
                 opts.insert("path".into(), Value::String(abs));
                 ("edit", Value::Object(opts))
             } else if other.contains("://") || other.starts_with("localhost") {
@@ -218,28 +287,50 @@ fn main() -> ExitCode {
     };
     match call(cmd, args) {
         Ok(v) => {
-            if want_json || !matches!(cmd, "ls" | "version" | "ports" | "block" | "theme" | "layout") {
+            if want_json
+                || !matches!(
+                    cmd,
+                    "ls" | "version" | "ports" | "block" | "theme" | "layout"
+                )
+            {
                 if !v.is_null() {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
                 }
             } else {
                 match cmd {
                     "ls" => print_ls(&v),
-                    "version" => println!("nus {}", v.get("nus").and_then(Value::as_str).unwrap_or("?")),
+                    "version" => println!(
+                        "nus {}",
+                        v.get("nus").and_then(Value::as_str).unwrap_or("?")
+                    ),
                     "ports" => {
-                        for p in v.get("ports").and_then(Value::as_array).into_iter().flatten() {
+                        for p in v
+                            .get("ports")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
                             println!(
                                 "{:>5}  {:<24} {:<12} {}{}",
                                 p.get("port").and_then(Value::as_u64).unwrap_or(0),
                                 p.get("title").and_then(Value::as_str).unwrap_or(""),
                                 p.get("process").and_then(Value::as_str).unwrap_or(""),
                                 p.get("group").and_then(Value::as_str).unwrap_or(""),
-                                if p.get("exposed").and_then(Value::as_bool) == Some(true) { " · exposed" } else { "" }
+                                if p.get("exposed").and_then(Value::as_bool) == Some(true) {
+                                    " · exposed"
+                                } else {
+                                    ""
+                                }
                             );
                         }
                     }
                     "block" => {
-                        for b in v.get("blocks").and_then(Value::as_array).into_iter().flatten() {
+                        for b in v
+                            .get("blocks")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
                             println!("$ {}", b.get("cmd").and_then(Value::as_str).unwrap_or(""));
                             print!("{}", b.get("output").and_then(Value::as_str).unwrap_or(""));
                             if let Some(e) = b.get("exit").and_then(Value::as_i64) {
@@ -248,13 +339,27 @@ fn main() -> ExitCode {
                         }
                     }
                     "theme" => {
-                        for t in v.get("themes").and_then(Value::as_array).into_iter().flatten() {
+                        for t in v
+                            .get("themes")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
                             println!("{}", t.as_str().unwrap_or(""));
                         }
                     }
                     "layout" => {
-                        for l in v.get("layouts").and_then(Value::as_array).into_iter().flatten() {
-                            println!("{}  {}", l.get("name").and_then(Value::as_str).unwrap_or(""), l.get("path").and_then(Value::as_str).unwrap_or(""));
+                        for l in v
+                            .get("layouts")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            println!(
+                                "{}  {}",
+                                l.get("name").and_then(Value::as_str).unwrap_or(""),
+                                l.get("path").and_then(Value::as_str).unwrap_or("")
+                            );
                         }
                         if let Some(c) = v.get("current").and_then(Value::as_str) {
                             println!("\n-- this window, as a layout:\n{c}");
@@ -286,7 +391,18 @@ mod tests {
 
     #[test]
     fn options_and_words() {
-        let a: Vec<String> = ["launch", "--profile", "pwsh", "--split", "--cwd", "C:\\x", "extra"].iter().map(|s| s.to_string()).collect();
+        let a: Vec<String> = [
+            "launch",
+            "--profile",
+            "pwsh",
+            "--split",
+            "--cwd",
+            "C:\\x",
+            "extra",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let (w, o) = parse(&a);
         assert_eq!(w, vec!["launch", "extra"]);
         assert_eq!(o.get("profile").and_then(Value::as_str), Some("pwsh"));

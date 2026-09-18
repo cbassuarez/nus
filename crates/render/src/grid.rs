@@ -156,7 +156,10 @@ impl GridRenderer {
         let empty = nus_vt::grid::Row::blank(grid.cols(), &nus_vt::cell::Cell::default());
         for r in 0..rows {
             let (row, cursor_here) = match view.get(r) {
-                Some(nus_vt::grid::Display::Line(abs)) => (grid.row_abs(*abs).unwrap_or(&empty), show_cursor && *abs == cursor_abs),
+                Some(nus_vt::grid::Display::Line(abs)) => (
+                    grid.row_abs(*abs).unwrap_or(&empty),
+                    show_cursor && *abs == cursor_abs,
+                ),
                 _ => (&empty, false),
             };
             let mut h = std::hash::DefaultHasher::new();
