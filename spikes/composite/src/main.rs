@@ -31,6 +31,8 @@ mod journal;
 mod cutoff;
 mod hands;
 mod replay;
+mod links;
+mod home;
 #[path = "loop_.rs"]
 mod loop_;
 mod blockpage;
@@ -250,6 +252,19 @@ impl ApplicationHandler<UserEvent> for Host {
             }
             if let Some(id) = a.front_request.take() {
                 front.push(id);
+            }
+        }
+        // Windows a restore asked for: one per saved session, each restored.
+        let mut sessions: Vec<start::Session> = Vec::new();
+        for a in self.apps.iter_mut() {
+            sessions.append(&mut a.spawn_sessions);
+        }
+        for s in sessions {
+            self.spawn_window(event_loop, Some(0));
+            if let Some(a) = self.apps.last_mut() {
+                a.last_session = Some(s);
+                a.restore_session_pub();
+                a.drop_birth = true;
             }
         }
         for i in spawn_from {
@@ -554,7 +569,10 @@ fn main() -> ExitCode {
             }
         }
     };
+    // Every window's tabs go in the file: the first window's session carries the rest.
+    let others: Vec<start::Session> = host.apps.iter().skip(1).map(|a| a.session_snapshot()).collect();
     if let Some(a) = host.apps.first_mut() {
+        a.other_sessions = others;
         a.save_session();
         a.sync_at_quit();
     }

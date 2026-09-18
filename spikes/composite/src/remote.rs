@@ -207,6 +207,7 @@ impl App {
                             Pane::Editor(e) => json!({ "kind": "editor", "title": e.title(), "path": e.buf().and_then(|b| b.path.as_ref()).map(|p| p.display().to_string()) }),
                             Pane::Settings(_) => json!({ "kind": "settings" }),
                             Pane::Hints(_) => json!({ "kind": "welcome" }),
+                            Pane::Home(_) => json!({ "kind": "home" }),
                             Pane::Ports(_) => json!({ "kind": "ports" }),
                         };
                         json!({

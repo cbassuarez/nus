@@ -34,6 +34,9 @@
 //!   tl left | right | b | home  a key to the timeline
 //!   share                      the active tab as a replay file, opened as a tab
 //!   ctrlc                      Ctrl+C to the shell
+//!   home | hometype <text> | homeenter   the prompt: open it, type into it, commit
+//!   link allow | deny          answer the link band on the focused shell
+//!   newwindow                  a second window
 //!   quit                       (implicit at the end)
 
 use std::path::PathBuf;
@@ -173,6 +176,20 @@ impl App {
                 self.timeline_key(&k);
             }
             "share" => self.run(crate::app::Action::ShareReplay),
+            "home" => self.open_home(),
+            "hometype" => {
+                let i = self.active;
+                if let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) {
+                    h.input.push_str(rest);
+                }
+            }
+            "homeenter" => self.home_commit_pub(),
+            "link" => {
+                use winit::keyboard::{Key, NamedKey};
+                let k = if rest == "deny" { Key::Named(NamedKey::Escape) } else { Key::Named(NamedKey::Enter) };
+                self.link_band_key(&k);
+            }
+            "newwindow" => self.run(crate::app::Action::NewWindow),
             "hands" => {
                 let a = match rest {
                     "deny" => crate::hands::Answer::Deny,

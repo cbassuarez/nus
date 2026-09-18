@@ -335,6 +335,7 @@ impl App {
                 Pane::Web(w) => w.tab.shared.borrow().title.clone(),
                 Pane::Settings(_) => "settings".into(),
                 Pane::Hints(_) => "welcome".into(),
+                Pane::Home(_) => "home".into(),
                 Pane::Editor(e) => e.title(),
                 Pane::Ports(_) => "ports".into(),
             }

@@ -335,6 +335,10 @@ pub enum Then {
     LastPage,
     /// The layout named in `then_layout` (a name under profile/layouts).
     Layout,
+    /// The prompt: a terminal with no PTY behind it (home.rs).
+    Prompt,
+    /// One page, `home_url`, as the whole window.
+    HomePage,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
@@ -451,6 +455,15 @@ pub struct Behavior {
     /// an idle prompt is let go; a running command is kept.
     #[serde(default)]
     pub keep_alive: KeepAlive,
+    /// The page THEN · HOME PAGE opens.
+    #[serde(default = "default_home_url")]
+    pub home_url: String,
+    /// Remember tabs and windows between launches (session.json); off, nothing is written.
+    #[serde(default = "default_true")]
+    pub remember: bool,
+    /// A plain click on a URL in the shell: ask first, open, or leave it to hints mode.
+    #[serde(default)]
+    pub link_click: LinkClick,
     /// The loop: Alt+Shift+click on a localhost page opens the editor at the element's source.
     #[serde(default = "default_true")]
     pub click_to_source: bool,
@@ -583,6 +596,19 @@ fn default_archive() -> u32 {
     12
 }
 
+fn default_home_url() -> String {
+    "https://nus.dev".into()
+}
+
+/// What a click on a link in the shell does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LinkClick {
+    #[default]
+    Ask,
+    Open,
+    HintsOnly,
+}
+
 /// How long replay sessions are kept.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReplayKeep {
@@ -686,6 +712,9 @@ impl Default for Behavior {
             hands: HandsMode::Ask,
             replay: ReplayKeep::Days7,
             click_to_source: true,
+            link_click: LinkClick::Ask,
+            home_url: default_home_url(),
+            remember: true,
             hands_hosts: Vec::new(),
             hands_confirm_submit: true,
             progress_sidebar: true,
@@ -850,6 +879,10 @@ pub enum Hit {
     Hands(HandsMode),
     Replay(ReplayKeep),
     ClickToSource(bool),
+    LinkClick(LinkClick),
+    Remember(bool),
+    SetLaunchTabs,
+    ClearLaunchTabs,
     HandsSubmit(bool),
     HandsForget,
     FoldOver(u32),
@@ -1180,6 +1213,10 @@ impl App {
             Hit::PortsRemember(b) => if b { "ports remember".into() } else { "ports forget".into() },
             Hit::KeepAlive(k) => if k == KeepAlive::On { "shells are held".into() } else { "shells die with the app".into() },
             Hit::ClickToSource(b) => if b { "click to source on".into() } else { "click to source off".into() },
+            Hit::Remember(b) => if b { "tabs and windows remembered".into() } else { "nothing remembered between launches".into() },
+            Hit::SetLaunchTabs => "this window is the launch tabs".into(),
+            Hit::ClearLaunchTabs => "launch tabs cleared".into(),
+            Hit::LinkClick(l) => match l { LinkClick::Ask => "links ask before opening".into(), LinkClick::Open => "links open on click".into(), LinkClick::HintsOnly => "links open from hints mode only".into() },
             Hit::Replay(k) => match k { ReplayKeep::Days7 => "replay keeps a week".into(), ReplayKeep::Day1 => "replay keeps a day".into(), ReplayKeep::Off => "replay off".into() },
             Hit::Hands(h) => match h { HandsMode::Ask => "hands ask first".into(), HandsMode::Always => "hands never ask".into(), HandsMode::Never => "hands off".into() },
             Hit::HandsSubmit(b) => if b { "a submit always asks".into() } else { "a submit does not ask on allowed hosts".into() },
@@ -1539,6 +1576,26 @@ impl App {
             Hit::Hands(h) => self.behavior.hands = h,
             Hit::Replay(k) => self.behavior.replay = k,
             Hit::ClickToSource(b) => self.behavior.click_to_source = b,
+            Hit::LinkClick(l) => self.behavior.link_click = l,
+            Hit::Remember(b) => {
+                self.behavior.remember = b;
+                if !b {
+                    let _ = std::fs::remove_file(std::env::current_dir().unwrap_or_default().join("profile").join("session.json"));
+                    self.last_session = None;
+                }
+            }
+            Hit::SetLaunchTabs => {
+                self.save_layout("launch");
+                self.behavior.then = Then::Layout;
+                self.behavior.then_layout = "launch".into();
+            }
+            Hit::ClearLaunchTabs => {
+                let _ = std::fs::remove_file(std::env::current_dir().unwrap_or_default().join("profile").join("layouts").join("launch.nus.luau"));
+                if self.behavior.then == Then::Layout && self.behavior.then_layout == "launch" {
+                    self.behavior.then = Then::Shell;
+                    self.behavior.then_layout.clear();
+                }
+            }
             Hit::HandsSubmit(b) => self.behavior.hands_confirm_submit = b,
             Hit::HandsForget => self.behavior.hands_hosts.clear(),
             Hit::FoldOver(n) => self.behavior.fold_over = n,
@@ -2461,6 +2518,8 @@ impl App {
                             ("RESTORE LAST SESSION".into(), Hit::Then(Then::Restore), b.then == Then::Restore),
                             ("A NEW SHELL".into(), Hit::Then(Then::Shell), b.then == Then::Shell),
                             ("THE LAST PAGE".into(), Hit::Then(Then::LastPage), b.then == Then::LastPage),
+                            ("THE PROMPT".into(), Hit::Then(Then::Prompt), b.then == Then::Prompt),
+                            (format!("HOME PAGE · {}", crate::links::host(&b.home_url).to_uppercase()), Hit::Then(Then::HomePage), b.then == Then::HomePage),
                             (if b.then_layout.is_empty() { "A LAYOUT".to_string() } else { format!("LAYOUT · {}", b.then_layout.to_uppercase()) }, Hit::Then(Then::Layout), b.then == Then::Layout),
                         ]),
                     ),
@@ -2471,6 +2530,23 @@ impl App {
                             if names.is_empty() { "layouts: save one from the palette (save this window as a layout) or write a .nus.luau · a folder with one offers it when a shell lands there".into() } else { format!("layouts: {} · pick which with the palette's layout rows; the first is used when none is picked", names.join(" · ")) }
                         }),
                     ),
+                    ("".into(), Info("the prompt is a terminal with no shell behind it: a url becomes a page, a command a shell running it, enter alone a shell · the home page is set from the palette: home <url>".into())),
+                    (
+                        "LAUNCH TABS".into(),
+                        Choice(vec![
+                            ("SET FROM THIS WINDOW".into(), Hit::SetLaunchTabs, false),
+                            (if crate::layout_file::saved().iter().any(|(n, _)| n == "launch") { "CLEAR".into() } else { "NONE SET".into() }, Hit::ClearLaunchTabs, false),
+                        ]),
+                    ),
+                    ("".into(), Info("what is open now, saved as the layout named launch, and THEN set to open it: shells with their folders, pages, the editor, the hatch".into())),
+                    (
+                        "REMEMBER".into(),
+                        Choice(vec![
+                            ("TABS AND WINDOWS".into(), Hit::Remember(true), b.remember),
+                            ("NOTHING".into(), Hit::Remember(false), !b.remember),
+                        ]),
+                    ),
+                    ("".into(), Info("remembered: every window's tabs, stacks, folders and pages come back through restore or the atlas · nothing: each launch starts as THEN says, and the atlas has only recents".into())),
                     (
                         "ATLAS".into(),
                         Choice(vec![
@@ -2684,8 +2760,18 @@ impl App {
                         ("OVER 200".into(), Hit::FoldOver(200), fo == 200),
                     ]),
                 ));
-                let (jn, jk, co) = (self.behavior.journal, self.behavior.journal_keep, self.behavior.cutoff);
+                let lc = self.behavior.link_click;
                 v.insert(7, (
+                    "CLICK LINKS".into(),
+                    Choice(vec![
+                        ("ASK".into(), Hit::LinkClick(LinkClick::Ask), lc == LinkClick::Ask),
+                        ("OPEN".into(), Hit::LinkClick(LinkClick::Open), lc == LinkClick::Open),
+                        ("HINTS ONLY".into(), Hit::LinkClick(LinkClick::HintsOnly), lc == LinkClick::HintsOnly),
+                    ]),
+                ));
+                v.insert(8, ("".into(), Info("a URL in the shell underlines under the pointer and a click opens it where LINKS says pages go; ASK puts a band on the pane first (D on it stops the asking) · hints mode (ctrl+shift+o) is always there".into())));
+                let (jn, jk, co) = (self.behavior.journal, self.behavior.journal_keep, self.behavior.cutoff);
+                v.insert(9, (
                     "JOURNAL".into(),
                     Choice(vec![
                         ("ON".into(), Hit::Journal(!jn), jn),
@@ -2694,8 +2780,8 @@ impl App {
                         ("90 DAYS".into(), Hit::JournalKeep(90), jk == 90),
                     ]),
                 ));
-                v.insert(8, ("".into(), Info("one line per finished command, per folder, in profile/journal · nus log, the palette's log rows, and a page per folder read it back".into())));
-                v.insert(9, (
+                v.insert(10, ("".into(), Info("one line per finished command, per folder, in profile/journal · nus log, the palette's log rows, and a page per folder read it back".into())));
+                v.insert(11, (
                     "CUT OFF".into(),
                     Choice(vec![
                         ("CHIP".into(), Hit::CutOffMode(CutOff::Chip), co == CutOff::Chip),
@@ -2703,9 +2789,9 @@ impl App {
                         ("OFF".into(), Hit::CutOffMode(CutOff::Off), co == CutOff::Off),
                     ]),
                 ));
-                v.insert(10, ("".into(), Info("a command a restart killed comes back as a chip on the restored shell: resume for claude and codex, run again for a server, reconnect for ssh".into())));
+                v.insert(12, ("".into(), Info("a command a restart killed comes back as a chip on the restored shell: resume for claude and codex, run again for a server, reconnect for ssh".into())));
                 let rk = self.behavior.replay;
-                v.insert(11, (
+                v.insert(13, (
                     "REPLAY".into(),
                     Choice(vec![
                         ("KEEP 7 DAYS".into(), Hit::Replay(ReplayKeep::Days7), rk == ReplayKeep::Days7),
@@ -2713,18 +2799,18 @@ impl App {
                         ("OFF".into(), Hit::Replay(ReplayKeep::Off), rk == ReplayKeep::Off),
                     ]),
                 ));
-                v.insert(12, ("".into(), Info("every shell's bytes, and at each command a still of the page beside: Ctrl+Shift+H scrubs the tab back through its checkpoints, B compares the page before and after, and share writes one HTML file that replays anywhere · takes effect at the next launch".into())));
+                v.insert(14, ("".into(), Info("every shell's bytes, and at each command a still of the page beside: Ctrl+Shift+H scrubs the tab back through its checkpoints, B compares the page before and after, and share writes one HTML file that replays anywhere · takes effect at the next launch".into())));
                 let ka = self.behavior.keep_alive;
-                v.insert(13, (
+                v.insert(15, (
                     "KEEP ALIVE".into(),
                     Choice(vec![
                         ("ON".into(), Hit::KeepAlive(KeepAlive::On), ka == KeepAlive::On),
                         ("OFF".into(), Hit::KeepAlive(KeepAlive::Off), ka == KeepAlive::Off),
                     ]),
                 ));
-                v.insert(14, ("".into(), Info(if nus_pty::hold::holder_exe().is_some() { "each shell runs in nus-hold, a small process that outlives the app: quit, crash or update, and a running command is still there when you come back; an idle prompt is let go".into() } else { "nus-hold was not found beside the app, so shells are not held".into() })));
+                v.insert(16, ("".into(), Info(if nus_pty::hold::holder_exe().is_some() { "each shell runs in nus-hold, a small process that outlives the app: quit, crash or update, and a running command is still there when you come back; an idle prompt is let go".into() } else { "nus-hold was not found beside the app, so shells are not held".into() })));
                 let sc = self.behavior.shell_colours;
-                v.insert(15, (
+                v.insert(17, (
                     "SHELL COLOURS".into(),
                     Choice(vec![
                         ("OFFER".into(), Hit::ShellColours(ShellColours::Chip), sc == ShellColours::Chip),

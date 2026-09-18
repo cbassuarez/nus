@@ -882,3 +882,53 @@ OVER. The welcome page's START HERE leads with it. Sync's file list is
 now the real one (`settings.json`, not `prefs.json`; plus `me.json`,
 containers, the blocklist, the avatar, themes and surfaces).
 
+
+## Links in the shell, launch, the prompt (settled and built 2026-09-18, twenty-first pass)
+
+**Links in the shell.** A URL in the grid — one the hint scanner finds, or
+an OSC 8 hyperlink — underlines under the pointer, with the host in the
+tooltip, and a plain click opens it where LINKS says pages go (a stack,
+the split, a new tab). Before it opens, a band on the pane asks — *github.com
+· open? · enter · esc cancels · d never ask again* — and D stops the asking
+for good. TERMINAL · CLICK LINKS: ASK (default) · OPEN · HINTS ONLY (the old
+way: Ctrl+Shift+O labels, nothing on click). A drag that starts on a link
+still selects; a Shift- or Ctrl-click is never a link.
+
+**Launch.** STARTUP · THEN grew: RESTORE LAST SESSION · A NEW SHELL · THE
+LAST PAGE · THE PROMPT · HOME PAGE · <host> · A LAYOUT. Restore brings back
+every window, not just the first: the file carries the other windows'
+sessions under `windows`, each comes back as a window with its tabs, its
+stacks and its container, and the shell a window is born with goes once the
+session's tabs are in and it has reached its prompt. LAUNCH TABS: SET FROM
+THIS WINDOW saves what is open as the layout named *launch* and points
+THEN at it; CLEAR forgets it; `set this window as the launch tabs` in the
+palette does the same. REMEMBER: TABS AND WINDOWS (default) · NOTHING —
+nothing writes no session, and the atlas keeps only recents. The home page
+is set from the palette: `home <url>`; it opens as the whole window.
+
+**The prompt.** THE PROMPT is nus's home: a terminal with no PTY behind it.
+One line, centred, a caret in signal and nothing else; the wordmark small
+where the pane begins; one dim line at the foot. A URL and Enter: the pane
+becomes that page. A command: the pane becomes a shell running it. Enter on
+nothing: a shell. As you type, the palette's rows come up beneath the line
+— tabs, recent pages and shells, layouts, history, held shells, settings —
+and ↓ moves onto them; nothing is picked until you do. `home` in the
+palette brings it back as a tab.
+
+**Three directions for the home, of which the prompt is the first.**
+*The prompt* (built): the app's whole thesis in one line — type, and it is
+a page or a shell. *The board*: the day's front page in Broadsheet — what is
+listening (ports), what ran (the journal), what is still running (held),
+last time's tabs — every line a row you can open, the caret at the top; the
+atlas and the ports board folded into one surface, for the person who
+comes back to a machine mid-work. *The plate*: the icon's orbit drawn large
+and alone, the band completing one orbit as the app boots, the ring's
+stops the last places you were (a shell, a page, a folder) and the caret
+appearing only when the orbit closes — for the person who wants the
+launch to be a moment. The three share one rule: no captions, no buttons,
+one caret, and whatever is typed goes somewhere real.
+
+**Applied, checked.** Passes seventeen and eighteen are in the code (every
+row, hook and verb they name); nineteen is built with its gaps named in
+place; twenty (theming) merged from its branch. This pass adds `links.rs`
+and `home.rs`, and touches session, settings and the palette.

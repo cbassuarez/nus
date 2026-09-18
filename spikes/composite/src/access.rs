@@ -230,6 +230,13 @@ impl App {
                         n.set_bounds(bounds(h.rect));
                         n
                     }
+                    Pane::Home(h) => {
+                        let mut n = Node::new(Role::TextInput);
+                        n.set_label("the prompt");
+                        n.set_value(h.input.clone());
+                        n.set_bounds(bounds(h.rect));
+                        n
+                    }
                 };
                 if is_right == focus_right {
                     focus = id;

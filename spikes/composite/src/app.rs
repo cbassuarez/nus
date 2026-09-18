@@ -113,6 +113,12 @@ pub enum Action {
     JournalPage,
     /// The timeline over the active tab.
     Timeline,
+    /// The prompt, as a tab.
+    Home,
+    /// STARTUP · THEN · HOME PAGE, set from the palette.
+    SetHome(String),
+    /// What is open now becomes the launch tabs.
+    SetLaunchTabs,
     /// The active tab as one HTML file that replays anywhere.
     ShareReplay,
     SaveToFolder(usize, usize),
@@ -234,6 +240,9 @@ pub struct TermPane {
     pub type_at_prompt: Option<String>,
     /// The timeline is showing this pane a moment, not now.
     pub replay: bool,
+    /// The link under the pointer, and the one a click is asking about.
+    pub link_hover: Option<crate::links::LinkAt>,
+    pub link_ask: Option<crate::links::LinkAt>,
     /// Blocks: folded output ranges (absolute lines), the display list they
     /// make, the block walked to, the filter, the lamps' hit rects.
     /// A shell set its colours (OSC 10/11): offer them for the look, since when.
@@ -352,6 +361,8 @@ pub enum Pane {
     Hints(HintsPane),
     Editor(crate::editor::EditorPane),
     Ports(crate::ports::PortsPane),
+    /// The prompt: nus's home, a terminal with no PTY (home.rs).
+    Home(crate::home::HomePane),
 }
 
 /// Sidebar click targets besides tab rows.
@@ -596,6 +607,7 @@ impl Tab {
                 }
                 Pane::Settings(_) => ("settings".into(), String::new()),
                 Pane::Hints(_) => ("welcome".into(), String::new()),
+                Pane::Home(_) => ("home".into(), String::new()),
                 Pane::Editor(e) => (e.title(), e.buf().and_then(|b| b.path.as_ref()).and_then(|p| p.parent()).map(|p| p.display().to_string()).unwrap_or_default()),
                 Pane::Ports(_) => ("ports".into(), String::new()),
             }
@@ -649,6 +661,7 @@ impl Tab {
             }
             Pane::Settings(_) => "settings".into(),
             Pane::Hints(_) => "welcome".into(),
+            Pane::Home(_) => "home".into(),
             Pane::Editor(e) => e.title(),
             Pane::Ports(_) => "ports".into(),
         };
@@ -831,6 +844,12 @@ pub struct App {
     /// Replay: the session's recorder, checkpoints waiting on a draw, the timeline.
     /// The loop's probe out on a page: (tab, right?, cdp id, since).
     pub loop_probe: Option<(usize, bool, i32, Instant)>,
+    /// Sessions for other windows, to be spawned by the host (restore).
+    pub spawn_sessions: Vec<crate::start::Session>,
+    /// A window restored from a session: its birth shell goes once it is at a prompt.
+    pub drop_birth: bool,
+    /// The other windows' sessions, gathered at quit for the file.
+    pub other_sessions: Vec<crate::start::Session>,
     pub recorder: Option<crate::replay::Recorder>,
     pub checkpoints: Vec<crate::replay::Pending>,
     pub timeline: Option<crate::replay::Timeline>,
@@ -1072,6 +1091,9 @@ impl App {
             shot: crate::shot::Shot::from_env(),
             deferred: Vec::new(),
             loop_probe: None,
+            spawn_sessions: Vec::new(),
+            drop_birth: false,
+            other_sessions: Vec::new(),
             recorder: None,
             checkpoints: Vec::new(),
             timeline: None,
@@ -1339,6 +1361,8 @@ impl App {
             cutoff_hit: None,
             type_at_prompt: None,
             replay: false,
+            link_hover: None,
+            link_ask: None,
             colour_offer: None,
             colour_offer_hit: None,
             folds: Vec::new(),
@@ -1635,6 +1659,9 @@ impl App {
                 tracing::warn!("rules nus.run({cmd}): {e}");
             }
         }
+        if self.drop_birth {
+            self.drop_birth_shell();
+        }
         // What restore asked to type once the shell is at a prompt.
         for tab in self.tabs.iter_mut() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
@@ -1683,6 +1710,26 @@ impl App {
                         }
                     }
                     crate::settings::Then::Shell => {}
+                    crate::settings::Then::Prompt => {
+                        // The first shell gives way to the prompt.
+                        if let Some(t) = self.tabs.first_mut() {
+                            if matches!(t.left, Pane::Term(_)) && t.right.is_none() {
+                                t.left = Pane::Home(crate::home::HomePane::new());
+                            }
+                        }
+                        self.layout();
+                    }
+                    crate::settings::Then::HomePage => {
+                        let url = self.behavior.home_url.clone();
+                        if let Some(w) = self.new_web_pane(&url) {
+                            if let Some(t) = self.tabs.first_mut() {
+                                if matches!(t.left, Pane::Term(_)) && t.right.is_none() {
+                                    t.left = Pane::Web(w);
+                                }
+                            }
+                            self.layout();
+                        }
+                    }
                     crate::settings::Then::Layout => {
                         let saved = crate::layout_file::saved();
                         let pick = saved.iter().find(|(n, _)| *n == self.behavior.then_layout).or(saved.first()).map(|(_, p)| p.clone());
@@ -3176,6 +3223,7 @@ impl App {
                 Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
                 Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
+                Pane::Home(_) => (nus_render::text::icons::TERMINAL, "home".into()),
                 Pane::Editor(e) => (nus_render::text::icons::CODE, e.title()),
                 Pane::Ports(_) => (nus_render::text::icons::PORTS, "ports".into()),
             };
@@ -4013,6 +4061,7 @@ impl App {
                 Pane::Web(_) => nus_render::text::icons::GLOBE,
                 Pane::Settings(_) => nus_render::text::icons::SETTINGS,
                 Pane::Hints(_) => nus_render::text::icons::HOME,
+                Pane::Home(_) => nus_render::text::icons::TERMINAL,
                 Pane::Editor(_) => nus_render::text::icons::CODE,
                 Pane::Ports(_) => nus_render::text::icons::PORTS,
             };
@@ -5311,6 +5360,7 @@ impl App {
                 let reach = self.draw_welcome(scene, r, scroll);
                 self.welcome_reach = reach;
             }
+            Pane::Home(h) => self.draw_home(scene, h, focused),
             Pane::Editor(p) => {
                 let r = p.rect;
                 self.draw_editor(scene, p, r, focused);
@@ -5398,6 +5448,7 @@ impl App {
                 self.draw_prompt_line(scene, p, pane_paper);
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
+                self.draw_link_band(scene, p, r, hh);
                 let _ = p.term.grid_mut().take_damage();
                 if swapped {
                     if let Some(tl) = self.timeline.as_mut() {
@@ -5655,6 +5706,15 @@ impl App {
                 }
                 if hit("welcome") || hit("help") || hit("tour") {
                     rows.push(row("?", "welcome · the tour of nus (F1)".into(), Action::Welcome));
+                }
+                if hit("home") || hit("prompt") {
+                    rows.push(row("»", "home · the prompt, a terminal with no shell behind it".into(), Action::Home));
+                }
+                if let Some(u) = q.strip_prefix("home ").map(str::trim).filter(|u| !u.is_empty()) {
+                    rows.push(row("⌂", format!("home page · {u} · opens at launch"), Action::SetHome(u.to_string())));
+                }
+                if hit("launch tabs") || hit("startup") {
+                    rows.push(row("⇥", "set this window as the launch tabs".into(), Action::SetLaunchTabs));
                 }
                 if hit("timeline") || hit("replay") || hit("then") {
                     rows.push(row("↺", "timeline · this tab at any checkpoint (ctrl+shift+h)".into(), Action::Timeline));
@@ -6076,6 +6136,20 @@ impl App {
             Action::Chain(name) => self.run_chain(&name),
             Action::JournalPage => self.open_journal_page(),
             Action::Timeline => self.toggle_timeline(),
+            Action::Home => self.open_home(),
+            Action::SetHome(url) => {
+                self.behavior.home_url = crate::links::normalize(&url);
+                self.behavior.then = crate::settings::Then::HomePage;
+                self.save_prefs();
+                self.notice(&format!("home page · {} · opens at launch", crate::links::host(&self.behavior.home_url)));
+            }
+            Action::SetLaunchTabs => {
+                self.save_layout("launch");
+                self.behavior.then = crate::settings::Then::Layout;
+                self.behavior.then_layout = "launch".into();
+                self.save_prefs();
+                self.notice("this window is the launch tabs · STARTUP · THEN opens it");
+            }
             Action::ShareReplay => match self.share_replay(self.active) {
                 Ok(p) => {
                     let url = format!("file:///{}", p.display().to_string().replace('\\', "/"));
@@ -6482,6 +6556,15 @@ impl App {
             self.dirty = true;
             return;
         }
+        // The prompt takes plain keys when it is the focused pane.
+        if self.home_key(ev) {
+            return;
+        }
+        // A link waiting on the focused shell: enter opens, esc cancels, d opens and stops asking.
+        if ev.state == ElementState::Pressed && self.link_band_key(&ev.logical_key) {
+            self.dirty = true;
+            return;
+        }
         // A hand waiting on the focused page: y/enter allows, n/esc denies, h allows the host; anything else takes over.
         if ev.state == ElementState::Pressed && self.hands_key(&ev.logical_key) {
             self.dirty = true;
@@ -6489,7 +6572,7 @@ impl App {
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
-            Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) => {}
+            Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) | Pane::Home(_) => {}
             Pane::Term(t) => {
                 // Shift+PgUp / PgDn: a page of scrollback, on the curve
                 // (unless the program asked for the keys, as in an alternate screen).
@@ -6688,6 +6771,7 @@ impl App {
             Pane::Web(_) => ("page", ""),
             Pane::Settings(_) => ("settings", ""),
             Pane::Hints(_) => ("welcome", ""),
+            Pane::Home(_) => ("home", ""),
             Pane::Editor(_) => ("editor", ""),
             Pane::Ports(_) => ("ports", ""),
         };
@@ -7318,7 +7402,7 @@ impl App {
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
                 Pane::Web(w) => Closed::Web(w.tab.shared.borrow().url.clone()),
-                Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) => {
+                Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) | Pane::Home(_) => {
                     self.tab_removed(i);
                     continue;
                 }
@@ -7697,6 +7781,7 @@ impl App {
             Pane::Web(w) => w.rect.contains(x, y),
             Pane::Settings(s) => s.rect.contains(x, y),
             Pane::Hints(s) => s.rect.contains(x, y),
+            Pane::Home(s) => s.rect.contains(x, y),
             Pane::Editor(e) => e.rect.contains(x, y),
             Pane::Ports(p) => p.rect.contains(x, y),
         };
@@ -7706,6 +7791,7 @@ impl App {
                 Pane::Web(w) => w.rect.contains(x, y),
                 Pane::Settings(s) => s.rect.contains(x, y),
                 Pane::Hints(s) => s.rect.contains(x, y),
+                Pane::Home(s) => s.rect.contains(x, y),
                 Pane::Editor(e) => e.rect.contains(x, y),
                 Pane::Ports(p) => p.rect.contains(x, y),
             };
@@ -7778,6 +7864,9 @@ impl App {
             return;
         }
         if pressed && button == MouseButton::Left && self.dedupe_click(x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.home_click(x, y) {
             return;
         }
         if pressed && button == MouseButton::Left && self.hands_click(x, y) {
@@ -7879,7 +7968,7 @@ impl App {
                     }
                     w.tab.focus(is_right == focus_right);
                 }
-                Pane::Term(_) | Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) => {}
+                Pane::Term(_) | Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) | Pane::Home(_) => {}
             }
         }
         self.mouse_down_in_web = down_in_web;
@@ -8505,6 +8594,7 @@ pub(crate) fn place_pane_bare(pane: &mut Pane, r: Rect, header: f32, pad_x: f32,
         }
         Pane::Settings(s) => s.rect = r,
         Pane::Hints(h) => h.rect = r,
+        Pane::Home(h) => h.rect = r,
         Pane::Editor(e) => e.rect = r,
         Pane::Ports(p) => p.rect = r,
         Pane::Web(w) => {
@@ -8580,6 +8670,9 @@ impl App {
             }
             Pane::Hints(_) => {
                 self.fonts.draw_icon(scene, nus_render::text::icons::HOME, size, x, y, color);
+            }
+            Pane::Home(_) => {
+                self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, size, x, y, color);
             }
             Pane::Editor(_) => {
                 self.fonts.draw_icon(scene, nus_render::text::icons::CODE, size, x, y, color);

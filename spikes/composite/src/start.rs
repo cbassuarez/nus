@@ -84,6 +84,9 @@ pub struct Session {
     pub tiles: Vec<usize>,
     /// The window's container.
     pub container: String,
+    /// The other windows open at the time, each with its own tabs; they
+    /// come back as windows when this one restores.
+    pub others: Vec<Session>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,10 +127,35 @@ fn saved_from_json(v: &serde_json::Value) -> Option<Saved> {
     }
 }
 
+impl SavedTab {
+    pub fn to_value(&self) -> serde_json::Value {
+        let t = self;
+        serde_json::json!({
+                    "left": t.left.as_ref().map(saved_to_json),
+                    "right": t.right.as_ref().map(saved_to_json),
+                    "shell": t.shell.as_ref().map(shell_state_to_json),
+                    "shell_right": t.shell_right.as_ref().map(shell_state_to_json),
+                    "pinned": t.pinned,
+                    "parent": t.parent,
+                    "name": t.name,
+                    "emoji": t.emoji,
+                    "colour": t.colour,
+                    "container": t.container,
+                    "split": t.split,
+                    "hatch": t.hatch,
+                })
+    }
+}
+
 impl Session {
     pub fn load() -> Option<Session> {
         let text = std::fs::read_to_string(profile_dir().join("session.json")).ok()?;
         let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        Session::from_value(&v)
+    }
+
+    /// One window's session from its JSON (the file's root, or one of `windows`).
+    pub fn from_value(v: &serde_json::Value) -> Option<Session> {
         let tabs = v
             .get("tabs")?
             .as_array()?
@@ -149,33 +177,22 @@ impl Session {
             .collect();
         let tiles = v.get("tiles").and_then(|t| t.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect()).unwrap_or_default();
         let container = v.get("container").and_then(|c| c.as_str()).unwrap_or(crate::containers::PERSONAL).to_string();
-        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize, tiles, container })
+        let others = v.get("windows").and_then(|w| w.as_array()).map(|a| a.iter().filter_map(Session::from_value).collect()).unwrap_or_default();
+        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize, tiles, container, others })
     }
 
     pub fn save(&self) {
-        let tabs: Vec<serde_json::Value> = self
-            .tabs
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "left": t.left.as_ref().map(saved_to_json),
-                    "right": t.right.as_ref().map(saved_to_json),
-                    "shell": t.shell.as_ref().map(shell_state_to_json),
-                    "shell_right": t.shell_right.as_ref().map(shell_state_to_json),
-                    "pinned": t.pinned,
-                    "parent": t.parent,
-                    "name": t.name,
-                    "emoji": t.emoji,
-                    "colour": t.colour,
-                    "container": t.container,
-                    "split": t.split,
-                    "hatch": t.hatch,
-                })
-            })
-            .collect();
-        let v = serde_json::json!({ "tabs": tabs, "active": self.active, "tiles": self.tiles, "container": self.container, "saved": now() });
+
+        let mut v = self.to_value();
+        v["saved"] = serde_json::json!(now());
         let _ = std::fs::create_dir_all(profile_dir());
         let _ = std::fs::write(profile_dir().join("session.json"), serde_json::to_string_pretty(&v).unwrap_or_default());
+    }
+
+    /// This window's session as JSON, the other windows under `windows`.
+    pub fn to_value(&self) -> serde_json::Value {
+        let tabs: Vec<serde_json::Value> = self.tabs.iter().map(SavedTab::to_value).collect();
+        serde_json::json!({ "tabs": tabs, "active": self.active, "tiles": self.tiles, "container": self.container, "windows": self.others.iter().map(Session::to_value).collect::<Vec<_>>() })
     }
 
     pub fn summary(&self) -> String {
@@ -426,11 +443,41 @@ impl App {
             }
             self.activate((first_new + sess.active).min(n - 1));
         }
+        // The other windows come back too: the host spawns one per session.
+        if !sess.others.is_empty() {
+            self.spawn_sessions.extend(sess.others.clone());
+        }
         self.layout();
     }
 
-    /// Save the current tabs as the session (called when tabs change).
-    pub(crate) fn save_session(&self) {
+    /// A restored window drops the idle shell it was born with, once the
+    /// session's tabs are in and that shell has reached its prompt (polled
+    /// from tick while `drop_birth` is set).
+    pub(crate) fn drop_birth_shell(&mut self) {
+        if self.tabs.len() < 2 {
+            self.drop_birth = false;
+            return;
+        }
+        if !matches!(&self.tabs[0].left, Pane::Term(t) if t.term.at_prompt()) {
+            return;
+        }
+        self.drop_birth = false;
+        let idle = matches!(&self.tabs[0].left, Pane::Term(t) if t.term.at_prompt() && t.pty.foreground_process().is_none()) && self.tabs[0].right.is_none();
+        if idle {
+            let mut tab = self.tabs.remove(0);
+            if let Pane::Term(t) = &mut tab.left {
+                if t.pty.held_id().is_some() {
+                    t.pty.kill();
+                }
+            }
+            self.active = self.active.saturating_sub(1);
+            self.tab_removed(0);
+            self.layout();
+        }
+    }
+
+    /// This window's tabs as a session, without writing it.
+    pub(crate) fn session_snapshot(&self) -> Session {
         let saved = |p: &Pane| match p {
             Pane::Term(t) => Some(Saved::Shell { profile: self.profiles.get(t.profile).map(|p| p.name.clone()).unwrap_or_default() }),
             Pane::Web(w) => {
@@ -466,7 +513,15 @@ impl App {
             .filter(|t| t.left.is_some())
             .collect();
         let tiles = self.tiling.as_ref().map(|t| t.ids.iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
-        Session { tabs, active: self.active, tiles, container: self.container.clone() }.save();
+        Session { tabs, active: self.active, tiles, container: self.container.clone(), others: self.other_sessions.clone() }
+    }
+
+    /// Save the current tabs as the session (called when tabs change).
+    pub(crate) fn save_session(&self) {
+        if !self.behavior.remember {
+            return;
+        }
+        self.session_snapshot().save();
     }
 
     /// Remember a page or shell in the recent list (deduped, newest first).
@@ -669,6 +724,7 @@ mod tests {
             active: 1,
             tiles: vec![0, 1],
             container: "PERSONAL".into(),
+            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, container: None, split: None, hatch: false }], active: 0, tiles: vec![], container: "WORK".into(), others: vec![] }],
         };
         let dir = std::env::temp_dir().join(format!("nus-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("profile")).unwrap();
@@ -691,6 +747,9 @@ mod tests {
         assert!(back.tabs[1].name.is_none());
         assert_eq!(back.active, 1);
         assert_eq!(back.tiles, vec![0, 1]);
+        assert_eq!(back.others.len(), 1);
+        assert_eq!(back.others[0].container, "WORK");
+        assert_eq!(back.others[0].tabs.len(), 1);
         assert_eq!(s.summary(), "1 shell · 2 pages");
     }
 }

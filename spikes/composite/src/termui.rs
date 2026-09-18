@@ -181,6 +181,11 @@ pub fn labels(n: usize) -> Vec<String> {
 
 impl App {
     /// Pointer → (absolute line, col) in a terminal pane.
+    /// The grid cell under a point, for the links layer.
+    pub(crate) fn term_cell_pub(p: &mut TermPane, x: f32, y: f32) -> (u64, usize) {
+        Self::term_cell(p, x, y)
+    }
+
     fn term_cell(p: &mut TermPane, x: f32, y: f32) -> (u64, usize) {
         let (cw, ch) = p.grid.cell_size();
         let cols = p.term.cols();
@@ -201,6 +206,9 @@ impl App {
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let mut acted = false;
         let mut open_url: Option<String> = None;
+        let mut open_link: Option<String> = None;
+        let mut link_asked = false;
+        let link_click = self.behavior.link_click;
         let mut open_file: Option<std::path::PathBuf> = None;
         let mut copy: Option<String> = None;
         let mut run: Option<String> = None;
@@ -307,6 +315,19 @@ impl App {
                     acted = true;
                     continue;
                 }
+                // A link under a plain click: ask, or open (the selection is not started).
+                if !shift && !ctrl && t.link_ask.is_none() && link_click != crate::settings::LinkClick::HintsOnly {
+                    if let Some(l) = Self::link_at(t, line, col) {
+                        if link_click == crate::settings::LinkClick::Open {
+                            open_link = Some(crate::links::normalize(&l.url));
+                        } else {
+                            t.link_ask = Some(l);
+                            link_asked = true;
+                        }
+                        acted = true;
+                        continue;
+                    }
+                }
                 // Click count.
                 let now = Instant::now();
                 let count = match t.clicks {
@@ -369,6 +390,15 @@ impl App {
         }
         if let Some(u) = open_url {
             self.open_url(&u, true);
+        }
+        if let Some(u) = open_link {
+            let i = self.active;
+            self.open_link(i, &u);
+        }
+        if link_asked {
+            self.band_anim.replay(0.0, 1.0, self.motion.dur(crate::anim::base::BAND));
+            self.play_event("toggle");
+            self.dirty = true;
         }
         if let Some(p) = open_file {
             self.open_file(&p, true);
@@ -477,6 +507,7 @@ impl App {
         let top = grid.abs_of_display(0);
         let label = self.label();
         let (mx, my) = self.mouse;
+        self.draw_link_hover(scene, p, r);
         let view = p.view().to_vec();
         let line_at = |row: usize| -> Option<u64> {
             match view.get(row) {
