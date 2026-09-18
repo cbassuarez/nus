@@ -19,6 +19,7 @@
 //!   ask why did that fail?     the ask panel, with the question sent
 //!   theme nord                 a stock theme by name
 //!   board | compact | atlas | settings | devtools | reader | split | sidebar
+//!   settingsat 2               settings at a section (2 = startup)
 //!   hover 40 200               the pointer at logical px from the top-left
 //!   click 900 500              a left click there
 //!   altclick 900 500           with Alt held (a peek)
@@ -209,6 +210,10 @@ impl App {
             "compact" => self.toggle_compact(),
             "atlas" => self.open_start(),
             "settings" => self.open_settings(),
+            "settingsat" => {
+                let sec = rest.trim().parse::<usize>().unwrap_or(0);
+                self.run(crate::app::Action::SettingsAt(sec, None));
+            }
             "devtools" => self.toggle_devtools(),
             "reader" => self.toggle_reader(),
             "split" => self.divide(),
