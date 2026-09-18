@@ -91,7 +91,7 @@ impl App {
             return;
         }
         let profile = profile_dir();
-        let device = self.behavior.sync_device.clone().filter(|d| !d.trim().is_empty()).unwrap_or_else(nus_sync::device_name);
+        let device = crate::me::device();
         let session = self.behavior.sync_session;
         let (tx, rx) = channel();
         self.sync.rx = Some(rx);

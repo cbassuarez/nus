@@ -222,6 +222,10 @@ pub struct TermPane {
     /// The prompt line's language server, once tried.
     pub plsp: Option<crate::prompt_lsp::LineLsp>,
     pub plsp_tried: bool,
+    /// The program running here ("claude", "nvim"), empty at a prompt;
+    /// the mark count it was read at.
+    pub program: String,
+    pub program_marks: usize,
     pub chip_hits: Vec<(Rect, usize)>,
     /// The command a restart killed, drawn at the seam after the snapshot.
     pub cutoff: Option<crate::cutoff::CutOff>,
@@ -814,6 +818,11 @@ pub struct App {
     pub sound: crate::sound::Sound,
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
+    /// You, on this machine (profile/me.json), and the card that shows it.
+    pub me: Option<crate::me::Me>,
+    pub me_card: crate::me::MeCard,
+    /// The name typed during the walk, before the file exists.
+    pub pending_name: String,
     pub splash: Option<crate::splash::Splash>,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
@@ -1056,6 +1065,9 @@ impl App {
             started: Instant::now(),
             sound: crate::sound::Sound::new(crate::sound::SoundPrefs::default()),
             start: None,
+            me: crate::me::Me::load(),
+            me_card: crate::me::MeCard::default(),
+            pending_name: String::new(),
             splash: Some(crate::splash::Splash::new()),
             shot: crate::shot::Shot::from_env(),
             deferred: Vec::new(),
@@ -1143,6 +1155,10 @@ impl App {
             app.active = 1;
         }
         app.apply_prefs(crate::prefs::Prefs::load());
+        // First launch, no profile yet: the card walks you through.
+        if !secondary && !onboarded && app.me.is_none() {
+            app.open_me_card();
+        }
         // The hatch's global hotkey: the first window registers it; a
         // second Space shares it (main routes the event to the focused one).
         if !secondary {
@@ -1169,6 +1185,7 @@ impl App {
         if let Some(days) = app.behavior.replay.days() {
             app.recorder = crate::replay::Recorder::new(days);
         }
+        app.user_name = app.me_name();
         if app.behavior.startup_sound {
             app.play_event("launch");
         }
@@ -1315,6 +1332,8 @@ impl App {
             mouse_last: None,
             plsp: None,
             plsp_tried: false,
+            program: String::new(),
+            program_marks: usize::MAX,
             chip_hits: Vec::new(),
             cutoff: None,
             cutoff_hit: None,
@@ -2237,6 +2256,49 @@ impl App {
         self.dirty = true;
     }
 
+    /// What a pane's colours go through: the settings' grade and
+    /// truecolour rule, then whatever `program(p)` says for what's running.
+    fn pane_policy(&self, program: &str, cwd: &Option<String>) -> nus_render::Policy {
+        let mut pol = nus_render::Policy { min_contrast: self.behavior.grade.ratio(), snap: self.behavior.truecolour == crate::settings::Truecolour::Snapped, ansi: None, remap: Vec::new() };
+        if program.is_empty() {
+            return pol;
+        }
+        let Some(look) = self.rules.program(program, program, cwd.as_deref().unwrap_or(""), &self.theme, self.surface.signal) else { return pol };
+        let word = |s: &str| -> Option<nus_vt::Rgb> {
+            let c = match s.trim() {
+                "ink" => self.theme.ink,
+                "paper" => self.theme.paper,
+                "signal" => self.surface.signal,
+                "dim" => self.theme.dim,
+                h => crate::surface::parse_hex(h)?,
+            };
+            Some(crate::theme_edit::to_rgb(c))
+        };
+        if let Some(c) = look.contrast {
+            pol.min_contrast = c.max(0.0);
+        }
+        if let Some(s) = look.snap {
+            pol.snap = s;
+        }
+        if let Some(a) = &look.ansi {
+            let parsed: Vec<Option<nus_vt::Rgb>> = a.iter().map(|s| word(s)).collect();
+            if parsed.iter().all(|c| c.is_some()) {
+                pol.ansi = Some(std::array::from_fn(|i| parsed[i].unwrap()));
+            }
+        }
+        pol.remap = look.remap.iter().filter_map(|(from, to)| Some((word(from)?, word(to)?))).collect();
+        pol
+    }
+
+    /// The caret's colour outside a shell (the editor, the prompt line):
+    /// the rule, resolved with the window's signal for the tab's own.
+    pub(crate) fn caret_color(&self) -> nus_render::Color {
+        match self.cursor.color {
+            crate::settings::CursorColor::Theme => self.theme.caret,
+            _ => self.surface.signal,
+        }
+    }
+
     /// The cursor as the prefs want it, for one pane.
     fn cursor_look(&self, p: &TermPane, focused: bool, tab_signal: Option<nus_render::Color>) -> nus_render::CursorLook {
         use crate::settings::{Blink, CursorColor, CursorShapePref};
@@ -2249,7 +2311,9 @@ impl App {
             CursorShapePref::Underline => Some(nus_vt::CursorShape::Underline),
         };
         let color = match self.cursor.color {
-            CursorColor::Ink => None,
+            // The theme's caret, unless the program set one (OSC 12).
+            CursorColor::Theme if p.term.palette.override_of(nus_vt::palette::CURSOR).is_some() => None,
+            CursorColor::Theme => Some(self.theme.caret),
             CursorColor::Signal => Some(self.surface.signal),
             CursorColor::Tab => tab_signal.or(Some(self.surface.signal)),
         };
@@ -2287,7 +2351,7 @@ impl App {
         }
         let (x, y) = (p.cur_x.value(), p.cur_y.value());
         let gliding = p.cur_x.active() || p.cur_y.active();
-        let color = look.color.unwrap_or(self.theme.ink);
+        let color = look.color.unwrap_or(self.theme.caret);
         let shape = look.shape.unwrap_or(p.term.cursor_style().shape);
         let rect_at = |cx: f32, cy: f32| {
             let px = p.origin.0 + cx * cw;
@@ -2340,7 +2404,7 @@ impl App {
     pub(crate) fn apply_theme(&mut self, t: &crate::themes::StockTheme) {
         use crate::theme_edit::{Family, ModeEdit};
         self.surface = t.surface.clone();
-        let face = |f: &crate::themes::Face| ModeEdit { paper: Some(f.paper), ink: Some(f.ink), page: Some(f.page), ansi: f.ansi };
+        let face = |f: &crate::themes::Face| ModeEdit { paper: Some(f.paper), ink: Some(f.ink), page: Some(f.page), ansi: f.ansi, caret: f.caret, selection: f.selection };
         self.theme_edit.paper = face(&t.paper);
         self.theme_edit.ink = face(&t.ink);
         self.theme_edit.family = Family::Imported;
@@ -2372,14 +2436,14 @@ impl App {
     pub(crate) fn current_theme(&self, name: &str) -> crate::themes::StockTheme {
         let paper = self.theme_edit.build(nus_render::Mode::Paper, self.surface.signal);
         let ink = self.theme_edit.build(nus_render::Mode::Ink, self.surface.signal);
-        let face = |t: &Theme| crate::themes::Face { paper: t.paper, ink: t.ink, page: t.page, ansi: Some(t.ansi.map(crate::theme_edit::from_rgb)) };
+        let face = |t: &Theme, e: &crate::theme_edit::ModeEdit| crate::themes::Face { paper: t.paper, ink: t.ink, page: t.page, ansi: Some(t.ansi.map(crate::theme_edit::from_rgb)), caret: e.caret, selection: e.selection };
         crate::themes::StockTheme {
             name: name.to_string(),
             story: format!("saved from {} on {}", self.preset_name, chrono_date()),
             port: false,
             cursor_motion: Some(self.cursor.motion),
-            paper: face(&paper),
-            ink: face(&ink),
+            paper: face(&paper, &self.theme_edit.paper),
+            ink: face(&ink, &self.theme_edit.ink),
             surface: self.surface.clone(),
             cursor: self.cursor.color,
             bar: self.load_bar.style,
@@ -2648,6 +2712,7 @@ impl App {
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+        self.rules.forget_programs();
         for tab in &mut self.tabs {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Term(t) = p {
@@ -3515,6 +3580,7 @@ impl App {
         self.draw_tidy(&mut scene, w, h);
         self.draw_board_overlay(&mut scene, w, h);
         self.draw_start(&mut scene);
+        self.draw_me_card(&mut scene);
         self.draw_tip(&mut scene, w, h);
         self.draw_splash(&mut scene);
         self.scene = scene;
@@ -4108,22 +4174,49 @@ impl App {
         let fh = self.px(m::FOOT_H);
         let isz = self.px(16.0);
         let iy = fy + ((fh - isz) / 2.0).round();
-        // Avatar: profile/avatar.png, else the initial in the signal square.
+        // Avatar: the profile's face — a picture, an emoji, or the initial
+        // in the signal square. A signal dot at its corner until the
+        // profile has been set up; the card opens on click.
         let av = self.px(22.0);
         let ar = Rect::new(sb.x + pad_x, fy + ((fh - av) / 2.0).round(), av, av);
-        match self.avatar.clone() {
-            Some(b) => {
-                scene.texture(ar, b, None);
-                scene.layer(None);
+        let face = match &self.me {
+            Some(me) => me.face.clone(),
+            None if self.avatar.is_some() => crate::me::Face::Picture,
+            None => crate::me::Face::Initial,
+        };
+        let name = self.user_name.clone();
+        self.draw_face(scene, ar, &face, &name);
+        let hit = Rect::new(sb.x, fy, ar.right() + self.px(8.0) - sb.x, fh);
+        if self.me.is_none() {
+            let d = self.px(7.0);
+            let dr = Rect::new(ar.right() - d / 2.0, ar.y - d / 2.0, d, d);
+            scene.push(nus_render::Instance::rounded(Rect::new(dr.x - self.px(1.5), dr.y - self.px(1.5), d + self.px(3.0), d + self.px(3.0)), (d + self.px(3.0)) / 2.0, t.paper));
+            scene.push(nus_render::Instance::rounded(dr, d / 2.0, self.surface.signal));
+        }
+        {
+            let key = hover_key("me", 0);
+            let (mx, my) = self.mouse;
+            let hot = hit.contains(mx, my);
+            let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: Instant::now() });
+            if hot != h.hot {
+                h.hot = hot;
+                if hot {
+                    h.since = Instant::now();
+                }
             }
-            None => {
-                scene.rect(ar, self.surface.signal);
-                let initial = self.user_initial();
-                let iw = self.fonts.measure(strong, &initial);
-                self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, ar.x + (ar.w - iw) / 2.0, ar.y + av / 2.0 + self.px(4.0), &initial);
+            if hot && !self.me_card.open {
+                let since = h.since;
+                let words = match &self.me {
+                    Some(me) => format!("{} · {} with nus", me.name, me.day_word()),
+                    None => "set up your profile · local, no account".to_string(),
+                };
+                self.tip = Some(Tip { anchor: hit, text: words, since });
+                if since.elapsed().as_millis() < 700 {
+                    self.dirty = true;
+                }
             }
         }
-        self.side_hits.push((Rect::new(sb.x, fy, ar.right() + self.px(8.0) - sb.x, fh), SideHit::Profile));
+        self.side_hits.push((hit, SideHit::Profile));
         let mut x = ar.right() + self.px(14.0);
         let hr = Rect::new(x - self.px(8.0), fy, isz + self.px(16.0), fh);
         self.icon_button(scene, nus_render::text::icons::PLUS, isz, x, iy, ink, hr, hover_key("foot", 0), IconMotion::Pop);
@@ -4208,15 +4301,20 @@ impl App {
                 self.close_tabs(false);
             }
             SideHit::Profile => {
-                self.open_settings();
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
-                    s.section = crate::settings::SEC_TERMINAL;
+                if self.me_card.open {
+                    self.close_me_card();
+                } else {
+                    self.open_me_card();
                 }
             }
             SideHit::NewTab => self.open_palette(PaletteMode::New),
             SideHit::NewShell if !from_mouse => {
-                let p = self.behavior.default_profile;
-                self.new_tab(p);
+                if self.behavior.lead == crate::settings::Lead::Browser {
+                    self.open_start();
+                } else {
+                    let p = self.behavior.default_profile;
+                    self.new_tab(p);
+                }
             }
             SideHit::NewShell => {
                 self.press = Some((Instant::now(), SideHit::NewShell));
@@ -4615,6 +4713,24 @@ impl App {
             scene.rect(r, t.paper);
             let mut y = top;
             let profiles = self.profiles.clone();
+            let page_first = self.behavior.lead == crate::settings::Lead::Browser;
+            if page_first {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                if cell.contains(mx, my) {
+                    scene.rect(cell, t.tint);
+                }
+                let isz = self.px(12.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), ink);
+                self.fonts.draw(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), "PAGE");
+                let k2 = "CTRL L";
+                let kw = self.fonts.measure(label, k2);
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), k2);
+                scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
+                if self.kinds_menu {
+                    self.side_hits.push((cell, SideHit::KindPage));
+                }
+                y += row;
+            }
             for (i, p) in profiles.iter().enumerate() {
                 let cell = Rect::new(sb.x, y, sb.w, row);
                 let hot = cell.contains(mx, my);
@@ -4625,9 +4741,9 @@ impl App {
                 let ctx = TabCtx { kind: "terminal", index: self.tabs.len(), profile: &p.name, space: &self.space_name, space_signal: self.surface.signal, theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, host: "", parent: None, tab_colours: &self.tab_colours };
                 let color = self.rules.new_tab(&ctx).signal.unwrap_or(self.surface.signal);
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), color);
-                let st = if i == self.behavior.default_profile { strong } else { label };
+                let st = if i == self.behavior.default_profile && !page_first { strong } else { label };
                 self.fonts.draw(scene, st, sb.x + self.px(30.0), y + self.px(19.0), &p.name.caps());
-                if i == self.behavior.default_profile {
+                if i == self.behavior.default_profile && !page_first {
                     let d = "DEFAULT";
                     let dw = self.fonts.measure(label, d);
                     self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - dw, y + self.px(19.0), d);
@@ -4638,19 +4754,21 @@ impl App {
                 }
                 y += row;
             }
-            let cell = Rect::new(sb.x, y, sb.w, row);
-            let hot = cell.contains(mx, my);
-            if hot {
-                scene.rect(cell, t.tint);
-            }
-            let isz = self.px(12.0);
-            self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), ink);
-            self.fonts.draw(scene, label, sb.x + self.px(30.0), y + self.px(19.0), "PAGE");
-            let k2 = "CTRL L";
-            let kw = self.fonts.measure(label, k2);
-            self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), k2);
-            if self.kinds_menu {
-                self.side_hits.push((cell, SideHit::KindPage));
+            if !page_first {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                let hot = cell.contains(mx, my);
+                if hot {
+                    scene.rect(cell, t.tint);
+                }
+                let isz = self.px(12.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), ink);
+                self.fonts.draw(scene, label, sb.x + self.px(30.0), y + self.px(19.0), "PAGE");
+                let k2 = "CTRL L";
+                let kw = self.fonts.measure(label, k2);
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), k2);
+                if self.kinds_menu {
+                    self.side_hits.push((cell, SideHit::KindPage));
+                }
             }
             scene.hline(sb.x, top + h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
             scene.layer(None);
@@ -5268,6 +5386,8 @@ impl App {
                     }
                 }
                 let view = p.view().to_vec();
+                p.tend_program();
+                p.grid.policy = self.pane_policy(&p.program, &p.cwd);
                 p.grid.draw_view(scene, &mut self.fonts, &p.term, p.origin, focused, lk, &view);
                 if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
                     self.draw_moving_cursor(scene, p, look);
@@ -5682,6 +5802,16 @@ impl App {
                 }
             }
             PaletteMode::New => {
+                let browser_first = self.behavior.lead == crate::settings::Lead::Browser;
+                // Browser first: the address leads, and an empty Enter is the atlas.
+                if browser_first {
+                    if q.is_empty() {
+                        rows.push(row("→", "new page · the atlas: recent pages and shells, or type an address".into(), Action::Start));
+                    } else {
+                        self.query_rows(input, &mut rows, true);
+                        rows.extend(self.history_rows(input, true, 5));
+                    }
+                }
                 for (i, p) in self.profiles.iter().enumerate() {
                     if hit(&p.name) {
                         rows.push(row(">", format!("terminal · {}", p.name), Action::NewTerminal(i)));
@@ -5693,13 +5823,15 @@ impl App {
                         rows.push(row("::", format!("{label} → localhost:{}", p.port), Action::NewBrowser(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                if !q.is_empty() {
-                    rows.extend(self.history_rows(input, true, 5));
-                }
-                if q.is_empty() {
-                    rows.push(row("→", "browser · type a URL or search terms".into(), Action::NewBrowser(String::new())));
-                } else {
-                    self.query_rows(input, &mut rows, true);
+                if !browser_first {
+                    if !q.is_empty() {
+                        rows.extend(self.history_rows(input, true, 5));
+                    }
+                    if q.is_empty() {
+                        rows.push(row("→", "browser · type a URL or search terms".into(), Action::NewBrowser(String::new())));
+                    } else {
+                        self.query_rows(input, &mut rows, true);
+                    }
                 }
             }
             PaletteMode::Url => {
@@ -6066,7 +6198,10 @@ impl App {
         if self.splash.is_some() {
             return;
         }
-        // Atlas owns the keyboard while open; then the palette.
+        // The profile card, then the atlas, own the keyboard while open.
+        if self.me_key(ev) {
+            return;
+        }
         if self.start_key(ev) {
             return;
         }
@@ -7387,6 +7522,9 @@ impl App {
         let pressed = state == ElementState::Pressed;
         let strip = self.strip_rect();
 
+        if self.me_mouse(button, state, x, y) {
+            return;
+        }
         if self.start_mouse(button, state, x, y) {
             return;
         }
@@ -7444,8 +7582,12 @@ impl App {
                         self.flash_anim.replay(0.0, 1.0, self.motion.dur(120.0));
                         self.flash_anim.go(0.0, self.motion.dur(120.0));
                     }
-                    let p = self.behavior.default_profile;
-                    self.new_tab(p);
+                    if self.behavior.lead == crate::settings::Lead::Browser {
+                        self.open_start();
+                    } else {
+                        let p = self.behavior.default_profile;
+                        self.new_tab(p);
+                    }
                     self.dirty = true;
                 }
                 return;

@@ -41,6 +41,7 @@ mod layout_file;
 mod ssh;
 mod tidy;
 mod syncui;
+mod me;
 mod hotkey;
 mod anim;
 mod app;

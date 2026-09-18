@@ -822,3 +822,63 @@ maps, and the reload riding the block's lamp.
 **Order.** As planned, and done in that order on 2026-09-18: cut off, ports
 that remember, the journal, attention named; held; eyes, hands; replay; the
 loop. What each one still lacks is named above, in place.
+
+## Tokens for the caret and the selection, program colours, what comes first (settled 2026-09-17, twentieth pass)
+
+**Caret and selection are tokens.** A theme carries, per face, a caret
+colour and a selection colour — the ink unless it says — beside paper,
+ink and page on LOOK · TOKENS, with a tray of the ink, the signal and
+the brights and a FOLLOW THE INK chip to let go. The shell's selection
+wash, the editor's, and both carets draw from them; the cursor rule's
+INK became THE THEME'S CARET (old prefs still read), SIGNAL and THE
+TAB'S OWN sit over it, and a program's OSC 12 still wins. The wash is
+always 22%; the token is the colour.
+
+**Program colours.** claude, codex and every TUI bring colours picked
+against someone else's background, and land unreadable on ours.
+TERMINAL · PROGRAM COLOURS: AS THEY COME · 3:1 · **4.5:1 AA** (default) ·
+7:1 AAA — any text that can't be read against its paper is walked
+toward white or black, the way it leans, until it reads (WCAG 2; VS
+Code's terminal does the same at 4.5). TRUECOLOUR: **AS SENT** · THE
+THEME'S SIXTEEN — the second snaps truecolour and the 256 to the nearest
+of ours in Oklab, so a program wears the theme. Per program, in
+rules.luau: `program(p)` (name, cmd, cwd, theme, ink, paper, signal)
+returns `contrast`, `snap`, `ansi` (sixteen of its own), `remap` (a
+colour it hardcodes → hex or ink/paper/signal/dim). The running program
+is read from the pane's blocks (the first real word: past env, sudo,
+npx, paths, .exe); answers are cached per program and face until the
+rules reload or the theme changes. The default rules carry claude's
+remap as a comment: its own colours, graded, is the default.
+
+**Terminal first, or browser first.** STARTUP · FIRST: **TERMINAL** ·
+BROWSER, and a START HERE row on the welcome page that flips it.
+Terminal first is what nus has been: NEW TAB and an empty Ctrl+T open
+the default shell, the palette leads with shells, links from outside
+arrive in the little window. Browser first: NEW TAB and an empty Ctrl+T
+open the atlas, the palette leads with the address and history, the
+kinds fan out with PAGE on top, links from outside open as tabs here,
+THEN is the last page. Picking one sets THEN and LINKS FROM OUTSIDE
+once; after that they're yours.
+
+**The profile.** You, on this machine: `profile/me.json` — a name, a face
+(the initial in the signal, an emoji, or `profile/avatar.png`), the day it
+began — and `profile/sync/device`, this machine's name, which is the one
+thing that never syncs. A file in a folder is the whole account: no server
+behind it, nothing counted, nothing sent, and the card says so in words.
+**The card** rises from the avatar in the footer (a signal dot sits on the
+avatar until the profile exists; the tooltip is *name · 12 days with nus*).
+The first time it walks you through — *hello* (what this is and isn't),
+name, face, this device, sync or not — and ends on *day 1, everything here
+stays here*; someone who was here before the card gets the day their
+profile really began (the oldest of its files). After that the card is the
+profile at a glance: the face, the name, *on <device> · local*, a
+calendar badge with the day count (the words in its tooltip), rows for
+NAME · FACE · DEVICE · SYNC · PRIVATE (each opens its edit in place, Esc
+returns), MORE for the full page, CLOSE. The full page is SETTINGS ·
+PROFILE: the same rows, SINCE, the sync status with a way to SYNC
+SETTINGS, PRIVATE spelled out (what the folder holds, what leaves it —
+nothing, unless sync, and then sealed), OPEN THE PROFILE FOLDER, START
+OVER. The welcome page's START HERE leads with it. Sync's file list is
+now the real one (`settings.json`, not `prefs.json`; plus `me.json`,
+containers, the blocklist, the avatar, themes and surfaces).
+

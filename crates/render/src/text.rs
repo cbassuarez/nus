@@ -614,6 +614,13 @@ pub mod icons {
     icon!(HISTORY, "clock-counter-clockwise");
     icon!(SPEAKER, "speaker-high");
     icon!(SPEAKER_OFF, "speaker-slash");
+    icon!(CALENDAR, "calendar-blank");
+    icon!(DESKTOP, "desktop");
+    icon!(EYE_SLASH, "eye-slash");
+    icon!(LOCK_KEY, "lock-key");
+    icon!(IMAGE, "image");
+    icon!(TEXT_AA, "text-aa");
+    icon!(HAND_WAVING, "hand-waving");
 }
 
 impl FontSystem {

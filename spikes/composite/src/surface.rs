@@ -561,6 +561,18 @@ function on_block(b)
   if b.exit ~= 0 and b.exit ~= -1 then return { notify = true } end
 end
 
+-- program(p): a program is running in a shell; p has name ("claude",
+-- "nvim"), cmd, cwd, theme ("ink" | "paper"), ink, paper, signal (hex).
+-- Return nothing to leave it to the settings, or a table: contrast (a
+-- WCAG ratio, 0 for as-they-come), snap (true: truecolour wears the
+-- theme), ansi (sixteen hex strings, this program's own), remap
+-- ({ ["#d97757"] = "signal" } — a colour it hardcodes, and ours; hex or
+-- "ink" | "paper" | "signal" | "dim").
+function program(p)
+  -- claude's orange as this Space's signal, its greys graded a notch harder:
+  -- if p.name == "claude" then return { contrast = 7, remap = { ["#d77757"] = "signal" } } end
+end
+
 -- ports: the board asks this for every port it finds. p has port, pid,
 -- process, command, cwd, exposed, mine, udp. Return nothing, or a table:
 -- name, tint ("#rrggbb"), open ("split" | "tab" | "peek" — when it
@@ -661,6 +673,19 @@ pub struct Rules {
     /// Commands a rule asked for through `nus.run(cmd, args)`; the app
     /// answers them after the hook returns (rules run on the app's thread).
     pub queued: std::rc::Rc<std::cell::RefCell<Vec<(String, serde_json::Value)>>>,
+    /// `program(p)` answers, by (name, face); cleared on reload and on a
+    /// theme change.
+    programs: std::cell::RefCell<std::collections::HashMap<(String, bool), Option<ProgramLook>>>,
+}
+
+/// What `program(p)` asked for one program. Colours stay as the rule
+/// wrote them (hex or a token word) and resolve against the live theme.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProgramLook {
+    pub contrast: Option<f32>,
+    pub snap: Option<bool>,
+    pub ansi: Option<[String; 16]>,
+    pub remap: Vec<(String, String)>,
 }
 
 impl Rules {
@@ -675,7 +700,7 @@ impl Rules {
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
         // Older files get the chains and folders examples appended, once each.
-        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("group", "-- group(tab):"), ("skills", "-- skills:"), ("on_block", "-- on_block(b):"), ("ports", "-- ports:")] {
+        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("group", "-- group(tab):"), ("skills", "-- skills:"), ("on_block", "-- on_block(b):"), ("program", "-- program(p):"), ("ports", "-- ports:")] {
             let Ok(src) = std::fs::read_to_string(&path) else { break };
             if src.contains(word) {
                 continue;
@@ -687,12 +712,13 @@ impl Rules {
                 "folders" => block.split("-- group(tab):").next().unwrap_or(block),
                 "group" => block.split("-- skills:").next().unwrap_or(block),
                 "skills" => block.split("-- nus.run(cmd, args):").next().unwrap_or(block),
-                "on_block" => block.split("-- ports:").next().unwrap_or(block),
+                "on_block" => block.split("-- program(p):").next().unwrap_or(block),
+                "program" => block.split("-- ports:").next().unwrap_or(block),
                 _ => block,
             };
             let _ = std::fs::write(&path, format!("{}\n{}", src.trim_end(), block.trim_end()));
         }
-        let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new(), queued: Default::default() };
+        let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new(), queued: Default::default(), programs: Default::default() };
         r.reload();
         r
     }
@@ -713,13 +739,14 @@ impl Rules {
     }
 
     pub fn from_source(source: &str) -> Rules {
-        let mut r = Rules { lua: mlua::Lua::new(), path: PathBuf::new(), status: String::new(), source: String::new(), queued: Default::default() };
+        let mut r = Rules { lua: mlua::Lua::new(), path: PathBuf::new(), status: String::new(), source: String::new(), queued: Default::default(), programs: Default::default() };
         r.apply(source.to_string());
         r
     }
 
     fn apply(&mut self, source: String) {
         self.source = source;
+        self.programs.borrow_mut().clear();
         let lua = mlua::Lua::new();
         lua.sandbox(true).ok();
         let g = lua.globals();
@@ -1023,6 +1050,45 @@ impl Rules {
                 None
             }
         }
+    }
+
+    /// The theme changed: `program(p)` answers built on it are stale.
+    pub fn forget_programs(&self) {
+        self.programs.borrow_mut().clear();
+    }
+
+    /// The `program` hook: a program is running; what it wears. Cached by
+    /// (name, face) until the rules reload or the theme changes.
+    pub fn program(&self, name: &str, cmd: &str, cwd: &str, theme: &nus_render::Theme, signal: Color) -> Option<ProgramLook> {
+        let ink_face = theme.mode == nus_render::Mode::Ink;
+        if let Some(hit) = self.programs.borrow().get(&(name.to_string(), ink_face)) {
+            return hit.clone();
+        }
+        let look = (|| {
+            let f = self.lua.globals().get::<mlua::Function>("program").ok()?;
+            let t = self.lua.create_table().ok()?;
+            let _ = t.set("name", name);
+            let _ = t.set("cmd", cmd);
+            let _ = t.set("cwd", cwd);
+            let _ = t.set("theme", if ink_face { "ink" } else { "paper" });
+            let _ = t.set("ink", hex(theme.ink));
+            let _ = t.set("paper", hex(theme.paper));
+            let _ = t.set("signal", hex(signal));
+            match f.call::<Option<mlua::Table>>(t) {
+                Ok(Some(o)) => {
+                    let ansi = o.get::<Vec<String>>("ansi").ok().filter(|v| v.len() == 16).map(|v| std::array::from_fn(|i| v[i].clone()));
+                    let remap = o.get::<mlua::Table>("remap").ok().map(|r| r.pairs::<String, String>().flatten().collect()).unwrap_or_default();
+                    Some(ProgramLook { contrast: o.get::<f32>("contrast").ok(), snap: o.get::<bool>("snap").ok(), ansi, remap })
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!("rules program: {e}");
+                    None
+                }
+            }
+        })();
+        self.programs.borrow_mut().insert((name.to_string(), ink_face), look.clone());
+        look
     }
 
     /// The `ports` hook: given a row's facts, what to call it and do with it.

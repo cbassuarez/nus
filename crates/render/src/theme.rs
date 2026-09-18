@@ -18,6 +18,12 @@ pub struct Theme {
     pub dim: Color,
     pub page: Color,
     pub scrim: Color,
+    /// The caret: what the cursor and the editor's insertion point are
+    /// drawn in when the cursor rule says "the theme's". Ink by default.
+    pub caret: Color,
+    /// The selection wash, alpha included: ink at 22% by default, over
+    /// cells in the shell, lines in the editor, matches in the reader.
+    pub selection: Color,
     pub ansi: [nus_vt::Rgb; 16],
 }
 
@@ -94,6 +100,8 @@ impl Theme {
             dim: hex(0x8a857a),
             page: hex(0xffffff),
             scrim: hexa(0xf4f1ea, 0.55),
+            caret: hex(0x141414),
+            selection: hexa(0x141414, 0.22),
             ansi: [
                 rgb(0x141414),
                 rgb(0xb3261e),
@@ -125,6 +133,8 @@ impl Theme {
             dim: hex(0x8a857a),
             page: hex(0xffffff),
             scrim: hexa(0x000000, 0.5),
+            caret: hex(0xece7da),
+            selection: hexa(0xece7da, 0.22),
             ansi: [
                 rgb(0x141414),
                 rgb(0xe0574c),
@@ -158,7 +168,7 @@ impl Theme {
         };
         palette.set_base(nus_vt::palette::FG, to_rgb(self.ink));
         palette.set_base(nus_vt::palette::BG, to_rgb(self.paper));
-        palette.set_base(nus_vt::palette::CURSOR, to_rgb(self.ink));
+        palette.set_base(nus_vt::palette::CURSOR, to_rgb(self.caret));
     }
 
     pub fn with_alpha(c: Color, a: f32) -> Color {

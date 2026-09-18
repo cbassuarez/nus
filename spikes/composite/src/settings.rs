@@ -120,6 +120,41 @@ pub enum ShellColours {
     PaneOnly,
 }
 
+/// The contrast every program's text must reach against its background
+/// (WCAG 2); what doesn't is walked toward ink until it does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Grade {
+    Off,
+    /// 3:1 — large text.
+    Large,
+    /// 4.5:1 — AA for text. VS Code's terminal default; ours.
+    #[default]
+    Aa,
+    /// 7:1 — AAA.
+    Aaa,
+}
+
+impl Grade {
+    pub fn ratio(self) -> f32 {
+        match self {
+            Grade::Off => 0.0,
+            Grade::Large => 3.0,
+            Grade::Aa => 4.5,
+            Grade::Aaa => 7.0,
+        }
+    }
+}
+
+/// What a program's truecolour and 256-colour text does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Truecolour {
+    /// As sent, graded.
+    #[default]
+    AsSent,
+    /// Snapped to the nearest of the theme's sixteen: the program wears the theme.
+    Snapped,
+}
+
 /// How often TIDY suggests groups on its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum TidyEvery {
@@ -214,7 +249,9 @@ pub enum Blink {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CursorColor {
-    Ink,
+    /// The theme's caret token (the ink unless the theme says).
+    #[serde(alias = "Ink")]
+    Theme,
     Signal,
     Tab,
 }
@@ -260,7 +297,7 @@ fn default_smear() -> f32 {
 
 impl Default for CursorPrefs {
     fn default() -> Self {
-        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Ink, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true, smear: 1.0 }
+        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Theme, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true, smear: 1.0 }
     }
 }
 
@@ -278,6 +315,16 @@ pub enum SplashMode {
     Draw,
     Still,
     None,
+}
+
+/// Which comes first: a terminal that also browses, or a browser that
+/// also has shells. It sets what NEW TAB opens with nothing typed, what
+/// leads the palette, and (once, when picked) THEN and LINKS FROM OUTSIDE.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Lead {
+    #[default]
+    Terminal,
+    Browser,
 }
 
 /// What happens once the splash has gone.
@@ -328,6 +375,9 @@ pub struct Behavior {
     pub atlas: AtlasMode,
     #[serde(default = "default_outside")]
     pub outside: Outside,
+    /// Terminal first or browser first.
+    #[serde(default)]
+    pub lead: Lead,
     /// Shells get prompt marks, cwd and exit codes injected at spawn.
     #[serde(default = "default_true")]
     pub shell_integration: bool,
@@ -352,11 +402,15 @@ pub struct Behavior {
     pub sync_every_min: u16,
     #[serde(default = "default_true")]
     pub sync_at_quit: bool,
-    #[serde(default)]
-    pub sync_device: Option<String>,
     /// OSC 10/11 from a shell: a chip offers the look, or it applies, or the pane only.
     #[serde(default)]
     pub shell_colours: ShellColours,
+    /// Program colours: the contrast they must reach, and whether their
+    /// truecolour wears the theme.
+    #[serde(default)]
+    pub grade: Grade,
+    #[serde(default)]
+    pub truecolour: Truecolour,
     /// Tidy: how often to suggest groups; dedupe bands on/off.
     #[serde(default)]
     pub tidy_every: TidyEvery,
@@ -617,6 +671,7 @@ impl Default for Behavior {
             then: Then::Shell,
             atlas: AtlasMode::Planet,
             outside: Outside::Little,
+            lead: Lead::Terminal,
             shell_integration: true,
             highlight: true,
             format_on_save: true,
@@ -639,12 +694,13 @@ impl Default for Behavior {
             then_layout: String::new(),
             ssh_integration: true,
             shell_colours: ShellColours::Chip,
+            grade: Grade::Aa,
+            truecolour: Truecolour::AsSent,
             sync_folder: String::new(),
             sync_git: String::new(),
             sync_session: false,
             sync_every_min: 10,
             sync_at_quit: true,
-            sync_device: None,
             tidy_every: TidyEvery::Off,
             dedupe: true,
             ports_grouping: PortsGrouping::Origin,
@@ -754,6 +810,8 @@ pub enum Hit {
     TokPaper(Color),
     TokInk(Color),
     TokPage(Color),
+    TokCaret(Option<Color>),
+    TokSelection(Option<Color>),
     TokReset,
     AnsiSel(usize),
     AnsiSet(Color),
@@ -803,6 +861,14 @@ pub enum Hit {
     TidyEvery(TidyEvery),
     Dedupe(bool),
     ShellColours(ShellColours),
+    Lead(Lead),
+    Grade(Grade),
+    Truecolour(Truecolour),
+    /// The profile card at one of its steps (name, face, device).
+    MeEdit(u8),
+    MeCard,
+    MeFolder,
+    MeForget,
     SyncSession(bool),
     SyncEvery(u16),
     SyncAtQuit(bool),
@@ -876,10 +942,12 @@ pub enum TokSel {
     Paper,
     Ink,
     Page,
+    Caret,
+    Selection,
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 14] = [
+pub const SECTIONS: [(&str, (&str, &str)); 15] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
@@ -893,6 +961,7 @@ pub const SECTIONS: [(&str, (&str, &str)); 14] = [
     ("RULES", icons::CODE),
     ("KEYS", icons::KEYBOARD),
     ("SYNC", icons::BROADCAST),
+    ("PROFILE", icons::USER),
     ("UPDATES", icons::DOWNLOAD),
 ];
 
@@ -903,6 +972,8 @@ pub const SEC_TERMINAL: usize = 5;
 pub const SEC_BROWSER: usize = 6;
 pub const SEC_PORTS: usize = 7;
 pub const SEC_HATCH: usize = 8;
+pub const SEC_SYNC: usize = 12;
+pub const SEC_PROFILE: usize = 13;
 pub const RULES: usize = 10;
 
 fn key(k: &str, shift: bool) -> String {
@@ -1072,6 +1143,8 @@ impl App {
             Hit::TokPaper(c) => format!("paper {}", surface::hex(c)),
             Hit::TokInk(c) => format!("ink {}", surface::hex(c)),
             Hit::TokPage(c) => format!("page {}", surface::hex(c)),
+            Hit::TokCaret(c) => c.map(|c| format!("caret {}", surface::hex(c))).unwrap_or_else(|| "caret follows the ink".into()),
+            Hit::TokSelection(c) => c.map(|c| format!("selection {}", surface::hex(c))).unwrap_or_else(|| "selection follows the ink".into()),
             Hit::TokReset => "reset this mode's tokens".into(),
             Hit::AnsiSel(i) => format!("ansi {i}"),
             Hit::AnsiSet(c) => format!("set to {}", surface::hex(c)),
@@ -1120,6 +1193,8 @@ impl App {
             Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
             Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
             Hit::ShellColours(c) => format!("shell colours: {:?}", c).to_lowercase(),
+            Hit::Grade(g) => match g { Grade::Off => "program colours as they come".into(), g => format!("program colours graded to {}:1", g.ratio()) },
+            Hit::Truecolour(t) => match t { Truecolour::AsSent => "truecolour as sent".into(), Truecolour::Snapped => "truecolour wears the theme".into() },
             Hit::SyncSession(b) => if b { "the session syncs".into() } else { "the session stays here".into() },
             Hit::SyncEvery(n) => if n == 0 { "sync on demand".into() } else { format!("sync every {n} min") },
             Hit::SyncAtQuit(b) => if b { "sync at quit".into() } else { "no sync at quit".into() },
@@ -1163,6 +1238,11 @@ impl App {
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
             Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
             Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
+            Hit::Lead(l) => match l { Lead::Terminal => "terminal first".into(), Lead::Browser => "browser first".into() },
+            Hit::MeEdit(k) => match k { 0 => "your name".into(), 1 => "your face".into(), _ => "this device's name".into() },
+            Hit::MeCard => "the profile card".into(),
+            Hit::MeFolder => "open the profile folder".into(),
+            Hit::MeForget => "start the profile over".into(),
             Hit::LoginItem(on) => if on { "start with the system".into() } else { "do not start with the system".into() },
             Hit::SoundOn(b) => if b { "sound on".into() } else { "sound off".into() },
             Hit::Play(i) => format!("play {}", crate::sound::NAMES.get(i).copied().unwrap_or("")),
@@ -1359,6 +1439,16 @@ impl App {
                 self.theme_edit.edit_mut(mode).page = Some(c);
                 self.rebuild_theme();
             }
+            Hit::TokCaret(c) => {
+                let mode = self.theme.mode;
+                self.theme_edit.edit_mut(mode).caret = c;
+                self.rebuild_theme();
+            }
+            Hit::TokSelection(c) => {
+                let mode = self.theme.mode;
+                self.theme_edit.edit_mut(mode).selection = c;
+                self.rebuild_theme();
+            }
             Hit::TokReset => {
                 let mode = self.theme.mode;
                 *self.theme_edit.edit_mut(mode) = Default::default();
@@ -1466,6 +1556,27 @@ impl App {
             Hit::TidyEvery(e) => self.behavior.tidy_every = e,
             Hit::Dedupe(b) => self.behavior.dedupe = b,
             Hit::ShellColours(c) => self.behavior.shell_colours = c,
+            Hit::Grade(g) => self.behavior.grade = g,
+            Hit::Truecolour(t) => self.behavior.truecolour = t,
+            Hit::MeEdit(k) => self.open_me_card_at(match k { 0 => crate::me::Step::Name, 1 => crate::me::Step::Face, _ => crate::me::Step::Device }),
+            Hit::MeCard => self.open_me_card(),
+            Hit::MeFolder => {
+                let dir = std::env::current_dir().unwrap_or_default().join("profile");
+                let cmd = if cfg!(target_os = "windows") {
+                    format!("start \"\" \"{}\"", dir.display())
+                } else if cfg!(target_os = "macos") {
+                    format!("open \"{}\"", dir.display())
+                } else {
+                    format!("xdg-open \"{}\"", dir.display())
+                };
+                self.run_in_shell(&cmd);
+            }
+            Hit::MeForget => {
+                crate::me::Me::forget();
+                self.me = None;
+                self.user_name = self.me_name();
+                self.open_me_card();
+            }
             Hit::SyncSession(b) => self.behavior.sync_session = b,
             Hit::SyncEvery(n) => self.behavior.sync_every_min = n,
             Hit::SyncAtQuit(b) => self.behavior.sync_at_quit = b,
@@ -1549,6 +1660,24 @@ impl App {
                 self.behavior.start_on_launch = a != AtlasMode::Planet;
             }
             Hit::Outside(o) => self.behavior.outside = o,
+            Hit::Lead(l) => {
+                self.behavior.lead = l;
+                // Picked, not merely loaded: the two settings that follow from it.
+                match l {
+                    Lead::Terminal => {
+                        self.behavior.outside = Outside::Little;
+                        if self.behavior.then == Then::LastPage {
+                            self.behavior.then = Then::Shell;
+                        }
+                    }
+                    Lead::Browser => {
+                        self.behavior.outside = Outside::NewTab;
+                        if self.behavior.then == Then::Shell {
+                            self.behavior.then = Then::LastPage;
+                        }
+                    }
+                }
+            }
             Hit::LoginItem(on) => {
                 self.login_note = match crate::little::login_item(on) {
                     Ok(()) => if on { "registered · nus starts with the system".into() } else { "removed".into() },
@@ -1635,6 +1764,8 @@ impl App {
             TokSel::Paper => self.theme.paper,
             TokSel::Ink => self.theme.ink,
             TokSel::Page => self.theme.page,
+            TokSel::Caret => self.theme.caret,
+            TokSel::Selection => nus_render::Theme::with_alpha(self.theme.selection, 1.0),
             TokSel::Ansi(i) => crate::theme_edit::from_rgb(self.theme.ansi[i.min(15)]),
         }
     }
@@ -1650,6 +1781,8 @@ impl App {
             TokSel::Paper => Hit::TokPaper(c),
             TokSel::Ink => Hit::TokInk(c),
             TokSel::Page => Hit::TokPage(c),
+            TokSel::Caret => Hit::TokCaret(Some(c)),
+            TokSel::Selection => Hit::TokSelection(Some(c)),
             TokSel::Ansi(i) => {
                 self.ansi_sel = i;
                 Hit::AnsiSet(c)
@@ -1846,7 +1979,7 @@ impl App {
         // Prompt with the cursor as configured.
         let mut lx = pane.x + self.px(10.0);
         lx += self.fonts.draw(scene, mono(ansi[2], self), lx, ly, "$ ");
-        let cur_c = match self.cursor.color { crate::settings::CursorColor::Ink => ink, _ => self.surface.signal };
+        let cur_c = match self.cursor.color { crate::settings::CursorColor::Theme => self.theme.caret, _ => self.surface.signal };
         let cw = self.px(5.5);
         let chh = self.px(11.0);
         match self.cursor.shape {
@@ -2062,6 +2195,9 @@ impl App {
                     list.iter().map(|&v| { let c = nus_render::theme::hex(v); (Some(c), mk(c), (c[0] - cur[0]).abs() < 0.004 && (c[1] - cur[1]).abs() < 0.004 && (c[2] - cur[2]).abs() < 0.004) }).collect()
                 };
                 let ansi: Vec<Color> = (0..16).map(|i| crate::theme_edit::from_rgb(t.ansi[i])).collect();
+                let edit = if ink_mode { self.theme_edit.ink.clone() } else { self.theme_edit.paper.clone() };
+                // What a caret or a selection might be: the ink, the signal, the brights.
+                let marks: Vec<Color> = std::iter::once(t.ink).chain(std::iter::once(self.surface.signal)).chain(surface::family(self.surface.signal)).chain((9..16).map(|i| ansi[i])).collect();
                 let sel = self.ansi_sel.min(15);
                 let row = |from: usize| -> Vec<(Option<Color>, Hit, bool)> { (from..from + 8).map(|i| (Some(ansi[i]), Hit::AnsiSel(i), i == sel)).collect() };
                 let mut cands: Vec<(Option<Color>, Hit, bool)> = Vec::new();
@@ -2092,15 +2228,18 @@ impl App {
                     ("INK".into(), Some(t.ink), hx(t.ink), Hit::TokSel(TokSel::Ink), self.tok_sel == TokSel::Ink),
                     ("PAGE".into(), Some(t.page), hx(t.page), Hit::TokSel(TokSel::Page), self.tok_sel == TokSel::Page),
                     ("DIM".into(), Some(t.dim), format!("{} · derived", hx(t.dim)), Hit::TokSel(self.tok_sel), false),
+                    ("CARET".into(), Some(t.caret), if edit.caret.is_some() { hx(t.caret) } else { format!("{} · the ink", hx(t.caret)) }, Hit::TokSel(TokSel::Caret), self.tok_sel == TokSel::Caret),
+                    ("SELECTION".into(), Some(nus_render::Theme::with_alpha(t.selection, 1.0)), if edit.selection.is_some() { format!("{} · at 22%", hx(t.selection)) } else { format!("{} · the ink at 22%", hx(t.selection)) }, Hit::TokSel(TokSel::Selection), self.tok_sel == TokSel::Selection),
                 ];
                 let ansi_tiles: Vec<(String, Option<Color>, String, Hit, bool)> = (0..16).map(|i| (format!("{i}"), Some(ansi[i]), hx(ansi[i]), Hit::TokSel(TokSel::Ansi(i)), self.tok_sel == TokSel::Ansi(i))).collect();
-                let editing_tok = matches!(self.tok_sel, TokSel::Paper | TokSel::Ink | TokSel::Page);
+                let editing_tok = matches!(self.tok_sel, TokSel::Paper | TokSel::Ink | TokSel::Page | TokSel::Caret | TokSel::Selection);
                 let editing_ansi = matches!(self.tok_sel, TokSel::Ansi(_));
                 let cur = self.tok_color();
                 let tray: Vec<(String, Option<Color>, String, Hit, bool)> = match self.tok_sel {
                     TokSel::Paper => papers.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
                     TokSel::Ink => inks.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
                     TokSel::Page => pages.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
+                    TokSel::Caret | TokSel::Selection => marks.iter().map(|&c| (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur)).collect(),
                     TokSel::Ansi(_) => cands.iter().map(|(c, _, _)| { let c = c.unwrap(); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
                     _ => Vec::new(),
                 };
@@ -2116,6 +2255,11 @@ impl App {
                 if editing_tok {
                     picker(&mut v, format!("{:?}", self.tok_sel), self);
                     v.push(("TRAY".into(), Tokens(tray.clone(), false)));
+                    match self.tok_sel {
+                        TokSel::Caret if edit.caret.is_some() => v.push(("".into(), Choice(vec![("FOLLOW THE INK".into(), Hit::TokCaret(None), false)]))),
+                        TokSel::Selection if edit.selection.is_some() => v.push(("".into(), Choice(vec![("FOLLOW THE INK".into(), Hit::TokSelection(None), false)]))),
+                        _ => {}
+                    }
                 }
                 v.push(("CONTRAST".into(), Info(format!("ink on paper {:.1}:1 {} · dim {:.1}:1 {} · signal {:.1}:1 {}", c_ink, grade(c_ink), c_dim, grade(c_dim), c_sig, grade(c_sig)))));
                 v.push(("".into(), Info(format!("dim, tint and hot follow paper and ink · editing the {} theme; TYPE & MOTION switches", if ink_mode { "ink" } else { "paper" }))));
@@ -2192,12 +2336,12 @@ impl App {
                     (
                         "COLOUR".into(),
                         Choice(vec![
-                            ("INK".into(), Hit::CurColor(CursorColor::Ink), c.color == CursorColor::Ink),
+                            ("THE THEME'S CARET".into(), Hit::CurColor(CursorColor::Theme), c.color == CursorColor::Theme),
                             ("SIGNAL".into(), Hit::CurColor(CursorColor::Signal), c.color == CursorColor::Signal),
                             ("THE TAB'S OWN".into(), Hit::CurColor(CursorColor::Tab), c.color == CursorColor::Tab),
                         ]),
                     ),
-                    ("".into(), Info("text under a block cursor inverts".into())),
+                    ("".into(), Info("the theme's caret is a token — LOOK · TOKENS sets it, the ink unless a theme says; the selection wash is a token there too · text under a block cursor inverts".into())),
                     (
                         "MOTION".into(),
                         Choice(vec![
@@ -2282,6 +2426,14 @@ impl App {
                     v
                 };
                 vec![
+                    (
+                        "FIRST".into(),
+                        Choice(vec![
+                            ("TERMINAL".into(), Hit::Lead(Lead::Terminal), b.lead == Lead::Terminal),
+                            ("BROWSER".into(), Hit::Lead(Lead::Browser), b.lead == Lead::Browser),
+                        ]),
+                    ),
+                    ("".into(), Info("a terminal that also browses, or a browser that also has shells: NEW TAB and Ctrl+T with nothing typed open a shell or the atlas, the palette leads with shells or with the address, the kinds fan out in that order · picking one sets THEN and LINKS FROM OUTSIDE below to match, once".into())),
                     (
                         "WINDOW".into(),
                         Choice(vec![
@@ -2581,6 +2733,24 @@ impl App {
                     ]),
                 ));
                 v.insert(8, ("".into(), Info("a script that sets the terminal's colours (OSC 10/11, like kitty's set-colors) changes the pane; OFFER puts a chip on it to apply them to the whole look — ink or paper by the background, the accent from the foreground — ALWAYS does it at once · nus theme <name> / nus look from the shell also work".into())));
+                let (g, tc) = (self.behavior.grade, self.behavior.truecolour);
+                v.insert(9, (
+                    "PROGRAM COLOURS".into(),
+                    Choice(vec![
+                        ("AS THEY COME".into(), Hit::Grade(Grade::Off), g == Grade::Off),
+                        ("3:1".into(), Hit::Grade(Grade::Large), g == Grade::Large),
+                        ("4.5:1 · AA".into(), Hit::Grade(Grade::Aa), g == Grade::Aa),
+                        ("7:1 · AAA".into(), Hit::Grade(Grade::Aaa), g == Grade::Aaa),
+                    ]),
+                ));
+                v.insert(10, (
+                    "TRUECOLOUR".into(),
+                    Choice(vec![
+                        ("AS SENT".into(), Hit::Truecolour(Truecolour::AsSent), tc == Truecolour::AsSent),
+                        ("THE THEME'S SIXTEEN".into(), Hit::Truecolour(Truecolour::Snapped), tc == Truecolour::Snapped),
+                    ]),
+                ));
+                v.insert(11, ("".into(), Info("claude, codex and every TUI bring colours picked against someone else's background; the grade walks any text that can't be read against its paper toward ink until it reads (WCAG), and THE THEME'S SIXTEEN snaps their truecolour to the nearest of ours so they wear the theme · program(p) in rules.luau gives one program its own sixteen, remaps a colour it hardcodes, or sets these per program".into())));
                 v.insert(9, (
                     "SSH".into(),
                     Choice(vec![("BRING THE INTEGRATION".into(), Hit::SshIntegration(!self.behavior.ssh_integration), self.behavior.ssh_integration)]),
@@ -2875,6 +3045,42 @@ impl App {
                 ),
             ]
             }
+            13 => {
+                let device = crate::me::device();
+                let (name, face, since, days) = match &self.me {
+                    Some(me) => (
+                        me.name.clone(),
+                        match &me.face { crate::me::Face::Initial => "the initial".to_string(), crate::me::Face::Emoji(e) => e.clone(), crate::me::Face::Picture => "profile/avatar.png".to_string() },
+                        me.created.clone(),
+                        me.day_word(),
+                    ),
+                    None => (crate::me::os_user(), "the initial".to_string(), "not yet".to_string(), "not set up".to_string()),
+                };
+                let is_emoji = matches!(self.me.as_ref().map(|m| &m.face), Some(crate::me::Face::Emoji(_)));
+                let mut v: Vec<(String, Control)> = vec![
+                    ("".into(), Info("you, on this machine: a name, a face, the day it began · profile/me.json — a file in a folder is the whole account: no server behind it, nothing counted, nothing sent".into())),
+                ];
+                if self.me.is_none() {
+                    v.push(("".into(), Buttons(vec![("SET UP THE PROFILE".into(), icons::USER, Hit::MeCard)])));
+                }
+                v.extend(vec![
+                    ("NAME".into(), Choice(vec![(name.caps(), Hit::MeEdit(0), true)])),
+                    ("FACE".into(), Choice(vec![
+                        ("THE INITIAL".into(), Hit::MeEdit(1), face == "the initial"),
+                        (if is_emoji { format!("EMOJI · {face}") } else { "AN EMOJI".into() }, Hit::MeEdit(1), is_emoji),
+                        ("A PICTURE".into(), Hit::MeEdit(1), face == "profile/avatar.png"),
+                    ])),
+                    ("".into(), Info("the face is the avatar in the footer; a picture is profile/avatar.png, any size, drawn at 22px".into())),
+                    ("DEVICE".into(), Choice(vec![(device.caps(), Hit::MeEdit(2), true)])),
+                    ("".into(), Info("sync names what this machine wrote by it (the manifest, the .lost files); it lives in profile/sync/device and never syncs itself".into())),
+                    ("SINCE".into(), Info(format!("{since} · {days}"))),
+                    ("SYNC".into(), Info(self.sync_status())),
+                    ("".into(), Buttons(vec![("SYNC SETTINGS".into(), icons::BROADCAST, Hit::Section(SEC_SYNC))])),
+                    ("PRIVATE".into(), Info("this profile is a folder: settings, rules, layouts, folders, ports, memory, sites, containers, the browser's own state · nothing leaves it unless you set up sync, and then only sealed · no account, no crash reports, no counters, no phone-home".into())),
+                    ("".into(), Buttons(vec![("OPEN THE PROFILE FOLDER".into(), icons::FOLDER, Hit::MeFolder), ("START OVER".into(), icons::WARNING, Hit::MeForget)])),
+                ]);
+                v
+            }
             12 => {
                 let b = &self.behavior;
                 let has_key = crate::syncui::key().is_some();
@@ -2936,7 +3142,7 @@ impl App {
         match k {
             0 => format!("{} · {} · {}", self.preset_name.to_lowercase(), if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.surface.shell.name()),
             1 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
-            2 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
+            2 => format!("{:?} first · {:?} · then {:?}", self.behavior.lead, self.behavior.splash, self.behavior.then).to_lowercase(),
             3 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
             4 => format!("links → {:?}", self.behavior.links).to_lowercase(),
             5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
@@ -2947,6 +3153,7 @@ impl App {
             10 => self.rules.status.clone(),
             11 => "chords".into(),
             12 => if self.sync_ready() { "on".into() } else { "off · no key or carrier".into() },
+            13 => match &self.me { Some(me) => format!("{} · {}", me.name.to_lowercase(), me.day_word()), None => "not set up · local, no account".into() },
             _ => "github releases".into(),
         }
     }
