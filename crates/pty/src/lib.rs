@@ -107,15 +107,34 @@ enum Inner {
 
 impl Pty {
     /// A shell in a holder process, so it survives this app.
-    pub fn spawn_held(profile: &Profile, cols: u16, rows: u16, dir: &std::path::Path, on_output: impl Fn() + Send + 'static) -> Result<Pty> {
+    pub fn spawn_held(
+        profile: &Profile,
+        cols: u16,
+        rows: u16,
+        dir: &std::path::Path,
+        on_output: impl Fn() + Send + 'static,
+    ) -> Result<Pty> {
         let client = hold::spawn_held(profile, cols, rows, dir, on_output)?;
-        Ok(Pty { inner: Inner::Held(client), cols, rows })
+        Ok(Pty {
+            inner: Inner::Held(client),
+            cols,
+            rows,
+        })
     }
 
     /// Back to a holder that is already running; the ring replays first.
-    pub fn attach(info: hold::Info, cols: u16, rows: u16, on_output: impl Fn() + Send + 'static) -> Result<Pty> {
+    pub fn attach(
+        info: hold::Info,
+        cols: u16,
+        rows: u16,
+        on_output: impl Fn() + Send + 'static,
+    ) -> Result<Pty> {
         let client = hold::Client::attach(info, on_output)?;
-        let mut pty = Pty { inner: Inner::Held(client), cols: 0, rows: 0 };
+        let mut pty = Pty {
+            inner: Inner::Held(client),
+            cols: 0,
+            rows: 0,
+        };
         pty.resize(cols, rows, (0, 0))?;
         Ok(pty)
     }
@@ -194,7 +213,12 @@ impl Pty {
             .context("spawn reader thread")?;
 
         Ok(Pty {
-            inner: Inner::Local { master: pair.master, writer, child, output: rx },
+            inner: Inner::Local {
+                master: pair.master,
+                writer,
+                child,
+                output: rx,
+            },
             cols,
             rows,
         })

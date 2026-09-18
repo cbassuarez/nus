@@ -18,7 +18,12 @@ use serde_json::{json, Value};
 /// instance-port verb + fixed args behind each.
 fn tools() -> Vec<(Value, &'static str, Value)> {
     let tab = json!({ "type": "integer", "description": "Tab number (1-based); the active tab by default." });
-    let t = |name: &str, desc: &str, props: Value, required: Vec<&str>, cmd: &'static str, fixed: Value| {
+    let t = |name: &str,
+             desc: &str,
+             props: Value,
+             required: Vec<&str>,
+             cmd: &'static str,
+             fixed: Value| {
         (
             json!({ "name": name, "description": desc, "inputSchema": { "type": "object", "properties": props, "required": required } }),
             cmd,
@@ -49,32 +54,52 @@ fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len() / 3 * 4 + 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
         out.push(T[(n >> 18 & 63) as usize] as char);
         out.push(T[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
 
 /// One tool call: the verb, its answer as MCP content.
-fn call_tool(name: &str, args: &Value, call: &dyn Fn(&str, Value) -> Result<Value, String>) -> Value {
-    let Some((_, cmd, fixed)) = tools().into_iter().find(|(t, _, _)| t.get("name").and_then(Value::as_str) == Some(name)) else {
+fn call_tool(
+    name: &str,
+    args: &Value,
+    call: &dyn Fn(&str, Value) -> Result<Value, String>,
+) -> Value {
+    let Some((_, cmd, fixed)) = tools()
+        .into_iter()
+        .find(|(t, _, _)| t.get("name").and_then(Value::as_str) == Some(name))
+    else {
         return json!({ "content": [{ "type": "text", "text": format!("no tool named {name}") }], "isError": true });
     };
     let mut merged = fixed.as_object().cloned().unwrap_or_default();
     // Who is asking: the assistants say so in their environment.
-    let who = if std::env::var_os("CLAUDECODE").is_some() || std::env::var_os("CLAUDE_CODE").is_some() {
-        "claude"
-    } else if std::env::vars().any(|(k, _)| k.starts_with("CODEX_")) {
-        "codex"
-    } else if std::env::var_os("GEMINI_CLI").is_some() {
-        "gemini"
-    } else {
-        "the assistant"
-    };
+    let who =
+        if std::env::var_os("CLAUDECODE").is_some() || std::env::var_os("CLAUDE_CODE").is_some() {
+            "claude"
+        } else if std::env::vars().any(|(k, _)| k.starts_with("CODEX_")) {
+            "codex"
+        } else if std::env::var_os("GEMINI_CLI").is_some() {
+            "gemini"
+        } else {
+            "the assistant"
+        };
     merged.insert("who".into(), Value::String(who.into()));
     if let Some(o) = args.as_object() {
         for (k, v) in o {
@@ -95,7 +120,11 @@ fn call_tool(name: &str, args: &Value, call: &dyn Fn(&str, Value) -> Result<Valu
             let text = match v.get("text").and_then(Value::as_str) {
                 Some(t) if v.as_object().is_some_and(|o| o.len() <= 4) => {
                     let title = v.get("title").and_then(Value::as_str).unwrap_or("");
-                    if title.is_empty() { t.to_string() } else { format!("# {title}\n\n{t}") }
+                    if title.is_empty() {
+                        t.to_string()
+                    } else {
+                        format!("# {title}\n\n{t}")
+                    }
                 }
                 _ => serde_json::to_string_pretty(&v).unwrap_or_default(),
             };
@@ -111,11 +140,19 @@ pub fn serve(call: &dyn Fn(&str, Value) -> Result<Value, String>) {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let reply = |out: &mut std::io::StdoutLock, id: Value, result: Value| {
-        let _ = writeln!(out, "{}", json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+        let _ = writeln!(
+            out,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": id, "result": result })
+        );
         let _ = out.flush();
     };
     let fail = |out: &mut std::io::StdoutLock, id: Value, code: i64, msg: &str| {
-        let _ = writeln!(out, "{}", json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } }));
+        let _ = writeln!(
+            out,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } })
+        );
         let _ = out.flush();
     };
     for line in stdin.lock().lines() {
@@ -132,12 +169,23 @@ pub fn serve(call: &dyn Fn(&str, Value) -> Result<Value, String>) {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
         match method {
             "initialize" => {
-                let version = params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2024-11-05");
-                reply(&mut out, id, json!({ "protocolVersion": version, "capabilities": { "tools": {} }, "serverInfo": { "name": "nus", "version": env!("CARGO_PKG_VERSION") } }));
+                let version = params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or("2024-11-05");
+                reply(
+                    &mut out,
+                    id,
+                    json!({ "protocolVersion": version, "capabilities": { "tools": {} }, "serverInfo": { "name": "nus", "version": env!("CARGO_PKG_VERSION") } }),
+                );
             }
             "notifications/initialized" | "notifications/cancelled" => {}
             "ping" => reply(&mut out, id, json!({})),
-            "tools/list" => reply(&mut out, id, json!({ "tools": tools().into_iter().map(|(t, _, _)| t).collect::<Vec<_>>() })),
+            "tools/list" => reply(
+                &mut out,
+                id,
+                json!({ "tools": tools().into_iter().map(|(t, _, _)| t).collect::<Vec<_>>() }),
+            ),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));

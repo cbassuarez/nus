@@ -50,7 +50,10 @@ impl Info {
 
     pub fn write(&self, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(dir)?;
-        std::fs::write(Self::path(dir, &self.id), serde_json::to_string_pretty(self)?)?;
+        std::fs::write(
+            Self::path(dir, &self.id),
+            serde_json::to_string_pretty(self)?,
+        )?;
         Ok(())
     }
 
@@ -61,7 +64,9 @@ impl Info {
 
     /// Every holder the directory names, alive or not (see [`alive`]).
     pub fn all(dir: &Path) -> Vec<Info> {
-        let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
         let mut v: Vec<Info> = rd
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -144,7 +149,10 @@ pub struct Ring {
 
 impl Ring {
     pub fn new(cap: usize) -> Ring {
-        Ring { buf: Vec::with_capacity(cap.min(1 << 16)), cap }
+        Ring {
+            buf: Vec::with_capacity(cap.min(1 << 16)),
+            cap,
+        }
     }
     pub fn push(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
@@ -170,11 +178,14 @@ impl Client {
     /// Connect and attach: the greeting, then the ring, then live output —
     /// all on the same channel, in order.
     pub fn attach(info: Info, on_output: impl Fn() + Send + 'static) -> Result<Client> {
-        let mut stream = TcpStream::connect(("127.0.0.1", info.port)).context("connect to the holder")?;
+        let mut stream =
+            TcpStream::connect(("127.0.0.1", info.port)).context("connect to the holder")?;
         stream.set_nodelay(true).ok();
         // The token proves we read the file; the holder checks it before serving.
         send(&mut stream, b't', info.token.as_bytes())?;
-        let Some((b'i', greeting)) = recv(&mut stream)? else { return Err(anyhow!("no greeting from the holder")) };
+        let Some((b'i', greeting)) = recv(&mut stream)? else {
+            return Err(anyhow!("no greeting from the holder"));
+        };
         let info: Info = serde_json::from_slice(&greeting).context("holder greeting")?;
         let exited = Arc::new(Mutex::new(None));
         let (tx, rx) = mpsc::channel();
@@ -192,7 +203,10 @@ impl Client {
                             on_output();
                         }
                         Ok(Some((b'x', code))) => {
-                            let code = code.get(..4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).unwrap_or(0);
+                            let code = code
+                                .get(..4)
+                                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .unwrap_or(0);
                             *flag.lock().unwrap() = Some(code);
                             on_output();
                             break;
@@ -211,7 +225,12 @@ impl Client {
                 }
             })
             .context("spawn hold reader")?;
-        Ok(Client { stream, info, output: rx, exited })
+        Ok(Client {
+            stream,
+            info,
+            output: rx,
+            exited,
+        })
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
@@ -244,7 +263,11 @@ pub fn holder_exe() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let name = if cfg!(windows) { "nus-hold.exe" } else { "nus-hold" };
+    let name = if cfg!(windows) {
+        "nus-hold.exe"
+    } else {
+        "nus-hold"
+    };
     let mut cands = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -254,21 +277,49 @@ pub fn holder_exe() -> Option<PathBuf> {
                 cands.push(up.join(name));
             }
             // spikes/<x>/target/<profile>/ → <repo>/target/<profile>/
-            for up in [dir.join("../../../../target/debug"), dir.join("../../../../target/release")] {
+            for up in [
+                dir.join("../../../../target/debug"),
+                dir.join("../../../../target/release"),
+            ] {
                 cands.push(up.join(name));
             }
         }
     }
-    cands.into_iter().find(|p| p.is_file()).map(|p| p.canonicalize().unwrap_or(p))
+    cands
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.canonicalize().unwrap_or(p))
 }
 
 /// Start a holder for `profile` and attach to it.
-pub fn spawn_held(profile: &crate::Profile, cols: u16, rows: u16, dir: &Path, on_output: impl Fn() + Send + 'static) -> Result<Client> {
+pub fn spawn_held(
+    profile: &crate::Profile,
+    cols: u16,
+    rows: u16,
+    dir: &Path,
+    on_output: impl Fn() + Send + 'static,
+) -> Result<Client> {
     let exe = holder_exe().ok_or_else(|| anyhow!("no nus-hold binary"))?;
     std::fs::create_dir_all(dir)?;
-    let id = format!("{:x}-{:x}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    let id = format!(
+        "{:x}-{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
     let mut cmd = std::process::Command::new(&exe);
-    cmd.arg("--id").arg(&id).arg("--dir").arg(dir).arg("--cols").arg(cols.to_string()).arg("--rows").arg(rows.to_string()).arg("--program").arg(&profile.program);
+    cmd.arg("--id")
+        .arg(&id)
+        .arg("--dir")
+        .arg(dir)
+        .arg("--cols")
+        .arg(cols.to_string())
+        .arg("--rows")
+        .arg(rows.to_string())
+        .arg("--program")
+        .arg(&profile.program);
     if let Some(cwd) = &profile.cwd {
         cmd.arg("--cwd").arg(cwd);
     }
@@ -276,7 +327,9 @@ pub fn spawn_held(profile: &crate::Profile, cols: u16, rows: u16, dir: &Path, on
         cmd.arg("--env").arg(format!("{k}={v}"));
     }
     cmd.arg("--").args(&profile.args);
-    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -285,7 +338,9 @@ pub fn spawn_held(profile: &crate::Profile, cols: u16, rows: u16, dir: &Path, on
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
-    let _child = cmd.spawn().with_context(|| format!("start {}", exe.display()))?;
+    let _child = cmd
+        .spawn()
+        .with_context(|| format!("start {}", exe.display()))?;
     // The holder writes its file once it listens; give it a moment.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let info = loop {
@@ -311,7 +366,10 @@ mod tests {
         send(&mut buf, b'x', &7u32.to_le_bytes()).unwrap();
         let mut r = std::io::Cursor::new(buf);
         assert_eq!(recv(&mut r).unwrap(), Some((b'o', b"hello".to_vec())));
-        assert_eq!(recv(&mut r).unwrap(), Some((b'x', 7u32.to_le_bytes().to_vec())));
+        assert_eq!(
+            recv(&mut r).unwrap(),
+            Some((b'x', 7u32.to_le_bytes().to_vec()))
+        );
         assert_eq!(recv(&mut r).unwrap(), None);
     }
 

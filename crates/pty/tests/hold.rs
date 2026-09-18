@@ -9,9 +9,21 @@ use nus_pty::{Profile, Pty};
 
 fn shell() -> Profile {
     if cfg!(windows) {
-        Profile { name: "test".into(), program: "cmd".into(), args: vec!["/Q".into(), "/K".into(), "echo held-hello".into()], cwd: None, env: Vec::new() }
+        Profile {
+            name: "test".into(),
+            program: "cmd".into(),
+            args: vec!["/Q".into(), "/K".into(), "echo held-hello".into()],
+            cwd: None,
+            env: Vec::new(),
+        }
     } else {
-        Profile { name: "test".into(), program: "sh".into(), args: vec!["-c".into(), "echo held-hello; cat".into()], cwd: None, env: Vec::new() }
+        Profile {
+            name: "test".into(),
+            program: "sh".into(),
+            args: vec!["-c".into(), "echo held-hello; cat".into()],
+            cwd: None,
+            env: Vec::new(),
+        }
     }
 }
 
@@ -55,10 +67,16 @@ fn spawn_detach_attach_kill() {
     // Attach: the ring replays the greeting, then the shell is live.
     let mut again = Pty::attach(info.clone(), 80, 24, || {}).expect("attach");
     let replay = wait_for(&again, "held-hello", 5);
-    assert!(replay.contains("held-hello"), "no ring on attach: {replay:?}");
+    assert!(
+        replay.contains("held-hello"),
+        "no ring on attach: {replay:?}"
+    );
     again.write(b"echo held-again\r\n").unwrap();
     let live = wait_for(&again, "held-again", 10);
-    assert!(live.contains("held-again"), "not live after attach: {live:?}");
+    assert!(
+        live.contains("held-again"),
+        "not live after attach: {live:?}"
+    );
 
     // Kill: the child goes, the holder reports the exit and leaves.
     again.kill();

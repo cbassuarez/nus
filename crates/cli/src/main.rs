@@ -187,7 +187,9 @@ fn main() -> ExitCode {
     };
     let rest: Vec<String> = words[1..].to_vec();
     let (cmd, args): (&str, Value) = match cmd.as_str() {
-        "ls" | "version" | "raise" | "ports" | "split" | "log" => (cmd.as_str(), Value::Object(opts)),
+        "ls" | "version" | "raise" | "ports" | "split" | "log" => {
+            (cmd.as_str(), Value::Object(opts))
+        }
         "hold" => {
             if let Some(w) = rest.first() {
                 opts.insert("what".into(), Value::String(w.clone()));
@@ -198,7 +200,10 @@ fn main() -> ExitCode {
             ("hold", Value::Object(opts))
         }
         "page" => {
-            opts.insert("what".into(), Value::String(rest.first().cloned().unwrap_or_else(|| "text".into())));
+            opts.insert(
+                "what".into(),
+                Value::String(rest.first().cloned().unwrap_or_else(|| "text".into())),
+            );
             if let Some(sel) = rest.get(1) {
                 opts.insert("selector".into(), Value::String(sel.clone()));
             }

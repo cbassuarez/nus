@@ -30,7 +30,13 @@ struct Args {
 fn parse() -> Result<Args> {
     let mut it = std::env::args().skip(1);
     let (mut id, mut dir, mut cols, mut rows) = (None, None, 80u16, 24u16);
-    let mut profile = Profile { name: "held".into(), program: String::new(), args: Vec::new(), cwd: None, env: Vec::new() };
+    let mut profile = Profile {
+        name: "held".into(),
+        program: String::new(),
+        args: Vec::new(),
+        cwd: None,
+        env: Vec::new(),
+    };
     while let Some(a) = it.next() {
         match a.as_str() {
             "--id" => id = it.next(),
@@ -40,7 +46,10 @@ fn parse() -> Result<Args> {
             "--program" => profile.program = it.next().unwrap_or_default(),
             "--cwd" => profile.cwd = it.next(),
             "--env" => {
-                if let Some((k, v)) = it.next().and_then(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))) {
+                if let Some((k, v)) = it.next().and_then(|kv| {
+                    kv.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                }) {
                     profile.env.push((k, v));
                 }
             }
@@ -54,7 +63,13 @@ fn parse() -> Result<Args> {
     if profile.program.is_empty() {
         return Err(anyhow!("--program is required"));
     }
-    Ok(Args { id: id.ok_or_else(|| anyhow!("--id is required"))?, dir: dir.ok_or_else(|| anyhow!("--dir is required"))?, cols, rows, profile })
+    Ok(Args {
+        id: id.ok_or_else(|| anyhow!("--id is required"))?,
+        dir: dir.ok_or_else(|| anyhow!("--dir is required"))?,
+        cols,
+        rows,
+        profile,
+    })
 }
 
 /// The bytes without `ESC [ 6 n`.
@@ -75,7 +90,10 @@ fn strip_dsr(out: &[u8]) -> Vec<u8> {
 fn token() -> String {
     // Enough to stop a stray local process from guessing; the file it lives
     // in is the real gate.
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     format!("{:x}{:x}", t, std::process::id() as u128 * 2_654_435_761)
 }
 
@@ -111,7 +129,10 @@ fn run() -> Result<()> {
         pid,
         program: args.profile.program.clone(),
         cwd: args.profile.cwd.clone(),
-        started: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        started: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
     };
     info.write(&args.dir)?;
     let file = Info::path(&args.dir, &args.id);
