@@ -89,6 +89,11 @@ impl Palette {
         self.overrides = [None; LEN];
     }
 
+    /// The override on an index, if a program set one (OSC 4/10/11/12).
+    pub fn override_of(&self, index: usize) -> Option<Rgb> {
+        self.overrides.get(index).copied().flatten()
+    }
+
     pub fn get(&self, index: usize) -> Rgb {
         let index = index.min(LEN - 1);
         self.overrides[index].unwrap_or(self.base[index])

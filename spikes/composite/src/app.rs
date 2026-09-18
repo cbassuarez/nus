@@ -205,6 +205,9 @@ pub struct TermPane {
     pub chip_hits: Vec<(Rect, usize)>,
     /// Blocks: folded output ranges (absolute lines), the display list they
     /// make, the block walked to, the filter, the lamps' hit rects.
+    /// A shell set its colours (OSC 10/11): offer them for the look, since when.
+    pub colour_offer: Option<Instant>,
+    pub colour_offer_hit: Option<Rect>,
     pub folds: Vec<(u64, u64)>,
     pub view: Vec<nus_vt::grid::Display>,
     pub view_key: Option<(u64, usize, usize, Option<(u64, u64)>)>,
@@ -1169,6 +1172,8 @@ impl App {
             plsp: None,
             plsp_tried: false,
             chip_hits: Vec::new(),
+            colour_offer: None,
+            colour_offer_hit: None,
             folds: Vec::new(),
             view: Vec::new(),
             view_key: None,
@@ -1917,6 +1922,24 @@ impl App {
             }
             let _ = (cw, rows);
         }
+        // The shell set its colours: a palette icon offers them for the look.
+        p.colour_offer_hit = None;
+        if let Some(at) = p.colour_offer {
+            if at.elapsed().as_secs() > 20 {
+                p.colour_offer = None;
+            } else {
+                let isz = self.px(14.0);
+                let chip = Rect::new(r.right() - self.px(18.0) - isz - self.px(10.0), r.y + hh + self.px(8.0), isz + self.px(20.0), isz + self.px(12.0));
+                scene.push(nus_render::Instance::rounded(chip, self.px(4.0), fade(self.paper(), 0.92)));
+                scene.outline(chip, self.px(m::HAIRLINE), fade(ink, 0.5));
+                let (mx, my) = self.mouse;
+                self.icon_button(scene, nus_render::text::icons::PALETTE, isz, chip.x + self.px(10.0), chip.y + self.px(6.0), self.surface.signal, chip, hover_key("colour-offer", p.pty.pid().unwrap_or(0) as usize), IconMotion::Pop);
+                if chip.contains(mx, my) {
+                    self.tip_words(chip, "the shell set colours · apply them to the look");
+                }
+                p.colour_offer_hit = Some(chip);
+            }
+        }
         // A long command just finished: a badge that fades over four seconds.
         if let Some((exit, when)) = p.done {
             let age = when.elapsed().as_secs_f32();
@@ -2476,6 +2499,8 @@ impl App {
     /// Drain PTYs, tick terminals, detect URLs. Returns true if anything changed.
     pub fn pump(&mut self) -> bool {
         let fold_over = self.behavior.fold_over;
+        let shell_colours = self.behavior.shell_colours;
+        let mut apply_colours: Vec<(Option<nus_vt::palette::Rgb>, Option<nus_vt::palette::Rgb>)> = Vec::new();
         let mut changed = false;
         let mut detected = None;
         let mut bell = false;
@@ -2581,6 +2606,22 @@ impl App {
                                 t.cwd = Some(path);
                                 changed = true;
                             }
+                            nus_vt::Event::ColorsChanged => {
+                                // OSC 10/11 set the pane's fg/bg: per the setting, offer or apply.
+                                let fg = t.term.palette.override_of(nus_vt::palette::FG);
+                                let bg = t.term.palette.override_of(nus_vt::palette::BG);
+                                if fg.is_some() || bg.is_some() {
+                                    match shell_colours {
+                                        crate::settings::ShellColours::Chip => t.colour_offer = Some(Instant::now()),
+                                        crate::settings::ShellColours::Always => apply_colours.push((fg, bg)),
+                                        crate::settings::ShellColours::PaneOnly => {}
+                                    }
+                                } else {
+                                    t.colour_offer = None;
+                                }
+                                t.term.grid_mut().damage_all();
+                                changed = true;
+                            }
                             nus_vt::Event::Progress(state, pct) => {
                                 let was = t.progress;
                                 t.progress = if state == 0 { None } else { Some((state, pct)) };
@@ -2622,7 +2663,69 @@ impl App {
         if bell {
             self.play_event("bell");
         }
+        for (fg, bg) in apply_colours {
+            self.apply_shell_colours(fg, bg);
+            changed = true;
+        }
         changed
+    }
+
+    /// The shell's colours become the look: ink or paper by the background's
+    /// lightness, the signal from the foreground when it's a colour (not
+    /// grey), the pane's own overrides cleared so it follows the look.
+    pub(crate) fn apply_shell_colours(&mut self, fg: Option<nus_vt::palette::Rgb>, bg: Option<nus_vt::palette::Rgb>) {
+        if let Some(bg) = bg {
+            let lum = 0.2126 * bg.r as f32 + 0.7152 * bg.g as f32 + 0.0722 * bg.b as f32;
+            let mode = if lum < 128.0 { nus_render::Mode::Ink } else { nus_render::Mode::Paper };
+            if self.theme.mode != mode {
+                self.behavior.follow_os_theme = false;
+                self.set_mode(mode);
+            }
+        }
+        if let Some(fg) = fg {
+            let (r, g, b) = (fg.r as f32 / 255.0, fg.g as f32 / 255.0, fg.b as f32 / 255.0);
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            // A grey foreground says nothing about an accent; a coloured one does.
+            if max - min > 0.18 {
+                self.surface.signal = [r, g, b, 1.0];
+                self.rebuild_theme();
+                self.refresh_icon();
+            }
+        }
+        for tab in &mut self.tabs {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Term(t) = p {
+                    t.term.palette.reset_override(nus_vt::palette::FG);
+                    t.term.palette.reset_override(nus_vt::palette::BG);
+                    t.colour_offer = None;
+                    t.term.grid_mut().damage_all();
+                }
+            }
+        }
+        self.save_prefs();
+        self.play_event("toggle");
+        self.dirty = true;
+    }
+
+    /// The offer chip was clicked: apply this pane's colours to the look.
+    pub(crate) fn colour_offer_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let mut found: Option<(Option<nus_vt::palette::Rgb>, Option<nus_vt::palette::Rgb>)> = None;
+        for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+            if let Pane::Term(t) = p {
+                if t.colour_offer.is_some() && t.colour_offer_hit.is_some_and(|r| r.contains(x, y)) {
+                    found = Some((t.term.palette.override_of(nus_vt::palette::FG), t.term.palette.override_of(nus_vt::palette::BG)));
+                }
+            }
+        }
+        match found {
+            Some((fg, bg)) => {
+                self.apply_shell_colours(fg, bg);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn begin_frames(&mut self) {
@@ -7103,6 +7206,9 @@ impl App {
             return;
         }
         if pressed && button == MouseButton::Left && self.lamp_click(x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.colour_offer_click(x, y) {
             return;
         }
         if self.term_mouse(button, state, x, y) {

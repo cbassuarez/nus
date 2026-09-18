@@ -665,3 +665,43 @@ ask · raise · version. The `nus` command (`crates/cli`) speaks it, and a
 bare `nus <file>` or `nus <url>` opens it. Rules call `nus.run(cmd, args)`;
 the app answers after the hook returns.
 
+## Tier three, the rest (settled 2026-09-17, eighteenth pass)
+
+**Progress.** OSC 9;4 runs as a 2px line under the tab's sidebar row and
+the strip crumb (red on error, gold on warning, a marquee while
+indeterminate) and on the Windows taskbar button. TERMINAL · PROGRESS.
+Rules: `on_progress({ state, tab })`.
+
+**The assistant sees tabs and shells.** Chips above the field, as icons —
+shell · block · page · tabs · editor · memory — lit when they go along;
+shell + the block in focus + the page beside are the default (ASSISTANTS ·
+GOES ALONG). The page's text comes through the reader. Skills are rules
+(`skills = { name = { prompt, context } }`): text chips in the panel and
+`ask <name>` in the palette. Memory is `profile/memory.md`: the book icon
+on an answer keeps its first line; ASSISTANTS shows and forgets it. Insert
+· run · copy on an answer are icons with tooltips.
+
+**Layouts as Luau.** A `.nus.luau` returns `{ space, tabs = { { shell, cwd,
+run } | { page, beside } | { edit } … }, hatch }` and can compute (`env.HOME`,
+`env.here`). Open from the palette's layout rows, the atlas, `nus open
+<file>`, or the chip a shell's cwd offers when one is there; SAVE THIS
+WINDOW AS A LAYOUT writes `profile/layouts/<name>.nus.luau`. STARTUP ·
+THEN · A LAYOUT. Rules: `on_open_layout(l)`.
+
+**SSH.** An ssh profile carries the integration in its remote command:
+the bootstrap writes nus's bash/zsh scripts to `~/.cache/nus` on the far
+side over the same connection and execs the login shell with them. Nothing
+installed there. TERMINAL · SSH. `nus ssh <host> [--split]`.
+
+**Tidy.** Suggestions only. A page open elsewhere gets a band on the newer
+tab: switch there, or keep both. `group(tab)` in rules names a group
+(default: host, or project folder). TIDY — the palette, or hourly/daily
+(TABS · TIDY) — proposes groups as a sheet with make-a-stack · archive ·
+skip per group; nothing moves until you tap. Rules: `on_tidy(groups)`.
+
+**Shell colours.** OSC 10/11 from a shell changes the pane; TERMINAL ·
+SHELL COLOURS: OFFER (default — a palette icon on the pane applies them to
+the look: ink or paper by the background, the accent from a coloured
+foreground) · ALWAYS · PANE ONLY. `nus theme <name>` and `nus look
+ink|paper --signal` are the hot-swap from a script.
+

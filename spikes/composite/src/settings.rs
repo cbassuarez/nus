@@ -108,6 +108,18 @@ fn default_ports_poll() -> u8 {
     1
 }
 
+/// What a shell's OSC 10/11 (set foreground/background) does to the look.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum ShellColours {
+    /// The pane changes; a chip offers to apply it to the whole look.
+    #[default]
+    Chip,
+    /// The look follows at once.
+    Always,
+    /// The pane only, as any terminal.
+    PaneOnly,
+}
+
 /// How often TIDY suggests groups on its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum TidyEvery {
@@ -324,6 +336,9 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    /// OSC 10/11 from a shell: a chip offers the look, or it applies, or the pane only.
+    #[serde(default)]
+    pub shell_colours: ShellColours,
     /// Tidy: how often to suggest groups; dedupe bands on/off.
     #[serde(default)]
     pub tidy_every: TidyEvery,
@@ -515,6 +530,7 @@ impl Default for Behavior {
             ask_ctx: default_ask_ctx(),
             then_layout: String::new(),
             ssh_integration: true,
+            shell_colours: ShellColours::Chip,
             tidy_every: TidyEvery::Off,
             dedupe: true,
             ports_grouping: PortsGrouping::Origin,
@@ -662,6 +678,7 @@ pub enum Hit {
     SshIntegration(bool),
     TidyEvery(TidyEvery),
     Dedupe(bool),
+    ShellColours(ShellColours),
     PortsGrouping(PortsGrouping),
     PortsOpen(PortsOpen),
     PortsPoll(u8),
@@ -960,6 +977,7 @@ impl App {
             Hit::SshIntegration(b) => if b { "ssh brings the integration".into() } else { "ssh as is".into() },
             Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
             Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
+            Hit::ShellColours(c) => format!("shell colours: {:?}", c).to_lowercase(),
             Hit::PortsGrouping(g) => g.name().into(),
             Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
             Hit::PortsPoll(n) => format!("poll every {n}s"),
@@ -1288,6 +1306,7 @@ impl App {
             Hit::SshIntegration(b) => self.behavior.ssh_integration = b,
             Hit::TidyEvery(e) => self.behavior.tidy_every = e,
             Hit::Dedupe(b) => self.behavior.dedupe = b,
+            Hit::ShellColours(c) => self.behavior.shell_colours = c,
             Hit::ForgetMemory => {
                 let _ = std::fs::write(std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), "");
             }
@@ -2347,20 +2366,30 @@ impl App {
                         ("OVER 200".into(), Hit::FoldOver(200), fo == 200),
                     ]),
                 ));
+                let sc = self.behavior.shell_colours;
                 v.insert(7, (
+                    "SHELL COLOURS".into(),
+                    Choice(vec![
+                        ("OFFER".into(), Hit::ShellColours(ShellColours::Chip), sc == ShellColours::Chip),
+                        ("ALWAYS".into(), Hit::ShellColours(ShellColours::Always), sc == ShellColours::Always),
+                        ("PANE ONLY".into(), Hit::ShellColours(ShellColours::PaneOnly), sc == ShellColours::PaneOnly),
+                    ]),
+                ));
+                v.insert(8, ("".into(), Info("a script that sets the terminal's colours (OSC 10/11, like kitty's set-colors) changes the pane; OFFER puts a chip on it to apply them to the whole look — ink or paper by the background, the accent from the foreground — ALWAYS does it at once · nus theme <name> / nus look from the shell also work".into())));
+                v.insert(9, (
                     "SSH".into(),
                     Choice(vec![("BRING THE INTEGRATION".into(), Hit::SshIntegration(!self.behavior.ssh_integration), self.behavior.ssh_integration)]),
                 ));
-                v.insert(8, ("".into(), Info("an ssh profile (from ~/.ssh/config, or nus ssh <host>) writes nus's bash and zsh scripts to ~/.cache/nus on the remote over the same connection and execs your shell with them: marks, cwd with the host, exit codes, progress · nothing to install there".into())));
-                v.insert(9, (
+                v.insert(10, ("".into(), Info("an ssh profile (from ~/.ssh/config, or nus ssh <host>) writes nus's bash and zsh scripts to ~/.cache/nus on the remote over the same connection and execs your shell with them: marks, cwd with the host, exit codes, progress · nothing to install there".into())));
+                v.insert(11, (
                     "PROGRESS".into(),
                     Choice(vec![
                         ("SIDEBAR · CRUMB".into(), Hit::ProgressSidebar(!self.behavior.progress_sidebar), self.behavior.progress_sidebar),
                         ("TASKBAR".into(), Hit::ProgressTaskbar(!self.behavior.progress_taskbar), self.behavior.progress_taskbar),
                     ]),
                 ));
-                v.insert(10, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
-                v.insert(11, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
+                v.insert(12, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
+                v.insert(13, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
                 v.insert(3, (
                     "CLIPBOARD".into(),
                     Choice(vec![
