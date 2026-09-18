@@ -1,0 +1,17 @@
+[package]
+name = "nus-hold"
+description = "A pty that outlives the app: one holder process per held shell, served over loopback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nus-hold"
+path = "src/main.rs"
+
+[dependencies]
+nus-pty = { path = "../pty" }
+anyhow.workspace = true
+serde_json.workspace = true

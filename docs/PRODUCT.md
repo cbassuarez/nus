@@ -706,12 +706,13 @@ foreground) · ALWAYS · PANE ONLY. `nus theme <name>` and `nus look
 ink|paper --signal` are the hot-swap from a script.
 
 
-## Recovery, the assistant's other half, replay, the loop (settled 2026-09-17, nineteenth pass)
+## Recovery, the assistant's other half, replay, the loop (settled 2026-09-17, nineteenth pass; built 2026-09-18)
 
 Three flagships and the small things that make them true. Everything here
 rides on what exists: blocks over OSC 133, session restore, the ports board,
 the instance-port protocol, containers, rules.luau, and the compositor owning
-both textures. Order at the end.
+both textures. Built in the composite spike the day after; the deltas from
+the plan are in the text below.
 
 **Cut off.** Session restore already lays the scrollback down as read-only
 history. A block with a start mark and no finish mark is the command the
@@ -729,12 +730,14 @@ whatever comes next. A held shell never shows it — nothing was cut.
 **Held.** A shell's pty lives in `nus-hold` (`crates/hold`), a small child
 that owns the pseudoconsole — on Windows `ClosePseudoConsole` kills the
 client, so the owner has to outlive the app — keeps a 4 MB ring of output,
-and speaks the pty over a pipe at `profile/hold/<id>`. nus attaches. nus
-quitting, crashing or updating leaves the holder and its process running;
-the next launch reattaches and the VT core replays the ring, so the screen
-is what it would have been. TERMINAL · KEEP ALIVE: RUNNING (default — a
-shell with a foreground process at quit is held, an idle prompt is not) ·
-ALWAYS · NEVER. The sidebar row of a held-but-unattached shell carries a
+and serves the pty over a loopback socket named in `profile/hold/<id>.json`
+(port and a per-holder token). nus attaches. nus quitting, crashing or
+updating leaves the holder and its process running; the next launch
+reattaches and the VT core replays the ring, so the screen is what it would
+have been — colours, blocks and all. TERMINAL · KEEP ALIVE: ON (default —
+every shell is held; at quit an idle prompt is let go, a running command is
+kept) · OFF. A shell cannot be moved into a holder after the fact, so the
+choice is at spawn, not at quit. The sidebar row of a held-but-unattached shell carries a
 *held* icon (tooltip: *held · claude running*); the atlas carries the same
 icon with a count. Close on a running
 process: CLOSE · DETACH · CANCEL, and reopen-closed reattaches. Moving a tab
@@ -743,26 +746,29 @@ its block's command. `nus hold ls · attach <id> · kill <id>`. A holder whose
 child exits with nothing attached exits too. SSH profiles hold the client.
 
 **Eyes.** `nus mcp` (in `crates/cli`) is an MCP server on stdio over the
-instance protocol; OPTIONAL TOOLS on the welcome page registers it with
-claude and codex (one line in their config, shown, undoable). Tools: `tabs`
-· `page.text` (the reader) · `page.dom <selector>` · `page.console` ·
-`page.network` · `page.screenshot` (the pane's texture — the NUS_SHOT path,
-never the OS) · `page.open <url> [beside]` · `shell.block <id>` · `ports`.
+instance protocol: `claude mcp add nus -- nus mcp`, the same for codex.
+Tools: `nus_tabs` · `nus_page_info` · `nus_page_text` (the reader) ·
+`nus_page_dom` · `nus_page_console` · `nus_page_network` ·
+`nus_page_screenshot` (the pane's texture — the NUS_SHOT path, never the
+OS) · `nus_page_open` · `nus_block` · `nus_ports` · `nus_log` · `nus_hold`.
 The assistant in the shell reads the page beside it as you see it, logged
-in as you. ASSISTANTS · EYES: ON · OFF. A tab an assistant is reading shows
-a small eye on its row.
+in as you. Console and network are kept per page from the moment it opens
+(`Runtime` and `Network` enabled on creation), capped. Not yet: the eye on
+the row, and a switch to turn eyes off.
 
-**Hands.** `page.click` · `page.type` · `page.scroll` · `page.navigate`, by
-CDP on the pane. Every action is a **block** in the page's tab — *claude ·
-click "Submit" · 12:04* — with a lamp, foldable, in the journal. Esc or a
-click on the page interrupts: the tool returns *taken over*, the assistant
-is told. ASSISTANTS · HANDS: ASK (default) · ALWAYS · NEVER. Rules:
-`assistants.policy = { hosts, confirm = {"submit", "external"}, hands }`.
-ASK draws a band over the page: *claude wants to click Submit · ALLOW ·
-DENY · ALLOW ON THIS HOST*. An assistant's Space (`new_space(ctx)` with
-`ctx.kind == "assistant"`, or `nus space --assistant`) is its own container
-— its own cookie jar, its own tab colour — and the pages it opens land
-there; you take any of them over with a click. In sight, revocable, local.
+**Hands.** `nus_page_click` (a selector, or x and y) · `nus_page_type` ·
+`nus_page_scroll` · `nus_page_navigate`, by CDP on the pane. Every hand
+leaves an icon chip under the URL row for a minute — click, keyboard,
+caret, globe; ink when it ran, signal when it was denied or taken over —
+with the words in its tooltip, and a `hand` line in the page's log. ASK
+draws a band over the page: *claude wants to scroll down · ALLOW · DENY ·
+ALLOW ON THIS HOST*; y/enter, n/esc, h answer it, and any other key or a
+click on the page takes over: the tool is told *taken over by the user*.
+ASSISTANTS · HANDS: ASK (default) · ALWAYS · NEVER · CONFIRM SUBMIT (a
+submit, an Enter or a navigation asks even on an allowed host) · the
+allowed hosts, forgettable. The assistant's name comes from its
+environment (`CLAUDECODE`, `CODEX_*`). Not yet: the rules-file policy,
+the assistant's own Space, and a hand as a block in the journal.
 
 **Ports that remember.** `ports.json` keeps each port's last owner and the
 block that started it. On restore, *was listening*: 5173 · vite · `npm run
@@ -784,33 +790,35 @@ with the assistant's name in the row icon's tooltip — *claude · waiting for
 you*. Stateful icons with tooltips, not captions: that is the rule for every
 row, chip and status in this pass.
 
-**Replay.** Every block boundary is a **checkpoint** of the tab: the cast
-segment since the last (the shell's bytes, timed), the page beside — URL,
-scroll, DOM (`Page.captureSnapshot`, MHTML) and its pixels (the texture, only
-when its hash changed) — and the editor's buffers as diffs. Stored under
-`profile/replay/<session>/`: asciinema v2 with a `checkpoint` event, blobs
-beside it. TERMINAL · REPLAY: KEEP 7 DAYS (default) · 1 DAY · OFF. **The
-timeline**: drag on the block scrollbar's ticks, or Ctrl+Shift+H, and the
-tab shows that moment — the shell by replaying the cast to *t* (our core,
-fast), the page as its still, greyed *then*, the editor as the buffer was;
-Esc returns to now. **Before / after** on a block: the page's two stills
-side by side, a pixel diff in signal, and the DOM changes as a list —
-behaviour, not code. **Share as replay**: `nus share <block | tab |
-session>` writes a folder — `index.html`, the cast, the stills, and the
-site's wasm renderer — that replays in any browser with the real cells; open
-it locally, push it as a gist or a Pages branch through gh. Explicit, and
-inspectable before it leaves.
+**Replay.** Every shell's bytes go to a cast (asciinema v2, one per tab,
+resizes as `r` events) under `profile/replay/<session>/`, and every block's
+end is a **checkpoint** — an `m` marker carrying the command, its exit, the
+folder, and the page beside as a still (`blobs/<tab>-<n>.png`, the pane's
+own pixels, taken on the next draw). TERMINAL · REPLAY: KEEP 7 DAYS
+(default) · 1 DAY · OFF; sessions older than that go at launch. **The
+timeline**: Ctrl+Shift+H (or the palette) and the tab shows a moment
+instead of now — the shell by replaying its cast into a scratch `Term` up
+to that checkpoint (our core, so the picture is exact, lamps and colours
+included), the page as its still under a wash of paper. A ruler along the
+pane's foot: a tick per checkpoint, the current one in signal, the command
+and its exit in the tooltip; ←/→, Home/End and a click on a tick move,
+Esc returns to now. **Before / after**: B cycles the page's still through
+after · before · diff — changed pixels in signal, the rest dimmed —
+behaviour, not code. **Share**: `nus share` (the palette too) writes one
+HTML file under `profile/shares/` — the cast, the stills, and the site's
+wasm renderer, all inline, so it plays from `file://` and travels as a
+single file — and opens it as a tab. Not yet: MHTML and the editor's
+buffers in a checkpoint, the DOM diff as a list, pixels skipped on an
+unchanged page.
 
 **The loop.** On a localhost page, Alt+Shift+click an element → the editor
-pane at its source: source maps first, then framework markers (React
-`_debugSource`, Vue `__file`, Svelte), then the served file. LOCALHOST ·
-CLICK TO SOURCE. A `file:line` in a failing block already opens the editor;
-a save the page reloads for (HMR, or ours on directory change) lights the
-page's row, and the reload rides the block's lamp. Console → shell exists;
-this is the way back.
+pane at its source: framework markers first (React `_debugSource`, Svelte
+`__svelte_meta`, Vue `__file`, an inspector attribute), then the served
+file under the folder the server runs from (the ports board's owner, else
+the shell beside, else the focused cwd). BROWSER · CLICK TO SOURCE. A
+`file:line` in a failing block already opens the editor. Not yet: source
+maps, and the reload riding the block's lamp.
 
-**Order.** On blocks alone, a day each: cut off, ports that remember, the
-journal, attention named. Then held (spike 5, then `crates/hold`). Then eyes
-— read-only, the protocol exists — and hands after spike 7. Then checkpoints
-→ the timeline → before/after → share (spike 6). The loop last; it is what
-makes *IDE* a fair word, not what makes the app.
+**Order.** As planned, and done in that order on 2026-09-18: cut off, ports
+that remember, the journal, attention named; held; eyes, hands; replay; the
+loop. What each one still lacks is named above, in place.

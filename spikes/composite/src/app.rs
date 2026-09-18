@@ -7509,7 +7509,7 @@ impl App {
                     self.close_peek();
                     return;
                 }
-            } else if self.mods.alt_key() {
+            } else if self.mods.alt_key() && !self.mods.shift_key() {
                 let active = self.active;
                 let link = self.tabs.get(active).and_then(|t| {
                     let p = if t.focus_right && t.right.is_some() { t.right.as_ref().unwrap() } else { &t.left };

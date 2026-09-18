@@ -1,0 +1,73 @@
+//! The holder end to end: spawn a shell through nus-hold, detach, and come
+//! back to find the ring and the live process. Needs a built `nus-hold`
+//! (cargo build -p nus-hold); skips quietly otherwise.
+
+use std::time::{Duration, Instant};
+
+use nus_pty::hold::{holder_exe, Info};
+use nus_pty::{Profile, Pty};
+
+fn shell() -> Profile {
+    if cfg!(windows) {
+        Profile { name: "test".into(), program: "cmd".into(), args: vec!["/Q".into(), "/K".into(), "echo held-hello".into()], cwd: None, env: Vec::new() }
+    } else {
+        Profile { name: "test".into(), program: "sh".into(), args: vec!["-c".into(), "echo held-hello; cat".into()], cwd: None, env: Vec::new() }
+    }
+}
+
+fn wait_for(pty: &Pty, needle: &str, secs: u64) -> String {
+    let mut got = String::new();
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < deadline {
+        got.push_str(&String::from_utf8_lossy(&pty.take_output()));
+        if got.contains(needle) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    got
+}
+
+#[test]
+fn spawn_detach_attach_kill() {
+    let Some(exe) = holder_exe() else {
+        eprintln!("no nus-hold binary; skipping");
+        return;
+    };
+    eprintln!("holder: {}", exe.display());
+    let dir = std::env::temp_dir().join(format!("nus-hold-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Spawn through the holder; the shell's greeting arrives over the socket.
+    let pty = Pty::spawn_held(&shell(), 80, 24, &dir, || {}).expect("spawn held");
+    let id = pty.held_id().expect("held").to_string();
+    let got = wait_for(&pty, "held-hello", 15);
+    assert!(got.contains("held-hello"), "no greeting: {got:?}");
+    let info = Info::read(&dir, &id).expect("info file");
+    assert_eq!(info.id, id);
+    assert!(info.pid > 0);
+
+    // Detach: the holder and the shell stay.
+    pty.detach();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(info.alive(&dir), "holder gone after detach");
+
+    // Attach: the ring replays the greeting, then the shell is live.
+    let mut again = Pty::attach(info.clone(), 80, 24, || {}).expect("attach");
+    let replay = wait_for(&again, "held-hello", 5);
+    assert!(replay.contains("held-hello"), "no ring on attach: {replay:?}");
+    again.write(b"echo held-again\r\n").unwrap();
+    let live = wait_for(&again, "held-again", 10);
+    assert!(live.contains("held-again"), "not live after attach: {live:?}");
+
+    // Kill: the child goes, the holder reports the exit and leaves.
+    again.kill();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while again.exit_code().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(again.exit_code().is_some(), "no exit after kill");
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(!Info::path(&dir, &id).exists(), "info file left behind");
+    let _ = std::fs::remove_dir_all(&dir);
+}

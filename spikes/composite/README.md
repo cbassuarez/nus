@@ -122,3 +122,19 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - Window transparency on Windows (needs a DirectComposition swapchain).
 - Single instance over a named pipe / unix socket (loopback TCP here).
 - Reader mode images (captions only here) and link following.
+
+- **Held shells (2026-09-18).** ConPTY's conhost sends DSR 6 at startup
+  and paints nothing until it is answered; a holder with no client
+  attached must answer it itself (`nus-hold` does, and keeps the ask out
+  of its ring). `taskkill /F` from Git Bash mangles `/F` into a path —
+  `MSYS_NO_PATHCONV=1`.
+- **The chunk that carries `133;D` usually carries the next prompt's
+  `133;A`/`B` too.** "The last CommandStart mark" at D time is the empty
+  new prompt; the finished block is `blocks().last()`. History and the
+  journal both read it that way now.
+- **A `file://` page can fetch nothing** (no modules, no wasm, no cast):
+  the replay share is one HTML file with the glue, the player, the wasm
+  and the cast inline.
+- **Snapshot files keyed by tab id** were overwritten by the next launch's
+  first save before restore read them; the session's shell snapshot is
+  inline in `session.json` instead.

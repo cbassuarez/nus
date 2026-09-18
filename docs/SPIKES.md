@@ -51,6 +51,13 @@ Direction "Broadsheet" chosen 2026-09-16 — see `docs/DESIGN.md` and the
 canvas sources in `design/`. Spike 4 renders the chrome from those tokens.
 
 ## 5. `hold` — a pty that outlives the app
+**Windows done 2026-09-18** in `crates/hold` and `nus_pty::hold`, with an
+end-to-end test (`crates/pty/tests/hold.rs`): spawn through the holder,
+detach, attach with the ring replayed, live, kill, file gone. Found: conhost
+sends DSR 6 at startup and draws nothing until answered — the holder
+answers when nobody is attached. Loopback + token instead of a named pipe.
+Unix and job objects still to do.
+
 The holder process from ARCHITECTURE.md, Windows first.
 - Does a ConPTY owned by a child survive the parent's exit and crash? Job
   object placement so the app's death takes nothing.
@@ -62,6 +69,11 @@ The holder process from ARCHITECTURE.md, Windows first.
 - Unix: `openpty` + a supervisor; SIGHUP handling; the same pipe protocol.
 
 ## 6. `checkpoint` — what a block boundary costs
+**Built 2026-09-18** as `replay.rs`: a cast per tab, a marker and a still
+per block, the timeline over a scratch `Term`, before/after as a pixel
+diff, share as one inline HTML file. Costs not yet measured over a working
+day; MHTML and editor buffers not yet in a checkpoint.
+
 Take the checkpoint from PRODUCT.md on every block for a working day.
 - `Page.captureSnapshot` size and time on real pages (docs.rs, a Vite app,
   GitHub); texture readback time at 1600×1000 (we have `snapshot`).
@@ -72,6 +84,12 @@ Take the checkpoint from PRODUCT.md on every block for a working day.
   real change (a CSS edit under HMR).
 
 ## 7. `hands` — CDP input on an offscreen browser, as blocks
+**Built 2026-09-18** as `hands.rs` and `nus mcp`: scroll, type, navigate
+and click through CDP on the OSR browser work as sent; the band, the chips,
+take-over and *allow on this host* work; the MCP handshake was exercised
+with a hand-rolled client (initialize, tools/list, tools/call). Not yet
+tried against Claude Code or Codex themselves.
+
 - `Input.dispatchMouseEvent` / `dispatchKeyEvent` on an OSR browser: do
   clicks land where the pane's coordinates say, at every scale factor?
 - A hand as a block: open, lamp, fold; user input cancels it and the tool

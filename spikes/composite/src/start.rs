@@ -43,6 +43,9 @@ fn shell_state_to_json(s: &ShellState) -> serde_json::Value {
 }
 
 fn shell_state_from_json(v: &serde_json::Value) -> Option<ShellState> {
+    if !v.is_object() {
+        return None;
+    }
     let st = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_string());
     let running = match (st("cmd"), v.get("since").and_then(|x| x.as_u64())) {
         (Some(c), Some(at)) if !c.trim().is_empty() => Some((c, at)),
@@ -660,8 +663,8 @@ mod tests {
     fn session_json_roundtrip() {
         let s = Session {
             tabs: vec![
-                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), container: Some("WORK".into()), split: None, hatch: false },
-                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, container: None, split: None, hatch: false },
+                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), shell: Some(ShellState { cwd: Some("/x".into()), running: Some(("claude".into(), 7)), snapshot: Some("hi".into()), held: None }), shell_right: None, pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), container: Some("WORK".into()), split: None, hatch: false },
+                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, container: None, split: None, hatch: false },
             ],
             active: 1,
             tiles: vec![0, 1],
@@ -680,6 +683,11 @@ mod tests {
         assert_eq!(back.tabs[0].name.as_deref(), Some("deploy notes"));
         assert_eq!(back.tabs[0].emoji.as_deref(), Some("📌"));
         assert_eq!(back.tabs[0].colour.as_deref(), Some("#2e7d32"));
+        let sh = back.tabs[0].shell.as_ref().expect("the shell state rides along");
+        assert_eq!(sh.cwd.as_deref(), Some("/x"));
+        assert_eq!(sh.running, Some(("claude".into(), 7)));
+        assert_eq!(sh.snapshot.as_deref(), Some("hi"));
+        assert!(back.tabs[1].shell.is_none());
         assert!(back.tabs[1].name.is_none());
         assert_eq!(back.active, 1);
         assert_eq!(back.tiles, vec![0, 1]);

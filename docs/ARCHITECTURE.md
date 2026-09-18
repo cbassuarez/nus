@@ -93,29 +93,38 @@ replace it.
 
 ## Holder
 
-`nus-hold` is one process per held shell: it creates the pty (ConPTY on
-Windows, `openpty` elsewhere), spawns the shell in it, and serves the pty's
-bytes both ways over a named pipe / unix socket at `profile/hold/<id>`,
-keeping a ring of the last 4 MB it has read. The app is a client; the VT core
-stays in the app. Detach is closing the pipe; attach is opening it and asking
-for the ring, which the core replays before going live. The holder outlives
-the app on purpose — `ClosePseudoConsole` terminates the client, so whoever
-owns the pseudoconsole decides whether `claude` survives a restart. Process
-lifetime: the holder exits when its child does and no client is attached, or
-on `nus hold kill`. On Windows the shell is in a job object owned by the
-holder, not the app, so an app crash takes nothing with it.
+`nus-hold` (`crates/hold`) is one process per held shell: it spawns the
+shell through `nus_pty::Pty` — the same pty code the app uses — keeps a ring
+of the last 4 MB it has read, and serves the pty's bytes both ways over a
+loopback socket to one client at a time. `profile/hold/<id>.json` names it:
+port, a per-launch token, the holder's pid and the shell's. The frames are
+`[tag][len u32][payload]` (`nus_pty::hold`): the client sends bytes,
+resizes and kill; the holder sends a greeting, the ring once, then output
+and the exit code. The app is a client; the VT core stays in the app.
+Detach is closing the socket; attach is opening it and taking the ring,
+which the core replays before going live. The holder outlives the app on
+purpose — `ClosePseudoConsole` terminates the client, so whoever owns the
+pseudoconsole decides whether `claude` survives a restart — and is started
+with its own process group and no console. It exits when its child does, or
+on kill. One thing learned in spike 5: ConPTY's conhost asks the terminal
+where the cursor is (DSR 6) and draws nothing until it hears back, so the
+holder answers when no client is attached and keeps the ask out of the
+ring.
 
 ## Assistant bridge
 
-Eyes and hands are the instance protocol (`remote.rs`) behind two doors:
-`nus mcp`, an MCP server on stdio that maps tools to verbs, and the same verbs
-from rules. Reading a page is the reader pipeline (CDP `Runtime.evaluate`
-with `returnByValue`) and, for pixels, the tab's texture through the render
-crate's `snapshot` — the OS screen is never read. Hands are CDP
-`Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` / `Page.navigate` on
-the pane's browser; each call is wrapped as a block on the page's tab and
-checked against `assistants.policy` before it runs. User input on that pane
-while a hand is open cancels it and answers the tool *taken over*. The
+Eyes and hands are the instance protocol (`remote.rs`) behind `nus mcp`,
+an MCP server on stdio in `crates/cli` that maps tools to verbs. A verb
+whose answer waits on the page — a CDP reply, a capture on the next draw —
+is parked in `App::deferred` and answered when it comes; hands are parked
+in the pane's band until you answer. Reading a page is the reader pipeline
+(CDP `Runtime.evaluate` with `returnByValue`) and, for pixels, the tab's
+texture through the render crate's `snapshot` — the OS screen is never
+read. Console and network are CDP events kept per page in `Shared::log`.
+Hands are CDP `Input.dispatchMouseEvent` / `Input.insertText` /
+`Input.dispatchKeyEvent` and the tab's own `load`; each is checked against
+the HANDS setting and the allowed hosts before it runs. User input on that
+pane while a hand waits cancels it and answers the tool *taken over*. The
 terminal never gets a `CefBrowser` and the browser never gets a pty handle:
 the bridge is typed messages, as before.
 
@@ -129,9 +138,10 @@ each editor buffer as a diff against the last checkpoint. The store is
 `profile/replay/<session>/cast.jsonl` (asciinema v2 plus a `checkpoint`
 event pointing at blobs in `blobs/`), pruned by age. Scrubbing replays the
 cast into a scratch `Term` up to *t* — the same core, so the picture is
-exact — and swaps the page pane for the still. Sharing bundles the session
-with the wasm renderer the site already uses (`nus_vt_wasm`), so a replay
-needs no server and no nus.
+exact — and swaps the page pane for the still. Sharing bundles the tab's cast, its stills and the wasm renderer the site
+already uses (`nus_vt_wasm`, carried in the app's assets) into one HTML file
+— module syntax stripped, the wasm and the cast inline — because a
+`file://` page can fetch nothing; so a replay needs no server and no nus.
 
 ## The loop
 
