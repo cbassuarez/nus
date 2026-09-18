@@ -1,0 +1,18 @@
+nus bundles or ports work by others, all under permissive licenses:
+
+- Phosphor Icons — MIT — https://phosphoricons.com
+- IBM Plex Mono — SIL Open Font License 1.1 — https://github.com/IBM/plex
+- Newsreader — SIL Open Font License 1.1 — https://github.com/productiontype/Newsreader
+- Chromium Embedded Framework — BSD-3-Clause — https://github.com/chromiumembedded/cef
+- cef-rs — MIT/Apache-2.0 — https://github.com/tauri-apps/cef-rs
+- tree-sitter and the bundled grammars (bash, powershell, rust, python,
+  javascript, typescript, json, go, toml) — MIT — https://tree-sitter.github.io
+- ropey — MIT — https://github.com/cessen/ropey
+- lsp-types — MIT — https://github.com/gluon-lang/lsp-types
+- Neovide's cursor renderer (ported as smear.rs) — MIT — https://github.com/neovide/neovide
+- neoscroll.nvim's easing curves (ported in scrolling.rs) — MIT — https://github.com/karb94/neoscroll.nvim
+- EasyList (ad blocking rules) — GPL-3.0 / CC BY-SA 3.0 dual — https://easylist.to
+- adblock-rust — MPL-2.0 — https://github.com/brave/adblock-rust
+- Contributor Covenant 2.1 (CODE_OF_CONDUCT.md) — CC BY 4.0
+
+Everything else is © 2026 Sebastian Suarez Solis, MIT — see LICENSE.

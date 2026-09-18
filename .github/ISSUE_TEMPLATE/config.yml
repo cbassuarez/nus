@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: How rules work
+    url: https://github.com/cbassuarez/nus/blob/main/docs/PRODUCT.md
+    about: Most "I wish it did X" is a rule in rules.luau — the product doc says which.

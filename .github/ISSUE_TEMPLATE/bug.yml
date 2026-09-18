@@ -1,0 +1,41 @@
+name: Bug
+description: Something is wrong, and you can show it happening.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        nus is one person's terminal and browser (see the README). Bugs with a reproduction are welcome; without one they close.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse --short HEAD` of the build that misbehaves"
+      placeholder: 97712a5
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Windows 11, macOS, Linux (Wayland), Linux (X11)]
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: What you did
+      description: The exact steps. A shell command, a URL, a chord.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: A screenshot, a `NUS_DUMP` capture of the terminal bytes, the relevant lines of `rules.luau`.

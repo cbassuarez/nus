@@ -1,0 +1,24 @@
+name: Feature request
+description: Read the first line before you open this.
+labels: [feature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is likely a no.** nus is built for one user, and its design is settled in `docs/PRODUCT.md`. I don't take feature requests; the license lets you fork it and I mean that kindly.
+
+        Before opening this, check whether it's already a rule: `rules.luau` covers new-tab colours, folders, chains, skills, ports, blocks, grouping and layouts, and `nus.run` reaches every remote-control verb. The look studio and layouts cover most of the rest.
+
+        If it survives that, keep it to one paragraph.
+  - type: textarea
+    id: what
+    attributes:
+      label: What, in one paragraph
+    validations:
+      required: true
+  - type: textarea
+    id: rule
+    attributes:
+      label: Why it can't be a rule, a theme or a layout
+    validations:
+      required: true
