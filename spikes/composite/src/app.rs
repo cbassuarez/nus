@@ -4083,8 +4083,12 @@ impl App {
             }
             SideHit::NewTab => self.open_palette(PaletteMode::New),
             SideHit::NewShell if !from_mouse => {
-                let p = self.behavior.default_profile;
-                self.new_tab(p);
+                if self.behavior.lead == crate::settings::Lead::Browser {
+                    self.open_start();
+                } else {
+                    let p = self.behavior.default_profile;
+                    self.new_tab(p);
+                }
             }
             SideHit::NewShell => {
                 self.press = Some((Instant::now(), SideHit::NewShell));
@@ -4483,6 +4487,24 @@ impl App {
             scene.rect(r, t.paper);
             let mut y = top;
             let profiles = self.profiles.clone();
+            let page_first = self.behavior.lead == crate::settings::Lead::Browser;
+            if page_first {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                if cell.contains(mx, my) {
+                    scene.rect(cell, t.tint);
+                }
+                let isz = self.px(12.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), ink);
+                self.fonts.draw(scene, strong, sb.x + self.px(30.0), y + self.px(19.0), "PAGE");
+                let k2 = "CTRL L";
+                let kw = self.fonts.measure(label, k2);
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), k2);
+                scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
+                if self.kinds_menu {
+                    self.side_hits.push((cell, SideHit::KindPage));
+                }
+                y += row;
+            }
             for (i, p) in profiles.iter().enumerate() {
                 let cell = Rect::new(sb.x, y, sb.w, row);
                 let hot = cell.contains(mx, my);
@@ -4493,9 +4515,9 @@ impl App {
                 let ctx = TabCtx { kind: "terminal", index: self.tabs.len(), profile: &p.name, space: &self.space_name, space_signal: self.surface.signal, theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, host: "", parent: None, tab_colours: &self.tab_colours };
                 let color = self.rules.new_tab(&ctx).signal.unwrap_or(self.surface.signal);
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), color);
-                let st = if i == self.behavior.default_profile { strong } else { label };
+                let st = if i == self.behavior.default_profile && !page_first { strong } else { label };
                 self.fonts.draw(scene, st, sb.x + self.px(30.0), y + self.px(19.0), &p.name.caps());
-                if i == self.behavior.default_profile {
+                if i == self.behavior.default_profile && !page_first {
                     let d = "DEFAULT";
                     let dw = self.fonts.measure(label, d);
                     self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - dw, y + self.px(19.0), d);
@@ -4506,19 +4528,21 @@ impl App {
                 }
                 y += row;
             }
-            let cell = Rect::new(sb.x, y, sb.w, row);
-            let hot = cell.contains(mx, my);
-            if hot {
-                scene.rect(cell, t.tint);
-            }
-            let isz = self.px(12.0);
-            self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), ink);
-            self.fonts.draw(scene, label, sb.x + self.px(30.0), y + self.px(19.0), "PAGE");
-            let k2 = "CTRL L";
-            let kw = self.fonts.measure(label, k2);
-            self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), k2);
-            if self.kinds_menu {
-                self.side_hits.push((cell, SideHit::KindPage));
+            if !page_first {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                let hot = cell.contains(mx, my);
+                if hot {
+                    scene.rect(cell, t.tint);
+                }
+                let isz = self.px(12.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), ink);
+                self.fonts.draw(scene, label, sb.x + self.px(30.0), y + self.px(19.0), "PAGE");
+                let k2 = "CTRL L";
+                let kw = self.fonts.measure(label, k2);
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - kw, y + self.px(19.0), k2);
+                if self.kinds_menu {
+                    self.side_hits.push((cell, SideHit::KindPage));
+                }
             }
             scene.hline(sb.x, top + h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
             scene.layer(None);
@@ -5495,6 +5519,16 @@ impl App {
                 }
             }
             PaletteMode::New => {
+                let browser_first = self.behavior.lead == crate::settings::Lead::Browser;
+                // Browser first: the address leads, and an empty Enter is the atlas.
+                if browser_first {
+                    if q.is_empty() {
+                        rows.push(row("→", "new page · the atlas: recent pages and shells, or type an address".into(), Action::Start));
+                    } else {
+                        self.query_rows(input, &mut rows, true);
+                        rows.extend(self.history_rows(input, true, 5));
+                    }
+                }
                 for (i, p) in self.profiles.iter().enumerate() {
                     if hit(&p.name) {
                         rows.push(row(">", format!("terminal · {}", p.name), Action::NewTerminal(i)));
@@ -5506,13 +5540,15 @@ impl App {
                         rows.push(row("::", format!("{label} → localhost:{}", p.port), Action::NewBrowser(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                if !q.is_empty() {
-                    rows.extend(self.history_rows(input, true, 5));
-                }
-                if q.is_empty() {
-                    rows.push(row("→", "browser · type a URL or search terms".into(), Action::NewBrowser(String::new())));
-                } else {
-                    self.query_rows(input, &mut rows, true);
+                if !browser_first {
+                    if !q.is_empty() {
+                        rows.extend(self.history_rows(input, true, 5));
+                    }
+                    if q.is_empty() {
+                        rows.push(row("→", "browser · type a URL or search terms".into(), Action::NewBrowser(String::new())));
+                    } else {
+                        self.query_rows(input, &mut rows, true);
+                    }
                 }
             }
             PaletteMode::Url => {
@@ -7180,8 +7216,12 @@ impl App {
                         self.flash_anim.replay(0.0, 1.0, self.motion.dur(120.0));
                         self.flash_anim.go(0.0, self.motion.dur(120.0));
                     }
-                    let p = self.behavior.default_profile;
-                    self.new_tab(p);
+                    if self.behavior.lead == crate::settings::Lead::Browser {
+                        self.open_start();
+                    } else {
+                        let p = self.behavior.default_profile;
+                        self.new_tab(p);
+                    }
                     self.dirty = true;
                 }
                 return;

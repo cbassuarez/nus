@@ -317,6 +317,16 @@ pub enum SplashMode {
     None,
 }
 
+/// Which comes first: a terminal that also browses, or a browser that
+/// also has shells. It sets what NEW TAB opens with nothing typed, what
+/// leads the palette, and (once, when picked) THEN and LINKS FROM OUTSIDE.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Lead {
+    #[default]
+    Terminal,
+    Browser,
+}
+
 /// What happens once the splash has gone.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Then {
@@ -365,6 +375,9 @@ pub struct Behavior {
     pub atlas: AtlasMode,
     #[serde(default = "default_outside")]
     pub outside: Outside,
+    /// Terminal first or browser first.
+    #[serde(default)]
+    pub lead: Lead,
     /// Shells get prompt marks, cwd and exit codes injected at spawn.
     #[serde(default = "default_true")]
     pub shell_integration: bool,
@@ -580,6 +593,7 @@ impl Default for Behavior {
             then: Then::Shell,
             atlas: AtlasMode::Planet,
             outside: Outside::Little,
+            lead: Lead::Terminal,
             shell_integration: true,
             highlight: true,
             format_on_save: true,
@@ -750,6 +764,7 @@ pub enum Hit {
     TidyEvery(TidyEvery),
     Dedupe(bool),
     ShellColours(ShellColours),
+    Lead(Lead),
     Grade(Grade),
     Truecolour(Truecolour),
     SyncSession(bool),
@@ -1108,6 +1123,7 @@ impl App {
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
             Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
             Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
+            Hit::Lead(l) => match l { Lead::Terminal => "terminal first".into(), Lead::Browser => "browser first".into() },
             Hit::LoginItem(on) => if on { "start with the system".into() } else { "do not start with the system".into() },
             Hit::SoundOn(b) => if b { "sound on".into() } else { "sound off".into() },
             Hit::Play(i) => format!("play {}", crate::sound::NAMES.get(i).copied().unwrap_or("")),
@@ -1496,6 +1512,24 @@ impl App {
                 self.behavior.start_on_launch = a != AtlasMode::Planet;
             }
             Hit::Outside(o) => self.behavior.outside = o,
+            Hit::Lead(l) => {
+                self.behavior.lead = l;
+                // Picked, not merely loaded: the two settings that follow from it.
+                match l {
+                    Lead::Terminal => {
+                        self.behavior.outside = Outside::Little;
+                        if self.behavior.then == Then::LastPage {
+                            self.behavior.then = Then::Shell;
+                        }
+                    }
+                    Lead::Browser => {
+                        self.behavior.outside = Outside::NewTab;
+                        if self.behavior.then == Then::Shell {
+                            self.behavior.then = Then::LastPage;
+                        }
+                    }
+                }
+            }
             Hit::LoginItem(on) => {
                 self.login_note = match crate::little::login_item(on) {
                     Ok(()) => if on { "registered · nus starts with the system".into() } else { "removed".into() },
@@ -2245,6 +2279,14 @@ impl App {
                 };
                 vec![
                     (
+                        "FIRST".into(),
+                        Choice(vec![
+                            ("TERMINAL".into(), Hit::Lead(Lead::Terminal), b.lead == Lead::Terminal),
+                            ("BROWSER".into(), Hit::Lead(Lead::Browser), b.lead == Lead::Browser),
+                        ]),
+                    ),
+                    ("".into(), Info("a terminal that also browses, or a browser that also has shells: NEW TAB and Ctrl+T with nothing typed open a shell or the atlas, the palette leads with shells or with the address, the kinds fan out in that order · picking one sets THEN and LINKS FROM OUTSIDE below to match, once".into())),
+                    (
                         "WINDOW".into(),
                         Choice(vec![
                             ("LAST SIZE & PLACE".into(), Hit::WindowStart(WindowStart::Last), b.window_start == WindowStart::Last),
@@ -2859,7 +2901,7 @@ impl App {
         match k {
             0 => format!("{} · {} · {}", self.preset_name.to_lowercase(), if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.surface.shell.name()),
             1 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
-            2 => format!("{:?} · then {:?}", self.behavior.splash, self.behavior.then).to_lowercase(),
+            2 => format!("{:?} first · {:?} · then {:?}", self.behavior.lead, self.behavior.splash, self.behavior.then).to_lowercase(),
             3 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
             4 => format!("links → {:?}", self.behavior.links).to_lowercase(),
             5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),

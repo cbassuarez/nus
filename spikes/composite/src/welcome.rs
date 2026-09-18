@@ -32,6 +32,8 @@ pub enum Act {
     Rename,
     RenameTab,
     Close,
+    /// Terminal first, or browser first.
+    Lead(crate::settings::Lead),
     Scroll(f32),
     /// GET or REMOVE an optional tool by id.
     Bundle(String),
@@ -105,7 +107,12 @@ impl App {
         let ink = self.theme.mode == nus_render::Mode::Ink;
         let default_browser = crate::little::registered();
         let login = crate::little::login_item_registered();
+        let lead = self.behavior.lead;
         let mut start = vec![
+            match lead {
+                crate::settings::Lead::Terminal => row("", "Terminal first", "NEW TAB is a shell, a URL at its prompt opens beside it, links from other apps arrive in a little window", Some(("BROWSER FIRST", Act::Lead(crate::settings::Lead::Browser)))),
+                crate::settings::Lead::Browser => row("", "Browser first", "NEW TAB is the atlas, the palette leads with the address, links from other apps open as tabs here; shells are a kind of tab", Some(("TERMINAL FIRST", Act::Lead(crate::settings::Lead::Terminal)))),
+            },
             row("", "The look", format!("{} · {} · {} carapace · the chip in the footer hot-swaps on hover", self.preset_name.to_lowercase(), if ink { "ink" } else { "paper" }, self.surface.shell.name()), Some(("OPEN THE STUDIO", Act::Studio))),
             row("", "Default browser", if default_browser { "nus is your default browser · links from other apps open in the little window".to_string() } else { "not yet · links from other apps would open here in a little window".to_string() }, if default_browser { None } else { Some(("MAKE DEFAULT", Act::DefaultBrowser)) }),
             row("", "Start on login", if login { "on · nus starts with the system".to_string() } else { "off".to_string() }, Some((if login { "TURN OFF" } else { "TURN ON" }, Act::LoginItem))),
@@ -378,6 +385,13 @@ impl App {
                 self.apply_setting(Hit::LoginItem(on), 0.0);
             }
             Act::NewWindow => self.new_window_request = true,
+            Act::Lead(l) => {
+                self.apply_setting(Hit::Lead(l), 0.0);
+                self.notice(match l {
+                    crate::settings::Lead::Terminal => "terminal first · NEW TAB is a shell",
+                    crate::settings::Lead::Browser => "browser first · NEW TAB is the atlas",
+                });
+            }
             Act::Rename => self.open_palette(PaletteMode::Rename),
             Act::RenameTab => self.open_palette(PaletteMode::RenameTab(self.active)),
             Act::Close => self.dismiss_hints(),
