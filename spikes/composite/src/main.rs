@@ -33,6 +33,7 @@ mod taskbar;
 mod askctx;
 mod layout_file;
 mod ssh;
+mod tidy;
 mod hotkey;
 mod anim;
 mod app;

@@ -530,6 +530,14 @@ folders = {
   },
 }
 
+-- group(tab): the group tidy proposes for a tab, or nil for the default
+-- (a page's host, a shell's project folder). tab has kind, title, url,
+-- host, cwd, stacked.
+function group(tab)
+  if tab.host == "github.com" then return "github" end
+  if tab.cwd:find("nus") then return "nus" end
+end
+
 -- skills: saved prompts for the assistant, each a chip in the panel and a
 -- palette row (ask <name>). context picks what goes along: shell, block,
 -- page, tabs, editor, memory. Leave it out to use the chips as they are.
@@ -667,7 +675,7 @@ impl Rules {
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
         // Older files get the chains and folders examples appended, once each.
-        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("skills", "-- skills:"), ("on_block", "-- on_block(b):"), ("ports", "-- ports:")] {
+        for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("group", "-- group(tab):"), ("skills", "-- skills:"), ("on_block", "-- on_block(b):"), ("ports", "-- ports:")] {
             let Ok(src) = std::fs::read_to_string(&path) else { break };
             if src.contains(word) {
                 continue;
@@ -676,7 +684,8 @@ impl Rules {
             let block = &DEFAULT_RULES[k..];
             let block = match word {
                 "chains" => block.split("-- folders:").next().unwrap_or(block),
-                "folders" => block.split("-- skills:").next().unwrap_or(block),
+                "folders" => block.split("-- group(tab):").next().unwrap_or(block),
+                "group" => block.split("-- skills:").next().unwrap_or(block),
                 "skills" => block.split("-- nus.run(cmd, args):").next().unwrap_or(block),
                 "on_block" => block.split("-- ports:").next().unwrap_or(block),
                 _ => block,
@@ -855,6 +864,41 @@ impl Rules {
                 tracing::warn!("rules new_tab: {e}");
                 Overrides::default()
             }
+        }
+    }
+
+    /// The `group` hook: a name for a tab, or nil for the default (its host
+    /// or its project folder). `group({ kind, title, url, cwd, stacked })`.
+    pub fn group(&self, kind: &str, title: &str, url: &str, cwd: &str, stacked: bool) -> Option<String> {
+        let Ok(f) = self.lua.globals().get::<mlua::Function>("group") else { return None };
+        let t = self.lua.create_table().unwrap();
+        let _ = t.set("kind", kind);
+        let _ = t.set("title", title);
+        let _ = t.set("url", url);
+        let _ = t.set("host", crate::tidy::host_of(url));
+        let _ = t.set("cwd", cwd);
+        let _ = t.set("stacked", stacked);
+        match f.call::<Option<String>>(t) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("rules group: {e}");
+                None
+            }
+        }
+    }
+
+    /// The `on_tidy` hook: the groups about to be suggested (names and counts).
+    pub fn on_tidy(&self, groups: &[crate::tidy::Group]) {
+        let Ok(f) = self.lua.globals().get::<mlua::Function>("on_tidy") else { return };
+        let list = self.lua.create_table().unwrap();
+        for (i, g) in groups.iter().enumerate() {
+            let t = self.lua.create_table().unwrap();
+            let _ = t.set("name", g.name.as_str());
+            let _ = t.set("count", g.tabs.len());
+            let _ = list.set(i + 1, t);
+        }
+        if let Err(e) = f.call::<()>(list) {
+            tracing::warn!("rules on_tidy: {e}");
         }
     }
 

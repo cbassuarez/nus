@@ -65,6 +65,10 @@ pub enum Action {
     OpenLayout(String),
     SaveLayout(String),
     OpenPalette(PaletteMode),
+    Tidy,
+    /// Dedupe: switch to the tab that has this page (and close this one), or keep both.
+    DedupeSwitch(usize, usize),
+    DedupeKeep(u64),
     /// Type a command into the focused (or a new) terminal and run it.
     RunInShell(String),
     ToggleSplit,
@@ -248,6 +252,9 @@ pub struct WebPane {
     pub load_since: Option<Instant>,
     /// Find in page, while the band is up.
     pub find: Option<crate::webui::Find>,
+    /// Dedupe: (this tab, the earlier tab with the same page), and the band's chips.
+    pub dedupe: Option<(usize, usize)>,
+    pub dedupe_hits: Vec<(Rect, bool)>,
     /// The permission band's ALLOW / DENY chips.
     pub perm_hits: Vec<(Rect, bool)>,
     /// The container this page lives in.
@@ -815,6 +822,10 @@ pub struct App {
     pub layout_offer: Option<(std::path::PathBuf, Instant)>,
     pub layout_offer_hit: Option<Rect>,
     pub layout_offered: std::collections::HashSet<std::path::PathBuf>,
+    /// Tab tidy: the sheet and its proposals.
+    pub tidy: crate::tidy::Tidy,
+    /// Dedupe bands dismissed with KEEP BOTH, by tab id.
+    pub dedupe_kept: std::collections::HashSet<u64>,
     /// Skills from rules.luau: saved prompts with their own context.
     pub skills: Vec<crate::askctx::Skill>,
     pub skills_src_len: usize,
@@ -1020,6 +1031,8 @@ impl App {
             selected: Default::default(),
             closed: Vec::new(),
             llm_tools: discover_llm_tools(),
+            tidy: Default::default(),
+            dedupe_kept: Default::default(),
             layout_offer: None,
             layout_offer_hit: None,
             layout_offered: std::collections::HashSet::new(),
@@ -1202,7 +1215,9 @@ impl App {
             dt_panel: 0,
             remembered: String::new(),
             find: None,
-            perm_hits: Vec::new(), bare: false, site_panel: false, site_hits: Vec::new(),
+            perm_hits: Vec::new(),
+            dedupe: None,
+            dedupe_hits: Vec::new(), bare: false, site_panel: false, site_hits: Vec::new(),
             asleep: None,
             load_since: None,
             devtools: None,
@@ -1419,6 +1434,17 @@ impl App {
         self.ports_tick();
         self.sync_taskbar_progress();
         self.offer_layout_here();
+        self.tidy_tick();
+        // Dedupe: does the active tab's page live elsewhere already?
+        let active = self.active;
+        let dup = self.duplicate_of(active).filter(|_| !self.dedupe_kept.contains(&self.tabs[active].id));
+        if let Some(Pane::Web(w)) = self.tabs.get_mut(active).map(|t| &mut t.left) {
+            let want = dup.map(|there| (active, there));
+            if w.dedupe != want {
+                w.dedupe = want;
+                self.dirty = true;
+            }
+        }
         if self.layout_offer.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs() > 12) {
             self.layout_offer = None;
             self.dirty = true;
@@ -3192,6 +3218,7 @@ impl App {
             }
         }
         self.draw_layout_offer(&mut scene, w);
+        self.draw_tidy(&mut scene, w, h);
         self.draw_board_overlay(&mut scene, w, h);
         self.draw_start(&mut scene);
         self.draw_tip(&mut scene, w, h);
@@ -5166,6 +5193,9 @@ impl App {
                         rows.push(row("</>", "this block · gist through gh".into(), Action::BlockGist(pg)));
                     }
                 }
+                if hit("tidy") || hit("group") || hit("clean") {
+                    rows.push(row("::", "tidy · suggest groups for these tabs".into(), Action::Tidy));
+                }
                 if q.is_empty() || hit("layout") || hit("workspace") || hit("session") {
                     rows.push(row("::", "save this window as a layout".into(), Action::OpenPalette(PaletteMode::SaveLayout)));
                     for (name, path) in crate::layout_file::saved() {
@@ -5434,6 +5464,21 @@ impl App {
             }
             Action::SaveLayout(n) => self.save_layout(&n),
             Action::OpenPalette(m) => self.open_palette(m),
+            Action::Tidy => self.open_tidy(),
+            Action::DedupeSwitch(here, there) => {
+                if there < self.tabs.len() && here < self.tabs.len() {
+                    self.selected.clear();
+                    self.activate(here);
+                    self.close_tabs(true);
+                    if let Some(j) = (there < self.tabs.len()).then_some(there) {
+                        self.activate(if j > here { j - 1 } else { j });
+                    }
+                }
+            }
+            Action::DedupeKeep(id) => {
+                self.dedupe_kept.insert(id);
+                self.dirty = true;
+            }
             Action::Skill(i, subject) => {
                 if let Some(t) = self.ask_term() {
                     if t.ask.is_none() {
@@ -5583,6 +5628,9 @@ impl App {
             return;
         }
         if self.ask_key(ev) {
+            return;
+        }
+        if self.tidy_key(ev) {
             return;
         }
         if self.palette.is_none() && !app && self.board_key(ev) {
@@ -7035,6 +7083,9 @@ impl App {
         if pressed && button == MouseButton::Left && self.ask_click(x, y) {
             return;
         }
+        if self.tidy_mouse(button, state, x, y) {
+            return;
+        }
         if self.board_mouse(button, state, x, y) {
             return;
         }
@@ -7055,6 +7106,9 @@ impl App {
             return;
         }
         if self.term_mouse(button, state, x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.dedupe_click(x, y) {
             return;
         }
         if pressed && button == MouseButton::Left && self.web_band_click(x, y) {

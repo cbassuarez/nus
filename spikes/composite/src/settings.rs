@@ -108,6 +108,15 @@ fn default_ports_poll() -> u8 {
     1
 }
 
+/// How often TIDY suggests groups on its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum TidyEvery {
+    #[default]
+    Off,
+    Hourly,
+    Daily,
+}
+
 fn default_ask_ctx() -> Vec<String> {
     vec!["shell".into(), "block".into(), "page".into()]
 }
@@ -315,6 +324,11 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    /// Tidy: how often to suggest groups; dedupe bands on/off.
+    #[serde(default)]
+    pub tidy_every: TidyEvery,
+    #[serde(default = "default_true")]
+    pub dedupe: bool,
     /// ssh profiles bring the shell integration to the remote.
     #[serde(default = "default_true")]
     pub ssh_integration: bool,
@@ -501,6 +515,8 @@ impl Default for Behavior {
             ask_ctx: default_ask_ctx(),
             then_layout: String::new(),
             ssh_integration: true,
+            tidy_every: TidyEvery::Off,
+            dedupe: true,
             ports_grouping: PortsGrouping::Origin,
             ports_open: PortsOpen::Split,
             ports_poll: 1,
@@ -644,6 +660,8 @@ pub enum Hit {
     AskCtx(crate::askctx::Ctx),
     ForgetMemory,
     SshIntegration(bool),
+    TidyEvery(TidyEvery),
+    Dedupe(bool),
     PortsGrouping(PortsGrouping),
     PortsOpen(PortsOpen),
     PortsPoll(u8),
@@ -940,6 +958,8 @@ impl App {
             Hit::AskCtx(c) => format!("ask context · {}", c.key()),
             Hit::ForgetMemory => "memory cleared".into(),
             Hit::SshIntegration(b) => if b { "ssh brings the integration".into() } else { "ssh as is".into() },
+            Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
+            Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
             Hit::PortsGrouping(g) => g.name().into(),
             Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
             Hit::PortsPoll(n) => format!("poll every {n}s"),
@@ -1266,6 +1286,8 @@ impl App {
                 }
             }
             Hit::SshIntegration(b) => self.behavior.ssh_integration = b,
+            Hit::TidyEvery(e) => self.behavior.tidy_every = e,
+            Hit::Dedupe(b) => self.behavior.dedupe = b,
             Hit::ForgetMemory => {
                 let _ = std::fs::write(std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), "");
             }
@@ -2274,6 +2296,14 @@ impl App {
                 ("STACKS".into(), Info("one level · collapse when not active · closing the parent asks".into())),
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
                 ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
+                ("TIDY".into(), Choice(vec![
+                    ("OFF".into(), Hit::TidyEvery(TidyEvery::Off), self.behavior.tidy_every == TidyEvery::Off),
+                    ("HOURLY".into(), Hit::TidyEvery(TidyEvery::Hourly), self.behavior.tidy_every == TidyEvery::Hourly),
+                    ("DAILY".into(), Hit::TidyEvery(TidyEvery::Daily), self.behavior.tidy_every == TidyEvery::Daily),
+                ])),
+                ("".into(), Info("tidy suggests groups — tabs sharing a host or a project folder, or what group(tab) in rules.luau names — as a sheet: make a stack, archive, or skip, each a tap; nothing moves on its own · the palette has it any time".into())),
+                ("DEDUPE".into(), Choice(vec![("ON".into(), Hit::Dedupe(!self.behavior.dedupe), self.behavior.dedupe)])),
+                ("".into(), Info("a page already open elsewhere gets a band: switch there, or keep both".into())),
             ],
             5 => {
                 let mut v: Vec<(String, Control)> = vec![(

@@ -126,6 +126,30 @@ impl App {
                 x += ww + self.px(8.0);
             }
         }
+        // Dedupe band: this page is open in another tab. Two icon chips.
+        w.dedupe_hits.clear();
+        if let Some((here, there)) = w.dedupe {
+            let bh = self.header_h();
+            let br = Rect::new(page.x, page.y, page.w, bh);
+            scene.rect(br, crate::surface::mix(t.paper, ink, 0.08));
+            scene.hline(br.x, br.bottom() - self.px(m::HAIRLINE), br.w, self.px(m::HAIRLINE), ink);
+            let by = br.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
+            let mut x = br.x + self.px(m::HEADER_PAD_X);
+            let label_there = self.tab_label(there);
+            x += self.fonts.draw(scene, strong, x, by, &format!("ALREADY OPEN IN {label_there}")) + self.px(18.0);
+            let isz = self.px(14.0);
+            let (mx, my) = self.mouse;
+            for (k, icon, words, switch) in [(0usize, nus_render::text::icons::TO_TAB, "switch there, close this one", true), (1, nus_render::text::icons::CLOSE, "keep both", false)] {
+                let hit = Rect::new(x - self.px(6.0), br.y + self.px(4.0), isz + self.px(12.0), bh - self.px(8.0));
+                let hot = hit.contains(mx, my);
+                self.icon_button(scene, icon, isz, x, br.y + (bh - isz) / 2.0, if switch { self.surface.signal } else { ink }, hit, crate::app::hover_key("dedupe", here * 10 + k), crate::app::IconMotion::Pop);
+                if hot {
+                    self.tip_words(hit, words);
+                }
+                w.dedupe_hits.push((hit, switch));
+                x += isz + self.px(18.0);
+            }
+        }
         // Find band, below any permission band.
         if let Some(f) = &w.find {
             let bh = self.header_h();
@@ -151,6 +175,27 @@ impl App {
             self.fonts.draw(scene, inv_l, br.right() - self.px(m::HEADER_PAD_X) - kw, by, keys);
             let cw = self.fonts.measure(inv, &count);
             self.fonts.draw(scene, inv, br.right() - self.px(m::HEADER_PAD_X) - kw - self.px(14.0) - cw, by, &count);
+        }
+    }
+
+    /// A click on a dedupe band's chip. Returns true when it was one.
+    pub(crate) fn dedupe_click(&mut self, x: f32, y: f32) -> bool {
+        let active = self.active;
+        let Some(tab) = self.tabs.get(active) else { return false };
+        let mut act: Option<crate::app::Action> = None;
+        for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+            let Pane::Web(w) = p else { continue };
+            let Some((here, there)) = w.dedupe else { continue };
+            if let Some((_, switch)) = w.dedupe_hits.iter().find(|(r, _)| r.contains(x, y)) {
+                act = Some(if *switch { crate::app::Action::DedupeSwitch(here, there) } else { crate::app::Action::DedupeKeep(tab.id) });
+            }
+        }
+        match act {
+            Some(a) => {
+                self.run(a);
+                true
+            }
+            None => false,
         }
     }
 
