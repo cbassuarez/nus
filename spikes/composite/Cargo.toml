@@ -15,6 +15,7 @@ nus-vt = { path = "../../crates/vt" }
 nus-pty = { path = "../../crates/pty" }
 nus-render = { path = "../../crates/render" }
 nus-lsp = { path = "../../crates/lsp" }
+nus-sync = { path = "../../crates/sync" }
 ropey = "1.6"
 cef = { path = "../../vendor/cef-rs/cef", default-features = false, features = ["sandbox", "build-util", "resources", "accelerated_osr"] }
 wgpu = "30"

@@ -129,6 +129,10 @@ pub enum TidyEvery {
     Daily,
 }
 
+fn default_sync_every() -> u16 {
+    10
+}
+
 fn default_ask_ctx() -> Vec<String> {
     vec!["shell".into(), "block".into(), "page".into()]
 }
@@ -336,6 +340,20 @@ pub struct Behavior {
     /// The prompt line's language server: quiet, a menu, or off.
     #[serde(default)]
     pub prompt_lsp: PromptLsp,
+    // Sync: the carriers, what travels, how often.
+    #[serde(default)]
+    pub sync_folder: String,
+    #[serde(default)]
+    pub sync_git: String,
+    #[serde(default)]
+    pub sync_session: bool,
+    /// Minutes between exchanges; 0 = only on demand and at quit.
+    #[serde(default = "default_sync_every")]
+    pub sync_every_min: u16,
+    #[serde(default = "default_true")]
+    pub sync_at_quit: bool,
+    #[serde(default)]
+    pub sync_device: Option<String>,
     /// OSC 10/11 from a shell: a chip offers the look, or it applies, or the pane only.
     #[serde(default)]
     pub shell_colours: ShellColours,
@@ -531,6 +549,12 @@ impl Default for Behavior {
             then_layout: String::new(),
             ssh_integration: true,
             shell_colours: ShellColours::Chip,
+            sync_folder: String::new(),
+            sync_git: String::new(),
+            sync_session: false,
+            sync_every_min: 10,
+            sync_at_quit: true,
+            sync_device: None,
             tidy_every: TidyEvery::Off,
             dedupe: true,
             ports_grouping: PortsGrouping::Origin,
@@ -679,6 +703,13 @@ pub enum Hit {
     TidyEvery(TidyEvery),
     Dedupe(bool),
     ShellColours(ShellColours),
+    SyncSession(bool),
+    SyncEvery(u16),
+    SyncAtQuit(bool),
+    SyncForget,
+    SyncNow,
+    SyncKey,
+    SyncEdit(u8),
     PortsGrouping(PortsGrouping),
     PortsOpen(PortsOpen),
     PortsPoll(u8),
@@ -748,7 +779,7 @@ pub enum TokSel {
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 13] = [
+pub const SECTIONS: [(&str, (&str, &str)); 14] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
@@ -761,6 +792,7 @@ pub const SECTIONS: [(&str, (&str, &str)); 13] = [
     ("ASSISTANTS", icons::ASSISTANT),
     ("RULES", icons::CODE),
     ("KEYS", icons::KEYBOARD),
+    ("SYNC", icons::BROADCAST),
     ("UPDATES", icons::DOWNLOAD),
 ];
 
@@ -978,6 +1010,13 @@ impl App {
             Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
             Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
             Hit::ShellColours(c) => format!("shell colours: {:?}", c).to_lowercase(),
+            Hit::SyncSession(b) => if b { "the session syncs".into() } else { "the session stays here".into() },
+            Hit::SyncEvery(n) => if n == 0 { "sync on demand".into() } else { format!("sync every {n} min") },
+            Hit::SyncAtQuit(b) => if b { "sync at quit".into() } else { "no sync at quit".into() },
+            Hit::SyncForget => "key forgotten".into(),
+            Hit::SyncNow => "syncing".into(),
+            Hit::SyncKey => "key copied".into(),
+            Hit::SyncEdit(_) => "sync".into(),
             Hit::PortsGrouping(g) => g.name().into(),
             Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
             Hit::PortsPoll(n) => format!("poll every {n}s"),
@@ -1307,6 +1346,13 @@ impl App {
             Hit::TidyEvery(e) => self.behavior.tidy_every = e,
             Hit::Dedupe(b) => self.behavior.dedupe = b,
             Hit::ShellColours(c) => self.behavior.shell_colours = c,
+            Hit::SyncSession(b) => self.behavior.sync_session = b,
+            Hit::SyncEvery(n) => self.behavior.sync_every_min = n,
+            Hit::SyncAtQuit(b) => self.behavior.sync_at_quit = b,
+            Hit::SyncForget => crate::syncui::forget_key(),
+            Hit::SyncNow => self.sync_now(),
+            Hit::SyncKey => self.run(crate::app::Action::SyncKey),
+            Hit::SyncEdit(k) => self.open_palette(match k { 0 => crate::app::PaletteMode::SyncFolder, 1 => crate::app::PaletteMode::SyncGit, _ => crate::app::PaletteMode::SyncJoin }),
             Hit::ForgetMemory => {
                 let _ = std::fs::write(std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), "");
             }
@@ -2652,6 +2698,38 @@ impl App {
                 ),
             ]
             }
+            12 => {
+                let b = &self.behavior;
+                let has_key = crate::syncui::key().is_some();
+                vec![
+                    ("".into(), Info("your profile on more than one device, no account: sealed with a key you copy, carried by a folder your OS already syncs or a private git remote, last writer wins and the loser is kept beside it as .lost".into())),
+                    ("STATUS".into(), Info(self.sync_status())),
+                    ("KEY".into(), Choice(vec![
+                        (if has_key { "SHOW · COPY".into() } else { "MAKE ONE".into() }, Hit::SyncKey, has_key),
+                        ("JOIN WITH A KEY".into(), Hit::SyncEdit(2), false),
+                        ("FORGET".into(), Hit::SyncForget, false),
+                    ])),
+                    ("".into(), Info("make the key on the first device, copy the word to the next (nus sync key · nus sync join <word>); it never leaves your devices".into())),
+                    ("CARRIERS".into(), Choice(vec![
+                        (if b.sync_folder.is_empty() { "FOLDER · NONE".into() } else { format!("FOLDER · {}", crate::app::fit_cmd(&b.sync_folder, 28).to_uppercase()) }, Hit::SyncEdit(0), !b.sync_folder.is_empty()),
+                        (if b.sync_git.is_empty() { "GIT · NONE".into() } else { format!("GIT · {}", crate::app::fit_cmd(&b.sync_git, 28).to_uppercase()) }, Hit::SyncEdit(1), !b.sync_git.is_empty()),
+                    ])),
+                    ("".into(), Info("either or both: a folder (iCloud Drive, OneDrive, Dropbox, Syncthing, a stick) holds sealed files per device; a git remote does the same with history · only ciphertext leaves this machine".into())),
+                    ("WHAT TRAVELS".into(), Choice(vec![
+                        ("PREFS · RULES · LAYOUTS · FOLDERS · PORTS · MEMORY · SITES".into(), Hit::SyncSession(b.sync_session), true),
+                        ("THE SESSION TOO".into(), Hit::SyncSession(!b.sync_session), b.sync_session),
+                    ])),
+                    ("".into(), Info("never cookies, caches, downloads or shell history · the session (open tabs) is off unless you say".into())),
+                    ("EVERY".into(), Choice(vec![
+                        ("ON DEMAND".into(), Hit::SyncEvery(0), b.sync_every_min == 0),
+                        ("5 MIN".into(), Hit::SyncEvery(5), b.sync_every_min == 5),
+                        ("10 MIN".into(), Hit::SyncEvery(10), b.sync_every_min == 10),
+                        ("30 MIN".into(), Hit::SyncEvery(30), b.sync_every_min == 30),
+                    ])),
+                    ("AT QUIT".into(), Choice(vec![("SYNC".into(), Hit::SyncAtQuit(!b.sync_at_quit), b.sync_at_quit)])),
+                    ("NOW".into(), Choice(vec![("SYNC NOW".into(), Hit::SyncNow, false)])),
+                ]
+            }
             11 => vec![
                 ("NEW TAB".into(), Info(key("T", true))),
                 ("GO".into(), Info(key("K", true))),
@@ -2691,6 +2769,7 @@ impl App {
             9 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
             10 => self.rules.status.clone(),
             11 => "chords".into(),
+            12 => if self.sync_ready() { "on".into() } else { "off · no key or carrier".into() },
             _ => "github releases".into(),
         }
     }

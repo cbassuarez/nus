@@ -94,6 +94,36 @@ impl App {
                 self.open_url(&url, new_tab);
                 Ok(json!({ "tab": self.active + 1 }))
             }
+            "sync" => {
+                match s("do").as_deref().unwrap_or("now") {
+                    "now" => {
+                        self.sync_now();
+                        Ok(json!({ "started": true }))
+                    }
+                    "key" => Ok(json!({ "key": crate::syncui::make_key() })),
+                    "join" => {
+                        let Some(w) = s("key") else { return Err("join needs key".into()) };
+                        if nus_sync::decode_key(&w).is_none() {
+                            return Err("that isn't a nus key".into());
+                        }
+                        crate::syncui::write_key(&w);
+                        self.sync_now();
+                        Ok(Value::Null)
+                    }
+                    "status" => Ok(json!({ "status": self.sync_status(), "ready": self.sync_ready() })),
+                    "folder" => {
+                        self.behavior.sync_folder = s("path").unwrap_or_default();
+                        self.save_prefs();
+                        Ok(Value::Null)
+                    }
+                    "git" => {
+                        self.behavior.sync_git = s("remote").unwrap_or_default();
+                        self.save_prefs();
+                        Ok(Value::Null)
+                    }
+                    other => Err(format!("sync: now · key · join · status · folder · git, not {other}")),
+                }
+            }
             "layout" => {
                 match s("save") {
                     Some(name) => {

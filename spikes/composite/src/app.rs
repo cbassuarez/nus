@@ -39,6 +39,10 @@ pub enum PaletteMode {
     Rename,
     /// SAVE LAYOUT: a name for profile/layouts/<name>.nus.luau.
     SaveLayout,
+    /// SYNC: a folder path, a git remote, or a key to join.
+    SyncFolder,
+    SyncGit,
+    SyncJoin,
     /// Name a tab; its icon (an emoji, or any short string).
     RenameTab(usize),
     IconTab(usize),
@@ -66,6 +70,12 @@ pub enum Action {
     SaveLayout(String),
     OpenPalette(PaletteMode),
     Tidy,
+    Noop,
+    SyncNow,
+    SyncKey,
+    SyncJoin(String),
+    SyncFolder(String),
+    SyncGit(String),
     /// Dedupe: switch to the tab that has this page (and close this one), or keep both.
     DedupeSwitch(usize, usize),
     DedupeKeep(u64),
@@ -828,6 +838,8 @@ pub struct App {
     pub layout_offer: Option<(std::path::PathBuf, Instant)>,
     pub layout_offer_hit: Option<Rect>,
     pub layout_offered: std::collections::HashSet<std::path::PathBuf>,
+    /// Sync: the worker and the last report.
+    pub sync: crate::syncui::SyncState,
     /// Tab tidy: the sheet and its proposals.
     pub tidy: crate::tidy::Tidy,
     /// Dedupe bands dismissed with KEEP BOTH, by tab id.
@@ -1039,6 +1051,7 @@ impl App {
             selected: Default::default(),
             closed: Vec::new(),
             llm_tools: discover_llm_tools(),
+            sync: Default::default(),
             tidy: Default::default(),
             dedupe_kept: Default::default(),
             layout_offer: None,
@@ -1446,6 +1459,7 @@ impl App {
         self.offer_layout_here();
         self.tidy_tick();
         self.refresh_auto_name();
+        self.sync_tick();
         // Dedupe: does the active tab's page live elsewhere already?
         let active = self.active;
         let dup = self.duplicate_of(active).filter(|_| !self.dedupe_kept.contains(&self.tabs[active].id));
@@ -3266,7 +3280,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder" };
+            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -5325,6 +5339,13 @@ impl App {
                         rows.push(row("</>", "this block · gist through gh".into(), Action::BlockGist(pg)));
                     }
                 }
+                if hit("sync") {
+                    rows.push(row("::", "sync now".into(), Action::SyncNow));
+                    rows.push(row("::", "sync · show this device's key".into(), Action::SyncKey));
+                    rows.push(row("::", "sync · join with a key from another device".into(), Action::OpenPalette(PaletteMode::SyncJoin)));
+                    rows.push(row("::", "sync · the folder".into(), Action::OpenPalette(PaletteMode::SyncFolder)));
+                    rows.push(row("::", "sync · the git remote".into(), Action::OpenPalette(PaletteMode::SyncGit)));
+                }
                 if hit("tidy") || hit("group") || hit("clean") {
                     rows.push(row("::", "tidy · suggest groups for these tabs".into(), Action::Tidy));
                 }
@@ -5453,6 +5474,29 @@ impl App {
                     rows.push(row("·", format!("name this window · now “{}” · empty = automatic", self.window_name()), Action::RenameWindow(String::new())));
                 } else {
                     rows.push(row("→", format!("call this window “{q}”"), Action::RenameWindow(q.to_string())));
+                }
+            }
+            PaletteMode::SyncFolder => {
+                if q.is_empty() {
+                    rows.push(row("·", format!("a folder your OS already syncs · now {}", if self.behavior.sync_folder.is_empty() { "none".to_string() } else { self.behavior.sync_folder.clone() }), Action::SyncFolder(String::new())));
+                } else {
+                    rows.push(row("→", format!("carry the profile through {q}"), Action::SyncFolder(q.to_string())));
+                }
+            }
+            PaletteMode::SyncGit => {
+                if q.is_empty() {
+                    rows.push(row("·", format!("a git remote (private) · now {}", if self.behavior.sync_git.is_empty() { "none".to_string() } else { self.behavior.sync_git.clone() }), Action::SyncGit(String::new())));
+                } else {
+                    rows.push(row("→", format!("carry the profile through {q}"), Action::SyncGit(q.to_string())));
+                }
+            }
+            PaletteMode::SyncJoin => {
+                if q.is_empty() {
+                    rows.push(row("·", "paste the key from the other device (nus5-…)".into(), Action::Noop));
+                } else if nus_sync::decode_key(&q).is_some() {
+                    rows.push(row("→", "join with this key".into(), Action::SyncJoin(q.to_string())));
+                } else {
+                    rows.push(row("·", "that isn't a nus key".into(), Action::Noop));
                 }
             }
             PaletteMode::SaveLayout => {
@@ -5597,6 +5641,30 @@ impl App {
             Action::SaveLayout(n) => self.save_layout(&n),
             Action::OpenPalette(m) => self.open_palette(m),
             Action::Tidy => self.open_tidy(),
+            Action::Noop => {}
+            Action::SyncNow => self.sync_now(),
+            Action::SyncKey => {
+                let word = crate::syncui::make_key();
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(word.clone());
+                }
+                self.notice(&format!("sync key copied · {word}"));
+            }
+            Action::SyncJoin(word) => {
+                crate::syncui::write_key(&word);
+                self.notice("joined · this device has the key");
+                self.sync_now();
+            }
+            Action::SyncFolder(p) => {
+                self.behavior.sync_folder = p;
+                self.save_prefs();
+                self.sync_now();
+            }
+            Action::SyncGit(g) => {
+                self.behavior.sync_git = g;
+                self.save_prefs();
+                self.sync_now();
+            }
             Action::DedupeSwitch(here, there) => {
                 if there < self.tabs.len() && here < self.tabs.len() {
                     self.selected.clear();

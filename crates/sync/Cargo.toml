@@ -1,0 +1,17 @@
+[package]
+name = "nus-sync"
+description = "The profile on more than one device: encrypted with a key you copy, carried by a folder you already sync or a git remote, last writer wins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chacha20poly1305 = "0.10"
+getrandom = "0.2"
+blake3 = "1"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

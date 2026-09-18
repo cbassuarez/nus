@@ -34,6 +34,7 @@ mod askctx;
 mod layout_file;
 mod ssh;
 mod tidy;
+mod syncui;
 mod hotkey;
 mod anim;
 mod app;
@@ -550,8 +551,9 @@ fn main() -> ExitCode {
             }
         }
     };
-    if let Some(a) = host.apps.first() {
+    if let Some(a) = host.apps.first_mut() {
         a.save_session();
+        a.sync_at_quit();
     }
     host.apps.clear();
     cef::shutdown();

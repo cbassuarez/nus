@@ -244,6 +244,24 @@ fn main() -> ExitCode {
             );
             ("ssh", Value::Object(opts))
         }
+        "sync" => {
+            let what = rest.first().cloned().unwrap_or_else(|| "now".into());
+            let arg = rest.get(1).cloned().unwrap_or_default();
+            match what.as_str() {
+                "join" => {
+                    opts.insert("key".into(), Value::String(arg));
+                }
+                "folder" => {
+                    opts.insert("path".into(), Value::String(arg));
+                }
+                "git" => {
+                    opts.insert("remote".into(), Value::String(arg));
+                }
+                _ => {}
+            }
+            opts.insert("do".into(), Value::String(what));
+            ("sync", Value::Object(opts))
+        }
         "layout" => {
             if rest.first().map(String::as_str) == Some("save") {
                 opts.insert(
@@ -290,7 +308,7 @@ fn main() -> ExitCode {
             if want_json
                 || !matches!(
                     cmd,
-                    "ls" | "version" | "ports" | "block" | "theme" | "layout"
+                    "ls" | "version" | "ports" | "block" | "theme" | "layout" | "sync"
                 )
             {
                 if !v.is_null() {
@@ -348,6 +366,15 @@ fn main() -> ExitCode {
                             println!("{}", t.as_str().unwrap_or(""));
                         }
                     }
+                    "sync" => {
+                        if let Some(k) = v.get("key").and_then(Value::as_str) {
+                            println!("{k}");
+                        } else if let Some(st) = v.get("status").and_then(Value::as_str) {
+                            println!("{st}");
+                        } else {
+                            println!("ok");
+                        }
+                    }
                     "layout" => {
                         for l in v
                             .get("layouts")
@@ -383,6 +410,7 @@ const USAGE: &str = "usage: nus <command> [args] [--json]
   theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|hoist|land]
   block [last|all] [--tab N] · ask <question> · raise · version
   layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
+  sync [now] · sync key · sync join <key> · sync status · sync folder <path> · sync git <remote>
   a bare <file> or <url> opens it";
 
 #[cfg(test)]

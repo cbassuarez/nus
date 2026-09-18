@@ -50,6 +50,9 @@ That means:
   Broadsheet look with a look studio and twenty stock themes.
 - **Config:** sandboxed Luau (`rules.luau`) for rules, folders, chains, skills,
   ports, blocks, grouping, layouts.
+- **Sync without an account:** the profile on more than one device, sealed
+  with a key you copy, carried by a folder you already sync or a private git
+  remote; last writer wins ([docs/SYNC.md](docs/SYNC.md)).
 - **Targets:** Windows 11 (daily), macOS (Apple silicon) and Linux (Wayland +
   X11) build in CI; the OS-specific pieces (global hotkey, taskbar) land per
   platform as they're done.
