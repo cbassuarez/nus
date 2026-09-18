@@ -111,6 +111,221 @@ pub fn app_icon_at(size: u32, n_color: Color, band: Color, progress: f32) -> Vec
         .collect()
 }
 
+/// The band's geometry, shared by the raster and the vector: where the
+/// swoosh runs, how it swells, and where it sits in a `size` frame.
+pub struct Band {
+    pub cx: f32,
+    pub cy: f32,
+    pub a: f32,
+    pub b: f32,
+    pub tilt: f32,
+    pub base_t: f32,
+    pub start: f32,
+    pub span: f32,
+}
+
+impl Band {
+    pub fn in_frame(size: f32) -> Band {
+        let s = size;
+        let gap_center = 0.12f32;
+        let gap = 0.9f32;
+        Band {
+            cx: s * 0.5,
+            cy: s * 0.54,
+            a: s * 0.49,
+            b: s * 0.16,
+            tilt: -24.0f32.to_radians(),
+            base_t: if s <= 32.0 { s * 0.085 } else { s * 0.05 },
+            start: gap_center + gap / 2.0,
+            span: std::f32::consts::TAU - gap,
+        }
+    }
+
+    /// A point on the band's centreline at parametric angle `th`, in the frame.
+    pub fn at(&self, th: f32) -> (f32, f32) {
+        let (u, v) = (self.a * th.cos(), self.b * th.sin());
+        let (cos, sin) = (self.tilt.cos(), self.tilt.sin());
+        (self.cx + u * cos - v * sin, self.cy + u * sin + v * cos)
+    }
+
+    /// The band's thickness `along` radians from its start, with `drawn`
+    /// radians of it drawn so far (the swoosh tapers to both ends).
+    pub fn thickness(&self, along: f32, drawn: f32) -> f32 {
+        let ends = (along / 0.55).min((drawn - along) / 0.55).clamp(0.0, 1.0);
+        let swell = 0.55
+            + 0.45 * (0.5 - 0.5 * (2.0 * std::f32::consts::PI * along / self.span + 0.6).cos());
+        self.base_t * swell * (0.15 + 0.85 * ends)
+    }
+
+    /// The outward normal at `th`, in the frame.
+    fn normal(&self, th: f32) -> (f32, f32) {
+        let (u, v) = (self.a * th.cos(), self.b * th.sin());
+        let (gu, gv) = (u / (self.a * self.a), v / (self.b * self.b));
+        let n = (gu * gu + gv * gv).sqrt().max(1e-6);
+        let (gu, gv) = (gu / n, gv / n);
+        let (cos, sin) = (self.tilt.cos(), self.tilt.sin());
+        (gu * cos - gv * sin, gu * sin + gv * cos)
+    }
+
+    /// The band as a filled outline between parametric angles `from` and `to`.
+    fn outline(&self, from: f32, to: f32, steps: usize) -> String {
+        let drawn = self.span;
+        let mut outer = Vec::with_capacity(steps + 1);
+        let mut inner = Vec::with_capacity(steps + 1);
+        for i in 0..=steps {
+            let th = from + (to - from) * i as f32 / steps as f32;
+            let (x, y) = self.at(th);
+            let (nx, ny) = self.normal(th);
+            let t = self.thickness((th - self.start).rem_euclid(std::f32::consts::TAU), drawn) / 2.0;
+            outer.push((x + nx * t, y + ny * t));
+            inner.push((x - nx * t, y - ny * t));
+        }
+        let mut d = String::new();
+        for (i, (x, y)) in outer.iter().enumerate() {
+            d.push_str(&format!("{}{x:.2} {y:.2} ", if i == 0 { "M" } else { "L" }));
+        }
+        for (x, y) in inner.iter().rev() {
+            d.push_str(&format!("L{x:.2} {y:.2} "));
+        }
+        d.push('Z');
+        d
+    }
+}
+
+/// Parametric angles along the band where `n` stops sit clear of the n
+/// glyph (a margin of ink-free frame around each), spread over the clear
+/// stretches of the band — the longer stretches take more. In band order.
+pub fn band_stops(size: f32, n: usize) -> Vec<f32> {
+    let s = size;
+    let band = Band::in_frame(s);
+    let glyph = raster_n(s * 1.38);
+    let (gw, gh) = (glyph.w as f32, glyph.h as f32);
+    let gx = ((s - gw) / 2.0 + s * 0.01).round();
+    let gy = ((s - gh) / 2.0 + s * 0.02).round();
+    let margin = (s * 0.055).max(3.0);
+    let inked = |x: f32, y: f32| -> bool {
+        let (x0, y0) = ((x - margin - gx).floor() as i32, (y - margin - gy).floor() as i32);
+        let (x1, y1) = ((x + margin - gx).ceil() as i32, (y + margin - gy).ceil() as i32);
+        for yy in y0.max(0)..y1.min(glyph.h as i32) {
+            for xx in x0.max(0)..x1.min(glyph.w as i32) {
+                if glyph.data[(yy as u32 * glyph.w + xx as u32) as usize] > 96 {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+    // Clear stretches of the band, away from its thin ends.
+    let mut stretches: Vec<(f32, f32)> = Vec::new();
+    let mut th = band.start + 0.12;
+    let end = band.start + band.span - 0.05;
+    while th <= end {
+        let (x, y) = band.at(th);
+        if !inked(x, y) {
+            match stretches.last_mut() {
+                Some(last) if th - last.1 < 0.02 => last.1 = th,
+                _ => stretches.push((th, th)),
+            }
+        }
+        th += 0.01;
+    }
+    let usable: Vec<(f32, f32)> = stretches.into_iter().filter(|r| r.1 - r.0 > 0.12).collect();
+    if usable.is_empty() {
+        return (0..n).map(|k| band.start + band.span * (k as f32 + 0.5) / n as f32).collect();
+    }
+    let mut counts = vec![1usize; usable.len()];
+    let mut placed = usable.len();
+    while placed < n {
+        let mut best = 0;
+        for i in 0..usable.len() {
+            let room = |i: usize| (usable[i].1 - usable[i].0) / (counts[i] + 1) as f32;
+            if room(i) > room(best) {
+                best = i;
+            }
+        }
+        counts[best] += 1;
+        placed += 1;
+    }
+    let mut out = Vec::with_capacity(n);
+    for (i, r) in usable.iter().enumerate() {
+        for j in 0..counts[i] {
+            out.push(r.0 + (r.1 - r.0) * (j as f32 + 0.5) / counts[i] as f32);
+        }
+    }
+    out.truncate(n);
+    out
+}
+
+/// The icon as SVG, `size` units square: the n's outline and the band as
+/// two filled paths — the half behind the n and the half in front — in the
+/// same geometry as the raster. `n_color` and `band` are CSS colours.
+pub fn app_icon_svg(size: f32, n_color: &str, band: &str) -> String {
+    let parts = app_icon_paths(size);
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {size} {size}\" width=\"{size}\" height=\"{size}\">\
+<path d=\"{}\" fill=\"{band}\"/><path d=\"{}\" fill=\"{n_color}\"/><path d=\"{}\" fill=\"{band}\"/></svg>",
+        parts.back, parts.n, parts.front
+    )
+}
+
+/// The icon's three paths (`d` attributes) in a `size` frame, back to front.
+pub struct IconPaths {
+    pub back: String,
+    pub n: String,
+    pub front: String,
+    pub band: Band,
+}
+
+pub fn app_icon_paths(size: f32) -> IconPaths {
+    let s = size;
+    let band = Band::in_frame(s);
+    // The n: the outline at the raster's size, y flipped, its box centred
+    // the way the raster centres its bitmap.
+    let font =
+        FontRef::from_index(crate::text::bundled::NEWSREADER_ITALIC, 0).expect("bundled font");
+    let id = font.charmap().map('n');
+    let mut ctx = ScaleContext::new();
+    let mut scaler = ctx.builder(font).size(s * 1.38).hint(false).build();
+    let outline = scaler.scale_outline(id).unwrap_or_default();
+    let bounds = outline.bounds();
+    let (gw, gh) = (bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y);
+    let gx = ((s - gw) / 2.0 + s * 0.01).round();
+    let gy = ((s - gh) / 2.0 + s * 0.02).round();
+    let tx = |x: f32| x - bounds.min.x + gx;
+    let ty = |y: f32| bounds.max.y - y + gy;
+    use swash::zeno::{Command, PathData};
+    let mut n = String::new();
+    for c in outline.path().commands() {
+        match c {
+            Command::MoveTo(p) => n.push_str(&format!("M{:.2} {:.2} ", tx(p.x), ty(p.y))),
+            Command::LineTo(p) => n.push_str(&format!("L{:.2} {:.2} ", tx(p.x), ty(p.y))),
+            Command::QuadTo(c, p) => n.push_str(&format!(
+                "Q{:.2} {:.2} {:.2} {:.2} ",
+                tx(c.x),
+                ty(c.y),
+                tx(p.x),
+                ty(p.y)
+            )),
+            Command::CurveTo(c1, c2, p) => n.push_str(&format!(
+                "C{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} ",
+                tx(c1.x),
+                ty(c1.y),
+                tx(c2.x),
+                ty(c2.y),
+                tx(p.x),
+                ty(p.y)
+            )),
+            Command::Close => n.push_str("Z "),
+        }
+    }
+    // The near half (v > 0, angles up to π) is drawn over the n; the rest behind.
+    let pi = std::f32::consts::PI;
+    let end = band.start + band.span;
+    let front = band.outline(band.start, pi, 180);
+    let back = band.outline(pi, end, 260);
+    IconPaths { back, n: n.trim_end().to_string(), front, band }
+}
+
 struct Mask {
     w: u32,
     h: u32,
@@ -236,6 +451,32 @@ mod tests {
         assert!(red > 50, "{red}");
         // Corners stay transparent.
         assert_eq!(px[3], 0);
+    }
+
+    #[test]
+    fn svg_has_three_paths() {
+        let svg = app_icon_svg(512.0, "#141413", "#c8102e");
+        assert_eq!(svg.matches("<path ").count(), 3);
+        let parts = app_icon_paths(512.0);
+        assert!(parts.n.starts_with('M') && parts.n.contains('C') || parts.n.contains('Q'));
+        // The band lies inside the frame.
+        for d in [&parts.back, &parts.front] {
+            for num in d.split(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').filter(|t| !t.is_empty()) {
+                let v: f32 = num.parse().unwrap();
+                assert!((-40.0..=552.0).contains(&v), "{v}");
+            }
+        }
+    }
+
+    #[test]
+    fn stops_sit_clear() {
+        let stops = band_stops(256.0, 4);
+        assert_eq!(stops.len(), 4);
+        let band = Band::in_frame(256.0);
+        for w in stops.windows(2) {
+            assert!(w[1] > w[0]);
+        }
+        assert!(stops[0] > band.start && stops[3] < band.start + band.span);
     }
 
     #[test]
