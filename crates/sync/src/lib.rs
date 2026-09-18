@@ -19,7 +19,7 @@
 //! nothing is ever silently gone. Google-Docs-level: no locks, no
 //! prompts, the newest edit stands.
 //!
-//! **What syncs.** The text profile: prefs, rules, layouts, folders,
+//! **What syncs.** The profile's own files: settings, me, rules, layouts, folders,
 //! ports names, memory, site rules — and the session (open tabs) when
 //! the setting says so. Never cookies, caches, downloads or history.
 
@@ -38,14 +38,18 @@ const MAGIC: &[u8; 4] = b"NUS1";
 /// The files that travel, relative to the profile. `session.json` only
 /// when asked.
 pub const ALWAYS: &[&str] = &[
-    "prefs.json",
+    "settings.json",
+    "me.json",
     "rules.luau",
     "folders.json",
     "ports.json",
     "memory.md",
     "sites.json",
+    "containers.json",
+    "blocklist.txt",
+    "avatar.png",
 ];
-pub const DIRS: &[&str] = &["layouts"];
+pub const DIRS: &[&str] = &["layouts", "themes", "surfaces"];
 pub const SESSION: &str = "session.json";
 
 // --- the key ---
@@ -594,10 +598,13 @@ mod tests {
     #[test]
     fn seal_is_bound_to_the_path() {
         let k = new_key();
-        let s = seal(&k, "prefs.json", b"hello");
-        assert_eq!(open(&k, "prefs.json", &s).as_deref(), Some(&b"hello"[..]));
+        let s = seal(&k, "settings.json", b"hello");
+        assert_eq!(
+            open(&k, "settings.json", &s).as_deref(),
+            Some(&b"hello"[..])
+        );
         assert_eq!(open(&k, "rules.luau", &s), None);
-        assert_eq!(open(&new_key(), "prefs.json", &s), None);
+        assert_eq!(open(&new_key(), "settings.json", &s), None);
     }
 
     #[test]
@@ -612,30 +619,30 @@ mod tests {
             root: carrier.clone(),
         };
         // A has prefs; B has nothing.
-        std::fs::write(a.join("prefs.json"), "{\"a\":1}").unwrap();
+        std::fs::write(a.join("settings.json"), "{\"a\":1}").unwrap();
         let r = exchange(&a, "alpha", &k, false, &[&f]);
-        assert_eq!(r.pushed, vec!["prefs.json"]);
+        assert_eq!(r.pushed, vec!["settings.json"]);
         let r = exchange(&b, "beta", &k, false, &[&f]);
         assert_eq!(
             r.pulled,
-            vec![("prefs.json".to_string(), "alpha".to_string())]
+            vec![("settings.json".to_string(), "alpha".to_string())]
         );
         assert_eq!(
-            std::fs::read_to_string(b.join("prefs.json")).unwrap(),
+            std::fs::read_to_string(b.join("settings.json")).unwrap(),
             "{\"a\":1}"
         );
         // B edits later: A pulls it and keeps its own as .lost.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        std::fs::write(b.join("prefs.json"), "{\"b\":2}").unwrap();
+        std::fs::write(b.join("settings.json"), "{\"b\":2}").unwrap();
         exchange(&b, "beta", &k, false, &[&f]);
         let r = exchange(&a, "alpha", &k, false, &[&f]);
         assert_eq!(r.pulled.len(), 1);
         assert_eq!(
-            std::fs::read_to_string(a.join("prefs.json")).unwrap(),
+            std::fs::read_to_string(a.join("settings.json")).unwrap(),
             "{\"b\":2}"
         );
         assert_eq!(
-            std::fs::read_to_string(a.join("prefs.json.alpha.lost")).unwrap(),
+            std::fs::read_to_string(a.join("settings.json.alpha.lost")).unwrap(),
             "{\"a\":1}"
         );
         // Session only when asked.
@@ -646,10 +653,10 @@ mod tests {
         assert!(r.pushed.contains(&"session.json".to_string()));
         // The carrier holds only ciphertext, under names that say nothing.
         let dir = carrier.join(device_dir(&k, "alpha"));
-        let blob = std::fs::read(dir.join(enc_name(&k, "prefs.json"))).unwrap();
+        let blob = std::fs::read(dir.join(enc_name(&k, "settings.json"))).unwrap();
         assert!(!blob.windows(5).any(|w| w == b"\"b\":2"));
         assert!(!carrier.join("alpha").exists());
-        assert!(!dir.join("prefs.json.enc").exists());
+        assert!(!dir.join("settings.json.enc").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

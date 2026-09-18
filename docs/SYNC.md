@@ -40,9 +40,12 @@ file newer on another device replaces ours and ours is kept beside it as
 work. No locks, no prompts, no three-way merge: Google-Docs-level — the
 newest edit stands, and nothing is ever silently gone.
 
-**What travels.** The text profile: `prefs.json`, `rules.luau`,
-`folders.json`, `ports.json`, `memory.md`, `sites.json`, and every file in
-`layouts/`. The session (open tabs, `session.json`) only when SETTINGS ·
+**What travels.** The profile's own files: `settings.json`, `me.json` (your
+name, face and first day), `rules.luau`, `folders.json`, `ports.json`,
+`memory.md`, `sites.json`, `containers.json`, `blocklist.txt`,
+`avatar.png`, and every file in `layouts/`, `themes/` and `surfaces/`. Not
+the device's name (`profile/sync/device`), which is what tells the two
+apart. The session (open tabs, `session.json`) only when SETTINGS ·
 SYNC · WHAT TRAVELS · THE SESSION TOO is on — off by default, because a
 laptop and a desk machine rarely want the same tabs. Never cookies, caches,
 downloads or shell history.

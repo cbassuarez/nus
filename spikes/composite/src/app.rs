@@ -778,6 +778,11 @@ pub struct App {
     pub sound: crate::sound::Sound,
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
+    /// You, on this machine (profile/me.json), and the card that shows it.
+    pub me: Option<crate::me::Me>,
+    pub me_card: crate::me::MeCard,
+    /// The name typed during the walk, before the file exists.
+    pub pending_name: String,
     pub splash: Option<crate::splash::Splash>,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
@@ -1012,6 +1017,9 @@ impl App {
             started: Instant::now(),
             sound: crate::sound::Sound::new(crate::sound::SoundPrefs::default()),
             start: None,
+            me: crate::me::Me::load(),
+            me_card: crate::me::MeCard::default(),
+            pending_name: String::new(),
             splash: Some(crate::splash::Splash::new()),
             shot: crate::shot::Shot::from_env(),
             start_shown: false,
@@ -1094,6 +1102,10 @@ impl App {
             app.active = 1;
         }
         app.apply_prefs(crate::prefs::Prefs::load());
+        // First launch, no profile yet: the card walks you through.
+        if !secondary && !onboarded && app.me.is_none() {
+            app.open_me_card();
+        }
         // The hatch's global hotkey: the first window registers it; a
         // second Space shares it (main routes the event to the focused one).
         if !secondary {
@@ -1117,6 +1129,7 @@ impl App {
         app.load_folders();
         app.refresh_icon();
         app.load_avatar();
+        app.user_name = app.me_name();
         if app.behavior.startup_sound {
             app.play_event("launch");
         }
@@ -3396,6 +3409,7 @@ impl App {
         self.draw_tidy(&mut scene, w, h);
         self.draw_board_overlay(&mut scene, w, h);
         self.draw_start(&mut scene);
+        self.draw_me_card(&mut scene);
         self.draw_tip(&mut scene, w, h);
         self.draw_splash(&mut scene);
         self.scene = scene;
@@ -3976,22 +3990,49 @@ impl App {
         let fh = self.px(m::FOOT_H);
         let isz = self.px(16.0);
         let iy = fy + ((fh - isz) / 2.0).round();
-        // Avatar: profile/avatar.png, else the initial in the signal square.
+        // Avatar: the profile's face — a picture, an emoji, or the initial
+        // in the signal square. A signal dot at its corner until the
+        // profile has been set up; the card opens on click.
         let av = self.px(22.0);
         let ar = Rect::new(sb.x + pad_x, fy + ((fh - av) / 2.0).round(), av, av);
-        match self.avatar.clone() {
-            Some(b) => {
-                scene.texture(ar, b, None);
-                scene.layer(None);
+        let face = match &self.me {
+            Some(me) => me.face.clone(),
+            None if self.avatar.is_some() => crate::me::Face::Picture,
+            None => crate::me::Face::Initial,
+        };
+        let name = self.user_name.clone();
+        self.draw_face(scene, ar, &face, &name);
+        let hit = Rect::new(sb.x, fy, ar.right() + self.px(8.0) - sb.x, fh);
+        if self.me.is_none() {
+            let d = self.px(7.0);
+            let dr = Rect::new(ar.right() - d / 2.0, ar.y - d / 2.0, d, d);
+            scene.push(nus_render::Instance::rounded(Rect::new(dr.x - self.px(1.5), dr.y - self.px(1.5), d + self.px(3.0), d + self.px(3.0)), (d + self.px(3.0)) / 2.0, t.paper));
+            scene.push(nus_render::Instance::rounded(dr, d / 2.0, self.surface.signal));
+        }
+        {
+            let key = hover_key("me", 0);
+            let (mx, my) = self.mouse;
+            let hot = hit.contains(mx, my);
+            let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: Instant::now() });
+            if hot != h.hot {
+                h.hot = hot;
+                if hot {
+                    h.since = Instant::now();
+                }
             }
-            None => {
-                scene.rect(ar, self.surface.signal);
-                let initial = self.user_initial();
-                let iw = self.fonts.measure(strong, &initial);
-                self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, ar.x + (ar.w - iw) / 2.0, ar.y + av / 2.0 + self.px(4.0), &initial);
+            if hot && !self.me_card.open {
+                let since = h.since;
+                let words = match &self.me {
+                    Some(me) => format!("{} · {} with nus", me.name, me.day_word()),
+                    None => "set up your profile · local, no account".to_string(),
+                };
+                self.tip = Some(Tip { anchor: hit, text: words, since });
+                if since.elapsed().as_millis() < 700 {
+                    self.dirty = true;
+                }
             }
         }
-        self.side_hits.push((Rect::new(sb.x, fy, ar.right() + self.px(8.0) - sb.x, fh), SideHit::Profile));
+        self.side_hits.push((hit, SideHit::Profile));
         let mut x = ar.right() + self.px(14.0);
         let hr = Rect::new(x - self.px(8.0), fy, isz + self.px(16.0), fh);
         self.icon_button(scene, nus_render::text::icons::PLUS, isz, x, iy, ink, hr, hover_key("foot", 0), IconMotion::Pop);
@@ -4076,9 +4117,10 @@ impl App {
                 self.close_tabs(false);
             }
             SideHit::Profile => {
-                self.open_settings();
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
-                    s.section = crate::settings::SEC_TERMINAL;
+                if self.me_card.open {
+                    self.close_me_card();
+                } else {
+                    self.open_me_card();
                 }
             }
             SideHit::NewTab => self.open_palette(PaletteMode::New),
@@ -5906,7 +5948,10 @@ impl App {
         if self.splash.is_some() {
             return;
         }
-        // Atlas owns the keyboard while open; then the palette.
+        // The profile card, then the atlas, own the keyboard while open.
+        if self.me_key(ev) {
+            return;
+        }
         if self.start_key(ev) {
             return;
         }
@@ -7159,6 +7204,9 @@ impl App {
         let pressed = state == ElementState::Pressed;
         let strip = self.strip_rect();
 
+        if self.me_mouse(button, state, x, y) {
+            return;
+        }
         if self.start_mouse(button, state, x, y) {
             return;
         }

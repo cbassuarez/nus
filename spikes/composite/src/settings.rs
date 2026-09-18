@@ -402,8 +402,6 @@ pub struct Behavior {
     pub sync_every_min: u16,
     #[serde(default = "default_true")]
     pub sync_at_quit: bool,
-    #[serde(default)]
-    pub sync_device: Option<String>,
     /// OSC 10/11 from a shell: a chip offers the look, or it applies, or the pane only.
     #[serde(default)]
     pub shell_colours: ShellColours,
@@ -613,7 +611,6 @@ impl Default for Behavior {
             sync_session: false,
             sync_every_min: 10,
             sync_at_quit: true,
-            sync_device: None,
             tidy_every: TidyEvery::Off,
             dedupe: true,
             ports_grouping: PortsGrouping::Origin,
@@ -767,6 +764,11 @@ pub enum Hit {
     Lead(Lead),
     Grade(Grade),
     Truecolour(Truecolour),
+    /// The profile card at one of its steps (name, face, device).
+    MeEdit(u8),
+    MeCard,
+    MeFolder,
+    MeForget,
     SyncSession(bool),
     SyncEvery(u16),
     SyncAtQuit(bool),
@@ -845,7 +847,7 @@ pub enum TokSel {
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 14] = [
+pub const SECTIONS: [(&str, (&str, &str)); 15] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
@@ -859,6 +861,7 @@ pub const SECTIONS: [(&str, (&str, &str)); 14] = [
     ("RULES", icons::CODE),
     ("KEYS", icons::KEYBOARD),
     ("SYNC", icons::BROADCAST),
+    ("PROFILE", icons::USER),
     ("UPDATES", icons::DOWNLOAD),
 ];
 
@@ -869,6 +872,8 @@ pub const SEC_TERMINAL: usize = 5;
 pub const SEC_BROWSER: usize = 6;
 pub const SEC_PORTS: usize = 7;
 pub const SEC_HATCH: usize = 8;
+pub const SEC_SYNC: usize = 12;
+pub const SEC_PROFILE: usize = 13;
 pub const RULES: usize = 10;
 
 fn key(k: &str, shift: bool) -> String {
@@ -1124,6 +1129,10 @@ impl App {
             Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
             Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
             Hit::Lead(l) => match l { Lead::Terminal => "terminal first".into(), Lead::Browser => "browser first".into() },
+            Hit::MeEdit(k) => match k { 0 => "your name".into(), 1 => "your face".into(), _ => "this device's name".into() },
+            Hit::MeCard => "the profile card".into(),
+            Hit::MeFolder => "open the profile folder".into(),
+            Hit::MeForget => "start the profile over".into(),
             Hit::LoginItem(on) => if on { "start with the system".into() } else { "do not start with the system".into() },
             Hit::SoundOn(b) => if b { "sound on".into() } else { "sound off".into() },
             Hit::Play(i) => format!("play {}", crate::sound::NAMES.get(i).copied().unwrap_or("")),
@@ -1429,6 +1438,25 @@ impl App {
             Hit::ShellColours(c) => self.behavior.shell_colours = c,
             Hit::Grade(g) => self.behavior.grade = g,
             Hit::Truecolour(t) => self.behavior.truecolour = t,
+            Hit::MeEdit(k) => self.open_me_card_at(match k { 0 => crate::me::Step::Name, 1 => crate::me::Step::Face, _ => crate::me::Step::Device }),
+            Hit::MeCard => self.open_me_card(),
+            Hit::MeFolder => {
+                let dir = std::env::current_dir().unwrap_or_default().join("profile");
+                let cmd = if cfg!(target_os = "windows") {
+                    format!("start \"\" \"{}\"", dir.display())
+                } else if cfg!(target_os = "macos") {
+                    format!("open \"{}\"", dir.display())
+                } else {
+                    format!("xdg-open \"{}\"", dir.display())
+                };
+                self.run_in_shell(&cmd);
+            }
+            Hit::MeForget => {
+                crate::me::Me::forget();
+                self.me = None;
+                self.user_name = self.me_name();
+                self.open_me_card();
+            }
             Hit::SyncSession(b) => self.behavior.sync_session = b,
             Hit::SyncEvery(n) => self.behavior.sync_every_min = n,
             Hit::SyncAtQuit(b) => self.behavior.sync_at_quit = b,
@@ -2840,6 +2868,42 @@ impl App {
                 ),
             ]
             }
+            13 => {
+                let device = crate::me::device();
+                let (name, face, since, days) = match &self.me {
+                    Some(me) => (
+                        me.name.clone(),
+                        match &me.face { crate::me::Face::Initial => "the initial".to_string(), crate::me::Face::Emoji(e) => e.clone(), crate::me::Face::Picture => "profile/avatar.png".to_string() },
+                        me.created.clone(),
+                        me.day_word(),
+                    ),
+                    None => (crate::me::os_user(), "the initial".to_string(), "not yet".to_string(), "not set up".to_string()),
+                };
+                let is_emoji = matches!(self.me.as_ref().map(|m| &m.face), Some(crate::me::Face::Emoji(_)));
+                let mut v: Vec<(String, Control)> = vec![
+                    ("".into(), Info("you, on this machine: a name, a face, the day it began · profile/me.json — a file in a folder is the whole account: no server behind it, nothing counted, nothing sent".into())),
+                ];
+                if self.me.is_none() {
+                    v.push(("".into(), Buttons(vec![("SET UP THE PROFILE".into(), icons::USER, Hit::MeCard)])));
+                }
+                v.extend(vec![
+                    ("NAME".into(), Choice(vec![(name.caps(), Hit::MeEdit(0), true)])),
+                    ("FACE".into(), Choice(vec![
+                        ("THE INITIAL".into(), Hit::MeEdit(1), face == "the initial"),
+                        (if is_emoji { format!("EMOJI · {face}") } else { "AN EMOJI".into() }, Hit::MeEdit(1), is_emoji),
+                        ("A PICTURE".into(), Hit::MeEdit(1), face == "profile/avatar.png"),
+                    ])),
+                    ("".into(), Info("the face is the avatar in the footer; a picture is profile/avatar.png, any size, drawn at 22px".into())),
+                    ("DEVICE".into(), Choice(vec![(device.caps(), Hit::MeEdit(2), true)])),
+                    ("".into(), Info("sync names what this machine wrote by it (the manifest, the .lost files); it lives in profile/sync/device and never syncs itself".into())),
+                    ("SINCE".into(), Info(format!("{since} · {days}"))),
+                    ("SYNC".into(), Info(self.sync_status())),
+                    ("".into(), Buttons(vec![("SYNC SETTINGS".into(), icons::BROADCAST, Hit::Section(SEC_SYNC))])),
+                    ("PRIVATE".into(), Info("this profile is a folder: settings, rules, layouts, folders, ports, memory, sites, containers, the browser's own state · nothing leaves it unless you set up sync, and then only sealed · no account, no crash reports, no counters, no phone-home".into())),
+                    ("".into(), Buttons(vec![("OPEN THE PROFILE FOLDER".into(), icons::FOLDER, Hit::MeFolder), ("START OVER".into(), icons::WARNING, Hit::MeForget)])),
+                ]);
+                v
+            }
             12 => {
                 let b = &self.behavior;
                 let has_key = crate::syncui::key().is_some();
@@ -2912,6 +2976,7 @@ impl App {
             10 => self.rules.status.clone(),
             11 => "chords".into(),
             12 => if self.sync_ready() { "on".into() } else { "off · no key or carrier".into() },
+            13 => match &self.me { Some(me) => format!("{} · {}", me.name.to_lowercase(), me.day_word()), None => "not set up · local, no account".into() },
             _ => "github releases".into(),
         }
     }

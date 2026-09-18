@@ -742,3 +742,26 @@ open the atlas, the palette leads with the address and history, the
 kinds fan out with PAGE on top, links from outside open as tabs here,
 THEN is the last page. Picking one sets THEN and LINKS FROM OUTSIDE
 once; after that they're yours.
+
+**The profile.** You, on this machine: `profile/me.json` — a name, a face
+(the initial in the signal, an emoji, or `profile/avatar.png`), the day it
+began — and `profile/sync/device`, this machine's name, which is the one
+thing that never syncs. A file in a folder is the whole account: no server
+behind it, nothing counted, nothing sent, and the card says so in words.
+**The card** rises from the avatar in the footer (a signal dot sits on the
+avatar until the profile exists; the tooltip is *name · 12 days with nus*).
+The first time it walks you through — *hello* (what this is and isn't),
+name, face, this device, sync or not — and ends on *day 1, everything here
+stays here*; someone who was here before the card gets the day their
+profile really began (the oldest of its files). After that the card is the
+profile at a glance: the face, the name, *on <device> · local*, a
+calendar badge with the day count (the words in its tooltip), rows for
+NAME · FACE · DEVICE · SYNC · PRIVATE (each opens its edit in place, Esc
+returns), MORE for the full page, CLOSE. The full page is SETTINGS ·
+PROFILE: the same rows, SINCE, the sync status with a way to SYNC
+SETTINGS, PRIVATE spelled out (what the folder holds, what leaves it —
+nothing, unless sync, and then sealed), OPEN THE PROFILE FOLDER, START
+OVER. The welcome page's START HERE leads with it. Sync's file list is
+now the real one (`settings.json`, not `prefs.json`; plus `me.json`,
+containers, the blocklist, the avatar, themes and surfaces).
+

@@ -50,6 +50,9 @@ That means:
   Broadsheet look with a look studio and twenty stock themes.
 - **Config:** sandboxed Luau (`rules.luau`) for rules, folders, chains, skills,
   ports, blocks, grouping, layouts.
+- **A local profile, not an account:** a name, a face, the day it began,
+  in a file in a folder on your machine. No server, no telemetry, nothing
+  sent; the card that sets it up says so.
 - **Sync without an account:** the profile on more than one device, sealed
   with a key you copy, carried by a folder you already sync or a private git
   remote; last writer wins ([docs/SYNC.md](docs/SYNC.md)).
