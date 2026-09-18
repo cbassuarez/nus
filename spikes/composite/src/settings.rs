@@ -381,6 +381,37 @@ pub struct Behavior {
     pub blocks: bool,
     #[serde(default)]
     pub fold_over: u32,
+    /// The journal: one line per finished block, per folder, kept this many days.
+    #[serde(default = "default_true")]
+    pub journal: bool,
+    #[serde(default = "default_journal_keep")]
+    pub journal_keep: u32,
+    /// Cut off: what a restart-killed command's chip does. Chip · run again · nothing.
+    #[serde(default)]
+    pub cutoff: CutOff,
+    /// Ports that remember: departed dev servers with a known command come back
+    /// on the board with a start-again action.
+    #[serde(default = "default_true")]
+    pub ports_remember: bool,
+    /// Held: shells run in a holder process that outlives the app. At quit
+    /// an idle prompt is let go; a running command is kept.
+    #[serde(default)]
+    pub keep_alive: KeepAlive,
+    /// The loop: Alt+Shift+click on a localhost page opens the editor at the element's source.
+    #[serde(default = "default_true")]
+    pub click_to_source: bool,
+    /// Replay: casts and checkpoints under profile/replay, kept this long.
+    #[serde(default)]
+    pub replay: ReplayKeep,
+    /// Hands: what an assistant may do on the page beside its shell.
+    #[serde(default)]
+    pub hands: HandsMode,
+    /// Hosts where hands need no asking (ALLOW ON THIS HOST).
+    #[serde(default)]
+    pub hands_hosts: Vec<String>,
+    /// Even on an allowed host, a submit (Enter, a submit button, a navigation) asks.
+    #[serde(default = "default_true")]
+    pub hands_confirm_submit: bool,
     // The ports board.
     #[serde(default)]
     pub ports_grouping: PortsGrouping,
@@ -498,6 +529,55 @@ fn default_archive() -> u32 {
     12
 }
 
+/// How long replay sessions are kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ReplayKeep {
+    #[default]
+    Days7,
+    Day1,
+    Off,
+}
+
+impl ReplayKeep {
+    pub fn days(self) -> Option<u32> {
+        match self {
+            ReplayKeep::Days7 => Some(7),
+            ReplayKeep::Day1 => Some(1),
+            ReplayKeep::Off => None,
+        }
+    }
+}
+
+/// What an assistant's hands may do on a page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HandsMode {
+    #[default]
+    Ask,
+    Always,
+    Never,
+}
+
+/// Whether shells are held (see `nus_pty::hold`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum KeepAlive {
+    #[default]
+    On,
+    Off,
+}
+
+fn default_journal_keep() -> u32 {
+    30
+}
+
+/// What a command the restart killed gets on the next launch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CutOff {
+    #[default]
+    Chip,
+    RunAgain,
+    Off,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -543,6 +623,16 @@ impl Default for Behavior {
             prompt_lsp: PromptLsp::Quiet,
             blocks: true,
             fold_over: 0,
+            journal: true,
+            journal_keep: 30,
+            cutoff: CutOff::Chip,
+            ports_remember: true,
+            keep_alive: KeepAlive::On,
+            hands: HandsMode::Ask,
+            replay: ReplayKeep::Days7,
+            click_to_source: true,
+            hands_hosts: Vec::new(),
+            hands_confirm_submit: true,
             progress_sidebar: true,
             progress_taskbar: true,
             ask_ctx: default_ask_ctx(),
@@ -694,6 +784,16 @@ pub enum Hit {
     PromptLsp(PromptLsp),
     FormatOnSave(bool),
     Blocks(bool),
+    Journal(bool),
+    JournalKeep(u32),
+    CutOffMode(CutOff),
+    PortsRemember(bool),
+    KeepAlive(KeepAlive),
+    Hands(HandsMode),
+    Replay(ReplayKeep),
+    ClickToSource(bool),
+    HandsSubmit(bool),
+    HandsForget,
     FoldOver(u32),
     ProgressSidebar(bool),
     ProgressTaskbar(bool),
@@ -1001,6 +1101,16 @@ impl App {
             Hit::PromptLsp(m) => match m { PromptLsp::Quiet => "prompt lsp quiet".into(), PromptLsp::Menu => "prompt lsp menu".into(), PromptLsp::Off => "prompt lsp off".into() },
             Hit::FormatOnSave(b) => if b { "format on save".into() } else { "save as is".into() },
             Hit::Blocks(b) => if b { "block lamps on".into() } else { "block lamps off".into() },
+            Hit::Journal(b) => if b { "journal on".into() } else { "journal off".into() },
+            Hit::JournalKeep(n) => format!("journal keeps {n} days"),
+            Hit::CutOffMode(m) => match m { CutOff::Chip => "cut off: a chip".into(), CutOff::RunAgain => "cut off: run again".into(), CutOff::Off => "cut off: nothing".into() },
+            Hit::PortsRemember(b) => if b { "ports remember".into() } else { "ports forget".into() },
+            Hit::KeepAlive(k) => if k == KeepAlive::On { "shells are held".into() } else { "shells die with the app".into() },
+            Hit::ClickToSource(b) => if b { "click to source on".into() } else { "click to source off".into() },
+            Hit::Replay(k) => match k { ReplayKeep::Days7 => "replay keeps a week".into(), ReplayKeep::Day1 => "replay keeps a day".into(), ReplayKeep::Off => "replay off".into() },
+            Hit::Hands(h) => match h { HandsMode::Ask => "hands ask first".into(), HandsMode::Always => "hands never ask".into(), HandsMode::Never => "hands off".into() },
+            Hit::HandsSubmit(b) => if b { "a submit always asks".into() } else { "a submit does not ask on allowed hosts".into() },
+            Hit::HandsForget => "allowed hosts forgotten".into(),
             Hit::FoldOver(n) => if n == 0 { "never fold on its own".into() } else { format!("fold output over {n} lines") },
             Hit::ProgressSidebar(b) => if b { "progress in the sidebar".into() } else { "progress in the pane only".into() },
             Hit::ProgressTaskbar(b) => if b { "progress on the taskbar".into() } else { "taskbar left alone".into() },
@@ -1331,6 +1441,16 @@ impl App {
             Hit::PromptLsp(m) => self.behavior.prompt_lsp = m,
             Hit::FormatOnSave(b) => self.behavior.format_on_save = b,
             Hit::Blocks(b) => self.behavior.blocks = b,
+            Hit::Journal(b) => self.behavior.journal = b,
+            Hit::JournalKeep(n) => self.behavior.journal_keep = n,
+            Hit::CutOffMode(m) => self.behavior.cutoff = m,
+            Hit::PortsRemember(b) => self.behavior.ports_remember = b,
+            Hit::KeepAlive(k) => self.behavior.keep_alive = k,
+            Hit::Hands(h) => self.behavior.hands = h,
+            Hit::Replay(k) => self.behavior.replay = k,
+            Hit::ClickToSource(b) => self.behavior.click_to_source = b,
+            Hit::HandsSubmit(b) => self.behavior.hands_confirm_submit = b,
+            Hit::HandsForget => self.behavior.hands_hosts.clear(),
             Hit::FoldOver(n) => self.behavior.fold_over = n,
             Hit::ProgressSidebar(b) => self.behavior.progress_sidebar = b,
             Hit::ProgressTaskbar(b) => self.behavior.progress_taskbar = b,
@@ -2412,8 +2532,47 @@ impl App {
                         ("OVER 200".into(), Hit::FoldOver(200), fo == 200),
                     ]),
                 ));
-                let sc = self.behavior.shell_colours;
+                let (jn, jk, co) = (self.behavior.journal, self.behavior.journal_keep, self.behavior.cutoff);
                 v.insert(7, (
+                    "JOURNAL".into(),
+                    Choice(vec![
+                        ("ON".into(), Hit::Journal(!jn), jn),
+                        ("KEEP 7 DAYS".into(), Hit::JournalKeep(7), jk == 7),
+                        ("30 DAYS".into(), Hit::JournalKeep(30), jk == 30),
+                        ("90 DAYS".into(), Hit::JournalKeep(90), jk == 90),
+                    ]),
+                ));
+                v.insert(8, ("".into(), Info("one line per finished command, per folder, in profile/journal · nus log, the palette's log rows, and a page per folder read it back".into())));
+                v.insert(9, (
+                    "CUT OFF".into(),
+                    Choice(vec![
+                        ("CHIP".into(), Hit::CutOffMode(CutOff::Chip), co == CutOff::Chip),
+                        ("RUN AGAIN".into(), Hit::CutOffMode(CutOff::RunAgain), co == CutOff::RunAgain),
+                        ("OFF".into(), Hit::CutOffMode(CutOff::Off), co == CutOff::Off),
+                    ]),
+                ));
+                v.insert(10, ("".into(), Info("a command a restart killed comes back as a chip on the restored shell: resume for claude and codex, run again for a server, reconnect for ssh".into())));
+                let rk = self.behavior.replay;
+                v.insert(11, (
+                    "REPLAY".into(),
+                    Choice(vec![
+                        ("KEEP 7 DAYS".into(), Hit::Replay(ReplayKeep::Days7), rk == ReplayKeep::Days7),
+                        ("1 DAY".into(), Hit::Replay(ReplayKeep::Day1), rk == ReplayKeep::Day1),
+                        ("OFF".into(), Hit::Replay(ReplayKeep::Off), rk == ReplayKeep::Off),
+                    ]),
+                ));
+                v.insert(12, ("".into(), Info("every shell's bytes, and at each command a still of the page beside: Ctrl+Shift+H scrubs the tab back through its checkpoints, B compares the page before and after, and share writes one HTML file that replays anywhere · takes effect at the next launch".into())));
+                let ka = self.behavior.keep_alive;
+                v.insert(13, (
+                    "KEEP ALIVE".into(),
+                    Choice(vec![
+                        ("ON".into(), Hit::KeepAlive(KeepAlive::On), ka == KeepAlive::On),
+                        ("OFF".into(), Hit::KeepAlive(KeepAlive::Off), ka == KeepAlive::Off),
+                    ]),
+                ));
+                v.insert(14, ("".into(), Info(if nus_pty::hold::holder_exe().is_some() { "each shell runs in nus-hold, a small process that outlives the app: quit, crash or update, and a running command is still there when you come back; an idle prompt is let go".into() } else { "nus-hold was not found beside the app, so shells are not held".into() })));
+                let sc = self.behavior.shell_colours;
+                v.insert(15, (
                     "SHELL COLOURS".into(),
                     Choice(vec![
                         ("OFFER".into(), Hit::ShellColours(ShellColours::Chip), sc == ShellColours::Chip),
@@ -2483,6 +2642,11 @@ impl App {
                 v
             }
             6 => vec![
+                (
+                    "CLICK TO SOURCE".into(),
+                    Choice(vec![("ON".into(), Hit::ClickToSource(true), self.behavior.click_to_source), ("OFF".into(), Hit::ClickToSource(false), !self.behavior.click_to_source)]),
+                ),
+                ("".into(), Info("alt+shift+click an element on a localhost page and the editor opens at its source: a framework's debug marker (react, svelte, vue), else the served file under the folder the server runs from".into())),
                 (
                     "CONTENT BLOCKING".into(),
                     Choice(vec![("ON".into(), Hit::Block(true), self.behavior.block_content), ("OFF".into(), Hit::Block(false), !self.behavior.block_content)]),
@@ -2637,6 +2801,19 @@ impl App {
                 let asks = crate::ask::backends();
                 let mut v: Vec<(String, Control)> = Vec::new();
                 v.push(("ASK".into(), Info(format!("Ctrl+Shift+? beside a shell · {}", if asks.is_empty() { "no assistant found · claude, codex, copilot, ollama on PATH, or ANTHROPIC_API_KEY (curl)".to_string() } else { asks.iter().map(|b| format!("{} ({})", b.name, b.how)).collect::<Vec<_>>().join(" · ") }))));
+                v.push(("EYES".into(), Info("nus mcp gives the assistant in the shell the page beside it: its text, DOM, console, network and a screenshot from our own texture · claude mcp add nus -- nus mcp".into())));
+                let hm = self.behavior.hands;
+                v.push((
+                    "HANDS".into(),
+                    Choice(vec![
+                        ("ASK".into(), Hit::Hands(HandsMode::Ask), hm == HandsMode::Ask),
+                        ("ALWAYS".into(), Hit::Hands(HandsMode::Always), hm == HandsMode::Always),
+                        ("NEVER".into(), Hit::Hands(HandsMode::Never), hm == HandsMode::Never),
+                        ("CONFIRM SUBMIT".into(), Hit::HandsSubmit(!self.behavior.hands_confirm_submit), self.behavior.hands_confirm_submit),
+                        (format!("{} HOSTS ALLOWED · FORGET", self.behavior.hands_hosts.len()), Hit::HandsForget, false),
+                    ]),
+                ));
+                v.push(("".into(), Info("click, type, scroll and navigate on the page, by the assistant, in sight: a band over the page asks first, every hand leaves a chip, and your own click or key while it waits takes over".into())));
                 v.extend(self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.caps()), Info(c.clone()))));
                 if self.llm_tools.is_empty() {
                     v.push(("LOCAL".into(), Info("none on PATH (claude, codex, ollama are detected)".into())));

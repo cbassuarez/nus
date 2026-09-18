@@ -126,6 +126,7 @@ impl App {
                 x += ww + self.px(8.0);
             }
         }
+        self.draw_hands(scene, w);
         // Dedupe band: this page is open in another tab. Two icon chips.
         w.dedupe_hits.clear();
         if let Some((here, there)) = w.dedupe {

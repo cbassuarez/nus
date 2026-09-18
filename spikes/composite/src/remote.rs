@@ -21,6 +21,29 @@ pub struct Request {
     pub reply: Sender<Value>,
 }
 
+/// An answer that waits on the page: a CDP reply by id, or a capture
+/// after the next draw.
+pub struct Deferred {
+    pub reply: Sender<Value>,
+    pub what: DeferredWhat,
+    pub since: std::time::Instant,
+}
+
+pub enum DeferredWhat {
+    /// `(tab, right pane?, cdp id)` and how to shape the reply.
+    Cdp(usize, bool, i32, Shape),
+    /// The pane's pixels, cropped from the next frame: `(tab, right?)`.
+    Shot(usize, bool),
+}
+
+#[derive(Clone, Copy)]
+pub enum Shape {
+    /// `result.result.value` as-is.
+    Value,
+    /// The reader's JSON: title, url, text and headings.
+    Article,
+}
+
 /// The per-launch token: random, written with the port.
 pub fn new_token() -> String {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -40,6 +63,124 @@ pub fn new_token() -> String {
 impl App {
     /// Answer one request on the app's loop. Everything here is what the
     /// palette or a chord would do; nothing is only reachable this way.
+    /// A request from the instance port: answered now, or parked in
+    /// `deferred` until the page answers (a CDP reply, a capture).
+    pub fn remote_request(&mut self, req: Request) {
+        // Hands answer through the band, on their own time.
+        if req.cmd == "hands" {
+            return self.hands_request(&req.args, req.reply);
+        }
+        match self.remote(&req.cmd, &req.args) {
+            Ok(v) if v.get("__deferred").is_some() => {
+                // `remote` left the description of what to wait for.
+                let what = self.take_deferred_what(&v);
+                match what {
+                    Some(what) => self.deferred.push(Deferred { reply: req.reply, what, since: std::time::Instant::now() }),
+                    None => {
+                        let _ = req.reply.send(json!({ "ok": false, "error": "nothing to wait for" }));
+                    }
+                }
+            }
+            Ok(result) => {
+                let _ = req.reply.send(json!({ "ok": true, "result": result }));
+            }
+            Err(e) => {
+                let _ = req.reply.send(json!({ "ok": false, "error": e }));
+            }
+        }
+    }
+
+    fn take_deferred_what(&mut self, v: &Value) -> Option<DeferredWhat> {
+        let d = v.get("__deferred")?;
+        let tab = d.get("tab")?.as_u64()? as usize;
+        let right = d.get("right").and_then(|r| r.as_bool()).unwrap_or(false);
+        match d.get("kind")?.as_str()? {
+            "cdp" => {
+                let id = d.get("id")?.as_i64()? as i32;
+                let shape = if d.get("shape").and_then(|s| s.as_str()) == Some("article") { Shape::Article } else { Shape::Value };
+                Some(DeferredWhat::Cdp(tab, right, id, shape))
+            }
+            "shot" => Some(DeferredWhat::Shot(tab, right)),
+            _ => None,
+        }
+    }
+
+    /// Answer what the page has answered; give up after ten seconds.
+    pub fn poll_deferred(&mut self) {
+        if self.deferred.is_empty() {
+            return;
+        }
+        let mut still = Vec::new();
+        for d in std::mem::take(&mut self.deferred) {
+            match &d.what {
+                DeferredWhat::Cdp(tab, right, id, shape) => {
+                    let reply = self.tabs.get(*tab).and_then(|t| if *right { t.right.as_ref() } else { Some(&t.left) }).and_then(|p| match p {
+                        Pane::Web(w) => w.tab.take_reply(*id),
+                        _ => None,
+                    });
+                    match reply {
+                        Some(v) => {
+                            let value = v.pointer("/result/value").cloned().unwrap_or(Value::Null);
+                            let result = match shape {
+                                Shape::Value => value,
+                                Shape::Article => {
+                                    let json = value.as_str().unwrap_or("");
+                                    match crate::reader::Article::parse(json) {
+                                        Some(a) => {
+                                            use crate::reader::Block as B;
+                                            let text: Vec<String> = a
+                                                .blocks
+                                                .iter()
+                                                .map(|b| match b {
+                                                    B::Heading(n, t) => format!("{} {t}", "#".repeat((*n).clamp(1, 6) as usize)),
+                                                    B::Para(t) | B::Caption(t) => t.clone(),
+                                                    B::Pre(t) => format!("```\n{t}\n```"),
+                                                    B::Item(t) => format!("- {t}"),
+                                                    B::Quote(t) => format!("> {t}"),
+                                                    B::Image(src, alt) => format!("![{alt}]({src})"),
+                                                })
+                                                .collect();
+                                            json!({ "title": a.title, "byline": a.byline, "when": a.when, "text": text.join("\n\n") })
+                                        }
+                                        None => json!({ "text": "" }),
+                                    }
+                                }
+                            };
+                            let _ = d.reply.send(json!({ "ok": true, "result": result }));
+                        }
+                        None if d.since.elapsed().as_secs() > 10 => {
+                            let _ = d.reply.send(json!({ "ok": false, "error": "the page did not answer" }));
+                        }
+                        None => still.push(d),
+                    }
+                }
+                DeferredWhat::Shot(..) => still.push(d),
+            }
+        }
+        self.deferred = still;
+    }
+
+    /// The web pane a request means: `tab` (1-based) or the active tab; the
+    /// page on either side of it.
+    fn page_pane(&self, args: &Value) -> Result<(usize, bool), String> {
+        let i = args.get("tab").and_then(|t| t.as_u64()).map(|t| (t as usize).saturating_sub(1)).unwrap_or(self.active);
+        let tab = self.tabs.get(i).ok_or("no such tab")?;
+        if matches!(tab.left, Pane::Web(_)) {
+            return Ok((i, false));
+        }
+        if matches!(tab.right, Some(Pane::Web(_))) {
+            return Ok((i, true));
+        }
+        Err("no page on that tab".into())
+    }
+
+    fn web_pane(&self, tab: usize, right: bool) -> Option<&crate::app::WebPane> {
+        self.tabs.get(tab).and_then(|t| if right { t.right.as_ref() } else { Some(&t.left) }).and_then(|p| match p {
+            Pane::Web(w) => Some(w),
+            _ => None,
+        })
+    }
+
     pub fn remote(&mut self, cmd: &str, args: &Value) -> Result<Value, String> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let n = |k: &str| args.get(k).and_then(Value::as_u64).map(|v| v as usize);
@@ -308,6 +449,99 @@ impl App {
                 let Some(q) = s("q") else { return Err("ask needs q".into()) };
                 self.ask_from_remote(&q);
                 Ok(Value::Null)
+            }
+            // Eyes: the page beside the shell, as the assistant reads it.
+            "page" => {
+                let what = s("what").unwrap_or_else(|| "text".into());
+                match what.as_str() {
+                    "open" => {
+                        let url = s("url").ok_or("open needs a url")?;
+                        let beside = args.get("beside").and_then(|b| b.as_bool()).unwrap_or(true);
+                        self.open_url(&url, !beside);
+                        Ok(json!({ "opened": url }))
+                    }
+                    "text" | "dom" | "console" | "network" | "screenshot" | "info" => {
+                        let (tab, right) = self.page_pane(args)?;
+                        let w = self.web_pane(tab, right).ok_or("no page")?;
+                        match what.as_str() {
+                            "info" => {
+                                let sh = w.tab.shared.borrow();
+                                Ok(json!({ "tab": tab + 1, "url": sh.url, "title": sh.title, "loading": sh.loading }))
+                            }
+                            "text" => {
+                                let id = w.tab.eval_reply(crate::reader::EXTRACT_JS);
+                                Ok(json!({ "__deferred": { "kind": "cdp", "tab": tab, "right": right, "id": id, "shape": "article" } }))
+                            }
+                            "dom" => {
+                                let sel = s("selector").unwrap_or_else(|| "body".into());
+                                let expr = format!("(function(){{ const n = document.querySelector({}); return n ? n.outerHTML.slice(0, 200000) : null; }})()", serde_json::to_string(&sel).unwrap_or_default());
+                                let id = w.tab.eval_reply(&expr);
+                                Ok(json!({ "__deferred": { "kind": "cdp", "tab": tab, "right": right, "id": id, "shape": "value" } }))
+                            }
+                            "console" | "network" => {
+                                let want_console = what == "console";
+                                let sh = w.tab.shared.borrow();
+                                let n = n("limit").unwrap_or(100);
+                                let rows: Vec<Value> = sh.log.iter().rev().filter(|e| (e.get("kind").and_then(|k| k.as_str()) == Some("console")) == want_console).take(n).cloned().collect();
+                                Ok(json!({ "entries": rows.into_iter().rev().collect::<Vec<_>>() }))
+                            }
+                            _ => Ok(json!({ "__deferred": { "kind": "shot", "tab": tab, "right": right } })),
+                        }
+                    }
+                    other => Err(format!("page: text · dom · console · network · screenshot · info · open, not {other}")),
+                }
+            }
+            // Share: the tab as one HTML file that replays anywhere.
+            "share" => {
+                let i = n("tab").map(|t| t.saturating_sub(1)).unwrap_or(self.active);
+                let path = self.share_replay(i)?;
+                Ok(json!({ "path": path.display().to_string() }))
+            }
+            // Held shells: ls · attach <id> · kill <id>.
+            "hold" => {
+                let dir = crate::app::App::hold_dir();
+                match s("what").as_deref().unwrap_or("ls") {
+                    "ls" => {
+                        let loose: Vec<String> = self.held_loose().into_iter().map(|i| i.id).collect();
+                        let all: Vec<Value> = nus_pty::hold::Info::all(&dir)
+                            .into_iter()
+                            .map(|i| json!({ "id": i.id, "pid": i.pid, "program": i.program, "cwd": i.cwd, "started": i.started, "attached": !loose.contains(&i.id) }))
+                            .collect();
+                        Ok(json!({ "held": all }))
+                    }
+                    "attach" => {
+                        let id = s("id").ok_or("attach needs an id")?;
+                        let info = nus_pty::hold::Info::read(&dir, &id).ok_or("no such holder")?;
+                        if !info.alive(&dir) {
+                            return Err("that holder is gone".into());
+                        }
+                        self.attach_held(info);
+                        Ok(json!({ "attached": id }))
+                    }
+                    "kill" => {
+                        let id = s("id").ok_or("kill needs an id")?;
+                        let info = nus_pty::hold::Info::read(&dir, &id).ok_or("no such holder")?;
+                        // Attach briefly to say kill; the holder exits with its child.
+                        match nus_pty::hold::Client::attach(info, || {}) {
+                            Ok(mut c) => {
+                                c.kill();
+                                Ok(json!({ "killed": id }))
+                            }
+                            Err(e) => Err(format!("kill: {e}")),
+                        }
+                    }
+                    other => Err(format!("hold: ls · attach · kill, not {other}")),
+                }
+            }
+            // The journal: what ran in a folder (the focused shell's by default).
+            "log" => {
+                let cwd = s("cwd").or_else(|| self.focused_cwd()).unwrap_or_default();
+                let limit = n("limit").unwrap_or(50);
+                let out: Vec<Value> = crate::journal::entries(&cwd, limit)
+                    .into_iter()
+                    .map(|e| json!({ "cmd": e.cmd, "cwd": e.cwd, "start": e.start, "ms": e.ms, "exit": e.exit, "tab": e.tab, "shell": e.shell }))
+                    .collect();
+                Ok(json!({ "cwd": cwd, "entries": out, "folders": crate::journal::folders().into_iter().map(|(c, n)| json!({ "cwd": c, "commands": n })).collect::<Vec<_>>() }))
             }
             other => Err(format!("unknown command {other}")),
         }

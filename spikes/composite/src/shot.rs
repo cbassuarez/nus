@@ -22,11 +22,18 @@
 //!   hover 40 200               the pointer at logical px from the top-left
 //!   click 900 500              a left click there
 //!   altclick 900 500           with Alt held (a peek)
+//!   srcclick 900 500           with Alt+Shift held (click to source)
 //!   shot window                capture the whole window
 //!   shot hero 0.5 0.06 0.5 0.94   capture a fraction [x y w h] of it
 //!   focus shell | page         which half of the split has the focus
 //!   erase 8                    backspaces to the shell, undoing a `line`
 //!   close                      the palette, ask, board and atlas, whichever is up
+//!   restore                    the last session, as the atlas would
+//!   hands allow | deny | host  answer the hands band on the active page
+//!   timeline                   toggle the timeline on the active tab
+//!   tl left | right | b | home  a key to the timeline
+//!   share                      the active tab as a replay file, opened as a tab
+//!   ctrlc                      Ctrl+C to the shell
 //!   quit                       (implicit at the end)
 
 use std::path::PathBuf;
@@ -151,6 +158,32 @@ impl App {
                 }
             }
             "board" => self.open_board(),
+            "restore" => self.restore_session_pub(),
+            "timeline" => self.toggle_timeline(),
+            "tl" => {
+                use winit::keyboard::{Key, NamedKey};
+                let k = match rest {
+                    "left" => Key::Named(NamedKey::ArrowLeft),
+                    "right" => Key::Named(NamedKey::ArrowRight),
+                    "home" => Key::Named(NamedKey::Home),
+                    "end" => Key::Named(NamedKey::End),
+                    "esc" => Key::Named(NamedKey::Escape),
+                    _ => Key::Character("b".into()),
+                };
+                self.timeline_key(&k);
+            }
+            "share" => self.run(crate::app::Action::ShareReplay),
+            "hands" => {
+                let a = match rest {
+                    "deny" => crate::hands::Answer::Deny,
+                    "host" => crate::hands::Answer::AllowHost,
+                    _ => crate::hands::Answer::Allow,
+                };
+                let i = self.active;
+                let right = self.tabs.get(i).is_some_and(|t| !matches!(t.left, Pane::Web(_)));
+                self.hands_answer(i, right, a);
+            }
+            "ctrlc" => self.shot_type(""),
             "compact" => self.toggle_compact(),
             "atlas" => self.open_start(),
             "settings" => self.open_settings(),
@@ -169,18 +202,21 @@ impl App {
                 }
                 self.layout();
             }
-            "hover" | "click" | "altclick" => {
+            "hover" | "click" | "altclick" | "srcclick" => {
                 let mut it = rest.split_whitespace().filter_map(|n| n.parse::<f32>().ok());
                 let (x, y) = (it.next().unwrap_or(0.0) * self.scale, it.next().unwrap_or(0.0) * self.scale);
                 if verb == "altclick" {
                     self.modifiers(ModifiersState::ALT);
+                }
+                if verb == "srcclick" {
+                    self.modifiers(ModifiersState::ALT | ModifiersState::SHIFT);
                 }
                 self.mouse_moved(x, y);
                 if verb != "hover" {
                     self.mouse_button(MouseButton::Left, ElementState::Pressed);
                     self.mouse_button(MouseButton::Left, ElementState::Released);
                 }
-                if verb == "altclick" {
+                if verb == "altclick" || verb == "srcclick" {
                     self.modifiers(ModifiersState::empty());
                 }
             }
@@ -218,35 +254,71 @@ impl App {
     pub fn shot_capture(&mut self, clear: [f32; 4]) {
         let Some((name, crop)) = self.shot.as_mut().and_then(|s| s.pending.take()) else { return };
         let (w, h) = self.target.size;
-        let rgba = self.gpu.snapshot((w, h), &self.scene, clear);
-        let (x0, y0, cw, ch) = match crop {
-            Some([x, y, cw, ch]) => (
-                (x * w as f32) as u32,
-                (y * h as f32) as u32,
-                ((cw * w as f32) as u32).max(1).min(w),
-                ((ch * h as f32) as u32).max(1).min(h),
-            ),
-            None => (0, 0, w, h),
-        };
-        let mut px = Vec::with_capacity((cw * ch * 4) as usize);
-        for row in y0..(y0 + ch).min(h) {
-            let start = ((row * w + x0) * 4) as usize;
-            px.extend_from_slice(&rgba[start..start + (cw.min(w - x0) * 4) as usize]);
-        }
+        let crop_px = crop.map(|[x, y, cw, ch]| ((x * w as f32) as u32, (y * h as f32) as u32, ((cw * w as f32) as u32).max(1), ((ch * h as f32) as u32).max(1)));
         let Some(s) = self.shot.as_ref() else { return };
         let _ = std::fs::create_dir_all(&s.out);
         let path = s.out.join(format!("{name}-{}.png", s.face));
-        let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let file = std::fs::File::create(&path)?;
-            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), cw, ch);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header()?.write_image_data(&px)?;
-            Ok(())
-        };
-        match write() {
-            Ok(()) => eprintln!("shot: wrote {} ({cw}×{ch} px at {}×)", path.display(), self.scale),
+        match self.snapshot_png(clear, crop_px, &path) {
+            Ok((cw, ch)) => eprintln!("shot: wrote {} ({cw}×{ch} px at {}×)", path.display(), self.scale),
             Err(e) => eprintln!("shot: {}: {e}", path.display()),
         }
+    }
+
+    /// The frame just drawn, cropped to `crop` (x, y, w, h in px) or whole,
+    /// as a PNG at `path`. Returns the written size.
+    pub(crate) fn snapshot_png(&mut self, clear: [f32; 4], crop: Option<(u32, u32, u32, u32)>, path: &std::path::Path) -> Result<(u32, u32), String> {
+        let (w, h) = self.target.size;
+        let rgba = self.gpu.snapshot((w, h), &self.scene, clear);
+        let (x0, y0, cw, ch) = match crop {
+            Some((x, y, cw, ch)) => (x.min(w - 1), y.min(h - 1), cw.max(1).min(w - x.min(w - 1)), ch.max(1).min(h - y.min(h - 1))),
+            None => (0, 0, w, h),
+        };
+        let mut px = Vec::with_capacity((cw * ch * 4) as usize);
+        for row in y0..y0 + ch {
+            let start = ((row * w + x0) * 4) as usize;
+            px.extend_from_slice(&rgba[start..start + (cw * 4) as usize]);
+        }
+        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), cw, ch);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().and_then(|mut wr| wr.write_image_data(&px)).map_err(|e| e.to_string())?;
+        Ok((cw, ch))
+    }
+
+    /// Page screenshots a remote request asked for: the pane's pixels from
+    /// the frame just drawn, to profile/shots/, the path in the answer.
+    pub(crate) fn deferred_shots(&mut self, clear: [f32; 4]) {
+        if !self.deferred.iter().any(|d| matches!(d.what, crate::remote::DeferredWhat::Shot(..))) {
+            return;
+        }
+        let dir = std::env::current_dir().unwrap_or_default().join("profile").join("shots");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut keep = Vec::new();
+        for d in std::mem::take(&mut self.deferred) {
+            let crate::remote::DeferredWhat::Shot(tab, right) = d.what else {
+                keep.push(d);
+                continue;
+            };
+            let rect = self.tabs.get(tab).and_then(|t| if right { t.right.as_ref() } else { Some(&t.left) }).and_then(|p| match p {
+                Pane::Web(w) => Some(w.page),
+                _ => None,
+            });
+            let Some(r) = rect else {
+                let _ = d.reply.send(serde_json::json!({ "ok": false, "error": "no page" }));
+                continue;
+            };
+            let path = dir.join(format!("page-{}.png", crate::journal::now()));
+            let crop = (r.x.max(0.0) as u32, r.y.max(0.0) as u32, r.w.max(1.0) as u32, r.h.max(1.0) as u32);
+            match self.snapshot_png(clear, Some(crop), &path) {
+                Ok((w, h)) => {
+                    let _ = d.reply.send(serde_json::json!({ "ok": true, "result": { "path": path.display().to_string(), "width": w, "height": h, "scale": self.scale } }));
+                }
+                Err(e) => {
+                    let _ = d.reply.send(serde_json::json!({ "ok": false, "error": e }));
+                }
+            }
+        }
+        self.deferred = keep;
     }
 }

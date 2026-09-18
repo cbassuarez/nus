@@ -27,10 +27,37 @@ pub enum Saved {
     Layout { path: String },
 }
 
+/// What a shell was doing when the session was saved: where, what was
+/// running (and since when), and its screen as text (inline; a few KB).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShellState {
+    pub cwd: Option<String>,
+    pub running: Option<(String, u64)>,
+    pub snapshot: Option<String>,
+    /// The holder's id when the shell was held.
+    pub held: Option<String>,
+}
+
+fn shell_state_to_json(s: &ShellState) -> serde_json::Value {
+    serde_json::json!({ "cwd": s.cwd, "cmd": s.running.as_ref().map(|r| r.0.clone()), "since": s.running.as_ref().map(|r| r.1), "snapshot": s.snapshot, "held": s.held })
+}
+
+fn shell_state_from_json(v: &serde_json::Value) -> Option<ShellState> {
+    let st = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_string());
+    let running = match (st("cmd"), v.get("since").and_then(|x| x.as_u64())) {
+        (Some(c), Some(at)) if !c.trim().is_empty() => Some((c, at)),
+        _ => None,
+    };
+    Some(ShellState { cwd: st("cwd"), running, snapshot: st("snapshot"), held: st("held") })
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SavedTab {
     pub left: Option<Saved>,
     pub right: Option<Saved>,
+    /// The shell's state, for a shell on either side.
+    pub shell: Option<ShellState>,
+    pub shell_right: Option<ShellState>,
     pub pinned: bool,
     /// Index of the parent tab in the session, for stacks.
     pub parent: Option<usize>,
@@ -105,6 +132,8 @@ impl Session {
             .map(|t| SavedTab {
                 left: t.get("left").and_then(saved_from_json),
                 right: t.get("right").and_then(saved_from_json),
+                shell: t.get("shell").and_then(shell_state_from_json),
+                shell_right: t.get("shell_right").and_then(shell_state_from_json),
                 pinned: t.get("pinned").and_then(|p| p.as_bool()).unwrap_or(false),
                 parent: t.get("parent").and_then(|p| p.as_u64()).map(|p| p as usize),
                 name: t.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -128,6 +157,8 @@ impl Session {
                 serde_json::json!({
                     "left": t.left.as_ref().map(saved_to_json),
                     "right": t.right.as_ref().map(saved_to_json),
+                    "shell": t.shell.as_ref().map(shell_state_to_json),
+                    "shell_right": t.shell_right.as_ref().map(shell_state_to_json),
                     "pinned": t.pinned,
                     "parent": t.parent,
                     "name": t.name,
@@ -200,6 +231,8 @@ pub struct Start {
 pub enum StartRow {
     Restore,
     Recent(Saved),
+    /// A held shell still running, with no tab: attach.
+    Held(nus_pty::hold::Info),
     Fresh,
 }
 
@@ -212,6 +245,14 @@ impl App {
         if let Some(sess) = &self.last_session {
             if !sess.tabs.is_empty() && hit("restore last session") {
                 rows.push((StartRow::Restore, "restore last session".to_string(), sess.summary()));
+            }
+        }
+        // Shells still running in their holders, with no tab of ours.
+        for info in self.held_loose() {
+            let title = format!("{} · still running", info.program);
+            let detail = info.cwd.clone().unwrap_or_else(|| "held".into());
+            if hit(&title) || hit(&detail) || hit("held") {
+                rows.push((StartRow::Held(info), title, detail));
             }
         }
         for r in &self.recent {
@@ -261,9 +302,52 @@ impl App {
                 let idx = self.profiles.iter().position(|p| p.name == profile).unwrap_or(self.behavior.default_profile);
                 self.new_tab(idx);
             }
+            StartRow::Held(info) => self.attach_held(info),
             StartRow::Fresh => {}
         }
         self.dirty = true;
+    }
+
+    /// A saved shell, back: attached to its holder when that is still
+    /// running (the ring replays, nothing was cut); else a fresh shell in
+    /// its folder with the snapshot laid down and the cut-off chip.
+    pub(crate) fn restore_shell(&mut self, idx: usize, s: &ShellState) -> Option<crate::app::TermPane> {
+        if let Some(id) = &s.held {
+            let dir = crate::app::App::hold_dir();
+            if let Some(info) = nus_pty::hold::Info::read(&dir, id) {
+                if info.alive(&dir) {
+                    if let Ok(t) = self.new_term_pane_attached(false, info) {
+                        return Some(t);
+                    }
+                }
+            }
+        }
+        let mut t = self.new_term_pane_at(false, idx, s.cwd.clone()).ok()?;
+        self.restore_shell_state(&mut t, s);
+        Some(t)
+    }
+
+    /// The snapshot as dim history above the fresh prompt, and the cut-off
+    /// chip when a command was still running at save time.
+    pub(crate) fn restore_shell_state(&mut self, t: &mut crate::app::TermPane, s: &ShellState) {
+        if let Some(text) = s.snapshot.as_ref() {
+            self.lay_snapshot(t, text);
+        }
+        let mode = self.behavior.cutoff;
+        if let (Some((cmd, at)), true) = (&s.running, mode != crate::settings::CutOff::Off) {
+            let cwd = s.cwd.clone().unwrap_or_default();
+            let (kind, resume, label) = match self.rules.on_cutoff(cmd, &cwd) {
+                Some((label, resume)) => (crate::cutoff::Kind::RunAgain, resume, label),
+                None => crate::cutoff::resume_for(cmd, &cwd, *at),
+            };
+            match mode {
+                crate::settings::CutOff::RunAgain => t.type_at_prompt = Some(format!("{resume}\r")),
+                _ => {
+                    let line = t.term.grid().abs_row(t.term.cursor().row);
+                    t.cutoff = Some(crate::cutoff::CutOff { cmd: crate::cutoff::oneline(cmd), at: *at, kind, resume, label, line });
+                }
+            }
+        }
     }
 
     pub(crate) fn restore_session_pub(&mut self) {
@@ -284,7 +368,8 @@ impl App {
             let left = match &t.left {
                 Some(Saved::Shell { profile }) => {
                     let idx = self.profiles.iter().position(|p| &p.name == profile).unwrap_or(self.behavior.default_profile);
-                    self.new_term_pane(false, idx).ok().map(Pane::Term)
+                    let state = t.shell.clone().unwrap_or_default();
+                    self.restore_shell(idx, &state).map(Pane::Term)
                 }
                 Some(Saved::Page { url, .. }) => self.new_web_pane_in(url, &container).map(Pane::Web),
                 Some(Saved::File { path }) => {
@@ -302,7 +387,8 @@ impl App {
                 Some(Saved::Page { url, .. }) => self.new_web_pane(url).map(Pane::Web),
                 Some(Saved::Shell { profile }) => {
                     let idx = self.profiles.iter().position(|p| &p.name == profile).unwrap_or(self.behavior.default_profile);
-                    self.new_term_pane(false, idx).ok().map(Pane::Term)
+                    let state = t.shell_right.clone().unwrap_or_default();
+                    self.restore_shell(idx, &state).map(Pane::Term)
                 }
                 Some(Saved::File { path }) => {
                     let mut e = crate::editor::EditorPane::new(nus_render::Rect::new(0.0, 0.0, 1.0, 1.0));
@@ -352,11 +438,28 @@ impl App {
             Pane::Ports(_) => Some(Saved::Ports),
             _ => None,
         };
+        // A shell's state: cwd, what is running, and its screen as text under
+        // profile/session/, so restore can lay it down and offer the cut-off chip.
+        let state = |p: &Pane, id: u64, side: &str| match p {
+            Pane::Term(t) => {
+                let running = match (t.running_since, t.running_at) {
+                    (Some(_), Some(at)) => t.term.marks.iter().rev().find(|m| m.kind == nus_vt::MarkKind::CommandStart).map(|b| (t.term.command_text(b), at)).filter(|(c, _)| !c.trim().is_empty()),
+                    _ => None,
+                };
+                // Inline, not a file: a file keyed by tab id is overwritten by
+                // the next launch's first save before restore gets to read it.
+                let _ = (id, side);
+                let text = t.snapshot_text(400);
+                let snapshot = (!text.is_empty()).then_some(text);
+                Some(ShellState { cwd: t.term.cwd.clone(), running, snapshot, held: t.pty.held_id().map(String::from) })
+            }
+            _ => None,
+        };
         let listed: Vec<&crate::app::Tab> = self.tabs.iter().filter(|t| t.peek.is_none()).collect();
         let index_of = |id: u64| listed.iter().position(|t| t.id == id);
         let tabs: Vec<SavedTab> = listed
             .iter()
-            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch })
+            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), shell: state(&t.left, t.id, "l"), shell_right: t.right.as_ref().and_then(|p| state(p, t.id, "r")), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch })
             .filter(|t| t.left.is_some())
             .collect();
         let tiles = self.tiling.as_ref().map(|t| t.ids.iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
@@ -508,6 +611,7 @@ impl App {
                 StartRow::Recent(Saved::File { .. }) => icons::CODE,
                 StartRow::Recent(Saved::Ports) => icons::PORTS,
                 StartRow::Recent(Saved::Layout { .. }) => icons::STACK,
+                StartRow::Held(_) => icons::TERMINAL,
                 StartRow::Fresh => icons::PLUS,
             };
             let base_r = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);

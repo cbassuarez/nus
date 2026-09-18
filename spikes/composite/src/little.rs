@@ -106,12 +106,15 @@ pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16) {
                                     break;
                                 }
                                 let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                                // A hand may wait on the user; the rest answers within seconds.
+                                let patience = if cmd == "hands" { 180 } else { 10 };
                                 let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
                                 let (reply_tx, reply_rx) = channel();
                                 if tx.send(Inbound::Request(crate::remote::Request { cmd, args, reply: reply_tx })).is_err() {
                                     break;
                                 }
-                                match reply_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                                // A hand may wait on the user; the rest answers within seconds.
+                                match reply_rx.recv_timeout(std::time::Duration::from_secs(patience)) {
                                     Ok(answer) => {
                                         let _ = writeln!(w, "{answer}");
                                     }

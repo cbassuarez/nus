@@ -1004,6 +1004,27 @@ impl Rules {
         }
     }
 
+    /// The `on_cutoff` hook: a command the restart killed. `b` has cmd and
+    /// cwd; return nothing, or `{ label = "…", cmd = "…" }` for the chip.
+    pub fn on_cutoff(&self, cmd: &str, cwd: &str) -> Option<(String, String)> {
+        let f = self.lua.globals().get::<mlua::Function>("on_cutoff").ok()?;
+        let t = self.lua.create_table().ok()?;
+        let _ = t.set("cmd", cmd);
+        let _ = t.set("cwd", cwd);
+        match f.call::<Option<mlua::Table>>(t) {
+            Ok(Some(o)) => {
+                let c: String = o.get("cmd").ok()?;
+                let label: String = o.get("label").unwrap_or_else(|_| "run again".into());
+                Some((label, c))
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("rules on_cutoff: {e}");
+                None
+            }
+        }
+    }
+
     /// The `ports` hook: given a row's facts, what to call it and do with it.
     /// `ports = function(p) if p.port == 5173 then return { name = "vite", open = "split" } end end`
     pub fn ports(&self, row: &crate::ports::Row) -> crate::ports::Rule {

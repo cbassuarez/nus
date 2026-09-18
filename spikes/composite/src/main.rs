@@ -27,6 +27,12 @@ mod prompt_lsp;
 mod ports;
 mod hatch;
 mod blocks;
+mod journal;
+mod cutoff;
+mod hands;
+mod replay;
+#[path = "loop_.rs"]
+mod loop_;
 mod blockpage;
 mod remote;
 mod taskbar;
@@ -508,13 +514,7 @@ fn main() -> ExitCode {
                         little::Inbound::Url(url) => {
                             a.open_little(&url);
                         }
-                        little::Inbound::Request(req) => {
-                            let answer = match a.remote(&req.cmd, &req.args) {
-                                Ok(result) => serde_json::json!({ "ok": true, "result": result }),
-                                Err(e) => serde_json::json!({ "ok": false, "error": e }),
-                            };
-                            let _ = req.reply.send(answer);
-                        }
+                        little::Inbound::Request(req) => a.remote_request(req),
                     }
                     a.dirty = true;
                 }
@@ -526,6 +526,8 @@ fn main() -> ExitCode {
             }
             a.tick();
             a.shot_tick();
+            a.poll_deferred();
+            a.poll_loop();
             a.process_requests();
             a.apply_term_resizes(false);
             a.begin_frames();
@@ -554,6 +556,10 @@ fn main() -> ExitCode {
     if let Some(a) = host.apps.first_mut() {
         a.save_session();
         a.sync_at_quit();
+    }
+    // Held shells: an idle prompt is let go, a running command is kept.
+    for a in host.apps.iter_mut() {
+        a.release_idle_held();
     }
     host.apps.clear();
     cef::shutdown();

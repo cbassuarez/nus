@@ -1544,6 +1544,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nus-hold"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "nus-pty",
+ "serde_json",
+]
+
+[[package]]
 name = "nus-lsp"
 version = "0.0.1"
 dependencies = [

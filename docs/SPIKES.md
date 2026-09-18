@@ -49,3 +49,35 @@ routing between terminal and browser. When this works, the code moves into
 ## Look and feel (before spike 4)
 Direction "Broadsheet" chosen 2026-09-16 — see `docs/DESIGN.md` and the
 canvas sources in `design/`. Spike 4 renders the chrome from those tokens.
+
+## 5. `hold` — a pty that outlives the app
+The holder process from ARCHITECTURE.md, Windows first.
+- Does a ConPTY owned by a child survive the parent's exit and crash? Job
+  object placement so the app's death takes nothing.
+- Reattach: open the pipe, replay a 4 MB ring into `nus_vt::Term`, go live.
+  Latency, and does the screen match a shell that was never detached
+  (cursor, modes, alt screen)?
+- `claude` and `codex` specifically: an interactive session held for ten
+  minutes with nobody attached, then resumed — do they notice?
+- Unix: `openpty` + a supervisor; SIGHUP handling; the same pipe protocol.
+
+## 6. `checkpoint` — what a block boundary costs
+Take the checkpoint from PRODUCT.md on every block for a working day.
+- `Page.captureSnapshot` size and time on real pages (docs.rs, a Vite app,
+  GitHub); texture readback time at 1600×1000 (we have `snapshot`).
+- Storage per day at KEEP 1 DAY with pixels skipped on unchanged DOM hash.
+- Scrub latency: replaying an 8-hour cast to an arbitrary *t*; where the
+  index points go.
+- Before/after: a pixel diff and a DOM diff that read as a list, on a
+  real change (a CSS edit under HMR).
+
+## 7. `hands` — CDP input on an offscreen browser, as blocks
+- `Input.dispatchMouseEvent` / `dispatchKeyEvent` on an OSR browser: do
+  clicks land where the pane's coordinates say, at every scale factor?
+- A hand as a block: open, lamp, fold; user input cancels it and the tool
+  returns *taken over* — the timing of that race.
+- `nus mcp` handshake with Claude Code and Codex: registration, the tool
+  list, a page read and a click round-trip, and what each does with a
+  refused action.
+- Policy: `confirm` bands over the page while the assistant waits; ALLOW ON
+  THIS HOST persists to `sites.json`.

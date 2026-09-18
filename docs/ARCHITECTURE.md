@@ -90,3 +90,55 @@ replace it.
 - macOS: IOSurface shared textures; notarized builds.
 - Linux: Wayland first, X11 works. Verify CEF boots under Wayland-only
   sessions (no XWayland) — SPIKES.md #1.
+
+## Holder
+
+`nus-hold` is one process per held shell: it creates the pty (ConPTY on
+Windows, `openpty` elsewhere), spawns the shell in it, and serves the pty's
+bytes both ways over a named pipe / unix socket at `profile/hold/<id>`,
+keeping a ring of the last 4 MB it has read. The app is a client; the VT core
+stays in the app. Detach is closing the pipe; attach is opening it and asking
+for the ring, which the core replays before going live. The holder outlives
+the app on purpose — `ClosePseudoConsole` terminates the client, so whoever
+owns the pseudoconsole decides whether `claude` survives a restart. Process
+lifetime: the holder exits when its child does and no client is attached, or
+on `nus hold kill`. On Windows the shell is in a job object owned by the
+holder, not the app, so an app crash takes nothing with it.
+
+## Assistant bridge
+
+Eyes and hands are the instance protocol (`remote.rs`) behind two doors:
+`nus mcp`, an MCP server on stdio that maps tools to verbs, and the same verbs
+from rules. Reading a page is the reader pipeline (CDP `Runtime.evaluate`
+with `returnByValue`) and, for pixels, the tab's texture through the render
+crate's `snapshot` — the OS screen is never read. Hands are CDP
+`Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` / `Page.navigate` on
+the pane's browser; each call is wrapped as a block on the page's tab and
+checked against `assistants.policy` before it runs. User input on that pane
+while a hand is open cancels it and answers the tool *taken over*. The
+terminal never gets a `CefBrowser` and the browser never gets a pty handle:
+the bridge is typed messages, as before.
+
+## Checkpoints and replay
+
+A checkpoint is taken at each block boundary for the tab the block is in:
+the cast segment since the last checkpoint (bytes and timings), the page
+beside as `Page.captureSnapshot` (MHTML) plus URL and scroll, its pixels as
+the texture read back (WebP; skipped when the DOM hash is unchanged), and
+each editor buffer as a diff against the last checkpoint. The store is
+`profile/replay/<session>/cast.jsonl` (asciinema v2 plus a `checkpoint`
+event pointing at blobs in `blobs/`), pruned by age. Scrubbing replays the
+cast into a scratch `Term` up to *t* — the same core, so the picture is
+exact — and swaps the page pane for the still. Sharing bundles the session
+with the wasm renderer the site already uses (`nus_vt_wasm`), so a replay
+needs no server and no nus.
+
+## The loop
+
+Click-to-source on localhost pages resolves the clicked element to a file
+and line in this order: a source map for the element's stylesheet or script
+(fetched through CDP, never re-requested by us), a framework's debug marker
+on the fibre/instance (React, Vue, Svelte), then the served file's path
+under the project. The editor pane opens it; the page's tab row lights when
+the dev server reloads, and the reload state rides the lamp of the block
+that started the server.

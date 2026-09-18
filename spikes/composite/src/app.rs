@@ -109,6 +109,12 @@ pub enum Action {
     ReopenIn(String),
     /// Run a named chain from rules.luau.
     Chain(String),
+    /// The journal of the focused shell's folder, as a page beside it.
+    JournalPage,
+    /// The timeline over the active tab.
+    Timeline,
+    /// The active tab as one HTML file that replays anywhere.
+    ShareReplay,
     SaveToFolder(usize, usize),
     OpenItem(usize, usize),
     SaveToNewFolder(usize, String),
@@ -124,6 +130,8 @@ use crate::surface::{Fullscreen, HoverFrom, Overrides, Rules, Side, SidebarRules
 pub enum Closed {
     Term(usize),
     Web(String),
+    /// A held shell that was detached: reopen attaches to it.
+    Held(nus_pty::hold::Info),
 }
 
 /// Click targets in the top strip.
@@ -193,6 +201,8 @@ pub struct TermPane {
     pub cwd: Option<String>,
     pub progress: Option<(u8, u8)>,
     pub running_since: Option<Instant>,
+    /// The same moment on the wall clock, for the journal.
+    pub running_at: Option<u64>,
     pub last_exit: Option<i32>,
     /// A command that took a while just finished: (exit, when) for the badge.
     pub done: Option<(Option<i32>, Instant)>,
@@ -213,6 +223,13 @@ pub struct TermPane {
     pub plsp: Option<crate::prompt_lsp::LineLsp>,
     pub plsp_tried: bool,
     pub chip_hits: Vec<(Rect, usize)>,
+    /// The command a restart killed, drawn at the seam after the snapshot.
+    pub cutoff: Option<crate::cutoff::CutOff>,
+    pub cutoff_hit: Option<Rect>,
+    /// Typed into the shell the next time it is at a prompt (restore's run-again).
+    pub type_at_prompt: Option<String>,
+    /// The timeline is showing this pane a moment, not now.
+    pub replay: bool,
     /// Blocks: folded output ranges (absolute lines), the display list they
     /// make, the block walked to, the filter, the lamps' hit rects.
     /// A shell set its colours (OSC 10/11): offer them for the look, since when.
@@ -268,6 +285,10 @@ pub struct WebPane {
     /// Dedupe: (this tab, the earlier tab with the same page), and the band's chips.
     pub dedupe: Option<(usize, usize)>,
     pub dedupe_hits: Vec<(Rect, bool)>,
+    /// The assistant's hands on this page: a band while one waits, chips after.
+    pub hands: crate::hands::Hands,
+    /// The timeline's still of this page, drawn instead of the live texture.
+    pub still: Option<Arc<wgpu::BindGroup>>,
     /// The permission band's ALLOW / DENY chips.
     pub perm_hits: Vec<(Rect, bool)>,
     /// The container this page lives in.
@@ -528,6 +549,25 @@ impl Tab {
         w(&self.left) || self.right.as_ref().is_some_and(w)
     }
 
+    /// Attention, named: who is waiting for you, or which assistant is
+    /// working. `(name, waiting)` — the running command's program (claude,
+    /// codex, …); a plain command only counts once it waits.
+    pub(crate) fn attention(&self) -> Option<(String, bool)> {
+        let one = |p: &Pane| -> Option<(String, bool)> {
+            let Pane::Term(t) = p else { return None };
+            let cmd = t.term.marks.iter().rev().find(|m| m.kind == nus_vt::MarkKind::CommandStart).map(|b| t.term.command_text(b)).unwrap_or_default();
+            let name = crate::cutoff::program(&cmd);
+            if t.waiting {
+                return Some((if name.is_empty() { "shell".into() } else { name }, true));
+            }
+            if t.running_since.is_some() && crate::cutoff::is_assistant(&name) {
+                return Some((name, false));
+            }
+            None
+        };
+        one(&self.left).or_else(|| self.right.as_ref().and_then(one))
+    }
+
     /// The shell's OSC 9;4 progress: (state, percent), the left pane's first.
     pub(crate) fn progress(&self) -> Option<(u8, u8)> {
         let p = |p: &Pane| match p {
@@ -777,6 +817,14 @@ pub struct App {
     pub splash: Option<crate::splash::Splash>,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
+    /// Remote answers waiting on the page (see remote.rs).
+    pub deferred: Vec<crate::remote::Deferred>,
+    /// Replay: the session's recorder, checkpoints waiting on a draw, the timeline.
+    /// The loop's probe out on a page: (tab, right?, cdp id, since).
+    pub loop_probe: Option<(usize, bool, i32, Instant)>,
+    pub recorder: Option<crate::replay::Recorder>,
+    pub checkpoints: Vec<crate::replay::Pending>,
+    pub timeline: Option<crate::replay::Timeline>,
     pub start_shown: bool,
     /// NUS_TYPE: text typed into the first shell once it has a prompt (a test hook).
     pub typed_once: bool,
@@ -1010,6 +1058,11 @@ impl App {
             start: None,
             splash: Some(crate::splash::Splash::new()),
             shot: crate::shot::Shot::from_env(),
+            deferred: Vec::new(),
+            loop_probe: None,
+            recorder: None,
+            checkpoints: Vec::new(),
+            timeline: None,
             start_shown: false,
             last_session: crate::start::Session::load(),
             recent: crate::start::load_recent(),
@@ -1113,6 +1166,9 @@ impl App {
         app.load_folders();
         app.refresh_icon();
         app.load_avatar();
+        if let Some(days) = app.behavior.replay.days() {
+            app.recorder = crate::replay::Recorder::new(days);
+        }
         if app.behavior.startup_sound {
             app.play_event("launch");
         }
@@ -1123,9 +1179,58 @@ impl App {
         (v * self.scale).round()
     }
 
+    /// Where the holders' files live.
+    pub(crate) fn hold_dir() -> std::path::PathBuf {
+        std::env::current_dir().unwrap_or_default().join("profile").join("hold")
+    }
+
+    /// Holders alive right now that no tab of ours is attached to.
+    pub(crate) fn held_loose(&self) -> Vec<nus_pty::hold::Info> {
+        let dir = Self::hold_dir();
+        let attached: std::collections::HashSet<String> = self
+            .tabs
+            .iter()
+            .flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref()))
+            .filter_map(|p| match p {
+                Pane::Term(t) => t.pty.held_id().map(String::from),
+                _ => None,
+            })
+            .collect();
+        nus_pty::hold::Info::all(&dir).into_iter().filter(|i| !attached.contains(&i.id)).filter(|i| i.alive(&dir)).collect()
+    }
+
+    /// Back to a held shell: a pane over the holder's socket. The ring
+    /// replays through the VT core, so the screen is what it would have been.
+    pub(crate) fn new_term_pane_attached(&mut self, split: bool, info: nus_pty::hold::Info) -> anyhow::Result<TermPane> {
+        let profile_index = self.profiles.iter().position(|p| p.program.eq_ignore_ascii_case(&info.program)).unwrap_or(self.behavior.default_profile);
+        let mut pane = self.new_term_pane_prepared(split, profile_index)?;
+        let proxy = self.proxy.clone();
+        let (cols, rows) = (pane.term.cols() as u16, pane.term.rows() as u16);
+        pane.pty = nus_pty::Pty::attach(info, cols, rows, move || {
+            let _ = proxy.send_event(UserEvent::Wake);
+        })?;
+        Ok(pane)
+    }
+
+    /// A pane like `new_term_pane` makes, but whose pty is a throwaway local
+    /// shell to be replaced — attach swaps in the holder's. (The local one
+    /// is killed on the swap; it never gets a prompt in.)
+    fn new_term_pane_prepared(&mut self, split: bool, profile: usize) -> anyhow::Result<TermPane> {
+        let keep = self.behavior.keep_alive;
+        self.behavior.keep_alive = crate::settings::KeepAlive::Off;
+        let r = self.new_term_pane_at(split, profile, None);
+        self.behavior.keep_alive = keep;
+        r
+    }
+
     /// Spawn a shell sized for the left pane (split or not), so ConPTY never
     /// sees a resize during startup.
     pub(crate) fn new_term_pane(&mut self, split: bool, profile: usize) -> anyhow::Result<TermPane> {
+        self.new_term_pane_at(split, profile, None)
+    }
+
+    /// The same, starting in `cwd` when one is given (session restore).
+    pub(crate) fn new_term_pane_at(&mut self, split: bool, profile: usize, cwd: Option<String>) -> anyhow::Result<TermPane> {
         let term_px = 13.0 * self.scale * 96.0 / 72.0;
         let grid = GridRenderer::new(&self.fonts, self.f.term, term_px);
         let c = self.content_rect();
@@ -1143,6 +1248,9 @@ impl App {
         term.cell_px = (cw as u16, ch as u16);
         let profile_index = profile;
         let mut profile = self.profiles.get(profile).cloned().unwrap_or_else(nus_pty::Profile::default_shell);
+        if let Some(c) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
+            profile.cwd = Some(c);
+        }
         // New shells open where the focused one is.
         if profile.cwd.is_none() {
             if let Some(cwd) = self.focused_cwd() {
@@ -1153,9 +1261,26 @@ impl App {
         let on = if is_ssh { self.behavior.shell_integration && self.behavior.ssh_integration } else { self.behavior.shell_integration };
         let profile = crate::shell::integrate(profile, on);
         let proxy = self.proxy.clone();
-        let pty = nus_pty::Pty::spawn(&profile, cols as u16, rows as u16, move || {
-            let _ = proxy.send_event(UserEvent::Wake);
-        })?;
+        // Held when the setting says so and the holder is there; else ours.
+        let held = self.behavior.keep_alive == crate::settings::KeepAlive::On && nus_pty::hold::holder_exe().is_some();
+        let pty = if held {
+            let p2 = proxy.clone();
+            match nus_pty::Pty::spawn_held(&profile, cols as u16, rows as u16, &Self::hold_dir(), move || {
+                let _ = p2.send_event(UserEvent::Wake);
+            }) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("hold: {e:#}; running the shell locally");
+                    nus_pty::Pty::spawn(&profile, cols as u16, rows as u16, move || {
+                        let _ = proxy.send_event(UserEvent::Wake);
+                    })?
+                }
+            }
+        } else {
+            nus_pty::Pty::spawn(&profile, cols as u16, rows as u16, move || {
+                let _ = proxy.send_event(UserEvent::Wake);
+            })?
+        };
         Ok(TermPane {
             term,
             pty,
@@ -1175,6 +1300,7 @@ impl App {
             cwd: None,
             progress: None,
             running_since: None,
+            running_at: None,
             last_exit: None,
             done: None,
             confirm_paste: None,
@@ -1190,6 +1316,10 @@ impl App {
             plsp: None,
             plsp_tried: false,
             chip_hits: Vec::new(),
+            cutoff: None,
+            cutoff_hit: None,
+            type_at_prompt: None,
+            replay: false,
             colour_offer: None,
             colour_offer_hit: None,
             folds: Vec::new(),
@@ -1240,7 +1370,7 @@ impl App {
             find: None,
             perm_hits: Vec::new(),
             dedupe: None,
-            dedupe_hits: Vec::new(), bare: false, site_panel: false, site_hits: Vec::new(),
+            dedupe_hits: Vec::new(), hands: Default::default(), still: None, bare: false, site_panel: false, site_hits: Vec::new(),
             asleep: None,
             load_since: None,
             devtools: None,
@@ -1484,6 +1614,18 @@ impl App {
         for (cmd, args) in queued {
             if let Err(e) = self.remote(&cmd, &args) {
                 tracing::warn!("rules nus.run({cmd}): {e}");
+            }
+        }
+        // What restore asked to type once the shell is at a prompt.
+        for tab in self.tabs.iter_mut() {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Term(t) = p {
+                    if t.type_at_prompt.is_some() && t.term.at_prompt() {
+                        if let Some(text) = t.type_at_prompt.take() {
+                            let _ = t.pty.write(text.as_bytes());
+                        }
+                    }
+                }
             }
         }
         // NUS_TYPE="text" types into the first shell at its first prompt;
@@ -2330,7 +2472,7 @@ impl App {
         for t in self.tabs.iter_mut() {
             for p in std::iter::once(&mut t.left).chain(t.right.as_mut()) {
                 match p {
-                    Pane::Term(tp) => sig.push_str(&format!("t{}|", tp.profile)),
+                    Pane::Term(tp) => sig.push_str(&format!("t{}|{}|{}|", tp.profile, tp.term.cwd.as_deref().unwrap_or(""), tp.running_at.unwrap_or(0))),
                     Pane::Web(w) => {
                         let (url, title, loading) = {
                             let s = w.tab.shared.borrow();
@@ -2476,6 +2618,9 @@ impl App {
                     let (cols, rows) = t.grid.grid_size(area);
                     if (cols, rows) != (t.term.cols(), t.term.rows()) {
                         t.term.resize(cols, rows);
+                        if let Some(rec) = self.recorder.as_mut() {
+                            rec.resize(tab.id, cols, rows);
+                        }
                         let (cw, ch) = t.grid.cell_size();
                         let _ = t.pty.resize(cols as u16, rows as u16, (cw as u16, ch as u16));
                         changed = true;
@@ -2519,8 +2664,10 @@ impl App {
     /// Drain PTYs, tick terminals, detect URLs. Returns true if anything changed.
     pub fn pump(&mut self) -> bool {
         let fold_over = self.behavior.fold_over;
+        let (journal_on, journal_keep) = (self.behavior.journal, self.behavior.journal_keep);
         let shell_colours = self.behavior.shell_colours;
         let mut apply_colours: Vec<(Option<nus_vt::palette::Rgb>, Option<nus_vt::palette::Rgb>)> = Vec::new();
+        let mut checkpoints: Vec<(usize, serde_json::Value)> = Vec::new();
         let mut changed = false;
         let mut detected = None;
         let mut bell = false;
@@ -2529,6 +2676,9 @@ impl App {
                 if let Pane::Term(t) = p {
                     let out = t.pty.take_output();
                     if !out.is_empty() {
+                        if let Some(rec) = self.recorder.as_mut() {
+                            rec.output(tab.id, t.term.cols(), t.term.rows(), &out);
+                        }
                         if let Ok(p) = std::env::var("NUS_DUMP") {
                             use std::io::Write;
                             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
@@ -2581,16 +2731,32 @@ impl App {
                                 match kind {
                                     nus_vt::MarkKind::OutputStart => {
                                         t.running_since = Some(Instant::now());
+                                        t.running_at = Some(crate::journal::now());
                                         t.done = None;
                                     }
                                     nus_vt::MarkKind::CommandEnd(exit) => {
                                         t.last_exit = exit;
+                                        // The command that just finished. Not the last B mark:
+                                        // the chunk that carried this D usually carries the
+                                        // next prompt's A and B too, and that B has no text yet.
+                                        let finished = t.blocks().into_iter().rev().find(|b| !b.running).map(|b| crate::journal::oneline(&b.cmd)).unwrap_or_default();
                                         // Remember the command for predictions.
-                                        if let Some(b) = t.term.marks.iter().rev().find(|m| m.kind == nus_vt::MarkKind::CommandStart) {
-                                            let cmd = t.term.command_text(b);
-                                            if !cmd.is_empty() && t.history.last() != Some(&cmd) {
-                                                crate::predict::append_history(&t.profile_name, &cmd);
-                                                t.history.push(cmd);
+                                        if !finished.is_empty() && t.history.last() != Some(&finished) {
+                                            crate::predict::append_history(&t.profile_name, &finished);
+                                            t.history.push(finished.clone());
+                                        }
+                                        // Replay: a checkpoint at the block's end (its still on the next draw).
+                                        if self.recorder.is_some() {
+                                            let ms = t.running_since.map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+                                            checkpoints.push((i, serde_json::json!({ "cmd": finished, "exit": exit, "cwd": t.term.cwd, "ms": ms, "at": crate::journal::now() })));
+                                        }
+                                        // The journal: what ran here, when, how long, how it ended.
+                                        if journal_on {
+                                            if let (Some(since), Some(at)) = (t.running_since, t.running_at.take()) {
+                                                let e = crate::journal::Entry { cmd: finished.clone(), cwd: t.term.cwd.clone().unwrap_or_default(), start: at, ms: since.elapsed().as_millis() as u64, exit, tab: t.title.clone(), shell: t.profile_name.clone() };
+                                                if crate::journal::worth(&e) {
+                                                    crate::journal::append(&e, journal_keep);
+                                                }
                                             }
                                         }
                                         if let Some(since) = t.running_since.take() {
@@ -2664,6 +2830,9 @@ impl App {
                     }
                 }
             }
+        }
+        for (i, payload) in checkpoints {
+            self.checkpoint(i, payload);
         }
         for tab in self.tabs.iter_mut() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
@@ -2800,6 +2969,8 @@ impl App {
         };
         self.gpu.render(&mut self.target, &self.scene, clear);
         self.shot_capture(clear);
+        self.deferred_shots(clear);
+        self.checkpoint_draw(clear);
         self.frames += 1;
         // NUS_FPS=1 logs the frame rate once a second.
         if std::env::var("NUS_FPS").is_ok() {
@@ -3815,9 +3986,22 @@ impl App {
                 self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, cx, iy, ink);
                 self.side_hits.push((Rect::new(cx - self.px(6.0), y, isz + self.px(12.0), row_h), SideHit::Close(i)));
                 right = cx - self.px(8.0);
-            } else if waiting {
+            } else if let Some((name, is_waiting)) = tab.attention() {
+                // A signal square when waiting for you; an assistant at work
+                // breathes in ink. The words are in the tooltip.
                 let d = self.px(7.0);
-                scene.rect(Rect::new(right - d, y + (row_h - d) / 2.0, d, d), self.surface.signal);
+                let dot = Rect::new(right - d, y + (row_h - d) / 2.0, d, d);
+                if is_waiting {
+                    scene.rect(dot, self.surface.signal);
+                } else {
+                    let breath = 0.35 + 0.45 * (0.5 + 0.5 * (self.started.elapsed().as_secs_f32() * 2.2).sin());
+                    scene.rect(dot, fade(ink, breath));
+                    self.dirty = true;
+                }
+                if dot.contains(self.mouse.0, self.mouse.1) {
+                    let words = if is_waiting { format!("{name} · waiting for you") } else { format!("{name} · working") };
+                    self.tip_words(Rect::new(dot.x - self.px(4.0), y, d + self.px(8.0), row_h), &words);
+                }
                 right -= d + self.px(8.0);
             } else if !stack.is_empty() {
                 // A node: its count and a caret; click the caret to fold or unfold.
@@ -4834,6 +5018,20 @@ impl App {
         self.dirty = true;
     }
 
+    /// The focused folder's journal as a Broadsheet page beside the shell.
+    pub(crate) fn open_journal_page(&mut self) {
+        let Some(cwd) = self.focused_cwd() else { return };
+        let entries = crate::journal::entries(&cwd, 500);
+        let html = crate::journal::page_html(&cwd, &entries, &self.theme, self.surface.signal);
+        match crate::journal::write_page(&html) {
+            Some(p) => {
+                let url = format!("file:///{}", p.display().to_string().replace('\\', "/"));
+                self.open_url(&url, false);
+            }
+            None => self.notice("could not write the log page"),
+        }
+    }
+
     pub(crate) fn open_settings(&mut self) {
         self.refresh_register_note();
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
@@ -5039,6 +5237,11 @@ impl App {
                     x += self.fonts.draw(scene, inv, x, by, &format!("{} IS RUNNING", proc_name.caps())) + self.px(14.0);
                     x += self.fonts.draw(scene, inv_l, x, by, "CLOSE ANYWAY?") + self.px(14.0);
                     x += self.fonts.draw(scene, inv, x, by, "ENTER") + self.px(14.0);
+                    if p.pty.held_id().is_some() {
+                        x += self.fonts.draw(scene, inv_l, x, by, "· ") ;
+                        x += self.fonts.draw(scene, inv, x, by, "D") + self.px(6.0);
+                        x += self.fonts.draw(scene, inv_l, x, by, "DETACHES · IT KEEPS RUNNING") + self.px(14.0);
+                    }
                     self.fonts.draw(scene, inv_l, x, by, "· ESC CANCELS");
                 }
                 let clip = Rect::new(r.x, r.y + hh, r.w, r.h - hh);
@@ -5056,6 +5259,14 @@ impl App {
                 if gliding {
                     lk.visible = false;
                 }
+                // The timeline: the scratch term stands in for the live one while drawing.
+                let swapped = p.replay && self.timeline.is_some();
+                if swapped {
+                    if let Some(tl) = self.timeline.as_mut() {
+                        std::mem::swap(&mut p.term, &mut tl.term);
+                        p.view_key = None;
+                    }
+                }
                 let view = p.view().to_vec();
                 p.grid.draw_view(scene, &mut self.fonts, &p.term, p.origin, focused, lk, &view);
                 if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
@@ -5063,10 +5274,18 @@ impl App {
                 }
                 self.draw_term_images(scene, p);
                 self.draw_block_layer(scene, p, r, hh);
+                self.draw_cutoff(scene, p, r);
                 self.draw_prompt_line(scene, p, pane_paper);
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
                 let _ = p.term.grid_mut().take_damage();
+                if swapped {
+                    if let Some(tl) = self.timeline.as_mut() {
+                        std::mem::swap(&mut p.term, &mut tl.term);
+                        p.view_key = None;
+                    }
+                    self.draw_timeline_ruler(scene, p, r);
+                }
                 scene.layer(None);
                 if p.ask.is_some() {
                     self.draw_ask(scene, p, Rect::new(r.x, r.y + hh, r.w, r.h - hh), focused);
@@ -5075,7 +5294,7 @@ impl App {
             Pane::Web(p) => {
                 let r = p.rect;
                 let s = p.tab.shared.borrow();
-                let (url, bind, loading) = (s.url.clone(), s.bind.clone(), s.loading);
+                let (url, bind, loading) = (s.url.clone(), p.still.clone().or_else(|| s.bind.clone()), s.loading);
                 drop(s);
                 let local = is_local(&url);
                 if !p.bare {
@@ -5139,6 +5358,10 @@ impl App {
                 } else if let Some(bind) = bind {
                     scene.texture(p.page, bind, Some(p.page));
                     scene.layer(None);
+                    if p.still.is_some() {
+                        // Then, not now: a wash of paper over the still.
+                        scene.rect(p.page, fade(self.paper(), 0.16));
+                    }
                 }
                 if local {
                     scene.push(nus_render::Instance::hazard(p.page, self.px(5.0), self.surface.signal, ink, self.px(10.0)));
@@ -5312,6 +5535,24 @@ impl App {
                 }
                 if hit("welcome") || hit("help") || hit("tour") {
                     rows.push(row("?", "welcome · the tour of nus (F1)".into(), Action::Welcome));
+                }
+                if hit("timeline") || hit("replay") || hit("then") {
+                    rows.push(row("↺", "timeline · this tab at any checkpoint (ctrl+shift+h)".into(), Action::Timeline));
+                }
+                if hit("share") || hit("replay") {
+                    rows.push(row("↗", "share this tab as a replay · one html file, the real cells".into(), Action::ShareReplay));
+                }
+                // The journal: `log` lists what ran in this folder, across restarts.
+                if let Some(cwd) = self.focused_cwd() {
+                    let rest = q.strip_prefix("log").map(|r| r.trim().to_string());
+                    if let Some(rest) = rest {
+                        let n = crate::journal::count_since(&cwd, crate::journal::now().saturating_sub(7 * 86_400));
+                        rows.push(row("≡", format!("log · {n} commands here this week · open the page"), Action::JournalPage));
+                        for e in crate::journal::entries(&cwd, 200).into_iter().filter(|e| rest.is_empty() || e.cmd.to_lowercase().contains(&rest)).take(8) {
+                            let end = match e.exit { Some(0) => "ok".to_string(), Some(c) => format!("exit {c}"), None => String::new() };
+                            rows.push(row("↻", format!("{} · {} · {} · {end}", e.cmd.trim(), crate::journal::when(e.start), crate::journal::took(e.ms)), Action::RunInShell(e.cmd.trim().to_string())));
+                        }
+                    }
                 }
                 // Recent commands from the focused shell: run again.
                 if let Some(tab) = self.tabs.get(self.active) {
@@ -5701,6 +5942,15 @@ impl App {
             Action::NewContainer(n) => self.new_container(&n),
             Action::ReopenIn(n) => self.reopen_in(&n),
             Action::Chain(name) => self.run_chain(&name),
+            Action::JournalPage => self.open_journal_page(),
+            Action::Timeline => self.toggle_timeline(),
+            Action::ShareReplay => match self.share_replay(self.active) {
+                Ok(p) => {
+                    let url = format!("file:///{}", p.display().to_string().replace('\\', "/"));
+                    self.open_url(&url, true);
+                }
+                Err(e) => self.notice(&format!("share: {e}")),
+            },
             Action::SaveToFolder(i, fi) => self.save_to_folder(i, fi),
             Action::OpenItem(fi, k) => self.open_item(fi, k),
             Action::SaveToNewFolder(i, name) => {
@@ -5896,12 +6146,16 @@ impl App {
         if pressed {
             if let Some(Pane::Term(t)) = self.tabs.get_mut(self.active).map(|t| t.focused()) {
                 if t.confirm_close.is_some() {
-                    match ev.logical_key {
+                    match &ev.logical_key {
                         WKey::Named(NamedKey::Enter) => {
                             t.confirm_close = None;
                             self.close_tabs(true);
                         }
                         WKey::Named(NamedKey::Escape) => t.confirm_close = None,
+                        WKey::Character(c) if c.eq_ignore_ascii_case("d") && t.pty.held_id().is_some() => {
+                            t.confirm_close = None;
+                            self.detach_active();
+                        }
                         _ => {}
                     }
                     self.dirty = true;
@@ -5986,6 +6240,7 @@ impl App {
                 Some(KeyCode::KeyZ) => return self.reopen_closed(),
                 Some(KeyCode::KeyD) => return self.divide(),
                 Some(KeyCode::KeyB) => return self.toggle_compact(),
+                Some(KeyCode::KeyH) => return self.toggle_timeline(),
                 Some(KeyCode::KeyA) | Some(KeyCode::Slash) => return self.toggle_ask(),
                 Some(KeyCode::KeyR) => return self.toggle_reader(),
                 Some(KeyCode::KeyS) => {
@@ -6087,6 +6342,16 @@ impl App {
         }
         let easing = self.behavior.scroll_easing;
         let motion = self.motion.clone();
+        // The timeline is up: its keys, unless a chord is being pressed.
+        if ev.state == ElementState::Pressed && self.timeline.is_some() && !self.mods.control_key() && self.timeline_key(&ev.logical_key) {
+            self.dirty = true;
+            return;
+        }
+        // A hand waiting on the focused page: y/enter allows, n/esc denies, h allows the host; anything else takes over.
+        if ev.state == ElementState::Pressed && self.hands_key(&ev.logical_key) {
+            self.dirty = true;
+            return;
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         match tab.focused() {
             Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) => {}
@@ -6794,6 +7059,50 @@ impl App {
         self.layout();
     }
 
+    /// At quit: kill held shells sitting at a prompt; leave the ones with a
+    /// foreground process for the next launch to attach to.
+    pub(crate) fn release_idle_held(&mut self) {
+        for tab in self.tabs.iter_mut() {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Term(t) = p {
+                    if t.pty.held_id().is_some() && t.term.at_prompt() && t.pty.foreground_process().is_none() {
+                        t.pty.kill();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Let the active tab's held shell go on without us: the tab closes,
+    /// the holder keeps the process, and reopen-closed (or the atlas) brings
+    /// it back.
+    pub(crate) fn detach_active(&mut self) {
+        let i = self.active;
+        let Some(tab) = self.tabs.get(i) else { return };
+        let Pane::Term(t) = &tab.left else { return };
+        let Some(id) = t.pty.held_id().map(String::from) else { return };
+        let Some(info) = nus_pty::hold::Info::read(&Self::hold_dir(), &id) else { return };
+        let tab = self.tabs.remove(i);
+        self.tile_forget(tab.id);
+        self.closed.push(Closed::Held(info));
+        self.tab_removed(i);
+        self.play_event("tab.close");
+        self.notice("detached · the shell keeps running; reopen-closed or the atlas brings it back");
+        self.dirty = true;
+    }
+
+    /// A held shell, back as a tab.
+    pub(crate) fn attach_held(&mut self, info: nus_pty::hold::Info) {
+        match self.new_term_pane_attached(false, info) {
+            Ok(t) => {
+                let tab = self.make_tab(Pane::Term(t), None);
+                self.tabs.push(tab);
+                self.activate(self.tabs.len() - 1);
+            }
+            Err(e) => self.notice(&format!("could not attach: {e}")),
+        }
+    }
+
     pub(crate) fn new_tab(&mut self, profile: usize) {
         if let Some(p) = self.profiles.get(profile) {
             let name = p.name.clone();
@@ -6861,7 +7170,15 @@ impl App {
         }
         self.play_event("tab.close");
         for &i in targets.iter().rev() {
-            let tab = self.tabs.remove(i);
+            let mut tab = self.tabs.remove(i);
+            // A held shell is the holder's: closing means killing it on purpose.
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Term(t) = p {
+                    if t.pty.held_id().is_some() {
+                        t.pty.kill();
+                    }
+                }
+            }
             self.tile_forget(tab.id);
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
@@ -6881,6 +7198,7 @@ impl App {
     fn reopen_closed(&mut self) {
         match self.closed.pop() {
             Some(Closed::Term(p)) => self.new_tab(p),
+            Some(Closed::Held(info)) => self.attach_held(info),
             Some(Closed::Web(url)) => self.open_url(&url, true),
             None => {}
         }
@@ -7308,7 +7626,7 @@ impl App {
         if self.editor_mouse(button, state, x, y) {
             return;
         }
-        if pressed && button == MouseButton::Left && self.lamp_click(x, y) {
+        if pressed && button == MouseButton::Left && (self.timeline_click(x, y) || self.lamp_click(x, y) || self.cutoff_click(x, y)) {
             return;
         }
         if pressed && button == MouseButton::Left && self.colour_offer_click(x, y) {
@@ -7318,6 +7636,9 @@ impl App {
             return;
         }
         if pressed && button == MouseButton::Left && self.dedupe_click(x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.hands_click(x, y) {
             return;
         }
         if pressed && button == MouseButton::Left && self.web_band_click(x, y) {
@@ -7336,6 +7657,7 @@ impl App {
         let mut toggle_site: Option<bool> = None;
         let mut switch_panel: Option<(bool, usize)> = None;
         let mut focus_dt: Option<(bool, bool)> = None;
+        let mut loop_click: Option<(bool, f32, f32)> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
             match p {
                 Pane::Web(w) => {
@@ -7396,6 +7718,10 @@ impl App {
                         }
                     }
                     let inside = w.page.contains(x, y) && w.reader.is_none();
+                    if inside && pressed && button == MouseButton::Left && self.mods.alt_key() && self.mods.shift_key() {
+                        loop_click = Some((is_right, (x - w.page.x) / scale, (y - w.page.y) / scale));
+                        continue;
+                    }
                     if inside || (!pressed && down_in_web) {
                         let (lx, ly) = ((x - w.page.x) / scale, (y - w.page.y) / scale);
                         let b = match button {
@@ -7449,6 +7775,11 @@ impl App {
             }
             self.play_event("toggle");
             self.dirty = true;
+        }
+        if let Some((right, lx, ly)) = loop_click {
+            let i = self.active;
+            self.loop_click(i, right, lx, ly);
+            return;
         }
         if open_url_palette {
             self.open_palette(PaletteMode::Url);
@@ -7616,9 +7947,13 @@ fn discover_llm_tools() -> Vec<(String, String)> {
     v
 }
 
-pub(crate) const SYSTEM_PROCS: &[&str] = &["system", "svchost", "lsass", "wininit", "services", "spoolsv", "dns", "rpcbind", "systemd", "cupsd", "launchd", "rapportd", "controlce", "sharingd"];
+pub(crate) const SYSTEM_PROCS: &[&str] = &["nus-hold", "system", "svchost", "lsass", "wininit", "services", "spoolsv", "dns", "rpcbind", "systemd", "cupsd", "launchd", "rapportd", "controlce", "sharingd"];
 
 /// Local/private destinations get the safety tape.
+pub(crate) fn is_local_url(url: &str) -> bool {
+    is_local(url)
+}
+
 fn is_local(url: &str) -> bool {
     let host = url.split("//").nth(1).unwrap_or(url).split('/').next().unwrap_or("");
     let host = host.trim_start_matches('[').split([']', ':']).next().unwrap_or("");

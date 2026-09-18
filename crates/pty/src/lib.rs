@@ -83,19 +83,57 @@ fn which(exe: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub mod hold;
+
 /// A running shell attached to a PTY. Output arrives on a channel fed by a
 /// reader thread; `on_output` is called from that thread so the host can
-/// wake its event loop.
+/// wake its event loop. The pty is either ours (`Local`) or a holder's
+/// (`Held`): a `nus-hold` process that outlives us, reached over a socket.
 pub struct Pty {
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
-    output: mpsc::Receiver<Vec<u8>>,
+    inner: Inner,
     cols: u16,
     rows: u16,
 }
 
+enum Inner {
+    Local {
+        master: Box<dyn MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+        child: Box<dyn Child + Send + Sync>,
+        output: mpsc::Receiver<Vec<u8>>,
+    },
+    Held(hold::Client),
+}
+
 impl Pty {
+    /// A shell in a holder process, so it survives this app.
+    pub fn spawn_held(profile: &Profile, cols: u16, rows: u16, dir: &std::path::Path, on_output: impl Fn() + Send + 'static) -> Result<Pty> {
+        let client = hold::spawn_held(profile, cols, rows, dir, on_output)?;
+        Ok(Pty { inner: Inner::Held(client), cols, rows })
+    }
+
+    /// Back to a holder that is already running; the ring replays first.
+    pub fn attach(info: hold::Info, cols: u16, rows: u16, on_output: impl Fn() + Send + 'static) -> Result<Pty> {
+        let client = hold::Client::attach(info, on_output)?;
+        let mut pty = Pty { inner: Inner::Held(client), cols: 0, rows: 0 };
+        pty.resize(cols, rows, (0, 0))?;
+        Ok(pty)
+    }
+
+    /// The holder's id when the shell is held.
+    pub fn held_id(&self) -> Option<&str> {
+        match &self.inner {
+            Inner::Held(c) => Some(&c.info.id),
+            Inner::Local { .. } => None,
+        }
+    }
+
+    /// Let go without killing: the holder keeps the shell. Only a held
+    /// shell can be detached; a local one is simply dropped.
+    pub fn detach(self) {
+        drop(self);
+    }
+
     pub fn spawn(
         profile: &Profile,
         cols: u16,
@@ -156,10 +194,7 @@ impl Pty {
             .context("spawn reader thread")?;
 
         Ok(Pty {
-            master: pair.master,
-            writer,
-            child,
-            output: rx,
+            inner: Inner::Local { master: pair.master, writer, child, output: rx },
             cols,
             rows,
         })
@@ -167,8 +202,12 @@ impl Pty {
 
     /// Drain everything the reader thread has delivered so far.
     pub fn take_output(&self) -> Vec<u8> {
+        let rx = match &self.inner {
+            Inner::Local { output, .. } => output,
+            Inner::Held(c) => &c.output,
+        };
         let mut out = Vec::new();
-        while let Ok(chunk) = self.output.try_recv() {
+        while let Ok(chunk) = rx.try_recv() {
             out.extend_from_slice(&chunk);
         }
         out
@@ -178,9 +217,14 @@ impl Pty {
         if bytes.is_empty() {
             return Ok(());
         }
-        self.writer.write_all(bytes).context("pty write")?;
-        self.writer.flush().ok();
-        Ok(())
+        match &mut self.inner {
+            Inner::Local { writer, .. } => {
+                writer.write_all(bytes).context("pty write")?;
+                writer.flush().ok();
+                Ok(())
+            }
+            Inner::Held(c) => c.write(bytes),
+        }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, cell_px: (u16, u16)) -> Result<()> {
@@ -189,29 +233,43 @@ impl Pty {
         }
         self.cols = cols;
         self.rows = rows;
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: cols * cell_px.0,
-                pixel_height: rows * cell_px.1,
-            })
-            .context("pty resize")
+        match &mut self.inner {
+            Inner::Local { master, .. } => master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: cols * cell_px.0,
+                    pixel_height: rows * cell_px.1,
+                })
+                .context("pty resize"),
+            Inner::Held(c) => c.resize(cols, rows, cell_px),
+        }
     }
 
     /// `Some(code)` once the child has exited.
     pub fn exit_code(&mut self) -> Option<u32> {
-        self.child.try_wait().ok().flatten().map(|s| s.exit_code())
+        match &mut self.inner {
+            Inner::Local { child, .. } => child.try_wait().ok().flatten().map(|s| s.exit_code()),
+            Inner::Held(c) => c.exit_code(),
+        }
     }
 
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
+        match &mut self.inner {
+            Inner::Local { child, .. } => {
+                let _ = child.kill();
+            }
+            Inner::Held(c) => c.kill(),
+        }
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        self.kill();
+        // A local shell dies with us; a held one is the holder's to keep.
+        if let Inner::Local { child, .. } = &mut self.inner {
+            let _ = child.kill();
+        }
     }
 }
 
@@ -291,7 +349,10 @@ impl Profile {
 impl Pty {
     /// The shell's process id.
     pub fn pid(&self) -> Option<u32> {
-        self.child.process_id()
+        match &self.inner {
+            Inner::Local { child, .. } => child.process_id(),
+            Inner::Held(c) => Some(c.info.pid),
+        }
     }
 
     /// Name of a process the shell is currently running (its first child),

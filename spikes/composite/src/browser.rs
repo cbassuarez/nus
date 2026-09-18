@@ -42,6 +42,9 @@ pub struct Shared {
     /// Results of CDP calls made with `devtools`, by message id; the app
     /// drains the ones it asked for.
     pub replies: Vec<(i32, serde_json::Value)>,
+    /// What the page said and fetched: console calls, exceptions, requests
+    /// and responses, as `{ "kind", "at", … }`, newest last, capped.
+    pub log: Vec<serde_json::Value>,
     /// The page's favicon, straight-alpha BGRA, once downloaded.
     pub favicon: Option<Favicon>,
     pub favicon_url: String,
@@ -543,11 +546,32 @@ wrap_dev_tools_message_observer! {
 
         fn on_dev_tools_event(&self, _browser: Option<&mut Browser>, method: Option<&CefString>, params: Option<&[u8]>) {
             let Some(method) = method else { return };
-            if method.to_string() != "Runtime.bindingCalled" {
-                return;
-            }
+            let method = method.to_string();
             let Some(params) = params else { return };
             let Ok(v) = serde_json::from_slice::<serde_json::Value>(params) else { return };
+            // The page's console and network, kept for eyes (`nus mcp`) and the block beside.
+            let entry = match method.as_str() {
+                "Runtime.consoleAPICalled" => {
+                    let args: Vec<String> = v.get("args").and_then(|a| a.as_array()).map(|a| a.iter().map(|x| x.get("value").map(|val| match val { serde_json::Value::String(s) => s.clone(), other => other.to_string() }).or_else(|| x.get("description").and_then(|d| d.as_str()).map(String::from)).unwrap_or_default()).collect()).unwrap_or_default();
+                    Some(serde_json::json!({ "kind": "console", "level": v.get("type").and_then(|t| t.as_str()).unwrap_or("log"), "text": args.join(" "), "at": v.get("timestamp") }))
+                }
+                "Runtime.exceptionThrown" => Some(serde_json::json!({ "kind": "console", "level": "error", "text": v.pointer("/exceptionDetails/exception/description").or_else(|| v.pointer("/exceptionDetails/text")).and_then(|t| t.as_str()).unwrap_or("exception"), "at": v.get("timestamp") })),
+                "Network.requestWillBeSent" => Some(serde_json::json!({ "kind": "request", "id": v.get("requestId"), "method": v.pointer("/request/method"), "url": v.pointer("/request/url"), "type": v.get("type"), "at": v.get("timestamp") })),
+                "Network.responseReceived" => Some(serde_json::json!({ "kind": "response", "id": v.get("requestId"), "status": v.pointer("/response/status"), "url": v.pointer("/response/url"), "mime": v.pointer("/response/mimeType"), "type": v.get("type"), "at": v.get("timestamp") })),
+                "Network.loadingFailed" => Some(serde_json::json!({ "kind": "response", "id": v.get("requestId"), "status": 0, "error": v.get("errorText"), "type": v.get("type"), "at": v.get("timestamp") })),
+                _ => None,
+            };
+            if let Some(e) = entry {
+                let mut s = self.o.shared.borrow_mut();
+                if s.log.len() >= 400 {
+                    s.log.remove(0);
+                }
+                s.log.push(e);
+                return;
+            }
+            if method != "Runtime.bindingCalled" {
+                return;
+            }
             if v.get("name").and_then(|n| n.as_str()) != Some("nusVideo") {
                 return;
             }
@@ -936,6 +960,7 @@ impl BrowserTab {
         let tab = BrowserTab { browser, shared, _observer: registration };
         tab.devtools("Runtime.enable", serde_json::json!({}));
         tab.devtools("Page.enable", serde_json::json!({}));
+        tab.devtools("Network.enable", serde_json::json!({}));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusVideo" }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));

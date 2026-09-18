@@ -62,6 +62,9 @@ pub enum Group {
     System,
     Connections,
     Docker,
+    /// Ports that remember: a dev server one of your shells started, gone
+    /// now — start again brings it back where it ran.
+    Remembered,
 }
 
 impl Group {
@@ -72,6 +75,49 @@ impl Group {
             Group::System => "SYSTEM",
             Group::Connections => "CONNECTIONS",
             Group::Docker => "DOCKER",
+            Group::Remembered => "WAS LISTENING",
+        }
+    }
+}
+
+/// A departed port with a known command and folder, kept in ports.json.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Remembered {
+    pub port: u16,
+    pub process: String,
+    pub command: String,
+    pub cwd: String,
+    pub last_seen: u64,
+}
+
+impl Remembered {
+    /// A row for the board: pid 0 marks it as a memory, not a socket.
+    pub fn row(&self) -> Row {
+        Row {
+            key: Key::Port { proto: Proto::Tcp, port: self.port, pid: 0 },
+            group: Group::Remembered,
+            proto: Proto::Tcp,
+            port: self.port,
+            pid: 0,
+            process: self.process.clone(),
+            exe: String::new(),
+            cmdline: self.command.clone(),
+            bound: String::new(),
+            exposed: false,
+            started: None,
+            tab: None,
+            cwd: Some(self.cwd.clone()),
+            command: Some(self.command.clone()),
+            probe: None,
+            conns: 0,
+            remotes: Vec::new(),
+            container: None,
+            name: None,
+            rule: Rule::default(),
+            seen: Instant::now(),
+            dying: None,
+            tunnel: None,
+            watch: false,
         }
     }
 }
@@ -135,7 +181,9 @@ pub struct TunnelState {
 
 impl Row {
     pub fn lamp(&self) -> Lamp {
-        if self.dying.is_some() {
+        if self.group == Group::Remembered {
+            Lamp::Gone
+        } else if self.dying.is_some() {
             Lamp::Dying
         } else if self.exposed {
             Lamp::Exposed
@@ -268,6 +316,9 @@ pub struct Board {
     /// Persisted names, by `process:port`.
     pub names: HashMap<String, String>,
     pub watched: HashSet<String>,
+    /// Ports that remember, and their rows for the board (ports not live now).
+    pub remembered: Vec<Remembered>,
+    pub ghosts: Vec<Row>,
     /// A new port's line beside the status icon: text, when, which.
     pub toast: Option<(String, Instant, Key)>,
     pub rise: crate::anim::Anim,
@@ -282,6 +333,8 @@ impl Board {
         let (tx, rx) = channel();
         spawn_worker(tx, wants.clone());
         let (names, watched) = load_names();
+        let remembered = load_remembered();
+        let ghosts = remembered.iter().map(Remembered::row).collect();
         Board {
             open: false,
             rows: Vec::new(),
@@ -301,6 +354,8 @@ impl Board {
             polls: 0,
             names,
             watched,
+            remembered,
+            ghosts,
             toast: None,
             rise: crate::anim::Anim::at(0.0),
             probed: HashSet::new(),
@@ -309,7 +364,25 @@ impl Board {
     }
 
     pub fn row(&self, key: &Key) -> Option<&Row> {
-        self.rows.iter().find(|r| &r.key == key)
+        self.rows.iter().find(|r| &r.key == key).or_else(|| self.ghosts.iter().find(|r| &r.key == key))
+    }
+
+    /// The memories as rows, for ports that are not listening right now.
+    pub fn refresh_ghosts(&mut self) {
+        let live: HashSet<u16> = self.rows.iter().map(|r| r.port).collect();
+        self.ghosts = self.remembered.iter().filter(|m| !live.contains(&m.port)).map(Remembered::row).collect();
+    }
+
+    /// A departed row worth remembering: one of your shells started it.
+    pub fn remember(&mut self, r: &Row) {
+        let (Some(cmd), Some(cwd)) = (r.command.clone(), r.cwd.clone()) else { return };
+        if cmd.trim().is_empty() || r.port == 0 {
+            return;
+        }
+        let now = crate::journal::now();
+        self.remembered.retain(|m| m.port != r.port);
+        self.remembered.insert(0, Remembered { port: r.port, process: r.process.clone(), command: crate::cutoff::oneline(&cmd), cwd, last_seen: now });
+        self.remembered.truncate(24);
     }
 
     pub fn row_mut(&mut self, key: &Key) -> Option<&mut Row> {
@@ -342,6 +415,11 @@ impl Board {
                     in_g.sort_by_key(|r| (r.port, r.pid));
                     out.push(Entry::Head(g, in_g.len()));
                     out.extend(in_g.into_iter().map(|r| Entry::Row(r.key.clone())));
+                }
+                let ghosts: Vec<&Row> = self.ghosts.iter().filter(|r| q.is_empty() || r.port.to_string().contains(&q) || r.process.to_lowercase().contains(&q) || r.cmdline.to_lowercase().contains(&q)).collect();
+                if !ghosts.is_empty() {
+                    out.push(Entry::Head(Group::Remembered, ghosts.len()));
+                    out.extend(ghosts.into_iter().map(|r| Entry::Row(r.key.clone())));
                 }
             }
             PortsGrouping::Port => {
@@ -388,8 +466,20 @@ fn load_names() -> (HashMap<String, String>, HashSet<String>) {
     (names, watched)
 }
 
+fn load_remembered() -> Vec<Remembered> {
+    let Ok(text) = std::fs::read_to_string(names_path()) else { return Vec::new() };
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    v.get("remembered").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default()
+}
+
 fn save_names(names: &HashMap<String, String>, watched: &HashSet<String>) {
-    let v = serde_json::json!({ "names": names, "watched": watched.iter().collect::<Vec<_>>() });
+    // Keep what else the file holds.
+    let remembered = load_remembered();
+    save_file(names, watched, &remembered);
+}
+
+fn save_file(names: &HashMap<String, String>, watched: &HashSet<String>, remembered: &[Remembered]) {
+    let v = serde_json::json!({ "names": names, "watched": watched.iter().collect::<Vec<_>>(), "remembered": remembered });
     let _ = std::fs::create_dir_all(names_path().parent().unwrap());
     let _ = std::fs::write(names_path(), serde_json::to_string_pretty(&v).unwrap_or_default());
 }
@@ -587,7 +677,7 @@ impl App {
             let info = s.info.get(&sock.pid);
             let name = info.map(|i| i.name.clone()).filter(|n| !n.is_empty()).or_else(|| s.tree.get(&sock.pid).map(|t| t.1.clone())).unwrap_or_default();
             let mine = nus_pty::ports::ancestor_in(&s.tree, sock.pid, &shell_pids);
-            let system = sock.pid == 0 || sock.pid == 4 || sock.port < 1024 || hidden.contains(&name.to_lowercase()) || sock.pid == me;
+            let system = sock.pid == 0 || sock.pid == 4 || sock.port < 1024 || hidden.contains(&name.to_lowercase()) || sock.pid == me || name.eq_ignore_ascii_case("nus-hold");
             if system && !show_system {
                 continue;
             }
@@ -629,7 +719,7 @@ impl App {
             for (pid, socks) in by_pid {
                 let info = s.info.get(&pid);
                 let name = info.map(|i| i.name.clone()).filter(|n| !n.is_empty()).or_else(|| s.tree.get(&pid).map(|t| t.1.clone())).unwrap_or_default();
-                if pid == 0 || pid == 4 || hidden.contains(&name.to_lowercase()) {
+                if pid == 0 || pid == 4 || hidden.contains(&name.to_lowercase()) || name.eq_ignore_ascii_case("nus-hold") {
                     continue;
                 }
                 let mut counts: HashMap<String, usize> = HashMap::new();
@@ -732,7 +822,12 @@ impl App {
             merged.push(f);
         }
         let gone: Vec<Row> = self.board.rows.iter().filter(|r| !merged.iter().any(|m| m.key == r.key)).cloned().collect();
+        let remember_on = self.behavior.ports_remember;
         for r in gone {
+            if remember_on && r.group == Group::Mine {
+                self.board.remember(&r);
+                save_file(&self.board.names, &self.board.watched, &self.board.remembered);
+            }
             self.board.killing.remove(&r.pid);
             if r.watch && self.board.polls > 0 {
                 self.ports_toast(format!("{} · {} went away", r.port, r.title()), r.key.clone());
@@ -743,6 +838,7 @@ impl App {
             self.board.departed.push(Departed { row: r, at: Instant::now() });
         }
         self.board.rows = merged;
+        self.board.refresh_ghosts();
         self.board.polls += 1;
         self.board.last = Some(s.at);
         // Arrivals: a probe, the toast, the rule's auto-open and tunnel.
@@ -924,6 +1020,17 @@ impl App {
                         if let Some(Pane::Term(t)) = self.tabs.get_mut(i).map(|t| &mut t.left) {
                             let _ = t.pty.write(format!("{cmd}\r").as_bytes());
                         }
+                    }
+                } else if let (Group::Remembered, Some(cmd)) = (r.group, r.command.clone()) {
+                    // Start again: a shell where it ran, the command at its first prompt.
+                    self.close_board();
+                    let profile = self.behavior.default_profile;
+                    if let Ok(mut t) = self.new_term_pane_at(false, profile, r.cwd.clone()) {
+                        t.type_at_prompt = Some(format!("{cmd}\r"));
+                        let tab = self.make_tab(Pane::Term(t), None);
+                        self.tabs.push(tab);
+                        let i = self.tabs.len() - 1;
+                        self.activate(i);
                     }
                 }
             }
@@ -1431,6 +1538,7 @@ impl App {
                     let owner = match row.group {
                         Group::Mine => row.tab.and_then(|id| self.tabs.iter().position(|t| t.id == id)).map(|i| format!("tab {}", i + 1)).unwrap_or_else(|| "shell".into()),
                         Group::Docker => "docker".into(),
+                        Group::Remembered => "was here".into(),
                         Group::System => "system".into(),
                         Group::Connections => if row.tab.is_some() { "mine".into() } else { String::new() },
                         Group::Others => if row.exposed { "exposed".into() } else { String::new() },

@@ -170,8 +170,15 @@ fn print_ls(v: &Value) {
     }
 }
 
+mod mcp;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The MCP server: stdin to stdout until the assistant hangs up.
+    if args.first().map(String::as_str) == Some("mcp") {
+        mcp::serve(&|cmd, a| call(cmd, a));
+        return ExitCode::SUCCESS;
+    }
     let (words, mut opts) = parse(&args);
     let want_json = opts.remove("json").is_some();
     let Some(cmd) = words.first().cloned() else {
@@ -180,7 +187,23 @@ fn main() -> ExitCode {
     };
     let rest: Vec<String> = words[1..].to_vec();
     let (cmd, args): (&str, Value) = match cmd.as_str() {
-        "ls" | "version" | "raise" | "ports" | "split" => (cmd.as_str(), Value::Object(opts)),
+        "ls" | "version" | "raise" | "ports" | "split" | "log" => (cmd.as_str(), Value::Object(opts)),
+        "hold" => {
+            if let Some(w) = rest.first() {
+                opts.insert("what".into(), Value::String(w.clone()));
+            }
+            if let Some(id) = rest.get(1) {
+                opts.insert("id".into(), Value::String(id.clone()));
+            }
+            ("hold", Value::Object(opts))
+        }
+        "page" => {
+            opts.insert("what".into(), Value::String(rest.first().cloned().unwrap_or_else(|| "text".into())));
+            if let Some(sel) = rest.get(1) {
+                opts.insert("selector".into(), Value::String(sel.clone()));
+            }
+            ("page", Value::Object(opts))
+        }
         "open" => {
             opts.insert("url".into(), Value::String(rest.join(" ")));
             ("open", Value::Object(opts))
@@ -411,6 +434,8 @@ const USAGE: &str = "usage: nus <command> [args] [--json]
   block [last|all] [--tab N] · ask <question> · raise · version
   layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
   sync [now] · sync key · sync join <key> · sync status · sync folder <path> · sync git <remote>
+  hold [ls|attach <id>|kill <id>] · log [--cwd D] [--limit N] · page [text|dom|console|network|screenshot|info] [--tab N]
+  mcp · the MCP server on stdio: claude mcp add nus -- nus mcp
   a bare <file> or <url> opens it";
 
 #[cfg(test)]
