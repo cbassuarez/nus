@@ -1,6 +1,6 @@
 {
-    "commit":  "734925c",
-    "taken":  "2026-09-17 14:26",
+    "commit":  "97cd255",
+    "taken":  "2026-09-18 14:49",
     "exe":  "debug",
     "scale":  1.25,
     "window":  {
@@ -83,6 +83,34 @@
                       "file":  "hero-page-paper.png",
                       "width":  649,
                       "height":  862
+                  },
+                  {
+                      "name":  "home-line",
+                      "face":  "ink",
+                      "file":  "home-line-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "home-line",
+                      "face":  "paper",
+                      "file":  "home-line-paper.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "home-plate",
+                      "face":  "ink",
+                      "file":  "home-plate-ink.png",
+                      "width":  1600,
+                      "height":  1000
+                  },
+                  {
+                      "name":  "home-plate",
+                      "face":  "paper",
+                      "file":  "home-plate-paper.png",
+                      "width":  1600,
+                      "height":  1000
                   },
                   {
                       "name":  "palette",

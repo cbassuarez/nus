@@ -928,7 +928,31 @@ appearing only when the orbit closes — for the person who wants the
 launch to be a moment. The three share one rule: no captions, no buttons,
 one caret, and whatever is typed goes somewhere real.
 
+**Settled (2026-09-18): the prompt stays, the plate stays, the prompt is
+the default.** THEN defaults to THE PROMPT, so the window's first tab is
+the line (the birth shell is not split with a page any more when THEN
+replaces the tab). The board is folded away; its rows are the prompt's rows.
+The plate became a way the prompt looks rather than a home of its own:
+STARTUP · HOME · THE LINE (default) · THE PLATE. Under the plate the app's
+own icon — the wordmark's n with the band in orbit, the taskbar's geometry
+exactly, from the same field — sits at half the pane's height above the
+line, and your last places are stops on its band: a square where the band
+runs clear of the n, a label beside it, at most four — shells still running
+in a holder, the folders the last session's shells were in (then the
+journal's), dev servers listening, the last pages. ↓ moves onto the stops
+as it does onto rows; click one and you are there; type and the palette's
+rows come up beneath the line as on the line alone. The band draws itself
+in the first time (the motion register stretches it), and the line and the
+stops come up once it closes. *The first second*: with a splash on, the
+splash draws the icon where the plate keeps it and at the plate's size,
+and hands over with the icon in place — only the paper over the chrome
+fades; the prompt is the first tab under the same pixels. Nothing moves.
+`plate.rs`; the icon's field is sampled once per size (`IconField`) so a
+frame at any progress is one cheap pass, which the splash uses too.
+
 **Applied, checked.** Passes seventeen and eighteen are in the code (every
 row, hook and verb they name); nineteen is built with its gaps named in
-place; twenty (theming) merged from its branch. This pass adds `links.rs`
-and `home.rs`, and touches session, settings and the palette.
+place; twenty (theming) merged from its branch. This pass adds `links.rs`,
+`home.rs` and `plate.rs`, and touches session, settings, the splash and
+the palette. Still to come for the home: the pond (koi over the line, a
+real page with real fish), sketched on the canvas, not built.

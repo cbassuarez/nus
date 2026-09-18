@@ -28,7 +28,9 @@ param(
   [string]$Script = '',
   [string]$SeedScript = '',
   [switch]$NoSeed,
-  [int]$TimeoutSec = 240
+  [int]$TimeoutSec = 240,
+  # Behavior keys to set over the scratch defaults, e.g. @{ splash = "Draw"; then = "Prompt"; home_look = "Plate" }
+  [hashtable]$Behavior = @{}
 )
 
 $ErrorActionPreference = 'Stop'
@@ -83,6 +85,7 @@ $s.behavior.window_start = 'Last'
 $s.behavior.follow_os_theme = $true
 $s.behavior.start_on_launch = $false
 $s.behavior | Add-Member -NotePropertyName ports_show_connections -NotePropertyValue $false -Force   # the board lists real peers otherwise
+foreach ($k in $Behavior.Keys) { $s.behavior | Add-Member -NotePropertyName $k -NotePropertyValue $Behavior[$k] -Force }
 # No BOM: serde_json refuses one, and PowerShell 5.1's -Encoding UTF8 writes it.
 [IO.File]::WriteAllText((Join-Path $profile 'settings.json'), ($s | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding $false))
 Set-Content (Join-Path $profile 'onboarded') 'skip' -Encoding ASCII

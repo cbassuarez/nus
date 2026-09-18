@@ -341,6 +341,16 @@ pub enum Then {
     HomePage,
 }
 
+/// What the prompt looks like: the line alone, or the line under the
+/// plate — the icon at a plate's size, your last places as stops on its
+/// band (plate.rs). The same typing, rows and enter either way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum HomeLook {
+    #[default]
+    Line,
+    Plate,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum AtlasMode {
     Planet,
@@ -458,6 +468,9 @@ pub struct Behavior {
     /// The page THEN · HOME PAGE opens.
     #[serde(default = "default_home_url")]
     pub home_url: String,
+    /// HOME: the prompt as the line alone, or under the plate.
+    #[serde(default)]
+    pub home_look: HomeLook,
     /// Remember tabs and windows between launches (session.json); off, nothing is written.
     #[serde(default = "default_true")]
     pub remember: bool,
@@ -672,7 +685,7 @@ fn default_splash_hold() -> f32 {
     1.0
 }
 fn default_then() -> Then {
-    Then::Shell
+    Then::Prompt
 }
 fn default_atlas() -> AtlasMode {
     AtlasMode::Planet
@@ -694,7 +707,7 @@ impl Default for Behavior {
             window_start: WindowStart::Last,
             splash: SplashMode::Draw,
             splash_hold: 1.0,
-            then: Then::Shell,
+            then: Then::Prompt,
             atlas: AtlasMode::Planet,
             outside: Outside::Little,
             lead: Lead::Terminal,
@@ -714,6 +727,7 @@ impl Default for Behavior {
             click_to_source: true,
             link_click: LinkClick::Ask,
             home_url: default_home_url(),
+            home_look: HomeLook::Line,
             remember: true,
             hands_hosts: Vec::new(),
             hands_confirm_submit: true,
@@ -943,6 +957,7 @@ pub enum Hit {
     CurHide(bool),
     WindowStart(WindowStart),
     Splash(SplashMode),
+    HomeLook(HomeLook),
     Then(Then),
     Atlas(AtlasMode),
     Outside(Outside),
@@ -1272,6 +1287,7 @@ impl App {
             Hit::CurHide(h) => if h { "hide the pointer while typing".into() } else { "keep the pointer while typing".into() },
             Hit::WindowStart(w) => format!("window {:?}", w).to_lowercase(),
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
+            Hit::HomeLook(l) => format!("home {:?}", l).to_lowercase(),
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
             Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
             Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
@@ -1592,7 +1608,7 @@ impl App {
             Hit::ClearLaunchTabs => {
                 let _ = std::fs::remove_file(std::env::current_dir().unwrap_or_default().join("profile").join("layouts").join("launch.nus.luau"));
                 if self.behavior.then == Then::Layout && self.behavior.then_layout == "launch" {
-                    self.behavior.then = Then::Shell;
+                    self.behavior.then = Then::Prompt;
                     self.behavior.then_layout.clear();
                 }
             }
@@ -1711,6 +1727,7 @@ impl App {
             }
             Hit::WindowStart(w) => self.behavior.window_start = w,
             Hit::Splash(m) => self.behavior.splash = m,
+            Hit::HomeLook(l) => self.behavior.home_look = l,
             Hit::Then(t) => self.behavior.then = t,
             Hit::Atlas(a) => {
                 self.behavior.atlas = a;
@@ -2531,6 +2548,14 @@ impl App {
                         }),
                     ),
                     ("".into(), Info("the prompt is a terminal with no shell behind it: a url becomes a page, a command a shell running it, enter alone a shell · the home page is set from the palette: home <url>".into())),
+                    (
+                        "HOME".into(),
+                        Choice(vec![
+                            ("THE LINE".into(), Hit::HomeLook(HomeLook::Line), b.home_look == HomeLook::Line),
+                            ("THE PLATE".into(), Hit::HomeLook(HomeLook::Plate), b.home_look == HomeLook::Plate),
+                        ]),
+                    ),
+                    ("".into(), Info("what the prompt looks like: the line alone, or the line under the plate — the icon at a plate's size, your last places as stops on its band · the splash draws the icon in where the plate keeps it and nothing fades between them · the same typing, rows and enter either way".into())),
                     (
                         "LAUNCH TABS".into(),
                         Choice(vec![

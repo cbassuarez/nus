@@ -35,6 +35,7 @@
 //!   share                      the active tab as a replay file, opened as a tab
 //!   ctrlc                      Ctrl+C to the shell
 //!   home | hometype <text> | homeenter   the prompt: open it, type into it, commit
+//!   homelook plate | line      HOME: the prompt under the plate, or the line alone
 //!   link allow | deny          answer the link band on the focused shell
 //!   newwindow                  a second window
 //!   quit                       (implicit at the end)
@@ -184,6 +185,10 @@ impl App {
                 }
             }
             "homeenter" => self.home_commit_pub(),
+            "homelook" => {
+                self.behavior.home_look = if rest == "plate" { crate::settings::HomeLook::Plate } else { crate::settings::HomeLook::Line };
+                self.dirty = true;
+            }
             "link" => {
                 use winit::keyboard::{Key, NamedKey};
                 let k = if rest == "deny" { Key::Named(NamedKey::Escape) } else { Key::Named(NamedKey::Enter) };

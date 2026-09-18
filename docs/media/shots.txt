@@ -84,6 +84,17 @@ wait 500
 shot palette
 close
 
+# Home, under the plate: the icon with the last places as stops on its
+# band (the seed run's shell folder, the site on :8000), the line beneath.
+homelook plate
+home
+wait 2200
+shot home-plate
+homelook line
+wait 900
+shot home-line
+close
+
 # Ask, beside a command that failed — in a shell of its own. Needs an
 # assistant on PATH (claude, codex, copilot, ollama), and spends one real query.
 newshell

@@ -14,101 +14,130 @@ pub fn app_icon(size: u32, n_color: Color, band: Color) -> Vec<u8> {
 }
 
 /// The same, with the swoosh drawn only `progress` (0..1) of the way from
-/// its start — the splash draws it in.
+/// its start — the splash draws it in. One-off; anything drawing frames
+/// keeps an [`IconField`].
 pub fn app_icon_at(size: u32, n_color: Color, band: Color, progress: f32) -> Vec<u8> {
-    let s = size as f32;
-    let mut px = vec![0.0f32; (size * size * 4) as usize];
+    IconField::new(size).frame(n_color, band, progress)
+}
 
-    // The n, from Newsreader Italic, centred and sized to the frame.
-    let glyph = raster_n(s * 1.38);
-    let (gw, gh) = (glyph.w as f32, glyph.h as f32);
-    let gx = ((s - gw) / 2.0 + s * 0.01).round();
-    let gy = ((s - gh) / 2.0 + s * 0.02).round();
+/// The icon sampled once per pixel — where each pixel of the band sits
+/// along it and how far off its centreline, and the n's coverage — so a
+/// frame at any progress is one cheap pass over the band's pixels. The
+/// splash and the plate draw the band in from this; the taskbar icon is
+/// its last frame.
+pub struct IconField {
+    size: u32,
+    band: Band,
+    /// The band's candidate pixels: index, radians along the band from its
+    /// start, signed distance from the centreline, and whether the pixel
+    /// is on the near half (drawn over the n).
+    strip: Vec<(u32, f32, f32, bool)>,
+    /// The n's coverage, and where its bitmap sits in the frame.
+    glyph: Mask,
+    gx: i32,
+    gy: i32,
+}
 
-    // A stroke, not a ring: it starts, swells, thins, and ends — open on
-    // the right like a swoosh, tilted 24°. Small sizes get a heavier stroke.
-    let (cx, cy) = (s * 0.5, s * 0.54);
-    let (a, b) = (s * 0.49, s * 0.16);
-    let tilt = -24.0f32.to_radians();
-    let (cos, sin) = (tilt.cos(), tilt.sin());
-    let base_t = if s <= 32.0 { s * 0.085 } else { s * 0.05 };
-    let gap_center = 0.12f32; // parametric angle; 0 = the right end
-    let gap = 0.9f32; // radians left open
-    let start = gap_center + gap / 2.0; // the stroke runs from here …
-    let span = std::f32::consts::TAU - gap; // … this far around
-    let drawn = span * progress.clamp(0.0, 1.0);
-    let band_at = |x: f32, y: f32| -> (f32, bool) {
-        // Into the ellipse frame.
-        let (dx, dy) = (x - cx, y - cy);
-        let (u, v) = (dx * cos + dy * sin, -dx * sin + dy * cos);
-        let r = ((u / a).powi(2) + (v / b).powi(2)).sqrt();
-        // Distance to the ellipse via the gradient magnitude.
-        let g = ((u / (a * a)).powi(2) + (v / (b * b)).powi(2))
-            .sqrt()
-            .max(1e-6)
-            / r.max(1e-6);
-        let d = (r - 1.0) / g;
-        // Where along the stroke: parametric angle from the start.
-        let th = (v / b).atan2(u / a);
-        let along = (th - start).rem_euclid(std::f32::consts::TAU);
-        if along > drawn {
-            return (0.0, v > 0.0);
+impl IconField {
+    pub fn new(size: u32) -> IconField {
+        let s = size as f32;
+        let band = Band::in_frame(s);
+        let (cos, sin) = (band.tilt.cos(), band.tilt.sin());
+        let (a, b) = (band.a, band.b);
+        // Nothing thicker than the base stroke is ever drawn; keep a pixel
+        // of slack for the anti-aliased edge.
+        let reach = band.base_t / 2.0 + 1.0;
+        let mut strip = Vec::new();
+        for y in 0..size {
+            for x in 0..size {
+                let (dx, dy) = (x as f32 + 0.5 - band.cx, y as f32 + 0.5 - band.cy);
+                // Into the ellipse frame.
+                let (u, v) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+                let r = ((u / a).powi(2) + (v / b).powi(2)).sqrt();
+                // Distance to the ellipse via the gradient magnitude.
+                let g = ((u / (a * a)).powi(2) + (v / (b * b)).powi(2))
+                    .sqrt()
+                    .max(1e-6)
+                    / r.max(1e-6);
+                let d = (r - 1.0) / g;
+                if d.abs() > reach {
+                    continue;
+                }
+                let th = (v / b).atan2(u / a);
+                let along = (th - band.start).rem_euclid(std::f32::consts::TAU);
+                strip.push((y * size + x, along, d, v > 0.0));
+            }
         }
-        // Weight: swells through the middle, tapers to the ends.
-        let ends = (along / 0.55).min((drawn - along) / 0.55).clamp(0.0, 1.0);
-        let swell =
-            0.55 + 0.45 * (0.5 - 0.5 * (2.0 * std::f32::consts::PI * along / span + 0.6).cos());
-        let thick = base_t * swell * (0.15 + 0.85 * ends);
-        let cov = (thick / 2.0 - d.abs() + 0.5).clamp(0.0, 1.0);
-        (cov, v > 0.0) // v > 0: the near half, drawn over the n.
-    };
+        let glyph = raster_n(s * 1.38);
+        let (gw, gh) = (glyph.w as f32, glyph.h as f32);
+        let gx = ((s - gw) / 2.0 + s * 0.01).round() as i32;
+        let gy = ((s - gh) / 2.0 + s * 0.02).round() as i32;
+        IconField {
+            size,
+            band,
+            strip,
+            glyph,
+            gx,
+            gy,
+        }
+    }
 
-    let blend = |px: &mut [f32], x: u32, y: u32, c: Color, cov: f32| {
-        if cov <= 0.0 {
-            return;
-        }
-        let i = ((y * size + x) * 4) as usize;
-        let a_src = c[3] * cov;
-        let a_dst = px[i + 3];
-        let a_out = a_src + a_dst * (1.0 - a_src);
-        if a_out <= 0.0 {
-            return;
-        }
-        for k in 0..3 {
-            px[i + k] = (c[k] * a_src + px[i + k] * a_dst * (1.0 - a_src)) / a_out;
-        }
-        px[i + 3] = a_out;
-    };
+    pub fn size(&self) -> u32 {
+        self.size
+    }
 
-    // Back half of the band, then the n, then the front half.
-    for y in 0..size {
-        for x in 0..size {
-            let (cov, front) = band_at(x as f32 + 0.5, y as f32 + 0.5);
+    /// Straight-alpha RGBA, the band drawn `progress` (0..1) of the way
+    /// from its start: the back half, the n, the front half.
+    pub fn frame(&self, n_color: Color, band: Color, progress: f32) -> Vec<u8> {
+        let size = self.size;
+        let mut px = vec![0.0f32; (size * size * 4) as usize];
+        let drawn = self.band.span * progress.clamp(0.0, 1.0);
+        let blend = |px: &mut [f32], i: usize, c: Color, cov: f32| {
+            if cov <= 0.0 {
+                return;
+            }
+            let a_src = c[3] * cov;
+            let a_dst = px[i + 3];
+            let a_out = a_src + a_dst * (1.0 - a_src);
+            if a_out <= 0.0 {
+                return;
+            }
+            for k in 0..3 {
+                px[i + k] = (c[k] * a_src + px[i + k] * a_dst * (1.0 - a_src)) / a_out;
+            }
+            px[i + 3] = a_out;
+        };
+        let cover = |along: f32, d: f32| -> f32 {
+            if along > drawn {
+                return 0.0;
+            }
+            let thick = self.band.thickness(along, drawn);
+            (thick / 2.0 - d.abs() + 0.5).clamp(0.0, 1.0)
+        };
+        for &(i, along, d, front) in &self.strip {
             if !front {
-                blend(&mut px, x, y, band, cov);
+                blend(&mut px, i as usize * 4, band, cover(along, d));
             }
         }
-    }
-    for y in 0..glyph.h {
-        for x in 0..glyph.w {
-            let cov = glyph.data[(y * glyph.w + x) as usize] as f32 / 255.0;
-            let (ox, oy) = (gx as i32 + x as i32, gy as i32 + y as i32);
-            if ox >= 0 && oy >= 0 && (ox as u32) < size && (oy as u32) < size {
-                blend(&mut px, ox as u32, oy as u32, n_color, cov);
+        for y in 0..self.glyph.h {
+            for x in 0..self.glyph.w {
+                let cov = self.glyph.data[(y * self.glyph.w + x) as usize] as f32 / 255.0;
+                let (ox, oy) = (self.gx + x as i32, self.gy + y as i32);
+                if ox >= 0 && oy >= 0 && (ox as u32) < size && (oy as u32) < size {
+                    let i = ((oy as u32 * size + ox as u32) * 4) as usize;
+                    blend(&mut px, i, n_color, cov);
+                }
             }
         }
-    }
-    for y in 0..size {
-        for x in 0..size {
-            let (cov, front) = band_at(x as f32 + 0.5, y as f32 + 0.5);
+        for &(i, along, d, front) in &self.strip {
             if front {
-                blend(&mut px, x, y, band, cov);
+                blend(&mut px, i as usize * 4, band, cover(along, d));
             }
         }
+        px.iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+            .collect()
     }
-    px.iter()
-        .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect()
 }
 
 /// The band's geometry, shared by the raster and the vector: where the
@@ -158,7 +187,7 @@ impl Band {
     }
 
     /// The outward normal at `th`, in the frame.
-    fn normal(&self, th: f32) -> (f32, f32) {
+    pub fn normal(&self, th: f32) -> (f32, f32) {
         let (u, v) = (self.a * th.cos(), self.b * th.sin());
         let (gu, gv) = (u / (self.a * self.a), v / (self.b * self.b));
         let n = (gu * gu + gv * gv).sqrt().max(1e-6);
@@ -176,7 +205,8 @@ impl Band {
             let th = from + (to - from) * i as f32 / steps as f32;
             let (x, y) = self.at(th);
             let (nx, ny) = self.normal(th);
-            let t = self.thickness((th - self.start).rem_euclid(std::f32::consts::TAU), drawn) / 2.0;
+            let t =
+                self.thickness((th - self.start).rem_euclid(std::f32::consts::TAU), drawn) / 2.0;
             outer.push((x + nx * t, y + ny * t));
             inner.push((x - nx * t, y - ny * t));
         }
@@ -204,8 +234,14 @@ pub fn band_stops(size: f32, n: usize) -> Vec<f32> {
     let gy = ((s - gh) / 2.0 + s * 0.02).round();
     let margin = (s * 0.055).max(3.0);
     let inked = |x: f32, y: f32| -> bool {
-        let (x0, y0) = ((x - margin - gx).floor() as i32, (y - margin - gy).floor() as i32);
-        let (x1, y1) = ((x + margin - gx).ceil() as i32, (y + margin - gy).ceil() as i32);
+        let (x0, y0) = (
+            (x - margin - gx).floor() as i32,
+            (y - margin - gy).floor() as i32,
+        );
+        let (x1, y1) = (
+            (x + margin - gx).ceil() as i32,
+            (y + margin - gy).ceil() as i32,
+        );
         for yy in y0.max(0)..y1.min(glyph.h as i32) {
             for xx in x0.max(0)..x1.min(glyph.w as i32) {
                 if glyph.data[(yy as u32 * glyph.w + xx as u32) as usize] > 96 {
@@ -231,7 +267,9 @@ pub fn band_stops(size: f32, n: usize) -> Vec<f32> {
     }
     let usable: Vec<(f32, f32)> = stretches.into_iter().filter(|r| r.1 - r.0 > 0.12).collect();
     if usable.is_empty() {
-        return (0..n).map(|k| band.start + band.span * (k as f32 + 0.5) / n as f32).collect();
+        return (0..n)
+            .map(|k| band.start + band.span * (k as f32 + 0.5) / n as f32)
+            .collect();
     }
     let mut counts = vec![1usize; usable.len()];
     let mut placed = usable.len();
@@ -323,7 +361,12 @@ pub fn app_icon_paths(size: f32) -> IconPaths {
     let end = band.start + band.span;
     let front = band.outline(band.start, pi, 180);
     let back = band.outline(pi, end, 260);
-    IconPaths { back, n: n.trim_end().to_string(), front, band }
+    IconPaths {
+        back,
+        n: n.trim_end().to_string(),
+        front,
+        band,
+    }
 }
 
 struct Mask {
@@ -461,7 +504,10 @@ mod tests {
         assert!(parts.n.starts_with('M') && parts.n.contains('C') || parts.n.contains('Q'));
         // The band lies inside the frame.
         for d in [&parts.back, &parts.front] {
-            for num in d.split(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').filter(|t| !t.is_empty()) {
+            for num in d
+                .split(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+                .filter(|t| !t.is_empty())
+            {
                 let v: f32 = num.parse().unwrap();
                 assert!((-40.0..=552.0).contains(&v), "{v}");
             }
@@ -477,6 +523,27 @@ mod tests {
             assert!(w[1] > w[0]);
         }
         assert!(stops[0] > band.start && stops[3] < band.start + band.span);
+    }
+
+    #[test]
+    fn field_draws_in() {
+        let field = IconField::new(64);
+        let red = |px: &[u8]| {
+            px.chunks(4)
+                .filter(|p| p[0] > 200 && p[1] < 60 && p[3] > 200)
+                .count()
+        };
+        let none = red(&field.frame([0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], 0.0));
+        let half = red(&field.frame([0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], 0.5));
+        let full = red(&field.frame([0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], 1.0));
+        assert!(
+            none == 0 && none < half && half < full,
+            "{none} {half} {full}"
+        );
+        assert_eq!(
+            full,
+            red(&app_icon(64, [0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]))
+        );
     }
 
     #[test]

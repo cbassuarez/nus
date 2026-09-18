@@ -115,6 +115,10 @@ pub enum Action {
     Timeline,
     /// The prompt, as a tab.
     Home,
+    /// A shell in this folder, as a tab (a stop on the plate).
+    ShellAt(String),
+    /// Back to a held shell by its id (a stop on the plate).
+    AttachHeld(String),
     /// STARTUP · THEN · HOME PAGE, set from the palette.
     SetHome(String),
     /// What is open now becomes the launch tabs.
@@ -158,6 +162,7 @@ pub enum CrumbHit {
     Start,
 }
 
+#[derive(Clone)]
 pub struct PaletteRow {
     pub num: String,
     pub text: String,
@@ -837,6 +842,8 @@ pub struct App {
     /// The name typed during the walk, before the file exists.
     pub pending_name: String,
     pub splash: Option<crate::splash::Splash>,
+    /// The plate's icon, sampled once at its size (plate.rs).
+    pub plate: Option<crate::plate::PlateArt>,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
     /// Remote answers waiting on the page (see remote.rs).
@@ -1088,6 +1095,7 @@ impl App {
             me_card: crate::me::MeCard::default(),
             pending_name: String::new(),
             splash: Some(crate::splash::Splash::new()),
+            plate: None,
             shot: crate::shot::Shot::from_env(),
             deferred: Vec::new(),
             loop_probe: None,
@@ -1159,11 +1167,13 @@ impl App {
         app.ordinal = ordinal;
         // A second window: one shell, no splash, no session restore, no name.
         let onboarded = App::onboarded();
-        let split = !secondary && onboarded;
+        // The birth tab: a shell beside a page, unless THEN replaces the
+        // whole tab anyway (the prompt, the home page) — then a lone shell.
+        let split = !secondary && onboarded && !matches!(app.behavior.then, crate::settings::Then::Prompt | crate::settings::Then::HomePage);
         // NUS_SHELL=<profile name> picks the first shell (a test hook).
         let first = std::env::var("NUS_SHELL").ok().and_then(|n| app.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(&n))).unwrap_or(0);
         let term = app.new_term_pane(split, first)?;
-        let right = if secondary || !onboarded {
+        let right = if !split {
             None
         } else {
             app.new_web_pane("https://docs.rs/wgpu/latest/wgpu/").map(Pane::Web)
@@ -1711,23 +1721,13 @@ impl App {
                     }
                     crate::settings::Then::Shell => {}
                     crate::settings::Then::Prompt => {
-                        // The first shell gives way to the prompt.
-                        if let Some(t) = self.tabs.first_mut() {
-                            if matches!(t.left, Pane::Term(_)) && t.right.is_none() {
-                                t.left = Pane::Home(crate::home::HomePane::new());
-                            }
-                        }
-                        self.layout();
+                        // The birth tab gives way to the prompt.
+                        self.replace_birth(Pane::Home(crate::home::HomePane::new()));
                     }
                     crate::settings::Then::HomePage => {
                         let url = self.behavior.home_url.clone();
                         if let Some(w) = self.new_web_pane(&url) {
-                            if let Some(t) = self.tabs.first_mut() {
-                                if matches!(t.left, Pane::Term(_)) && t.right.is_none() {
-                                    t.left = Pane::Web(w);
-                                }
-                            }
-                            self.layout();
+                            self.replace_birth(Pane::Web(w));
                         }
                     }
                     crate::settings::Then::Layout => {
@@ -6137,6 +6137,19 @@ impl App {
             Action::JournalPage => self.open_journal_page(),
             Action::Timeline => self.toggle_timeline(),
             Action::Home => self.open_home(),
+            Action::ShellAt(cwd) => {
+                let profile = self.behavior.default_profile;
+                if let Ok(t) = self.new_term_pane_at(false, profile, Some(cwd)) {
+                    let tab = self.make_tab(Pane::Term(t), None);
+                    self.tabs.push(tab);
+                    self.activate(self.tabs.len() - 1);
+                }
+            }
+            Action::AttachHeld(id) => {
+                if let Some(info) = self.held_loose().into_iter().find(|i| i.id == id) {
+                    self.attach_held(info);
+                }
+            }
             Action::SetHome(url) => {
                 self.behavior.home_url = crate::links::normalize(&url);
                 self.behavior.then = crate::settings::Then::HomePage;
