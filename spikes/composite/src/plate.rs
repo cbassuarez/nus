@@ -19,7 +19,7 @@ use crate::home::HomePane;
 use crate::settings::{HomeLook, SplashMode, Then};
 
 /// Seconds the band takes to draw (before the motion register).
-pub const DRAW: f32 = 0.7;
+pub const DRAW: f32 = 0.42;
 /// Seconds the line and the stops take to come up once the band closes.
 const SETTLE: f32 = 0.4;
 /// Stops on the band: the first places the prompt offers.
@@ -31,6 +31,12 @@ pub struct PlateArt {
     tex: Option<(f32, Color, Color, Arc<wgpu::BindGroup>)>,
     /// Parametric angles of the stops along the band, in band order.
     stops: Vec<f32>,
+}
+
+/// The band's draw-in: quick off the mark, easing home (ease-out cubic).
+pub(crate) fn swoosh(t: f32) -> f32 {
+    let u = 1.0 - t.clamp(0.0, 1.0);
+    1.0 - u * u * u
 }
 
 /// Where the plate keeps the icon in a pane: half the pane's height (or
@@ -115,7 +121,7 @@ impl App {
         }
         let art = self.plate.as_mut().expect("plate art");
         if let Some((p, n, b, bind)) = &art.tex {
-            if (*p - progress).abs() <= 1.0 / 96.0 && *n == n_color && *b == band {
+            if (*p - progress).abs() <= 1.0 / 400.0 && *n == n_color && *b == band {
                 return bind.clone();
             }
         }
@@ -152,7 +158,7 @@ impl App {
         let reduced = self.motion.reduced();
         let t = p.since.elapsed().as_secs_f32();
         let draw_secs = if reduced || p.handed { 0.0 } else { DRAW * k };
-        let progress = if draw_secs <= 0.0 { 1.0 } else { (t / draw_secs).clamp(0.0, 1.0) };
+        let progress = if draw_secs <= 0.0 { 1.0 } else { swoosh((t / draw_secs).clamp(0.0, 1.0)) };
         let up = if reduced { 1.0 } else { ((t - draw_secs) / (SETTLE * k)).clamp(0.0, 1.0) };
         let up = 1.0 - (1.0 - up) * (1.0 - up);
         let bind = self.plate_texture(size, progress);

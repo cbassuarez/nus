@@ -17,21 +17,26 @@ pub fn app_icon(size: u32, n_color: Color, band: Color) -> Vec<u8> {
 /// its start — the splash draws it in. One-off; anything drawing frames
 /// keeps an [`IconField`].
 pub fn app_icon_at(size: u32, n_color: Color, band: Color, progress: f32) -> Vec<u8> {
-    IconField::new(size).frame(n_color, band, progress)
+    let mut field = IconField::new(size);
+    field.frame(n_color, band, progress)
 }
 
 /// The icon sampled once per pixel — where each pixel of the band sits
-/// along it and how far off its centreline, and the n's coverage — so a
-/// frame at any progress is one cheap pass over the band's pixels. The
-/// splash and the plate draw the band in from this; the taskbar icon is
-/// its last frame.
+/// along it and how far off its centreline, and the n rendered on its own
+/// with its coverage kept where the band crosses it — so a frame at any
+/// progress is a copy of the n and one cheap pass over the band's pixels.
+/// The splash and the plate draw the band in from this, every frame; the
+/// taskbar icon is its last frame.
 pub struct IconField {
     size: u32,
     band: Band,
     /// The band's candidate pixels: index, radians along the band from its
-    /// start, signed distance from the centreline, and whether the pixel
-    /// is on the near half (drawn over the n).
-    strip: Vec<(u32, f32, f32, bool)>,
+    /// start, signed distance from the centreline, whether the pixel is on
+    /// the near half (drawn over the n), and the n's coverage there.
+    strip: Vec<(u32, f32, f32, bool, f32)>,
+    /// The n alone, straight-alpha RGBA, in the colour it was last drawn.
+    base: Vec<u8>,
+    base_color: Color,
     /// The n's coverage, and where its bitmap sits in the frame.
     glyph: Mask,
     gx: i32,
@@ -44,6 +49,17 @@ impl IconField {
         let band = Band::in_frame(s);
         let (cos, sin) = (band.tilt.cos(), band.tilt.sin());
         let (a, b) = (band.a, band.b);
+        let glyph = raster_n(s * 1.38);
+        let (gw, gh) = (glyph.w as f32, glyph.h as f32);
+        let gx = ((s - gw) / 2.0 + s * 0.01).round() as i32;
+        let gy = ((s - gh) / 2.0 + s * 0.02).round() as i32;
+        let n_at = |x: u32, y: u32| -> f32 {
+            let (lx, ly) = (x as i32 - gx, y as i32 - gy);
+            if lx < 0 || ly < 0 || lx >= glyph.w as i32 || ly >= glyph.h as i32 {
+                return 0.0;
+            }
+            glyph.data[(ly as u32 * glyph.w + lx as u32) as usize] as f32 / 255.0
+        };
         // Nothing thicker than the base stroke is ever drawn; keep a pixel
         // of slack for the anti-aliased edge.
         let reach = band.base_t / 2.0 + 1.0;
@@ -65,78 +81,101 @@ impl IconField {
                 }
                 let th = (v / b).atan2(u / a);
                 let along = (th - band.start).rem_euclid(std::f32::consts::TAU);
-                strip.push((y * size + x, along, d, v > 0.0));
+                strip.push((y * size + x, along, d, v > 0.0, n_at(x, y)));
             }
         }
-        let glyph = raster_n(s * 1.38);
-        let (gw, gh) = (glyph.w as f32, glyph.h as f32);
-        let gx = ((s - gw) / 2.0 + s * 0.01).round() as i32;
-        let gy = ((s - gh) / 2.0 + s * 0.02).round() as i32;
-        IconField {
+        let mut field = IconField {
             size,
             band,
             strip,
+            base: Vec::new(),
+            base_color: [0.0; 4],
             glyph,
             gx,
             gy,
-        }
+        };
+        field.draw_base([0.0, 0.0, 0.0, 1.0]);
+        field
     }
 
     pub fn size(&self) -> u32 {
         self.size
     }
 
-    /// Straight-alpha RGBA, the band drawn `progress` (0..1) of the way
-    /// from its start: the back half, the n, the front half.
-    pub fn frame(&self, n_color: Color, band: Color, progress: f32) -> Vec<u8> {
+    /// The n alone, in `n_color`.
+    fn draw_base(&mut self, n_color: Color) {
         let size = self.size;
-        let mut px = vec![0.0f32; (size * size * 4) as usize];
-        let drawn = self.band.span * progress.clamp(0.0, 1.0);
-        let blend = |px: &mut [f32], i: usize, c: Color, cov: f32| {
-            if cov <= 0.0 {
-                return;
-            }
-            let a_src = c[3] * cov;
-            let a_dst = px[i + 3];
-            let a_out = a_src + a_dst * (1.0 - a_src);
-            if a_out <= 0.0 {
-                return;
-            }
-            for k in 0..3 {
-                px[i + k] = (c[k] * a_src + px[i + k] * a_dst * (1.0 - a_src)) / a_out;
-            }
-            px[i + 3] = a_out;
-        };
-        let cover = |along: f32, d: f32| -> f32 {
-            if along > drawn {
-                return 0.0;
-            }
-            let thick = self.band.thickness(along, drawn);
-            (thick / 2.0 - d.abs() + 0.5).clamp(0.0, 1.0)
-        };
-        for &(i, along, d, front) in &self.strip {
-            if !front {
-                blend(&mut px, i as usize * 4, band, cover(along, d));
-            }
-        }
+        let mut px = vec![0u8; (size * size * 4) as usize];
+        let rgb = [
+            (n_color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (n_color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (n_color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+        ];
         for y in 0..self.glyph.h {
             for x in 0..self.glyph.w {
-                let cov = self.glyph.data[(y * self.glyph.w + x) as usize] as f32 / 255.0;
+                let cov = self.glyph.data[(y * self.glyph.w + x) as usize];
                 let (ox, oy) = (self.gx + x as i32, self.gy + y as i32);
-                if ox >= 0 && oy >= 0 && (ox as u32) < size && (oy as u32) < size {
+                if cov > 0 && ox >= 0 && oy >= 0 && (ox as u32) < size && (oy as u32) < size {
                     let i = ((oy as u32 * size + ox as u32) * 4) as usize;
-                    blend(&mut px, i, n_color, cov);
+                    px[i] = rgb[0];
+                    px[i + 1] = rgb[1];
+                    px[i + 2] = rgb[2];
+                    px[i + 3] = (cov as f32 * n_color[3]).round() as u8;
                 }
             }
         }
-        for &(i, along, d, front) in &self.strip {
+        self.base = px;
+        self.base_color = n_color;
+    }
+
+    /// Straight-alpha RGBA, the band drawn `progress` (0..1) of the way
+    /// from its start: the back half, the n, the front half.
+    pub fn frame(&mut self, n_color: Color, band: Color, progress: f32) -> Vec<u8> {
+        if self.base_color != n_color {
+            self.draw_base(n_color);
+        }
+        let mut px = self.base.clone();
+        let drawn = self.band.span * progress.clamp(0.0, 1.0);
+        let over = |dst: [f32; 4], c: Color, cov: f32| -> [f32; 4] {
+            if cov <= 0.0 {
+                return dst;
+            }
+            let a_src = c[3] * cov;
+            let a_out = a_src + dst[3] * (1.0 - a_src);
+            if a_out <= 0.0 {
+                return [0.0; 4];
+            }
+            let mut out = [0.0; 4];
+            for k in 0..3 {
+                out[k] = (c[k] * a_src + dst[k] * dst[3] * (1.0 - a_src)) / a_out;
+            }
+            out[3] = a_out;
+            out
+        };
+        for &(i, along, d, front, n_cov) in &self.strip {
+            if along > drawn {
+                continue;
+            }
+            let thick = self.band.thickness(along, drawn);
+            let cov = (thick / 2.0 - d.abs() + 0.5).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            // Transparent, then the band behind, the n, the band in front.
+            let mut c = [0.0f32; 4];
+            if !front {
+                c = over(c, band, cov);
+            }
+            c = over(c, n_color, n_cov);
             if front {
-                blend(&mut px, i as usize * 4, band, cover(along, d));
+                c = over(c, band, cov);
+            }
+            let o = i as usize * 4;
+            for k in 0..4 {
+                px[o + k] = (c[k].clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         }
-        px.iter()
-            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect()
+        px
     }
 }
 
@@ -527,7 +566,7 @@ mod tests {
 
     #[test]
     fn field_draws_in() {
-        let field = IconField::new(64);
+        let mut field = IconField::new(64);
         let red = |px: &[u8]| {
             px.chunks(4)
                 .filter(|p| p[0] > 200 && p[1] < 60 && p[3] > 200)

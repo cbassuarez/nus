@@ -14,7 +14,10 @@ use crate::anim::Anim;
 use crate::app::App;
 
 pub struct Splash {
+    /// When the first frame was drawn: the clock starts there, not at
+    /// App::new (the window comes up a good while after).
     pub started: Instant,
+    pub begun: bool,
     /// The icon texture at the progress it was rendered for.
     pub tex: Option<(f32, Arc<wgpu::BindGroup>)>,
     pub fade: Anim,
@@ -22,14 +25,14 @@ pub struct Splash {
 }
 
 /// Seconds the swoosh takes to draw (before the motion register).
-const DRAW: f32 = 0.7;
+const DRAW: f32 = crate::plate::DRAW;
 /// Never shorter than this; never longer than the max, ready or not.
 const MAX: f32 = 2.6;
 const SIZE: u32 = 256;
 
 impl Splash {
     pub fn new() -> Splash {
-        Splash { started: Instant::now(), tex: None, fade: Anim::at(1.0), leaving: false }
+        Splash { started: Instant::now(), begun: false, tex: None, fade: Anim::at(1.0), leaving: false }
     }
 }
 
@@ -61,7 +64,11 @@ impl App {
     }
 
     pub fn draw_splash(&mut self, scene: &mut nus_render::Scene) {
-        let Some(sp) = self.splash.as_ref() else { return };
+        let Some(sp) = self.splash.as_mut() else { return };
+        if !sp.begun {
+            sp.begun = true;
+            sp.started = Instant::now();
+        }
         let elapsed = sp.started.elapsed().as_secs_f32();
         let k = self.plate_k();
         let draw_secs = if self.motion.reduced() || self.behavior.splash != crate::settings::SplashMode::Draw { 0.0 } else { DRAW * k };
@@ -69,46 +76,21 @@ impl App {
             self.splash = None;
             return;
         }
-        let progress = if draw_secs <= 0.0 { 1.0 } else { (elapsed / draw_secs).clamp(0.0, 1.0) };
+        let progress = if draw_secs <= 0.0 { 1.0 } else { crate::plate::swoosh((elapsed / draw_secs).clamp(0.0, 1.0)) };
         let plate = self.plate_continues();
         let (w, h) = (self.target.size.0 as f32, self.target.size.1 as f32);
         // The icon: where the plate keeps it, from the plate's own field;
-        // or 160 px in the middle, a 256² CPU raster (~40 frames).
+        // or 160 px in the middle, from the same field at 256.
         let (rect, bind) = if plate {
             let pane = self.tabs.first().map(|t| t.left.rect()).unwrap_or(Rect::new(0.0, 0.0, w, h));
             let rect = crate::plate::icon_rect(pane);
             let size = (rect.w.round() as u32).clamp(64, 1024);
             (rect, Some(self.plate_texture(size, progress)))
         } else {
-            let need = sp.tex.as_ref().map(|(p, _)| (*p - progress).abs() > 0.004).unwrap_or(true);
-            if need {
-                let n = self.theme.ink;
-                let rgba = nus_render::icon::app_icon_at(SIZE, n, self.surface.signal, progress);
-                let bgra: Vec<u8> = rgba.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
-                let tex = self.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("splash"),
-                    size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Bgra8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                self.gpu.queue.write_texture(
-                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    &bgra,
-                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(SIZE * 4), rows_per_image: Some(SIZE) },
-                    wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
-                );
-                let bind = (self.bind_texture)(&tex);
-                if let Some(sp) = self.splash.as_mut() {
-                    sp.tex = Some((progress, bind));
-                }
-            }
+            let bind = self.plate_texture(SIZE, progress);
             let size = (160.0 * self.scale).round();
             let rect = Rect::new(((w - size) / 2.0).round(), ((h - size) / 2.0).round() - self.px(12.0), size, size);
-            (rect, self.splash.as_ref().and_then(|sp| sp.tex.as_ref().map(|(_, b)| b.clone())))
+            (rect, Some(bind))
         };
         // The plate needs nothing of the first tab: it is the first tab.
         let ready = plate || self.splash_ready();
