@@ -705,3 +705,40 @@ the look: ink or paper by the background, the accent from a coloured
 foreground) · ALWAYS · PANE ONLY. `nus theme <name>` and `nus look
 ink|paper --signal` are the hot-swap from a script.
 
+
+## Tokens for the caret and the selection, program colours, what comes first (settled 2026-09-17, twentieth pass)
+
+**Caret and selection are tokens.** A theme carries, per face, a caret
+colour and a selection colour — the ink unless it says — beside paper,
+ink and page on LOOK · TOKENS, with a tray of the ink, the signal and
+the brights and a FOLLOW THE INK chip to let go. The shell's selection
+wash, the editor's, and both carets draw from them; the cursor rule's
+INK became THE THEME'S CARET (old prefs still read), SIGNAL and THE
+TAB'S OWN sit over it, and a program's OSC 12 still wins. The wash is
+always 22%; the token is the colour.
+
+**Program colours.** claude, codex and every TUI bring colours picked
+against someone else's background, and land unreadable on ours.
+TERMINAL · PROGRAM COLOURS: AS THEY COME · 3:1 · **4.5:1 AA** (default) ·
+7:1 AAA — any text that can't be read against its paper is walked
+toward white or black, the way it leans, until it reads (WCAG 2; VS
+Code's terminal does the same at 4.5). TRUECOLOUR: **AS SENT** · THE
+THEME'S SIXTEEN — the second snaps truecolour and the 256 to the nearest
+of ours in Oklab, so a program wears the theme. Per program, in
+rules.luau: `program(p)` (name, cmd, cwd, theme, ink, paper, signal)
+returns `contrast`, `snap`, `ansi` (sixteen of its own), `remap` (a
+colour it hardcodes → hex or ink/paper/signal/dim). The running program
+is read from the pane's blocks (the first real word: past env, sudo,
+npx, paths, .exe); answers are cached per program and face until the
+rules reload or the theme changes. The default rules carry claude's
+remap as a comment: its own colours, graded, is the default.
+
+**Terminal first, or browser first.** STARTUP · FIRST: **TERMINAL** ·
+BROWSER, and a START HERE row on the welcome page that flips it.
+Terminal first is what nus has been: NEW TAB and an empty Ctrl+T open
+the default shell, the palette leads with shells, links from outside
+arrive in the little window. Browser first: NEW TAB and an empty Ctrl+T
+open the atlas, the palette leads with the address and history, the
+kinds fan out with PAGE on top, links from outside open as tabs here,
+THEN is the last page. Picking one sets THEN and LINKS FROM OUTSIDE
+once; after that they're yours.

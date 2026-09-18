@@ -25,6 +25,8 @@ color on screen: the active Space's.
 | dim        | `#8a857a`              | `#8a857a`                  |
 | page       | `#ffffff` (web content)| `#ffffff`                  |
 | scrim      | `rgba(244,241,234,.55)`| `rgba(0,0,0,0.5)`          |
+| caret      | the ink                | the ink                    |
+| selection  | the ink at 22%         | the ink at 22%             |
 
 Space signals (same in both themes): red `#c8102e`, blue `#1f5fbf`,
 gold `#d9a400`, green `#2e7d32`, violet `#6b3fa0`, teal `#1a7f8a`.
@@ -38,8 +40,19 @@ ANSI 0–15, ink theme:
 `#141414 #e0574c #7ac77f #e5b94a #6ea3ef #d086d0 #6fd0da #bdb8ab`
 `#5a564e #ff6f63 #93e39a #ffd06a #8fbcff #e9a0e9 #8be6ef #ece7da`
 
-Terminal default fg/bg = ink/paper of the theme. Cursor: block, ink on
-paper, no blink by default.
+Terminal default fg/bg = ink/paper of the theme. Cursor: block, the
+theme's caret on paper, no blink by default. Caret and selection are
+tokens a theme may set per face (LOOK · TOKENS); the shell's selection,
+the editor's selection and both carets draw from them, and the cursor
+rule's other choices (signal, the tab's own) sit over the caret.
+
+A program's own colours — truecolour and the 256 — are graded before
+they reach the screen: any text under 4.5:1 against its background is
+walked toward white or black, the way it leans, until it reads
+(TERMINAL · PROGRAM COLOURS). THE THEME'S SIXTEEN snaps them to the
+nearest of ours in Oklab, so a program wears the theme; `program(p)` in
+rules.luau does either per program, gives one its own sixteen, or remaps
+a colour it hardcodes.
 
 ## Type
 
