@@ -217,8 +217,9 @@ impl GridRenderer {
                     }
                     let is_cursor = cursor_here && c == cursor.col;
                     let block = is_cursor && shape == CursorShape::Block && focused;
-                    let (fg, bg) =
-                        resolve(cell, palette, policy, &sixteen, block, cursor_rgb, default_bg);
+                    let (fg, bg) = resolve(
+                        cell, palette, policy, &sixteen, block, cursor_rgb, default_bg,
+                    );
                     let x = c as f32 * cw;
                     if let Some(bgc) = bg {
                         let w = if cell.flags.contains(Flags::WIDE) {
@@ -296,8 +297,9 @@ impl GridRenderer {
                         let cell = &row.cells[c];
                         let is_cursor = cursor_here && c == cursor.col;
                         let block = is_cursor && shape == CursorShape::Block && focused;
-                        let (fg, _) =
-                            resolve(cell, palette, policy, &sixteen, block, cursor_rgb, default_bg);
+                        let (fg, _) = resolve(
+                            cell, palette, policy, &sixteen, block, cursor_rgb, default_bg,
+                        );
                         let x = (c as f32 * cw + g.x_offset + a.left as f32).round();
                         let y = (baseline - g.y_offset - a.top as f32).round();
                         cached.fg.push(Instance::glyph(

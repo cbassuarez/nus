@@ -100,12 +100,14 @@ pub fn ensure_contrast(fg: Color, bg: Color, min: f32) -> Color {
         let end_c = [end, end, end, fg[3]];
         // The least of the move that reads: a binary search on the mix.
         let (mut lo, mut hi) = (0.0f32, 1.0f32);
-        let mix = |t: f32| [
-            fg[0] + (end - fg[0]) * t,
-            fg[1] + (end - fg[1]) * t,
-            fg[2] + (end - fg[2]) * t,
-            fg[3],
-        ];
+        let mix = |t: f32| {
+            [
+                fg[0] + (end - fg[0]) * t,
+                fg[1] + (end - fg[1]) * t,
+                fg[2] + (end - fg[2]) * t,
+                fg[3],
+            ]
+        };
         if contrast(end_c, bg) < min {
             return (end_c, contrast(end_c, bg));
         }
@@ -159,9 +161,8 @@ pub fn nearest(c: Rgb, sixteen: &[Rgb; 16]) -> Rgb {
     let mut best = (f32::MAX, sixteen[7]);
     for &s in sixteen {
         let have = oklab(s);
-        let d = (want[0] - have[0]).powi(2)
-            + (want[1] - have[1]).powi(2)
-            + (want[2] - have[2]).powi(2);
+        let d =
+            (want[0] - have[0]).powi(2) + (want[1] - have[1]).powi(2) + (want[2] - have[2]).powi(2);
         if d < best.0 {
             best = (d, s);
         }
