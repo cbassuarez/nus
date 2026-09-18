@@ -72,7 +72,7 @@ impl Default for ThemeEdit {
     }
 }
 
-fn to_rgb(c: Color) -> nus_vt::Rgb {
+pub fn to_rgb(c: Color) -> nus_vt::Rgb {
     nus_vt::Rgb { r: (c[0] * 255.0).round() as u8, g: (c[1] * 255.0).round() as u8, b: (c[2] * 255.0).round() as u8 }
 }
 pub fn from_rgb(c: nus_vt::Rgb) -> Color {

@@ -212,6 +212,10 @@ pub struct TermPane {
     /// The prompt line's language server, once tried.
     pub plsp: Option<crate::prompt_lsp::LineLsp>,
     pub plsp_tried: bool,
+    /// The program running here ("claude", "nvim"), empty at a prompt;
+    /// the mark count it was read at.
+    pub program: String,
+    pub program_marks: usize,
     pub chip_hits: Vec<(Rect, usize)>,
     /// Blocks: folded output ranges (absolute lines), the display list they
     /// make, the block walked to, the filter, the lamps' hit rects.
@@ -1189,6 +1193,8 @@ impl App {
             mouse_last: None,
             plsp: None,
             plsp_tried: false,
+            program: String::new(),
+            program_marks: usize::MAX,
             chip_hits: Vec::new(),
             colour_offer: None,
             colour_offer_hit: None,
@@ -2095,6 +2101,40 @@ impl App {
         self.dirty = true;
     }
 
+    /// What a pane's colours go through: the settings' grade and
+    /// truecolour rule, then whatever `program(p)` says for what's running.
+    fn pane_policy(&self, program: &str, cwd: &Option<String>) -> nus_render::Policy {
+        let mut pol = nus_render::Policy { min_contrast: self.behavior.grade.ratio(), snap: self.behavior.truecolour == crate::settings::Truecolour::Snapped, ansi: None, remap: Vec::new() };
+        if program.is_empty() {
+            return pol;
+        }
+        let Some(look) = self.rules.program(program, program, cwd.as_deref().unwrap_or(""), &self.theme, self.surface.signal) else { return pol };
+        let word = |s: &str| -> Option<nus_vt::Rgb> {
+            let c = match s.trim() {
+                "ink" => self.theme.ink,
+                "paper" => self.theme.paper,
+                "signal" => self.surface.signal,
+                "dim" => self.theme.dim,
+                h => crate::surface::parse_hex(h)?,
+            };
+            Some(crate::theme_edit::to_rgb(c))
+        };
+        if let Some(c) = look.contrast {
+            pol.min_contrast = c.max(0.0);
+        }
+        if let Some(s) = look.snap {
+            pol.snap = s;
+        }
+        if let Some(a) = &look.ansi {
+            let parsed: Vec<Option<nus_vt::Rgb>> = a.iter().map(|s| word(s)).collect();
+            if parsed.iter().all(|c| c.is_some()) {
+                pol.ansi = Some(std::array::from_fn(|i| parsed[i].unwrap()));
+            }
+        }
+        pol.remap = look.remap.iter().filter_map(|(from, to)| Some((word(from)?, word(to)?))).collect();
+        pol
+    }
+
     /// The caret's colour outside a shell (the editor, the prompt line):
     /// the rule, resolved with the window's signal for the tab's own.
     pub(crate) fn caret_color(&self) -> nus_render::Color {
@@ -2514,6 +2554,7 @@ impl App {
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+        self.rules.forget_programs();
         for tab in &mut self.tabs {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Term(t) = p {
@@ -5068,6 +5109,8 @@ impl App {
                     lk.visible = false;
                 }
                 let view = p.view().to_vec();
+                p.tend_program();
+                p.grid.policy = self.pane_policy(&p.program, &p.cwd);
                 p.grid.draw_view(scene, &mut self.fonts, &p.term, p.origin, focused, lk, &view);
                 if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
                     self.draw_moving_cursor(scene, p, look);

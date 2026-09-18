@@ -120,6 +120,41 @@ pub enum ShellColours {
     PaneOnly,
 }
 
+/// The contrast every program's text must reach against its background
+/// (WCAG 2); what doesn't is walked toward ink until it does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Grade {
+    Off,
+    /// 3:1 — large text.
+    Large,
+    /// 4.5:1 — AA for text. VS Code's terminal default; ours.
+    #[default]
+    Aa,
+    /// 7:1 — AAA.
+    Aaa,
+}
+
+impl Grade {
+    pub fn ratio(self) -> f32 {
+        match self {
+            Grade::Off => 0.0,
+            Grade::Large => 3.0,
+            Grade::Aa => 4.5,
+            Grade::Aaa => 7.0,
+        }
+    }
+}
+
+/// What a program's truecolour and 256-colour text does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Truecolour {
+    /// As sent, graded.
+    #[default]
+    AsSent,
+    /// Snapped to the nearest of the theme's sixteen: the program wears the theme.
+    Snapped,
+}
+
 /// How often TIDY suggests groups on its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum TidyEvery {
@@ -359,6 +394,12 @@ pub struct Behavior {
     /// OSC 10/11 from a shell: a chip offers the look, or it applies, or the pane only.
     #[serde(default)]
     pub shell_colours: ShellColours,
+    /// Program colours: the contrast they must reach, and whether their
+    /// truecolour wears the theme.
+    #[serde(default)]
+    pub grade: Grade,
+    #[serde(default)]
+    pub truecolour: Truecolour,
     /// Tidy: how often to suggest groups; dedupe bands on/off.
     #[serde(default)]
     pub tidy_every: TidyEvery,
@@ -551,6 +592,8 @@ impl Default for Behavior {
             then_layout: String::new(),
             ssh_integration: true,
             shell_colours: ShellColours::Chip,
+            grade: Grade::Aa,
+            truecolour: Truecolour::AsSent,
             sync_folder: String::new(),
             sync_git: String::new(),
             sync_session: false,
@@ -707,6 +750,8 @@ pub enum Hit {
     TidyEvery(TidyEvery),
     Dedupe(bool),
     ShellColours(ShellColours),
+    Grade(Grade),
+    Truecolour(Truecolour),
     SyncSession(bool),
     SyncEvery(u16),
     SyncAtQuit(bool),
@@ -1018,6 +1063,8 @@ impl App {
             Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
             Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
             Hit::ShellColours(c) => format!("shell colours: {:?}", c).to_lowercase(),
+            Hit::Grade(g) => match g { Grade::Off => "program colours as they come".into(), g => format!("program colours graded to {}:1", g.ratio()) },
+            Hit::Truecolour(t) => match t { Truecolour::AsSent => "truecolour as sent".into(), Truecolour::Snapped => "truecolour wears the theme".into() },
             Hit::SyncSession(b) => if b { "the session syncs".into() } else { "the session stays here".into() },
             Hit::SyncEvery(n) => if n == 0 { "sync on demand".into() } else { format!("sync every {n} min") },
             Hit::SyncAtQuit(b) => if b { "sync at quit".into() } else { "no sync at quit".into() },
@@ -1364,6 +1411,8 @@ impl App {
             Hit::TidyEvery(e) => self.behavior.tidy_every = e,
             Hit::Dedupe(b) => self.behavior.dedupe = b,
             Hit::ShellColours(c) => self.behavior.shell_colours = c,
+            Hit::Grade(g) => self.behavior.grade = g,
+            Hit::Truecolour(t) => self.behavior.truecolour = t,
             Hit::SyncSession(b) => self.behavior.sync_session = b,
             Hit::SyncEvery(n) => self.behavior.sync_every_min = n,
             Hit::SyncAtQuit(b) => self.behavior.sync_at_quit = b,
@@ -2455,6 +2504,24 @@ impl App {
                     ]),
                 ));
                 v.insert(8, ("".into(), Info("a script that sets the terminal's colours (OSC 10/11, like kitty's set-colors) changes the pane; OFFER puts a chip on it to apply them to the whole look — ink or paper by the background, the accent from the foreground — ALWAYS does it at once · nus theme <name> / nus look from the shell also work".into())));
+                let (g, tc) = (self.behavior.grade, self.behavior.truecolour);
+                v.insert(9, (
+                    "PROGRAM COLOURS".into(),
+                    Choice(vec![
+                        ("AS THEY COME".into(), Hit::Grade(Grade::Off), g == Grade::Off),
+                        ("3:1".into(), Hit::Grade(Grade::Large), g == Grade::Large),
+                        ("4.5:1 · AA".into(), Hit::Grade(Grade::Aa), g == Grade::Aa),
+                        ("7:1 · AAA".into(), Hit::Grade(Grade::Aaa), g == Grade::Aaa),
+                    ]),
+                ));
+                v.insert(10, (
+                    "TRUECOLOUR".into(),
+                    Choice(vec![
+                        ("AS SENT".into(), Hit::Truecolour(Truecolour::AsSent), tc == Truecolour::AsSent),
+                        ("THE THEME'S SIXTEEN".into(), Hit::Truecolour(Truecolour::Snapped), tc == Truecolour::Snapped),
+                    ]),
+                ));
+                v.insert(11, ("".into(), Info("claude, codex and every TUI bring colours picked against someone else's background; the grade walks any text that can't be read against its paper toward ink until it reads (WCAG), and THE THEME'S SIXTEEN snaps their truecolour to the nearest of ours so they wear the theme · program(p) in rules.luau gives one program its own sixteen, remaps a colour it hardcodes, or sets these per program".into())));
                 v.insert(9, (
                     "SSH".into(),
                     Choice(vec![("BRING THE INTEGRATION".into(), Hit::SshIntegration(!self.behavior.ssh_integration), self.behavior.ssh_integration)]),

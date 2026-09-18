@@ -35,6 +35,42 @@ impl Block {
     }
 }
 
+/// The program a command line runs: the first word past env assignments
+/// and the usual wrappers, its path and `.exe` dropped. `sudo nvim x` →
+/// nvim; `FOO=1 npx claude` → claude; `./target/debug/nus.exe` → nus.
+pub fn program_of(cmd: &str) -> String {
+    let wrappers = ["sudo", "doas", "env", "time", "nohup", "exec", "command", "builtin", "npx", "pnpx", "bunx", "uvx", "pipx", "cargo-run"];
+    for word in cmd.split_whitespace() {
+        let w = word.trim_matches(|c| c == '"' || c == '\'');
+        if w.is_empty() || w.starts_with('-') {
+            continue;
+        }
+        if w.contains('=') && !w.starts_with('=') && w.split('=').next().is_some_and(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+            continue;
+        }
+        let base = w.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(w);
+        let base = base.strip_suffix(".exe").or_else(|| base.strip_suffix(".cmd")).or_else(|| base.strip_suffix(".bat")).unwrap_or(base);
+        if wrappers.contains(&base) {
+            continue;
+        }
+        return base.to_ascii_lowercase();
+    }
+    String::new()
+}
+
+impl TermPane {
+    /// What is running in this pane right now, or nothing at a prompt.
+    /// Recomputed when the marks change; a walk over them otherwise.
+    pub(crate) fn tend_program(&mut self) {
+        let n = self.term.marks.len();
+        if n == self.program_marks {
+            return;
+        }
+        self.program_marks = n;
+        self.program = self.blocks().last().filter(|b| b.running).map(|b| program_of(&b.cmd)).unwrap_or_default();
+    }
+}
+
 impl TermPane {
     /// Every block in scrollback, oldest first. Cheap: a walk over marks.
     pub fn blocks(&self) -> Vec<Block> {
@@ -448,5 +484,21 @@ impl App {
             }
             None => self.notice("could not write the block page"),
         }
+    }
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::program_of;
+
+    #[test]
+    fn the_program_is_the_first_real_word() {
+        assert_eq!(program_of("claude --continue"), "claude");
+        assert_eq!(program_of("sudo nvim x.rs"), "nvim");
+        assert_eq!(program_of("FOO=1 BAR=2 npx claude"), "claude");
+        assert_eq!(program_of("./target/debug/nus.exe ls"), "nus");
+        assert_eq!(program_of(r"C:\Users\seb\bin\Codex.exe"), "codex");
+        assert_eq!(program_of("time cargo test"), "cargo");
+        assert_eq!(program_of(""), "");
     }
 }
