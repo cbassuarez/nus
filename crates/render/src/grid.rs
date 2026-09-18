@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use nus_vt::{Cell, Color as VtColor, CursorShape, Flags, Modes, Term};
 
+use crate::policy::{ensure_contrast, Policy};
 use crate::scene::{Color, Instance, Rect, Scene};
 use crate::text::{FontId, FontSystem, Metrics};
 
@@ -19,6 +20,9 @@ pub struct GridRenderer {
     pub font: FontId,
     pub px: f32,
     pub metrics: Metrics,
+    /// What happens to the program's colours on the way to the screen;
+    /// the host sets it per pane (the theme's grade, a program's own).
+    pub policy: Policy,
     rows: Vec<CachedRow>,
     text: String,
     col_of: Vec<usize>,
@@ -67,6 +71,7 @@ impl GridRenderer {
             font,
             px,
             metrics: fonts.metrics(font, px),
+            policy: Policy::default(),
             rows: Vec::new(),
             text: String::new(),
             col_of: Vec::new(),
@@ -147,6 +152,9 @@ impl GridRenderer {
         let weight = look.weight.max(1.0);
         let hollow = look.hollow_unfocused;
         let default_bg = to_color(palette.get(nus_vt::palette::BG));
+        let policy = &self.policy;
+        let policy_stamp = policy.stamp();
+        let sixteen: [nus_vt::Rgb; 16] = std::array::from_fn(|i| palette.get(i));
         self.rows.resize_with(rows, || CachedRow {
             hash: 0,
             bg: Vec::new(),
@@ -194,6 +202,7 @@ impl GridRenderer {
             }
             // Palette changes invalidate everything; fold a cheap sample in.
             palette.get(nus_vt::palette::FG).r.hash(&mut h);
+            policy_stamp.hash(&mut h);
             let hash = h.finish();
             if self.rows[r].hash != hash || self.rows[r].hash == 0 {
                 let cached = &mut self.rows[r];
@@ -208,7 +217,8 @@ impl GridRenderer {
                     }
                     let is_cursor = cursor_here && c == cursor.col;
                     let block = is_cursor && shape == CursorShape::Block && focused;
-                    let (fg, bg) = resolve(cell, palette, block, cursor_rgb, default_bg);
+                    let (fg, bg) =
+                        resolve(cell, palette, policy, &sixteen, block, cursor_rgb, default_bg);
                     let x = c as f32 * cw;
                     if let Some(bgc) = bg {
                         let w = if cell.flags.contains(Flags::WIDE) {
@@ -286,7 +296,8 @@ impl GridRenderer {
                         let cell = &row.cells[c];
                         let is_cursor = cursor_here && c == cursor.col;
                         let block = is_cursor && shape == CursorShape::Block && focused;
-                        let (fg, _) = resolve(cell, palette, block, cursor_rgb, default_bg);
+                        let (fg, _) =
+                            resolve(cell, palette, policy, &sixteen, block, cursor_rgb, default_bg);
                         let x = (c as f32 * cw + g.x_offset + a.left as f32).round();
                         let y = (baseline - g.y_offset - a.top as f32).round();
                         cached.fg.push(Instance::glyph(
@@ -324,9 +335,30 @@ impl GridRenderer {
     }
 }
 
+/// One of the program's colours through the palette and the policy: a
+/// program's own sixteen over the theme's, remaps, the snap for anything
+/// that isn't one of the sixteen.
+fn place(
+    c: VtColor,
+    is_fg: bool,
+    palette: &nus_vt::Palette,
+    policy: &Policy,
+    sixteen: &[nus_vt::Rgb; 16],
+) -> nus_vt::Rgb {
+    let of_sixteen = matches!(c, VtColor::Indexed(0..=15) | VtColor::Default);
+    let rgb = match (c, &policy.ansi) {
+        (VtColor::Indexed(i @ 0..=15), Some(own)) => own[i as usize],
+        _ => palette.resolve(c, is_fg),
+    };
+    policy.place(rgb, of_sixteen, sixteen)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn resolve(
     cell: &Cell,
     palette: &nus_vt::Palette,
+    policy: &Policy,
+    sixteen: &[nus_vt::Rgb; 16],
     block_cursor: bool,
     cursor_rgb: Color,
     default_bg: Color,
@@ -339,12 +371,12 @@ fn resolve(
             fg = VtColor::Indexed(0);
         }
     }
-    let mut fgc = to_color(palette.resolve(fg, true));
     if cell.flags.contains(Flags::BOLD) {
         if let VtColor::Indexed(i @ 0..=7) = fg {
-            fgc = to_color(palette.get(i as usize + 8));
+            fg = VtColor::Indexed(i + 8);
         }
     }
+    let mut fgc = to_color(place(fg, true, palette, policy, sixteen));
     if cell.flags.contains(Flags::DIM) {
         fgc = [fgc[0] * 0.6, fgc[1] * 0.6, fgc[2] * 0.6, 1.0];
     }
@@ -354,7 +386,12 @@ fn resolve(
     let bgc = if bg == VtColor::Default && !cell.flags.contains(Flags::INVERSE) {
         None
     } else {
-        Some(to_color(palette.resolve(bg, false)))
+        Some(to_color(place(bg, false, palette, policy, sixteen)))
     };
+    // The grade: what can't be read against its background is walked
+    // until it can. A blank cell has nothing to read.
+    if policy.min_contrast > 1.0 && cell.ch != ' ' && cell.ch != ' ' {
+        fgc = ensure_contrast(fgc, bgc.unwrap_or(default_bg), policy.min_contrast);
+    }
     (fgc, bgc)
 }

@@ -1572,6 +1572,7 @@ impl App {
         let ch = metrics.line_height.max(term_px * 1.25);
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
         let signal = self.surface.signal;
+        let caret = self.caret_color();
         let (mx, my) = self.mouse;
         let strip_h = self.px(30.0);
         let status_h = self.px(26.0);
@@ -1732,7 +1733,7 @@ impl App {
                 .collect()
         };
         let wash = crate::surface::mix(paper, ink, 0.04);
-        let sel_color = fade(signal, 0.22);
+        let sel_color = self.theme.selection;
         let match_color = fade(ansi(3), 0.25);
 
         for row in 0..rows {
@@ -1857,7 +1858,7 @@ impl App {
             // The caret.
             if line == cur_line && focused && e.goto.is_none() && e.find.is_none() {
                 let cx = ox + b.col_of(b.cursor) as f32 * cw;
-                scene.rect(Rect::new(cx - px(0.5), ly, px(2.0), ch), signal);
+                scene.rect(Rect::new(cx - px(0.5), ly, px(2.0), ch), caret);
             }
         }
 

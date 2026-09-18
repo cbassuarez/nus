@@ -6,7 +6,8 @@
 //!     drift, breath, opacity;
 //!   · two faces — paper and ink — each with paper / ink / page tokens and
 //!     a contrast-graded ANSI 16, so "follow OS" switches inside the theme;
-//!   · the cursor's colour rule (ink, signal, the tab's own);
+//!   · a caret and a selection colour per face (the ink unless said);
+//!   · the cursor's colour rule (the theme's caret, signal, the tab's own);
 //!   · the loading bar's style and colour;
 //!   · a sound signature: cues for the events that carry character
 //!     (launch, ready, tab switch, bell), the rest left to the user;
@@ -34,6 +35,11 @@ pub struct Face {
     pub page: Color,
     /// None = Broadsheet's sixteen for that mode.
     pub ansi: Option<[Color; 16]>,
+    /// None = the ink. The selection is a colour; the wash is 22%.
+    #[serde(default)]
+    pub caret: Option<Color>,
+    #[serde(default)]
+    pub selection: Option<Color>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -73,7 +79,7 @@ fn ansi(v: [u32; 16]) -> Option<[Color; 16]> {
 }
 
 fn face(paper: u32, ink: u32, page: u32, a: Option<[Color; 16]>) -> Face {
-    Face { paper: hex(paper), ink: hex(ink), page: hex(page), ansi: a }
+    Face { paper: hex(paper), ink: hex(ink), page: hex(page), ansi: a, caret: None, selection: None }
 }
 
 fn surface(signal: u32, stops: &[u32], shell: Shell, width: f32, radius: f32, tex: TextureKind, strength: f32, scale: f32) -> Surface {
@@ -152,7 +158,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xf4f1ea, 0x141414, 0xffffff, None),
             face(0x141414, 0xece7da, 0xffffff, None),
             Surface::default(),
-            C::Ink, BarStyle::Comet, BarColor::Signal,
+            C::Theme, BarStyle::Comet, BarColor::Signal,
             &[], "family", false,
         ),
         theme(
@@ -161,7 +167,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xe9e6df, 0x232323, 0xf7f5f0, ansi(NEWSPRINT_PAPER)),
             face(0x1a1a1a, 0xd9d6cf, 0xf7f5f0, None),
             surface(0xa83232, &[0xa83232, 0x5a5a5a], Shell::Band, 6.0, 0.0, TextureKind::Grain, 0.22, 2.0),
-            C::Ink, BarStyle::Rule, BarColor::Ink,
+            C::Theme, BarStyle::Rule, BarColor::Ink,
             &[("launch", "arrival"), ("page.ready", "tick")], "same", false,
         ),
         theme(
@@ -206,7 +212,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xe8f2e8, 0x0f2a14, 0xf4faf4, None),
             face(0x0a0f0a, 0x33ff66, 0xf4faf4, ansi(PHOSPHOR)),
             Surface { texture_motion: true, ..surface(0x33ff66, &[0x33ff66, 0x0a3d1a], Shell::Band, 6.0, 0.0, TextureKind::Halftone, 0.2, 3.0) },
-            C::Ink, BarStyle::Rule, BarColor::Ink,
+            C::Theme, BarStyle::Rule, BarColor::Ink,
             &[("launch", "scan"), ("bell", "error"), ("command.done", "tick")], "same", true,
         ),
         theme(
@@ -215,7 +221,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xf8f0dc, 0x3a2a08, 0xfffaf0, None),
             face(0x120b02, 0xffb000, 0xfffaf0, ansi(AMBER)),
             Surface { texture_motion: true, ..surface(0xffb000, &[0xffb000, 0x4a3410], Shell::Band, 6.0, 0.0, TextureKind::Halftone, 0.18, 3.0) },
-            C::Ink, BarStyle::Rule, BarColor::Ink,
+            C::Theme, BarStyle::Rule, BarColor::Ink,
             &[("launch", "scan"), ("bell", "error")], "same", true,
         ),
         theme(
@@ -233,7 +239,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xeef2e6, 0x1a1f16, 0xffffff, None),
             face(0x141814, 0xe0e6d6, 0xffffff, None),
             surface(0x2e7d32, &[0x2e7d32, 0xc48a00], Shell::Stroke, 3.0, 4.0, TextureKind::Stitch, 0.12, 6.0),
-            C::Ink, BarStyle::Rule, BarColor::Signal,
+            C::Theme, BarStyle::Rule, BarColor::Signal,
             &[("tab.switch", "tick")], "family", false,
         ),
         theme(
@@ -242,7 +248,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xf4f1ea, 0x111111, 0xffffff, ansi(BAUHAUS_PAPER)),
             face(0x111111, 0xf4f1ea, 0xffffff, None),
             surface(0xd7263d, &[0xd7263d, 0x1f4ea1, 0xf2c200], Shell::Gradient, 8.0, 0.0, TextureKind::None, 0.0, 3.0),
-            C::Ink, BarStyle::Carapace, BarColor::Signal,
+            C::Theme, BarStyle::Carapace, BarColor::Signal,
             &[("launch", "press"), ("tab.switch", "press")], "wheel", false,
         ),
         theme(
@@ -251,7 +257,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xffffff, 0x000000, 0xffffff, ansi(ONYX_PAPER)),
             face(0x000000, 0xffffff, 0xffffff, ansi(ONYX)),
             surface(0xffffff, &[0xffffff, 0x555555], Shell::Stroke, 1.0, 0.0, TextureKind::None, 0.0, 3.0),
-            C::Ink, BarStyle::Rule, BarColor::Ink,
+            C::Theme, BarStyle::Rule, BarColor::Ink,
             &[], "same", true,
         ),
         theme(
@@ -260,7 +266,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xffffff, 0x000000, 0xffffff, ansi(CONTRAST_PAPER)),
             face(0x000000, 0xffffff, 0xffffff, ansi(CONTRAST_INK)),
             surface(0xb30000, &[0xb30000, 0x000000], Shell::Stroke, 6.0, 0.0, TextureKind::None, 0.0, 3.0),
-            C::Ink, BarStyle::Rule, BarColor::Signal,
+            C::Theme, BarStyle::Rule, BarColor::Signal,
             &[], "same", false,
         ),
     ];

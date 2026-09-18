@@ -40,6 +40,12 @@ pub struct ModeEdit {
     pub ink: Option<Color>,
     pub page: Option<Color>,
     pub ansi: Option<[Color; 16]>,
+    /// The caret, when it isn't the ink; the selection's colour, when it
+    /// isn't the ink (the wash is always 22%).
+    #[serde(default)]
+    pub caret: Option<Color>,
+    #[serde(default)]
+    pub selection: Option<Color>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -171,6 +177,8 @@ impl ThemeEdit {
         if let Some(p) = e.page {
             t.page = p;
         }
+        t.caret = e.caret.unwrap_or(t.ink);
+        t.selection = Theme::with_alpha(e.selection.unwrap_or(t.ink), 0.22);
         if e.paper.is_some() || e.ink.is_some() {
             t.dim = mix(t.ink, t.paper, 0.45);
             t.tint = Theme::with_alpha(t.ink, if mode == Mode::Ink { 0.07 } else { 0.06 });

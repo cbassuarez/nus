@@ -499,7 +499,7 @@ impl App {
                 if to > from {
                     let x = p.origin.0 + from as f32 * cw;
                     let y = p.origin.1 + row as f32 * ch;
-                    scene.rect(Rect::new(x, y, (to - from) as f32 * cw, ch), fade(ink, 0.22));
+                    scene.rect(Rect::new(x, y, (to - from) as f32 * cw, ch), t.selection);
                 }
             }
         }

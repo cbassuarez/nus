@@ -2095,6 +2095,15 @@ impl App {
         self.dirty = true;
     }
 
+    /// The caret's colour outside a shell (the editor, the prompt line):
+    /// the rule, resolved with the window's signal for the tab's own.
+    pub(crate) fn caret_color(&self) -> nus_render::Color {
+        match self.cursor.color {
+            crate::settings::CursorColor::Theme => self.theme.caret,
+            _ => self.surface.signal,
+        }
+    }
+
     /// The cursor as the prefs want it, for one pane.
     fn cursor_look(&self, p: &TermPane, focused: bool, tab_signal: Option<nus_render::Color>) -> nus_render::CursorLook {
         use crate::settings::{Blink, CursorColor, CursorShapePref};
@@ -2107,7 +2116,9 @@ impl App {
             CursorShapePref::Underline => Some(nus_vt::CursorShape::Underline),
         };
         let color = match self.cursor.color {
-            CursorColor::Ink => None,
+            // The theme's caret, unless the program set one (OSC 12).
+            CursorColor::Theme if p.term.palette.override_of(nus_vt::palette::CURSOR).is_some() => None,
+            CursorColor::Theme => Some(self.theme.caret),
             CursorColor::Signal => Some(self.surface.signal),
             CursorColor::Tab => tab_signal.or(Some(self.surface.signal)),
         };
@@ -2145,7 +2156,7 @@ impl App {
         }
         let (x, y) = (p.cur_x.value(), p.cur_y.value());
         let gliding = p.cur_x.active() || p.cur_y.active();
-        let color = look.color.unwrap_or(self.theme.ink);
+        let color = look.color.unwrap_or(self.theme.caret);
         let shape = look.shape.unwrap_or(p.term.cursor_style().shape);
         let rect_at = |cx: f32, cy: f32| {
             let px = p.origin.0 + cx * cw;
@@ -2198,7 +2209,7 @@ impl App {
     pub(crate) fn apply_theme(&mut self, t: &crate::themes::StockTheme) {
         use crate::theme_edit::{Family, ModeEdit};
         self.surface = t.surface.clone();
-        let face = |f: &crate::themes::Face| ModeEdit { paper: Some(f.paper), ink: Some(f.ink), page: Some(f.page), ansi: f.ansi };
+        let face = |f: &crate::themes::Face| ModeEdit { paper: Some(f.paper), ink: Some(f.ink), page: Some(f.page), ansi: f.ansi, caret: f.caret, selection: f.selection };
         self.theme_edit.paper = face(&t.paper);
         self.theme_edit.ink = face(&t.ink);
         self.theme_edit.family = Family::Imported;
@@ -2230,14 +2241,14 @@ impl App {
     pub(crate) fn current_theme(&self, name: &str) -> crate::themes::StockTheme {
         let paper = self.theme_edit.build(nus_render::Mode::Paper, self.surface.signal);
         let ink = self.theme_edit.build(nus_render::Mode::Ink, self.surface.signal);
-        let face = |t: &Theme| crate::themes::Face { paper: t.paper, ink: t.ink, page: t.page, ansi: Some(t.ansi.map(crate::theme_edit::from_rgb)) };
+        let face = |t: &Theme, e: &crate::theme_edit::ModeEdit| crate::themes::Face { paper: t.paper, ink: t.ink, page: t.page, ansi: Some(t.ansi.map(crate::theme_edit::from_rgb)), caret: e.caret, selection: e.selection };
         crate::themes::StockTheme {
             name: name.to_string(),
             story: format!("saved from {} on {}", self.preset_name, chrono_date()),
             port: false,
             cursor_motion: Some(self.cursor.motion),
-            paper: face(&paper),
-            ink: face(&ink),
+            paper: face(&paper, &self.theme_edit.paper),
+            ink: face(&ink, &self.theme_edit.ink),
             surface: self.surface.clone(),
             cursor: self.cursor.color,
             bar: self.load_bar.style,

@@ -214,7 +214,9 @@ pub enum Blink {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CursorColor {
-    Ink,
+    /// The theme's caret token (the ink unless the theme says).
+    #[serde(alias = "Ink")]
+    Theme,
     Signal,
     Tab,
 }
@@ -260,7 +262,7 @@ fn default_smear() -> f32 {
 
 impl Default for CursorPrefs {
     fn default() -> Self {
-        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Ink, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true, smear: 1.0 }
+        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Theme, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true, smear: 1.0 }
     }
 }
 
@@ -664,6 +666,8 @@ pub enum Hit {
     TokPaper(Color),
     TokInk(Color),
     TokPage(Color),
+    TokCaret(Option<Color>),
+    TokSelection(Option<Color>),
     TokReset,
     AnsiSel(usize),
     AnsiSet(Color),
@@ -776,6 +780,8 @@ pub enum TokSel {
     Paper,
     Ink,
     Page,
+    Caret,
+    Selection,
     Ansi(usize),
 }
 
@@ -972,6 +978,8 @@ impl App {
             Hit::TokPaper(c) => format!("paper {}", surface::hex(c)),
             Hit::TokInk(c) => format!("ink {}", surface::hex(c)),
             Hit::TokPage(c) => format!("page {}", surface::hex(c)),
+            Hit::TokCaret(c) => c.map(|c| format!("caret {}", surface::hex(c))).unwrap_or_else(|| "caret follows the ink".into()),
+            Hit::TokSelection(c) => c.map(|c| format!("selection {}", surface::hex(c))).unwrap_or_else(|| "selection follows the ink".into()),
             Hit::TokReset => "reset this mode's tokens".into(),
             Hit::AnsiSel(i) => format!("ansi {i}"),
             Hit::AnsiSet(c) => format!("set to {}", surface::hex(c)),
@@ -1249,6 +1257,16 @@ impl App {
                 self.theme_edit.edit_mut(mode).page = Some(c);
                 self.rebuild_theme();
             }
+            Hit::TokCaret(c) => {
+                let mode = self.theme.mode;
+                self.theme_edit.edit_mut(mode).caret = c;
+                self.rebuild_theme();
+            }
+            Hit::TokSelection(c) => {
+                let mode = self.theme.mode;
+                self.theme_edit.edit_mut(mode).selection = c;
+                self.rebuild_theme();
+            }
             Hit::TokReset => {
                 let mode = self.theme.mode;
                 *self.theme_edit.edit_mut(mode) = Default::default();
@@ -1515,6 +1533,8 @@ impl App {
             TokSel::Paper => self.theme.paper,
             TokSel::Ink => self.theme.ink,
             TokSel::Page => self.theme.page,
+            TokSel::Caret => self.theme.caret,
+            TokSel::Selection => nus_render::Theme::with_alpha(self.theme.selection, 1.0),
             TokSel::Ansi(i) => crate::theme_edit::from_rgb(self.theme.ansi[i.min(15)]),
         }
     }
@@ -1530,6 +1550,8 @@ impl App {
             TokSel::Paper => Hit::TokPaper(c),
             TokSel::Ink => Hit::TokInk(c),
             TokSel::Page => Hit::TokPage(c),
+            TokSel::Caret => Hit::TokCaret(Some(c)),
+            TokSel::Selection => Hit::TokSelection(Some(c)),
             TokSel::Ansi(i) => {
                 self.ansi_sel = i;
                 Hit::AnsiSet(c)
@@ -1726,7 +1748,7 @@ impl App {
         // Prompt with the cursor as configured.
         let mut lx = pane.x + self.px(10.0);
         lx += self.fonts.draw(scene, mono(ansi[2], self), lx, ly, "$ ");
-        let cur_c = match self.cursor.color { crate::settings::CursorColor::Ink => ink, _ => self.surface.signal };
+        let cur_c = match self.cursor.color { crate::settings::CursorColor::Theme => self.theme.caret, _ => self.surface.signal };
         let cw = self.px(5.5);
         let chh = self.px(11.0);
         match self.cursor.shape {
@@ -1942,6 +1964,9 @@ impl App {
                     list.iter().map(|&v| { let c = nus_render::theme::hex(v); (Some(c), mk(c), (c[0] - cur[0]).abs() < 0.004 && (c[1] - cur[1]).abs() < 0.004 && (c[2] - cur[2]).abs() < 0.004) }).collect()
                 };
                 let ansi: Vec<Color> = (0..16).map(|i| crate::theme_edit::from_rgb(t.ansi[i])).collect();
+                let edit = if ink_mode { self.theme_edit.ink.clone() } else { self.theme_edit.paper.clone() };
+                // What a caret or a selection might be: the ink, the signal, the brights.
+                let marks: Vec<Color> = std::iter::once(t.ink).chain(std::iter::once(self.surface.signal)).chain(surface::family(self.surface.signal)).chain((9..16).map(|i| ansi[i])).collect();
                 let sel = self.ansi_sel.min(15);
                 let row = |from: usize| -> Vec<(Option<Color>, Hit, bool)> { (from..from + 8).map(|i| (Some(ansi[i]), Hit::AnsiSel(i), i == sel)).collect() };
                 let mut cands: Vec<(Option<Color>, Hit, bool)> = Vec::new();
@@ -1972,15 +1997,18 @@ impl App {
                     ("INK".into(), Some(t.ink), hx(t.ink), Hit::TokSel(TokSel::Ink), self.tok_sel == TokSel::Ink),
                     ("PAGE".into(), Some(t.page), hx(t.page), Hit::TokSel(TokSel::Page), self.tok_sel == TokSel::Page),
                     ("DIM".into(), Some(t.dim), format!("{} · derived", hx(t.dim)), Hit::TokSel(self.tok_sel), false),
+                    ("CARET".into(), Some(t.caret), if edit.caret.is_some() { hx(t.caret) } else { format!("{} · the ink", hx(t.caret)) }, Hit::TokSel(TokSel::Caret), self.tok_sel == TokSel::Caret),
+                    ("SELECTION".into(), Some(nus_render::Theme::with_alpha(t.selection, 1.0)), if edit.selection.is_some() { format!("{} · at 22%", hx(t.selection)) } else { format!("{} · the ink at 22%", hx(t.selection)) }, Hit::TokSel(TokSel::Selection), self.tok_sel == TokSel::Selection),
                 ];
                 let ansi_tiles: Vec<(String, Option<Color>, String, Hit, bool)> = (0..16).map(|i| (format!("{i}"), Some(ansi[i]), hx(ansi[i]), Hit::TokSel(TokSel::Ansi(i)), self.tok_sel == TokSel::Ansi(i))).collect();
-                let editing_tok = matches!(self.tok_sel, TokSel::Paper | TokSel::Ink | TokSel::Page);
+                let editing_tok = matches!(self.tok_sel, TokSel::Paper | TokSel::Ink | TokSel::Page | TokSel::Caret | TokSel::Selection);
                 let editing_ansi = matches!(self.tok_sel, TokSel::Ansi(_));
                 let cur = self.tok_color();
                 let tray: Vec<(String, Option<Color>, String, Hit, bool)> = match self.tok_sel {
                     TokSel::Paper => papers.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
                     TokSel::Ink => inks.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
                     TokSel::Page => pages.iter().map(|&v| { let c = nus_render::theme::hex(v); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
+                    TokSel::Caret | TokSel::Selection => marks.iter().map(|&c| (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur)).collect(),
                     TokSel::Ansi(_) => cands.iter().map(|(c, _, _)| { let c = c.unwrap(); (String::new(), Some(c), hx(c), Hit::TokSet(c), c == cur) }).collect(),
                     _ => Vec::new(),
                 };
@@ -1996,6 +2024,11 @@ impl App {
                 if editing_tok {
                     picker(&mut v, format!("{:?}", self.tok_sel), self);
                     v.push(("TRAY".into(), Tokens(tray.clone(), false)));
+                    match self.tok_sel {
+                        TokSel::Caret if edit.caret.is_some() => v.push(("".into(), Choice(vec![("FOLLOW THE INK".into(), Hit::TokCaret(None), false)]))),
+                        TokSel::Selection if edit.selection.is_some() => v.push(("".into(), Choice(vec![("FOLLOW THE INK".into(), Hit::TokSelection(None), false)]))),
+                        _ => {}
+                    }
                 }
                 v.push(("CONTRAST".into(), Info(format!("ink on paper {:.1}:1 {} · dim {:.1}:1 {} · signal {:.1}:1 {}", c_ink, grade(c_ink), c_dim, grade(c_dim), c_sig, grade(c_sig)))));
                 v.push(("".into(), Info(format!("dim, tint and hot follow paper and ink · editing the {} theme; TYPE & MOTION switches", if ink_mode { "ink" } else { "paper" }))));
@@ -2072,12 +2105,12 @@ impl App {
                     (
                         "COLOUR".into(),
                         Choice(vec![
-                            ("INK".into(), Hit::CurColor(CursorColor::Ink), c.color == CursorColor::Ink),
+                            ("THE THEME'S CARET".into(), Hit::CurColor(CursorColor::Theme), c.color == CursorColor::Theme),
                             ("SIGNAL".into(), Hit::CurColor(CursorColor::Signal), c.color == CursorColor::Signal),
                             ("THE TAB'S OWN".into(), Hit::CurColor(CursorColor::Tab), c.color == CursorColor::Tab),
                         ]),
                     ),
-                    ("".into(), Info("text under a block cursor inverts".into())),
+                    ("".into(), Info("the theme's caret is a token — LOOK · TOKENS sets it, the ink unless a theme says; the selection wash is a token there too · text under a block cursor inverts".into())),
                     (
                         "MOTION".into(),
                         Choice(vec![
