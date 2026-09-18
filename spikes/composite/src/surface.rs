@@ -569,7 +569,8 @@ end
 -- ({ ["#d97757"] = "signal" } — a colour it hardcodes, and ours; hex or
 -- "ink" | "paper" | "signal" | "dim").
 function program(p)
-  if p.name == "claude" then return { remap = { ["#d97757"] = "signal" } } end
+  -- claude's orange as this Space's signal, its greys graded a notch harder:
+  -- if p.name == "claude" then return { contrast = 7, remap = { ["#d77757"] = "signal" } } end
 end
 
 -- ports: the board asks this for every port it finds. p has port, pid,
