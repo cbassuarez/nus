@@ -5478,14 +5478,20 @@ impl App {
             }
             PaletteMode::SyncFolder => {
                 if q.is_empty() {
-                    rows.push(row("·", format!("a folder your OS already syncs · now {}", if self.behavior.sync_folder.is_empty() { "none".to_string() } else { self.behavior.sync_folder.clone() }), Action::SyncFolder(String::new())));
+                    rows.push(row("·", "a folder your OS already syncs (iCloud Drive, OneDrive, Dropbox, a stick)".into(), Action::Noop));
+                    if !self.behavior.sync_folder.is_empty() {
+                        rows.push(row("×", format!("stop carrying through {}", self.behavior.sync_folder), Action::SyncFolder(String::new())));
+                    }
                 } else {
                     rows.push(row("→", format!("carry the profile through {q}"), Action::SyncFolder(q.to_string())));
                 }
             }
             PaletteMode::SyncGit => {
                 if q.is_empty() {
-                    rows.push(row("·", format!("a git remote (private) · now {}", if self.behavior.sync_git.is_empty() { "none".to_string() } else { self.behavior.sync_git.clone() }), Action::SyncGit(String::new())));
+                    rows.push(row("·", "a private git remote (git@github.com:you/nus-profile.git)".into(), Action::Noop));
+                    if !self.behavior.sync_git.is_empty() {
+                        rows.push(row("×", format!("stop carrying through {}", self.behavior.sync_git), Action::SyncGit(String::new())));
+                    }
                 } else {
                     rows.push(row("→", format!("carry the profile through {q}"), Action::SyncGit(q.to_string())));
                 }
