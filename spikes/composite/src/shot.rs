@@ -37,6 +37,8 @@
 //!   ctrlc                      Ctrl+C to the shell
 //!   home | hometype <text> | homeenter   the prompt: open it, type into it, commit
 //!   homelook plate | line      HOME: the prompt under the plate, or the line alone
+//!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
+//!   copyurl                    the focused page's url to the clipboard, with its toast
 //!   link allow | deny          answer the link band on the focused shell
 //!   newwindow                  a second window
 //!   quit                       (implicit at the end)
@@ -186,6 +188,10 @@ impl App {
                 }
             }
             "homeenter" => self.home_commit_pub(),
+            "other" => self.open_url_by_other(rest),
+            "copyurl" => {
+                self.copy_page_url();
+            }
             "homelook" => {
                 self.behavior.home_look = if rest == "plate" { crate::settings::HomeLook::Plate } else { crate::settings::HomeLook::Line };
                 self.dirty = true;

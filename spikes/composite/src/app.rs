@@ -115,6 +115,8 @@ pub enum Action {
     Timeline,
     /// The prompt, as a tab.
     Home,
+    /// The focused page's address to the clipboard.
+    CopyUrl,
     /// A shell in this folder, as a tab (a stop on the plate).
     ShellAt(String),
     /// Back to a held shell by its id (a stop on the plate).
@@ -844,6 +846,9 @@ pub struct App {
     pub splash: Option<crate::splash::Splash>,
     /// The plate's icon, sampled once at its size (plate.rs).
     pub plate: Option<crate::plate::PlateArt>,
+    /// One slip of words at the foot of the content (toast.rs).
+    pub toast: Option<crate::toast::Toast>,
+    pub toast_anim: Anim,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
     /// Remote answers waiting on the page (see remote.rs).
@@ -1096,6 +1101,8 @@ impl App {
             pending_name: String::new(),
             splash: Some(crate::splash::Splash::new()),
             plate: None,
+            toast: None,
+            toast_anim: Anim::at(0.0),
             shot: crate::shot::Shot::from_env(),
             deferred: Vec::new(),
             loop_probe: None,
@@ -2252,6 +2259,10 @@ impl App {
 
     /// Ctrl+Shift+C: the selection if there is one, else the last output.
     pub(crate) fn copy_selection_or_output(&mut self) {
+        // On a page the chord copies its address; the terminal chord is untouched.
+        if self.focused_term().is_none() && self.copy_page_url() {
+            return;
+        }
         let text = self.focused_term().filter(|t| t.sel.is_some()).map(|t| t.selection_text());
         match text {
             Some(text) if !text.is_empty() => {
@@ -3630,6 +3641,7 @@ impl App {
         self.draw_start(&mut scene);
         self.draw_me_card(&mut scene);
         self.draw_tip(&mut scene, w, h);
+        self.draw_toast(&mut scene);
         self.draw_splash(&mut scene);
         self.scene = scene;
     }
@@ -5710,6 +5722,9 @@ impl App {
                 if hit("home") || hit("prompt") {
                     rows.push(row("»", "home · the prompt, a terminal with no shell behind it".into(), Action::Home));
                 }
+                if hit("copy") || hit("url") || hit("address") {
+                    rows.push(row("⧉", "copy this page's url (ctrl+shift+c on a page)".into(), Action::CopyUrl));
+                }
                 if let Some(u) = q.strip_prefix("home ").map(str::trim).filter(|u| !u.is_empty()) {
                     rows.push(row("⌂", format!("home page · {u} · opens at launch"), Action::SetHome(u.to_string())));
                 }
@@ -6137,6 +6152,11 @@ impl App {
             Action::JournalPage => self.open_journal_page(),
             Action::Timeline => self.toggle_timeline(),
             Action::Home => self.open_home(),
+            Action::CopyUrl => {
+                if !self.copy_page_url() {
+                    self.toast("NO PAGE HAS THE FOCUS", None);
+                }
+            }
             Action::ShellAt(cwd) => {
                 let profile = self.behavior.default_profile;
                 if let Ok(t) = self.new_term_pane_at(false, profile, Some(cwd)) {
@@ -7623,6 +7643,9 @@ impl App {
             return;
         }
         if self.start_mouse(button, state, x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.toast_click(x, y) {
             return;
         }
         if pressed && button == MouseButton::Left && self.palette.is_some() {

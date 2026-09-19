@@ -57,6 +57,7 @@ mod sound;
 mod shot;
 mod splash;
 mod plate;
+mod toast;
 mod start;
 mod surface;
 mod theme_edit;

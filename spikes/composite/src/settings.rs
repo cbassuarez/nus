@@ -341,6 +341,15 @@ pub enum Then {
     HomePage,
 }
 
+/// A tab opened by something other than your own hand (`nus open`, an
+/// assistant, a rule, a link from outside): behind with a toast, or in front.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum OpenedBy {
+    #[default]
+    Behind,
+    Front,
+}
+
 /// What the prompt looks like: the line alone, or the line under the
 /// plate — the icon at a plate's size, your last places as stops on its
 /// band (plate.rs). The same typing, rows and enter either way.
@@ -471,6 +480,9 @@ pub struct Behavior {
     /// HOME: the prompt as the line alone, or under the plate.
     #[serde(default)]
     pub home_look: HomeLook,
+    /// TABS · OPENED BY OTHERS.
+    #[serde(default)]
+    pub opened_by_others: OpenedBy,
     /// Remember tabs and windows between launches (session.json); off, nothing is written.
     #[serde(default = "default_true")]
     pub remember: bool,
@@ -728,6 +740,7 @@ impl Default for Behavior {
             link_click: LinkClick::Ask,
             home_url: default_home_url(),
             home_look: HomeLook::Line,
+            opened_by_others: OpenedBy::Behind,
             remember: true,
             hands_hosts: Vec::new(),
             hands_confirm_submit: true,
@@ -958,6 +971,7 @@ pub enum Hit {
     WindowStart(WindowStart),
     Splash(SplashMode),
     HomeLook(HomeLook),
+    OpenedBy(OpenedBy),
     Then(Then),
     Atlas(AtlasMode),
     Outside(Outside),
@@ -1288,6 +1302,7 @@ impl App {
             Hit::WindowStart(w) => format!("window {:?}", w).to_lowercase(),
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::HomeLook(l) => format!("home {:?}", l).to_lowercase(),
+            Hit::OpenedBy(o) => format!("opened by others {:?}", o).to_lowercase(),
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
             Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
             Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
@@ -1728,6 +1743,7 @@ impl App {
             Hit::WindowStart(w) => self.behavior.window_start = w,
             Hit::Splash(m) => self.behavior.splash = m,
             Hit::HomeLook(l) => self.behavior.home_look = l,
+            Hit::OpenedBy(o) => self.behavior.opened_by_others = o,
             Hit::Then(t) => self.behavior.then = t,
             Hit::Atlas(a) => {
                 self.behavior.atlas = a;
@@ -2689,6 +2705,14 @@ impl App {
             ],
             4 => vec![
                 (
+                    "OPENED BY OTHERS".into(),
+                    Choice(vec![
+                        ("BEHIND · WITH A TOAST".into(), Hit::OpenedBy(OpenedBy::Behind), self.behavior.opened_by_others == OpenedBy::Behind),
+                        ("IN FRONT".into(), Hit::OpenedBy(OpenedBy::Front), self.behavior.opened_by_others == OpenedBy::Front),
+                    ]),
+                ),
+                ("".into(), Info("a tab opened by nus open from a shell, an assistant's hands, a rule or a link handed from outside · your own clicks and palette rows always come to the front".into())),
+                (
                     "PANE CONTROLS".into(),
                     Choice(vec![
                         ("NEAR THE CORNER".into(), Hit::PaneControls(crate::panes::Controls::Near), self.behavior.pane_controls == crate::panes::Controls::Near),
@@ -3233,6 +3257,7 @@ impl App {
                 ("SPLIT".into(), Info(key("D", true))),
                 ("SIDEBAR".into(), Info(key("S", true))),
                 ("DEVTOOLS".into(), Info(key("I", true))),
+                ("COPY".into(), Info(format!("{} · the selection, else the last output; on a page, its url", key("C", true)))),
                 ("TAB N".into(), Info(key("1–9", false))),
                 ("MRU".into(), Info(key("`", false))),
                 ("PREV / NEXT".into(), Info(key("PGUP / PGDN", false))),

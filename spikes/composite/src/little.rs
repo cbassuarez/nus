@@ -192,7 +192,7 @@ impl App {
             return;
         }
         if self.behavior.outside == crate::settings::Outside::NewTab {
-            self.open_url(url, true);
+            self.open_url_by_other(url);
             self.window.focus_window();
             return;
         }

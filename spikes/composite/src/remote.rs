@@ -233,7 +233,11 @@ impl App {
                     return Ok(json!({ "tab": self.active + 1, "layout": true }));
                 }
                 let new_tab = !b("split");
-                self.open_url(&url, new_tab);
+                if new_tab {
+                    self.open_url_by_other(&url);
+                } else {
+                    self.open_url(&url, false);
+                }
                 Ok(json!({ "tab": self.active + 1 }))
             }
             "sync" => {
@@ -458,7 +462,11 @@ impl App {
                     "open" => {
                         let url = s("url").ok_or("open needs a url")?;
                         let beside = args.get("beside").and_then(|b| b.as_bool()).unwrap_or(true);
-                        self.open_url(&url, !beside);
+                        if beside {
+                            self.open_url(&url, false);
+                        } else {
+                            self.open_url_by_other(&url);
+                        }
                         Ok(json!({ "opened": url }))
                     }
                     "text" | "dom" | "console" | "network" | "screenshot" | "info" => {
