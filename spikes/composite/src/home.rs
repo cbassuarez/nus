@@ -51,12 +51,74 @@ impl App {
     /// list of places to go when nothing is — under the plate, the stops.
     fn home_rows(&self, input: &str, places: &[PaletteRow]) -> Vec<PaletteRow> {
         let empty = input.trim().is_empty();
+        // A fresh window: folders first, so it can become one of them.
+        if self.fresh {
+            let folders = self.workspace_rows(input);
+            if empty {
+                return folders;
+            }
+            let mut rows = folders;
+            rows.extend(self.palette_rows(PaletteMode::Go, input).into_iter().filter(|r| !r.text.starts_with("search ") && !r.text.starts_with("open ")));
+            rows.truncate(9);
+            return rows;
+        }
         if empty && self.behavior.home_look == HomeLook::Plate {
             return places.to_vec();
         }
         let mut rows: Vec<PaletteRow> = self.palette_rows(PaletteMode::Go, input).into_iter().filter(|r| !r.text.starts_with("search ") && !r.text.starts_with("open ")).collect();
         rows.truncate(if empty { 7 } else { 9 });
         rows
+    }
+
+    /// Folders this window could be: the other windows', the last
+    /// sessions' shells', the journal's — and the line itself when it
+    /// names a folder.
+    fn workspace_rows(&self, input: &str) -> Vec<PaletteRow> {
+        let q = input.trim();
+        let mut out: Vec<PaletteRow> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let typed = q.replace('/', "\\");
+        if !q.is_empty() && std::path::Path::new(&typed).is_dir() {
+            seen.insert(typed.to_lowercase());
+            out.push(PaletteRow { num: "→".into(), text: format!("{} · this window's folder", typed), action: crate::app::Action::OpenFolder(typed.clone()) });
+        }
+        let mut folders: Vec<String> = Vec::new();
+        if let Some(w) = &self.workspace {
+            folders.push(w.to_string_lossy().to_string());
+        }
+        if let Some(sess) = &self.last_session {
+            if let Some(f) = &sess.folder {
+                folders.push(f.clone());
+            }
+            for t in &sess.tabs {
+                for st in std::iter::once(&t.shell).chain(std::iter::once(&t.shell_right)).flatten() {
+                    if let Some(c) = &st.cwd {
+                        folders.push(c.clone());
+                    }
+                }
+            }
+            for o in &sess.others {
+                if let Some(f) = &o.folder {
+                    folders.push(f.clone());
+                }
+            }
+        }
+        folders.extend(crate::journal::folders().into_iter().map(|(c, _)| c));
+        let ql = q.to_lowercase();
+        for f in folders.into_iter().filter(|f| !f.is_empty() && std::path::Path::new(f).is_dir()) {
+            let key = f.to_lowercase();
+            if !ql.is_empty() && !key.contains(&ql) {
+                continue;
+            }
+            if seen.insert(key) {
+                let tail = crate::plate::tail(&f);
+                out.push(PaletteRow { num: "▸".into(), text: format!("{tail} · {f}"), action: crate::app::Action::OpenFolder(f.clone()) });
+            }
+            if out.len() >= 8 {
+                break;
+            }
+        }
+        out
     }
 
     /// The pane's places, gathered on first use and refreshed every so often.
@@ -108,6 +170,13 @@ impl App {
                 }
                 self.layout();
                 self.dirty = true;
+                return;
+            }
+        }
+        if self.fresh && !input.is_empty() {
+            let typed = input.replace('/', "\\");
+            if std::path::Path::new(&typed).is_dir() {
+                self.open_folder(&typed);
                 return;
             }
         }

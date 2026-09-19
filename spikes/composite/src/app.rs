@@ -86,6 +86,13 @@ pub enum Action {
     ToggleSplit,
     CloseTab,
     ToggleSidebar,
+    /// The sidebar's FILES page.
+    ToggleFiles,
+    /// Bind this window to a folder (None: let it follow the shell).
+    Workspace(Option<String>),
+    /// Make this window the folder's: bound, a shell born there in this
+    /// tab (the prompt gives way), FILES on its tree.
+    OpenFolder(String),
     TogglePin,
     Reopen,
     ShellStyle,
@@ -395,6 +402,14 @@ pub enum SideHit {
     WinFront(usize),
     Rename,
     NewWindow,
+    /// The footer's folder: the sidebar's FILES page, on or off.
+    Files,
+    /// The tree's head: keep this folder (bind the window), or let it follow.
+    FilesPin,
+    /// The tree's root, up one.
+    FilesUp,
+    /// A row of the tree.
+    FileRow(usize),
     /// A square on the rail.
     Rail(usize),
     /// The look chip in the footer: opens the hot swapper.
@@ -744,6 +759,11 @@ pub struct App {
     /// Asks the host answers: front that window; open a new one.
     pub front_request: Option<u64>,
     pub new_window_request: bool,
+    /// A window that came up as the prompt and has not been given a folder
+    /// or a tab yet: its rows offer folders.
+    pub fresh: bool,
+    /// The folder the asking window worked in, for a shell born here.
+    pub born_in: Option<String>,
     pub win_menu: bool,
     pub win_anim: Anim,
     pub kinds_menu: bool,
@@ -912,6 +932,12 @@ pub struct App {
     pub devtools_request: Option<(usize, bool)>,
     pub crumb_hits: Vec<(Rect, CrumbHit)>,
     pub side_hits: Vec<(Rect, SideHit)>,
+    /// Which page the sidebar shows, and the tree behind FILES.
+    pub side_page: crate::files::SidePage,
+    pub tree: crate::files::Tree,
+    /// The folder this window is bound to, when it is: its name, its
+    /// tree, where new shells are born.
+    pub workspace: Option<std::path::PathBuf>,
     /// profile/avatar.png as a texture, when there is one.
     pub avatar: Option<Arc<wgpu::BindGroup>>,
     pub next_id: u64,
@@ -965,7 +991,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(window: Arc<Window>, proxy: EventLoopProxy<UserEvent>, secondary: bool, ordinal: usize) -> anyhow::Result<App> {
+    pub fn new(window: Arc<Window>, proxy: EventLoopProxy<UserEvent>, secondary: bool, ordinal: usize, born_in: Option<String>) -> anyhow::Result<App> {
         let (gpu, target) = Gpu::new(window.clone())?;
         let scale = window.scale_factor() as f32;
         let mut fonts = FontSystem::new();
@@ -1039,6 +1065,8 @@ impl App {
             ordinal: 0,
             front_request: None,
             new_window_request: false,
+            fresh: false,
+            born_in: None,
             windows: Vec::new(),
             win_menu: false,
             win_anim: Anim::at(0.0),
@@ -1120,7 +1148,7 @@ impl App {
             art: None,
             art_previews: std::collections::HashMap::new(),
             procs: None,
-            shot: crate::shot::Shot::from_env(),
+            shot: if secondary { crate::shot::Shot::from_env_secondary() } else { crate::shot::Shot::from_env() },
             deferred: Vec::new(),
             loop_probe: None,
             spawn_sessions: Vec::new(),
@@ -1151,6 +1179,9 @@ impl App {
             devtools_request: None,
             crumb_hits: Vec::new(),
             side_hits: Vec::new(),
+            side_page: Default::default(),
+            tree: Default::default(),
+            workspace: None,
             avatar: None,
             next_id: 1,
             hints: App::load_hints(),
@@ -1196,7 +1227,8 @@ impl App {
         let split = !secondary && onboarded && !matches!(app.behavior.then, crate::settings::Then::Prompt | crate::settings::Then::HomePage);
         // NUS_SHELL=<profile name> picks the first shell (a test hook).
         let first = std::env::var("NUS_SHELL").ok().and_then(|n| app.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(&n))).unwrap_or(0);
-        let term = app.new_term_pane(split, first)?;
+        // A second window's shell is born in the asking window's folder.
+        let term = app.new_term_pane_at(split, first, if secondary { born_in.clone() } else { None })?;
         let right = if !split {
             None
         } else {
@@ -1226,10 +1258,31 @@ impl App {
             }
         }
         if secondary {
-            app.splash = None;
-            app.start_shown = true;
-            app.then_done = true;
+            // A window of its own: no session restore, no name yet; what
+            // it is born as is STARTUP · A NEW WINDOW.
             app.window_named = None;
+            match app.behavior.new_window {
+                crate::settings::NewWindow::Launch => {
+                    // As the first window did: the splash, then THEN — but never
+                    // the session, which is the first window's.
+                    app.then_done = false;
+                    if app.behavior.then == crate::settings::Then::Restore {
+                        app.behavior.then = crate::settings::Then::Shell;
+                    }
+                }
+                crate::settings::NewWindow::Prompt => {
+                    app.splash = None;
+                    app.start_shown = true;
+                    app.then_done = true;
+                    app.replace_birth(Pane::Home(crate::home::HomePane::new()));
+                    app.fresh = true;
+                }
+                crate::settings::NewWindow::Shell => {
+                    app.splash = None;
+                    app.start_shown = true;
+                    app.then_done = true;
+                }
+            }
         }
         let mode = app.theme.mode;
         app.set_mode(mode);
@@ -1324,11 +1377,15 @@ impl App {
         if let Some(c) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
             profile.cwd = Some(c);
         }
-        // New shells open where the focused one is.
+        // New shells open where the focused one is — within the window's
+        // folder when it has one, else at that folder.
         if profile.cwd.is_none() {
-            if let Some(cwd) = self.focused_cwd() {
-                profile.cwd = Some(cwd);
-            }
+            let focused = self.focused_cwd();
+            profile.cwd = match (&self.workspace, focused) {
+                (Some(w), Some(c)) if std::path::Path::new(&c).starts_with(w) => Some(c),
+                (Some(w), _) => Some(w.to_string_lossy().to_string()),
+                (None, c) => c,
+            };
         }
         let is_ssh = profile.program.rsplit(['/', '\\']).next().unwrap_or("").trim_end_matches(".exe") == "ssh";
         let on = if is_ssh { self.behavior.shell_integration && self.behavior.ssh_integration } else { self.behavior.shell_integration };
@@ -3907,7 +3964,7 @@ impl App {
             return;
         }
         self.auto_name_key = Some(key);
-        let base = match git_root_name(cwd.map(std::path::PathBuf::from)) {
+        let base = match self.workspace.as_ref().and_then(|w| w.file_name().map(|n| n.to_string_lossy().to_string())).or_else(|| git_root_name(cwd.map(std::path::PathBuf::from))) {
             Some(root) => root,
             None => {
                 // The most common host; a tie goes to the one seen first.
@@ -4010,6 +4067,14 @@ impl App {
         let row_h = self.side_header_h();
 
         let g = self.sidebar_geometry();
+        if self.side_page == crate::files::SidePage::Files {
+            // FILES: the tree takes the list, from under the header to the footer.
+            self.draw_tree(scene, sb, sb.y + row_h, g.foot_y);
+            self.draw_sidebar_footer(scene, sb, g.foot_y);
+            let _ = (label, ui, dim, strong, ui_strong);
+            self.draw_sidebar_menus(scene, sb);
+            return;
+        }
         let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids.clone()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
 
@@ -4247,6 +4312,19 @@ impl App {
         self.draw_folders(scene, sb, folders_top, g.foot_y - self.px(4.0));
         scene.layer(None);
 
+        self.draw_sidebar_footer(scene, sb, g.foot_y);
+        let _ = (label, ui, dim, pad_x);
+        self.draw_sidebar_menus(scene, sb);
+    }
+
+    /// The footer: one row of verbs. Avatar · new tab · the look · files ·
+    /// recently closed · downloads · settings.
+    fn draw_sidebar_footer(&mut self, scene: &mut Scene, sb: Rect, foot_y: f32) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let pad_x = self.px(m::ROW_PAD_X);
+        struct G { foot_y: f32 }
+        let g = G { foot_y };
         // Footer: one row of verbs. Avatar · new tab · recently closed · downloads · settings.
         let fy = g.foot_y;
         scene.hline(sb.x, fy, sb.w, self.px(m::STRUCTURE), ink);
@@ -4305,19 +4383,46 @@ impl App {
         self.draw_look_chip(scene, x, fy, fh);
         // Right cluster.
         let mut rx = sb.right() - pad_x;
+        let files_on = self.side_page == crate::files::SidePage::Files;
         for (icon, hit, lit, motion, k) in [
             (nus_render::text::icons::SETTINGS, SideHit::Settings, true, IconMotion::Spin(30.0), 1),
             (nus_render::text::icons::DOWNLOAD, SideHit::Downloads, crate::browser::DOWNLOADS.lock().map(|l| l.iter().any(|d| !d.done && !d.cancelled)).unwrap_or(false), IconMotion::Bob, 2),
             (nus_render::text::icons::HISTORY, SideHit::Closed, !self.closed.is_empty(), IconMotion::Spin(-40.0), 3),
+            (nus_render::text::icons::FOLDER_SIMPLE, SideHit::Files, files_on, IconMotion::Pop, 4),
         ] {
             rx -= isz;
             let hr = Rect::new(rx - self.px(8.0), fy, isz + self.px(16.0), fh);
             self.icon_button(scene, icon, isz, rx, iy, if lit { ink } else { t.dim }, hr, hover_key("foot", k), motion);
+            if hit == SideHit::Files {
+                let words = if files_on { "tabs · ctrl+shift+e".to_string() } else { "files · the folder this window works in · ctrl+shift+e".to_string() };
+                self.foot_tip(hover_key("foot-tip", 4), hr, words);
+                if files_on {
+                    scene.rect(Rect::new(rx, fy + fh - self.px(6.0), isz, self.px(2.0)), self.surface.signal);
+                }
+            }
             self.side_hits.push((hr, hit));
             rx -= self.px(14.0);
         }
-        let _ = (label, ui, dim);
-        self.draw_sidebar_menus(scene, sb);
+    }
+
+    /// A tooltip for a footer verb.
+    fn foot_tip(&mut self, key: u64, hit: Rect, words: String) {
+        let (mx, my) = self.mouse;
+        let hot = hit.contains(mx, my);
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: Instant::now() });
+        if hot != h.hot {
+            h.hot = hot;
+            if hot {
+                h.since = Instant::now();
+            }
+        }
+        if hot {
+            let since = h.since;
+            self.tip = Some(Tip { anchor: hit, text: words, since });
+            if since.elapsed().as_millis() < 700 {
+                self.dirty = true;
+            }
+        }
     }
 
     /// The look chip: paper, ink and signal as a hand of three cards —
@@ -4460,6 +4565,26 @@ impl App {
             }
             SideHit::LookQuick(q) => self.quick_look(q),
 
+            SideHit::Files => self.toggle_files(),
+            SideHit::FilesPin => {
+                if self.workspace.is_some() {
+                    self.bind_workspace(None);
+                    self.notice("the tree follows the shell");
+                } else if let Some(r) = self.tree.root.clone() {
+                    self.bind_workspace(Some(r.clone()));
+                    self.notice(&format!("this window is {}'s", r.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+                }
+            }
+            SideHit::FilesUp => {
+                if let Some(up) = self.tree.root.as_ref().and_then(|r| r.parent().map(|p| p.to_path_buf())) {
+                    if self.workspace.is_some() {
+                        self.bind_workspace(Some(up));
+                    } else {
+                        self.tree.set_root(Some(up));
+                    }
+                }
+            }
+            SideHit::FileRow(k) => self.tree_click(k),
             SideHit::Closed => {
                 self.open_palette(PaletteMode::Go);
                 if let Some((_, input)) = self.palette.as_mut() {
@@ -5830,7 +5955,7 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 19] = [
+                let actions: [(String, Action); 20] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
@@ -5843,6 +5968,7 @@ impl App {
                     ("swap tiles · CTRL+ALT+SHIFT+→".to_string(), Action::TileSwap),
                     (format!("close tab · {}", key("W", true)), Action::CloseTab),
                     (format!("sidebar · {}", key("S", true)), Action::ToggleSidebar),
+                    (format!("files · the tree of this window's folder · {}", key("E", true)), Action::ToggleFiles),
                     (
                         format!("{} this tab", if self.tabs.get(self.active).is_some_and(|t| t.pinned) { "unpin" } else { "pin" }),
                         Action::TogglePin,
@@ -6332,6 +6458,17 @@ impl App {
                 self.sidebar = !self.sidebar;
                 self.layout();
             }
+            Action::ToggleFiles => self.toggle_files(),
+            Action::OpenFolder(f) => self.open_folder(&f),
+            Action::Workspace(f) => {
+                let f = f.map(std::path::PathBuf::from);
+                let name = f.as_ref().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+                self.bind_workspace(f);
+                match name {
+                    Some(n) => self.notice(&format!("this window is {n}'s")),
+                    None => self.notice("the window follows the shell"),
+                }
+            }
         }
         self.dirty = true;
     }
@@ -6537,6 +6674,7 @@ impl App {
                     self.sidebar = !self.sidebar;
                     return self.layout();
                 }
+                Some(KeyCode::KeyE) => return self.toggle_files(),
                 _ => {}
             }
             if let WKey::Named(NamedKey::Enter) = ev.logical_key {
@@ -8128,6 +8266,9 @@ impl App {
         if self.ask_wheel(x, y, dy_px) {
             return;
         }
+        if self.tree_wheel(x, y, dy_px) {
+            return;
+        }
         if self.board_wheel(x, y, dy_px) {
             return;
         }
@@ -8583,6 +8724,18 @@ pub(crate) fn parse_place(s: &str) -> Option<[f32; 2]> {
     let (lat, lon) = (nums[0] * signs[0], nums[1] * signs[1]);
     if lat.abs() > 90.0 || lon.abs() > 180.0 { return None; }
     Some([lat, lon])
+}
+
+/// Hand a file to the OS: its own program opens it.
+pub(crate) fn open_with_os(path: &std::path::Path) {
+    let p = path.to_string_lossy().to_string();
+    let _ = if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd").args(["/c", "start", "", &p]).spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&p).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(&p).spawn()
+    };
 }
 
 pub(crate) fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {

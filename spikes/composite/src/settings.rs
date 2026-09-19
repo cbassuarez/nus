@@ -341,6 +341,18 @@ pub enum Then {
     HomePage,
 }
 
+/// What a new window comes up as. A window is a surface of its own — its
+/// tabs, its name, and the folder it works in — never a copy of the one
+/// that asked. The prompt offers folders in its rows; a shell is born in
+/// the asking window's folder; launch does what the first window does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum NewWindow {
+    #[default]
+    Prompt,
+    Shell,
+    Launch,
+}
+
 /// A tab opened by something other than your own hand (`nus open`, an
 /// assistant, a rule, a link from outside): behind with a toast, or in front.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -485,6 +497,9 @@ pub struct Behavior {
     /// TABS · OPENED BY OTHERS.
     #[serde(default)]
     pub opened_by_others: OpenedBy,
+    /// STARTUP · A NEW WINDOW.
+    #[serde(default)]
+    pub new_window: NewWindow,
     /// HOME · ART: which art plays behind the line (a built-in's name or a file's stem).
     #[serde(default = "default_home_art")]
     pub home_art: String,
@@ -752,6 +767,7 @@ impl Default for Behavior {
             home_url: default_home_url(),
             home_look: HomeLook::Line,
             opened_by_others: OpenedBy::Behind,
+            new_window: NewWindow::Prompt,
             home_art: default_home_art(),
             place: None,
             remember: true,
@@ -988,6 +1004,7 @@ pub enum Hit {
     Splash(SplashMode),
     HomeLook(HomeLook),
     OpenedBy(OpenedBy),
+    NewWindow(NewWindow),
     /// An art from the picker, by its place in art::list().
     HomeArt(usize),
     AddArt,
@@ -1362,6 +1379,7 @@ impl App {
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::HomeLook(l) => format!("home {:?}", l).to_lowercase(),
             Hit::OpenedBy(o) => format!("opened by others {:?}", o).to_lowercase(),
+            Hit::NewWindow(w) => format!("a new window {:?}", w).to_lowercase(),
             Hit::HomeArt(i) => format!("art · {}", crate::art::list().get(i).map(|a| a.name.clone()).unwrap_or_default()),
             Hit::AddArt => "a new art of your own".into(),
             Hit::AskArt => "asking for an art".into(),
@@ -1814,6 +1832,7 @@ impl App {
             Hit::Splash(m) => self.behavior.splash = m,
             Hit::HomeLook(l) => self.behavior.home_look = l,
             Hit::OpenedBy(o) => self.behavior.opened_by_others = o,
+            Hit::NewWindow(w) => self.behavior.new_window = w,
             Hit::HomeArt(i) => {
                 if let Some(a) = crate::art::list().get(i) {
                     self.behavior.home_look = HomeLook::Art;
@@ -2249,7 +2268,7 @@ impl App {
     fn rows_for(&self, section: usize) -> Vec<(String, Control)> {
         let rows = self.rows_for_raw(section);
         match section {
-            2 => captioned(rows, &[("SPLASH", "THE SPLASH"), ("HOME", "THE PROMPT"), ("LAUNCH TABS", "LAUNCH"), ("FIRST", "FROM OUTSIDE")]),
+            2 => captioned(rows, &[("SPLASH", "THE SPLASH"), ("HOME", "THE PROMPT"), ("A NEW WINDOW", "WINDOWS"), ("LAUNCH TABS", "LAUNCH"), ("FIRST", "FROM OUTSIDE")]),
             5 => captioned(rows, &[("CLIPBOARD", "CLIPBOARD & SCROLL"), ("COMMAND LINE", "THE LINE"), ("EDITOR", "BLOCKS & LINKS"), ("JOURNAL", "MEMORY"), ("SHELL COLOURS", "COLOUR"), ("SSH", "ELSEWHERE"), ("DEFAULT SHELL", "SHELLS")]),
             6 => captioned(rows, &[("LOADING BAR", "LOADING"), ("DEFAULT BROWSER", "THE SYSTEM"), ("SEARCH", "AS SHIPPED")]),
             _ => rows,
@@ -2743,6 +2762,15 @@ impl App {
                         )]),
                     ),
                     ("".into(), Info("for the sky: where this machine is, as lat, lon · never leaves it".into())),
+                    (
+                        "A NEW WINDOW".into(),
+                        Choice(vec![
+                            ("THE PROMPT · FOLDERS IN ITS ROWS".into(), Hit::NewWindow(NewWindow::Prompt), b.new_window == NewWindow::Prompt),
+                            ("A SHELL IN THIS WINDOW'S FOLDER".into(), Hit::NewWindow(NewWindow::Shell), b.new_window == NewWindow::Shell),
+                            ("AS LAUNCH".into(), Hit::NewWindow(NewWindow::Launch), b.new_window == NewWindow::Launch),
+                        ]),
+                    ),
+                    ("".into(), Info("a window is a surface of its own — its tabs, its name, the folder it works in — never a copy of the one that asked · the prompt's rows offer folders: pick one and the window becomes that folder's, a shell born there and FILES on its tree".into())),
                     (
                         "LAUNCH TABS".into(),
                         Choice(vec![

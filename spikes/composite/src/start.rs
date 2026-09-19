@@ -87,6 +87,8 @@ pub struct Session {
     /// The other windows open at the time, each with its own tabs; they
     /// come back as windows when this one restores.
     pub others: Vec<Session>,
+    /// The folder the window was bound to, if any.
+    pub folder: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -178,7 +180,8 @@ impl Session {
         let tiles = v.get("tiles").and_then(|t| t.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect()).unwrap_or_default();
         let container = v.get("container").and_then(|c| c.as_str()).unwrap_or(crate::containers::PERSONAL).to_string();
         let others = v.get("windows").and_then(|w| w.as_array()).map(|a| a.iter().filter_map(Session::from_value).collect()).unwrap_or_default();
-        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize, tiles, container, others })
+        let folder = v.get("folder").and_then(|f| f.as_str()).map(|s| s.to_string());
+        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize, tiles, container, others, folder })
     }
 
     pub fn save(&self) {
@@ -192,7 +195,7 @@ impl Session {
     /// This window's session as JSON, the other windows under `windows`.
     pub fn to_value(&self) -> serde_json::Value {
         let tabs: Vec<serde_json::Value> = self.tabs.iter().map(SavedTab::to_value).collect();
-        serde_json::json!({ "tabs": tabs, "active": self.active, "tiles": self.tiles, "container": self.container, "windows": self.others.iter().map(Session::to_value).collect::<Vec<_>>() })
+        serde_json::json!({ "tabs": tabs, "active": self.active, "tiles": self.tiles, "container": self.container, "folder": self.folder, "windows": self.others.iter().map(Session::to_value).collect::<Vec<_>>() })
     }
 
     pub fn summary(&self) -> String {
@@ -382,6 +385,11 @@ impl App {
             self.container = sess.container.clone();
             self.register_window();
         }
+        // The folder the window was bound to.
+        if let Some(f) = sess.folder.as_ref().map(std::path::PathBuf::from).filter(|f| f.is_dir()) {
+            self.workspace = Some(f);
+            self.auto_name_key = None;
+        }
         let mut ids: Vec<Option<u64>> = Vec::new();
         for t in &sess.tabs {
             let container = t.container.clone().filter(|c| self.containers.iter().any(|k| &k.name == c)).unwrap_or_else(|| self.container.clone());
@@ -513,7 +521,7 @@ impl App {
             .filter(|t| t.left.is_some())
             .collect();
         let tiles = self.tiling.as_ref().map(|t| t.ids.iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
-        Session { tabs, active: self.active, tiles, container: self.container.clone(), others: self.other_sessions.clone() }
+        Session { tabs, active: self.active, tiles, container: self.container.clone(), others: self.other_sessions.clone(), folder: self.workspace.as_ref().map(|w| w.to_string_lossy().to_string()) }
     }
 
     /// Save the current tabs as the session (called when tabs change).
@@ -724,7 +732,8 @@ mod tests {
             active: 1,
             tiles: vec![0, 1],
             container: "PERSONAL".into(),
-            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, container: None, split: None, hatch: false }], active: 0, tiles: vec![], container: "WORK".into(), others: vec![] }],
+            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, container: None, split: None, hatch: false }], active: 0, tiles: vec![], container: "WORK".into(), others: vec![], folder: None }],
+            folder: None,
         };
         let dir = std::env::temp_dir().join(format!("nus-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("profile")).unwrap();

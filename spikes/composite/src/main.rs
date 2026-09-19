@@ -61,6 +61,7 @@ mod toast;
 mod page_menu;
 mod art;
 mod forge;
+mod files;
 mod procs;
 mod start;
 mod surface;
@@ -166,7 +167,9 @@ impl Host {
         // The adapter must exist before the window is first shown.
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
         window.set_visible(true);
-        match App::new(window.clone(), self.proxy.clone(), secondary, self.made) {
+        // The folder the asking window works in, for a shell born here.
+        let born_in = from.and_then(|i| self.apps.get(i)).and_then(|a| a.workspace.as_ref().map(|w| w.to_string_lossy().to_string()).or_else(|| a.focused_cwd()));
+        match App::new(window.clone(), self.proxy.clone(), secondary, self.made, born_in) {
             Ok(mut a) => {
                 a.fullscreen = start == settings::WindowStart::Fullscreen;
                 if let Some(parent) = from.and_then(|i| self.apps.get(i)) {
@@ -550,6 +553,7 @@ fn main() -> ExitCode {
             a.shot_tick();
             a.poll_deferred();
             a.poll_page_menus();
+            a.tend_tree();
             a.poll_loop();
             a.process_requests();
             a.apply_term_resizes(false);

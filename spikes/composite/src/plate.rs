@@ -48,7 +48,7 @@ pub(crate) fn icon_rect(pane: Rect) -> Rect {
 }
 
 /// The last folder of a path, for a label: `C:\\Users\\seb\\nus` → `nus`.
-fn tail(cwd: &str) -> String {
+pub(crate) fn tail(cwd: &str) -> String {
     let t = cwd.trim_end_matches(['/', '\\']);
     t.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(t).to_string()
 }

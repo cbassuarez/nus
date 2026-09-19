@@ -1019,3 +1019,37 @@ private, and the git carrier does the rest; the token stays in
 and is never in a url, in git's config or on the carrier. The key step
 makes the word on the first device (COPY) or takes it on the next. Same
 sealing, same last-writer-wins. See docs/SYNC.md.
+
+## The window as a workspace: FILES, and a new window of its own (settled and built 2026-09-19, twenty-third pass)
+
+**A window may be a folder's.** Bound to a folder it is that folder's
+window: the folder's name in the sidebar's head and the strip, the tree
+of it under FILES, new shells born in it (a shell already inside it keeps
+its own place), its own slot in the session (`folder`). Unbound, a window
+follows the focused shell's folder. Binding is a click on the tree's head
+(the pin) or a folder picked in a fresh window; `Action::Workspace`
+does it from the palette. The other windows' folders are offered wherever
+folders are.
+
+**FILES.** The sidebar's second page — the folder in the footer, or
+Ctrl+Shift+E — takes the list from under the header to the footer: the
+folder's name pinned or following at the top with an up-caret, then the
+tree: folders first, then files, dot-files and the heavy folders
+(node_modules, target, .git, dist, build, .venv…) dim and closed until
+asked. A click on a folder opens it; a click on a file opens it in nus's
+editor beside the shell as the preview, which the next click replaces
+unless it was edited; a double-click keeps it. Files that aren't text go
+to the OS. The tree re-reads its folders every few seconds while shown.
+`files.rs`; `SidePage`; `Tree`.
+
+**A new window is a surface of its own.** Never a copy of the one that
+asked: no session restore, its own name and number, and what it comes up
+as is STARTUP · A NEW WINDOW: THE PROMPT · FOLDERS IN ITS ROWS (default) —
+the line, empty, its rows the folders it could be (the other windows',
+the last sessions' shells', the journal's; a typed path first), pick one
+or press Enter on a path and the window becomes that folder's, a shell
+born there where the prompt was and FILES on its tree; A SHELL IN THIS
+WINDOW'S FOLDER — a shell born in the asking window's folder; AS LAUNCH —
+the splash and THEN as the first window, but never the session. The
+photograph driver runs a second script (`-Script2`, `NUS_SHOT2`) in
+windows the first one opens.

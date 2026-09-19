@@ -697,6 +697,27 @@ impl EditorPane {
     }
 }
 
+/// Text, as far as a look at the first bytes can tell: no NULs, and
+/// mostly printable. Big files go to the OS too.
+pub(crate) fn looks_text(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if meta.len() > 8 * 1024 * 1024 {
+        return false;
+    }
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut buf = [0u8; 4096];
+    let n = std::io::Read::read(&mut f, &mut buf).unwrap_or(0);
+    if n == 0 {
+        return true;
+    }
+    let head = &buf[..n];
+    if head.contains(&0) {
+        return false;
+    }
+    let odd = head.iter().filter(|&&b| b < 0x09 || (b > 0x0d && b < 0x20)).count();
+    odd * 20 < n
+}
+
 impl App {
     /// The editor pane in focus, if any.
     pub(crate) fn focused_editor(&mut self) -> Option<&mut EditorPane> {

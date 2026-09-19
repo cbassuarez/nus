@@ -39,6 +39,7 @@
 //!   ctrlc                      Ctrl+C to the shell
 //!   home | hometype <text> | homeclear | homeenter   the prompt: open it, type into it, empty it, commit
 //!   mecard [sync|folder|forge|token|key|next|back]   the profile card: the view, a step of the walk, or a press
+//!   files | bind <folder> | treeclick <row>   the sidebar's FILES page: turn it, bind the window, click a row
 //!   homelook plate | line | art <key>   HOME: the prompt under the plate, the line alone, or an art behind it
 //!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
 //!   copyurl                    the focused page's url to the clipboard, with its toast
@@ -68,7 +69,17 @@ pub struct Shot {
 impl Shot {
     /// From `NUS_SHOT`, if set.
     pub fn from_env() -> Option<Shot> {
-        let path = std::env::var_os("NUS_SHOT")?;
+        Shot::from_var("NUS_SHOT")
+    }
+
+    /// A second window runs `NUS_SHOT2` (else nothing), so the first
+    /// window's script can open one and photograph it.
+    pub fn from_env_secondary() -> Option<Shot> {
+        Shot::from_var("NUS_SHOT2")
+    }
+
+    fn from_var(var: &str) -> Option<Shot> {
+        let path = std::env::var_os(var)?;
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) => {
@@ -199,6 +210,12 @@ impl App {
                 }
             }
             "homeenter" => self.home_commit_pub(),
+            "files" => self.toggle_files(),
+            "bind" => self.bind_workspace(if rest.trim().is_empty() { None } else { Some(std::path::PathBuf::from(rest.trim())) }),
+            "treeclick" => {
+                let k = rest.trim().parse::<usize>().unwrap_or(0);
+                self.tree_click(k);
+            }
             "mecard" => match rest.trim() {
                 "next" => self.me_next_pub(),
                 "back" => self.me_back_pub(),

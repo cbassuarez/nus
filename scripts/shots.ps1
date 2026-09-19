@@ -27,6 +27,8 @@ param(
   [string]$Site = '',
   [string]$Script = '',
   [string]$SeedScript = '',
+  # A script for windows the first one opens (newwindow), else they run nothing
+  [string]$Script2 = '',
   [switch]$NoSeed,
   [int]$TimeoutSec = 240,
   # The window, in logical px
@@ -102,13 +104,14 @@ function Invoke-Face([string]$face, [string]$out, [string]$which = $resolved) {
   $env:NUS_SHOT = $which
   $env:NUS_SHOT_OUT = $out
   $env:NUS_SHELL = 'pwsh'
+  if ($Script2) { $env:NUS_SHOT2 = (Resolve-Path $Script2).Path }
   $env:PATH = "$(Split-Path -Parent $Exe);$env:PATH"
   $p = Start-Process $Exe -WorkingDirectory $scratch -PassThru
   if (-not $p.WaitForExit($TimeoutSec * 1000)) {
     Write-Warning "$face`: still running after $TimeoutSec s - stopping it"
     & cmd /c "taskkill /PID $($p.Id) /T /F >nul 2>&1"
   }
-  Remove-Item Env:NUS_MODE, Env:NUS_SHOT, Env:NUS_SHOT_OUT, Env:NUS_SHELL -ErrorAction SilentlyContinue
+  Remove-Item Env:NUS_MODE, Env:NUS_SHOT, Env:NUS_SHOT_OUT, Env:NUS_SHELL, Env:NUS_SHOT2 -ErrorAction SilentlyContinue
 }
 
 New-Item -ItemType Directory -Force $Out | Out-Null
