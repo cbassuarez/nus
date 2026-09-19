@@ -58,6 +58,7 @@ mod shot;
 mod splash;
 mod plate;
 mod toast;
+mod page_menu;
 mod start;
 mod surface;
 mod theme_edit;
@@ -545,6 +546,7 @@ fn main() -> ExitCode {
             a.tick();
             a.shot_tick();
             a.poll_deferred();
+            a.poll_page_menus();
             a.poll_loop();
             a.process_requests();
             a.apply_term_resizes(false);

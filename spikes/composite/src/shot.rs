@@ -22,6 +22,7 @@
 //!   settingsat 2               settings at a section (2 = startup)
 //!   hover 40 200               the pointer at logical px from the top-left
 //!   click 900 500              a left click there
+//!   rclick 900 500             a right click there (the page's menu)
 //!   altclick 900 500           with Alt held (a peek)
 //!   srcclick 900 500           with Alt+Shift held (click to source)
 //!   shot window                capture the whole window
@@ -235,7 +236,7 @@ impl App {
                 }
                 self.layout();
             }
-            "hover" | "click" | "altclick" | "srcclick" => {
+            "hover" | "click" | "rclick" | "altclick" | "srcclick" => {
                 let mut it = rest.split_whitespace().filter_map(|n| n.parse::<f32>().ok());
                 let (x, y) = (it.next().unwrap_or(0.0) * self.scale, it.next().unwrap_or(0.0) * self.scale);
                 if verb == "altclick" {
@@ -245,7 +246,10 @@ impl App {
                     self.modifiers(ModifiersState::ALT | ModifiersState::SHIFT);
                 }
                 self.mouse_moved(x, y);
-                if verb != "hover" {
+                if verb == "rclick" {
+                    self.mouse_button(MouseButton::Right, ElementState::Pressed);
+                    self.mouse_button(MouseButton::Right, ElementState::Released);
+                } else if verb != "hover" {
                     self.mouse_button(MouseButton::Left, ElementState::Pressed);
                     self.mouse_button(MouseButton::Left, ElementState::Released);
                 }

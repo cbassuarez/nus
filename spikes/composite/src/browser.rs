@@ -42,6 +42,15 @@ pub struct Shared {
     /// Results of CDP calls made with `devtools`, by message id; the app
     /// drains the ones it asked for.
     pub replies: Vec<(i32, serde_json::Value)>,
+    /// Every <video> and <audio> on the page with a source, as the report
+    /// last saw them (webui's strip icon, the page menu).
+    pub media: Vec<Media>,
+    /// A right-click's menu, waiting for the app to draw it (page_menu.rs).
+    pub menu: Option<MenuRequest>,
+    /// Pages the menu asked to open: (url, beside).
+    pub opens: Vec<(String, bool)>,
+    /// A word for a toast the menu earned ("copied · …").
+    pub said: Option<String>,
     /// What the page said and fetched: console calls, exceptions, requests
     /// and responses, as `{ "kind", "at", … }`, newest last, capped.
     pub log: Vec<serde_json::Value>,
@@ -187,6 +196,38 @@ impl Created {
     }
 }
 
+/// A media element on the page. `blob` sources (MediaSource players)
+/// cannot be saved: there is no file behind them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Media {
+    pub kind: String,
+    pub src: String,
+    pub w: u32,
+    pub h: u32,
+    pub blob: bool,
+}
+
+/// What the page's right-click menu should hold, from the click's context.
+pub struct MenuRequest {
+    /// View coordinates (CSS px).
+    pub x: f32,
+    pub y: f32,
+    /// (command id, label, enabled); an empty label is a separator.
+    pub items: Vec<(i32, String, bool)>,
+    pub callback: RunContextMenuCallback,
+}
+
+// The menu's own commands; CEF's builtins (back, copy, …) keep their ids.
+pub const CMD_SAVE_MEDIA: i32 = 26500 + 1;
+pub const CMD_COPY_MEDIA: i32 = 26500 + 2;
+pub const CMD_OPEN_MEDIA: i32 = 26500 + 3;
+pub const CMD_OPEN_LINK: i32 = 26500 + 4;
+pub const CMD_OPEN_LINK_BESIDE: i32 = 26500 + 5;
+pub const CMD_COPY_LINK: i32 = 26500 + 6;
+pub const CMD_COPY_PAGE: i32 = 26500 + 7;
+pub const CMD_PIP: i32 = 26500 + 8;
+pub const CMD_NOTHING: i32 = 26500 + 9;
+
 /// A video's state in CSS px relative to the viewport.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Video {
@@ -229,7 +270,14 @@ pub const VIDEO_JS: &str = r#"(() => {
       p = { x: r.left, y: r.top, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight,
             paused: v.paused, ended: v.ended, muted: v.muted, t: v.currentTime, dur: v.duration || 0 };
     }
-    if (window.nusVideo) window.nusVideo(JSON.stringify(p));
+    const media = [], seen = {};
+    for (const m of document.querySelectorAll('video,audio')) {
+      const src = m.currentSrc || m.src || '';
+      if (!src || seen[src]) continue;
+      seen[src] = 1;
+      media.push({ k: m.tagName.toLowerCase(), src, w: m.videoWidth || 0, h: m.videoHeight || 0, blob: /^(blob:|mediasource:)/.test(src) });
+    }
+    if (window.nusVideo) window.nusVideo(JSON.stringify({ v: p, media }));
   }
   const V = () => st.best;
   window.__nus = {
@@ -576,7 +624,25 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             let payload = v.get("payload").and_then(|p| p.as_str()).unwrap_or("null");
-            let video = serde_json::from_str::<serde_json::Value>(payload).ok().and_then(|p| {
+            let report = serde_json::from_str::<serde_json::Value>(payload).unwrap_or(serde_json::Value::Null);
+            let media: Vec<Media> = report
+                .get("media")
+                .and_then(|m| m.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|m| {
+                            Some(Media {
+                                kind: m.get("k")?.as_str()?.to_string(),
+                                src: m.get("src")?.as_str()?.to_string(),
+                                w: m.get("w").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                                h: m.get("h").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                                blob: m.get("blob").and_then(|x| x.as_bool()).unwrap_or(false),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let video = report.get("v").cloned().and_then(|p| {
                 let f = |k: &str| p.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
                 let b = |k: &str| p.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
                 if p.is_null() {
@@ -596,7 +662,120 @@ wrap_dev_tools_message_observer! {
                     dur: f("dur"),
                 })
             });
-            self.o.shared.borrow_mut().video = video;
+            let mut s = self.o.shared.borrow_mut();
+            s.video = video;
+            if s.media != media {
+                s.media = media;
+                s.paints += 1;
+            }
+        }
+    }
+}
+
+/// The page's right-click: nus draws the menu itself (page_menu.rs) and
+/// CEF runs whatever was picked. The entries are Chromium's, in nus's
+/// words: media first, then the link, then the page.
+wrap_context_menu_handler! {
+    pub struct MenuBuilder {
+        display: Display,
+    }
+
+    impl ContextMenuHandler {
+        fn run_context_menu(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, params: Option<&mut ContextMenuParams>, _model: Option<&mut MenuModel>, callback: Option<&mut RunContextMenuCallback>) -> ::std::os::raw::c_int {
+            let (Some(p), Some(cb)) = (params, callback) else { return 0 };
+            let s = |c: CefStringUserfree| CefString::from(&c).to_string();
+            let media_type = p.media_type();
+            let src = s(p.source_url());
+            let link = s(p.link_url());
+            let editable = p.is_editable() != 0;
+            let selected = !s(p.selection_text()).is_empty();
+            let mut items: Vec<(i32, String, bool)> = Vec::new();
+            let sep = |items: &mut Vec<(i32, String, bool)>| {
+                if items.last().is_some_and(|i| !i.1.is_empty()) {
+                    items.push((0, String::new(), false));
+                }
+            };
+            let blob = src.starts_with("blob:") || src.starts_with("mediasource:");
+            if media_type == ContextMenuMediaType::VIDEO || media_type == ContextMenuMediaType::AUDIO {
+                let what = if media_type == ContextMenuMediaType::VIDEO { "VIDEO" } else { "AUDIO" };
+                if blob || src.is_empty() {
+                    items.push((CMD_NOTHING, "THIS PLAYER STREAMS · NOTHING TO SAVE".into(), false));
+                } else {
+                    items.push((CMD_SAVE_MEDIA, format!("SAVE {what}"), true));
+                    items.push((CMD_COPY_MEDIA, format!("COPY {what} ADDRESS"), true));
+                    items.push((CMD_OPEN_MEDIA, format!("OPEN {what} IN A NEW TAB"), true));
+                }
+                if media_type == ContextMenuMediaType::VIDEO {
+                    items.push((CMD_PIP, "PICTURE IN PICTURE".into(), true));
+                }
+            } else if media_type == ContextMenuMediaType::IMAGE && !src.is_empty() {
+                items.push((CMD_SAVE_MEDIA, "SAVE IMAGE".into(), true));
+                items.push((CMD_COPY_MEDIA, "COPY IMAGE ADDRESS".into(), true));
+                items.push((CMD_OPEN_MEDIA, "OPEN IMAGE IN A NEW TAB".into(), true));
+            }
+            if !link.is_empty() {
+                sep(&mut items);
+                items.push((CMD_OPEN_LINK, "OPEN LINK IN A NEW TAB".into(), true));
+                items.push((CMD_OPEN_LINK_BESIDE, "OPEN LINK BESIDE".into(), true));
+                items.push((CMD_COPY_LINK, "COPY LINK ADDRESS".into(), true));
+            }
+            if editable {
+                sep(&mut items);
+                items.push((110, "UNDO".into(), true));
+                items.push((112, "CUT".into(), true));
+                items.push((113, "COPY".into(), true));
+                items.push((114, "PASTE".into(), true));
+                items.push((117, "SELECT ALL".into(), true));
+            } else if selected {
+                sep(&mut items);
+                items.push((113, "COPY".into(), true));
+            }
+            sep(&mut items);
+            items.push((100, "BACK".into(), true));
+            items.push((101, "FORWARD".into(), true));
+            items.push((102, "RELOAD".into(), true));
+            sep(&mut items);
+            items.push((CMD_COPY_PAGE, "COPY PAGE ADDRESS".into(), true));
+            items.push((132, "VIEW SOURCE".into(), true));
+            let mut sh = self.display.shared.borrow_mut();
+            if let Some(old) = sh.menu.take() {
+                old.callback.cancel();
+            }
+            sh.menu = Some(MenuRequest { x: p.xcoord() as f32, y: p.ycoord() as f32, items, callback: cb.clone() });
+            sh.paints += 1;
+            1
+        }
+
+        fn on_context_menu_command(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, params: Option<&mut ContextMenuParams>, command_id: ::std::os::raw::c_int, _event_flags: EventFlags) -> ::std::os::raw::c_int {
+            let Some(p) = params else { return 0 };
+            let s = |c: CefStringUserfree| CefString::from(&c).to_string();
+            let src = s(p.source_url());
+            let link = s(p.link_url());
+            let page = s(p.page_url());
+            let copy = |text: &str| {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(text.to_string());
+                }
+            };
+            let mut sh = self.display.shared.borrow_mut();
+            match command_id {
+                CMD_SAVE_MEDIA => {
+                    if let Some(h) = browser.and_then(|b| b.host()) {
+                        h.start_download(Some(&src.as_str().into()));
+                    }
+                }
+                CMD_COPY_MEDIA => { copy(&src); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&src, 60))); }
+                CMD_OPEN_MEDIA => sh.opens.push((src, false)),
+                CMD_OPEN_LINK => sh.opens.push((link, false)),
+                CMD_OPEN_LINK_BESIDE => sh.opens.push((link, true)),
+                CMD_COPY_LINK => { copy(&link); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&link, 60))); }
+                CMD_COPY_PAGE => { copy(&page); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&page, 60))); }
+                CMD_PIP => sh.said = Some("PIP".into()),
+                CMD_NOTHING => {}
+                _ => return 0,
+            }
+            sh.paints += 1;
+            1
         }
     }
 }
@@ -865,6 +1044,7 @@ wrap_client! {
         download: DownloadHandler,
         permission: PermissionHandler,
         request: RequestHandler,
+        menu: ContextMenuHandler,
     }
 
     impl Client {
@@ -888,6 +1068,9 @@ wrap_client! {
         }
         fn request_handler(&self) -> Option<RequestHandler> {
             Some(self.request.clone())
+        }
+        fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
+            Some(self.menu.clone())
         }
     }
 }
@@ -941,6 +1124,7 @@ impl BrowserTab {
             DownloadBuilder::new(Display { shared: shared.clone() }),
             PermissionBuilder::new(Display { shared: shared.clone() }),
             RequestBuilder::new(Display { shared: shared.clone() }),
+            MenuBuilder::new(Display { shared: shared.clone() }),
         );
         // The container's context: the global one for PERSONAL, else its own
         // cookie jar and cache under profile/containers.
@@ -1032,6 +1216,14 @@ impl BrowserTab {
 
     pub fn video(&self) -> Option<Video> {
         self.shared.borrow().video.clone()
+    }
+
+    /// Save a file the page is showing, through the page's own session
+    /// (cookies and all), into ~/Downloads via the download handler.
+    pub fn download(&self, url: &str) {
+        if let Some(h) = self.host() {
+            h.start_download(Some(&url.into()));
+        }
     }
 
     /// Open the DevTools frontend for this page as a browser we composite.

@@ -514,6 +514,8 @@ pub fn tip_for(key: u64) -> Option<&'static str> {
         ("hatch", 0, "land · ctrl+shift+↓"),
         ("hatch", 1, "pin"),
         ("hatch", 2, "hide · esc"),
+        ("media", 0, "save the video on this page"),
+        ("media", 1, "this player streams · nothing to save"),
     ];
     table.iter().find(|(n, i, _)| hover_key(n, *i) == key).map(|(_, _, w)| *w)
 }
@@ -848,6 +850,8 @@ pub struct App {
     pub plate: Option<crate::plate::PlateArt>,
     /// One slip of words at the foot of the content (toast.rs).
     pub toast: Option<crate::toast::Toast>,
+    /// The page's right-click menu, while up (page_menu.rs).
+    pub page_menu: Option<crate::page_menu::PageMenu>,
     pub toast_anim: Anim,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
@@ -1103,6 +1107,7 @@ impl App {
             plate: None,
             toast: None,
             toast_anim: Anim::at(0.0),
+            page_menu: None,
             shot: crate::shot::Shot::from_env(),
             deferred: Vec::new(),
             loop_probe: None,
@@ -3642,6 +3647,7 @@ impl App {
         self.draw_me_card(&mut scene);
         self.draw_tip(&mut scene, w, h);
         self.draw_toast(&mut scene);
+        self.draw_page_menu(&mut scene);
         self.draw_splash(&mut scene);
         self.scene = scene;
     }
@@ -5478,6 +5484,8 @@ impl App {
                 let r = p.rect;
                 let s = p.tab.shared.borrow();
                 let (url, bind, loading) = (s.url.clone(), p.still.clone().or_else(|| s.bind.clone()), s.loading);
+                let media_n = s.media.iter().filter(|mm| !mm.blob).count();
+                let media_any = !s.media.is_empty();
                 drop(s);
                 let local = is_local(&url);
                 if !p.bare {
@@ -5493,10 +5501,17 @@ impl App {
                 }
                 x += self.px(4.0);
                 // Reader: the book, lit while on. DevTools: the bug, lit while open.
-                let dw = isz * 3.0 + self.px(28.0);
+                let dw = isz * 3.0 + self.px(28.0) + if media_any { isz + self.px(14.0) } else { 0.0 };
                 let bug_x = r.right() - self.px(14.0) - isz;
                 let book_x = bug_x - self.px(14.0) - isz;
                 let gear_x = book_x - self.px(14.0) - isz;
+                // Media on the page: the download icon, lit when there is a file to save.
+                if media_any {
+                    let dl_x = gear_x - self.px(14.0) - isz;
+                    let hr = Rect::new(dl_x - self.px(6.0), r.y + self.px(6.0), isz + self.px(12.0), self.px(22.0));
+                    let c = if media_n > 0 { ink } else { t.dim };
+                    self.icon_button(scene, nus_render::text::icons::DOWNLOAD, isz, dl_x, iy, c, hr, hover_key("media", if media_n > 0 { 0 } else { 1 }), IconMotion::Still);
+                }
                 {
                     let host = crate::sites::host_of(&url);
                     let tuned = !crate::sites::prefs(&host).is_default();
@@ -6303,6 +6318,9 @@ impl App {
         let app = if cfg!(target_os = "macos") { sup } else { ctrl && shift };
 
         if self.splash.is_some() {
+            return;
+        }
+        if self.page_menu_key(ev) {
             return;
         }
         // The profile card, then the atlas, own the keyboard while open.
@@ -7645,6 +7663,13 @@ impl App {
         if self.start_mouse(button, state, x, y) {
             return;
         }
+        if pressed && self.page_menu.is_some() {
+            if button == MouseButton::Left {
+                self.page_menu_click(x, y);
+                return;
+            }
+            self.close_page_menu();
+        }
         if pressed && button == MouseButton::Left && self.toast_click(x, y) {
             return;
         }
@@ -7925,6 +7950,7 @@ impl App {
         let mut switch_panel: Option<(bool, usize)> = None;
         let mut focus_dt: Option<(bool, bool)> = None;
         let mut loop_click: Option<(bool, f32, f32)> = None;
+        let mut media_click: Option<(u64, bool)> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
             match p {
                 Pane::Web(w) => {
@@ -7944,6 +7970,8 @@ impl App {
                             toggle_reader = true;
                         } else if x > w.rect.right() - 104.0 * scale {
                             toggle_site = Some(is_right);
+                        } else if x > w.rect.right() - 134.0 * scale && !w.tab.shared.borrow().media.is_empty() {
+                            media_click = Some((tab.id, is_right));
                         } else {
                             open_url_palette = true;
                         }
@@ -8032,6 +8060,9 @@ impl App {
         }
         if toggle_reader {
             self.toggle_reader();
+        }
+        if let Some((id, right)) = media_click {
+            self.media_menu(id, right, (x, y));
         }
         if let Some(right) = toggle_site {
             if let Some(tab) = self.tabs.get_mut(self.active) {
