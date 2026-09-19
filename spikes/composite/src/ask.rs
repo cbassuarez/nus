@@ -64,6 +64,8 @@ pub struct Ask {
     pub gathering: Option<(i32, String, String, String, crate::askctx::Gathered, Instant, Option<String>)>,
     /// Turns that went to memory.
     pub remembered: Vec<usize>,
+    /// This ask wants an art: the reply's ```luau block lands in profile/art.
+    pub art: bool,
 }
 
 impl Ask {
@@ -78,7 +80,7 @@ impl Ask {
     }
 
     pub fn with_ctx(ctx: Vec<crate::askctx::Ctx>) -> Ask {
-        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, ctx, gathering: None, remembered: Vec::new() }
+        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, ctx, gathering: None, remembered: Vec::new(), art: false }
     }
 }
 
@@ -306,6 +308,32 @@ impl App {
         self.ask_send_with(None);
     }
 
+    /// Send a task of nus's own — the panel shows `shown` as the turn, the
+    /// assistant gets `task` in full, with no context gathered. What comes
+    /// back is handled like any answer, plus whatever `Ask::art` asks.
+    pub(crate) fn ask_send_task(&mut self, shown: &str, task: &str) {
+        let none = backends().is_empty();
+        let gathered = self.gather_context(&[]);
+        let Some(t) = self.ask_term() else { return };
+        if t.ask.is_none() {
+            t.ask = Some(Ask::from_keys(&[]));
+        }
+        let Some(ask) = t.ask.as_mut() else { return };
+        if ask.pending.is_some() || ask.gathering.is_some() {
+            return;
+        }
+        ask.input.clear();
+        if none {
+            ask.turns.push(Turn { q: shown.to_string(), blocks: Vec::new(), error: Some("no assistant on this machine · claude, codex, copilot, ollama, or ANTHROPIC_API_KEY".into()) });
+            self.dirty = true;
+            return;
+        }
+        ask.turns.push(Turn { q: shown.to_string(), blocks: Vec::new(), error: None });
+        ask.gathering = Some((-1, String::new(), String::new(), String::new(), gathered, Instant::now(), Some(task.to_string())));
+        self.play_event("control.press");
+        self.dirty = true;
+    }
+
     /// Send the field, or a skill's prompt with the field as its subject.
     /// The context the chips ask for goes along; the page's text arrives
     /// a tick later, so the prompt is built in `tend_ask`.
@@ -400,6 +428,7 @@ impl App {
                 }
             }
         }
+        let mut art_answer: Option<String> = None;
         for tab in self.tabs.iter_mut() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 let Pane::Term(t) = p else { continue };
@@ -409,7 +438,13 @@ impl App {
                     Ok(r) => {
                         if let Some(turn) = ask.turns.last_mut() {
                             match r {
-                                Ok(md) => turn.blocks = parse(&md),
+                                Ok(md) => {
+                                    if ask.art {
+                                        ask.art = false;
+                                        art_answer = Some(md.clone());
+                                    }
+                                    turn.blocks = parse(&md);
+                                }
                                 Err(e) => turn.error = Some(e),
                             }
                         }
@@ -435,6 +470,16 @@ impl App {
                     }
                 }
             }
+        }
+        if let Some(md) = art_answer {
+            match self.art_from_answer(&md) {
+                Some(name) => {
+                    self.art = None;
+                    self.toast(format!("ART · {name} · IN THE PICKER, AND UP"), None);
+                }
+                None => self.toast("THE ANSWER HAD NO LUAU BLOCK · ASK AGAIN", None),
+            }
+            changed = true;
         }
         if changed {
             self.dirty = true;

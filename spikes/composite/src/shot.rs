@@ -15,7 +15,8 @@
 //!   newshell                   a new shell tab, in front
 //!   shell git status           type into the shell at its prompt and run
 //!   line cargo te              type into the shell without running
-//!   palette go cargo te        the palette (go | new | url) with a query
+//!   palette go cargo te        the palette (go | new | url | place) with a query
+//!   enter                      commit the palette
 //!   ask why did that fail?     the ask panel, with the question sent
 //!   theme nord                 a stock theme by name
 //!   board | compact | atlas | settings | devtools | reader | split | sidebar
@@ -36,8 +37,8 @@
 //!   tl left | right | b | home  a key to the timeline
 //!   share                      the active tab as a replay file, opened as a tab
 //!   ctrlc                      Ctrl+C to the shell
-//!   home | hometype <text> | homeenter   the prompt: open it, type into it, commit
-//!   homelook plate | line      HOME: the prompt under the plate, or the line alone
+//!   home | hometype <text> | homeclear | homeenter   the prompt: open it, type into it, empty it, commit
+//!   homelook plate | line | art <key>   HOME: the prompt under the plate, the line alone, or an art behind it
 //!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
 //!   copyurl                    the focused page's url to the clipboard, with its toast
 //!   link allow | deny          answer the link band on the focused shell
@@ -136,6 +137,7 @@ impl App {
                 let mode = match mode {
                     "new" => PaletteMode::New,
                     "url" => PaletteMode::Url,
+                    "place" => PaletteMode::Place,
                     _ => PaletteMode::Go,
                 };
                 self.open_palette(mode);
@@ -188,13 +190,32 @@ impl App {
                     h.input.push_str(rest);
                 }
             }
+            "homeclear" => {
+                let i = self.active;
+                if let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) {
+                    h.input.clear();
+                    h.sel = 0;
+                }
+            }
             "homeenter" => self.home_commit_pub(),
+            "enter" => self.palette_commit(),
             "other" => self.open_url_by_other(rest),
             "copyurl" => {
                 self.copy_page_url();
             }
             "homelook" => {
-                self.behavior.home_look = if rest == "plate" { crate::settings::HomeLook::Plate } else { crate::settings::HomeLook::Line };
+                use crate::settings::HomeLook;
+                let mut words = rest.split_whitespace();
+                self.behavior.home_look = match words.next() {
+                    Some("plate") => HomeLook::Plate,
+                    Some("art") => {
+                        if let Some(key) = words.next() {
+                            self.behavior.home_art = key.to_string();
+                        }
+                        HomeLook::Art
+                    }
+                    _ => HomeLook::Line,
+                };
                 self.dirty = true;
             }
             "link" => {

@@ -22,6 +22,11 @@ pub struct Gpu {
     atlas_bind: wgpu::BindGroup,
     instances: wgpu::Buffer,
     instance_cap: usize,
+    /// Polygon corners for `Scene::poly`, read by the fragment shader.
+    points: wgpu::Buffer,
+    points_cap: usize,
+    points_bgl: wgpu::BindGroupLayout,
+    points_bind: wgpu::BindGroup,
     adapter: wgpu::Adapter,
 }
 
@@ -128,9 +133,25 @@ impl Gpu {
             label: Some("quad"),
             source: wgpu::ShaderSource::Wgsl(include_str!("quad.wgsl").into()),
         });
+        let points_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("points bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let points_cap = 4096;
+        let points = Self::make_points(&device, points_cap);
+        let points_bind = Self::bind_points(&device, &points_bgl, &points);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("quad pl"),
-            bind_group_layouts: &[Some(&bgl)],
+            bind_group_layouts: &[Some(&bgl), Some(&points_bgl)],
             immediate_size: 8,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -184,6 +205,10 @@ impl Gpu {
             atlas_bind,
             instances,
             instance_cap,
+            points,
+            points_cap,
+            points_bgl,
+            points_bind,
             adapter,
         };
         let mut target = Target {
@@ -231,6 +256,30 @@ impl Gpu {
         };
         t.configure(&self.device);
         Ok(t)
+    }
+
+    fn make_points(device: &wgpu::Device, cap: usize) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("points"),
+            size: (std::mem::size_of::<[f32; 2]>() * cap) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn bind_points(
+        device: &wgpu::Device,
+        bgl: &wgpu::BindGroupLayout,
+        points: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("points"),
+            layout: bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: points.as_entire_binding(),
+            }],
+        })
     }
 
     fn make_bind(
@@ -410,6 +459,16 @@ impl Gpu {
             self.queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(all));
         }
+        let pts = scene.points();
+        if pts.len() > self.points_cap {
+            self.points_cap = pts.len().next_power_of_two();
+            self.points = Self::make_points(&self.device, self.points_cap);
+            self.points_bind = Self::bind_points(&self.device, &self.points_bgl, &self.points);
+        }
+        if !pts.is_empty() {
+            self.queue
+                .write_buffer(&self.points, 0, bytemuck::cast_slice(pts));
+        }
     }
 
     /// One render pass of `scene` into `view`, cleared to `clear`.
@@ -444,6 +503,7 @@ impl Gpu {
             let (sw, sh) = size;
             pass.set_immediates(0, bytemuck::cast_slice(&[sw as f32, sh as f32]));
             pass.set_vertex_buffer(0, self.instances.slice(..));
+            pass.set_bind_group(1, &self.points_bind, &[]);
             for layer in scene.layers() {
                 if layer.range.is_empty() {
                     continue;

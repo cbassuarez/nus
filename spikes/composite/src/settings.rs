@@ -358,6 +358,8 @@ pub enum HomeLook {
     #[default]
     Line,
     Plate,
+    /// One of the arts (art.rs): `home_art` names it.
+    Art,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
@@ -483,6 +485,12 @@ pub struct Behavior {
     /// TABS · OPENED BY OTHERS.
     #[serde(default)]
     pub opened_by_others: OpenedBy,
+    /// HOME · ART: which art plays behind the line (a built-in's name or a file's stem).
+    #[serde(default = "default_home_art")]
+    pub home_art: String,
+    /// Where this machine is, for the sky: [lat, lon]; none = a rough guess from the clock.
+    #[serde(default)]
+    pub place: Option<[f32; 2]>,
     /// Remember tabs and windows between launches (session.json); off, nothing is written.
     #[serde(default = "default_true")]
     pub remember: bool,
@@ -696,6 +704,9 @@ fn default_splash() -> SplashMode {
 fn default_splash_hold() -> f32 {
     1.0
 }
+fn default_home_art() -> String {
+    "pond".into()
+}
 fn default_then() -> Then {
     Then::Prompt
 }
@@ -741,6 +752,8 @@ impl Default for Behavior {
             home_url: default_home_url(),
             home_look: HomeLook::Line,
             opened_by_others: OpenedBy::Behind,
+            home_art: default_home_art(),
+            place: None,
             remember: true,
             hands_hosts: Vec::new(),
             hands_confirm_submit: true,
@@ -972,6 +985,12 @@ pub enum Hit {
     Splash(SplashMode),
     HomeLook(HomeLook),
     OpenedBy(OpenedBy),
+    /// An art from the picker, by its place in art::list().
+    HomeArt(usize),
+    AddArt,
+    AskArt,
+    OpenArtFolder,
+    PlaceEdit,
     Then(Then),
     Atlas(AtlasMode),
     Outside(Outside),
@@ -1065,6 +1084,8 @@ enum Control {
     Proof(Vec<(Color, String)>),
     /// A mini sidebar: (bg, signal, title, child) rows the rules produced.
     Tabs(Vec<(Option<Color>, Option<Color>, String, bool)>),
+    /// The art picker: (key, name, says, hit, current, built-in), each card alive.
+    Art(Vec<(String, String, String, Hit, bool, bool)>),
 }
 
 impl App {
@@ -1303,6 +1324,11 @@ impl App {
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::HomeLook(l) => format!("home {:?}", l).to_lowercase(),
             Hit::OpenedBy(o) => format!("opened by others {:?}", o).to_lowercase(),
+            Hit::HomeArt(i) => format!("art · {}", crate::art::list().get(i).map(|a| a.name.clone()).unwrap_or_default()),
+            Hit::AddArt => "a new art of your own".into(),
+            Hit::AskArt => "asking for an art".into(),
+            Hit::OpenArtFolder => "the art folder".into(),
+            Hit::PlaceEdit => "place".into(),
             Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
             Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
             Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
@@ -1744,6 +1770,16 @@ impl App {
             Hit::Splash(m) => self.behavior.splash = m,
             Hit::HomeLook(l) => self.behavior.home_look = l,
             Hit::OpenedBy(o) => self.behavior.opened_by_others = o,
+            Hit::HomeArt(i) => {
+                if let Some(a) = crate::art::list().get(i) {
+                    self.behavior.home_look = HomeLook::Art;
+                    self.behavior.home_art = a.key.clone();
+                }
+            }
+            Hit::AddArt => self.add_art(),
+            Hit::AskArt => self.ask_for_art(),
+            Hit::OpenArtFolder => crate::art::open_dir(),
+            Hit::PlaceEdit => self.open_palette(crate::app::PaletteMode::Place),
             Hit::Then(t) => self.behavior.then = t,
             Hit::Atlas(a) => {
                 self.behavior.atlas = a;
@@ -1924,6 +1960,69 @@ impl App {
     /// A preset card: the ramp as its face, the signal as a chip, the name
     /// set in Newsreader; hard shadow, ink outline.
     #[allow(clippy::too_many_arguments)]
+    /// An art's card: the art itself, small and alive, a paper strip with its name, its line beneath.
+    fn draw_art_card(&mut self, scene: &mut Scene, r: Rect, key: &str, name: &str, says: &str, on: bool, builtin: bool) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let hk = hover_key("artcard", r.y as usize * 4096 + r.x as usize);
+        let (mx, my) = self.mouse;
+        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(36.0)).contains(mx, my);
+        let dur = self.motion.dur(140.0);
+        let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
+        if hot != h.hot {
+            h.hot = hot;
+            h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
+        }
+        let a = h.alpha.value();
+        let lift = self.px(3.0) * a;
+        let off = self.px(5.0) + lift;
+        let card = Rect::new(r.x - lift, r.y - lift, r.w, r.h);
+        scene.rect(Rect::new(card.x + off, card.y + off, card.w, card.h), if on { self.surface.signal } else { ink });
+        scene.rect(card, t.paper);
+        // The art, alive, run at a pane's size and shrunk into the card;
+        // its line a small box a third of the way down.
+        let sc = card.w / self.px(1280.0);
+        let cmds = {
+            let (w, h) = (card.w / sc, card.h / sc);
+            let env = crate::art::Env {
+                w,
+                h,
+                line: [w * 0.2, h * 0.34, w * 0.6, self.px(40.0)],
+                rows: 0.0,
+                pointer: None,
+                typed: String::new(),
+                taps: Vec::new(),
+                face: if self.theme.mode == nus_render::Mode::Ink { "ink".into() } else { "paper".into() },
+                paper: t.paper,
+                ink: t.ink,
+                signal: self.surface.signal,
+                dim: t.dim,
+                tint: t.tint,
+                place: self.place(),
+                procs: Some(self.procs_shared()),
+                scale: self.scale,
+            };
+            let art = self.art_previews.entry(key.to_string()).or_insert_with(|| crate::art::Art::open(key));
+            art.tend();
+            art.frame(env)
+        };
+        self.draw_art_cmds_scaled(scene, card, cmds, sc);
+        // The line, in miniature.
+        let lx = card.x + card.w * 0.2;
+        let ly = card.y + card.h * 0.34 + self.px(10.0);
+        scene.hline(lx, ly, card.w * 0.6, self.px(m::HAIRLINE), fade(ink, 0.5));
+        scene.rect(Rect::new(lx, ly - self.px(6.0), self.px(3.0), self.px(5.0)), self.surface.signal);
+        scene.outline(card, self.px(m::STRUCTURE), ink);
+        let label = self.label();
+        let dim = Style { color: t.dim, ..label };
+        let nm = self.fit(label, &name.to_uppercase(), r.w);
+        self.fonts.draw(scene, Style { color: ink, ..label }, r.x, r.y + r.h + self.px(18.0), &nm);
+        let sub = if says.is_empty() { if builtin { "ships with nus".to_string() } else { "yours".to_string() } } else { says.to_string() };
+        let sb = self.fit(dim, &sub, r.w);
+        self.fonts.draw(scene, dim, r.x, r.y + r.h + self.px(31.0), &sb);
+        self.dirty = true;
+    }
+
     fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool, faces: Option<(Color, Color, Color, Color)>) {
         let t = self.theme.clone();
         let ink = t.ink;
@@ -2569,9 +2668,35 @@ impl App {
                         Choice(vec![
                             ("THE LINE".into(), Hit::HomeLook(HomeLook::Line), b.home_look == HomeLook::Line),
                             ("THE PLATE".into(), Hit::HomeLook(HomeLook::Plate), b.home_look == HomeLook::Plate),
+                            ("ART".into(), Hit::HomeLook(HomeLook::Art), b.home_look == HomeLook::Art),
                         ]),
                     ),
-                    ("".into(), Info("what the prompt looks like: the line alone, or the line under the plate — the icon at a plate's size, your last places as stops on its band · the splash draws the icon in where the plate keeps it and nothing fades between them · the same typing, rows and enter either way".into())),
+                    ("".into(), Info("what the prompt looks like: the line alone; the line under the plate — the icon at a plate's size, your last places as stops on its band; or an art behind the line · the same typing, rows and enter either way".into())),
+                    (
+                        "ART".into(),
+                        Art(crate::art::list().into_iter().enumerate().map(|(i, a)| (a.key.clone(), a.name, a.says, Hit::HomeArt(i), b.home_look == HomeLook::Art && b.home_art == a.key, a.path.is_none())).collect()),
+                    ),
+                    (
+                        "".into(),
+                        Buttons(vec![
+                            ("ADD YOUR OWN".into(), icons::PLUS, Hit::AddArt),
+                            ("ASK FOR ONE".into(), icons::ASSISTANT, Hit::AskArt),
+                            ("OPEN THE FOLDER".into(), icons::FOLDER, Hit::OpenArtFolder),
+                        ]),
+                    ),
+                    ("".into(), Info("one Luau file each in profile/art — the four that ship are files too, so they are worked examples · add your own from a blank in the editor, or ask your assistant for one and it lands in the picker · a saved file redraws at once".into())),
+                    (
+                        "PLACE".into(),
+                        Choice(vec![(
+                            match b.place {
+                                Some([lat, lon]) => format!("{:.1}° {} · {:.1}° {}", lat.abs(), if lat >= 0.0 { "N" } else { "S" }, lon.abs(), if lon >= 0.0 { "E" } else { "W" }),
+                                None => { let (lat, lon) = self.place(); format!("ABOUT {:.0}° {} · {:.0}° {} · FROM THE CLOCK", lat.abs(), if lat >= 0.0 { "N" } else { "S" }, lon.abs(), if lon >= 0.0 { "E" } else { "W" }) }
+                            },
+                            Hit::PlaceEdit,
+                            b.place.is_some(),
+                        )]),
+                    ),
+                    ("".into(), Info("for the sky: where this machine is, as lat, lon · never leaves it".into())),
                     (
                         "LAUNCH TABS".into(),
                         Choice(vec![
@@ -3424,7 +3549,7 @@ impl App {
         let rows = self.rows_for(p.section);
         for (k, control) in rows {
             // Full-width controls: caption above, the control across the column.
-            let full = matches!(control, Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..));
+            let full = matches!(control, Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_));
             let cap_h = if full && !k.is_empty() { self.px(22.0) } else { 0.0 };
             let card_w = self.px(168.0);
             let card_h = self.px(104.0);
@@ -3436,6 +3561,10 @@ impl App {
                 Control::Cards(cards) => {
                     let rows = (cards.len() + per_row - 1) / per_row;
                     cap_h + rows as f32 * (card_h + self.px(8.0) + gap) + self.px(10.0)
+                }
+                Control::Art(cards) => {
+                    let rows = (cards.len() + per_row - 1) / per_row;
+                    cap_h + rows as f32 * (card_h + self.px(36.0) + gap) + self.px(10.0)
                 }
                 Control::Tokens(items, big) => {
                     let (tw, th) = if *big { (self.px(84.0), self.px(64.0) + self.px(34.0)) } else { (self.px(34.0), self.px(34.0)) };
@@ -3496,6 +3625,22 @@ impl App {
                         let card = Rect::new(x, cy, card_w, card_h);
                         self.draw_card(scene, card, &name, &ramp, signal, angle, on, faces);
                         self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(6.0)), hit));
+                        x += card_w + gap;
+                        n += 1;
+                    }
+                }
+                Control::Art(cards) => {
+                    let mut x = cx;
+                    let mut cy = y + cap_h;
+                    let mut n = 0;
+                    for (key, name, says, hit, on, builtin) in cards {
+                        if n > 0 && n % per_row == 0 {
+                            x = cx;
+                            cy += card_h + self.px(36.0) + gap;
+                        }
+                        let card = Rect::new(x, cy, card_w, card_h);
+                        self.draw_art_card(scene, card, &key, &name, &says, on, builtin);
+                        self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(36.0)), hit));
                         x += card_w + gap;
                         n += 1;
                     }

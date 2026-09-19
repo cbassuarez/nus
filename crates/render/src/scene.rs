@@ -294,7 +294,12 @@ pub struct Scene {
     instances: Vec<Instance>,
     layers: Vec<Layer>,
     open: Option<(usize, Option<Rect>)>,
+    /// Polygon corners for the frame's `poly` instances, in the order pushed.
+    points: Vec<[f32; 2]>,
 }
+
+/// The most corners one polygon may have; the shader walks them per pixel.
+pub const POLY_MAX: usize = 1024;
 
 impl Scene {
     pub fn new() -> Scene {
@@ -305,6 +310,46 @@ impl Scene {
         self.instances.clear();
         self.layers.clear();
         self.open = None;
+        self.points.clear();
+    }
+
+    /// A filled polygon through `pts` (either winding, concave allowed,
+    /// even-odd where it crosses itself), anti-aliased at its edge and
+    /// seamless inside however translucent the colour: the shader fills it
+    /// from the signed distance to the outline rather than from triangles.
+    pub fn poly(&mut self, pts: &[[f32; 2]], color: Color) {
+        let n = pts.len().min(POLY_MAX);
+        if n < 3 || color[3] <= 0.0 {
+            return;
+        }
+        let pts = &pts[..n];
+        let min_x = pts.iter().map(|c| c[0]).fold(f32::INFINITY, f32::min);
+        let min_y = pts.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
+        let max_x = pts.iter().map(|c| c[0]).fold(f32::NEG_INFINITY, f32::max);
+        let max_y = pts.iter().map(|c| c[1]).fold(f32::NEG_INFINITY, f32::max);
+        if !(min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite()) {
+            return;
+        }
+        // A pixel of slack so the anti-aliased edge isn't clipped.
+        let (x, y) = (min_x.floor() - 1.0, min_y.floor() - 1.0);
+        let (w, h) = ((max_x - x).ceil() + 1.0, (max_y - y).ceil() + 1.0);
+        let start = self.points.len() as u32;
+        // Corners ride relative to the box, as the shader sees the pixel.
+        self.points.extend(pts.iter().map(|c| [c[0] - x, c[1] - y]));
+        self.push(Instance {
+            pos: [x, y],
+            size: [w, h],
+            uv: [0.0; 4],
+            color,
+            kind: 13,
+            color2: n as u32,
+            phase: 0.0,
+            extra: start,
+        });
+    }
+
+    pub fn points(&self) -> &[[f32; 2]] {
+        &self.points
     }
 
     /// Start (or restart) an atlas-bound layer with an optional clip.

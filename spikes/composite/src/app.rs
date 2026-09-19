@@ -43,6 +43,8 @@ pub enum PaletteMode {
     SyncFolder,
     SyncGit,
     SyncJoin,
+    /// STARTUP · PLACE: lat, lon.
+    Place,
     /// Name a tab; its icon (an emoji, or any short string).
     RenameTab(usize),
     IconTab(usize),
@@ -117,6 +119,8 @@ pub enum Action {
     Home,
     /// The focused page's address to the clipboard.
     CopyUrl,
+    /// STARTUP · PLACE.
+    SetPlace(Option<[f32; 2]>),
     /// A shell in this folder, as a tab (a stop on the plate).
     ShellAt(String),
     /// Back to a held shell by its id (a stop on the plate).
@@ -852,6 +856,11 @@ pub struct App {
     pub toast: Option<crate::toast::Toast>,
     /// The page's right-click menu, while up (page_menu.rs).
     pub page_menu: Option<crate::page_menu::PageMenu>,
+    /// The art behind the prompt, running (art.rs); the picker's cards, alive.
+    pub art: Option<crate::art::Art>,
+    pub art_previews: std::collections::HashMap<String, crate::art::Art>,
+    /// The machine's processes, sampled once an art asks (procs.rs).
+    pub procs: Option<crate::procs::Shared>,
     pub toast_anim: Anim,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
@@ -1108,6 +1117,9 @@ impl App {
             toast: None,
             toast_anim: Anim::at(0.0),
             page_menu: None,
+            art: None,
+            art_previews: std::collections::HashMap::new(),
+            procs: None,
             shot: crate::shot::Shot::from_env(),
             deferred: Vec::new(),
             loop_probe: None,
@@ -3580,7 +3592,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder" };
+            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -5984,6 +5996,19 @@ impl App {
                     rows.push(row("→", format!("call this tab “{q}”"), Action::NameTab(i, q.to_string())));
                 }
             }
+            PaletteMode::Place => {
+                let parsed = crate::app::parse_place(&q);
+                if q.trim().is_empty() {
+                    rows.push(row("·", "where this machine is, as lat, lon — 35.2, -106.6 · for the sky".into(), Action::Noop));
+                    if self.behavior.place.is_some() {
+                        rows.push(row("×", "forget it · a rough place from the clock instead".into(), Action::SetPlace(None)));
+                    }
+                } else if let Some([lat, lon]) = parsed {
+                    rows.push(row("→", format!("{:.1}° {} · {:.1}° {}", lat.abs(), if lat >= 0.0 { "N" } else { "S" }, lon.abs(), if lon >= 0.0 { "E" } else { "W" }), Action::SetPlace(Some([lat, lon]))));
+                } else {
+                    rows.push(row("·", "two numbers: lat, lon".into(), Action::Noop));
+                }
+            }
             PaletteMode::Folder(i) => {
                 for (fi, f) in self.folders.iter().enumerate() {
                     if f.kind == crate::folders::Kind::Plain && hit(&f.name) {
@@ -6167,6 +6192,11 @@ impl App {
             Action::JournalPage => self.open_journal_page(),
             Action::Timeline => self.toggle_timeline(),
             Action::Home => self.open_home(),
+            Action::SetPlace(p) => {
+                self.behavior.place = p;
+                self.save_prefs();
+                self.art = None;
+            }
             Action::CopyUrl => {
                 if !self.copy_page_url() {
                     self.toast("NO PAGE HAS THE FOCUS", None);
@@ -8530,6 +8560,31 @@ fn git_root_name(from: Option<std::path::PathBuf>) -> Option<String> {
 }
 
 /// A colour at a fraction of its own alpha.
+/// "35.2, -106.6" (or with ° N/S E/W) → [lat, lon].
+pub(crate) fn parse_place(s: &str) -> Option<[f32; 2]> {
+    let clean: String = s.chars().map(|c| if c == '°' || c == ';' { ' ' } else { c }).collect();
+    let mut nums: Vec<f32> = Vec::new();
+    let mut signs: Vec<f32> = Vec::new();
+    for tok in clean.split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()) {
+        let up = tok.to_uppercase();
+        match up.as_str() {
+            "N" | "E" => { if let Some(last) = signs.last_mut() { *last = 1.0; } }
+            "S" | "W" => { if let Some(last) = signs.last_mut() { *last = -1.0; } }
+            _ => {
+                if let Ok(v) = tok.trim_end_matches(|c: char| c.is_alphabetic()).parse::<f32>() {
+                    nums.push(v);
+                    signs.push(1.0);
+                    if up.ends_with('S') || up.ends_with('W') { *signs.last_mut().unwrap() = -1.0; }
+                }
+            }
+        }
+    }
+    if nums.len() != 2 { return None; }
+    let (lat, lon) = (nums[0] * signs[0], nums[1] * signs[1]);
+    if lat.abs() > 90.0 || lon.abs() > 180.0 { return None; }
+    Some([lat, lon])
+}
+
 pub(crate) fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {
     [c[0], c[1], c[2], c[3] * k]
 }

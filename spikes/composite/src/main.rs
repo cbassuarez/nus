@@ -59,6 +59,8 @@ mod splash;
 mod plate;
 mod toast;
 mod page_menu;
+mod art;
+mod procs;
 mod start;
 mod surface;
 mod theme_edit;

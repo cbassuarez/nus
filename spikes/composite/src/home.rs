@@ -27,6 +27,8 @@ pub struct HomePane {
     pub since: Instant,
     /// The splash drew the plate's band already; it is not drawn in again.
     pub handed: bool,
+    /// Clicks on the pane's paper since the last frame, for the art.
+    pub taps: Vec<(f32, f32)>,
     /// The plate's stops (plate.rs), gathered when the pane first draws
     /// and again now and then — holders are asked over a socket.
     pub places: Option<(Instant, Vec<PaletteRow>)>,
@@ -34,7 +36,7 @@ pub struct HomePane {
 
 impl HomePane {
     pub fn new() -> HomePane {
-        HomePane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: Instant::now(), handed: false, places: None }
+        HomePane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: Instant::now(), handed: false, taps: Vec::new(), places: None }
     }
 }
 
@@ -182,7 +184,14 @@ impl App {
     pub(crate) fn home_click(&mut self, x: f32, y: f32) -> bool {
         let i = self.active;
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
-        let Some(&(_, k)) = h.hits.iter().find(|(r, _)| r.contains(x, y)) else { return false };
+        let Some(&(_, k)) = h.hits.iter().find(|(r, _)| r.contains(x, y)) else {
+            // Paper, not a row: the art may want to know.
+            if h.rect.contains(x, y) {
+                h.taps.push((x - h.rect.x, y - h.rect.y));
+                self.dirty = true;
+            }
+            return false;
+        };
         h.sel = k + 1;
         self.home_commit();
         true
@@ -196,9 +205,13 @@ impl App {
         let paper = self.paper();
         scene.rect(r, paper);
         let plate = self.behavior.home_look == HomeLook::Plate;
+        let art = self.behavior.home_look == HomeLook::Art;
         // Under the plate the line sits beneath the icon and comes up once
         // the band closes; alone, it sits a third of the way down.
         let (y0, up) = if plate { self.draw_plate_icon(scene, p) } else { (r.y + r.h * 0.34, 1.0) };
+        if art {
+            self.draw_home_art(scene, p, y0);
+        }
         // The wordmark, small, where the pane begins — the plate is the n itself.
         if !plate {
             let word = Style { font: self.f.wordmark, px: self.px(22.0), color: fade(ink, 0.55), tracking: 0.0 };
@@ -267,6 +280,59 @@ impl App {
         };
         let fw = self.fonts.measure(dim, foot);
         self.fonts.draw(scene, dim, r.x + (r.w - fw) / 2.0, foot_y, foot);
+    }
+}
+
+impl App {
+    /// The art, running behind the line: the pane is its canvas, the
+    /// line's box (and the rows' reach while typing) is what it keeps
+    /// clear of, the pointer and the typing and the taps are its inputs.
+    fn draw_home_art(&mut self, scene: &mut Scene, p: &mut HomePane, y0: f32) {
+        let key = self.behavior.home_art.clone();
+        if self.art.as_ref().map(|a| a.key != key).unwrap_or(true) {
+            self.art = Some(crate::art::Art::open(&key));
+        }
+        let r = p.rect;
+        let t = self.theme.clone();
+        let px = self.px(20.0);
+        let line_w = (r.w * 0.62).max(self.px(320.0)).min(r.w - self.px(56.0));
+        let x0 = r.x + (r.w - line_w) / 2.0;
+        // The rows' reach below the line, from the last frame's rows.
+        let line_bottom = y0 - px * 0.78 + px * 0.95 + self.px(14.0);
+        let rows = p.hits.last().map(|(rr, _)| (rr.bottom() - line_bottom).max(0.0)).unwrap_or(0.0);
+        let (mx, my) = self.mouse;
+        let pointer = if r.contains(mx, my) { Some((mx - r.x, my - r.y)) } else { None };
+        let env = crate::art::Env {
+            w: r.w,
+            h: r.h,
+            line: [x0 - r.x, y0 - px * 0.78 - r.y, line_w, px * 0.95 + self.px(14.0)],
+            rows,
+            pointer,
+            typed: p.input.clone(),
+            taps: std::mem::take(&mut p.taps),
+            face: if t.mode == nus_render::Mode::Ink { "ink".into() } else { "paper".into() },
+            paper: self.paper(),
+            ink: t.ink,
+            signal: self.surface.signal,
+            dim: t.dim,
+            tint: t.tint,
+            place: self.place(),
+            procs: Some(self.procs_shared()),
+            scale: self.scale,
+        };
+        let (cmds, status) = {
+            let art = self.art.as_mut().unwrap();
+            art.tend();
+            (art.frame(env), art.status.clone())
+        };
+        self.draw_art_cmds(scene, r, cmds);
+        if let Some(err) = status {
+            let dim = Style { color: self.surface.signal, ..self.label() };
+            let line = format!("ART · {} · {}", key.to_uppercase(), err);
+            self.fonts.draw(scene, dim, r.x + self.px(28.0), r.bottom() - self.px(48.0), &line);
+        }
+        // Alive: keep drawing.
+        self.dirty = true;
     }
 }
 

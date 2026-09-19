@@ -4,6 +4,8 @@ struct Globals {
 var<immediate> globals: Globals;
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var tex_sampler: sampler;
+// Polygon corners for kind 13, relative to the instance's box.
+@group(1) @binding(0) var<storage, read> points: array<vec2<f32>>;
 
 struct Instance {
     @location(0) pos: vec2<f32>,
@@ -29,6 +31,7 @@ struct VsOut {
     @location(8) @interpolate(flat) extra: u32,
     @location(9) @interpolate(flat) stop3: vec4<f32>,
     @location(10) @interpolate(flat) stop4: vec4<f32>,
+    @location(11) @interpolate(flat) raw2: u32,
 };
 
 fn unpack(c: u32) -> vec4<f32> {
@@ -65,6 +68,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
     out.extra = inst.extra;
     out.stop3 = unpack(bitcast<u32>(inst.uv.z));
     out.stop4 = unpack(bitcast<u32>(inst.uv.w));
+    out.raw2 = inst.color2;
     return out;
 }
 
@@ -123,6 +127,37 @@ fn sd_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if in.kind == 0u {
         return in.color;
+    }
+    if in.kind == 13u {
+        // A polygon: `extra` is where its corners start in `points`, raw2
+        // how many. Signed distance to the outline (even-odd inside) gives
+        // one anti-aliased edge and no seams within, however translucent.
+        let start = in.extra;
+        let n = in.raw2;
+        let p = in.local;
+        var d2 = 1.0e18;
+        var inside = false;
+        for (var i = 0u; i < n; i = i + 1u) {
+            let a = points[start + i];
+            let b = points[start + (i + 1u) % n];
+            let e = b - a;
+            let w = p - a;
+            let t = clamp(dot(w, e) / max(dot(e, e), 1.0e-6), 0.0, 1.0);
+            let q = w - e * t;
+            d2 = min(d2, dot(q, q));
+            if (a.y <= p.y) != (b.y <= p.y) {
+                let x = a.x + (p.y - a.y) * e.x / e.y;
+                if p.x < x {
+                    inside = !inside;
+                }
+            }
+        }
+        var sd = sqrt(d2);
+        if inside {
+            sd = -sd;
+        }
+        let cov = 1.0 - smoothstep(-0.75, 0.75, sd);
+        return vec4(in.color.rgb, in.color.a * cov);
     }
     if in.kind == 12u {
         // A convex quad: four corners inside the instance box, c0 in params,
