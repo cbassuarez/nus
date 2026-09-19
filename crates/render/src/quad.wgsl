@@ -119,6 +119,93 @@ fn sd_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     return length(max(q, vec2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
 }
 
+// The sky (kind 14): value noise, fBm, and a day that turns with the sun.
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    var f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+fn fbm(p0: vec2<f32>) -> f32 {
+    var p = p0;
+    var s = 0.0;
+    var a = 0.5;
+    let m = mat2x2<f32>(vec2(1.6, 1.2), vec2(-1.2, 1.6));
+    for (var i = 0; i < 6; i = i + 1) {
+        s = s + a * vnoise(p);
+        p = m * p + vec2(3.1, 1.7);
+        a = a * 0.5;
+    }
+    return s;
+}
+fn sky_at(y: f32, alt: f32) -> vec3<f32> {
+    let day = smoothstep(-0.12, 0.25, alt);
+    let dusk = smoothstep(-0.25, 0.0, alt) * (1.0 - smoothstep(0.0, 0.3, alt));
+    let zen = mix(vec3(0.02, 0.03, 0.07), vec3(0.16, 0.38, 0.82), day);
+    let hor = mix(vec3(0.05, 0.06, 0.11), vec3(0.70, 0.82, 0.94), day);
+    var c = mix(hor, zen, pow(clamp(y, 0.0, 1.0), 0.55));
+    c = mix(c, vec3(1.0, 0.55, 0.28), dusk * pow(1.0 - clamp(y, 0.0, 1.0), 2.5) * 0.85);
+    return c;
+}
+fn sky(in: VsOut) -> vec4<f32> {
+    let uv = vec2(in.local.x / in.size.x, 1.0 - in.local.y / in.size.y);
+    let ar = in.size.x / in.size.y;
+    let az = in.params.x;
+    let alt = in.params.y;
+    let cover = in.color.r;
+    let wind = in.color.g;
+    let pan = vec2(in.color.b, in.color.a);
+    let t = in.phase;
+    // The horizon a little under the pane: a sky looked up at.
+    let y = uv.y * 0.9 + 0.08;
+    var col = sky_at(y, alt);
+    let day = smoothstep(-0.12, 0.25, alt);
+    // The sun: a disc and a glow where it is.
+    let sp = vec2(0.5 + az * 0.55, alt * 0.9 + 0.02);
+    let dist = length((uv - sp) * vec2(ar, 1.0));
+    let sun_col = mix(vec3(1.0, 0.75, 0.45), vec3(1.0, 0.98, 0.92), smoothstep(0.0, 0.35, alt));
+    col = col + sun_col * (0.9 * exp(-dist * 28.0) + 0.35 * exp(-dist * 6.0)) * step(-0.12, alt);
+    col = col + sun_col * smoothstep(0.018, 0.012, dist) * step(-0.05, alt);
+    // A moon at night, and stars.
+    let mp = vec2(0.5 - az * 0.5, clamp(-alt, 0.0, 1.0) * 0.8 + 0.1);
+    let md = length((uv - mp) * vec2(ar, 1.0));
+    col = col + vec3(0.9, 0.92, 1.0) * (smoothstep(0.014, 0.010, md) * 0.9 + 0.18 * exp(-md * 18.0)) * (1.0 - day);
+    let cell = floor(uv * in.size * 0.5);
+    let st = step(0.997, hash(cell)) * (1.0 - day) * (0.5 + 0.5 * sin(t * 1.3 + hash(cell) * 40.0));
+    col = col + vec3(st);
+    // Clouds: flatter and denser toward the horizon; the field warps itself.
+    let z = 1.0 / (y * 1.25 + 0.22);
+    let p = vec2((uv.x - 0.5) * ar * z * 0.95, z * 0.9) * 1.45 + pan;
+    let w = vec2(wind * t * 0.010, wind * t * 0.0015);
+    let q = p + w;
+    let warp = 0.35 * vec2(fbm(q * 0.9 + vec2(1.7, 9.2)), fbm(q * 0.9 + vec2(8.3, 2.8)));
+    let base = fbm(q + warp) * 0.8 + fbm((q + warp * 0.5) * 3.1 + 7.0) * 0.3;
+    let edge = 0.62 - cover * 0.42;
+    var dens = smoothstep(edge - 0.06, edge + 0.26, base);
+    let core = smoothstep(edge + 0.12, edge + 0.5, base);
+    dens = dens * smoothstep(0.0, 0.2, y);
+    // Lit from the sun: the field a step toward it, for a cheap normal.
+    let to_sun = normalize(vec2(az * 0.6, max(alt, 0.08)));
+    let q2 = q + to_sun * 0.05;
+    let warp2 = 0.35 * vec2(fbm(q2 * 0.9 + vec2(1.7, 9.2)), fbm(q2 * 0.9 + vec2(8.3, 2.8)));
+    let nl = fbm(q2 + warp2) * 0.8 + fbm((q2 + warp2 * 0.5) * 3.1 + 7.0) * 0.3;
+    let lit = clamp(0.5 + (nl - base) * 9.0, 0.0, 1.0);
+    var shade = mix(vec3(0.72, 0.76, 0.86), vec3(0.30, 0.32, 0.40), 1.0 - day);
+    var light = mix(vec3(1.0), sun_col, 0.25);
+    light = mix(vec3(0.22, 0.24, 0.32), light, day);
+    let dusk_t = smoothstep(-0.2, 0.0, alt) * (1.0 - smoothstep(0.0, 0.3, alt));
+    light = mix(light, vec3(1.0, 0.66, 0.45), dusk_t * 0.7);
+    shade = mix(shade, vec3(0.55, 0.42, 0.48), dusk_t * 0.5);
+    var cc = mix(shade, light, lit);
+    cc = mix(cc, light, core * 0.35);
+    let rim = smoothstep(0.0, 0.1, dens) * (1.0 - smoothstep(0.1, 0.4, dens));
+    cc = cc + light * rim * 0.3 * day;
+    col = mix(col, cc, min(1.0, dens * 1.05));
+    // A hair of grain so the gradient never bands.
+    col = col + (hash(uv * in.size + t) - 0.5) * 0.012;
+    return vec4(col, 1.0);
+}
+
 // kind 0: solid. 1: atlas glyph (R = coverage). 2: external RGBA texture.
 // 3: rounded fill (params.x = radius). 4: rounded stroke (params.x = radius,
 // params.y = thickness). 3 and 4 blend toward color2 along a diagonal
@@ -127,6 +214,9 @@ fn sd_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if in.kind == 0u {
         return in.color;
+    }
+    if in.kind == 14u {
+        return sky(in);
     }
     if in.kind == 13u {
         // A polygon: `extra` is where its corners start in `points`, raw2

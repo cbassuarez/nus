@@ -352,6 +352,24 @@ impl Scene {
         &self.points
     }
 
+    /// A sky over `r`: the gradient by the sun's height, the sun (or the
+    /// moon and stars) where it is, and cumulus from a noise field, lit
+    /// from the sun and drifting on the wind — all in the fragment shader.
+    /// `az` runs -1 (east, left) to 1 (west, right); `alt` is the sine of
+    /// the sun's altitude; `cover` 0..1; `t` seconds; `seed` picks the field.
+    pub fn sky(&mut self, r: Rect, az: f32, alt: f32, cover: f32, wind: f32, t: f32, seed: [f32; 2]) {
+        self.push(Instance {
+            pos: [r.x, r.y],
+            size: [r.w, r.h],
+            uv: [az, alt, 0.0, 0.0],
+            color: [cover, wind, seed[0], seed[1]],
+            kind: 14,
+            color2: 0,
+            phase: t,
+            extra: 0,
+        });
+    }
+
     /// Start (or restart) an atlas-bound layer with an optional clip.
     pub fn layer(&mut self, clip: Option<Rect>) {
         self.close();

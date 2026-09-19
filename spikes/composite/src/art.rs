@@ -24,10 +24,11 @@ pub fn dir() -> PathBuf {
 }
 
 /// The four that ship, by their file names.
-pub const BUILTIN: [(&str, &str, &str); 4] = [
+pub const BUILTIN: [(&str, &str, &str); 5] = [
     ("pond", "the pond", include_str!("../assets/art/pond.luau")),
     ("memphis", "memphis", include_str!("../assets/art/memphis.luau")),
     ("space", "space", include_str!("../assets/art/space.luau")),
+    ("sky", "the sky", include_str!("../assets/art/sky.luau")),
     ("brain", "the brain", include_str!("../assets/art/brain.luau")),
 ];
 
@@ -95,6 +96,8 @@ pub enum Cmd {
     Line(f32, f32, f32, f32, f32, Color),
     /// x, y (baseline), text, px, colour, font (0 mono · 1 serif · 2 strong), align (0 left · 1 centre · 2 right), tracked
     Text(f32, f32, String, f32, Color, u8, u8, bool),
+    /// A sky over the rect: (az -1..1, sin alt, cover, wind, seed).
+    Sky(Rect, f32, f32, f32, f32, [f32; 2]),
 }
 
 /// What the canvas knows this frame.
@@ -125,6 +128,8 @@ struct State {
     cmds: Vec<Cmd>,
     t: f32,
     dt: f32,
+    /// The art says its backdrop is dark: the line goes paper over it.
+    dark: bool,
 }
 
 #[derive(Clone)]
@@ -361,7 +366,30 @@ impl mlua::UserData for Canvas {
             }
         });
         m.add_method("rgba", |lua, _, (r, g, b, a): (f32, f32, f32, Option<f32>)| table_color(lua, [r, g, b, a.unwrap_or(1.0)]));
-        m.add_method("now", |_, _, ()| Ok(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0)));
+        // The sky: a table of az (-1 east … 1 west), alt (sin of the sun's
+        // altitude), cover (0..1), wind, seed {x, y}; x, y, w, h default to the pane.
+        m.add_method("sky", |_, c, o: mlua::Table| {
+            let mut s = c.0.borrow_mut();
+            let (w, h) = (s.env.w, s.env.h);
+            let g = |k: &str, d: f32| o.get::<f32>(k).unwrap_or(d);
+            let r = Rect::new(g("x", 0.0), g("y", 0.0), g("w", w), g("h", h));
+            let seed = o.get::<mlua::Table>("seed").ok().map(|t| [t.get::<f32>(1).unwrap_or(0.0), t.get::<f32>(2).unwrap_or(0.0)]).unwrap_or([3.7, 1.3]);
+            s.cmds.push(Cmd::Sky(r, g("az", 0.0).clamp(-1.0, 1.0), g("alt", 0.5).clamp(-1.0, 1.0), g("cover", 0.4).clamp(0.0, 1.0), g("wind", 1.0), seed));
+            Ok(())
+        });
+        // What the art is drawn on: "dark" puts the line in paper with a
+        // shadow; "paper" (the default) keeps it in ink.
+        m.add_method("backdrop", |_, c, which: String| {
+            c.0.borrow_mut().dark = which == "dark";
+            Ok(())
+        });
+        // The clock, in unix milliseconds; NUS_CLOCK pins it (for photographs of a night sky at noon).
+        m.add_method("now", |_, _, ()| {
+            if let Some(ms) = std::env::var("NUS_CLOCK").ok().and_then(|v| v.parse::<f64>().ok()) {
+                return Ok(ms);
+            }
+            Ok(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0))
+        });
         m.add_method("place", |lua, c, ()| {
             let (lat, lon) = c.0.borrow().env.place;
             let t = lua.create_table()?;
@@ -417,6 +445,8 @@ pub struct Art {
     state: Rc<RefCell<State>>,
     /// The last error, if the script broke; it draws at the foot.
     pub status: Option<String>,
+    /// Set by the last frame: the line goes paper over this art.
+    pub dark: bool,
     started: Instant,
     last: Instant,
     /// Keep the koi and the stars where they were across a reload.
@@ -442,7 +472,8 @@ impl Art {
             path,
             checked: Instant::now(),
             lua: mlua::Lua::new(),
-            state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0 })),
+            state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, dark: false })),
+            dark: false,
             status: None,
             started: Instant::now(),
             last: Instant::now(),
@@ -492,6 +523,7 @@ impl Art {
             let mut s = self.state.borrow_mut();
             s.env = env;
             s.cmds.clear();
+            s.dark = false;
             s.t = self.started.elapsed().as_secs_f32();
             s.dt = dt;
         }
@@ -507,6 +539,7 @@ impl Art {
         if let Err(e) = result {
             self.status = Some(short_error(&e));
         }
+        self.dark = self.state.borrow().dark;
         std::mem::take(&mut self.state.borrow_mut().cmds)
     }
 }
@@ -557,6 +590,10 @@ impl App {
                     let a = at(x1, y1);
                     let b = at(x2, y2);
                     scene.push(Instance::quad([[a[0] + nx, a[1] + ny], [b[0] + nx, b[1] + ny], [b[0] - nx, b[1] - ny], [a[0] - nx, a[1] - ny]], c));
+                }
+                Cmd::Sky(rr, az, alt, cover, wind, seed) => {
+                    let rr = Rect::new(rr.x * sc + ox, rr.y * sc + oy, rr.w * sc, rr.h * sc);
+                    scene.sky(rr, az, alt, cover, wind, self.started.elapsed().as_secs_f32(), seed);
                 }
                 Cmd::Text(x, y, text, px, c, font, align, tracked) => {
                     let size = self.px(px) * sc;
@@ -728,7 +765,7 @@ mod tests {
 
     #[test]
     fn a_script_draws() {
-        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: Instant::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0 })), status: None, started: Instant::now(), last: Instant::now(), reloads: 0 };
+        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: Instant::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, dark: false })), status: None, dark: false, started: Instant::now(), last: Instant::now(), reloads: 0 };
         art.load("function draw(c) c:rect(1, 2, 3, 4, c.ink) c:circle(5, 5, 2, '#c8102e', 0.5) c:text(0, 10, 'hi', 11, c.dim, 1, { caps = true }) c:blob({ {0,0}, {10,0}, {10,10}, {0,10} }, c.signal) end");
         let cmds = art.frame(Env { w: 100.0, h: 100.0, ..Default::default() });
         assert!(cmds.len() >= 4, "{}", cmds.len());

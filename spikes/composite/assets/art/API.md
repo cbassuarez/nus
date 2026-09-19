@@ -36,6 +36,10 @@ optional `alpha` multiplies.
     c:measure(text, px, font?)   a near-enough width
     c:mix(a, b, t)               a colour between two
     c:rgba(r, g, b, a?)          a colour table
+    c:sky({az=, alt=, cover=, wind=, seed={x,y}, x?, y?, w?, h?})
+                                 a whole sky in the shader: az -1 (east, left) … 1 (west, right), alt the sine of the
+                                 sun's altitude (night below 0: a moon, stars), cover 0..1, wind 1 = a breeze
+    c:backdrop("dark")           say the art is dark: the line goes paper with a shadow (default "paper")
 
 The file's first lines say what it is:
 

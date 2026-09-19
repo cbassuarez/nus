@@ -876,18 +876,21 @@ impl App {
         let under = if has_me { format!("on {} · local", device()) } else { "a profile that lives here".to_string() };
         self.fonts.draw(scene, dim, nx, base1 + self.px(18.0), &self.fit(dim, &under.caps(), r.right() - pad - nx - self.px(90.0)));
         if let Some(me) = &self.me {
-            // The badge: a calendar and the count; the words in the tooltip.
+            // The masthead number: the day as the issue number — DAY in small
+            // caps over an italic numeral, a hairline above and below, no box.
             let days = me.days();
-            let word = days.to_string();
-            let isz = self.px(13.0);
-            let bw = isz + self.px(6.0) + self.fonts.measure(strong, &word) + self.px(20.0);
-            let bh = self.px(24.0);
+            let word = format!("No. {days}");
+            let num = Style { font: self.f.wordmark, px: self.px(18.0), color: ink, tracking: 0.0 };
+            let cap = Style { color: t.dim, px: self.px(9.5), tracking: self.px(1.4), ..label };
+            let bw = self.fonts.measure(num, &word).max(self.fonts.measure(cap, "DAY")) + self.px(4.0);
+            let bh = self.px(38.0);
             let br = Rect::new(r.right() - pad - bw, r.y + ((head_h - bh) / 2.0).round(), bw, bh);
-            scene.rect(Rect::new(br.x + self.px(2.0), br.y + self.px(2.0), br.w, br.h), ink);
-            scene.rect(br, t.paper);
-            scene.outline(br, self.px(m::HAIRLINE), ink);
-            self.fonts.draw_icon(scene, icons::CALENDAR, isz, br.x + self.px(10.0), br.y + ((bh - isz) / 2.0).round(), self.surface.signal);
-            self.fonts.draw(scene, strong, br.x + self.px(10.0) + isz + self.px(6.0), br.y + bh / 2.0 + self.px(4.0), &word);
+            scene.hline(br.x, br.y, br.w, self.px(m::HAIRLINE), ink);
+            scene.hline(br.x, br.bottom() - self.px(m::HAIRLINE), br.w, self.px(m::HAIRLINE), ink);
+            let cw = self.fonts.measure(cap, "DAY");
+            self.fonts.draw(scene, cap, br.right() - self.px(2.0) - cw, br.y + self.px(13.0), "DAY");
+            let nw = self.fonts.measure(num, &word);
+            self.fonts.draw(scene, num, br.right() - self.px(2.0) - nw, br.bottom() - self.px(7.0), &word);
             let tip = format!("{} with nus · since {}", me.day_word(), me.created);
             self.me_tip(hover_key("me-badge", 0), br, tip);
             self.me_card.hits.push((br, CardHit::Badge));

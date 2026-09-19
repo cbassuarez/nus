@@ -212,19 +212,22 @@ impl App {
         if art {
             self.draw_home_art(scene, p, y0);
         }
+        // Over a dark art the words go paper, with a hair of ink beneath.
+        let dark = art && self.art.as_ref().is_some_and(|a| a.dark);
+        let ink = if dark { t.paper } else { ink };
         // The wordmark, small, where the pane begins — the plate is the n itself.
         if !plate {
-            let word = Style { font: self.f.wordmark, px: self.px(22.0), color: fade(ink, 0.55), tracking: 0.0 };
-            self.fonts.draw(scene, word, r.x + self.px(28.0), r.y + self.px(42.0), "nus");
+            let word = Style { font: self.f.wordmark, px: self.px(22.0), color: fade(ink, 0.7), tracking: 0.0 };
+            self.draw_lit(scene, word, r.x + self.px(28.0), r.y + self.px(42.0), "nus", dark);
         }
         // The line: a caret in signal, the input in mono, a rule beneath.
         let px = self.px(20.0);
         let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
         let line_w = (r.w * 0.62).max(self.px(320.0)).min(r.w - self.px(56.0));
         let x0 = r.x + (r.w - line_w) / 2.0;
-        let caret_w = self.fonts.draw(scene, Style { color: fade(self.surface.signal, up), ..mono }, x0, y0, "»") + self.px(12.0);
+        let caret_w = self.draw_lit(scene, Style { color: fade(self.surface.signal, up), ..mono }, x0, y0, "»", dark) + self.px(12.0);
         let shown = self.fit(mono, &p.input, line_w - caret_w - px);
-        let tw = self.fonts.draw(scene, mono, x0 + caret_w, y0, &shown);
+        let tw = self.draw_lit(scene, mono, x0 + caret_w, y0, &shown, dark);
         // The block caret, breathing.
         if focused {
             let on = (self.started.elapsed().as_secs_f32() * 2.0) as u32 % 2 == 0 || p.since.elapsed().as_millis() < 600;
@@ -242,7 +245,7 @@ impl App {
         let sel = p.sel.min(rows.len());
         p.sel = sel;
         let label = self.label();
-        let dim = Style { color: fade(t.dim, up), ..label };
+        let dim = Style { color: fade(if dark { fade(t.paper, 0.75) } else { t.dim }, up), ..label };
         let foot_y = r.bottom() - self.px(26.0);
         if plate && p.input.trim().is_empty() {
             self.draw_stops(scene, p, &rows, sel, up);
@@ -261,9 +264,9 @@ impl App {
                 }
                 let base = y + row_h / 2.0 + self.px(4.0);
                 let num_w = self.px(28.0);
-                self.fonts.draw(scene, dim, x0, base, &row.num);
+                self.draw_lit(scene, dim, x0, base, &row.num, dark);
                 let text = self.fit(label, &row.text, line_w - num_w);
-                self.fonts.draw(scene, Style { color: fade(ink, if hot { 1.0 } else { 0.75 } * up), ..label }, x0 + num_w, base, &text);
+                self.draw_lit(scene, Style { color: fade(ink, if hot { 1.0 } else { 0.75 } * up), ..label }, x0 + num_w, base, &text, dark);
                 p.hits.push((rr, k));
                 y += row_h;
             }
@@ -279,7 +282,21 @@ impl App {
             "enter · a shell running this"
         };
         let fw = self.fonts.measure(dim, foot);
-        self.fonts.draw(scene, dim, r.x + (r.w - fw) / 2.0, foot_y, foot);
+        self.draw_lit(scene, dim, r.x + (r.w - fw) / 2.0, foot_y, foot, dark);
+    }
+
+    /// Text over an art: with `dark`, an ink shadow a pixel under the words.
+    fn draw_lit(&mut self, scene: &mut Scene, st: Style, x: f32, y: f32, text: &str, dark: bool) -> f32 {
+        if dark {
+            // Two passes: a soft one two pixels down, a crisp one beneath.
+            let d = self.px(1.0);
+            let soft = Style { color: [0.0, 0.0, 0.0, 0.35 * st.color[3]], ..st };
+            let crisp = Style { color: [0.0, 0.0, 0.0, 0.6 * st.color[3]], ..st };
+            self.fonts.draw(scene, soft, x + d * 2.0, y + d * 2.0, text);
+            self.fonts.draw(scene, soft, x - d, y + d, text);
+            self.fonts.draw(scene, crisp, x + d, y + d, text);
+        }
+        self.fonts.draw(scene, st, x, y, text)
     }
 }
 
