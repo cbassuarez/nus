@@ -25,6 +25,20 @@ or by `nus sync folder <path>` / `nus sync git <remote>`:
 - **A git remote**, private. A clone lives under `profile/sync/git`;
   `pull --rebase` before, `add · commit · push` after. Same files, with
   history for free.
+- **A forge** (2026-09-19): the git remote made for you. On the profile
+  card — the avatar in the footer, or PROFILE · HOW IT LIVES, or SYNC ·
+  SIGN IN TO A FORGE — pick GitHub, Forgejo, Gitea or GitLab. GitHub signs
+  in from the card by the device flow (a code to enter on
+  github.com/login/device) when nus has an app id (`NUS_GITHUB_CLIENT_ID`
+  at build or run time), else with a token of repo scope; the others take
+  the instance's address and a token. nus asks who the token is, finds
+  `nus-profile` or makes it, private, and points the git carrier at its
+  https url. The token lives in `profile/sync/forge.token` (0600 where
+  modes exist), goes to the forge as an `Authorization` header on each
+  git command (`-c http.extraheader`), and is never in a url, in git's
+  config, or on the carrier; `profile/sync/forge.json` remembers the forge,
+  the login and the repo. FORGET THE FORGE drops both and clears the remote;
+  the repo stays yours to delete. The web calls go through `curl`.
 
 **Only ciphertext leaves.** Every file is sealed with XChaCha20-Poly1305
 under the key, the file's relative path as associated data so a blob cannot

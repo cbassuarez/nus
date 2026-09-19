@@ -956,3 +956,66 @@ place; twenty (theming) merged from its branch. This pass adds `links.rs`,
 `home.rs` and `plate.rs`, and touches session, settings, the splash and
 the palette. Still to come for the home: the pond (koi over the line, a
 real page with real fish), sketched on the canvas, not built.
+
+## Art behind the prompt, the page's menu, the settings, the third way (built 2026-09-19, twenty-second pass)
+
+**Art.** STARTUP · HOME · THE LINE · THE PLATE · ART: an art is one Luau
+file that draws behind the line, every frame, on a canvas that is the
+pane. `c.prompt` is the line's box and `c.rows` how far the rows beneath
+it reach; the art keeps clear of them. It sees the pointer, what is typed,
+the taps on the paper, the tokens (paper, ink, signal, dim, tint, the six
+promo signals), the clock, the place, and the kernel's processes; it draws
+with rects, circles, ovals, lines, curves, quads, polygons, blobs and text.
+Four ship, as files too: *the pond* (four koi from a bending spine, a real
+width profile, translucent fins, patches that follow the bend; they keep
+off the line, gather when you type, shy from the pointer, and a tap
+ripples), *memphis* (the promo's kit — squiggle, zigzag, stripes, dots,
+solids with the 2px line and the 8×8 shadow, the sticker), *space* (the
+sky over this machine now, zenith at the centre, north up, east left as it
+is lying back: the bright northern catalogue by magnitude, the figures in
+hairlines, the names in small caps, sidereal time from the clock and the
+place, meteors on a tap; the sky fades around the line), *the brain* (every
+process as a row of dim type in three trees — the system, nus's own, the
+desktop — hairlines parent to child, a pulse down the connector when one
+wakes, the kernel's counters along the top; hover a row and its ancestry
+lights, type and the names come forward). The picker on the STARTUP page
+runs each art live in a card at a pane's size and shrinks it in (type too
+small to read is greeked); ADD YOUR OWN writes the blank into
+`profile/art/` and opens it in the editor — save and it redraws; ASK FOR
+ONE sends the canvas doc to the assistant and the ```luau block it
+answers with lands in the picker; OPEN THE FOLDER; PLACE sets lat, lon for
+the sky (else guessed from the clock's zone). A file in `profile/art/`
+named like a built-in replaces it. The renderer grew a polygon for this:
+any simple polygon filled from the signed distance to its outline, one
+anti-aliased edge and no seams inside however translucent.
+
+**Tabs opened by others, the copy chord, the page's menu.** TABS · OPENED
+BY OTHERS · BEHIND · WITH A TOAST (default) · IN FRONT: a tab a shell, an
+assistant's hands, a rule or another app opens lands behind, and a slip
+rises at the foot — *opened behind · host · click to go*. Ctrl+Shift+C on
+a page copies its url with a toast (the shell keeps its own chord). The
+page's right-click is nus's own menu — media first (SAVE VIDEO AS, SAVE
+IMAGE AS, COPY THE ADDRESS, PICTURE IN PICTURE), then the link, then the
+page (back · forward · reload · copy · view source) — and a download icon
+in the page's strip when there is media on the page; saving is Chromium's
+save-as, direct media only, into ~/Downloads with the footer's download row.
+
+**Settings, every page.** Prose wraps; chips and buttons wrap when the
+column is narrow; long pages read in parts under small captions; SOUND's
+events are a speaker toggle, the cue's name (click to hear it) and a
+caret; KEYS shows chords as keycaps; the nav has every section (KEYS,
+SYNC, PROFILE and UPDATES under YOU) and tightens when the window is
+short.
+
+**The third way.** The profile lives one of three ways, chosen on the
+card (the avatar in the footer, or PROFILE · HOW IT LIVES): *here* — a
+folder on this machine, nothing leaves; *a folder you sync* — iCloud,
+OneDrive, Dropbox, Syncthing, a stick, sealed with a key you copy; *a
+private repo on a forge* — GitHub (sign in from the card with a code, when
+nus has a GitHub app id, or paste a token with repo scope), Forgejo, Gitea
+or GitLab (the instance and a token). nus finds or makes `nus-profile`,
+private, and the git carrier does the rest; the token stays in
+`profile/sync/forge.token`, goes to the forge as a header per git command,
+and is never in a url, in git's config or on the carrier. The key step
+makes the word on the first device (COPY) or takes it on the next. Same
+sealing, same last-writer-wins. See docs/SYNC.md.

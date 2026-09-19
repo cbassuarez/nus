@@ -949,6 +949,9 @@ pub enum Hit {
     SyncNow,
     SyncKey,
     SyncEdit(u8),
+    /// The card's walk, at how the profile lives / the forge.
+    MeWalk(u8),
+    ForgeForget,
     PortsGrouping(PortsGrouping),
     PortsOpen(PortsOpen),
     PortsPoll(u8),
@@ -1321,6 +1324,9 @@ impl App {
             Hit::SyncNow => "syncing".into(),
             Hit::SyncKey => "key copied".into(),
             Hit::SyncEdit(_) => "sync".into(),
+            Hit::MeWalk(0) => "how the profile lives".into(),
+            Hit::MeWalk(_) => "a forge".into(),
+            Hit::ForgeForget => "forget the forge".into(),
             Hit::PortsGrouping(g) => g.name().into(),
             Hit::PortsOpen(o) => format!("open in {}", match o { PortsOpen::Tab => "a tab", PortsOpen::Split => "the split", PortsOpen::Peek => "a peek" }),
             Hit::PortsPoll(n) => format!("poll every {n}s"),
@@ -1730,6 +1736,12 @@ impl App {
             Hit::SyncNow => self.sync_now(),
             Hit::SyncKey => self.run(crate::app::Action::SyncKey),
             Hit::SyncEdit(k) => self.open_palette(match k { 0 => crate::app::PaletteMode::SyncFolder, 1 => crate::app::PaletteMode::SyncGit, _ => crate::app::PaletteMode::SyncJoin }),
+            Hit::MeWalk(k) => self.open_me_card_at(if k == 0 { crate::me::Step::Sync } else { crate::me::Step::Forge }),
+            Hit::ForgeForget => {
+                crate::forge::forget();
+                self.behavior.sync_git.clear();
+                self.notice("the forge is forgotten · the repo is still yours to delete");
+            }
             Hit::ForgetMemory => {
                 let _ = std::fs::write(std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), "");
             }
@@ -3369,7 +3381,7 @@ impl App {
                     ("".into(), Info("sync names what this machine wrote by it (the manifest, the .lost files); it lives in profile/sync/device and never syncs itself".into())),
                     ("SINCE".into(), Info(format!("{since} · {days}"))),
                     ("SYNC".into(), Info(self.sync_status())),
-                    ("".into(), Buttons(vec![("SYNC SETTINGS".into(), icons::BROADCAST, Hit::Section(SEC_SYNC))])),
+                    ("".into(), Buttons(vec![("HOW IT LIVES".into(), icons::BROADCAST, Hit::MeWalk(0)), ("SYNC SETTINGS".into(), icons::SLIDERS, Hit::Section(SEC_SYNC))])),
                     ("PRIVATE".into(), Info("this profile is a folder: settings, rules, layouts, folders, ports, memory, sites, containers, the browser's own state · nothing leaves it unless you set up sync, and then only sealed · no account, no crash reports, no counters, no phone-home".into())),
                     ("".into(), Buttons(vec![("OPEN THE PROFILE FOLDER".into(), icons::FOLDER, Hit::MeFolder), ("START OVER".into(), icons::WARNING, Hit::MeForget)])),
                 ]);
@@ -3379,8 +3391,19 @@ impl App {
                 let b = &self.behavior;
                 let has_key = crate::syncui::key().is_some();
                 vec![
-                    ("".into(), Info("your profile on more than one device, no account: sealed with a key you copy, carried by a folder your OS already syncs or a private git remote, last writer wins and the loser is kept beside it as .lost".into())),
+                    ("".into(), Info("your profile on more than one device, no account: sealed with a key you copy, carried by a folder your OS already syncs or a private repo on a forge, last writer wins and the loser is kept beside it as .lost".into())),
                     ("STATUS".into(), Info(self.sync_status())),
+                    ("".into(), Buttons({
+                        let mut b = vec![("HOW IT LIVES · THE WALK".into(), icons::USER, Hit::MeWalk(0)), ("SIGN IN TO A FORGE".into(), icons::GITHUB, Hit::MeWalk(1))];
+                        if crate::forge::load().is_some() {
+                            b.push(("FORGET THE FORGE".into(), icons::CLOSE, Hit::ForgeForget));
+                        }
+                        b
+                    })),
+                    ("".into(), Info(match crate::forge::load() {
+                        Some(f) => format!("{} · the token stays in profile/sync/forge.token, sent to the forge as a header, never in a url or on the carrier", f.word()),
+                        None => "the walk sets up any of the three ways in the card; a forge is github (sign in from the card, or a token), forgejo, gitea or gitlab (a token) — nus makes nus-profile, private".into(),
+                    })),
                     ("KEY".into(), Choice(vec![
                         (if has_key { "SHOW · COPY".into() } else { "MAKE ONE".into() }, Hit::SyncKey, has_key),
                         ("JOIN WITH A KEY".into(), Hit::SyncEdit(2), false),

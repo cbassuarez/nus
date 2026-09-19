@@ -344,10 +344,13 @@ impl Carrier for Folder {
 }
 
 /// A git remote: a clone under `work`, pulled before and pushed after.
+/// With `auth`, an `Authorization` header value goes on every fetch and
+/// push (a forge's token, kept off the URL and out of git's config).
 pub struct Git {
     pub remote: String,
     pub work: PathBuf,
     pub folder: Folder,
+    pub auth: Option<String>,
 }
 
 impl Git {
@@ -358,10 +361,24 @@ impl Git {
             folder: Folder {
                 root: work.to_path_buf(),
             },
+            auth: None,
+        }
+    }
+    pub fn with_auth(remote: &str, work: &Path, auth: Option<String>) -> Git {
+        let mut g = Git::new(remote, work);
+        g.auth = auth;
+        g
+    }
+    /// The header, as a `-c` pair for the command line.
+    fn header_args(&self) -> Vec<String> {
+        match &self.auth {
+            Some(h) => vec!["-c".into(), format!("http.extraheader=Authorization: {h}")],
+            None => Vec::new(),
         }
     }
     fn git(&self, args: &[&str]) -> anyhow::Result<String> {
         let out = std::process::Command::new("git")
+            .args(self.header_args())
             .args(args)
             .current_dir(&self.work)
             .output()
@@ -403,6 +420,7 @@ impl Carrier for Git {
         if !self.work.join(".git").exists() {
             std::fs::create_dir_all(&self.work)?;
             let out = std::process::Command::new("git")
+                .args(self.header_args())
                 .args(["clone", "--quiet", &self.remote, "."])
                 .current_dir(&self.work)
                 .output()?;

@@ -60,6 +60,7 @@ mod plate;
 mod toast;
 mod page_menu;
 mod art;
+mod forge;
 mod procs;
 mod start;
 mod surface;

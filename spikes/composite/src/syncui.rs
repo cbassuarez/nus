@@ -104,7 +104,9 @@ impl App {
                     carriers.push(Box::new(nus_sync::Folder { root: f }));
                 }
                 if let Some(g) = git {
-                    carriers.push(Box::new(nus_sync::Git::new(&g, &profile.join("sync").join("git"))));
+                    // A forge's repo speaks with its token, as a header.
+                    let auth = crate::forge::load().filter(|f| f.clone_url == g).and_then(|_| crate::forge::auth_header());
+                    carriers.push(Box::new(nus_sync::Git::with_auth(&g, &profile.join("sync").join("git"), auth)));
                 }
                 let refs: Vec<&dyn nus_sync::Carrier> = carriers.iter().map(|c| c.as_ref()).collect();
                 let rep = nus_sync::exchange(&profile, &device, &k, session, &refs);
@@ -169,10 +171,15 @@ impl App {
         let mut s = String::new();
         s.push_str(if key { "key on this device" } else { "no key" });
         s.push_str(" · ");
+        // A forge's repo by its name, not its url.
+        let g = g.map(|g| match crate::forge::load() {
+            Some(f) if f.clone_url == g => f.word(),
+            _ => format!("git {g}"),
+        });
         s.push_str(&match (f, g) {
-            (Some(f), Some(g)) => format!("folder {} + git {}", f.display(), g),
+            (Some(f), Some(g)) => format!("folder {} + {}", f.display(), g),
             (Some(f), None) => format!("folder {}", f.display()),
-            (None, Some(g)) => format!("git {g}"),
+            (None, Some(g)) => g,
             (None, None) => "no carrier".into(),
         });
         if self.sync.rx.is_some() {

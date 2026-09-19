@@ -38,6 +38,7 @@
 //!   share                      the active tab as a replay file, opened as a tab
 //!   ctrlc                      Ctrl+C to the shell
 //!   home | hometype <text> | homeclear | homeenter   the prompt: open it, type into it, empty it, commit
+//!   mecard [sync|folder|forge|token|key|next|back]   the profile card: the view, a step of the walk, or a press
 //!   homelook plate | line | art <key>   HOME: the prompt under the plate, the line alone, or an art behind it
 //!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
 //!   copyurl                    the focused page's url to the clipboard, with its toast
@@ -198,6 +199,16 @@ impl App {
                 }
             }
             "homeenter" => self.home_commit_pub(),
+            "mecard" => match rest.trim() {
+                "next" => self.me_next_pub(),
+                "back" => self.me_back_pub(),
+                "sync" => self.open_me_card_at(crate::me::Step::Sync),
+                "folder" => self.open_me_card_at(crate::me::Step::Folder),
+                "forge" => self.open_me_card_at(crate::me::Step::Forge),
+                "token" => self.open_me_card_at(crate::me::Step::ForgeToken),
+                "key" => self.open_me_card_at(crate::me::Step::Key),
+                _ => self.open_me_card(),
+            },
             "enter" => self.palette_commit(),
             "other" => self.open_url_by_other(rest),
             "copyurl" => {

@@ -4,10 +4,16 @@
 //! whole account: no server behind it, nothing counted, nothing sent.
 //!
 //! The card rises from the avatar in the footer. The first time it walks
-//! you through — hello, name, face, device, sync or not — and says, in so
-//! many words, that this stays here. After that it is the profile at a
-//! glance: the face, the name, a day-count badge, the rows, and MORE for
-//! the full page under settings.
+//! you through — hello, name, face, device, and how the profile lives —
+//! and says, in so many words, that this stays here. After that it is the
+//! profile at a glance: the face, the name, a day-count badge, the rows,
+//! and MORE for the full page under settings.
+//!
+//! How it lives, three ways: here, a folder on this machine and nothing
+//! leaves; carried by a folder your OS already syncs; or carried by a
+//! private repo on a forge — GitHub signed into from the card or with a
+//! token, Forgejo, Gitea or GitLab with a token — that nus makes for you.
+//! The last two share a key you copy; only ciphertext goes anywhere.
 
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -177,8 +183,28 @@ pub enum Step {
     Name,
     Face,
     Device,
+    /// How the profile lives: here, a folder you sync, a private repo.
     Sync,
+    /// The folder your OS carries.
+    Folder,
+    /// Which forge, and how to sign in.
+    Forge,
+    /// A token, pasted.
+    ForgeToken,
+    /// The worker's phase: a code to enter, verifying, making, done.
+    ForgeWait,
+    /// The key: made here, or joined with the word from another device.
+    Key,
     Done,
+}
+
+/// The three ways the profile can live.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Way {
+    #[default]
+    Here,
+    Folder,
+    Forge,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -193,6 +219,22 @@ pub enum CardHit {
     Edit(Step),
     Folder,
     Badge,
+    /// One of the three ways.
+    Way(u8),
+    /// One of the forges.
+    ForgeKind(u8),
+    /// GitHub, from the card (the device flow).
+    ForgeSignIn,
+    /// Any forge, with a token.
+    ForgeToken,
+    /// The page the device code goes on, in a tab.
+    OpenCodePage,
+    CopyCode,
+    /// The key: 0 make one here, 1 join with the word.
+    KeyMode(u8),
+    CopyKey,
+    /// Undo the forge: the token and the repo's name forgotten.
+    ForgeForget,
 }
 
 pub struct MeCard {
@@ -207,11 +249,35 @@ pub struct MeCard {
     pub rise: Anim,
     pub rect: Rect,
     pub hits: Vec<(Rect, CardHit)>,
+    /// The way picked, the forge picked, the key's mode (0 make, 1 join).
+    pub way: Way,
+    pub forge: crate::forge::Kind,
+    pub key_mode: u8,
+    /// The forge worker, while it runs; the word the key was made as.
+    pub flow: Option<crate::forge::Flow>,
+    pub made_key: String,
+    /// The host typed for a forge that is not GitHub.
+    pub host: String,
 }
 
 impl Default for MeCard {
     fn default() -> Self {
-        MeCard { open: false, step: None, editing: false, input: String::new(), face: Face::Initial, rise: Anim::at(0.0), rect: Rect::new(0.0, 0.0, 0.0, 0.0), hits: Vec::new() }
+        MeCard {
+            open: false,
+            step: None,
+            editing: false,
+            input: String::new(),
+            face: Face::Initial,
+            rise: Anim::at(0.0),
+            rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+            hits: Vec::new(),
+            way: Way::Here,
+            forge: crate::forge::Kind::GitHub,
+            key_mode: 0,
+            flow: None,
+            made_key: String::new(),
+            host: String::new(),
+        }
     }
 }
 
@@ -238,24 +304,45 @@ impl App {
                 Some(Face::Emoji(e)) => e.clone(),
                 _ => String::new(),
             },
+            Step::Folder => self.behavior.sync_folder.clone(),
             _ => String::new(),
         };
         let c = &mut self.me_card;
         c.step = Some(step);
-        c.editing = self.me.is_some();
+        // The sync steps are a walk of their own, never a one-field edit.
+        c.editing = self.me.is_some() && !matches!(step, Step::Sync | Step::Folder | Step::Forge | Step::ForgeToken | Step::ForgeWait | Step::Key);
         c.input = seed;
         c.face = self.me.as_ref().map(|m| m.face.clone()).unwrap_or_default();
+        c.way = if !self.behavior.sync_git.is_empty() { Way::Forge } else if !self.behavior.sync_folder.is_empty() { Way::Folder } else { Way::Here };
+        c.forge = crate::forge::load().map(|f| f.kind).unwrap_or_default();
+        c.host = c.forge.default_host().to_string();
+        c.key_mode = 0;
+        c.made_key.clear();
+        if let Some(f) = c.flow.take() {
+            f.cancel();
+        }
     }
 
     pub(crate) fn close_me_card(&mut self) {
         self.me_card.open = false;
         self.me_card.hits.clear();
+        if let Some(f) = self.me_card.flow.take() {
+            f.cancel();
+        }
         self.dirty = true;
     }
 
     /// The name the rest of the app uses.
     pub(crate) fn me_name(&self) -> String {
         self.me.as_ref().map(|m| m.name.clone()).filter(|n| !n.trim().is_empty()).unwrap_or_else(os_user)
+    }
+
+    /// For the shot driver.
+    pub(crate) fn me_next_pub(&mut self) {
+        self.me_next();
+    }
+    pub(crate) fn me_back_pub(&mut self) {
+        self.me_back();
     }
 
     /// Enter, or NEXT: commit this step and go on.
@@ -317,13 +404,85 @@ impl App {
                     self.me_card.input.clear();
                 }
             }
-            Step::Sync => self.me_finish(),
+            Step::Sync => match self.me_card.way {
+                Way::Here => self.me_sync_done(),
+                Way::Folder => {
+                    self.me_card.step = Some(Step::Folder);
+                    self.me_card.input = self.behavior.sync_folder.clone();
+                }
+                Way::Forge => {
+                    self.me_card.step = Some(Step::Forge);
+                    self.me_card.input.clear();
+                }
+            },
+            Step::Folder => {
+                if input.is_empty() {
+                    return;
+                }
+                self.behavior.sync_folder = input;
+                self.save_prefs();
+                self.me_card.step = Some(Step::Key);
+                self.me_card.input.clear();
+            }
+            Step::Forge => {
+                // NEXT here means a token; GitHub's sign-in has its own button.
+                self.me_card.host = if input.is_empty() { self.me_card.forge.default_host().to_string() } else { input };
+                self.me_card.step = Some(Step::ForgeToken);
+                self.me_card.input.clear();
+            }
+            Step::ForgeToken => {
+                if input.is_empty() {
+                    return;
+                }
+                let kind = self.me_card.forge;
+                let host = self.me_card.host.clone();
+                self.me_card.flow = Some(crate::forge::start_token(kind, &host, &input));
+                self.me_card.step = Some(Step::ForgeWait);
+                self.me_card.input.clear();
+            }
+            Step::ForgeWait => {
+                // Only on to the key once the worker is done.
+                if let Some(crate::forge::Phase::Done(f)) = self.me_card.flow.as_ref().map(|f| f.phase()) {
+                    self.behavior.sync_git = f.clone_url.clone();
+                    self.save_prefs();
+                    self.me_card.flow = None;
+                    self.me_card.step = Some(Step::Key);
+                    self.me_card.input.clear();
+                }
+            }
+            Step::Key => {
+                if self.me_card.key_mode == 1 {
+                    if nus_sync::decode_key(&input).is_none() {
+                        self.notice("that is not a nus key · nus5-…");
+                        return;
+                    }
+                    crate::syncui::write_key(&input);
+                } else if crate::syncui::key().is_none() {
+                    self.me_card.made_key = crate::syncui::make_key();
+                    // Shown first; NEXT again goes on.
+                    return;
+                }
+                self.me_sync_done();
+                self.sync_now();
+            }
             Step::Done => {
                 self.me_card.step = None;
             }
         }
         self.user_name = self.me_name();
         self.dirty = true;
+    }
+
+    /// The sync walk ends: the profile is saved if it wasn't, and the card
+    /// says how it lives now.
+    fn me_sync_done(&mut self) {
+        if self.me.is_none() {
+            self.me_finish();
+        } else {
+            self.me_card.step = Some(Step::Done);
+            self.me_card.input.clear();
+        }
+        self.me_card.editing = false;
     }
 
     /// The walk's end: the file, day 1 (or the day it really began).
@@ -344,11 +503,17 @@ impl App {
             c.editing = false;
             return;
         }
+        if let Some(f) = c.flow.take() {
+            f.cancel();
+        }
         c.step = match c.step {
             Some(Step::Name) => Some(Step::Hello),
             Some(Step::Face) => Some(Step::Name),
             Some(Step::Device) => Some(Step::Face),
             Some(Step::Sync) => Some(Step::Device),
+            Some(Step::Folder) | Some(Step::Forge) => Some(Step::Sync),
+            Some(Step::ForgeToken) | Some(Step::ForgeWait) => Some(Step::Forge),
+            Some(Step::Key) => Some(if c.way == Way::Forge { Step::Forge } else { Step::Folder }),
             s => s,
         };
         c.input = match c.step {
@@ -388,8 +553,63 @@ impl App {
                 if self.me.is_none() {
                     self.me_finish();
                 }
-                self.close_me_card();
-                self.open_settings_at(crate::settings::SEC_SYNC, None);
+                self.open_me_card_at(Step::Sync);
+            }
+            CardHit::Way(k) => {
+                self.me_card.way = match k { 1 => Way::Folder, 2 => Way::Forge, _ => Way::Here };
+            }
+            CardHit::ForgeKind(k) => {
+                let kind = crate::forge::Kind::ALL[(k as usize).min(3)];
+                self.me_card.forge = kind;
+                self.me_card.host = kind.default_host().to_string();
+                self.me_card.input = if kind == crate::forge::Kind::GitHub { String::new() } else { kind.default_host().to_string() };
+            }
+            CardHit::ForgeSignIn => {
+                if let Some(id) = crate::forge::client_id() {
+                    self.me_card.flow = Some(crate::forge::start_device(&id));
+                    self.me_card.step = Some(Step::ForgeWait);
+                    self.me_card.input.clear();
+                }
+            }
+            CardHit::ForgeToken => {
+                let input = self.me_card.input.trim().to_string();
+                self.me_card.host = if input.is_empty() { self.me_card.forge.default_host().to_string() } else { input };
+                self.me_card.step = Some(Step::ForgeToken);
+                self.me_card.input.clear();
+            }
+            CardHit::OpenCodePage => {
+                if let Some(crate::forge::Phase::Code { uri, .. }) = self.me_card.flow.as_ref().map(|f| f.phase()) {
+                    self.open_url(&uri, true);
+                }
+            }
+            CardHit::CopyCode => {
+                if let Some(crate::forge::Phase::Code { user_code, .. }) = self.me_card.flow.as_ref().map(|f| f.phase()) {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(user_code.clone());
+                    }
+                    self.toast(format!("COPIED · {user_code}"), None);
+                }
+            }
+            CardHit::KeyMode(k) => {
+                self.me_card.key_mode = k;
+                self.me_card.input.clear();
+                if k == 0 {
+                    self.me_card.made_key = crate::syncui::make_key();
+                }
+            }
+            CardHit::CopyKey => {
+                let word = if self.me_card.made_key.is_empty() { crate::syncui::make_key() } else { self.me_card.made_key.clone() };
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(word);
+                }
+                self.toast("COPIED · THE KEY · PASTE IT ON THE OTHER DEVICE", None);
+            }
+            CardHit::ForgeForget => {
+                crate::forge::forget();
+                self.behavior.sync_git.clear();
+                self.save_prefs();
+                self.me_card.step = Some(Step::Sync);
+                self.me_card.way = Way::Here;
             }
             CardHit::Edit(step) => self.open_me_card_at(step),
             CardHit::Folder => {
@@ -416,7 +636,20 @@ impl App {
         if ev.state != ElementState::Pressed {
             return true;
         }
-        let typing = matches!(self.me_card.step, Some(Step::Name) | Some(Step::Device)) || (self.me_card.step == Some(Step::Face) && matches!(self.me_card.face, Face::Emoji(_)));
+        let typing = matches!(self.me_card.step, Some(Step::Name) | Some(Step::Device) | Some(Step::Folder) | Some(Step::ForgeToken))
+            || (self.me_card.step == Some(Step::Face) && matches!(self.me_card.face, Face::Emoji(_)))
+            || (self.me_card.step == Some(Step::Forge) && self.me_card.forge != crate::forge::Kind::GitHub)
+            || (self.me_card.step == Some(Step::Key) && self.me_card.key_mode == 1);
+        // Paste: a path, a token, a key — one line of it.
+        if typing && self.mods.control_key() && matches!(&ev.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("v")) {
+            if let Some(text) = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok()) {
+                let line = text.lines().next().unwrap_or("").trim().to_string();
+                let room = 200usize.saturating_sub(self.me_card.input.chars().count());
+                self.me_card.input.extend(line.chars().take(room));
+            }
+            self.dirty = true;
+            return true;
+        }
         match &ev.logical_key {
             WKey::Named(NamedKey::Escape) => {
                 if self.me_card.editing {
@@ -437,7 +670,8 @@ impl App {
             }
             WKey::Named(NamedKey::Space) if typing => self.me_card.input.push(' '),
             WKey::Character(c) if typing && !self.mods.control_key() && !self.mods.super_key() && c.chars().all(|ch| !ch.is_control()) => {
-                if self.me_card.input.chars().count() < 40 {
+                let room = if matches!(self.me_card.step, Some(Step::Name) | Some(Step::Device) | Some(Step::Face)) { 40 } else { 200 };
+                if self.me_card.input.chars().count() < room {
                     self.me_card.input.push_str(c);
                 }
             }
@@ -530,7 +764,14 @@ impl App {
     fn me_input(&mut self, scene: &mut Scene, x: f32, y: f32, w: f32, hint: &str) -> f32 {
         let t = self.theme.clone();
         let big = Style { font: self.f.ui, px: self.px(18.0), color: t.ink, tracking: 0.0 };
-        let text = self.me_card.input.clone();
+        // A token shows as dots but its last four.
+        let text = if self.me_card.step == Some(Step::ForgeToken) {
+            let n = self.me_card.input.chars().count();
+            let tail: String = self.me_card.input.chars().skip(n.saturating_sub(4)).collect();
+            if n > 4 { format!("{}{}", "•".repeat((n - 4).min(24)), tail) } else { "•".repeat(n) }
+        } else {
+            self.me_card.input.clone()
+        };
         let base = y + self.px(22.0);
         if text.is_empty() {
             self.fonts.draw(scene, Style { color: t.dim, ..big }, x, base, hint);
@@ -562,11 +803,12 @@ impl App {
         let ui_strong = self.ui_strong();
         let dim = Style { color: t.dim, ..label };
         let pad = self.px(20.0);
-        let cw = self.px(380.0).min(w - self.px(32.0));
+        let step = self.me_card.step;
+        let wide = matches!(step, Some(Step::Sync) | Some(Step::Folder) | Some(Step::Forge) | Some(Step::ForgeToken) | Some(Step::ForgeWait) | Some(Step::Key));
+        let cw = self.px(if wide { 440.0 } else { 380.0 }).min(w - self.px(32.0));
         self.me_card.hits.clear();
 
         // Height by what's on the card.
-        let step = self.me_card.step;
         let editing = self.me_card.editing;
         let has_me = self.me.is_some();
         let head_h = self.px(76.0);
@@ -577,7 +819,12 @@ impl App {
             Some(Step::Hello) => self.px(150.0),
             Some(Step::Name) | Some(Step::Device) => self.px(126.0),
             Some(Step::Face) => self.px(176.0),
-            Some(Step::Sync) => self.px(150.0),
+            Some(Step::Sync) => self.px(196.0),
+            Some(Step::Folder) => self.px(150.0),
+            Some(Step::Forge) => self.px(212.0),
+            Some(Step::ForgeToken) => self.px(150.0),
+            Some(Step::ForgeWait) => self.px(170.0),
+            Some(Step::Key) => self.px(196.0),
             Some(Step::Done) => self.px(126.0),
         };
         let ch = head_h + body_h + foot_h;
@@ -660,7 +907,15 @@ impl App {
                     Face::Emoji(e) => e.clone(),
                     Face::Picture => "profile/avatar.png".to_string(),
                 };
-                let sync = if self.sync_ready() { "on".to_string() } else { "off · nothing leaves".to_string() };
+                let sync = if self.sync_ready() {
+                    match crate::forge::load() {
+                        Some(f) if f.clone_url == self.behavior.sync_git => f.word(),
+                        _ if !self.behavior.sync_folder.is_empty() => "on · a folder".to_string(),
+                        _ => "on · git".to_string(),
+                    }
+                } else {
+                    "off · nothing leaves".to_string()
+                };
                 let rows: Vec<(&str, String, (&'static str, &'static str), CardHit)> = vec![
                     ("NAME", me.name.clone(), icons::TEXT_AA, CardHit::Edit(Step::Name)),
                     ("FACE", face_word, icons::SMILEY, CardHit::Edit(Step::Face)),
@@ -799,24 +1054,239 @@ impl App {
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Sync) => {
-                let isz = self.px(22.0);
-                self.fonts.draw_icon(scene, icons::LOCK_KEY, isz, bx, y, self.surface.signal);
-                let head = Style { font: self.f.strong, px: self.px(15.0), color: ink, tracking: 0.0 };
-                self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Carry it to another device?");
-                y += self.px(34.0);
-                let lines = [
-                    "Optional. A key you copy seals the profile; a folder",
-                    "you already sync, or a private git remote, carries it.",
-                    "Only ciphertext leaves. Last writer wins, nothing is",
-                    "silently lost. You can set this up any time, in settings.",
+                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "WHERE IT LIVES");
+                y += self.px(22.0);
+                // Three tiles: here, a folder you sync, a private repo.
+                let tw = ((bw - 2.0 * self.px(10.0)) / 3.0).floor();
+                let th = self.px(74.0);
+                let picked = self.me_card.way;
+                let tiles: [(u8, &str, &str, (&'static str, &'static str)); 3] = [
+                    (0, "HERE", "nothing leaves", icons::EYE_SLASH),
+                    (1, "A FOLDER", "one you sync", icons::FOLDER_SIMPLE),
+                    (2, "A REPO", "on a forge", icons::GITHUB),
                 ];
-                for l in lines {
-                    self.fonts.draw(scene, ui, bx, y + self.px(12.0), l);
-                    y += self.px(19.0);
+                for (k, word, sub, icon) in tiles {
+                    let tx = bx + k as f32 * (tw + self.px(10.0));
+                    let tr = Rect::new(tx, y, tw, th);
+                    let on = matches!((picked, k), (Way::Here, 0) | (Way::Folder, 1) | (Way::Forge, 2));
+                    scene.rect(Rect::new(tr.x + self.px(3.0), tr.y + self.px(3.0), tr.w, tr.h), if on { ink } else { fade(ink, 0.25) });
+                    scene.rect(tr, t.paper);
+                    scene.outline(tr, self.px(if on { m::FLOATING } else { m::HAIRLINE }), ink);
+                    let isz = self.px(16.0);
+                    self.fonts.draw_icon(scene, icon, isz, tr.x + self.px(10.0), tr.y + self.px(10.0), if on { self.surface.signal } else { t.dim });
+                    self.fonts.draw(scene, Style { color: if on { ink } else { t.dim }, ..strong }, tr.x + self.px(10.0), tr.y + self.px(44.0), word);
+                    let small = Style { px: self.px(9.5), ..dim };
+                    let sw = self.fit(small, sub, tw - self.px(16.0));
+                    self.fonts.draw(scene, small, tr.x + self.px(10.0), tr.y + self.px(60.0), &sw);
+                    self.me_card.hits.push((tr, CardHit::Way(k)));
+                }
+                y += th + self.px(14.0);
+                let words = match picked {
+                    Way::Here => "A FOLDER ON THIS MACHINE · NO ACCOUNT, NO SERVER, NOTHING SENT",
+                    Way::Folder => "ICLOUD, ONEDRIVE, DROPBOX, SYNCTHING, A STICK · SEALED WITH A KEY YOU COPY",
+                    Way::Forge => "GITHUB · FORGEJO · GITEA · GITLAB · NUS MAKES NUS-PROFILE, PRIVATE · SEALED",
+                };
+                for l in crate::reader::wrap(&self.fonts, dim, words, bw) {
+                    self.fonts.draw(scene, dim, bx, y + self.px(12.0), &l);
+                    y += self.px(15.0);
                 }
                 let mut x = bx;
-                x += self.me_button(scene, x, foot_base, "SET UP SYNC", true, CardHit::SetupSync) + self.px(10.0);
-                x += self.me_button(scene, x, foot_base, "NOT NOW", false, CardHit::NotNow) + self.px(10.0);
+                x += self.me_button(scene, x, foot_base, if picked == Way::Here { "KEEP IT HERE" } else { "NEXT" }, true, CardHit::Next) + self.px(10.0);
+                if !editing && !has_me {
+                    x += self.me_button(scene, x, foot_base, "NOT NOW", false, CardHit::NotNow) + self.px(10.0);
+                }
+                self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+            }
+            Some(Step::Folder) => {
+                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "THE FOLDER THAT TRAVELS");
+                y += self.px(22.0);
+                y = self.me_input(scene, bx, y, bw, "a path your OS already syncs");
+                for l in crate::reader::wrap(&self.fonts, dim, "SEALED FILES PER DEVICE LAND THERE · CTRL+V PASTES · NEXT: THE KEY", bw) {
+                    self.fonts.draw(scene, dim, bx, y + self.px(18.0), &l);
+                    y += self.px(15.0);
+                }
+                let mut x = bx;
+                x += self.me_button(scene, x, foot_base, "NEXT", true, CardHit::Next) + self.px(10.0);
+                self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+            }
+            Some(Step::Forge) => {
+                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "WHICH FORGE");
+                y += self.px(22.0);
+                // Four chips.
+                let picked = self.me_card.forge;
+                let mut x = bx;
+                for (k, kind) in crate::forge::Kind::ALL.iter().enumerate() {
+                    let on = *kind == picked;
+                    let w = self.fonts.measure(label, kind.name()) + self.px(20.0);
+                    let chip = Rect::new(x, y, w, self.px(m::LABEL_PX) + self.px(14.0));
+                    if on {
+                        scene.rect(chip, ink);
+                    } else {
+                        scene.outline(chip, self.px(m::HAIRLINE), ink);
+                    }
+                    self.fonts.draw(scene, Style { color: if on { t.paper } else { ink }, ..label }, x + self.px(10.0), chip.y + chip.h / 2.0 + self.px(4.0), kind.name());
+                    self.me_card.hits.push((chip, CardHit::ForgeKind(k as u8)));
+                    x += w + self.px(8.0);
+                }
+                y += self.px(m::LABEL_PX) + self.px(14.0) + self.px(14.0);
+                if picked == crate::forge::Kind::GitHub {
+                    let signin = crate::forge::client_id().is_some();
+                    let words = if signin {
+                        "SIGN IN FROM HERE: A CODE TO ENTER ON GITHUB.COM, THEN NUS MAKES NUS-PROFILE, PRIVATE · OR PASTE A TOKEN WITH REPO SCOPE"
+                    } else {
+                        "A TOKEN WITH REPO SCOPE: GITHUB.COM › SETTINGS › DEVELOPER SETTINGS › PERSONAL ACCESS TOKENS · NUS MAKES NUS-PROFILE, PRIVATE"
+                    };
+                    for l in crate::reader::wrap(&self.fonts, dim, words, bw) {
+                        self.fonts.draw(scene, dim, bx, y + self.px(12.0), &l);
+                        y += self.px(15.0);
+                    }
+                    let mut x = bx;
+                    if signin {
+                        x += self.me_button(scene, x, foot_base, "SIGN IN WITH GITHUB", true, CardHit::ForgeSignIn) + self.px(10.0);
+                        x += self.me_button(scene, x, foot_base, "A TOKEN", false, CardHit::ForgeToken) + self.px(10.0);
+                    } else {
+                        x += self.me_button(scene, x, foot_base, "USE A TOKEN", true, CardHit::ForgeToken) + self.px(10.0);
+                    }
+                    self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+                } else {
+                    y = self.me_input(scene, bx, y, bw, picked.default_host());
+                    let hint = format!("THE INSTANCE · THEN A TOKEN: {}", picked.token_hint()).to_uppercase();
+                    for l in crate::reader::wrap(&self.fonts, dim, &hint, bw) {
+                        self.fonts.draw(scene, dim, bx, y + self.px(16.0), &l);
+                        y += self.px(15.0);
+                    }
+                    let mut x = bx;
+                    x += self.me_button(scene, x, foot_base, "USE A TOKEN", true, CardHit::ForgeToken) + self.px(10.0);
+                    self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+                }
+            }
+            Some(Step::ForgeToken) => {
+                let kind = self.me_card.forge;
+                self.fonts.draw(scene, strong, bx, y + self.px(8.0), &format!("A {} TOKEN", kind.name().to_uppercase()));
+                y += self.px(22.0);
+                y = self.me_input(scene, bx, y, bw, "paste it · ctrl+v");
+                let hint = format!("{} · IT STAYS IN PROFILE/SYNC, NEVER IN A URL OR ON THE CARRIER", kind.token_hint()).to_uppercase();
+                for l in crate::reader::wrap(&self.fonts, dim, &hint, bw) {
+                    self.fonts.draw(scene, dim, bx, y + self.px(18.0), &l);
+                    y += self.px(15.0);
+                }
+                let mut x = bx;
+                x += self.me_button(scene, x, foot_base, "NEXT", true, CardHit::Next) + self.px(10.0);
+                self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+            }
+            Some(Step::ForgeWait) => {
+                use crate::forge::Phase;
+                let phase = self.me_card.flow.as_ref().map(|f| f.phase()).unwrap_or(Phase::Failed("nothing running".into()));
+                let head = Style { font: self.f.strong, px: self.px(15.0), color: ink, tracking: 0.0 };
+                let isz = self.px(22.0);
+                match &phase {
+                    Phase::Starting => {
+                        self.fonts.draw_icon(scene, icons::GITHUB, isz, bx, y, self.surface.signal);
+                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Asking GitHub for a code…");
+                        self.dirty = true;
+                    }
+                    Phase::Code { user_code, uri } => {
+                        self.fonts.draw_icon(scene, icons::GITHUB, isz, bx, y, self.surface.signal);
+                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Enter this code on GitHub");
+                        y += self.px(36.0);
+                        let code = Style { font: self.f.strong, px: self.px(28.0), color: ink, tracking: self.px(2.0) };
+                        let cw = self.fonts.measure(code, user_code);
+                        let cr = Rect::new(bx, y, cw + self.px(28.0), self.px(44.0));
+                        scene.rect(Rect::new(cr.x + self.px(3.0), cr.y + self.px(3.0), cr.w, cr.h), ink);
+                        scene.rect(cr, t.paper);
+                        scene.outline(cr, self.px(m::STRUCTURE), ink);
+                        self.fonts.draw(scene, code, cr.x + self.px(14.0), cr.y + self.px(31.0), user_code);
+                        let cbw = self.fonts.measure(strong, "COPY") + self.px(24.0);
+                        self.me_button(scene, cr.right() + self.px(12.0), cr.y + self.px(29.0), "COPY", false, CardHit::CopyCode);
+                        let _ = cbw;
+                        y += self.px(44.0) + self.px(12.0);
+                        self.fonts.draw(scene, dim, bx, y + self.px(12.0), &format!("{} · NUS WAITS HERE", uri.trim_start_matches("https://").to_uppercase()));
+                        self.dirty = true;
+                    }
+                    Phase::Verifying => {
+                        self.fonts.draw_icon(scene, icons::LOCK_KEY, isz, bx, y, self.surface.signal);
+                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Signing in…");
+                        self.dirty = true;
+                    }
+                    Phase::Making => {
+                        self.fonts.draw_icon(scene, icons::LOCK_KEY, isz, bx, y, self.surface.signal);
+                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Finding nus-profile, or making it…");
+                        self.dirty = true;
+                    }
+                    Phase::Done(f) => {
+                        self.fonts.draw_icon(scene, icons::CHECK, isz, bx, y, self.surface.signal);
+                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), &format!("{} · {}/{}", f.kind.name(), f.user, f.repo));
+                        y += self.px(34.0);
+                        self.fonts.draw(scene, ui, bx, y + self.px(12.0), "Private, and empty until the first sync. Next, the key");
+                        self.fonts.draw(scene, ui, bx, y + self.px(31.0), "that seals what goes there.");
+                    }
+                    Phase::Failed(e) => {
+                        self.fonts.draw_icon(scene, icons::WARNING, isz, bx, y, self.surface.signal);
+                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "That did not work.");
+                        y += self.px(34.0);
+                        for l in crate::reader::wrap(&self.fonts, ui, e, bw) {
+                            self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
+                            y += self.px(19.0);
+                        }
+                    }
+                }
+                let mut x = bx;
+                match &phase {
+                    Phase::Done(_) => x += self.me_button(scene, x, foot_base, "NEXT", true, CardHit::Next) + self.px(10.0),
+                    Phase::Code { .. } => x += self.me_button(scene, x, foot_base, "OPEN THAT PAGE", true, CardHit::OpenCodePage) + self.px(10.0),
+                    _ => {}
+                }
+                self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+            }
+            Some(Step::Key) => {
+                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "THE KEY THAT SEALS IT");
+                y += self.px(22.0);
+                // Two chips: the first device makes one; the next joins with the word.
+                let mode = self.me_card.key_mode;
+                let mut x = bx;
+                for (k, word) in [(0u8, "THE FIRST DEVICE · MAKE ONE"), (1u8, "I HAVE THE WORD")] {
+                    let on = mode == k;
+                    let w = self.fonts.measure(label, word) + self.px(20.0);
+                    let chip = Rect::new(x, y, w, self.px(m::LABEL_PX) + self.px(14.0));
+                    if on {
+                        scene.rect(chip, ink);
+                    } else {
+                        scene.outline(chip, self.px(m::HAIRLINE), ink);
+                    }
+                    self.fonts.draw(scene, Style { color: if on { t.paper } else { ink }, ..label }, x + self.px(10.0), chip.y + chip.h / 2.0 + self.px(4.0), word);
+                    self.me_card.hits.push((chip, CardHit::KeyMode(k)));
+                    x += w + self.px(8.0);
+                }
+                y += self.px(m::LABEL_PX) + self.px(14.0) + self.px(14.0);
+                if mode == 1 {
+                    y = self.me_input(scene, bx, y, bw, "nus5-…");
+                    for l in crate::reader::wrap(&self.fonts, dim, "THE WORD FROM THE OTHER DEVICE · ITS CARD SHOWS IT UNDER THE KEY", bw) {
+                        self.fonts.draw(scene, dim, bx, y + self.px(18.0), &l);
+                        y += self.px(15.0);
+                    }
+                } else {
+                    let word = if self.me_card.made_key.is_empty() { crate::syncui::key().map(|k| nus_sync::encode_key(&k)).unwrap_or_default() } else { self.me_card.made_key.clone() };
+                    if word.is_empty() {
+                        for l in crate::reader::wrap(&self.fonts, ui, "DONE makes it: 32 random bytes, shown once as a word to copy to the next device. It never leaves your devices.", bw) {
+                            self.fonts.draw(scene, ui, bx, y + self.px(14.0), &l);
+                            y += self.px(19.0);
+                        }
+                    } else {
+                        let kw = Style { font: self.f.ui, px: self.px(12.5), color: ink, tracking: 0.0 };
+                        for l in crate::reader::wrap(&self.fonts, kw, &word.replace('-', "- "), bw - self.px(70.0)) {
+                            self.fonts.draw(scene, kw, bx, y + self.px(14.0), &l.replace("- ", "-"));
+                            y += self.px(17.0);
+                        }
+                        let cw2 = self.fonts.measure(strong, "COPY") + self.px(24.0);
+                        self.me_button(scene, r.right() - pad - cw2, y - self.px(2.0), "COPY", false, CardHit::CopyKey);
+                        for l in crate::reader::wrap(&self.fonts, dim, "COPY IT TO THE NEXT DEVICE · IT IS IN PROFILE/SYNC/KEY", bw - self.px(70.0)) {
+                            self.fonts.draw(scene, dim, bx, y + self.px(14.0), &l);
+                            y += self.px(15.0);
+                        }
+                    }
+                }
+                let mut x = bx;
+                x += self.me_button(scene, x, foot_base, "DONE", true, CardHit::Next) + self.px(10.0);
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Done) => {
@@ -826,7 +1296,20 @@ impl App {
                 let word = self.me.as_ref().map(|m| m.day_word()).unwrap_or_else(|| "day 1".into());
                 self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), &format!("{}. Everything here stays here.", word.caps()));
                 y += self.px(34.0);
-                let lines = ["The avatar in the footer opens this card; MORE takes", "you to the full page under settings — profile, sync,", "and what lives in the folder."];
+                let how = if self.sync_ready() {
+                    match crate::forge::load() {
+                        Some(f) if f.clone_url == self.behavior.sync_git => format!("Sealed and carried by {}.", f.word()),
+                        _ if !self.behavior.sync_folder.is_empty() => "Sealed and carried by your folder.".to_string(),
+                        _ => "Sealed and carried by your git remote.".to_string(),
+                    }
+                } else {
+                    "The avatar in the footer opens this card; MORE takes".to_string()
+                };
+                let lines = if self.sync_ready() {
+                    [how.as_str(), "The avatar in the footer opens this card; MORE takes", "you to the full page under settings."]
+                } else {
+                    [how.as_str(), "you to the full page under settings — profile, sync,", "and what lives in the folder."]
+                };
                 for l in lines {
                     self.fonts.draw(scene, ui, bx, y + self.px(12.0), l);
                     y += self.px(19.0);
