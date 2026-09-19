@@ -940,6 +940,8 @@ pub struct App {
     pub touch: crate::touch::Touch,
     /// While you were away (news.rs).
     pub news: crate::news::News,
+    /// The instance port's request channel, for the phone's page.
+    pub inbound: Option<std::sync::mpsc::Sender<crate::little::Inbound>>,
     /// Which page the sidebar shows, and the tree behind FILES.
     pub side_page: crate::files::SidePage,
     pub tree: crate::files::Tree,
@@ -1189,6 +1191,7 @@ impl App {
             side_hits: Vec::new(),
             touch: Default::default(),
             news: Default::default(),
+            inbound: None,
             side_page: Default::default(),
             tree: Default::default(),
             workspace: None,

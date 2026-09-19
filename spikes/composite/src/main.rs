@@ -65,6 +65,7 @@ mod power;
 mod touch;
 mod news;
 mod diffs;
+mod phone;
 mod files;
 mod procs;
 mod start;
@@ -110,6 +111,8 @@ struct Host {
     made: usize,
     /// The window the user was last in: "raise" from another launch goes here.
     focused: Option<WindowId>,
+    /// The instance port's request channel, for the phone's page to speak through.
+    inbound: std::sync::mpsc::Sender<little::Inbound>,
 }
 
 impl Host {
@@ -175,6 +178,8 @@ impl Host {
         let born_in = from.and_then(|i| self.apps.get(i)).and_then(|a| a.workspace.as_ref().map(|w| w.to_string_lossy().to_string()).or_else(|| a.focused_cwd()));
         match App::new(window.clone(), self.proxy.clone(), secondary, self.made, born_in) {
             Ok(mut a) => {
+                a.inbound = Some(self.inbound.clone());
+                a.phone_at_launch();
                 a.fullscreen = start == settings::WindowStart::Fullscreen;
                 if let Some(parent) = from.and_then(|i| self.apps.get(i)) {
                     a.container = parent.container.clone();
@@ -495,9 +500,9 @@ fn main() -> ExitCode {
 
     // One instance: a second launch hands its URLs to the first and exits.
     let urls = little::urls_from_args();
-    let (urls_rx, port) = match little::claim(&urls) {
+    let (urls_rx, port, inbound_tx) = match little::claim(&urls) {
         little::Claim::HandedOff => return ExitCode::SUCCESS,
-        little::Claim::Primary(rx, port) => (rx, port),
+        little::Claim::Primary(rx, port, tx) => (rx, port, tx),
     };
 
     let profile = std::env::current_dir().unwrap().join("profile");
@@ -520,7 +525,7 @@ fn main() -> ExitCode {
     let mut event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
-    let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None };
+    let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None, inbound: inbound_tx };
     let mut urls_rx = Some(urls_rx);
     let _ = port;
     let code = loop {

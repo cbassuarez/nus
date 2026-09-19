@@ -143,6 +143,17 @@ pub fn is_local(b: &Backend) -> bool {
     b.name.starts_with("declared:") || b.name == "ollama"
 }
 
+/// One question, answered whole, with no context but the machine's: what
+/// the phone's page asks. The backend is the settings' choice.
+pub fn answer(q: &str) -> Result<String, String> {
+    let name = crate::prefs::Prefs::load().behavior.map(|b| b.ask_backend).unwrap_or_default();
+    let backend = chosen(&name).ok_or_else(|| "no assistant on this machine".to_string())?;
+    let prompt = format!("You are the assistant inside nus, a terminal that is also a browser, answering from a phone: short, plain, at most one fenced code block.
+Question: {q}
+");
+    run(&backend, &prompt, None)
+}
+
 /// The backends this machine has, best first.
 pub fn backends() -> Vec<Backend> {
     let mut v = declared();

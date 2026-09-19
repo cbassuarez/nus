@@ -6,7 +6,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -27,7 +27,7 @@ use crate::app::{Caps, App, WebPane};
 pub enum Claim {
     /// We are the instance: URLs from later launches arrive here; the
     /// port other processes reach us on.
-    Primary(Receiver<Inbound>, u16),
+    Primary(Receiver<Inbound>, u16, Sender<Inbound>),
     /// Another instance took the URLs; exit.
     HandedOff,
 }
@@ -60,20 +60,21 @@ pub fn claim(urls: &[String]) -> Claim {
         }
     }
     let token = crate::remote::new_token();
-    let (rx, port) = listen(urls, token.clone());
+    let (rx, port, tx) = listen(urls, token.clone());
     if port != 0 {
         let _ = std::fs::create_dir_all(instance_file().parent().unwrap());
         // The port on the first line, the token on the second; the CLI reads both.
         let _ = std::fs::write(instance_file(), format!("{port}\n{token}\n"));
     }
-    Claim::Primary(rx, port)
+    Claim::Primary(rx, port, tx)
 }
 
 /// Listen on a loopback port for URLs and "raise" (one per line, from
 /// another launch) and for remote-control requests (JSON lines carrying
 /// the token; one reply per request); `urls` are queued first.
-pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16) {
+pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16, Sender<Inbound>) {
     let (tx, rx) = channel();
+    let tx_out = tx.clone();
     for u in urls {
         let _ = tx.send(Inbound::Url(u.clone()));
     }
@@ -139,7 +140,7 @@ pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16) {
         }
         Err(e) => tracing::warn!("single instance: {e}"),
     }
-    (rx, port)
+    (rx, port, tx_out)
 }
 
 /// URLs on the command line (anything that parses as http(s) or a bare host).

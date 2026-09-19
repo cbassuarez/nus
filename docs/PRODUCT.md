@@ -1133,3 +1133,45 @@ DevTools bridge); a second PTY kind (an ssh or sandbox session that
 holds, journals and replays like a local one: `nus_pty::Profile` grows a
 `where`); a model backend that streams (the panel shows words as they
 come, which the ambient uses too).
+
+## The review's first pass at the UI (settled and built 2026-09-19, twenty-fourth pass)
+
+Asked, answered, built:
+
+- **Touch: long-press is hover.** A finger that lands moves the pointer,
+  so everything that follows the pointer follows the finger; held a
+  beat (350ms) it is a hover — the tooltip comes, nothing acts; lifted
+  quickly it is a tap, a click; moved past the slop it drags. Once a
+  touch has been seen, hit targets grow toward 44px — the sidebar, the
+  settings, the card, the prompt's rows. The mouse is untouched.
+  `touch.rs`.
+- **The agents' front page lives in the prompt's rows.** WHILE YOU WERE
+  AWAY — five minutes unfocused, or since the last session was saved —
+  what failed, what ran long, what still runs (here and held), who asks
+  for hands; each row opens the shell it names; acting or Esc dismisses.
+  `news.rs`; `journal::since`.
+- **A diff in a block is a diff.** Chips on every `@@` line: STAGE and
+  REVERT for `git diff`, UNSTAGE for `--cached`, APPLY for any other
+  diff (an agent's patch, `cat x.patch`); one hunk through `git apply`
+  in the shell's folder; the outcome a toast, the output untouched.
+  `diffs.rs`.
+- **The ask panel gets a LOCAL mode.** The head names the backend and
+  cycles the ones on the machine on a click — LOCAL · <name> for a
+  declared assistant or ollama; ASSISTANTS · ASK WITH sets it. Answers
+  stream line by line, so a local model reads as instant.
+- **A workspace is a folder, local or remote.** Settled: the unit stays a
+  folder; it may be on an ssh host or in a sandbox, read over the shell's
+  own connection. The local half is FILES; the remote half waits on the
+  second PTY kind (the seam is in the ledger).
+- **The phone's nus is a page the window serves.** SYNC · THE PHONE: this
+  window on the LAN — the front page (what ran and failed while you were
+  away, what is listening, hands to allow or deny, the tabs) and a line
+  to ask; a token in the address, plain http, this network only; the
+  address in `profile/phone` and on the clipboard when it turns on.
+  Everything it knows comes through the instance port's request channel
+  (`front`, `hands-answer`), nothing else. `phone.rs`.
+- **The power budget stays a policy**, not a control.
+
+ASSUMED: one laptop and one phone on one network; a mouse with a touch
+screen imagined, not held; git on PATH; the shell's own colours for a
+diff's + and −; an answer that fits one screen of the phone.

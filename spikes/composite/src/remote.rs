@@ -450,6 +450,30 @@ impl App {
                     .collect();
                 Ok(json!({ "blocks": out }))
             }
+            // The phone's front page: what the prompt's news says, what listens, who asks for hands, the tabs.
+            "front" => {
+                let news: Vec<Value> = self.news_rows().iter().map(|r| json!({ "mark": r.num, "text": r.text })).collect();
+                let ports: Vec<Value> = self.ports.iter().filter(|p| p.port >= 1024).map(|p| json!({ "mark": "☍", "text": if p.process.is_empty() { format!("localhost:{}", p.port) } else { format!("localhost:{} · {}", p.port, p.process.to_lowercase()) } })).collect();
+                let tabs: Vec<Value> = self.tabs.iter().enumerate().filter(|(_, t)| t.peek.is_none() && !t.hatch).map(|(i, t)| json!({ "mark": format!("{}", i + 1), "text": t.title() })).collect();
+                let mut hands = Vec::new();
+                for (i, t) in self.tabs.iter().enumerate() {
+                    for (right, p) in [(false, Some(&t.left)), (true, t.right.as_ref())] {
+                        if let Some(Pane::Web(w)) = p {
+                            if let Some(a) = &w.hands.ask {
+                                hands.push(json!({ "tab": i, "right": right, "who": a.who, "what": a.what.label() }));
+                            }
+                        }
+                    }
+                }
+                Ok(json!({ "name": self.window_name(), "news": news, "ports": ports, "tabs": tabs, "hands": hands }))
+            }
+            "hands-answer" => {
+                let tab = n("tab").ok_or("hands-answer needs tab")?;
+                let right = b("right");
+                let a = match s("answer").as_deref() { Some("allow") => crate::hands::Answer::Allow, Some("host") => crate::hands::Answer::AllowHost, _ => crate::hands::Answer::Deny };
+                self.hands_answer(tab, right, a);
+                Ok(Value::Null)
+            }
             "ask" => {
                 let Some(q) = s("q") else { return Err("ask needs q".into()) };
                 self.ask_from_remote(&q);

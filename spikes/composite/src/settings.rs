@@ -503,6 +503,9 @@ pub struct Behavior {
     /// ASSISTANTS · the backend the ask panel uses ("" = the best on the machine).
     #[serde(default)]
     pub ask_backend: String,
+    /// SYNC · THE PHONE: this window served as a page on the LAN.
+    #[serde(default)]
+    pub phone: bool,
     /// HOME · ART: which art plays behind the line (a built-in's name or a file's stem).
     #[serde(default = "default_home_art")]
     pub home_art: String,
@@ -772,6 +775,7 @@ impl Default for Behavior {
             opened_by_others: OpenedBy::Behind,
             new_window: NewWindow::Prompt,
             ask_backend: String::new(),
+            phone: false,
             home_art: default_home_art(),
             place: None,
             remember: true,
@@ -1011,6 +1015,9 @@ pub enum Hit {
     NewWindow(NewWindow),
     /// ASSISTANTS · ASK WITH: an index into the backends on the machine.
     AskBackend(usize),
+    /// SYNC · THE PHONE, on or off.
+    Phone(bool),
+    CopyPhoneUrl,
     /// An art from the picker, by its place in art::list().
     HomeArt(usize),
     AddArt,
@@ -1388,6 +1395,8 @@ impl App {
             Hit::OpenedBy(o) => format!("opened by others {:?}", o).to_lowercase(),
             Hit::NewWindow(w) => format!("a new window {:?}", w).to_lowercase(),
             Hit::AskBackend(i) => format!("ask with {}", crate::ask::backends().get(i).map(|b| b.name.clone()).unwrap_or_default()),
+            Hit::Phone(on) => if on { "serve this window to the phone".into() } else { "stop serving the phone".into() },
+            Hit::CopyPhoneUrl => "copy the phone's address".into(),
             Hit::HomeArt(i) => format!("art · {}", crate::art::list().get(i).map(|a| a.name.clone()).unwrap_or_default()),
             Hit::AddArt => "a new art of your own".into(),
             Hit::AskArt => "asking for an art".into(),
@@ -1846,6 +1855,22 @@ impl App {
                     self.behavior.ask_backend = b.name.clone();
                 }
             }
+            Hit::Phone(on) => {
+                self.behavior.phone = on;
+                if on {
+                    self.phone_on();
+                } else {
+                    self.notice("the phone's page stops at the next launch · the token is forgotten");
+                }
+            }
+            Hit::CopyPhoneUrl => {
+                if let Some(p) = crate::phone::current() {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(p.url());
+                    }
+                    self.toast_with(Some(icons::COPY), "COPIED!", p.url(), None);
+                }
+            }
             Hit::HomeArt(i) => {
                 if let Some(a) = crate::art::list().get(i) {
                     self.behavior.home_look = HomeLook::Art;
@@ -2286,6 +2311,7 @@ impl App {
             2 => captioned(rows, &[("SPLASH", "THE SPLASH"), ("HOME", "THE PROMPT"), ("A NEW WINDOW", "WINDOWS"), ("LAUNCH TABS", "LAUNCH"), ("FIRST", "FROM OUTSIDE")]),
             5 => captioned(rows, &[("CLIPBOARD", "CLIPBOARD & SCROLL"), ("COMMAND LINE", "THE LINE"), ("EDITOR", "BLOCKS & LINKS"), ("JOURNAL", "MEMORY"), ("SHELL COLOURS", "COLOUR"), ("SSH", "ELSEWHERE"), ("DEFAULT SHELL", "SHELLS")]),
             6 => captioned(rows, &[("LOADING BAR", "LOADING"), ("DEFAULT BROWSER", "THE SYSTEM"), ("SEARCH", "AS SHIPPED")]),
+            12 => captioned(rows, &[("THE PHONE", "ANOTHER DEVICE")]),
             _ => rows,
         }
     }
@@ -3476,6 +3502,11 @@ impl App {
                     ])),
                     ("AT QUIT".into(), Choice(vec![("SYNC".into(), Hit::SyncAtQuit(!b.sync_at_quit), b.sync_at_quit)])),
                     ("NOW".into(), Choice(vec![("SYNC NOW".into(), Hit::SyncNow, false)])),
+                    ("THE PHONE".into(), Choice(vec![("ON".into(), Hit::Phone(true), b.phone), ("OFF".into(), Hit::Phone(false), !b.phone)])),
+                    ("".into(), match crate::phone::current() {
+                        Some(p) if b.phone => Buttons(vec![(format!("COPY · {}", p.url().to_uppercase()), icons::COPY, Hit::CopyPhoneUrl)]),
+                        _ => Info("this window as a page on your network, for the phone: what ran and failed while you were away, what is listening, hands to allow or deny, a line to ask · a token in the address, plain http, this network only".into()),
+                    }),
                 ]
             }
             11 => {
