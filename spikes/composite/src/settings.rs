@@ -1005,7 +1005,7 @@ pub enum Hit {
 
 /// The sections, grouped by what they're about: how nus looks, how it
 /// feels, what you work in, and the machine.
-pub const GROUPS: [(&str, std::ops::Range<usize>); 4] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("SYSTEM", 9..11)];
+pub const GROUPS: [(&str, std::ops::Range<usize>); 5] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("SYSTEM", 9..12), ("YOU", 12..15)];
 
 /// The look studio's tabs.
 pub const LOOK_TABS: [&str; 5] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CURSOR"];
@@ -1057,6 +1057,20 @@ pub const SEC_SYNC: usize = 12;
 pub const SEC_PROFILE: usize = 13;
 pub const RULES: usize = 10;
 
+/// How many lines a run of widths takes at `gap` apart within `width`.
+fn wrap_count(widths: &[f32], gap: f32, width: f32) -> usize {
+    let mut lines = 1;
+    let mut x = 0.0;
+    for &w in widths {
+        if x > 0.0 && x + w > width {
+            lines += 1;
+            x = 0.0;
+        }
+        x += w + gap;
+    }
+    lines
+}
+
 fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
         format!("⌘{}{}", if shift { "⇧" } else { "" }, k)
@@ -1086,6 +1100,24 @@ enum Control {
     Tabs(Vec<(Option<Color>, Option<Color>, String, bool)>),
     /// The art picker: (key, name, says, hit, current, built-in), each card alive.
     Art(Vec<(String, String, String, Hit, bool, bool)>),
+    /// A sound event: (event index, its cue's index or None for quiet, a note).
+    /// One speaker toggle, the cue's name (click to hear it), a next.
+    Cue(usize, Option<usize>, String),
+    /// A chord as keycaps, then what it does.
+    Keys(Vec<String>, String),
+    /// A group heading within a page: the row's label, small and dim.
+    Caption,
+}
+
+/// Group headings for a page's rows: each caption goes in before the row
+/// whose label it names, so the pages read in parts.
+fn captioned(mut rows: Vec<(String, Control)>, caps: &[(&str, &str)]) -> Vec<(String, Control)> {
+    for (before, cap) in caps {
+        if let Some(i) = rows.iter().position(|(k, _)| k == before) {
+            rows.insert(i, (cap.to_string(), Control::Caption));
+        }
+    }
+    rows
 }
 
 impl App {
@@ -2203,6 +2235,16 @@ impl App {
     }
 
     fn rows_for(&self, section: usize) -> Vec<(String, Control)> {
+        let rows = self.rows_for_raw(section);
+        match section {
+            2 => captioned(rows, &[("SPLASH", "THE SPLASH"), ("HOME", "THE PROMPT"), ("LAUNCH TABS", "LAUNCH"), ("FIRST", "FROM OUTSIDE")]),
+            5 => captioned(rows, &[("CLIPBOARD", "CLIPBOARD & SCROLL"), ("COMMAND LINE", "THE LINE"), ("EDITOR", "BLOCKS & LINKS"), ("JOURNAL", "MEMORY"), ("SHELL COLOURS", "COLOUR"), ("SSH", "ELSEWHERE"), ("DEFAULT SHELL", "SHELLS")]),
+            6 => captioned(rows, &[("LOADING BAR", "LOADING"), ("DEFAULT BROWSER", "THE SYSTEM"), ("SEARCH", "AS SHIPPED")]),
+            _ => rows,
+        }
+    }
+
+    fn rows_for_raw(&self, section: usize) -> Vec<(String, Control)> {
         use Control::*;
         let hex = surface::hex;
         let ink = self.theme.mode == nus_render::Mode::Ink;
@@ -2585,19 +2627,11 @@ impl App {
                         Choice(chunk.iter().map(|&i| (crate::sound::NAMES[i].caps(), Hit::Play(i), false)).collect()),
                     ));
                 }
-                rows.push(("".into(), Info("what plays when · QUIET silences an event · NEXT walks the palette".into())));
+                rows.push(("".into(), Info("what plays when · the speaker silences an event · the name plays it · ▸ walks the palette".into())));
                 for (e, (ev, _, note)) in crate::sound::EVENTS.iter().enumerate() {
                     let cur = self.sound.prefs.cue_for(ev);
-                    let mut chips = vec![("QUIET".into(), Hit::EventCue(e, usize::MAX), cur.is_none())];
-                    if let Some(c) = &cur {
-                        let ci = crate::sound::NAMES.iter().position(|n| n == c).unwrap_or(0);
-                        chips.push((c.to_string(), Hit::EventCue(e, ci), true));
-                    }
-                    chips.push(("NEXT ▸".into(), Hit::EventNext(e), false));
-                    if !note.is_empty() {
-                        chips.push((note.caps(), Hit::EventNext(e), false));
-                    }
-                    rows.push((ev.replace('.', " · ").caps(), Choice(chips)));
+                    let ci = cur.as_deref().and_then(|c| crate::sound::NAMES.iter().position(|n| *n == c));
+                    rows.push((ev.replace('.', " · ").caps(), Cue(e, ci, note.to_string())));
                 }
                 rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
                 rows
@@ -3373,23 +3407,37 @@ impl App {
                     ("NOW".into(), Choice(vec![("SYNC NOW".into(), Hit::SyncNow, false)])),
                 ]
             }
-            11 => vec![
-                ("NEW TAB".into(), Info(key("T", true))),
-                ("GO".into(), Info(key("K", true))),
-                ("URL".into(), Info(key("L", true))),
-                ("CLOSE".into(), Info(key("W", true))),
-                ("REOPEN CLOSED".into(), Info(key("Z", true))),
-                ("SPLIT".into(), Info(key("D", true))),
-                ("SIDEBAR".into(), Info(key("S", true))),
-                ("DEVTOOLS".into(), Info(key("I", true))),
-                ("COPY".into(), Info(format!("{} · the selection, else the last output; on a page, its url", key("C", true)))),
-                ("TAB N".into(), Info(key("1–9", false))),
-                ("MRU".into(), Info(key("`", false))),
-                ("PREV / NEXT".into(), Info(key("PGUP / PGDN", false))),
-                ("SETTINGS".into(), Info(key(",", false))),
-                ("FULLSCREEN".into(), Info("F11".into())),
-                ("WELCOME".into(), Buttons(vec![("THE TOUR · F1".into(), icons::BOOK, Hit::Welcome)])),
-            ],
+            11 => {
+                let mac = cfg!(target_os = "macos");
+                let mod_ = |shift: bool| -> Vec<String> {
+                    let mut v = vec![if mac { "⌘".to_string() } else { "Ctrl".to_string() }];
+                    if shift {
+                        v.push(if mac { "⇧".to_string() } else { "Shift".to_string() });
+                    }
+                    v
+                };
+                let chord = |k: &str, shift: bool| -> Vec<String> { let mut v = mod_(shift); v.push(k.to_string()); v };
+                vec![
+                    ("".into(), Info("the chords are nus's own; the shell keeps everything else, ctrl+c and ctrl+shift+c included".into())),
+                    ("NEW TAB".into(), Keys(chord("T", true), "a shell in the default profile".into())),
+                    ("GO".into(), Keys(chord("K", true), "the palette: commands, tabs, places".into())),
+                    ("URL".into(), Keys(chord("L", true), "a page, by address".into())),
+                    ("CLOSE".into(), Keys(chord("W", true), "the tab; the stack folds first".into())),
+                    ("REOPEN CLOSED".into(), Keys(chord("Z", true), "the last one closed".into())),
+                    ("SPLIT".into(), Keys(chord("D", true), "a second pane beside this one".into())),
+                    ("SIDEBAR".into(), Keys(chord("S", true), "shown, hidden, pinned".into())),
+                    ("DEVTOOLS".into(), Keys(chord("I", true), "the page's, in a split".into())),
+                    ("COPY".into(), Keys(chord("C", true), "the selection, else the last output; on a page, its url".into())),
+                    ("FOLD".into(), Keys(chord("-", true), "every stack; again unfolds".into())),
+                    ("TIMELINE".into(), Keys(chord("H", true), "this tab at any checkpoint".into())),
+                    ("TAB N".into(), Keys(chord("1–9", false), "the stack, at its last-used member".into())),
+                    ("MRU".into(), Keys(chord("`", false), "the tab you were on".into())),
+                    ("PREV / NEXT".into(), Keys(chord("PgUp / PgDn", false), "the tab beside this one".into())),
+                    ("SETTINGS".into(), Keys(chord(",", false), "this".into())),
+                    ("FULLSCREEN".into(), Keys(vec!["F11".into()], "the window edge to edge".into())),
+                    ("WELCOME".into(), Buttons(vec![("THE TOUR · F1".into(), icons::BOOK, Hit::Welcome)])),
+                ]
+            }
             _ => vec![
                 ("CHANNEL".into(), Info("GitHub Releases · self-update (v1)".into())),
                 ("TELEMETRY".into(), Info("none".into())),
@@ -3412,7 +3460,7 @@ impl App {
             8 => format!("{:?} · {}", self.behavior.hatch_look, self.behavior.hatch_hotkey.label()).to_lowercase(),
             9 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
             10 => self.rules.status.clone(),
-            11 => "chords".into(),
+            11 => "chords · the shell keeps its own".into(),
             12 => if self.sync_ready() { "on".into() } else { "off · no key or carrier".into() },
             13 => match &self.me { Some(me) => format!("{} · {}", me.name.to_lowercase(), me.day_word()), None => "not set up · local, no account".into() },
             _ => "github releases".into(),
@@ -3499,9 +3547,18 @@ impl App {
         } else {
             scene.vline(r.x + nav_w, r.y, r.h, self.px(m::STRUCTURE), ink);
         }
-        let sh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
+        // The nav fits the window: rows tighten when it is short.
+        let mut sh = self.px(12.0) * 2.0 + self.px(m::LABEL_PX) + self.px(m::HAIRLINE);
+        let mut gh = self.px(24.0);
+        if !tiles {
+            let avail = r.h - self.px(40.0);
+            let need = SECTIONS.len() as f32 * sh + GROUPS.len() as f32 * gh + (GROUPS.len() as f32 - 1.0) * self.px(6.0);
+            if need > avail {
+                gh = self.px(18.0);
+                sh = ((avail - GROUPS.len() as f32 * gh - (GROUPS.len() as f32 - 1.0) * self.px(6.0)) / SECTIONS.len() as f32).max(self.px(m::LABEL_PX) + self.px(10.0));
+            }
+        }
         let isz = self.px(14.0);
-        let gh = self.px(24.0);
         let (mx, my) = self.mouse;
         let mut y = r.y;
         for (gi, (gname, range)) in GROUPS.iter().enumerate().filter(|_| !tiles) {
@@ -3510,7 +3567,7 @@ impl App {
                 y += self.px(6.0);
             }
             let cap = Style { color: t.dim, px: self.px(10.0), ..label };
-            self.fonts.draw(scene, cap, r.x + self.px(18.0), y + self.px(16.0), gname);
+            self.fonts.draw(scene, cap, r.x + self.px(18.0), y + gh - self.px(8.0), gname);
             y += gh;
             for i in range.clone() {
             let (name, icon) = &SECTIONS[i];
@@ -3522,7 +3579,7 @@ impl App {
                 scene.rect(Rect::new(r.x, y, nav_w, sh - self.px(m::HAIRLINE)), t.tint);
             }
             let col = if sel { t.paper } else { ink };
-            let base = y + self.px(12.0) + self.px(m::LABEL_PX) - self.px(2.0);
+            let base = y + (sh - self.px(m::LABEL_PX)) / 2.0 + self.px(m::LABEL_PX) - self.px(2.0);
             self.fonts.draw_icon(scene, *icon, isz, r.x + self.px(18.0), base - isz + self.px(2.0), col);
             self.fonts.draw(scene, Style { color: col, ..label }, r.x + self.px(18.0) + isz + self.px(10.0), base, name);
             scene.hline(r.x, y + sh - self.px(m::HAIRLINE), nav_w, self.px(m::HAIRLINE), ink);
@@ -3574,10 +3631,39 @@ impl App {
                     cap_h + rows as f32 * (th + tg) + self.px(10.0)
                 }
                 Control::Swatches(_) => self.px(12.0) * 2.0 + self.px(18.0) + self.px(m::HAIRLINE),
+                // Prose wraps; a row grows with its lines.
+                Control::Info(v) => {
+                    let lines = crate::reader::wrap(&self.fonts, ui, v, maxw - label_w).len().max(1);
+                    self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * self.px(m::UI_PX * 1.5)
+                }
+                // Chips and buttons wrap when the column is narrow.
+                Control::Choice(opts) => {
+                    let widths: Vec<f32> = opts.iter().map(|(t, _, _)| self.fonts.measure(label, t) + self.px(20.0)).collect();
+                    let lines = wrap_count(&widths, self.px(8.0), maxw - label_w);
+                    self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * (self.px(m::LABEL_PX) + self.px(20.0))
+                }
+                Control::Buttons(items) => {
+                    let widths: Vec<f32> = items.iter().map(|(t, _, _)| self.fonts.measure(strong, t) + self.px(24.0) + self.px(13.0) + self.px(8.0)).collect();
+                    let lines = wrap_count(&widths, self.px(14.0), maxw - label_w);
+                    self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * (self.px(m::LABEL_PX) + self.px(24.0))
+                }
+                Control::Tabs(rows) => self.px(8.0) + rows.len() as f32 * self.px(26.0) + self.px(12.0),
+                Control::Caption => self.px(40.0),
+                Control::Keys(keys, note) => {
+                    let kw: f32 = (keys.iter().map(|k| self.fonts.measure(strong, k) + self.px(16.0) + self.px(10.0)).sum::<f32>() + self.px(8.0)).max(self.px(236.0));
+                    let lines = crate::reader::wrap(&self.fonts, dim, note, (maxw - label_w - kw).max(self.px(80.0))).len().max(1);
+                    self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * self.px(m::UI_PX * 1.5)
+                }
                 _ => self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE),
             };
-            let control_kind = if matches!(control, Control::Studio | Control::Strip(_)) { 0 } else { 1 };
+            let control_kind = if matches!(control, Control::Studio | Control::Strip(_) | Control::Caption) { 0 } else { 1 };
             let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);
+            if matches!(control, Control::Caption) {
+                let cap = Style { color: t.dim, px: self.px(10.0), tracking: self.px(1.2), ..label };
+                self.fonts.draw(scene, cap, cx, y + self.px(30.0), &k);
+                y += rh;
+                continue;
+            }
             if full {
                 if !k.is_empty() {
                     self.fonts.draw(scene, dim, cx, y + self.px(12.0), &k);
@@ -3588,6 +3674,7 @@ impl App {
             // In the studio, unlabelled rows run the full column.
             let vx = if p.section == SEC_LOOK && k.is_empty() { cx } else { cx + label_w };
             match control {
+                Control::Caption => {}
                 Control::Studio => {
                     let r = Rect::new(cx, y, maxw, self.px(180.0));
                     self.draw_studio(scene, r);
@@ -3679,8 +3766,70 @@ impl App {
                     }
                 }
                 Control::Info(v) => {
-                    let vs = self.fit(ui, &v, maxw - label_w);
-                    self.fonts.draw(scene, ui, vx, base, &vs);
+                    let mut ly = base;
+                    for line in crate::reader::wrap(&self.fonts, ui, &v, maxw - label_w) {
+                        self.fonts.draw(scene, ui, vx, ly, &line);
+                        ly += self.px(m::UI_PX * 1.5);
+                    }
+                }
+                Control::Keys(keys, note) => {
+                    // Keycaps: outlined, a hard shadow, a + between; the note after.
+                    let mut x = vx;
+                    let ch = self.px(m::LABEL_PX) + self.px(12.0);
+                    let cy = base - self.px(m::LABEL_PX) - self.px(6.0);
+                    for (i, k) in keys.iter().enumerate() {
+                        if i > 0 {
+                            self.fonts.draw(scene, dim, x, base - self.px(1.0), "+");
+                            x += self.px(10.0);
+                        }
+                        let w = self.fonts.measure(strong, k) + self.px(16.0);
+                        let cap = Rect::new(x, cy, w, ch);
+                        scene.rect(Rect::new(cap.x + self.px(2.0), cap.y + self.px(2.0), cap.w, cap.h), ink);
+                        scene.rect(cap, t.paper);
+                        scene.outline(cap, self.px(m::HAIRLINE), ink);
+                        self.fonts.draw(scene, strong, x + self.px(8.0), base - self.px(1.0), k);
+                        x += w + self.px(6.0);
+                    }
+                    // The notes line up in a column when the caps allow.
+                    x = (x + self.px(8.0)).max(vx + self.px(236.0));
+                    let mut ly = base;
+                    for line in crate::reader::wrap(&self.fonts, dim, &note, (cx + maxw - x).max(self.px(80.0))) {
+                        self.fonts.draw(scene, dim, x, ly, &line);
+                        ly += self.px(m::UI_PX * 1.5);
+                    }
+                }
+                Control::Cue(e, ci, note) => {
+                    // The speaker: on, or slashed for quiet. Click toggles;
+                    // quiet remembers nothing, so back on is the event's default cue.
+                    let quiet = ci.is_none();
+                    let isz = self.px(15.0);
+                    let hit_r = Rect::new(vx - self.px(6.0), base - self.px(m::LABEL_PX) - self.px(8.0), isz + self.px(12.0), self.px(m::LABEL_PX) + self.px(16.0));
+                    let default_ci = crate::sound::NAMES.iter().position(|n| *n == crate::sound::EVENTS[e].1).unwrap_or(0);
+                    self.fonts.draw_icon(scene, if quiet { icons::SPEAKER_OFF } else { icons::SPEAKER }, isz, vx, base - isz + self.px(2.0), if quiet { t.dim } else { ink });
+                    self.settings_hits.push((hit_r, if quiet { Hit::EventCue(e, default_ci) } else { Hit::EventCue(e, usize::MAX) }));
+                    let mut x = vx + isz + self.px(16.0);
+                    // The cue's name, a chip that plays it; a caret walks the palette.
+                    let name = ci.map(|i| crate::sound::NAMES[i].caps()).unwrap_or_else(|| "QUIET".to_string());
+                    let w = self.fonts.measure(label, &name) + self.px(20.0);
+                    let chip = Rect::new(x, base - self.px(m::LABEL_PX) - self.px(6.0), w, self.px(m::LABEL_PX) + self.px(12.0));
+                    if quiet {
+                        scene.outline(chip, self.px(m::HAIRLINE), t.dim);
+                        self.fonts.draw(scene, dim, x + self.px(10.0), base - self.px(1.0), &name);
+                    } else {
+                        scene.rect(chip, ink);
+                        self.fonts.draw(scene, Style { color: t.paper, ..label }, x + self.px(10.0), base - self.px(1.0), &name);
+                        self.settings_hits.push((chip, Hit::Play(ci.unwrap_or(0))));
+                    }
+                    x += w + self.px(6.0);
+                    let csz = self.px(12.0);
+                    let next = Rect::new(x, chip.y, csz + self.px(12.0), chip.h);
+                    self.fonts.draw_icon(scene, icons::CARET_RIGHT, csz, x + self.px(6.0), base - csz + self.px(1.0), if quiet { t.dim } else { ink });
+                    self.settings_hits.push((next, Hit::EventNext(e)));
+                    x += next.w + self.px(10.0);
+                    if !note.is_empty() {
+                        let ns = self.fit(dim, &note, (cx + maxw - x).max(self.px(40.0)));
+                        self.fonts.draw(scene, dim, x, base, &ns);
+                    }
                 }
                 Control::Proof(runs) => {
                     let mut x = vx;
@@ -3713,8 +3862,14 @@ impl App {
                 }
                 Control::Choice(opts) => {
                     let mut x = vx;
+                    let mut cb = base;
                     for (text, hit, on) in opts {
                         let w = self.fonts.measure(label, &text) + self.px(20.0);
+                        if x > vx && x + w > cx + maxw {
+                            x = vx;
+                            cb += self.px(m::LABEL_PX) + self.px(20.0);
+                        }
+                        let base = cb;
                         let chip = Rect::new(x, base - self.px(m::LABEL_PX) - self.px(6.0), w, self.px(m::LABEL_PX) + self.px(12.0));
                         if on {
                             scene.rect(chip, ink);
@@ -3761,9 +3916,15 @@ impl App {
                 }
                 Control::Buttons(items) => {
                     let mut x = vx;
+                    let mut cb = base;
                     for (text, icon, hit) in items {
                         let isz = self.px(13.0);
                         let w = self.fonts.measure(strong, &text) + self.px(24.0) + isz + self.px(8.0);
+                        if x > vx && x + w > cx + maxw {
+                            x = vx;
+                            cb += self.px(m::LABEL_PX) + self.px(24.0);
+                        }
+                        let base = cb;
                         let b = Rect::new(x, base - self.px(m::LABEL_PX) - self.px(8.0), w, self.px(m::LABEL_PX) + self.px(16.0));
                         scene.rect(Rect::new(b.x + self.px(3.0), b.y + self.px(3.0), b.w, b.h), ink);
                         scene.rect(b, t.paper);

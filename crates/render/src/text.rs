@@ -614,6 +614,7 @@ pub mod icons {
     icon!(HISTORY, "clock-counter-clockwise");
     icon!(SPEAKER, "speaker-high");
     icon!(SPEAKER_OFF, "speaker-slash");
+    icon!(PLAY, "play");
     icon!(CALENDAR, "calendar-blank");
     icon!(DESKTOP, "desktop");
     icon!(EYE_SLASH, "eye-slash");

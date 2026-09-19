@@ -29,6 +29,8 @@ param(
   [string]$SeedScript = '',
   [switch]$NoSeed,
   [int]$TimeoutSec = 240,
+  # The window, in logical px
+  [int[]]$Size = @(1280, 800),
   # Behavior keys to set over the scratch defaults, e.g. @{ splash = "Draw"; then = "Prompt"; home_look = "Plate" }
   [hashtable]$Behavior = @{}
 )
@@ -65,7 +67,7 @@ if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction Silent
 $dpi = (Get-ItemProperty 'HKCU:\Control Panel\Desktop\WindowMetrics' -ErrorAction SilentlyContinue).AppliedDPI
 if (-not $dpi) { $dpi = 96 }
 $scale = $dpi / 96
-$logical = @(1280, 800)
+$logical = @($Size[0], $Size[1])
 $phys = @([int]($logical[0] * $scale), [int]($logical[1] * $scale))
 Write-Host "scale $scale  window $($logical -join 'x') logical = $($phys -join 'x') px"
 
