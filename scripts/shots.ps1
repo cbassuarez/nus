@@ -29,6 +29,8 @@ param(
   [string]$SeedScript = '',
   # A script for windows the first one opens (newwindow), else they run nothing
   [string]$Script2 = '',
+  # A folder whose files are copied into the scratch profile (assistants.json, a journal, art…)
+  [string]$ProfileExtra = '',
   [switch]$NoSeed,
   [int]$TimeoutSec = 240,
   # The window, in logical px
@@ -93,6 +95,7 @@ foreach ($k in $Behavior.Keys) { $s.behavior | Add-Member -NotePropertyName $k -
 # No BOM: serde_json refuses one, and PowerShell 5.1's -Encoding UTF8 writes it.
 [IO.File]::WriteAllText((Join-Path $profile 'settings.json'), ($s | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding $false))
 Set-Content (Join-Path $profile 'onboarded') 'skip' -Encoding ASCII
+if ($ProfileExtra) { Copy-Item (Join-Path $ProfileExtra '*') $profile -Recurse -Force }
 $resolved = Join-Path $scratch 'shots.txt'
 [IO.File]::WriteAllText($resolved, ((Get-Content $script -Raw -Encoding UTF8) -replace '\{repo\}', $root), (New-Object Text.UTF8Encoding $false))
 $resolvedSeed = Join-Path $scratch 'seed.txt'

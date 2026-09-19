@@ -500,6 +500,9 @@ pub struct Behavior {
     /// STARTUP · A NEW WINDOW.
     #[serde(default)]
     pub new_window: NewWindow,
+    /// ASSISTANTS · the backend the ask panel uses ("" = the best on the machine).
+    #[serde(default)]
+    pub ask_backend: String,
     /// HOME · ART: which art plays behind the line (a built-in's name or a file's stem).
     #[serde(default = "default_home_art")]
     pub home_art: String,
@@ -768,6 +771,7 @@ impl Default for Behavior {
             home_look: HomeLook::Line,
             opened_by_others: OpenedBy::Behind,
             new_window: NewWindow::Prompt,
+            ask_backend: String::new(),
             home_art: default_home_art(),
             place: None,
             remember: true,
@@ -1005,6 +1009,8 @@ pub enum Hit {
     HomeLook(HomeLook),
     OpenedBy(OpenedBy),
     NewWindow(NewWindow),
+    /// ASSISTANTS · ASK WITH: an index into the backends on the machine.
+    AskBackend(usize),
     /// An art from the picker, by its place in art::list().
     HomeArt(usize),
     AddArt,
@@ -1381,6 +1387,7 @@ impl App {
             Hit::HomeLook(l) => format!("home {:?}", l).to_lowercase(),
             Hit::OpenedBy(o) => format!("opened by others {:?}", o).to_lowercase(),
             Hit::NewWindow(w) => format!("a new window {:?}", w).to_lowercase(),
+            Hit::AskBackend(i) => format!("ask with {}", crate::ask::backends().get(i).map(|b| b.name.clone()).unwrap_or_default()),
             Hit::HomeArt(i) => format!("art · {}", crate::art::list().get(i).map(|a| a.name.clone()).unwrap_or_default()),
             Hit::AddArt => "a new art of your own".into(),
             Hit::AskArt => "asking for an art".into(),
@@ -1834,6 +1841,11 @@ impl App {
             Hit::HomeLook(l) => self.behavior.home_look = l,
             Hit::OpenedBy(o) => self.behavior.opened_by_others = o,
             Hit::NewWindow(w) => self.behavior.new_window = w,
+            Hit::AskBackend(i) => {
+                if let Some(b) = crate::ask::backends().get(i) {
+                    self.behavior.ask_backend = b.name.clone();
+                }
+            }
             Hit::HomeArt(i) => {
                 if let Some(a) = crate::art::list().get(i) {
                     self.behavior.home_look = HomeLook::Art;
@@ -3308,6 +3320,11 @@ impl App {
                 let asks = crate::ask::backends();
                 let mut v: Vec<(String, Control)> = Vec::new();
                 v.push(("ASK".into(), Info(format!("Ctrl+Shift+? beside a shell · {}", if asks.is_empty() { "no assistant found · claude, codex, copilot, ollama on PATH, or ANTHROPIC_API_KEY (curl)".to_string() } else { asks.iter().map(|b| format!("{} ({})", b.name, b.how)).collect::<Vec<_>>().join(" · ") }))));
+                if !asks.is_empty() {
+                    let now = crate::ask::chosen(&self.behavior.ask_backend).map(|b| b.name).unwrap_or_default();
+                    v.push(("ASK WITH".into(), Choice(asks.iter().enumerate().map(|(i, b)| ((if crate::ask::is_local(b) { format!("LOCAL · {}", b.name.trim_start_matches("declared:")) } else { b.name.clone() }).to_uppercase(), Hit::AskBackend(i), b.name == now)).collect())));
+                    v.push(("".into(), Info("the panel's head cycles these too · a local model answers as it writes · declare your own in profile/assistants.json: [{\"name\": \"qwen\", \"command\": \"llm -m qwen\"}] — the prompt on stdin, the answer on stdout".into())));
+                }
                 v.push(("EYES".into(), Info("nus mcp gives the assistant in the shell the page beside it: its text, DOM, console, network and a screenshot from our own texture · claude mcp add nus -- nus mcp".into())));
                 let hm = self.behavior.hands;
                 v.push((

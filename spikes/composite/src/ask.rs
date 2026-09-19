@@ -45,6 +45,8 @@ pub enum AskHit {
     Skill(usize),
     /// REMEMBER on a turn: the answer's first line goes to memory.
     Remember(usize),
+    /// The head's backend: the next one on the machine (a local model, the cloud).
+    Backend,
 }
 
 pub struct Ask {
@@ -66,6 +68,9 @@ pub struct Ask {
     pub remembered: Vec<usize>,
     /// This ask wants an art: the reply's ```luau block lands in profile/art.
     pub art: bool,
+    /// Words as they come, while the answer is still being written.
+    pub stream: Option<Receiver<String>>,
+    pub partial: String,
 }
 
 impl Ask {
@@ -80,7 +85,7 @@ impl Ask {
     }
 
     pub fn with_ctx(ctx: Vec<crate::askctx::Ctx>) -> Ask {
-        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, ctx, gathering: None, remembered: Vec::new(), art: false }
+        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, ctx, gathering: None, remembered: Vec::new(), art: false, stream: None, partial: String::new() }
     }
 }
 
@@ -127,6 +132,17 @@ pub fn declared() -> Vec<Backend> {
         .unwrap_or_default()
 }
 
+/// The backend in use: the one named in the settings when it is on the
+/// machine, else the first. LOCAL is a declared assistant or ollama.
+pub fn chosen(name: &str) -> Option<Backend> {
+    let all = backends();
+    all.iter().find(|b| b.name == name).cloned().or_else(|| all.into_iter().next())
+}
+
+pub fn is_local(b: &Backend) -> bool {
+    b.name.starts_with("declared:") || b.name == "ollama"
+}
+
 /// The backends this machine has, best first.
 pub fn backends() -> Vec<Backend> {
     let mut v = declared();
@@ -160,7 +176,8 @@ fn no_window(c: &mut std::process::Command) {
 }
 
 /// Run one prompt through a backend, blocking; called on a worker thread.
-fn run(backend: &Backend, prompt: &str) -> Result<String, String> {
+/// With `stream`, each line of the answer is sent as it arrives.
+fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<String>>) -> Result<String, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut c = match backend.name.as_str() {
@@ -227,13 +244,40 @@ fn run(backend: &Backend, prompt: &str) -> Result<String, String> {
     if let Some(mut si) = child.stdin.take() {
         let _ = si.write_all(prompt.as_bytes());
     }
+    // The answer as it comes: read stdout line by line, sending each.
+    let mut text = String::new();
+    if let Some(so) = child.stdout.take() {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(so);
+        for line in reader.split(b'\n').map_while(Result::ok) {
+            let l = String::from_utf8_lossy(&line).to_string();
+            text.push_str(&l);
+            text.push('\n');
+            if let Some(tx) = &stream {
+                let _ = tx.send(format!("{l}\n"));
+            }
+        }
+    }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let text = text.trim().to_string();
     if !out.status.success() && text.is_empty() {
         let e = String::from_utf8_lossy(&out.stderr);
         return Err(crate::surface::first_line(e.trim()));
     }
     Ok(text)
+}
+
+/// Prose wrapped paragraph by paragraph: a newline in the text is a
+/// paragraph break, never a glyph.
+fn wrap_paragraphs(fonts: &nus_render::FontSystem, style: Style, text: &str, width: f32) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, para) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push(String::new());
+        }
+        out.extend(crate::reader::wrap(fonts, style, para, width));
+    }
+    out
 }
 
 /// Markdown into blocks: fenced code, and the prose between.
@@ -410,7 +454,7 @@ impl App {
     /// The gathered context is complete (or the page timed out): build
     /// the prompt and fire the backend.
     fn ask_fire(&mut self, q: String, mut g: crate::askctx::Gathered, page: Option<(String, String, String)>, skill_prompt: Option<String>) {
-        let Some(backend) = backends().into_iter().next() else { return };
+        let Some(backend) = chosen(&self.behavior.ask_backend) else { return };
         if let Some(p) = page {
             g.page = Some(p);
         }
@@ -426,13 +470,16 @@ impl App {
             (None, _) => prompt.push_str(&format!("\nQuestion: {q}\n")),
         }
         let (tx, rx) = channel();
+        let (stx, srx) = channel::<String>();
         let b = backend.clone();
         let p = prompt.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(run(&b, &p));
+            let _ = tx.send(run(&b, &p, Some(stx)));
         });
         if let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) {
             ask.pending = Some((rx, Instant::now(), backend.name.clone()));
+            ask.stream = Some(srx);
+            ask.partial.clear();
         }
         self.dirty = true;
     }
@@ -461,6 +508,21 @@ impl App {
                 let Pane::Term(t) = p else { continue };
                 let Some(ask) = t.ask.as_mut() else { continue };
                 let Some((rx, at, _)) = ask.pending.as_ref() else { continue };
+                // Words as they come.
+                let mut grew = false;
+                if let Some(srx) = ask.stream.as_ref() {
+                    while let Ok(chunk) = srx.try_recv() {
+                        ask.partial.push_str(&chunk);
+                        grew = true;
+                    }
+                }
+                if grew {
+                    if let Some(turn) = ask.turns.last_mut() {
+                        turn.blocks = parse(&ask.partial);
+                    }
+                    ask.scroll = f32::MAX;
+                    changed = true;
+                }
                 match rx.try_recv() {
                     Ok(r) => {
                         if let Some(turn) = ask.turns.last_mut() {
@@ -476,6 +538,7 @@ impl App {
                             }
                         }
                         ask.pending = None;
+                        ask.stream = None;
                         ask.scroll = f32::MAX; // to the bottom
                         changed = true;
                     }
@@ -574,6 +637,20 @@ impl App {
         let mut sound: Option<&'static str> = None;
         match hit {
             Some(AskHit::Field) | None => ask.focus = true,
+            Some(AskHit::Backend) => {
+                let all = backends();
+                if let Some(now) = chosen(&self.behavior.ask_backend) {
+                    let i = all.iter().position(|b| b.name == now.name).unwrap_or(0);
+                    if let Some(next) = all.get((i + 1) % all.len().max(1)) {
+                        self.behavior.ask_backend = next.name.clone();
+                        self.save_prefs();
+                        let word = if is_local(next) { format!("local · {}", next.name.trim_start_matches("declared:")) } else { next.name.clone() };
+                        self.notice(&format!("ask · {word}"));
+                    }
+                }
+                self.dirty = true;
+                return true;
+            }
             Some(AskHit::Close) => {
                 t.ask = None;
                 self.layout();
@@ -679,8 +756,26 @@ impl App {
         let wm = Style { font: self.f.wordmark, px: self.px(18.0), color: ink, tracking: 0.0 };
         let mut x = pr.x + pad;
         x += self.fonts.draw(scene, wm, x, base + self.px(1.0), "ask") + self.px(10.0);
-        let who = backends().into_iter().next().map(|b| b.name.caps()).unwrap_or_else(|| "NO ASSISTANT".into());
-        self.fonts.draw(scene, Style { color: t.dim, ..label }, x, base, &who);
+        let all = backends();
+        let now = chosen(&self.behavior.ask_backend);
+        let who = match &now {
+            Some(b) if is_local(b) => format!("LOCAL · {}", b.name.trim_start_matches("declared:").to_uppercase()),
+            Some(b) => b.name.to_uppercase(),
+            None => "NO ASSISTANT".into(),
+        };
+        let ww = self.fonts.measure(label, &who);
+        let chip = Rect::new(x - self.px(6.0), pr.y + self.px(5.0), ww + self.px(12.0) + if all.len() > 1 { self.px(14.0) } else { 0.0 }, head_h - self.px(10.0));
+        let chip_hot = all.len() > 1 && chip.contains(mx, my);
+        if chip_hot {
+            scene.rect(chip, fade(t.tint, 0.8));
+        }
+        self.fonts.draw(scene, Style { color: if chip_hot { ink } else { t.dim }, ..label }, x, base, &who);
+        if all.len() > 1 {
+            // More than one on the machine: a caret, click for the next.
+            let csz = self.px(10.0);
+            self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, x + ww + self.px(6.0), base - csz + self.px(1.0), t.dim);
+            ask.hits.push((chip, AskHit::Backend));
+        }
         let isz = self.px(12.0);
         let cx = pr.right() - pad - isz;
         self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, cx, pr.y + ((head_h - isz) / 2.0).round(), if Rect::new(cx - 6.0, pr.y, isz + 12.0, head_h).contains(mx, my) { ink } else { t.dim });
@@ -736,7 +831,7 @@ impl App {
             for (bi, b) in turn.blocks.iter().enumerate() {
                 match b {
                     Block::Prose(p) => {
-                        let l = crate::reader::wrap(&self.fonts, dim, p, inner_w);
+                        let l = wrap_paragraphs(&self.fonts, dim, p, inner_w);
                         total += l.len() as f32 * line_h + self.px(4.0);
                         lines_cache.push((ti, bi, l));
                     }
