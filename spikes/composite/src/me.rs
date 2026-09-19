@@ -689,7 +689,8 @@ impl App {
         if state != ElementState::Pressed || button != MouseButton::Left {
             return true;
         }
-        if let Some((_, h)) = self.me_card.hits.iter().find(|(r, _)| r.contains(x, y)).copied() {
+        let pad = self.touch_pad();
+        if let Some((_, h)) = self.me_card.hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)).copied() {
             self.me_hit(h);
         } else if !self.me_card.rect.contains(x, y) {
             self.close_me_card();

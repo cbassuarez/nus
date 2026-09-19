@@ -1227,7 +1227,8 @@ impl App {
         if !s.rect.contains(x, y) {
             return false;
         }
-        let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| r.contains(x, y)) else { return true };
+        let pad = self.touch_pad();
+        let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) else { return true };
         match hit {
             Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) => {}
             Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::ReloadAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {

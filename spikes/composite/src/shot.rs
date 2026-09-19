@@ -40,6 +40,7 @@
 //!   home | hometype <text> | homeclear | homeenter   the prompt: open it, type into it, empty it, commit
 //!   mecard [sync|folder|forge|token|key|next|back]   the profile card: the view, a step of the walk, or a press
 //!   files | bind <folder> | treeclick <row>   the sidebar's FILES page: turn it, bind the window, click a row
+//!   news <unix seconds>        the prompt tells what happened since then (while you were away)
 //!   homelook plate | line | art <key>   HOME: the prompt under the plate, the line alone, or an art behind it
 //!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
 //!   copyurl                    the focused page's url to the clipboard, with its toast
@@ -210,6 +211,10 @@ impl App {
                 }
             }
             "homeenter" => self.home_commit_pub(),
+            "news" => {
+                self.news.since = Some(rest.trim().parse::<u64>().unwrap_or(0));
+                self.news.made = None;
+            }
             "files" => self.toggle_files(),
             "bind" => self.bind_workspace(if rest.trim().is_empty() { None } else { Some(std::path::PathBuf::from(rest.trim())) }),
             "treeclick" => {

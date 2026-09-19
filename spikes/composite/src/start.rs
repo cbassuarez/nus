@@ -149,6 +149,13 @@ impl SavedTab {
     }
 }
 
+/// When the last session was saved (unix seconds), for what counts as news.
+pub fn last_saved() -> Option<u64> {
+    let text = std::fs::read_to_string(profile_dir().join("session.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("saved").and_then(|s| s.as_u64())
+}
+
 impl Session {
     pub fn load() -> Option<Session> {
         let text = std::fs::read_to_string(profile_dir().join("session.json")).ok()?;

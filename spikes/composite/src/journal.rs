@@ -94,6 +94,20 @@ pub fn entries(cwd: &str, limit: usize) -> Vec<Entry> {
     v
 }
 
+/// Every command that started since `since` (unix seconds), in every
+/// folder, newest first.
+pub fn since(since: u64) -> Vec<Entry> {
+    let Ok(rd) = std::fs::read_dir(dir()) else { return Vec::new() };
+    let mut out: Vec<Entry> = rd
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .flat_map(|text| text.lines().filter_map(from_json).filter(|e| e.start >= since).collect::<Vec<_>>())
+        .collect();
+    out.sort_by(|a, b| b.start.cmp(&a.start));
+    out.truncate(200);
+    out
+}
+
 /// How many commands ran in this folder since `since` (unix seconds).
 pub fn count_since(cwd: &str, since: u64) -> usize {
     let Ok(text) = std::fs::read_to_string(path_for(cwd)) else { return 0 };

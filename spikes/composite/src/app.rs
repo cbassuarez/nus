@@ -932,6 +932,10 @@ pub struct App {
     pub devtools_request: Option<(usize, bool)>,
     pub crumb_hits: Vec<(Rect, CrumbHit)>,
     pub side_hits: Vec<(Rect, SideHit)>,
+    /// A finger on the screen: long-press is hover, a tap is a click (touch.rs).
+    pub touch: crate::touch::Touch,
+    /// While you were away (news.rs).
+    pub news: crate::news::News,
     /// Which page the sidebar shows, and the tree behind FILES.
     pub side_page: crate::files::SidePage,
     pub tree: crate::files::Tree,
@@ -1179,6 +1183,8 @@ impl App {
             devtools_request: None,
             crumb_hits: Vec::new(),
             side_hits: Vec::new(),
+            touch: Default::default(),
+            news: Default::default(),
             side_page: Default::default(),
             tree: Default::default(),
             workspace: None,
@@ -1250,6 +1256,7 @@ impl App {
         // The hatch's global hotkey: the first window registers it; a
         // second Space shares it (main routes the event to the focused one).
         if !secondary {
+            app.news_at_launch();
             app.hotkey = Some(crate::hotkey::Hotkey::register(app.behavior.hatch_hotkey, app.proxy.clone()));
             if let Some(k) = &app.hotkey {
                 if !k.status.is_empty() {
@@ -7657,6 +7664,7 @@ impl App {
 
     pub fn focus_changed(&mut self, focused: bool) {
         self.window_focused = focused;
+        self.news_focus(focused);
         if !focused {
             if self.pip.is_none() {
                 if let Some(right) = self.playing_video(self.active) {
@@ -7910,7 +7918,8 @@ impl App {
         if pressed && button == MouseButton::Left && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             let sb = self.sidebar_rect();
             let g = self.sidebar_geometry();
-            if let Some(&(_, hit)) = self.side_hits.iter().rev().find(|(r, _)| r.contains(x, y)) {
+            let pad = self.touch_pad();
+            if let Some(&(_, hit)) = self.side_hits.iter().rev().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) {
                 self.side_action(hit, true);
                 self.dirty = true;
                 return;

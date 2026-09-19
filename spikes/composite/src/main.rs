@@ -62,6 +62,8 @@ mod page_menu;
 mod art;
 mod forge;
 mod power;
+mod touch;
+mod news;
 mod files;
 mod procs;
 mod start;
@@ -453,6 +455,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 a.dirty = true;
             }
             WindowEvent::MouseWheel { delta, .. } => a.wheel(delta),
+            WindowEvent::Touch(t) => a.touch(t.id, t.phase, t.location.x as f32, t.location.y as f32),
             WindowEvent::RedrawRequested => a.redraw(),
             _ => {}
         }
@@ -555,6 +558,7 @@ fn main() -> ExitCode {
             a.poll_deferred();
             a.poll_page_menus();
             a.tend_tree();
+            a.tend_touch();
             a.poll_loop();
             a.process_requests();
             a.apply_term_resizes(false);

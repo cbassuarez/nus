@@ -67,7 +67,23 @@ impl App {
         }
         let mut rows: Vec<PaletteRow> = self.palette_rows(PaletteMode::Go, input).into_iter().filter(|r| !r.text.starts_with("search ") && !r.text.starts_with("open ")).collect();
         rows.truncate(if empty { 7 } else { 9 });
+        // While you were away: the news first, the usual rows after.
+        if empty && self.news.since.is_some() && !self.news.rows.is_empty() {
+            let mut all = self.news.rows.clone();
+            let room = 9usize.saturating_sub(all.len());
+            all.extend(rows.into_iter().take(room));
+            return all;
+        }
         rows
+    }
+
+    /// How many of the rows are news, for the caption above them.
+    fn news_count(&self, input: &str) -> usize {
+        if input.trim().is_empty() && self.news.since.is_some() && self.behavior.home_look != HomeLook::Plate {
+            self.news.rows.len()
+        } else {
+            0
+        }
     }
 
     /// Folders this window could be: the other windows', the last
@@ -152,6 +168,10 @@ impl App {
         let sel = h.sel;
         let places = h.places.as_ref().map(|(_, v)| v.to_vec()).unwrap_or_default();
         let rows = self.home_rows(&input, &places);
+        // Acting on anything is having seen the news.
+        if self.news.since.is_some() {
+            self.dismiss_news();
+        }
         // A row only when you moved to one (sel is 1-based; 0 is the line itself).
         if let Some(row) = sel.checked_sub(1).and_then(|k| rows.get(k)) {
             {
@@ -230,6 +250,10 @@ impl App {
             K::Named(NamedKey::ArrowUp) => h.sel = h.sel.saturating_sub(1),
             K::Named(NamedKey::Escape) => {
                 if h.input.is_empty() {
+                    if self.news.since.is_some() {
+                        self.dismiss_news();
+                        return true;
+                    }
                     return false;
                 }
                 h.input.clear();
@@ -249,8 +273,9 @@ impl App {
     /// A click on a row.
     pub(crate) fn home_click(&mut self, x: f32, y: f32) -> bool {
         let i = self.active;
+        let pad = self.touch_pad();
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
-        let Some(&(_, k)) = h.hits.iter().find(|(r, _)| r.contains(x, y)) else {
+        let Some(&(_, k)) = h.hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) else {
             // Paper, not a row: the art may want to know.
             if h.rect.contains(x, y) {
                 h.taps.push((x - h.rect.x, y - h.rect.y));
@@ -306,6 +331,8 @@ impl App {
         // Rows beneath: the palette's, for what is typed. Under the plate
         // with nothing typed, the rows are the stops on the band.
         let places = self.home_places(p);
+        let _ = self.news_rows();
+        let news_n = self.news_count(&p.input);
         let rows = self.home_rows(&p.input, &places);
         p.hits.clear();
         let sel = p.sel.min(rows.len());
@@ -319,9 +346,21 @@ impl App {
             let row_h = self.px(30.0);
             let mut y = y0 + self.px(30.0);
             let (mx, my) = self.mouse;
+            if news_n > 0 {
+                // The caption: since when, and how it goes.
+                let since = self.news.since.filter(|s| crate::journal::now().saturating_sub(*s) < 7 * 86400).map(|s| format!("SINCE {}", crate::journal::when(s).to_uppercase())).unwrap_or_else(|| "SINCE LAST TIME".into());
+                let cap = Style { color: fade(self.surface.signal, up), px: self.px(10.0), tracking: self.px(1.2), ..label };
+                self.draw_lit(scene, cap, x0, y + self.px(18.0), &format!("WHILE YOU WERE AWAY · {since} · ESC DISMISSES"), dark);
+                y += self.px(26.0);
+            }
             for (k, row) in rows.iter().enumerate() {
                 if y + row_h > foot_y - self.px(8.0) {
                     break;
+                }
+                if news_n > 0 && k == news_n {
+                    // A rule between the news and the usual rows.
+                    scene.hline(x0, y + self.px(2.0), line_w, self.px(m::HAIRLINE), fade(ink, 0.25 * up));
+                    y += self.px(8.0);
                 }
                 let rr = Rect::new(x0, y, line_w, row_h);
                 let hot = k + 1 == sel || rr.contains(mx, my);
