@@ -3,8 +3,8 @@
 //! plus the kernel's own counters — context switches and system calls per
 //! second, threads and handles in all. Sampled once a second on a thread
 //! of its own (opening two hundred processes takes a few milliseconds);
-//! the brain reads the last sample. Windows for now; elsewhere the sample
-//! is empty and the brain says so.
+//! the brain reads the last sample. Windows reads the kernel directly;
+//! elsewhere `ps` is asked once a second (no kernel counters there yet).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -138,7 +138,36 @@ fn kernel_counters() -> (u64, u64) {
     (u32_at(296), u32_at(308))
 }
 
+/// Elsewhere: `ps`, which every Unix has. Processor time comes back as
+/// seconds; it is kept in the same 100 ns units the Windows path uses.
 #[cfg(not(windows))]
 fn sample() -> (Vec<Proc>, std::collections::HashMap<u32, u64>, u64, u64, u32, u32) {
-    (Vec::new(), std::collections::HashMap::new(), 0, 0, 0, 0)
+    let mut procs = Vec::new();
+    let mut times = std::collections::HashMap::new();
+    let mut threads_all = 0u32;
+    let out = std::process::Command::new("ps").args(["-eo", "pid=,ppid=,time=,rss=,nlwp=,comm="]).output();
+    let Ok(out) = out else { return (procs, times, 0, 0, 0, 0) };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let (Some(pid), Some(ppid), Some(time), Some(rss)) = (it.next(), it.next(), it.next(), it.next()) else { continue };
+        // nlwp is Linux's; macOS's ps has no thread count and the column reads as the name.
+        let rest: Vec<&str> = it.collect();
+        let (threads, name) = match rest.first().and_then(|t| t.parse::<u32>().ok()) {
+            Some(n) if rest.len() > 1 => (n, rest[1..].join(" ")),
+            _ => (1, rest.join(" ")),
+        };
+        let (Ok(pid), Ok(ppid), Ok(rss)) = (pid.parse::<u32>(), ppid.parse::<u32>(), rss.parse::<f32>()) else { continue };
+        // time is [[dd-]hh:]mm:ss
+        let secs: u64 = {
+            let (days, clock) = match time.split_once('-') { Some((d, c)) => (d.parse::<u64>().unwrap_or(0), c), None => (0, time) };
+            let parts: Vec<u64> = clock.split(':').map(|p| p.parse::<u64>().unwrap_or(0)).collect();
+            let hms = match parts.len() { 3 => parts[0] * 3600 + parts[1] * 60 + parts[2], 2 => parts[0] * 60 + parts[1], _ => 0 };
+            days * 86400 + hms
+        };
+        times.insert(pid, secs * 10_000_000);
+        threads_all += threads;
+        let name = name.rsplit('/').next().unwrap_or(&name).to_string();
+        procs.push(Proc { pid, ppid, name, cpu: 0.0, mem: rss / 1024.0, threads });
+    }
+    (procs, times, 0, 0, threads_all, 0)
 }

@@ -105,9 +105,31 @@ fn copilot_installed() -> bool {
     base.join("GitHub CLI").join("copilot").exists()
 }
 
+/// Assistants you declare, ahead of the ones found on PATH: one object
+/// per line of `profile/assistants.json`'s array — `{"name": "local",
+/// "command": "llm -m qwen"}` — the prompt on its stdin, the answer on
+/// its stdout. A local model, a wrapper, a script: anything that reads
+/// and writes text. The name shows in the panel's head.
+pub fn declared() -> Vec<Backend> {
+    let path = std::env::current_dir().unwrap_or_default().join("profile").join("assistants.json");
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| {
+                    let name = e.get("name")?.as_str()?.trim().to_string();
+                    let cmd = e.get("command")?.as_str()?.trim().to_string();
+                    (!name.is_empty() && !cmd.is_empty()).then(|| Backend { name: format!("declared:{name}"), how: cmd })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The backends this machine has, best first.
 pub fn backends() -> Vec<Backend> {
-    let mut v = Vec::new();
+    let mut v = declared();
     if let Ok(cmd) = std::env::var("NUS_ASK_CMD") {
         v.push(Backend { name: "custom".into(), how: cmd });
     }
@@ -142,6 +164,11 @@ fn run(backend: &Backend, prompt: &str) -> Result<String, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut c = match backend.name.as_str() {
+        n if n.starts_with("declared:") => {
+            let mut c = if cfg!(windows) { Command::new("cmd") } else { Command::new("sh") };
+            c.args(if cfg!(windows) { vec!["/C", &backend.how] } else { vec!["-c", &backend.how] });
+            c
+        }
         "custom" => {
             let mut c = if cfg!(windows) { Command::new("cmd") } else { Command::new("sh") };
             c.args(if cfg!(windows) { vec!["/C", &backend.how] } else { vec!["-c", &backend.how] });

@@ -1053,3 +1053,83 @@ WINDOW'S FOLDER — a shell born in the asking window's folder; AS LAUNCH —
 the splash and THEN as the first window, but never the session. The
 photograph driver runs a second script (`-Script2`, `NUS_SHOT2`) in
 windows the first one opens.
+
+## The review against the future (begun 2026-09-19)
+
+> "We have a very bad tendency to base our plans for computers on the
+> equipment we have in house and the things we're doing now, and totally
+> fail to review them in the light of the equipment that will be
+> available and the things that we will be doing." — Grace Hopper
+
+nus is exposed on both halves. This section is the standing review: an
+assumptions ledger every pass adds a line to, the items that never leave
+the checklist, and the programme of work that came out of the first
+review. The rule from here: **every pass ends with an ASSUMED line** —
+the screen, the input, the engine, the network, the model's latency, and
+*who is typing* — so the blind spot is a list rather than a mood.
+
+### The ledger, passes nineteen to twenty-three
+
+- **Screen**: one laptop, 1280×800 at 1.25×; "narrow" is 900px; tiles at
+  phone width were drawn but never held. Never an ultra-wide, never a
+  phone driving a shell.
+- **Input**: a mouse. Hover carries the footer verbs, the tree's head, the
+  toasts' affordance and every tooltip. No touch, no pen, no voice.
+- **Engine**: CEF is *the* browser; `BrowserTab` is nearly an interface
+  but nothing has ever been its second implementation. The PTY is local.
+- **Platform**: Windows. `procs.rs` read the kernel only on Windows (now:
+  `ps` elsewhere); the login item is a Startup-folder shortcut; the build
+  wants Ninja on PATH; paths were being turned to backslashes (fixed).
+- **Place**: the sky faced south (now: the equator); the star catalogue is
+  northern; the place is guessed from the clock's zone.
+- **Assistants**: `backends()` was a roll call of 2026's CLIs (now: a
+  declared list comes first); the panel assumes a cloud round-trip.
+- **Power**: the arts redrew at 60fps whether or not anyone looked (now:
+  still when unfocused, every other frame on battery); the debug build
+  pegged a core.
+- **Who is typing**: a person, at one shell, supervising an assistant in a
+  panel beside it. The blocks, journal, replay, cut-off, hands and held
+  shells are the primitives of a *supervised agent*; the tabs above them
+  are a person's.
+- **What a workspace is**: a folder. Sync is last-writer-wins per file (now:
+  `memory.md` merges as a union).
+- **Output**: a grid of monospace cells; a command's output is a stream
+  that blocks only begin to treat as a thing.
+
+### Standing items
+
+1. **Three machines, not one**: the laptop in hand; a phone with only
+   `nus` remote control and the little window; a cloud sandbox with no
+   local files. A feature that makes no sense on two of the three is the
+   review.
+2. **The agent-first read**: for every feature, "if an agent is the one
+   using this, what does it need?" — structured output, a permission, a
+   replay. Done means those three, next to the photographs.
+3. **Two of everything at the seams**: a second browser behind
+   `BrowserTab`, a second PTY kind (a sandbox), a second model backend
+   (local, ambient). Not for the product — to keep the interfaces honest.
+4. **A power budget and a touch pass** next to "no clipping" and "both
+   faces": `power.rs` is the budget; the touch pass is the next review.
+
+### The programme
+
+Done in this pass (no UI): `power.rs` (the arts' budget: still when the
+window is not looked at, every other frame on battery — Windows, Linux
+and macOS know their battery); `procs.rs` samples through `ps` where the
+kernel is not Windows; `profile/assistants.json` declares assistants
+ahead of the roll call (`{"name","command"}`, the prompt on stdin, the
+answer on stdout); `memory.md` merges as the union of lines in sync;
+the sky faces the equator; typed paths stay as typed.
+
+Asked, not assumed (UI): the touch model; where the agents' front page
+lives; what a structured block is first; where an ambient local model
+acts; what a workspace is beyond a folder; the phone's nus. The answers
+and what they became are recorded under the passes that build them.
+
+Planned, with what each needs: a second browser engine behind
+`BrowserTab` (WebView2 on Windows, or a headless one for agents: the
+seam is the shared-texture paint, the context menu, downloads and the
+DevTools bridge); a second PTY kind (an ssh or sandbox session that
+holds, journals and replays like a local one: `nus_pty::Profile` grows a
+`where`); a model backend that streams (the panel shows words as they
+come, which the ambient uses too).

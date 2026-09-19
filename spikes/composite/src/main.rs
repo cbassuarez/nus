@@ -61,6 +61,7 @@ mod toast;
 mod page_menu;
 mod art;
 mod forge;
+mod power;
 mod files;
 mod procs;
 mod start;

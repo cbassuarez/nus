@@ -77,7 +77,7 @@ impl App {
         let q = input.trim();
         let mut out: Vec<PaletteRow> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let typed = q.replace('/', "\\");
+        let typed = q.to_string();
         if !q.is_empty() && std::path::Path::new(&typed).is_dir() {
             seen.insert(typed.to_lowercase());
             out.push(PaletteRow { num: "→".into(), text: format!("{} · this window's folder", typed), action: crate::app::Action::OpenFolder(typed.clone()) });
@@ -173,12 +173,9 @@ impl App {
                 return;
             }
         }
-        if self.fresh && !input.is_empty() {
-            let typed = input.replace('/', "\\");
-            if std::path::Path::new(&typed).is_dir() {
-                self.open_folder(&typed);
-                return;
-            }
+        if self.fresh && !input.is_empty() && std::path::Path::new(&input).is_dir() {
+            self.open_folder(&input);
+            return;
         }
         let profile = self.behavior.default_profile;
         let replacement = if is_url(&input) {
@@ -417,8 +414,10 @@ impl App {
             let line = format!("ART · {} · {}", key.to_uppercase(), err);
             self.fonts.draw(scene, dim, r.x + self.px(28.0), r.bottom() - self.px(48.0), &line);
         }
-        // Alive: keep drawing.
-        self.dirty = true;
+        // Alive: keep drawing — as the power budget allows (power.rs).
+        if self.art_wants_frame() {
+            self.dirty = true;
+        }
     }
 }
 

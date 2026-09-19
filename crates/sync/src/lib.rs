@@ -51,6 +51,32 @@ pub const ALWAYS: &[&str] = &[
 ];
 pub const DIRS: &[&str] = &["layouts", "themes", "surfaces"];
 pub const SESSION: &str = "session.json";
+/// Files that only grow — an assistant's memory, written from wherever
+/// it worked — merge as the union of their lines instead of one side
+/// losing: theirs in their order, then whatever of ours they lacked.
+pub const UNION: &[&str] = &["memory.md"];
+
+/// The union of two line-files: `theirs` in order, then the lines of
+/// `ours` they don't have, in ours' order. Blank lines are kept as they
+/// come in theirs and dropped from the tail, so a merge never doubles
+/// the spacing.
+pub fn union_lines(theirs: &str, ours: &str) -> String {
+    let mut out: Vec<&str> = theirs.lines().collect();
+    let have: std::collections::HashSet<&str> = theirs.lines().filter(|l| !l.trim().is_empty()).collect();
+    let mut added = false;
+    for l in ours.lines() {
+        if l.trim().is_empty() || have.contains(l) {
+            continue;
+        }
+        out.push(l);
+        added = true;
+    }
+    let mut s = out.join("\n");
+    if theirs.ends_with('\n') || (added && !s.is_empty()) {
+        s.push('\n');
+    }
+    s
+}
 
 // --- the key ---
 
@@ -529,7 +555,16 @@ pub fn exchange(
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if dest.is_file() {
+        // A file that only grows: theirs and ours become one, and ours
+        // goes back out on the push as the newer of the two.
+        let union = UNION.contains(&rel.as_str()) && dest.is_file();
+        let plain = if union {
+            let ours = std::fs::read(&dest).unwrap_or_default();
+            union_lines(&String::from_utf8_lossy(&plain), &String::from_utf8_lossy(&ours)).into_bytes()
+        } else {
+            plain
+        };
+        if dest.is_file() && !union {
             let lost = profile.join(format!("{rel}.{device}.lost"));
             if std::fs::rename(&dest, &lost).is_ok() {
                 rep.kept.push(rel.clone());
@@ -537,10 +572,13 @@ pub fn exchange(
         }
         match std::fs::write(&dest, &plain) {
             Ok(()) => {
-                // Keep the writer's clock, so the next round agrees.
-                let t = UNIX_EPOCH + std::time::Duration::from_secs(*written);
-                if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
-                    let _ = f.set_modified(t);
+                // Keep the writer's clock, so the next round agrees; a
+                // union is newer than both, so it pushes.
+                if !union {
+                    let t = UNIX_EPOCH + std::time::Duration::from_secs(*written);
+                    if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
+                        let _ = f.set_modified(t);
+                    }
                 }
                 rep.pulled.push((rel.clone(), from.clone()));
             }
@@ -602,6 +640,35 @@ pub fn device_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_memory_file_merges_as_a_union() {
+        let theirs = "# memory
+- a
+- b
+";
+        let ours = "# memory
+- a
+- c
+";
+        assert_eq!(union_lines(theirs, ours), "# memory
+- a
+- b
+- c
+");
+        // Nothing of ours missing: theirs, untouched.
+        assert_eq!(union_lines(theirs, "- a
+"), theirs);
+        // Blank lines of ours never pile up.
+        assert_eq!(union_lines("- a
+", "
+
+- z
+
+"), "- a
+- z
+");
+    }
 
     #[test]
     fn key_round_trip() {

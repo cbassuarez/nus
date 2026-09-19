@@ -33,8 +33,10 @@ function draw(c)
   local place = c:place()
   local ms = c:now()
   local alt, az = sun(ms, place.lat, place.lon)
-  -- Facing south: east is on the left, west on the right.
+  -- Facing the equator: from the north, east is on the left; from the
+  -- south, the sun crosses the northern sky and east is on the right.
   local x = -math.sin(az)
+  if place.lat < 0 then x = -x end
   -- The cover eases over the hours; a tap on the paper gusts the wind.
   local hours = ms / 3600000
   local cover = 0.2 + 0.22 * (0.5 + 0.5 * math.sin(hours * 0.7 + seed[1]))

@@ -2083,7 +2083,9 @@ impl App {
         let sub = if says.is_empty() { if builtin { "ships with nus".to_string() } else { "yours".to_string() } } else { says.to_string() };
         let sb = self.fit(dim, &sub, r.w);
         self.fonts.draw(scene, dim, r.x, r.y + r.h + self.px(31.0), &sb);
-        self.dirty = true;
+        if self.art_wants_frame() {
+            self.dirty = true;
+        }
     }
 
     fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool, faces: Option<(Color, Color, Color, Color)>) {
