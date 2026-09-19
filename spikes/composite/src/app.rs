@@ -272,6 +272,10 @@ pub struct TermPane {
     pub block_sel: Option<u64>,
     pub block_filter: Option<String>,
     pub lamp_hits: Vec<(Rect, u64)>,
+    /// A diff block's hunk chips: (rect, block start, hunk index, what).
+    pub hunk_hits: Vec<(Rect, u64, usize, crate::diffs::Do)>,
+    /// Parsed diffs by block start: (the block's end line, the hunks).
+    pub diff_cache: std::collections::HashMap<u64, (u64, Vec<crate::diffs::Hunk>)>,
     pub select_all_at: Option<Instant>,
     pub hover_block: u64,
     /// Terminal images as textures, by image id; rebuilt when the term's
@@ -1469,6 +1473,8 @@ impl App {
             block_sel: None,
             block_filter: None,
             lamp_hits: Vec::new(),
+            hunk_hits: Vec::new(),
+            diff_cache: std::collections::HashMap::new(),
             select_all_at: None,
             hover_block: 0,
             image_tex: std::collections::HashMap::new(),
@@ -8092,7 +8098,7 @@ impl App {
         if self.editor_mouse(button, state, x, y) {
             return;
         }
-        if pressed && button == MouseButton::Left && (self.timeline_click(x, y) || self.lamp_click(x, y) || self.cutoff_click(x, y)) {
+        if pressed && button == MouseButton::Left && (self.timeline_click(x, y) || self.hunk_click(x, y) || self.lamp_click(x, y) || self.cutoff_click(x, y)) {
             return;
         }
         if pressed && button == MouseButton::Left && self.colour_offer_click(x, y) {

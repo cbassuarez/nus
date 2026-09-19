@@ -64,6 +64,7 @@ mod forge;
 mod power;
 mod touch;
 mod news;
+mod diffs;
 mod files;
 mod procs;
 mod start;

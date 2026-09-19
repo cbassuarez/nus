@@ -808,6 +808,12 @@ impl TermPane {
         c.map(|c| self.term.output_text(&c)).unwrap_or_default()
     }
 
+    /// The absolute line the block's output begins on, as output_text counts it.
+    pub fn block_output_first(&self, start: u64) -> Option<u64> {
+        let c = self.term.marks.iter().find(|m| m.line >= start && m.kind == nus_vt::MarkKind::OutputStart)?;
+        Some(if c.col == 0 { c.line } else { c.line + 1 })
+    }
+
     pub fn block_cmd_text(&self, start: u64) -> String {
         let b = self.term.marks.iter().find(|m| m.line >= start && m.kind == nus_vt::MarkKind::CommandStart).copied();
         b.map(|b| self.term.command_text(&b)).unwrap_or_default()

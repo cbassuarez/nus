@@ -371,6 +371,50 @@ impl App {
                 }
             }
         }
+        // A diff in a block: chips on each hunk's line — stage, revert, apply.
+        p.hunk_hits.clear();
+        let diff_blocks: Vec<Block> = blocks.iter().filter(|b| !b.running && !p.is_folded(b)).cloned().collect();
+        for b in &diff_blocks {
+            let fresh = p.diff_cache.get(&b.start).is_some_and(|(end, _)| *end == b.end);
+            if !fresh {
+                let text = p.block_output_text(b.start);
+                let hunks = if text.contains("@@") && (text.contains("\n+++ ") || text.starts_with("+++ ") || text.contains("diff --git")) { crate::diffs::parse(&text) } else { Vec::new() };
+                p.diff_cache.insert(b.start, (b.end, hunks));
+            }
+            let Some(hunks) = p.diff_cache.get(&b.start).map(|(_, h)| h.clone()) else { continue };
+            if hunks.is_empty() {
+                continue;
+            }
+            let kind = crate::diffs::kind_of(&b.cmd);
+            let dos = crate::diffs::Do::for_kind(kind);
+            let first = p.block_output_first(b.start).unwrap_or(b.output);
+            for (hi, h) in hunks.iter().enumerate() {
+                let abs = first + h.at as u64;
+                let Some(row) = view.iter().position(|d| matches!(d, Display::Line(l) if *l == abs)) else { continue };
+                let y = p.origin.1 + row as f32 * ch;
+                let base = y + p.grid.metrics.baseline;
+                // Right-aligned chips, small, outlined; the hunk's counts first.
+                let mut x = r.right() - self.px(18.0);
+                for what in dos.iter().rev() {
+                    let word = what.word();
+                    let w = self.fonts.measure(label, word) + self.px(14.0);
+                    let chip = Rect::new(x - w, y + (ch - self.px(m::LABEL_PX) - self.px(8.0)) / 2.0, w, self.px(m::LABEL_PX) + self.px(8.0));
+                    let hot = chip.contains(mx, my);
+                    let danger = matches!(what, crate::diffs::Do::Revert);
+                    scene.rect(chip, if hot { if danger { signal } else { ink } } else { paper });
+                    scene.outline(chip, self.px(m::HAIRLINE), if danger { signal } else { ink });
+                    self.fonts.draw(scene, Style { color: if hot { paper } else if danger { signal } else { ink }, ..label }, chip.x + self.px(7.0), base - self.px(1.0), word);
+                    if hot {
+                        self.tip_words(chip, &format!("{} · {} · {}", word.to_lowercase(), h.file(), h.counts()));
+                    }
+                    p.hunk_hits.push((chip, b.start, hi, *what));
+                    x -= w + self.px(6.0);
+                }
+                let counts = h.counts();
+                let cwidth = self.fonts.measure(dim, &counts);
+                self.fonts.draw(scene, dim, x - cwidth - self.px(4.0), base, &counts);
+            }
+        }
         // Fold rows: one ruled line each, over the rows the fold occupies.
         for (row, d) in view.iter().enumerate() {
             let Display::Fold(s, e) = d else { continue };
@@ -448,6 +492,36 @@ impl App {
             }
         }
         false
+    }
+
+    /// A hunk's chip: the patch of that hunk through git apply, in the
+    /// shell's folder; the outcome as a toast, the output left as it was.
+    pub(crate) fn hunk_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(tab) = self.tabs.get_mut(self.active) else { return false };
+        let mut job: Option<(crate::diffs::Hunk, crate::diffs::Do, String)> = None;
+        for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            let Pane::Term(t) = p else { continue };
+            let Some((_, start, hi, what)) = t.hunk_hits.iter().find(|(r, _, _, _)| r.contains(x, y)).cloned() else { continue };
+            if let Some(h) = t.diff_cache.get(&start).and_then(|(_, hs)| hs.get(hi)).cloned() {
+                job = Some((h, what, t.term.cwd.clone().unwrap_or_default()));
+            }
+            break;
+        }
+        let Some((hunk, what, cwd)) = job else { return false };
+        let cwd = if cwd.is_empty() { std::env::current_dir().unwrap_or_default() } else { std::path::PathBuf::from(cwd) };
+        match crate::diffs::run(&hunk, what, &cwd) {
+            Ok(word) => {
+                self.play_event("success");
+                self.toast_with(Some(nus_render::text::icons::CHECK), what.word(), format!("{} · {}", hunk.file(), hunk.counts()), None);
+                let _ = word;
+            }
+            Err(e) => {
+                self.play_event("error");
+                self.toast_with(Some(nus_render::text::icons::WARNING), "NOT APPLIED", e, None);
+            }
+        }
+        self.dirty = true;
+        true
     }
 
     /// The share page for a block: a reader-style page beside the shell.
