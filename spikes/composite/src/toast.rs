@@ -1,14 +1,19 @@
 //! A toast: one ink slip at the foot of the content, in the band's voice —
-//! a few caps words, six seconds, click to act. It is how nus says
-//! "opened behind · docs.rs · click to go" and "copied · github.com/…"
-//! without giving the strip words. One at a time; a new one replaces it.
+//! an icon, a few caps words, six seconds, click to act. It is how nus
+//! says "copied! · github.com/…" and "behind · docs.rs ›" without giving
+//! the strip words. One at a time; a new one replaces it. A slip that
+//! can be clicked ends in a caret and goes signal under the pointer.
 
 use std::time::Instant;
 
+use nus_render::text::icons;
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
 
-use crate::app::App;
+use crate::app::{fade, App};
+
+/// An icon: (name, svg), as the text module keeps them.
+pub type Icon = (&'static str, &'static str);
 
 pub enum Act {
     /// Bring this tab (by id) to the front.
@@ -16,7 +21,10 @@ pub enum Act {
 }
 
 pub struct Toast {
+    pub icon: Option<Icon>,
+    /// The words, strong; and a tail in the same voice, dimmer (a url, a host).
     pub text: String,
+    pub tail: String,
     pub act: Option<Act>,
     pub at: Instant,
     pub rect: Rect,
@@ -27,7 +35,12 @@ const HOLD: f32 = 6.0;
 
 impl App {
     pub(crate) fn toast(&mut self, text: impl Into<String>, act: Option<Act>) {
-        self.toast = Some(Toast { text: text.into(), act, at: Instant::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0) });
+        self.toast_with(None, text, "", act);
+    }
+
+    /// A slip with an icon and a dimmer tail after the words.
+    pub(crate) fn toast_with(&mut self, icon: Option<Icon>, text: impl Into<String>, tail: impl Into<String>, act: Option<Act>) {
+        self.toast = Some(Toast { icon, text: text.into(), tail: tail.into(), act, at: Instant::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0) });
         let d = self.motion.dur(crate::anim::base::PALETTE);
         self.toast_anim.replay(0.0, 1.0, d);
         self.dirty = true;
@@ -43,22 +56,50 @@ impl App {
             self.dirty = true;
             return;
         }
-        let text = t.text.clone();
+        let (icon, text, tail, actionable) = (t.icon, t.text.clone(), t.tail.clone(), t.act.is_some());
         let th = self.theme.clone();
         let strong = self.label_strong();
         let leave = if age > HOLD - 0.3 { ((HOLD - age) / 0.3).clamp(0.0, 1.0) } else { 1.0 };
         let rise = self.toast_anim.value() * leave;
         let c = self.content_rect();
         let bh = self.header_h();
+        let pad = self.px(m::HEADER_PAD_X);
+        let gap = self.px(8.0);
+        let isz = self.px(14.0);
+        let csz = self.px(11.0);
+        // The tail gives way before the words do.
+        let room = c.w - pad * 2.0 - self.px(40.0);
+        let tail = if tail.is_empty() { tail } else { self.fit(strong, &tail, (room - self.fonts.measure(strong, &text) - isz - gap * 3.0).max(self.px(60.0))) };
         let tw = self.fonts.measure(strong, &text);
-        let w = (tw + self.px(m::HEADER_PAD_X) * 2.0).round();
+        let tlw = if tail.is_empty() { 0.0 } else { self.fonts.measure(strong, &tail) + gap };
+        let iw = if icon.is_some() { isz + gap } else { 0.0 };
+        let cw = if actionable { csz + gap } else { 0.0 };
+        let w = (pad * 2.0 + iw + tw + tlw + cw).round();
         let x = (c.x + (c.w - w) / 2.0).round();
         let rest = c.bottom() - self.px(m::HEADER_PAD_Y) * 2.0 - bh;
         let r = Rect::new(x, rest + (1.0 - rise) * (bh + self.px(m::HEADER_PAD_Y) * 2.0), w, bh);
+        // Under the pointer, a slip that acts goes signal: it can be pressed.
+        let (mx, my) = self.mouse;
+        let hot = actionable && r.contains(mx, my);
         scene.layer(Some(c));
-        scene.rect(r, th.ink);
+        scene.rect(Rect::new(r.x + self.px(3.0), r.y + self.px(3.0), r.w, r.h), fade(th.ink, 0.35 * rise));
+        scene.rect(r, if hot { self.surface.signal } else { th.ink });
         let by = r.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
-        self.fonts.draw(scene, Style { color: th.paper, ..strong }, r.x + self.px(m::HEADER_PAD_X), by, &text);
+        let paper = if hot { [1.0, 1.0, 1.0, 1.0] } else { th.paper };
+        let mut tx = r.x + pad;
+        if let Some(ic) = icon {
+            self.fonts.draw_icon(scene, ic, isz, tx, by - isz + self.px(2.0), if hot { paper } else { self.surface.signal });
+            tx += isz + gap;
+        }
+        tx += self.fonts.draw(scene, Style { color: paper, ..strong }, tx, by, &text);
+        if !tail.is_empty() {
+            tx += gap;
+            tx += self.fonts.draw(scene, Style { color: fade(paper, 0.62), ..strong }, tx, by, &tail);
+        }
+        if actionable {
+            tx += gap;
+            self.fonts.draw_icon(scene, icons::CARET_RIGHT, csz, tx, by - csz + self.px(1.0), paper);
+        }
         scene.layer(None);
         if let Some(t) = self.toast.as_mut() {
             t.rect = r;
@@ -95,7 +136,7 @@ impl App {
         self.tabs.push(tab);
         if behind {
             let host = crate::links::host(url);
-            self.toast(format!("OPENED BEHIND · {host} · CLICK TO GO"), Some(Act::GoTab(id)));
+            self.toast_with(Some(icons::TO_TAB), "BEHIND", host, Some(Act::GoTab(id)));
             self.layout();
         } else {
             self.activate(self.tabs.len() - 1);
@@ -123,7 +164,7 @@ impl App {
             let _ = cb.set_text(url.clone());
         }
         self.play_event("toggle");
-        self.toast(format!("COPIED · {}", crate::app::fit_cmd(&url, 60)), None);
+        self.toast_with(Some(icons::COPY), "COPIED!", url, None);
         true
     }
 }

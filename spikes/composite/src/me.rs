@@ -587,7 +587,7 @@ impl App {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(user_code.clone());
                     }
-                    self.toast(format!("COPIED · {user_code}"), None);
+                    self.toast_with(Some(icons::COPY), "COPIED!", user_code.clone(), None);
                 }
             }
             CardHit::KeyMode(k) => {
@@ -602,7 +602,7 @@ impl App {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     let _ = cb.set_text(word);
                 }
-                self.toast("COPIED · THE KEY · PASTE IT ON THE OTHER DEVICE", None);
+                self.toast_with(Some(icons::COPY), "COPIED!", "the key · paste it on the other device", None);
             }
             CardHit::ForgeForget => {
                 crate::forge::forget();
@@ -921,7 +921,7 @@ impl App {
                     ("FACE", face_word, icons::SMILEY, CardHit::Edit(Step::Face)),
                     ("DEVICE", device(), icons::DESKTOP, CardHit::Edit(Step::Device)),
                     ("SYNC", sync, icons::BROADCAST, CardHit::SetupSync),
-                    ("PRIVATE", "no account · no server · no telemetry".into(), icons::EYE_SLASH, CardHit::Folder),
+                    ("PRIVATE", "nothing leaves · no account".into(), icons::EYE_SLASH, CardHit::Folder),
                 ];
                 let (mx, my) = self.mouse;
                 for (k, (what, value, icon, hit)) in rows.into_iter().enumerate() {
@@ -961,14 +961,9 @@ impl App {
                 let head = Style { font: self.f.strong, px: self.px(15.0), color: ink, tracking: 0.0 };
                 self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "This is your profile.");
                 y += self.px(34.0);
-                let lines = [
-                    "It is a folder on this machine — settings, rules,",
-                    "memory, sites, the lot. There is no account behind it,",
-                    "no server, and nothing is counted or sent. Sync, if you",
-                    "want it, is a key you copy; only ciphertext ever leaves.",
-                ];
-                for l in lines {
-                    self.fonts.draw(scene, ui, bx, y + self.px(12.0), l);
+                let words = "It is a folder on this machine — settings, rules, memory, sites, the lot. There is no account behind it, no server, and nothing is counted or sent. Sync, if you want it, is a key you copy; only ciphertext ever leaves.";
+                for l in crate::reader::wrap(&self.fonts, ui, words, bw) {
+                    self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
                     y += self.px(19.0);
                 }
                 let mut x = bx;
@@ -979,7 +974,10 @@ impl App {
                 self.fonts.draw(scene, strong, bx, y + self.px(8.0), if editing { "YOUR NAME" } else { "WHAT NUS CALLS YOU" });
                 y += self.px(22.0);
                 y = self.me_input(scene, bx, y, bw, "a name");
-                self.fonts.draw(scene, dim, bx, y + self.px(18.0), "THE INITIAL IS YOUR FACE UNTIL YOU PICK ONE · ENTER GOES ON");
+                for l in crate::reader::wrap(&self.fonts, dim, "THE INITIAL IS YOUR FACE UNTIL YOU PICK ONE · ENTER GOES ON", bw) {
+                    self.fonts.draw(scene, dim, bx, y + self.px(18.0), &l);
+                    y += self.px(15.0);
+                }
                 let mut x = bx;
                 x += self.me_button(scene, x, foot_base, if editing { "SAVE" } else { "NEXT" }, true, CardHit::Next) + self.px(10.0);
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
@@ -988,9 +986,9 @@ impl App {
                 self.fonts.draw(scene, strong, bx, y + self.px(8.0), "YOUR FACE");
                 y += self.px(22.0);
                 // Three tiles: the initial, an emoji, the picture.
-                let tw = self.px(96.0);
-                let th = self.px(64.0);
                 let gap = self.px(12.0);
+                let tw = ((bw - 2.0 * gap) / 3.0).floor();
+                let th = self.px(64.0);
                 let picked = self.me_card.face.clone();
                 let n = if self.pending_name.is_empty() { name.clone() } else { self.pending_name.clone() };
                 let tiles: [(u8, &str); 3] = [(0, "INITIAL"), (1, "EMOJI"), (2, "PICTURE")];
@@ -1021,7 +1019,9 @@ impl App {
                             }
                         }
                     }
-                    self.fonts.draw(scene, Style { color: if on { ink } else { t.dim }, ..label }, fr.right() + self.px(8.0), tr.y + th / 2.0 + self.px(4.0), word);
+                    let ws = Style { color: if on { ink } else { t.dim }, ..label };
+                    let wf = self.fit(ws, word, tr.right() - fr.right() - self.px(14.0));
+                    self.fonts.draw(scene, ws, fr.right() + self.px(8.0), tr.y + th / 2.0 + self.px(4.0), &wf);
                     self.me_card.hits.push((tr, CardHit::Face(k)));
                 }
                 y += th + self.px(14.0);
@@ -1037,7 +1037,10 @@ impl App {
                         self.me_button(scene, r.right() - pad - fw, y + self.px(18.0), "OPEN THE FOLDER", false, CardHit::Folder);
                     }
                     Face::Initial => {
-                        self.fonts.draw(scene, dim, bx, y + self.px(14.0), "THE FIRST LETTER OF YOUR NAME, IN THE SPACE'S SIGNAL");
+                        for l in crate::reader::wrap(&self.fonts, dim, "THE FIRST LETTER OF YOUR NAME, IN THE SPACE'S SIGNAL", bw) {
+                            self.fonts.draw(scene, dim, bx, y + self.px(14.0), &l);
+                            y += self.px(15.0);
+                        }
                     }
                 }
                 let mut x = bx;
@@ -1048,7 +1051,10 @@ impl App {
                 self.fonts.draw(scene, strong, bx, y + self.px(8.0), "THIS DEVICE");
                 y += self.px(22.0);
                 y = self.me_input(scene, bx, y, bw, "a name for this machine");
-                self.fonts.draw(scene, dim, bx, y + self.px(18.0), "SYNC NAMES WHAT THIS MACHINE WROTE BY IT · IT NEVER SYNCS ITSELF");
+                for l in crate::reader::wrap(&self.fonts, dim, "SYNC NAMES WHAT THIS MACHINE WROTE BY IT · IT NEVER SYNCS ITSELF", bw) {
+                    self.fonts.draw(scene, dim, bx, y + self.px(18.0), &l);
+                    y += self.px(15.0);
+                }
                 let mut x = bx;
                 x += self.me_button(scene, x, foot_base, if editing { "SAVE" } else { "NEXT" }, true, CardHit::Next) + self.px(10.0);
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
@@ -1305,13 +1311,13 @@ impl App {
                 } else {
                     "The avatar in the footer opens this card; MORE takes".to_string()
                 };
-                let lines = if self.sync_ready() {
-                    [how.as_str(), "The avatar in the footer opens this card; MORE takes", "you to the full page under settings."]
+                let words = if self.sync_ready() {
+                    format!("{how} The avatar in the footer opens this card; MORE takes you to the full page under settings.")
                 } else {
-                    [how.as_str(), "you to the full page under settings — profile, sync,", "and what lives in the folder."]
+                    format!("{how} you to the full page under settings — profile, sync, and what lives in the folder.")
                 };
-                for l in lines {
-                    self.fonts.draw(scene, ui, bx, y + self.px(12.0), l);
+                for l in crate::reader::wrap(&self.fonts, ui, &words, bw) {
+                    self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
                     y += self.px(19.0);
                 }
                 let mut x = bx;
