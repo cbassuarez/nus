@@ -34,11 +34,15 @@ def main():
     lines=[f'nus {args.tag}', '', 'A terminal, browser and workspace in one application.', '', f'Channel: **{manifest["channel"]}** · Source: `{args.revision}`', '', '## Downloads', '', '| Package | Signing |', '| --- | --- |']
     lines.extend(f'| {e["target"]} | {e["signing"]} |' for e in entries)
     lines += ['', 'Extract the complete package before launching. macOS: move nus.app to Applications. Windows: launch nus.exe. Linux: run ./nus; see README.txt for desktop integration and runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
+    # The public API returns release notes without a second cross-origin asset
+    # request. Keep the same verified metadata available to the download page.
+    lines += ['', '<!-- nus-release:'+json.dumps(manifest,separators=(',',':'))+' -->']
     notes.write_text('\n'.join(lines)+'\n')
     # Draft first: a failed upload cannot expose a half-published release.
     existing=subprocess.run(['gh','release','view',args.tag,'--json','isDraft'],capture_output=True,text=True)
     if existing.returncode == 0:
         if not json.loads(existing.stdout)['isDraft']: raise ValueError('Published releases are immutable; choose a new preview number')
+        subprocess.run(['gh','release','edit',args.tag,'--notes-file',str(notes)],check=True)
     else:
         command=['gh','release','create',args.tag,'--target',args.revision,'--title',f'nus {args.tag}','--draft','--notes-file',str(notes)]
         if manifest['channel']=='preview': command.append('--prerelease')

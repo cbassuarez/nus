@@ -26,6 +26,14 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        if: runner.os == 'Windows'
+      - name: Select the MSVC linker explicitly
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/link.exe'
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -36,7 +44,7 @@ jobs:
       - run: cargo test --workspace
       - name: Fetch pinned Chromium Embedded Framework
         shell: bash
-        run: scripts/fetch-cef.sh
+        run: bash scripts/fetch-cef.sh
       - name: Build and test the shipping application
         shell: bash
         run: |

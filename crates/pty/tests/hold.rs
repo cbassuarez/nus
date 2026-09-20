@@ -58,6 +58,11 @@ fn spawn_detach_attach_kill() {
     let info = Info::read(&dir, &id).expect("info file");
     assert_eq!(info.id, id);
     assert!(info.pid > 0);
+    // A health probe must answer promptly and leave the attached client live.
+    let probe_started = Instant::now();
+    assert!(info.alive(&dir), "live holder did not answer ping");
+    assert!(probe_started.elapsed() < Duration::from_millis(400));
+    assert!(Info::path(&dir, &id).exists(), "ping removed a live holder");
 
     // Detach: the holder and the shell stay.
     pty.detach();

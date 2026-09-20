@@ -1401,6 +1401,7 @@ impl BrowserTab {
         let host = self.host()?;
         let info = WindowInfo {
             window_name: "nus Developer Tools".into(),
+            #[cfg(target_os = "macos")]
             hidden: i32::from(std::env::var_os("NUS_SHOT").is_some()),
             bounds: cef::Rect { x: 100, y: 100, width: 1000, height: 700 },
             runtime_style: RuntimeStyle::CHROME,

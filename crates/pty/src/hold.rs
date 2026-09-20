@@ -82,8 +82,12 @@ impl Info {
         match TcpStream::connect(("127.0.0.1", self.port)) {
             Ok(mut s) => {
                 let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(400)));
-                // The greeting is 'i'; a holder that answers is alive. We do
-                // not attach, so it sends nothing more once we hang up.
+                // Send a complete ping frame. Waiting silently made the server
+                // wait 500 ms for a token while this client timed out at 400 ms.
+                // A probe must not replace an attached terminal client.
+                if send(&mut s, b'p', &[]).is_err() {
+                    return false;
+                }
                 let mut tag = [0u8; 1];
                 let ok = s.read_exact(&mut tag).is_ok() && tag[0] == b'i';
                 if !ok {
@@ -256,6 +260,14 @@ impl Client {
 
     pub fn exit_code(&self) -> Option<u32> {
         *self.exited.lock().unwrap()
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        // The reader owns a cloned descriptor. Closing only the writer leaves
+        // it blocked forever on an idle detached shell.
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
     }
 }
 
