@@ -34,6 +34,7 @@ mod bundles;
 mod editor;
 mod editor_work;
 mod perf;
+mod distribution;
 mod work;
 mod lsp_host;
 mod prompt_lsp;
@@ -838,6 +839,10 @@ fn settle_as_app(dock: &mut dock::Dock) {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("nus {} ({})", env!("CARGO_PKG_VERSION"), env!("NUS_BUILD_REVISION"));
+        return ExitCode::SUCCESS;
+    }
     perf::start();
     let _private_root = match private::prepare() {
         Ok(root) => root,
@@ -873,6 +878,12 @@ fn main() -> ExitCode {
         return ExitCode::from(ret.max(0) as u8);
     }
     assert_eq!(ret, -1, "browser process must not be executed here");
+
+    #[cfg(not(target_os = "macos"))]
+    if let Err(e) = distribution::settle() {
+        eprintln!("Could not open the nus data directory: {e}");
+        return ExitCode::FAILURE;
+    }
 
     // One instance: a second launch hands its URLs to the first and exits.
     let urls = little::urls_from_args();

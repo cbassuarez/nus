@@ -88,7 +88,7 @@ impl GridRenderer {
     /// Add space to the grid itself, so selection, cursor and PTY columns agree.
     pub fn set_spacing(&mut self, fonts: &FontSystem, line: f32, tracking: f32) {
         self.metrics = fonts.metrics(self.font, self.px);
-        let extra = self.metrics.line_height * (line.clamp(1.0, 1.8)-1.0);
+        let extra = self.metrics.line_height * (line.clamp(1.0, 1.8) - 1.0);
         self.metrics.line_height = (self.metrics.line_height + extra).round();
         self.metrics.baseline += (extra * 0.5).round();
         self.metrics.advance = (self.metrics.advance + tracking.clamp(0.0, 8.0)).max(1.0);

@@ -201,7 +201,9 @@ impl Client {
                     match recv(&mut reader) {
                         Ok(Some((b'h', bytes))) | Ok(Some((b'o', bytes))) => {
                             for chunk in bytes.chunks(64 * 1024) {
-                                if tx.send(chunk.to_vec()).is_err() { return; }
+                                if tx.send(chunk.to_vec()).is_err() {
+                                    return;
+                                }
                                 on_output();
                             }
                         }
@@ -399,7 +401,10 @@ mod tests {
         assert_eq!(ring.bytes(), b"cdefghij");
         ring.push(&vec![b'x'; 1024 * 1024]);
         assert_eq!(ring.bytes(), b"xxxxxxxx");
-        assert!(ring.buf.capacity() <= 16, "oversized writes must not inflate the retained allocation");
+        assert!(
+            ring.buf.capacity() <= 16,
+            "oversized writes must not inflate the retained allocation"
+        );
         let mut empty = Ring::new(0);
         empty.push(b"ignored");
         assert!(empty.bytes().is_empty());

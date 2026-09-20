@@ -76,17 +76,96 @@ pub fn render(size: u32, signal: Color, face: Face) -> Vec<u8> {
 }
 
 /// A still Signal badge over the existing authored mark. Empty text is a dot.
-pub fn tray(size:u32,signal:Color,badge:Option<&str>)->Vec<u8>{
-    let mut rgba=render(size,signal,Face::Newsreader);let Some(text)=badge else{return rgba;};let s=size as f32;
-    let radius=if text.is_empty(){s*0.13}else{s*0.24};let cx=s-radius-1.0;let cy=s-radius-1.0;
-    let composite=|out:&mut [u8],x:u32,y:u32,c:Color,coverage:f32|{let i=((y*size+x)*4)as usize;let mut base=[out[i]as f32/255.0,out[i+1]as f32/255.0,out[i+2]as f32/255.0,out[i+3]as f32/255.0];over(&mut base,c,coverage);for k in 0..4{out[i+k]=(base[k]*255.0).round()as u8;}};
-    for y in 0..size{for x in 0..size{let distance=((x as f32+0.5-cx).powi(2)+(y as f32+0.5-cy).powi(2)).sqrt();composite(&mut rgba,x,y,[1.0;4],(radius+1.0-distance).clamp(0.0,1.0));composite(&mut rgba,x,y,signal,(radius-0.8-distance).clamp(0.0,1.0));}}
-    if !text.is_empty(){
-        let font=FontRef::from_index(bundled::PLEX_MONO_SEMIBOLD,0).expect("bundled signal font");let mut ctx=ScaleContext::new();let mut scaler=ctx.builder(font).size(s*if text.len()>1{0.3}else{0.4}).hint(true).build();
-        let images:Vec<_>=text.chars().filter_map(|c|Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler,font.charmap().map(c))).collect();let width=images.iter().map(|i|i.placement.width+1).sum::<u32>().saturating_sub(1);let mut left=(cx-width as f32/2.0).round()as i32;
-        let luminance=signal[0]*0.2126+signal[1]*0.7152+signal[2]*0.0722;let colour=if luminance>0.5{[0.02,0.02,0.025,1.0]}else{[1.0;4]};
-        for img in images{let top=(cy-img.placement.height as f32/2.0).round()as i32;for y in 0..img.placement.height{for x in 0..img.placement.width{let(px,py)=(left+x as i32,top+y as i32);if px>=0&&py>=0&&px<size as i32&&py<size as i32{composite(&mut rgba,px as u32,py as u32,colour,img.data[(y*img.placement.width+x)as usize]as f32/255.0);}}}left+=img.placement.width as i32+1;}
-    }rgba
+pub fn tray(size: u32, signal: Color, badge: Option<&str>) -> Vec<u8> {
+    let mut rgba = render(size, signal, Face::Newsreader);
+    let Some(text) = badge else {
+        return rgba;
+    };
+    let s = size as f32;
+    let radius = if text.is_empty() { s * 0.13 } else { s * 0.24 };
+    let cx = s - radius - 1.0;
+    let cy = s - radius - 1.0;
+    let composite = |out: &mut [u8], x: u32, y: u32, c: Color, coverage: f32| {
+        let i = ((y * size + x) * 4) as usize;
+        let mut base = [
+            out[i] as f32 / 255.0,
+            out[i + 1] as f32 / 255.0,
+            out[i + 2] as f32 / 255.0,
+            out[i + 3] as f32 / 255.0,
+        ];
+        over(&mut base, c, coverage);
+        for k in 0..4 {
+            out[i + k] = (base[k] * 255.0).round() as u8;
+        }
+    };
+    for y in 0..size {
+        for x in 0..size {
+            let distance = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            composite(
+                &mut rgba,
+                x,
+                y,
+                [1.0; 4],
+                (radius + 1.0 - distance).clamp(0.0, 1.0),
+            );
+            composite(
+                &mut rgba,
+                x,
+                y,
+                signal,
+                (radius - 0.8 - distance).clamp(0.0, 1.0),
+            );
+        }
+    }
+    if !text.is_empty() {
+        let font =
+            FontRef::from_index(bundled::PLEX_MONO_SEMIBOLD, 0).expect("bundled signal font");
+        let mut ctx = ScaleContext::new();
+        let mut scaler = ctx
+            .builder(font)
+            .size(s * if text.len() > 1 { 0.3 } else { 0.4 })
+            .hint(true)
+            .build();
+        let images: Vec<_> = text
+            .chars()
+            .filter_map(|c| {
+                Render::new(&[Source::Outline])
+                    .format(Format::Alpha)
+                    .render(&mut scaler, font.charmap().map(c))
+            })
+            .collect();
+        let width = images
+            .iter()
+            .map(|i| i.placement.width + 1)
+            .sum::<u32>()
+            .saturating_sub(1);
+        let mut left = (cx - width as f32 / 2.0).round() as i32;
+        let luminance = signal[0] * 0.2126 + signal[1] * 0.7152 + signal[2] * 0.0722;
+        let colour = if luminance > 0.5 {
+            [0.02, 0.02, 0.025, 1.0]
+        } else {
+            [1.0; 4]
+        };
+        for img in images {
+            let top = (cy - img.placement.height as f32 / 2.0).round() as i32;
+            for y in 0..img.placement.height {
+                for x in 0..img.placement.width {
+                    let (px, py) = (left + x as i32, top + y as i32);
+                    if px >= 0 && py >= 0 && px < size as i32 && py < size as i32 {
+                        composite(
+                            &mut rgba,
+                            px as u32,
+                            py as u32,
+                            colour,
+                            img.data[(y * img.placement.width + x) as usize] as f32 / 255.0,
+                        );
+                    }
+                }
+            }
+            left += img.placement.width as i32 + 1;
+        }
+    }
+    rgba
 }
 
 /// Geometry and shadows are sampled once; changing theme only recolours the orbit.

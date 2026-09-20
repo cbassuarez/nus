@@ -65,16 +65,28 @@ struct Doc {
     language: String,
 }
 
+/// The documents as the server last saw them, keyed by URL.
+type Snapshots = HashMap<Url, ropey::Rope>;
+
+/// Work that needs the snapshots, run once when the message is sent.
+type Defer = Box<dyn FnOnce(&mut Snapshots) -> Value + Send>;
+
 enum Outbound {
     Ready(Value),
-    Deferred(Box<dyn FnOnce(&mut HashMap<Url, ropey::Rope>) -> Value + Send>),
+    Deferred(Defer),
 }
 impl Outbound {
-    fn value(self, snapshots: &mut HashMap<Url, ropey::Rope>) -> Value {
+    fn value(self, snapshots: &mut Snapshots) -> Value {
         match self {
             Self::Ready(v) => {
                 if v["method"] == "textDocument/didClose" {
-                    if let Some(uri) = v.pointer("/params/textDocument/uri").and_then(Value::as_str).and_then(|u| Url::parse(u).ok()) { snapshots.remove(&uri); }
+                    if let Some(uri) = v
+                        .pointer("/params/textDocument/uri")
+                        .and_then(Value::as_str)
+                        .and_then(|u| Url::parse(u).ok())
+                    {
+                        snapshots.remove(&uri);
+                    }
                 }
                 v
             }
@@ -87,31 +99,58 @@ impl Outbound {
 /// chunks uses slice equality, rather than allocating/serializing the file.
 fn rope_change(old: &ropey::Rope, new: &ropey::Rope) -> TextDocumentContentChangeEvent {
     let mut prefix = 0;
-    for (a,b) in old.chunks().zip(new.chunks()) {
-        if a == b { prefix += a.len(); }
-        else { prefix += a.bytes().zip(b.bytes()).take_while(|(a,b)| a == b).count(); break; }
+    for (a, b) in old.chunks().zip(new.chunks()) {
+        if a == b {
+            prefix += a.len();
+        } else {
+            prefix += a.bytes().zip(b.bytes()).take_while(|(a, b)| a == b).count();
+            break;
+        }
     }
     let start = old.byte_to_char(prefix);
     prefix = old.char_to_byte(start);
     let mut suffix = 0;
-    for (a,b) in old.chunks_at_byte(old.len_bytes()).0.reversed().zip(new.chunks_at_byte(new.len_bytes()).0.reversed()) {
-        if a == b { suffix += a.len(); }
-        else { suffix += a.bytes().rev().zip(b.bytes().rev()).take_while(|(a,b)| a == b).count(); break; }
+    for (a, b) in old
+        .chunks_at_byte(old.len_bytes())
+        .0
+        .reversed()
+        .zip(new.chunks_at_byte(new.len_bytes()).0.reversed())
+    {
+        if a == b {
+            suffix += a.len();
+        } else {
+            suffix += a
+                .bytes()
+                .rev()
+                .zip(b.bytes().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            break;
+        }
     }
-    suffix = suffix.min(old.len_bytes()-prefix).min(new.len_bytes()-prefix);
+    suffix = suffix
+        .min(old.len_bytes() - prefix)
+        .min(new.len_bytes() - prefix);
     // Round the end forward to a complete character if two different Unicode
     // characters share their final UTF-8 byte(s).
-    let mut old_end = old.len_bytes()-suffix;
-    while old.char_to_byte(old.byte_to_char(old_end)) != old_end { old_end += 1; suffix -= 1; }
-    let new_end = new.len_bytes()-suffix;
+    let mut old_end = old.len_bytes() - suffix;
+    while old.char_to_byte(old.byte_to_char(old_end)) != old_end {
+        old_end += 1;
+        suffix -= 1;
+    }
+    let new_end = new.len_bytes() - suffix;
     let end = old.byte_to_char(old_end);
     let position = |at| {
         let line = old.char_to_line(at);
-        Position::new(line as u32, (old.char_to_utf16_cu(at)-old.char_to_utf16_cu(old.line_to_char(line))) as u32)
+        Position::new(
+            line as u32,
+            (old.char_to_utf16_cu(at) - old.char_to_utf16_cu(old.line_to_char(line))) as u32,
+        )
     };
     TextDocumentContentChangeEvent {
-        range:Some(Range::new(position(start),position(end))),range_length:None,
-        text:new.byte_slice(prefix..new_end).to_string(),
+        range: Some(Range::new(position(start), position(end))),
+        range_length: None,
+        text: new.byte_slice(prefix..new_end).to_string(),
     }
 }
 
@@ -193,7 +232,9 @@ impl Client {
                 .spawn(move || {
                     let mut reader = BufReader::new(stderr);
                     while let Some(line) = bounded_line(&mut reader, 8192) {
-                        if ev_tx.send(Event::Log(line)).is_err() { break; }
+                        if ev_tx.send(Event::Log(line)).is_err() {
+                            break;
+                        }
                     }
                 })?;
         }
@@ -211,12 +252,19 @@ impl Client {
                     while let Some(msg) = read_frame(&mut r) {
                         handle_incoming(msg, &ev_tx, &out_tx, &pending);
                     }
-                    let code = child.lock().ok().and_then(|mut c| c.as_mut().and_then(|c| {
-                        // EOF/malformed framing: terminate a server that left its
-                        // process alive. Never wait on a live child while holding
-                        // the mutex that shutdown needs to kill it.
-                        let _ = c.kill(); c.wait().ok()
-                    })).and_then(|s| s.code());
+                    let code = child
+                        .lock()
+                        .ok()
+                        .and_then(|mut c| {
+                            c.as_mut().and_then(|c| {
+                                // EOF/malformed framing: terminate a server that left its
+                                // process alive. Never wait on a live child while holding
+                                // the mutex that shutdown needs to kill it.
+                                let _ = c.kill();
+                                c.wait().ok()
+                            })
+                        })
+                        .and_then(|s| s.code());
                     let _ = ev_tx.send(Event::Exited(code));
                 })?;
         }
@@ -299,14 +347,20 @@ impl Client {
         self.request("initialize", params);
     }
 
-    fn send(&self, v: Value) { self.enqueue(Outbound::Ready(v)); }
+    fn send(&self, v: Value) {
+        self.enqueue(Outbound::Ready(v));
+    }
 
     fn enqueue(&self, v: Outbound) {
         if let Err(TrySendError::Full(_)) = self.tx.try_send(v) {
             // A wedged server must not freeze typing or collect unlimited
             // full-document updates. End it and report its exit to the host.
             tracing::warn!("language server stopped reading; ending {}", self.name);
-            if let Ok(mut child)=self.child.lock() {if let Some(child)=child.as_mut(){let _=child.kill();}}
+            if let Ok(mut child) = self.child.lock() {
+                if let Some(child) = child.as_mut() {
+                    let _ = child.kill();
+                }
+            }
         }
     }
 
@@ -314,7 +368,11 @@ impl Client {
     pub fn request<P: serde::Serialize>(&self, method: &'static str, params: P) -> RequestId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut p) = self.pending.lock() {
-            if p.len() >= 512 {if let Some(oldest)=p.keys().min().copied(){p.remove(&oldest);}}
+            if p.len() >= 512 {
+                if let Some(oldest) = p.keys().min().copied() {
+                    p.remove(&oldest);
+                }
+            }
             p.insert(id, method);
         }
         self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
@@ -371,7 +429,13 @@ impl Client {
     pub fn did_open_rope(&self, uri: Url, language: &str, text: ropey::Rope) {
         let language = language.to_owned();
         if let Ok(mut docs) = self.docs.lock() {
-            docs.insert(uri.clone(), Doc { version: 1, language: language.clone() });
+            docs.insert(
+                uri.clone(),
+                Doc {
+                    version: 1,
+                    language: language.clone(),
+                },
+            );
         }
         self.enqueue(Outbound::Deferred(Box::new(move |snapshots| {
             let body = json!({
@@ -385,18 +449,40 @@ impl Client {
     }
 
     pub fn did_change_rope(&self, uri: Url, text: ropey::Rope) -> i32 {
-        let version = self.docs.lock().map(|mut docs| {
-            let doc = docs.entry(uri.clone()).or_insert(Doc {version:0, language:String::new()});
-            doc.version += 1;
-            doc.version
-        }).unwrap_or(1);
-        let incremental = self.capabilities.lock().ok().and_then(|c| c.as_ref().and_then(|c| c.text_document_sync.clone())).is_some_and(|sync| match sync {
-            TextDocumentSyncCapability::Kind(k) => k == TextDocumentSyncKind::INCREMENTAL,
-            TextDocumentSyncCapability::Options(o) => o.change == Some(TextDocumentSyncKind::INCREMENTAL),
-        });
+        let version = self
+            .docs
+            .lock()
+            .map(|mut docs| {
+                let doc = docs.entry(uri.clone()).or_insert(Doc {
+                    version: 0,
+                    language: String::new(),
+                });
+                doc.version += 1;
+                doc.version
+            })
+            .unwrap_or(1);
+        let incremental = self
+            .capabilities
+            .lock()
+            .ok()
+            .and_then(|c| c.as_ref().and_then(|c| c.text_document_sync.clone()))
+            .is_some_and(|sync| match sync {
+                TextDocumentSyncCapability::Kind(k) => k == TextDocumentSyncKind::INCREMENTAL,
+                TextDocumentSyncCapability::Options(o) => {
+                    o.change == Some(TextDocumentSyncKind::INCREMENTAL)
+                }
+            });
         self.enqueue(Outbound::Deferred(Box::new(move |snapshots| {
-            let change = if incremental { snapshots.get(&uri).map(|old| rope_change(old, &text)) } else { None }
-                .unwrap_or_else(|| TextDocumentContentChangeEvent {range:None,range_length:None,text:text.to_string()});
+            let change = if incremental {
+                snapshots.get(&uri).map(|old| rope_change(old, &text))
+            } else {
+                None
+            }
+            .unwrap_or_else(|| TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: text.to_string(),
+            });
             snapshots.insert(uri.clone(), text);
             json!({
                 "jsonrpc":"2.0", "method":"textDocument/didChange", "params": {
@@ -458,8 +544,19 @@ impl Client {
 
     /// Release server-side document state when tabs or buffers are closed.
     pub fn retain_documents(&self, live: &std::collections::HashSet<Url>) {
-        let closed: Vec<_> = self.docs.lock().map(|docs| docs.keys().filter(|uri| !live.contains(*uri)).cloned().collect()).unwrap_or_default();
-        for uri in closed { self.did_close(uri); }
+        let closed: Vec<_> = self
+            .docs
+            .lock()
+            .map(|docs| {
+                docs.keys()
+                    .filter(|uri| !live.contains(*uri))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for uri in closed {
+            self.did_close(uri);
+        }
     }
 
     pub fn language_of(&self, uri: &Url) -> Option<String> {
@@ -599,23 +696,30 @@ impl Drop for Client {
 }
 
 fn clipped(text: &str) -> String {
-    let mut end=text.len().min(8192);
-    while !text.is_char_boundary(end) {end-=1;}
+    let mut end = text.len().min(8192);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
     text[..end].to_string()
 }
 
 /// Read through one line, retaining only its bounded prefix.
 fn bounded_line<R: BufRead>(r: &mut R, max: usize) -> Option<String> {
-    let mut out = Vec::new(); let mut read = false;
+    let mut out = Vec::new();
+    let mut read = false;
     loop {
         let part = r.fill_buf().ok()?;
-        if part.is_empty() { break; }
+        if part.is_empty() {
+            break;
+        }
         read = true;
         let end = part.iter().position(|b| *b == b'\n').map(|i| i + 1);
         let n = end.unwrap_or(part.len());
         out.extend_from_slice(&part[..n.min(max.saturating_sub(out.len()))]);
         r.consume(n);
-        if end.is_some() { break; }
+        if end.is_some() {
+            break;
+        }
     }
     read.then(|| String::from_utf8_lossy(&out).trim_end().to_string())
 }
@@ -625,7 +729,9 @@ fn read_frame<R: BufRead>(r: &mut R) -> Option<Value> {
     let mut len: Option<usize> = None;
     loop {
         let line = bounded_line(r, 8192)?;
-        if line.len() >= 8192 { return None; }
+        if line.len() >= 8192 {
+            return None;
+        }
         let line = line.trim_end();
         if line.is_empty() {
             // A blank line before any header is noise (a chatty server, a
@@ -640,7 +746,9 @@ fn read_frame<R: BufRead>(r: &mut R) -> Option<Value> {
         }
     }
     let len = len?;
-    if len > 16 * 1024 * 1024 { return None; }
+    if len > 16 * 1024 * 1024 {
+        return None;
+    }
     let mut body = vec![0u8; len];
     r.read_exact(&mut body).ok()?;
     serde_json::from_slice(&body).ok()
@@ -676,7 +784,9 @@ fn handle_incoming(
                 // registerCapability, workDoneProgress/create, applyEdit…: ok.
                 _ => Value::Null,
             };
-            let _ = out.send(Outbound::Ready(json!({ "jsonrpc": "2.0", "id": id, "result": result })));
+            let _ = out.send(Outbound::Ready(
+                json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            ));
         }
         // A notification.
         (Some(m), None) => match m {
@@ -799,9 +909,9 @@ mod tests {
 
     #[test]
     fn oversized_protocol_data_and_logs_are_bounded() {
-        let mut invalid=std::io::Cursor::new(b"Content-Length: 999999999999\r\n\r\n");
+        let mut invalid = std::io::Cursor::new(b"Content-Length: 999999999999\r\n\r\n");
         assert!(read_frame(&mut invalid).is_none());
-        let mut log=std::io::Cursor::new(format!("{}\nnext\n", "x".repeat(1_000_000)));
+        let mut log = std::io::Cursor::new(format!("{}\nnext\n", "x".repeat(1_000_000)));
         assert_eq!(bounded_line(&mut log, 128).unwrap().len(), 128);
         assert_eq!(bounded_line(&mut log, 128).unwrap(), "next");
         assert!(bounded_line(&mut log, 128).is_none());
@@ -841,17 +951,20 @@ mod rope_sync_tests {
     fn incremental_edits_preserve_unicode_crlf_and_chunk_boundaries() {
         for initial in ["α😀\r\nhello world".to_string(), "hello α😀\n".repeat(1000)] {
             let old = ropey::Rope::from_str(&initial);
-            for at in [0, 2, old.len_chars()/2, old.len_chars()] {
+            for at in [0, 2, old.len_chars() / 2, old.len_chars()] {
                 for insertion in ["x", "😀", "\r\n", ""] {
                     let mut new = old.clone();
-                    if at < new.len_chars() { new.remove(at..at+1); }
+                    if at < new.len_chars() {
+                        new.remove(at..at + 1);
+                    }
                     new.insert(at, insertion);
                     let change = rope_change(&old, &new);
                     let range = change.range.unwrap();
                     let a = offset_of(&initial, range.start);
                     let b = offset_of(&initial, range.end);
                     let mut applied = old.clone();
-                    applied.remove(a..b); applied.insert(a, &change.text);
+                    applied.remove(a..b);
+                    applied.insert(a, &change.text);
                     assert_eq!(applied, new);
                     assert!(change.text.len() < 5000);
                 }

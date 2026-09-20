@@ -11,7 +11,11 @@ fn main() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut entries = Vec::new();
     for size in [16u32, 24, 32, 48, 64, 128, 256, 512, 1024] {
-        let rgba = nus_render::dock_icon::render(size, signal::RED, nus_render::dock_icon::Face::Newsreader);
+        let rgba = nus_render::dock_icon::render(
+            size,
+            signal::RED,
+            nus_render::dock_icon::Face::Newsreader,
+        );
         let p = png(&rgba, size, size);
         std::fs::write(format!("{dir}/nus-{size}.png"), &p).unwrap();
         if size <= 256 {
@@ -22,7 +26,11 @@ fn main() {
     // Dock variant (pure white n, clipped by its orbit, with a contrast shadow), at every
     // size a macOS .icns wants (scripts/bundle-mac.sh builds it from these).
     for size in [16u32, 32, 64, 128, 256, 512, 1024] {
-        let rgba = nus_render::dock_icon::render(size, signal::RED, nus_render::dock_icon::Face::Newsreader);
+        let rgba = nus_render::dock_icon::render(
+            size,
+            signal::RED,
+            nus_render::dock_icon::Face::Newsreader,
+        );
         std::fs::write(format!("{dir}/nus-{size}-ink.png"), png(&rgba, size, size)).unwrap();
     }
     // The vector, for the site and anything that scales.

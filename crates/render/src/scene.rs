@@ -372,7 +372,19 @@ impl Scene {
     /// from the sun and drifting on the wind — all in the fragment shader.
     /// `az` runs -1 (east, left) to 1 (west, right); `alt` is the sine of
     /// the sun's altitude; `cover` 0..1; `t` seconds; `seed` picks the field.
-    pub fn sky(&mut self, r: Rect, az: f32, alt: f32, cover: f32, wind: f32, t: f32, seed: [f32; 2]) {
+    // Eight independent scalars, each one named in the lines above and each
+    // going straight to the shader: a struct here would only move the list.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sky(
+        &mut self,
+        r: Rect,
+        az: f32,
+        alt: f32,
+        cover: f32,
+        wind: f32,
+        t: f32,
+        seed: [f32; 2],
+    ) {
         self.push(Instance {
             pos: [r.x, r.y],
             size: [r.w, r.h],
@@ -396,7 +408,9 @@ impl Scene {
     /// Existing clips are intersected, so a reveal cannot expose pane overflow.
     pub fn clip_all(&mut self, rect: Rect) {
         self.close();
-        for layer in &mut self.layers { layer.clip=Some(layer.clip.map(|c|c.intersect(&rect)).unwrap_or(rect)); }
+        for layer in &mut self.layers {
+            layer.clip = Some(layer.clip.map(|c| c.intersect(&rect)).unwrap_or(rect));
+        }
     }
 
     /// Start (or restart) an atlas-bound layer with an optional clip.
@@ -447,7 +461,14 @@ impl Scene {
     }
 
     /// A texture with both opacity and an explicit clip, for nested previews.
-    pub fn texture_uv_alpha(&mut self, rect: Rect, uv: [f32; 4], bind: Arc<wgpu::BindGroup>, clip: Option<Rect>, alpha: f32) {
+    pub fn texture_uv_alpha(
+        &mut self,
+        rect: Rect,
+        uv: [f32; 4],
+        bind: Arc<wgpu::BindGroup>,
+        clip: Option<Rect>,
+        alpha: f32,
+    ) {
         self.close();
         let start = self.instances.len();
         let mut i = Instance::textured(rect, alpha);

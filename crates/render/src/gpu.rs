@@ -43,7 +43,9 @@ pub struct Gpu {
 
 impl std::ops::Deref for Gpu {
     type Target = SharedGpu;
-    fn deref(&self) -> &SharedGpu { &self.shared }
+    fn deref(&self) -> &SharedGpu {
+        &self.shared
+    }
 }
 
 /// A window's surface.
@@ -185,13 +187,34 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
-        let shared = Arc::new(SharedGpu { device, queue, instance, format, pipeline, bgl, sampler, points_bgl, adapter });
+        let shared = Arc::new(SharedGpu {
+            device,
+            queue,
+            instance,
+            format,
+            pipeline,
+            bgl,
+            sampler,
+            points_bgl,
+            adapter,
+        });
         SHARED.with(|s| *s.borrow_mut() = Arc::downgrade(&shared));
         Self::with_shared(shared, window, surface)
     }
 
-    fn with_shared(shared: Arc<SharedGpu>, window: Arc<Window>, surface: wgpu::Surface<'static>) -> Result<(Gpu, Target)> {
-        let SharedGpu { device, bgl, sampler, points_bgl, format, .. } = shared.as_ref();
+    fn with_shared(
+        shared: Arc<SharedGpu>,
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+    ) -> Result<(Gpu, Target)> {
+        let SharedGpu {
+            device,
+            bgl,
+            sampler,
+            points_bgl,
+            format,
+            ..
+        } = shared.as_ref();
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("glyph atlas"),
             size: wgpu::Extent3d {
@@ -204,15 +227,17 @@ impl Gpu {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R8Unorm,
             // COPY_SRC so the app can photograph its own glyph atlas.
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-        let atlas_bind = Self::make_bind(&device, &bgl, &atlas_view, &sampler);
+        let atlas_bind = Self::make_bind(device, bgl, &atlas_view, sampler);
 
         let points_cap = 4096;
-        let points = Self::make_points(&device, points_cap);
-        let points_bind = Self::bind_points(&device, &points_bgl, &points);
+        let points = Self::make_points(device, points_cap);
+        let points_bind = Self::bind_points(device, points_bgl, &points);
         let instance_cap = 8192;
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
@@ -222,7 +247,16 @@ impl Gpu {
         });
         let size = window.inner_size();
         let format = *format;
-        let gpu = Gpu { shared, atlas, atlas_bind, instances, instance_cap, points, points_cap, points_bind };
+        let gpu = Gpu {
+            shared,
+            atlas,
+            atlas_bind,
+            instances,
+            instance_cap,
+            points,
+            points_cap,
+            points_bind,
+        };
         let mut target = Target {
             surface,
             size: (size.width.max(1), size.height.max(1)),
@@ -386,18 +420,38 @@ impl Gpu {
     /// pixel, `ATLAS_SIZE` square. Every letter the app has drawn so far.
     pub fn atlas_snapshot(&mut self) -> (u32, Vec<u8>) {
         let size = ATLAS_SIZE;
-        let row = (size + 255) / 256 * 256;
+        let row = size.div_ceil(256) * 256;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("atlas readback"),
             size: (row * size) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("atlas") });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("atlas"),
+            });
         enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &self.atlas, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(size) } },
-            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.atlas,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(size),
+                },
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(Some(enc.finish()));
         let slice = buffer.slice(..);
@@ -555,7 +609,10 @@ impl Gpu {
             });
             pass.set_pipeline(&self.pipeline);
             let (sw, sh) = size;
-            pass.set_immediates(0, bytemuck::cast_slice(&[sw as f32, sh as f32, scene.corner_radius, 0.0]));
+            pass.set_immediates(
+                0,
+                bytemuck::cast_slice(&[sw as f32, sh as f32, scene.corner_radius, 0.0]),
+            );
             pass.set_vertex_buffer(0, self.instances.slice(..));
             pass.set_bind_group(1, &self.points_bind, &[]);
             for layer in scene.layers() {

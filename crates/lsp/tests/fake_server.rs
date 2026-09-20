@@ -58,7 +58,10 @@ fn serve() -> ! {
                     json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":uri,"diagnostics":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"severity":1,"message":"fake"}]}}),
                 );
             }
-            "textDocument/didClose" => send(&mut w, json!({"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"document released"}})),
+            "textDocument/didClose" => send(
+                &mut w,
+                json!({"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"document released"}}),
+            ),
             "textDocument/hover" => {
                 let ch = msg["params"]["position"]["character"].as_u64().unwrap();
                 send(
@@ -143,7 +146,10 @@ fn talks_to_a_server() {
     assert_eq!(client.did_change(uri.clone(), "let x = 2;"), 2);
     client.retain_documents(&Default::default());
     assert!(client.language_of(&uri).is_none());
-    wait_for(&rx, |e| matches!(e, Event::Log(s) if s == "document released"));
+    wait_for(
+        &rx,
+        |e| matches!(e, Event::Log(s) if s == "document released"),
+    );
     client.shutdown();
     wait_for(&rx, |e| matches!(e, Event::Exited(_)));
 }

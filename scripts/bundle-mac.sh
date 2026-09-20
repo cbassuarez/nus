@@ -30,10 +30,11 @@ app="${NUS_BUNDLE_OUT:-$root/dist/$name.app}"
 [[ "$app" == /* && "$app" == *.app ]] || { echo "NUS_BUNDLE_OUT must be an absolute .app path" >&2; exit 1; }
 bin="$root/spikes/composite/target/$profile"
 
-echo "· building ($profile)"
-(cd "$root/spikes/composite" && cargo build $([[ $profile == release ]] && echo --release) --bins -q)
-
-(cd "$root" && cargo build $([[ $profile == release ]] && echo --release) -p nus-cli -q)
+if [[ "${NUS_BUNDLE_SKIP_BUILD:-0}" != 1 ]]; then
+  echo "· building ($profile)"
+  (cd "$root/spikes/composite" && cargo build $([[ $profile == release ]] && echo --release) --locked --bins -q)
+  (cd "$root" && cargo build $([[ $profile == release ]] && echo --release) --locked -p nus-cli -q)
+fi
 
 echo "· laying out $app"
 rm -rf "$app"
@@ -87,7 +88,7 @@ done
 
 echo "· icon (the white n)"
 icons=$(mktemp -d)
-(cd "$root" && cargo run -q -p nus-render --example icon -- "$icons/png" >/dev/null)
+(cd "$root" && cargo run --release --locked -q -p nus-render --example icon -- "$icons/png" >/dev/null)
 set_=$icons/$name.iconset
 mkdir -p "$set_"
 for s in 16 32 128 256 512; do

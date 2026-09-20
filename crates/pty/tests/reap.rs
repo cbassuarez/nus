@@ -16,7 +16,13 @@ fn shell() -> Profile {
     } else {
         ("sh", vec!["-i".into()])
     };
-    Profile { name: "test".into(), program: program.into(), args, cwd: None, env: Vec::new() }
+    Profile {
+        name: "test".into(),
+        program: program.into(),
+        args,
+        cwd: None,
+        env: Vec::new(),
+    }
 }
 
 /// A long sleeper that a dying terminal does not reach: backgrounded,
@@ -69,7 +75,10 @@ fn killing_a_shell_takes_what_it_started() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(!alive(child), "the sleeper outlived the shell: pid {child}");
-    assert!(!alive(shell_pid), "the shell outlived its kill: pid {shell_pid}");
+    assert!(
+        !alive(shell_pid),
+        "the shell outlived its kill: pid {shell_pid}"
+    );
 }
 
 #[test]

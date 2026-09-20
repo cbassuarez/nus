@@ -1,0 +1,140 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version: v0.0.1-preview.1 or v0.0.1'
+        required: true
+        default: v0.0.1-preview.1
+      publish:
+        description: Publish the complete matrix to GitHub Releases
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 scripts/test-release.py
+      - id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os,re,tomllib
+          tag=os.environ['RELEASE_TAG']
+          m=re.fullmatch(r'v(\d+\.\d+\.\d+)(?:-preview\.\d+)?',tag)
+          if not m: raise SystemExit('Expected vX.Y.Z or vX.Y.Z-preview.N')
+          root=tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version']
+          app=tomllib.load(open('spikes/composite/Cargo.toml','rb'))['package']['version']
+          if m[1] != root or app != root: raise SystemExit('Tag, app and workspace versions must match')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('tag='+tag+'\n')
+          PY
+  package:
+    needs: version
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: macos-arm64
+          - os: macos-15-intel
+            target: macos-x86_64
+          - os: windows-2022
+            target: windows-x86_64
+          - os: ubuntu-22.04
+            target: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        if: runner.os == 'Windows'
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libgtk-3-dev libasound2-dev libudev-dev libgbm-dev libnss3 libxss1 libvulkan1 mesa-vulkan-drivers xvfb
+      - name: Fetch pinned CEF
+        run: bash scripts/fetch-cef.sh
+      - name: Test and build native application
+        run: |
+          source scripts/env.sh
+          cargo test --locked --release --workspace
+          cargo build --locked --release -p nus-cli
+          cargo test --locked --release --manifest-path spikes/composite/Cargo.toml --bin composite
+          cargo build --locked --release --manifest-path spikes/composite/Cargo.toml --bins
+      - name: Package and sign
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          MACOS_CERTIFICATE: ${{ (github.event_name == 'push' || inputs.publish) && secrets.MACOS_CERTIFICATE || '' }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          WINDOWS_CERTIFICATE: ${{ (github.event_name == 'push' || inputs.publish) && secrets.WINDOWS_CERTIFICATE || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: python scripts/package-release.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
+      - name: Verify packaged executable and runtime loader
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            dist/nus.app/Contents/MacOS/nus --version
+          elif [[ "$RUNNER_OS" == Windows ]]; then
+            "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus.exe" --version
+          else
+            "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --version
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+  publish:
+    needs: [version, package]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+      - name: Validate hashes and publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: python3 scripts/publish-release.py --tag "$RELEASE_TAG" --revision "$GITHUB_SHA"

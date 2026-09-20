@@ -62,7 +62,8 @@ pub const UNION: &[&str] = &["memory.md"];
 /// the spacing.
 pub fn union_lines(theirs: &str, ours: &str) -> String {
     let mut out: Vec<&str> = theirs.lines().collect();
-    let have: std::collections::HashSet<&str> = theirs.lines().filter(|l| !l.trim().is_empty()).collect();
+    let have: std::collections::HashSet<&str> =
+        theirs.lines().filter(|l| !l.trim().is_empty()).collect();
     let mut added = false;
     for l in ours.lines() {
         if l.trim().is_empty() || have.contains(l) {
@@ -560,7 +561,11 @@ pub fn exchange(
         let union = UNION.contains(&rel.as_str()) && dest.is_file();
         let plain = if union {
             let ours = std::fs::read(&dest).unwrap_or_default();
-            union_lines(&String::from_utf8_lossy(&plain), &String::from_utf8_lossy(&ours)).into_bytes()
+            union_lines(
+                &String::from_utf8_lossy(&plain),
+                &String::from_utf8_lossy(&ours),
+            )
+            .into_bytes()
         } else {
             plain
         };
@@ -651,23 +656,36 @@ mod tests {
 - a
 - c
 ";
-        assert_eq!(union_lines(theirs, ours), "# memory
+        assert_eq!(
+            union_lines(theirs, ours),
+            "# memory
 - a
 - b
 - c
-");
+"
+        );
         // Nothing of ours missing: theirs, untouched.
-        assert_eq!(union_lines(theirs, "- a
-"), theirs);
+        assert_eq!(
+            union_lines(
+                theirs, "- a
+"
+            ),
+            theirs
+        );
         // Blank lines of ours never pile up.
-        assert_eq!(union_lines("- a
+        assert_eq!(
+            union_lines(
+                "- a
 ", "
 
 - z
 
-"), "- a
+"
+            ),
+            "- a
 - z
-");
+"
+        );
     }
 
     #[test]

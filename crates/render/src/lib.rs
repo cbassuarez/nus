@@ -2,10 +2,10 @@
 //! (solid rects, atlas glyphs, external textures), fonts and shaping, the
 //! terminal grid renderer, and the Broadsheet theme tokens.
 
+pub mod dock_icon;
 pub mod gpu;
 pub mod grid;
 pub mod icon;
-pub mod dock_icon;
 pub mod policy;
 pub mod scene;
 pub mod text;

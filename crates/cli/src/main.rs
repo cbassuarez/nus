@@ -100,7 +100,10 @@ fn parse(args: &[String]) -> (Vec<String>, serde_json::Map<String, Value>) {
         let a = &args[i];
         if let Some(k) = a.strip_prefix("--") {
             let key = k.replace('-', "_");
-            let takes_value = matches!(k, "tab" | "tab-id" | "window" | "profile" | "cwd" | "run" | "signal" | "which");
+            let takes_value = matches!(
+                k,
+                "tab" | "tab-id" | "window" | "profile" | "cwd" | "run" | "signal" | "which"
+            );
             if takes_value && i + 1 < args.len() {
                 let v = &args[i + 1];
                 let val = v

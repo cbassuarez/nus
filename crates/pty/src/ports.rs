@@ -409,7 +409,9 @@ pub fn kill(pid: u32, force: bool) -> bool {
 /// would otherwise outlive them as orphans.
 pub fn descendants_in(tree: &HashMap<u32, (u32, String)>, pid: u32) -> Vec<u32> {
     // Never turn a reserved/root pid into a request for the entire system tree.
-    if pid <= 1 { return Vec::new(); }
+    if pid <= 1 {
+        return Vec::new();
+    }
     let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
     for (&child, &(parent, _)) in tree {
         if child != parent {
@@ -685,18 +687,29 @@ mod tests {
 
     /// pid → (ppid, name), the shape `process_tree` returns.
     fn tree(rows: &[(u32, u32, &str)]) -> HashMap<u32, (u32, String)> {
-        rows.iter().map(|&(pid, ppid, n)| (pid, (ppid, n.to_string()))).collect()
+        rows.iter()
+            .map(|&(pid, ppid, n)| (pid, (ppid, n.to_string())))
+            .collect()
     }
 
     #[test]
     fn descendants_come_back_deepest_first() {
         // 10 → 20 → 30, and 10 → 21. The leaves have to be signalled
         // before their parents, or they are orphaned on the way down.
-        let t = tree(&[(1, 0, "init"), (10, 1, "sh"), (20, 10, "npm"), (21, 10, "tail"), (30, 20, "node")]);
+        let t = tree(&[
+            (1, 0, "init"),
+            (10, 1, "sh"),
+            (20, 10, "npm"),
+            (21, 10, "tail"),
+            (30, 20, "node"),
+        ]);
         let d = descendants_in(&t, 10);
         assert_eq!(d.len(), 3, "{d:?}");
         let at = |pid: u32| d.iter().position(|&p| p == pid).unwrap();
-        assert!(at(30) < at(20), "the node has to go before the npm that holds it: {d:?}");
+        assert!(
+            at(30) < at(20),
+            "the node has to go before the npm that holds it: {d:?}"
+        );
         assert!(d.contains(&21));
         assert!(!d.contains(&10), "the root is not its own descendant");
     }
@@ -716,7 +729,12 @@ mod tests {
     #[test]
     fn a_shell_running_something_names_it() {
         // Lowest pid wins, so the same shell always reads the same way.
-        let t = tree(&[(10, 1, "zsh"), (33, 10, "vim"), (22, 10, "npm"), (44, 22, "node")]);
+        let t = tree(&[
+            (10, 1, "zsh"),
+            (33, 10, "vim"),
+            (22, 10, "npm"),
+            (44, 22, "node"),
+        ]);
         assert_eq!(child_name_in(&t, 10).as_deref(), Some("npm"));
     }
 
@@ -730,9 +748,9 @@ mod tests {
     fn nothing_signals_init() {
         assert!(!kill_one(1, true));
         assert!(!kill_one(0, false));
-        let t=tree(&[(1,0,"init"),(10,1,"sh"),(20,10,"node")]);
-        assert!(descendants_in(&t,0).is_empty());
-        assert!(descendants_in(&t,1).is_empty());
+        let t = tree(&[(1, 0, "init"), (10, 1, "sh"), (20, 10, "node")]);
+        assert!(descendants_in(&t, 0).is_empty());
+        assert!(descendants_in(&t, 1).is_empty());
     }
 
     #[test]
