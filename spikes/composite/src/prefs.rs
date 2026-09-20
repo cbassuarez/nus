@@ -11,8 +11,19 @@ use crate::app::App;
 use crate::settings::Behavior;
 use crate::surface::{SidebarRules, Surface};
 
+/// The shape of settings.json this nus writes. A file from an older nus
+/// has a lower number (0 before there was one) and is brought up in
+/// `migrate`; one from a newer nus is read for what this build knows
+/// (store.rs) and the rest is kept through the save.
+pub const SCHEMA: u32 = 2;
+
+/// Keys the last load had to leave out, for a word to the user once.
+static SALVAGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct Prefs {
+    #[serde(default)]
+    pub schema: u32,
     pub surface: Option<Surface>,
     pub sidebar: Option<SidebarRules>,
     pub motion: Option<Motion>,
@@ -35,9 +46,62 @@ fn path() -> std::path::PathBuf {
 }
 
 impl Prefs {
+    /// The file, whole or salvaged (store.rs), brought up to this schema.
     pub fn load() -> Prefs {
-        std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        let read = crate::store::read_json::<Prefs>(&path());
+        if !read.dropped.is_empty() {
+            *SALVAGED.lock().unwrap() = read.dropped;
+        }
+        let mut p = read.value;
+        migrate(&mut p);
+        p
     }
+}
+
+/// Older files, brought up. Each step is idempotent; the number only
+/// says which steps have run.
+fn migrate(p: &mut Prefs) {
+    if p.schema < 1 {
+        // Two start pages the page no longer offers, from before it had
+        // these four (also applied late in apply_prefs, for the window).
+        if let Some(b) = p.behavior.as_mut() {
+            match b.then {
+                crate::settings::Then::Shell => {
+                    b.then = crate::settings::Then::Prompt;
+                    b.lead = crate::settings::Lead::Terminal;
+                }
+                crate::settings::Then::Restore => {
+                    b.then = crate::settings::Then::Prompt;
+                    b.remember = true;
+                    if b.atlas == crate::settings::AtlasMode::Planet {
+                        b.atlas = crate::settings::AtlasMode::AtLaunch;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // 2: white paper; a surface base of the old paper swatch means "none".
+    if p.schema < 2 {
+        if let Some(s) = p.surface.as_mut() {
+            if s.base.is_some_and(|b| (b[0] - 0.957).abs() < 0.01 && (b[1] - 0.945).abs() < 0.01 && (b[2] - 0.918).abs() < 0.01) {
+                s.base = None;
+                s.tint = 0.0;
+            }
+        }
+    }
+    p.schema = SCHEMA;
+}
+
+/// The settings Chromium takes on its command line, stored where the
+/// browser process reads them before it starts (browser.rs): smooth
+/// scrolling and the scrollbars. Called from main, before CEF.
+pub fn apply_start_switches() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let p = Prefs::load();
+    let b = p.behavior.unwrap_or_default();
+    crate::browser::SMOOTH_SCROLL.store(b.page_smooth_scroll, Relaxed);
+    crate::browser::SCROLLBARS.store(b.scrollbars as u8, Relaxed);
 }
 
 impl App {
@@ -45,6 +109,9 @@ impl App {
         crate::downloads::init();
         crate::browser::BLOCKING.store(p.behavior.as_ref().map(|b| b.block_content).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
         crate::browser::SMOOTH_SCROLL.store(p.behavior.as_ref().map(|b| b.page_smooth_scroll).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
+        if let Some(b) = p.behavior.as_ref() {
+            self.apply_behavior_statics(b);
+        }
         if let Some(s) = p.surface {
             self.surface = s;
         }
@@ -117,10 +184,29 @@ impl App {
         self.apply_fonts();
         *self.prefs_baseline.borrow_mut() = self.prefs_snapshot();
         self.prefs_revision.set(REVISION.load(Ordering::Relaxed));
+        // A file this nus could not read whole: say what was set aside,
+        // once, and where the original is.
+        let dropped = std::mem::take(&mut *SALVAGED.lock().unwrap());
+        if !dropped.is_empty() {
+            let shown: Vec<&str> = dropped.iter().map(|s| s.as_str()).take(4).collect();
+            self.notice(&format!("settings · {} kept as {} · the original is settings.unread", if dropped.len() > 4 { format!("{} and {} more", shown.join(", "), dropped.len() - 4) } else { shown.join(", ") }, "the default"));
+        }
+    }
+
+    /// The behaviour the browser glue reads without an `App` in hand:
+    /// downloads, the privacy signal, the default zoom. Once at load and
+    /// again whenever one of them changes.
+    pub(crate) fn apply_behavior_statics(&self, b: &Behavior) {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::browser::set_downloads_dir(&b.download_dir);
+        crate::browser::DOWNLOAD_ASK.store(b.download_ask, Relaxed);
+        crate::browser::PRIVACY_SIGNAL.store(b.privacy_signal, Relaxed);
+        crate::sites::DEFAULT_ZOOM.store(b.page_zoom.clamp(25, 500) as u32, Relaxed);
     }
 
     fn prefs_snapshot(&self) -> serde_json::Value {
         let p = Prefs {
+            schema: SCHEMA,
             surface: Some(self.surface.clone()),
             sidebar: Some(self.sidebar_rules.clone()),
             motion: Some(self.motion.clone()),

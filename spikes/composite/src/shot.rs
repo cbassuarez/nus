@@ -68,6 +68,7 @@
 //!   newtab                     open the configured start page in a new tab
 //!   startpage prompt|home|last|layout [url or layout name]   set the start page
 //!   assertpane home|web|term|settings   assert the focused pane kind
+//!   eval <js> · assertreply <text>   run js on the focused page; after a wait, check its answer
 //!   asserttabs <count>          assert the number of tabs
 //!   newwindowlook prompt|shell|launch   set new-window behavior
 //!   newwindow                  a second window
@@ -87,6 +88,8 @@ pub struct Shot {
     steps: Vec<String>,
     next: usize,
     until: Option<Instant>,
+    /// The last `eval`, for `assertreply`.
+    reply: Option<i32>,
     out: PathBuf,
     face: &'static str,
     /// A capture asked for by the last step, taken after the next draw.
@@ -160,7 +163,7 @@ impl Shot {
             .collect();
         let out = std::env::var_os("NUS_SHOT_OUT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("docs/media"));
         let face = if std::env::var("NUS_MODE").ok().as_deref() == Some("paper") { "paper" } else { "ink" };
-        Some(Shot { steps, next: 0, until: None, out, face, pending: None, done: false, rec: None, settle: None })
+        Some(Shot { steps, next: 0, until: None, reply: None, out, face, pending: None, done: false, rec: None, settle: None })
     }
 }
 
@@ -464,6 +467,28 @@ impl App {
                     Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",
                 }).unwrap_or("missing");
                 assert_eq!(kind, rest, "focused pane at step `{step}`");
+            }
+            // `eval <js>`: run it on the focused page and keep the answer;
+            // `assertreply <text>` (after a `wait`) checks it came back
+            // with that text in it. For checks that look inside a page.
+            "eval" => {
+                let tab = &self.tabs[self.active];
+                let pane = if tab.focus_right { tab.right.as_ref().unwrap_or(&tab.left) } else { &tab.left };
+                let Pane::Web(w) = pane else { panic!("eval needs a page") };
+                let id = w.tab.eval_reply(rest);
+                if let Some(s) = self.shot.as_mut() {
+                    s.reply = Some(id);
+                }
+            }
+            "assertreply" => {
+                let id = self.shot.as_ref().and_then(|s| s.reply).expect("eval first");
+                let tab = &self.tabs[self.active];
+                let pane = if tab.focus_right { tab.right.as_ref().unwrap_or(&tab.left) } else { &tab.left };
+                let Pane::Web(w) = pane else { panic!("assertreply needs a page") };
+                let v = w.tab.take_reply(id).expect("the page did not answer in time; wait longer before assertreply");
+                let text = v.pointer("/result/value").map(|x| match x { serde_json::Value::String(s) => s.clone(), other => other.to_string() }).unwrap_or_else(|| v.to_string());
+                assert!(text.contains(rest), "page said {text:?}, expected {rest:?}");
+                eprintln!("shot: reply {text}");
             }
             "asserturl" => {
                 let Some(Pane::Web(web)) = self.tabs.get(self.active).map(|t| &t.left) else { panic!("expected web page") };

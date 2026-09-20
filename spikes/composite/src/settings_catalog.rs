@@ -167,7 +167,7 @@ impl App {
             for (heading,names) in [
                 ("SHELLS", vec!["DEFAULT SHELL","SHELL INTEGRATION","KEEP ALIVE","SSH"]),
                 ("COMMAND EDITING", vec!["COMMAND LINE","PROMPT LSP","EDITOR","BLOCKS","CLICK LINKS"]),
-                ("CLIPBOARD & SCROLLING",vec!["CLIPBOARD","OSC 52","SCROLL","WHEEL"]),
+                ("CLIPBOARD & SCROLLING",vec!["CLIPBOARD","OSC 52","SCROLL","WHEEL","SCROLLBACK"]),
                 ("HISTORY & REPLAY",vec!["JOURNAL","CUT OFF","REPLAY"]),
                 ("COLOURS & PROGRESS",vec!["SHELL COLOURS","PROGRAM COLOURS","TRUECOLOUR","PROGRESS"]),
             ] {
@@ -182,6 +182,7 @@ impl App {
                         "EDITOR"=>Some("Formatting needs a formatter for the file type. When none is installed, the file is saved unchanged."),
                         "REPLAY"=>Some("Records terminal output and a snapshot of the page beside it at command checkpoints. Changes apply now; turning it off leaves existing recordings available."),
                         "JOURNAL"=>Some("Saves a local entry for each finished command. Turning it off stops new entries; retention controls how long entries are kept."),
+                        "SCROLLBACK"=>Some("Lines a new shell keeps behind it; shells already open keep what they started with. Restored with the session."),
                         _=>None,
                     };
                     if let Some(note)=note {ordered.push(("".into(),Control::Info(note.into())));}
@@ -195,7 +196,7 @@ impl App {
                 (3, "HEADER") => "WINDOW HEADER", (3, "REVEAL") => "WHERE HOVER REVEALS THE SIDEBAR",
                 (3, "GRACE") => "DELAY BEFORE HIDING", (3, "FULLSCREEN") => "SIDEBAR IN FULLSCREEN",
                 (4, "OPENED BY OTHERS") => "TABS OPENED BY OTHER APPS", (4, "TIDY") => "SUGGEST TAB GROUPS",
-                (4, "DEDUPE") => "DUPLICATE PAGES", (5, "REPLAY") => "REPLAY RECORDING", (5,"OSC 52") => "PROGRAM CLIPBOARD ACCESS", (5,"PROMPT LSP") => "COMPLETIONS & DIAGNOSTICS", (5,"CUT OFF") => "INTERRUPTED COMMANDS", (5,"WHEEL") => "MOUSE WHEEL DISTANCE", (5,"SCROLL") => "TERMINAL SCROLL ANIMATION", (5, "JOURNAL") => "COMMAND JOURNAL",
+                (4, "DEDUPE") => "DUPLICATE PAGES", (5, "REPLAY") => "REPLAY RECORDING", (5,"OSC 52") => "PROGRAM CLIPBOARD ACCESS", (5,"PROMPT LSP") => "COMPLETIONS & DIAGNOSTICS", (5,"CUT OFF") => "INTERRUPTED COMMANDS", (5,"WHEEL") => "MOUSE WHEEL DISTANCE", (5,"SCROLL") => "SCROLL ANIMATION", (5,"SCROLLBACK") => "SCROLLBACK LINES", (5, "JOURNAL") => "COMMAND JOURNAL",
                 (7, "SHOW") => "VISIBLE PORT TYPES", (7, "KILL") => "CONFIRM STOPPING PROCESSES",
                 (9, "HANDS") => "ASSISTANT ACTION PERMISSIONS", (9, "CONTEXT") => "DEFAULT ASSISTANT CONTEXT",
                 (12, "EVERY") => "SYNC FREQUENCY", (12, "KEY") => "ENCRYPTION KEY", (12, "CARRIERS") => "SYNC DESTINATIONS",

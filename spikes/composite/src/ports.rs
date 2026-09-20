@@ -1126,10 +1126,15 @@ impl App {
         }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
+        let mods = self.mods;
         let key = ev.logical_key.clone();
-        let text = ev.text.as_ref().map(|s| s.to_string());
         // Rename in progress.
         if let Some((k, s)) = self.board.rename.as_mut() {
+            // The name's own editing: typing, erasing, paste (field.rs).
+            if crate::field::edit(s, ev, mods, 80).taken() {
+                self.dirty = true;
+                return true;
+            }
             match &key {
                 WKey::Named(NamedKey::Escape) => self.board.rename = None,
                 WKey::Named(NamedKey::Enter) => {
@@ -1147,14 +1152,7 @@ impl App {
                     }
                     save_names(&self.board.names, &self.board.watched);
                 }
-                WKey::Named(NamedKey::Backspace) => {
-                    s.pop();
-                }
-                _ => {
-                    if let Some(t) = text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
-                        s.push_str(t);
-                    }
-                }
+                _ => {}
             }
             self.dirty = true;
             return true;
@@ -1173,22 +1171,24 @@ impl App {
         }
         // The filter line.
         if let Some(f) = self.board.filter.as_mut() {
+            // Backspace on nothing closes it; the rest is the line's own
+            // editing: typing, erasing, paste (field.rs).
+            if f.is_empty() && matches!(key, WKey::Named(NamedKey::Backspace)) {
+                self.board.filter = None;
+                self.dirty = true;
+                return true;
+            }
+            if crate::field::edit(f, ev, mods, 200).taken() {
+                self.dirty = true;
+                return true;
+            }
             match &key {
                 WKey::Named(NamedKey::Escape) => self.board.filter = None,
-                WKey::Named(NamedKey::Backspace) => {
-                    if f.pop().is_none() {
-                        self.board.filter = None;
-                    }
-                }
                 WKey::Named(NamedKey::Enter) | WKey::Named(NamedKey::ArrowDown) | WKey::Named(NamedKey::ArrowUp) => {
                     // Fall through to selection with the filter kept.
                     return self.board_nav(&key, ctrl, shift);
                 }
-                _ => {
-                    if let Some(t) = text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
-                        f.push_str(t);
-                    }
-                }
+                _ => {}
             }
             self.dirty = true;
             return true;

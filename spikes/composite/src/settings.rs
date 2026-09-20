@@ -652,10 +652,92 @@ pub struct Behavior {
     /// Chromium's smooth scrolling in pages (takes a restart).
     #[serde(default = "default_true")]
     pub page_smooth_scroll: bool,
+    /// Logical px one wheel notch moves a page or one of nus's own lists.
+    #[serde(default = "default_wheel_px")]
+    pub wheel_px: u16,
+    /// Pages' scrollbars: Chromium's overlay ones, the classic ones, or none (takes a restart).
+    #[serde(default)]
+    pub scrollbars: Scrollbars,
+    /// Where downloads go; empty is ~/Downloads.
+    #[serde(default)]
+    pub download_dir: String,
+    /// Ask where to save each download, with the system's dialog.
+    #[serde(default)]
+    pub download_ask: bool,
+    /// What happens when a download finishes.
+    #[serde(default)]
+    pub download_done: DownloadDone,
+    /// Pages' zoom when a site has none of its own, in percent.
+    #[serde(default = "default_zoom")]
+    pub page_zoom: u16,
+    /// Send Global Privacy Control and DNT with every request.
+    #[serde(default)]
+    pub privacy_signal: bool,
+    /// Lines of scrollback a new shell keeps.
+    #[serde(default = "default_scrollback")]
+    pub scrollback: u32,
 }
 
 fn default_wheel_lines() -> u32 {
     3
+}
+fn default_wheel_px() -> u16 {
+    100
+}
+fn default_zoom() -> u16 {
+    100
+}
+fn default_scrollback() -> u32 {
+    10_000
+}
+
+/// Pages' scrollbars, as Chromium draws them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Scrollbars {
+    /// Thin, over the content, gone when still (the system's on macOS).
+    #[default]
+    Overlay,
+    /// The classic track beside the content.
+    Classic,
+    /// None drawn; the wheel and the keys still scroll.
+    Hidden,
+}
+
+impl Scrollbars {
+    pub const ALL: [Scrollbars; 3] = [Scrollbars::Overlay, Scrollbars::Classic, Scrollbars::Hidden];
+    pub fn name(self) -> &'static str {
+        match self {
+            Scrollbars::Overlay => "overlay",
+            Scrollbars::Classic => "classic",
+            Scrollbars::Hidden => "hidden",
+        }
+    }
+}
+
+/// What a finished download does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DownloadDone {
+    /// A notice in the footer.
+    #[default]
+    Notice,
+    /// The file, shown in its folder.
+    Reveal,
+    /// The file, opened with its program.
+    Open,
+    /// Nothing said.
+    Quiet,
+}
+
+impl DownloadDone {
+    pub const ALL: [DownloadDone; 4] = [DownloadDone::Notice, DownloadDone::Reveal, DownloadDone::Open, DownloadDone::Quiet];
+    pub fn name(self) -> &'static str {
+        match self {
+            DownloadDone::Notice => "notice",
+            DownloadDone::Reveal => "reveal",
+            DownloadDone::Open => "open",
+            DownloadDone::Quiet => "quiet",
+        }
+    }
 }
 
 /// OSC 52: tmux, neovim and friends setting (and reading) the clipboard.
@@ -690,7 +772,7 @@ fn default_archive() -> u32 {
 }
 
 fn default_home_url() -> String {
-    "https://nus.dev".into()
+    "https://cbassuarez.com/nus.dev".into()
 }
 
 /// What a click on a link in the shell does.
@@ -880,6 +962,14 @@ impl Default for Behavior {
             scroll_easing: crate::scrolling::Easing::Cubic,
             wheel_lines: 3,
             page_smooth_scroll: true,
+            wheel_px: default_wheel_px(),
+            scrollbars: Scrollbars::Overlay,
+            download_dir: String::new(),
+            download_ask: false,
+            download_done: DownloadDone::Notice,
+            page_zoom: default_zoom(),
+            privacy_signal: false,
+            scrollback: default_scrollback(),
         }
     }
 }
@@ -1075,6 +1165,17 @@ pub enum Hit {
     Compact(bool),
     SmallTabs(crate::sidebar::SmallTabs),
     DownloadRename(crate::downloads::Rename),
+    /// 0 choose a folder · 1 back to the default · 2 open it.
+    DownloadDir(u8),
+    DownloadAsk(bool),
+    DownloadDone(DownloadDone),
+    WheelPx(u16),
+    Scrollbars(Scrollbars),
+    PageZoom(u16),
+    PrivacySignal(bool),
+    Scrollback(u32),
+    /// 0 cookies · 1 the cache.
+    ClearBrowsing(u8),
     Downloads,
     CurShape(CursorShapePref),
     CurBlink(Blink),
@@ -1447,6 +1548,18 @@ impl App {
             Hit::SmallTabs(mode)=>format!("small sidebar {mode:?}"),
             Hit::Downloads => "open downloads".into(),
             Hit::DownloadRename(mode) => format!("download naming {mode:?}"),
+            Hit::DownloadDir(0) => "choose the downloads folder".into(),
+            Hit::DownloadDir(1) => "downloads to the system's folder".into(),
+            Hit::DownloadDir(_) => "open the downloads folder".into(),
+            Hit::DownloadAsk(on) => (if on { "ask where to save each download" } else { "save downloads without asking" }).into(),
+            Hit::DownloadDone(what) => format!("when a download finishes · {}", what.name()),
+            Hit::WheelPx(px) => format!("wheel speed {px} px"),
+            Hit::Scrollbars(s) => format!("scrollbars {}", s.name()),
+            Hit::PageZoom(pct) => format!("default zoom {pct}%"),
+            Hit::PrivacySignal(on) => (if on { "send the privacy signal" } else { "no privacy signal" }).into(),
+            Hit::Scrollback(n) => format!("scrollback {n} lines"),
+            Hit::ClearBrowsing(0) => "clear cookies".into(),
+            Hit::ClearBrowsing(_) => "clear the cache".into(),
             Hit::Compact(c) => (if c { "compact sidebar" } else { "full sidebar" }).into(),
             Hit::HoverFrom(h) => format!("reveal from {:?}", h).to_lowercase(),
             Hit::Fullscreen(f) => format!("fullscreen {:?}", f).to_lowercase(),
@@ -1684,6 +1797,17 @@ impl App {
             Hit::SmallTabs(mode)=>{self.sidebar_rules.small_tabs=mode;self.layout();},
             Hit::Downloads => self.open_downloads(),
             Hit::DownloadRename(mode) => { self.behavior.download_rename=mode;crate::downloads::set_rename(mode); },
+            Hit::DownloadDir(0) => self.pick_download_dir(),
+            Hit::DownloadDir(1) => { self.behavior.download_dir.clear(); let b = self.behavior.clone(); self.apply_behavior_statics(&b); self.notice("downloads · back to the system's folder"); }
+            Hit::DownloadDir(_) => self.download_action(crate::downloads::Hit::Folder),
+            Hit::DownloadAsk(on) => { self.behavior.download_ask = on; let b = self.behavior.clone(); self.apply_behavior_statics(&b); }
+            Hit::DownloadDone(what) => self.behavior.download_done = what,
+            Hit::WheelPx(px) => self.behavior.wheel_px = px,
+            Hit::Scrollbars(s) => self.behavior.scrollbars = s,
+            Hit::PageZoom(pct) => { self.behavior.page_zoom = pct; let b = self.behavior.clone(); self.apply_behavior_statics(&b); self.rezoom_pages(); }
+            Hit::PrivacySignal(on) => { self.behavior.privacy_signal = on; let b = self.behavior.clone(); self.apply_behavior_statics(&b); }
+            Hit::Scrollback(n) => self.behavior.scrollback = n,
+            Hit::ClearBrowsing(what) => self.clear_browsing(what),
             Hit::Compact(c) => {
                 if self.sidebar_rules.compact != c {
                     self.toggle_compact();
@@ -2924,8 +3048,9 @@ impl App {
                         tray.push((String::new(), Some(c), hex(c), Hit::TokSet(c), c == cur));
                     }
                 }
-                let mut base_tiles: Vec<(String, Option<Color>, String, Hit, bool)> = vec![("NONE".into(), None, "paper as is".into(), Hit::Base(None), self.surface.base.is_none())];
-                base_tiles.extend(SWATCHES.iter().map(|&(_, c)| (String::new(), Some(c), hex(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
+                // White leads the bases — the paper's own — then ink, then the signals.
+                let mut base_tiles: Vec<(String, Option<Color>, String, Hit, bool)> = vec![("NONE".into(), None, "the theme's paper as is".into(), Hit::Base(None), self.surface.base.is_none())];
+                base_tiles.extend(SWATCHES[6..].iter().chain(SWATCHES[..6].iter()).map(|&(_, c)| (String::new(), Some(c), hex(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
                 let _ = base;
                 let mut v = vec![
                     ("CARAPACE TOKENS".into(), Tokens(tiles, true)),
@@ -3029,7 +3154,7 @@ impl App {
                 use crate::theme_edit::{contrast, grade, Family};
                 let t = self.theme.clone();
                 let ink_mode = t.mode == nus_render::Mode::Ink;
-                let papers: &[u32] = if ink_mode { &[0x141414, 0x0f0f0f, 0x1b1a1a, 0x1c1b19, 0x1e2126, 0x16253a, 0x201c1c, 0x0d1117] } else { &[0xf4f1ea, 0xfffdf7, 0xf7f3e8, 0xece7da, 0xe8e4d8, 0xfbf1c7, 0xfdf6e3, 0xffffff] };
+                let papers: &[u32] = if ink_mode { &[0x141414, 0x0f0f0f, 0x1b1a1a, 0x1c1b19, 0x1e2126, 0x16253a, 0x201c1c, 0x0d1117] } else { &[0xffffff, 0xfcfcfa, 0xf4f1ea, 0xfffdf7, 0xf7f3e8, 0xece7da, 0xfbf1c7, 0xfdf6e3] };
                 let inks: &[u32] = if ink_mode { &[0xece7da, 0xf4f1ea, 0xffffff, 0xd8d2c4, 0xe6e1d3, 0xcdd6f4, 0xa89984, 0x93a1a1] } else { &[0x141414, 0x000000, 0x2b2a27, 0x3c3836, 0x073642, 0x1c1b19, 0x3b4252, 0x4a4740] };
                 let pages: &[u32] = &[0xffffff, 0xf4f1ea, 0xfdf6e3, 0x141414, 0x1b1a1a, 0x0f0f0f];
                 let sw = |list: &[u32], cur: Color, mk: fn(Color) -> Hit| -> Vec<(Option<Color>, Hit, bool)> {
@@ -3748,7 +3873,7 @@ impl App {
                     Buttons(vec![("CHOOSE A PICTURE".into(), icons::IMAGE, Hit::PickAvatar), ("RELOAD".into(), icons::RELOAD, Hit::ReloadAvatar), ("OPEN PROFILE FOLDER".into(), icons::FOLDER, Hit::OpenProfileDir)]),
                 ));
                 v.push(("".into(), Info(if self.avatar.is_some() { "profile/avatar.png · shown in the sidebar".into() } else { "choose a picture from anywhere on this machine · it is squared off and kept as profile/avatar.png".into() })));
-                v.push(("SCROLLBACK".into(), Info("10 000 lines · restored with the session".into())));
+                v.push(("SCROLLBACK".into(), Choice([2_000u32, 10_000, 50_000, 200_000].iter().map(|&n| (if n >= 1000 { format!("{}K LINES", n / 1000) } else { format!("{n} LINES") }, Hit::Scrollback(n), n == self.behavior.scrollback)).collect())));
                 v.push(("ATTENTION".into(), Info("BEL and OSC 133 mark a tab WAITING while it is not active".into())));
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
                 v
@@ -3783,6 +3908,10 @@ impl App {
                     Choice(vec![("SMOOTH".into(), Hit::PageSmooth(true), self.behavior.page_smooth_scroll), ("INSTANT".into(), Hit::PageSmooth(false), !self.behavior.page_smooth_scroll)]),
                 ),
                 ("".into(), Info("Chromium's own smooth scrolling for wheels and keys; trackpads are pixel-precise either way · takes effect at the next start".into())),
+                ("WHEEL SPEED".into(), Choice([50u16, 75, 100, 150, 200].iter().map(|&px| (format!("{px} PX"), Hit::WheelPx(px), px == self.behavior.wheel_px)).collect())),
+                ("".into(), Info("how far one notch of the wheel moves a page, and nus's own lists — settings, the reader, the sidebar — which ride TERMINAL · SCROLL's curve · trackpads move as far as your fingers do".into())),
+                ("SCROLLBARS".into(), Choice(Scrollbars::ALL.iter().map(|&s| (s.name().caps(), Hit::Scrollbars(s), s == self.behavior.scrollbars)).collect())),
+                ("".into(), Info("overlay: thin, over the page, gone when still (macOS follows the system) · classic: the track beside the page · hidden: none drawn · takes effect at the next start".into())),
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().caps(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),
@@ -3825,7 +3954,7 @@ impl App {
                     "".into(),
                     Info(self.register_note.clone()),
                 ),
-                ("SEARCH".into(), Info("Text entered as a search opens Google.".into())),
+                ("SEARCH".into(), Info(format!("Words that are not an address search {} · PROMPT · SEARCH ENGINE chooses.", self.behavior.prompt.engine.name()))),
                 ("NEW TAB".into(), Info("Uses the start page selected in Startup: prompt palette, home page, saved layout or last page.".into())),
                 ("COOKIES".into(), Info("Website storage is managed by Chromium. Use the site settings beside the address for site-specific controls.".into())),
                 ("DOWNLOADS".into(), Buttons(vec![("OPEN DOWNLOADS".into(),icons::DOWNLOAD,Hit::Downloads)])),
@@ -3835,6 +3964,18 @@ impl App {
                     ("SELECTIVE · BETA".into(),Hit::DownloadRename(crate::downloads::Rename::Selective),self.behavior.download_rename==crate::downloads::Rename::Selective),
                 ])),
                 ("".into(),Info("Off keeps the site's filename. All downloads uses a readable page title and keeps the extension. Selective (beta) renames documents, images and media, preserving technical, versioned and unknown filenames. Existing files are never replaced; duplicates receive a number.".into())),
+                ("DOWNLOADS · LOCATION".into(), Info(if self.behavior.download_dir.trim().is_empty() { format!("{} · the system's", crate::browser::default_downloads_dir().display()) } else { crate::browser::downloads_dir().display().to_string() })),
+                ("".into(), Buttons(vec![("CHOOSE FOLDER".into(), icons::FOLDER, Hit::DownloadDir(0)), ("OPEN".into(), icons::OPEN_EXTERNAL, Hit::DownloadDir(2)), ("RESET".into(), icons::UNDO, Hit::DownloadDir(1))])),
+                ("ASK WHERE TO SAVE".into(), Choice(vec![("EACH TIME".into(), Hit::DownloadAsk(true), self.behavior.download_ask), ("NEVER · STRAIGHT TO THE FOLDER".into(), Hit::DownloadAsk(false), !self.behavior.download_ask)])),
+                ("".into(), Info("each time: the system's save dialog, starting in the folder above with the file's name; the download waits until you choose, and cancelling drops it".into())),
+                ("WHEN A DOWNLOAD FINISHES".into(), Choice(DownloadDone::ALL.iter().map(|&d| (d.name().caps(), Hit::DownloadDone(d), d == self.behavior.download_done)).collect())),
+                ("".into(), Info("notice: a slip at the foot, click to show the file · reveal: its folder opens with it selected · open: the file opens in its program · quiet: nothing, the list keeps it".into())),
+                ("DEFAULT ZOOM".into(), Choice([80u16, 90, 100, 110, 125, 150].iter().map(|&z| (format!("{z}%"), Hit::PageZoom(z), z == self.behavior.page_zoom)).collect())),
+                ("".into(), Info("what a site gets before you zoom it yourself · the gear beside the address remembers a zoom per site, and its reset goes back to this".into())),
+                ("PRIVACY SIGNAL".into(), Choice(vec![("SEND".into(), Hit::PrivacySignal(true), self.behavior.privacy_signal), ("OFF".into(), Hit::PrivacySignal(false), !self.behavior.privacy_signal)])),
+                ("".into(), Info("Global Privacy Control (Sec-GPC: 1) and Do Not Track on every request · sites that honour it stop selling what they see; the rest ignore it".into())),
+                ("CLEAR".into(), Buttons(vec![("COOKIES · ALL SITES".into(), icons::WARNING, Hit::ClearBrowsing(0)), ("THE CACHE".into(), icons::RELOAD, Hit::ClearBrowsing(1))])),
+                ("".into(), Info("cookies: every site signs you out, the containers included · the cache: pages fetch fresh; nothing of yours is touched".into())),
                 ("PASSWORDS".into(), Info("No built-in password manager. Password integration is not available in this build.".into())),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
@@ -4661,6 +4802,11 @@ impl App {
         }
         // Remember the reach so the wheel can clamp.
         self.settings_reach = (y + scroll - top + self.px(40.0)).max(0.0);
+        {
+            let moving = self.gliding(crate::scrolling::Glider::Settings(self.drawing_tab));
+            let reach = (self.settings_reach - p.rect.h + self.scale * 48.0).max(0.0) + content.h;
+            self.draw_thumb(scene, content, scroll, reach, moving);
+        }
         scene.layer(None);
         // Hits above or below the column are unreachable.
         for (hr, _) in self.settings_hits.iter_mut().skip(content_hit_start) {

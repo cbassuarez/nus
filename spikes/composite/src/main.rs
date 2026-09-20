@@ -46,6 +46,10 @@ mod hands;
 mod replay;
 mod links;
 mod home;
+mod field;
+mod webkeys;
+mod swipe;
+mod store;
 #[path = "loop_.rs"]
 mod loop_;
 mod blockpage;
@@ -756,6 +760,9 @@ fn settle_as_app(dock: &mut dock::Dock) {
         let _ = std::env::set_current_dir(&dir);
     }
     dock.begin_launch(prefs::Prefs::load().motion.unwrap_or_default().reduced());
+    // What Chromium is told on its command line comes from the prefs, and
+    // has to be known before the browser process starts.
+    prefs::apply_start_switches();
     // Only isolated native checks may deliberately hold startup open, proving
     // that a slow launch loops and a fast launch never waits for an animation.
     if std::env::var_os("NUS_SHOT").is_some() {

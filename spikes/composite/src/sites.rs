@@ -15,7 +15,7 @@ use std::sync::{LazyLock, RwLock};
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SitePrefs {
     /// Percent; 100 is the page's own.
-    #[serde(default = "hundred")]
+    #[serde(default = "default_zoom")]
     pub zoom: u32,
     #[serde(default = "yes")]
     pub autoplay: bool,
@@ -32,16 +32,20 @@ pub struct SitePrefs {
     pub perms: BTreeMap<String, bool>,
 }
 
-fn hundred() -> u32 {
-    100
-}
 fn yes() -> bool {
     true
 }
 
+/// BROWSER · DEFAULT ZOOM: what a site with no zoom of its own gets.
+pub static DEFAULT_ZOOM: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+pub fn default_zoom() -> u32 {
+    DEFAULT_ZOOM.load(std::sync::atomic::Ordering::Relaxed).clamp(25, 500)
+}
+
 impl Default for SitePrefs {
     fn default() -> Self {
-        SitePrefs { zoom: 100, autoplay: true, js: true, cookies: true, boosts: true, blocking: true, perms: BTreeMap::new() }
+        SitePrefs { zoom: default_zoom(), autoplay: true, js: true, cookies: true, boosts: true, blocking: true, perms: BTreeMap::new() }
     }
 }
 
@@ -59,11 +63,12 @@ fn path() -> std::path::PathBuf {
 }
 
 fn load() -> HashMap<String, SitePrefs> {
-    std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    // Salvaged by host when the file is from another nus (store.rs).
+    crate::store::read_json::<HashMap<String, SitePrefs>>(&path()).value
 }
 
 fn save(map: &HashMap<String, SitePrefs>) {
-    let _ = std::fs::write(path(), serde_json::to_string_pretty(map).unwrap_or_default());
+    let _ = crate::store::write_json(&path(), map);
 }
 
 /// The host of a URL, lowercased, without a port or "www.".
@@ -147,6 +152,54 @@ pub enum SiteHit {
 pub const NO_AUTOPLAY: &str = "(function(){if(window.__nusNoAuto)return;window.__nusNoAuto=1;function q(){document.querySelectorAll('video,audio').forEach(function(m){m.autoplay=false;if(!m.__nusUser){m.pause();}m.addEventListener('play',function(){if(!m.__nusUser){m.pause();}});m.addEventListener('click',function(){m.__nusUser=1;},true);});}q();new MutationObserver(q).observe(document.documentElement,{childList:true,subtree:true});})()";
 
 impl App {
+    /// BROWSER · DEFAULT ZOOM changed: every open page with no zoom of its
+    /// own takes the new one now.
+    pub(crate) fn rezoom_pages(&mut self) {
+        let mut n = 0;
+        for tab in &self.tabs {
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                let Pane::Web(w) = p else { continue };
+                let host = host_of(&w.tab.shared.borrow().url);
+                if host.is_empty() || SITES.read().unwrap().contains_key(&host) {
+                    continue;
+                }
+                if let Some(h) = w.tab.host() {
+                    h.set_zoom_level(zoom_level(default_zoom()));
+                    n += 1;
+                }
+            }
+        }
+        if n > 0 {
+            self.dirty = true;
+        }
+    }
+
+    /// BROWSER · CLEAR: 0 every cookie, 1 the cache. Cookies go through
+    /// the global cookie manager (the containers share it); the cache
+    /// through DevTools on any page that is up, since it is one cache.
+    pub(crate) fn clear_browsing(&mut self, what: u8) {
+        if what == 0 {
+            if let Some(cm) = cef::cookie_manager_get_global_manager(None) {
+                cm.delete_cookies(None, None, None);
+                cm.flush_store(None);
+            }
+            self.notice("cookies · cleared for every site");
+        } else {
+            let page = self.tabs.iter().flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref())).find_map(|p| match p {
+                Pane::Web(w) => Some(w),
+                _ => None,
+            });
+            match page {
+                Some(w) => {
+                    w.tab.devtools("Network.clearBrowserCache", serde_json::json!({}));
+                    self.notice("the cache · cleared; pages fetch fresh");
+                }
+                None => self.notice("the cache · open a page first; it is cleared through one"),
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Apply the host's remembered zoom, script and autoplay to a page as
     /// it starts loading (and once it's loaded, for autoplay).
     pub(crate) fn apply_site(&self, w: &WebPane, url: &str, loading: bool) {
@@ -251,7 +304,7 @@ impl App {
                 self.fonts.draw_icon(scene, ic, isz, b.x + (bw - isz) / 2.0, b.y + (bw - isz) / 2.0, ink);
                 w.site_hits.push((b, h));
             }
-            self.fonts.draw(scene, Style { color: if p.zoom == 100 { t.dim } else { ink }, ..strong }, num.x + self.px(6.0), base, &pct);
+            self.fonts.draw(scene, Style { color: if p.zoom == default_zoom() { t.dim } else { ink }, ..strong }, num.x + self.px(6.0), base, &pct);
             w.site_hits.push((num, SiteHit::ZoomReset));
             let _ = cell;
             y += row_h;
@@ -354,7 +407,7 @@ impl App {
         match h {
             SiteHit::ZoomOut => p.zoom = (p.zoom.saturating_sub(10)).max(30),
             SiteHit::ZoomIn => p.zoom = (p.zoom + 10).min(300),
-            SiteHit::ZoomReset => p.zoom = 100,
+            SiteHit::ZoomReset => p.zoom = default_zoom(),
             SiteHit::Autoplay => p.autoplay = !p.autoplay,
             SiteHit::Js => {
                 p.js = !p.js;

@@ -144,7 +144,7 @@ impl App {
             .filter(|f| f.kind == Kind::Plain)
             .map(|f| serde_json::json!({ "name": f.name, "items": f.items, "open": f.open }))
             .collect();
-        let _ = std::fs::write(folders_path(), serde_json::to_string_pretty(&v).unwrap_or_default());
+        let _ = crate::store::write_json(&folders_path(), &v);
     }
 
     /// Folders from rules.luau replace the previous set of Rules folders.
@@ -312,6 +312,18 @@ impl App {
         out
     }
 
+    /// How tall the folders region is when nothing is cut off: the rule
+    /// and its margins, a head per folder, a row per item of an open one.
+    pub(crate) fn folders_reach(&self) -> f32 {
+        if self.folders.is_empty() {
+            return 0.0;
+        }
+        let head = self.px(28.0);
+        let row = self.px(m::ROW_H);
+        let items: usize = self.folders.iter().filter(|f| f.open).map(|f| f.items.len()).sum();
+        self.px(16.0) + head * self.folders.len() as f32 + row * items as f32 + self.px(8.0)
+    }
+
     /// Draw the folders region under the NEW TAB row.
     pub(crate) fn draw_folders(&mut self, scene: &mut Scene, sb: Rect, top: f32, bottom: f32) {
         if self.folders.is_empty() || top + self.px(40.0) > bottom {
@@ -327,9 +339,14 @@ impl App {
         let top = top + self.px(8.0);
         scene.hline(sb.x + pad_x, top, sb.w - 2.0 * pad_x, self.px(m::HAIRLINE), fade(t.dim, 0.5));
         let rows = self.folder_rows(top + self.px(8.0), bottom);
+        // Rows scrolled up under the header are neither drawn nor hit.
+        let from = self.sidebar_geometry().top;
         let isz = self.px(12.0);
         for (r, y, h) in rows {
-            let cell = Rect::new(sb.x, y, sb.w, h);
+            if y + h <= from {
+                continue;
+            }
+            let cell = Rect::new(sb.x, y.max(from), sb.w, y + h - y.max(from));
             let hot = cell.contains(mx, my) && self.sidebar_visible();
             match r {
                 FRow::Head(fi) => {

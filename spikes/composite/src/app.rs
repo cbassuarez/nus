@@ -16,7 +16,7 @@ use winit::window::Window;
 use crate::browser::{BrowserTab, Shared, SharedRef};
 use crate::UserEvent;
 
-const SCROLLBACK: usize = 10_000;
+// Scrollback per shell is TERMINAL · SCROLLBACK (behavior.scrollback).
 
 /// Platform key label: "⌘K" on macOS, "CTRL+K" elsewhere. `shift` adds ⇧ / SHIFT+.
 pub(crate) fn key(k: &str, shift: bool) -> String {
@@ -144,6 +144,8 @@ pub enum Action {
     AttachHeld(String),
     /// STARTUP · THEN · HOME PAGE, set from the palette.
     SetHome(String),
+    /// PROMPT · SEARCH ENGINE: a template of your own, from the palette.
+    SetSearch(String),
     /// What is open now becomes the launch tabs.
     SetLaunchTabs,
     /// The active tab as one HTML file that replays anywhere.
@@ -352,6 +354,11 @@ pub struct WebPane {
     pub site_hits: Vec<(Rect, crate::sites::SiteHit)>,
     /// Blanked for being idle; the URL to come back to.
     pub asleep: Option<String>,
+    /// Wheel fractions not yet handed to the page (scrolling.rs).
+    pub wheel_carry: (f32, f32),
+    /// A sideways swipe in progress: how far (logical px, + = back),
+    /// and when it last moved. Past the threshold it is back or forward.
+    pub swipe: Option<(f32, Instant)>,
 }
 
 pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::icons::CONSOLE), ("network", nus_render::text::icons::NETWORK), ("elements", nus_render::text::icons::CODE)];
@@ -576,6 +583,29 @@ pub struct SidebarGeom {
     /// (tab index, y, height) for each listed row.
     pub rows: Vec<(usize, f32, f32)>,
     pub foot_y: f32,
+    /// Where the list begins: under the header and the pinned row. Rows
+    /// scrolled above it are under those, not over them.
+    pub top: f32,
+    /// How tall the list is when nothing is cut: the rows, NEW TAB and the
+    /// folders. More than `foot_y - top` and the wheel scrolls it.
+    pub reach: f32,
+}
+
+impl SidebarGeom {
+    /// The list's window, between the header and the footer.
+    pub fn list(&self, sb: Rect) -> Rect {
+        Rect::new(sb.x, self.top, sb.w, (self.foot_y - self.top).max(0.0))
+    }
+    /// How far the list can scroll.
+    pub fn scroll_max(&self) -> f32 {
+        (self.reach - (self.foot_y - self.top)).max(0.0)
+    }
+    /// A row's rect cut to the list's window, or nothing when it is out of it.
+    pub fn clip(&self, sb: Rect, y: f32, h: f32) -> Option<Rect> {
+        let top = y.max(self.top);
+        let bottom = (y + h).min(self.foot_y);
+        (bottom > top).then(|| Rect::new(sb.x, top, sb.w, bottom - top))
+    }
 }
 
 pub struct Tab {
@@ -749,6 +779,13 @@ pub struct App {
     pub sidebar_hover: bool,
     pub sidebar_leave: Option<Instant>,
     pub hover_row: Option<usize>,
+    /// How far the sidebar's list is scrolled (physical px), when the
+    /// rows and folders outgrow the space between the header and the footer.
+    pub sidebar_scroll: f32,
+    /// Trips in flight for the surfaces that scroll in pixels (scrolling.rs).
+    pub glides: std::collections::HashMap<crate::scrolling::Glider, crate::scrolling::Trip>,
+    /// The tab whose panes are being drawn, while the tab list is out of `App`.
+    pub drawing_tab: u64,
     pub user_name: String,
     /// What the window is made of (see surface.rs) and the rules that colour
     /// new tabs; both editable from the settings tab.
@@ -1104,6 +1141,9 @@ impl App {
             sidebar_hover: false,
             sidebar_leave: None,
             hover_row: None,
+            sidebar_scroll: 0.0,
+            glides: Default::default(),
+            drawing_tab: 0,
             surface: Surface::default(),
             sidebar_rules: SidebarRules::default(),
             rules: Rules::load(),
@@ -1462,7 +1502,7 @@ impl App {
             c.h - self.header_h() - 2.0 * self.px(16.0),
         );
         let (cols, rows) = grid.grid_size(area);
-        let mut term = Term::new(cols, rows, SCROLLBACK);
+        let mut term = Term::new(cols, rows, (self.behavior.scrollback as usize).clamp(200, 1_000_000));
         self.theme.apply(&mut term.palette);
         let (cw, ch) = grid.cell_size();
         term.cell_px = (cw as u16, ch as u16);
@@ -1605,6 +1645,8 @@ impl App {
             dedupe_label: String::new(),
             dedupe_hits: Vec::new(), hands: Default::default(), still: None, bare: false, site_panel: false, site_hits: Vec::new(),
             asleep: None,
+            wheel_carry: (0.0, 0.0),
+            swipe: None,
             load_since: None,
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -1816,6 +1858,7 @@ impl App {
         if self.assistants.poll() { self.dirty = true; }
         let revision=crate::downloads::REVISION.load(std::sync::atomic::Ordering::Relaxed);
         if revision!=self.download_ui.revision {self.download_ui.revision=revision;self.dirty=true;}
+        self.tend_downloads();
         self.refresh_shared_prefs();
         self.drain_popups();
         self.poll_lsp();
@@ -2130,7 +2173,32 @@ impl App {
 
     // ── Reader ───────────────────────────────────────────────────────────
 
-    /// Ctrl+Shift+R: extract the focused page's article and set it in
+    /// The page this tab shows: the focused one, else the page beside the shell.
+    fn shown_page(&mut self) -> Option<&mut WebPane> {
+        let tab = self.tabs.get_mut(self.active)?;
+        let pane = match (&tab.left, tab.focus_right) {
+            (_, true) if tab.right.is_some() => tab.right.as_mut().unwrap(),
+            (Pane::Web(_), _) => &mut tab.left,
+            _ => tab.right.as_mut()?,
+        };
+        match pane {
+            Pane::Web(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    /// ⌘R · Ctrl+Shift+R · F5: the page again; `hard` goes past the cache.
+    pub(crate) fn reload_page(&mut self, hard: bool) {
+        if let Some(w) = self.shown_page() {
+            if hard {
+                w.tab.reload_ignore_cache();
+            } else {
+                w.tab.reload();
+            }
+        }
+    }
+
+    /// Ctrl+Alt+R (⌘⌥R): extract the focused page's article and set it in
     /// Newsreader over the page; again to go back.
     pub(crate) fn toggle_reader(&mut self) {
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
@@ -3563,8 +3631,12 @@ impl App {
         scene.corner_radius = radius;
         let sw = self.px(self.surface.shell_width);
         if radius > 0.0 {
-            // The paper is a rounded card; the corners outside it show the clear color.
-            scene.push(nus_render::Instance::rounded(win, radius, self.paper()));
+            // The paper is a rounded card; the corners outside it show the
+            // clear color. It is as translucent as the flat window's clear
+            // would be, so a radius never makes the window opaque.
+            let p = self.paper();
+            let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
+            scene.push(nus_render::Instance::rounded(win, radius, [p[0], p[1], p[2], a]));
         }
         let stops = self.surface.ramp(ink);
         let angle = self.surface.angle;
@@ -3656,6 +3728,7 @@ impl App {
         }
         let n = self.tab_label(active);
         let look = self.tabs[active].look.clone();
+        self.drawing_tab = self.tabs[active].id;
         self.pane_hits.clear();
         let mut tabs = std::mem::take(&mut self.tabs);
         if !tiled {
@@ -4206,7 +4279,9 @@ impl App {
         let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned && !self.tabs[i].hatch).collect();
         let pinned_h = if pinned.is_empty() { 0.0 } else if self.sidebar_icons() {self.px(32.0)*pinned.len() as f32} else {self.header_h()};
         let row = self.px(if self.sidebar_icons() && self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Preview {48.0}else{m::ROW_H});
-        let mut y = sb.y + space_row + pinned_h;
+        let top = sb.y + space_row + pinned_h;
+        let foot_y = sb.bottom() - self.sidebar_footer_h();
+        let mut y = top - self.sidebar_scroll;
         let mut rows = Vec::new();
         for i in 0..self.tabs.len() {
             if self.tabs[i].pinned || self.tabs[i].peek.is_some() || self.tabs[i].hatch {
@@ -4225,7 +4300,44 @@ impl App {
             rows.push((i, y, h));
             y += h;
         }
-        SidebarGeom { pinned, pinned_h, rows, foot_y: sb.bottom() - self.sidebar_footer_h(), next_y: y }
+        // What the list would take unscrolled: the rows, NEW TAB, the folders.
+        let mut reach = y + self.sidebar_scroll - top;
+        if self.header.next_row && !self.sidebar_icons() {
+            reach += row;
+        }
+        if !self.sidebar_icons() {
+            reach += self.folders_reach();
+        }
+        SidebarGeom { pinned, pinned_h, rows, foot_y, next_y: y, top, reach }
+    }
+
+    /// Keep the list's scroll within what it has to show — a closed tab or
+    /// a folded folder may have shortened it — and say how far it can go.
+    pub(crate) fn settle_sidebar_scroll(&mut self) -> f32 {
+        let max = self.sidebar_geometry().scroll_max();
+        if self.sidebar_scroll > max {
+            self.sidebar_scroll = max;
+        }
+        if self.sidebar_scroll < 0.0 {
+            self.sidebar_scroll = 0.0;
+        }
+        max
+    }
+
+    /// The wheel over the sidebar: the list scrolls when it overflows, and
+    /// the page under it never does. True when the wheel was the sidebar's.
+    pub(crate) fn sidebar_wheel(&mut self, x: f32, y: f32, dy_px: f32) -> bool {
+        if !self.sidebar_visible() || !self.sidebar_rect().contains(x, y) || self.dl_menu {
+            return false;
+        }
+        let max = self.settle_sidebar_scroll();
+        if max > 0.0 {
+            let at = self.sidebar_scroll;
+            self.sidebar_scroll = self.glide(crate::scrolling::Glider::Sidebar, at, -dy_px, max);
+            self.hover_row = None;
+            self.dirty = true;
+        }
+        true
     }
 
     fn draw_sidebar(&mut self, scene: &mut Scene) {
@@ -4247,6 +4359,7 @@ impl App {
         self.draw_sidebar_header(scene, sb);
         let row_h = self.side_header_h();
 
+        self.settle_sidebar_scroll();
         let g = self.sidebar_geometry();
         if self.side_page == crate::files::SidePage::Files {
             // FILES: the tree takes the list, from under the header to the footer.
@@ -4267,8 +4380,13 @@ impl App {
                 let cx = sb.x + k as f32 * cell_w;
                 let cell = Rect::new(cx, py, cell_w, g.pinned_h - self.px(m::STRUCTURE));
                 let active = i == self.active;
+                let selected = self.selected.contains(&i);
                 if active {
                     scene.rect(cell, ink);
+                } else if selected {
+                    // Held with Ctrl: the tint and a signal bar, as a row.
+                    scene.rect(cell, fade(t.tint, 0.75));
+                    scene.rect(Rect::new(cx, py, self.px(2.0), cell.h), tabs[i].look.signal.unwrap_or(self.surface.signal));
                 }
                 let st = Style { color: if active { t.paper } else { ink }, ..ui_strong };
                 let base = py + self.px(8.0) + self.px(m::UI_PX) - self.px(3.0);
@@ -4279,9 +4397,6 @@ impl App {
                 let _ = k;
                 let title = self.fit(st, &tabs[i].title(), cell_w - (x - cx) - self.px(10.0));
                 self.fonts.draw(scene, Style { font: self.f.ui, ..st }, x, base, &title);
-                if self.selected.contains(&i) {
-                    scene.outline(cell, self.px(m::STRUCTURE), ink);
-                }
                 if k + 1 < g.pinned.len() {
                     scene.vline(cx + cell_w, py, g.pinned_h, self.px(m::HAIRLINE), ink);
                 }
@@ -4295,6 +4410,10 @@ impl App {
         let depths: Vec<usize> = g.rows.iter().map(|&(i, _, _)| depth_of(&tabs, i)).collect();
         let row_h = self.px(m::ROW_H);
         for (k, &(i, y, h)) in g.rows.iter().enumerate() {
+            // A row scrolled under the header or the footer is not drawn;
+            // one half out is cut to the list's window.
+            let Some(row_clip) = g.clip(sb, y, h) else { continue };
+            scene.layer(Some(g.list(sb)));
             let tab = &tabs[i];
             let waiting = tab.waiting();
             let child = tab.parent.is_some();
@@ -4304,17 +4423,20 @@ impl App {
             let open = !stack.is_empty() && !folded;
             let active = i == self.active;
             let hovered = self.hover_row == Some(i);
+            let selected = self.selected.contains(&i);
             if active {
                 let ty = if self.tint_anim.active() { self.tint_anim.value() } else { y };
                 scene.rect(Rect::new(sb.x, ty, sb.w, row_h), t.tint);
                 scene.rect(Rect::new(sb.x, ty, self.px(2.0), row_h), tab.look.signal.unwrap_or(self.surface.signal));
+            } else if selected {
+                // Held with Ctrl: the tint and the bar, as the active row wears
+                // them, so a selection reads as rows the active one is among.
+                scene.rect(Rect::new(sb.x, y, sb.w, row_h), fade(t.tint, if hovered { 1.0 } else { 0.75 }));
+                scene.rect(Rect::new(sb.x, y, self.px(2.0), row_h), tab.look.signal.unwrap_or(self.surface.signal));
             } else if hovered {
                 scene.rect(Rect::new(sb.x, y, sb.w, row_h), fade(t.tint, 0.5));
             }
-            scene.layer(Some(Rect::new(sb.x, y, sb.w, h)));
-            if self.selected.contains(&i) {
-                scene.outline(Rect::new(sb.x, y, sb.w, row_h), self.px(m::STRUCTURE), ink);
-            }
+            scene.layer(Some(row_clip));
             let base = y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0);
             let mut x = sb.x + pad_x;
             // A dim numeral for the first nine trees; a rule per level for the rest.
@@ -4342,7 +4464,7 @@ impl App {
                 Pane::Ports(_) => nus_render::text::icons::PORTS,
             Pane::Downloads(_) => nus_render::text::icons::DOWNLOAD,
             };
-            let row_bg = if active { crate::surface::mix(self.paper(), ink, t.tint[3]) } else if hovered { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.5) } else { self.paper() };
+            let row_bg = if active { crate::surface::mix(self.paper(), ink, t.tint[3]) } else if selected { crate::surface::mix(self.paper(), ink, t.tint[3] * if hovered { 1.0 } else { 0.75 }) } else if hovered { crate::surface::mix(self.paper(), ink, t.tint[3] * 0.5) } else { self.paper() };
             let isz = self.px(15.0);
             let iy = y + ((row_h - isz) / 2.0).round();
             let _ = icon;
@@ -4354,13 +4476,13 @@ impl App {
                 }
                 None => {
                     let (main, other) = tab.panes();
-                    self.draw_pane_icon(scene, main, x, iy, isz, if active { ink } else { t.dim }, Some(Rect::new(sb.x, y, sb.w, h)));
+                    self.draw_pane_icon(scene, main, x, iy, isz, if active { ink } else { t.dim }, Some(row_clip));
                     if let Some(o) = other {
                         // The split's other pane, as a badge at the corner.
                         let bsz = self.px(9.0);
                         let br = Rect::new(x + isz - bsz + self.px(2.0), iy + isz - bsz + self.px(2.0), bsz, bsz);
                         scene.rect(Rect::new(br.x - self.px(1.5), br.y - self.px(1.5), bsz + self.px(3.0), bsz + self.px(3.0)), row_bg);
-                        self.draw_pane_icon(scene, o, br.x, br.y, bsz, if active { ink } else { t.dim }, Some(Rect::new(sb.x, y, sb.w, h)));
+                        self.draw_pane_icon(scene, o, br.x, br.y, bsz, if active { ink } else { t.dim }, Some(row_clip));
                     }
                 }
             }
@@ -4460,10 +4582,12 @@ impl App {
             }
         }
         // The next ruled row is NEW TAB: a ghost plus where the tab will appear.
-        if self.header.next_row && g.next_y + row_h <= g.foot_y {
+        if let Some(next_clip) = if self.header.next_row { g.clip(sb, g.next_y, row_h) } else { None } {
+            scene.layer(Some(next_clip));
             let r = Rect::new(sb.x, g.next_y, sb.w, row_h);
+            let hit = next_clip;
             let (mx, my) = self.mouse;
-            let hot = r.contains(mx, my) && self.sidebar_visible() && !self.win_menu && !self.kinds_menu;
+            let hot = hit.contains(mx, my) && self.sidebar_visible() && !self.win_menu && !self.kinds_menu;
             let pressing = matches!(self.press, Some((_, SideHit::NewShell)));
             if hot {
                 scene.rect(r, fade(t.tint, if pressing { 1.0 } else { 0.6 }));
@@ -4486,13 +4610,16 @@ impl App {
                     dx += dash * 2.0;
                 }
             }
-            self.side_hits.push((r, SideHit::NewShell));
+            self.side_hits.push((hit, SideHit::NewShell));
+            scene.layer(None);
         }
         // Folders, under the tabs, down to the footer.
         let folders_top = g.next_y + if self.header.next_row { row_h } else { 0.0 };
-        scene.layer(Some(Rect::new(sb.x, folders_top, sb.w, (g.foot_y - folders_top).max(0.0))));
+        let folders_from = folders_top.max(g.top);
+        scene.layer(Some(Rect::new(sb.x, folders_from, sb.w, (g.foot_y - folders_from).max(0.0))));
         self.draw_folders(scene, sb, folders_top, g.foot_y - self.px(4.0));
         scene.layer(None);
+        self.draw_sidebar_scrollbar(scene, sb, &g);
 
         self.draw_sidebar_footer(scene, sb, g.foot_y);
         let _ = (label, ui, dim, pad_x);
@@ -4502,6 +4629,22 @@ impl App {
     /// The footer: one row of verbs. Avatar · new tab · the look · files ·
     /// recently closed · downloads · settings.
     fn draw_sidebar_footer(&mut self, scene:&mut Scene, sb:Rect, foot_y:f32) {self.draw_responsive_footer(scene,sb,foot_y);}
+
+    /// A list taller than its window says so: a thin thumb at the list's
+    /// outer edge, dim, there while the pointer is over the sidebar.
+    pub(crate) fn draw_sidebar_scrollbar(&mut self, scene: &mut Scene, sb: Rect, g: &SidebarGeom) {
+        let max = g.scroll_max();
+        let window = g.foot_y - g.top;
+        if max <= 0.0 || window <= 0.0 || !sb.contains(self.mouse.0, self.mouse.1) {
+            return;
+        }
+        let w = self.px(2.0);
+        let x = if self.sidebar_right() { sb.x + self.px(1.0) } else { sb.right() - w - self.px(1.0) };
+        let track = Rect::new(x, g.top + self.px(2.0), w, window - self.px(4.0));
+        let len = (track.h * window / g.reach).max(self.px(16.0)).min(track.h);
+        let y = track.y + (track.h - len) * (self.sidebar_scroll / max).clamp(0.0, 1.0);
+        scene.rect(Rect::new(track.x, y, track.w, len), fade(self.theme.dim, 0.6));
+    }
 
     /// A tooltip for a footer verb.
     pub(crate) fn foot_tip(&mut self, key: u64, hit: Rect, words: String) {
@@ -4579,7 +4722,11 @@ impl App {
         match hit {
             SideHit::MenuDrawer => self.toggle_menu_drawer(self.menu_footer_anchor()),
             SideHit::Close(i) => {
-                self.selected.clear();
+                // The × does what Ctrl+W does: a row in the selection takes
+                // the whole selection with it; a row outside it goes alone.
+                if !self.selected.contains(&i) {
+                    self.selected.clear();
+                }
                 self.activate(i);
                 self.close_tabs(false);
             }
@@ -5319,7 +5466,7 @@ impl App {
             let lower = step.to_lowercase();
             if let Some(url) = lower.strip_prefix("open ") {
                 let url = step[step.len() - url.len()..].trim();
-                let (url, _) = Self::url_or_search(url);
+                let (url, _) = self.url_or_search(url);
                 self.open_url(&url, true);
                 opened.push(self.tabs[self.active].id);
             } else if let Some(cmd) = lower.strip_prefix("run ") {
@@ -5532,13 +5679,21 @@ impl App {
                 let scroll = p.scroll;
                 let reach = self.draw_welcome(scene, r, scroll);
                 self.welcome_reach = reach;
+                let moving = self.gliding(crate::scrolling::Glider::Welcome(self.drawing_tab));
+                self.draw_thumb(scene, r, scroll, reach, moving);
             }
             Pane::Home(h) => self.draw_home(scene, h, focused),
             Pane::Editor(p) => {
                 let r = p.rect;
                 self.draw_editor(scene, p, r, focused);
             }
-            Pane::Downloads(p) => {self.download_ui.reach=self.draw_downloads(scene,p.rect,p.scroll,false);p.scroll=p.scroll.min(self.download_ui.reach);}
+            Pane::Downloads(p) => {
+                self.download_ui.reach = self.draw_downloads(scene, p.rect, p.scroll, false);
+                p.scroll = p.scroll.min(self.download_ui.reach);
+                let (r, scroll, reach) = (p.rect, p.scroll, self.download_ui.reach);
+                let moving = self.gliding(crate::scrolling::Glider::Downloads(self.drawing_tab));
+                self.draw_thumb(scene, r, scroll, reach + r.h, moving);
+            }
             Pane::Ports(p) => {
                 let r = p.rect;
                 let t = self.theme.clone();
@@ -5869,7 +6024,9 @@ impl App {
         format!("{s}…")
     }
 
-    pub(crate) fn url_or_search(input: &str) -> (String, String) {
+    /// What typed words become: the address they are, or a search for
+    /// them at the prompt's engine (PROMPT · SEARCH ENGINE).
+    pub(crate) fn url_or_search(&self, input: &str) -> (String, String) {
         let q = input.trim();
         if q.contains("://") {
             (q.to_string(), format!("open {q}"))
@@ -5877,7 +6034,7 @@ impl App {
             (format!("http://{q}"), format!("open {q}"))
         } else {
             (
-                format!("https://www.google.com/search?q={}", q.replace(' ', "+")),
+                self.behavior.prompt.search_url(q),
                 format!("search \u{201c}{q}\u{201d}"),
             )
         }
@@ -6198,15 +6355,15 @@ impl App {
         let q = input.trim();
         let open = |url: String| if new_tab { Action::NewBrowser(url) } else { Action::OpenInPane(url) };
         let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
-        let enc = |s: &str| s.replace(' ', "+").replace('&', "%26").replace('#', "%23");
+        let enc = crate::prompt::encode_query;
         let is_url = strict_url(q).is_some() || q.contains("://");
-        let (url, text) = Self::url_or_search(q);
+        let (url, text) = self.url_or_search(q);
         if let Some(p) = local_file(q) {
             rows.push(row("</>", format!("{} · open in the editor", p.display()), Action::OpenFile(p.display().to_string())));
         }
         if is_url {
             rows.push(row("→", text, open(url)));
-            rows.push(row("?", format!("search “{q}”"), open(format!("https://www.google.com/search?q={}", enc(q)))));
+            rows.push(row("?", format!("search “{q}”"), open(self.behavior.prompt.search_url(q))));
         } else {
             rows.push(row("?", text, open(url)));
         }
@@ -6382,6 +6539,13 @@ impl App {
                 self.behavior.then = crate::settings::Then::HomePage;
                 self.save_prefs();
                 self.notice(&format!("home page · {} · opens at launch and in new tabs", crate::links::host(&self.behavior.home_url)));
+            }
+            Action::SetSearch(template) => {
+                let template = if template.contains("://") { template } else { format!("https://{template}") };
+                self.behavior.prompt.search_url = template;
+                self.behavior.prompt.engine = crate::prompt::SearchEngine::Custom;
+                self.save_prefs();
+                self.notice(&format!("search engine · {} · ? and the search row go there", crate::links::host(&self.behavior.prompt.search_url)));
             }
             Action::SetLaunchTabs => {
                 self.save_layout("launch");
@@ -6601,32 +6765,28 @@ impl App {
                 return;
             }
             self.palette_reveal = true;
-            match &ev.logical_key {
-                WKey::Named(NamedKey::Escape) => self.palette = None,
-                WKey::Named(NamedKey::Enter) => self.palette_commit(),
-                WKey::Named(NamedKey::Backspace) => {
-                    input.pop();
-                    self.palette_sel = 0;
-                }
-                WKey::Named(NamedKey::ArrowDown) => {
-                    self.palette_sel += 1;
-                    self.play_event("palette.move");
-                }
-                WKey::Named(NamedKey::ArrowUp) => {
-                    self.palette_sel = self.palette_sel.saturating_sub(1);
-                    self.play_event("palette.move");
-                }
-                WKey::Named(NamedKey::Space) => input.push(' '),
-                WKey::Character(c) if app => {
-                    if c.eq_ignore_ascii_case("k") || c.eq_ignore_ascii_case("t") || c.eq_ignore_ascii_case("l") {
-                        self.palette = None;
+            // The palette's own chord again closes it.
+            let again = app && matches!(&ev.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("k") || c.eq_ignore_ascii_case("t") || c.eq_ignore_ascii_case("l"));
+            let took = if again { crate::field::Took::No } else { crate::field::edit(input, ev, self.mods, 2000) };
+            if took.changed() {
+                self.palette_sel = 0;
+            }
+            if !took.taken() {
+                match &ev.logical_key {
+                    WKey::Named(NamedKey::Escape) => self.palette = None,
+                    WKey::Named(NamedKey::Enter) => self.palette_commit(),
+                    // Tab walks the rows like the arrows; Shift+Tab back.
+                    WKey::Named(NamedKey::ArrowDown) | WKey::Named(NamedKey::Tab) if !(shift && matches!(ev.logical_key, WKey::Named(NamedKey::Tab))) => {
+                        self.palette_sel += 1;
+                        self.play_event("palette.move");
                     }
+                    WKey::Named(NamedKey::ArrowUp) | WKey::Named(NamedKey::Tab) => {
+                        self.palette_sel = self.palette_sel.saturating_sub(1);
+                        self.play_event("palette.move");
+                    }
+                    WKey::Character(_) if again => self.palette = None,
+                    _ => {}
                 }
-                WKey::Character(c) if !ctrl && !sup => {
-                    input.push_str(c);
-                    self.palette_sel = 0;
-                }
-                _ => {}
             }
             self.dirty = true;
             return;
@@ -6709,7 +6869,16 @@ impl App {
                 return if shift { self.tile_swap(d) } else { self.tile_focus(d) };
             }
         }
+        // The reader: Ctrl+Alt+R (⌘⌥R on macOS), as in Firefox. R with the
+        // app chord — ⌘R, Ctrl+Shift+R — is a reload, as everywhere.
+        if pressed && code == Some(KeyCode::KeyR) && alt && !shift && (if cfg!(target_os = "macos") { sup } else { ctrl }) {
+            return self.toggle_reader();
+        }
         if pressed && app {
+            // The shell's copy and paste chords, on the prompt: its line.
+            if matches!(code, Some(KeyCode::KeyC) | Some(KeyCode::KeyV) | Some(KeyCode::KeyX)) && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Home(_))) && self.home_key(ev) {
+                return;
+            }
             match code {
                 Some(KeyCode::Minus) => return self.fold_all(),
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
@@ -6745,7 +6914,9 @@ impl App {
                 Some(KeyCode::KeyB) => return self.toggle_compact(),
                 Some(KeyCode::KeyH) => return self.toggle_timeline(),
                 Some(KeyCode::KeyA) | Some(KeyCode::Slash) => return self.toggle_ask(),
-                Some(KeyCode::KeyR) => return self.toggle_reader(),
+                // ⌘R reloads the focused page; with Shift (and Ctrl+Shift+R
+                // everywhere) past the cache. A shell keeps its own Ctrl+R.
+                Some(KeyCode::KeyR) => return self.reload_page(shift || !cfg!(target_os = "macos")),
                 Some(KeyCode::KeyS) => {
                     self.sidebar = !self.sidebar;
                     return self.layout();
@@ -6866,6 +7037,7 @@ impl App {
             return;
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let w_right = tab.focus_right && tab.right.is_some();
         match tab.focused() {
             Pane::Settings(_) | Pane::Hints(_) | Pane::Editor(_) | Pane::Ports(_) | Pane::Downloads(_) | Pane::Home(_) => {}
             Pane::Term(t) => {
@@ -6994,7 +7166,8 @@ impl App {
                     return;
                 }
                 if t.term.grid().display_offset != 0 {
-                    t.term.grid_mut().scroll_display(-(SCROLLBACK as isize));
+                    let off = t.term.grid().display_offset as isize;
+                    t.term.grid_mut().scroll_display(-off);
                 }
                 let _ = t.pty.write(&bytes);
             }
@@ -7002,41 +7175,24 @@ impl App {
                 if pressed && matches!(ev.logical_key, WKey::Named(NamedKey::F12)) {
                     return self.toggle_devtools();
                 }
-                let flags = cef_mods(self.mods);
-                let vk = vk_code(&ev.physical_key, &ev.logical_key);
                 let d = w.devtools.as_ref().unwrap();
-                let mut e = cef::KeyEvent { windows_key_code: vk, native_key_code: vk, modifiers: flags, ..Default::default() };
-                if pressed {
-                    e.type_ = cef::KeyEventType::RAWKEYDOWN;
-                    d.key(&e);
-                    if let Some(text) = &ev.text {
-                        if !ctrl || alt {
-                            for ch in text.encode_utf16() {
-                                let mut c = cef::KeyEvent { ..e };
-                                c.type_ = cef::KeyEventType::CHAR;
-                                c.character = ch;
-                                c.unmodified_character = ch;
-                                c.windows_key_code = ch as i32;
-                                d.key(&c);
-                            }
-                        }
-                    }
-                } else {
-                    e.type_ = cef::KeyEventType::KEYUP;
+                for e in crate::webkeys::events(ev, self.mods) {
                     d.key(&e);
                 }
             }
             Pane::Web(w) => {
                 // Chrome-compatible keys while a browser pane is focused.
+                // Chords go by the physical key: with Ctrl held, Windows
+                // reports no character for many of them.
                 if pressed {
                     match (&ev.logical_key, ctrl, alt) {
-                        (WKey::Character(c), true, false) if c.eq_ignore_ascii_case("l") => {
+                        _ if code == Some(KeyCode::KeyL) && ctrl && !alt => {
                             return self.open_palette(PaletteMode::Url);
                         }
-                        (WKey::Character(c), true, false) if c.eq_ignore_ascii_case("r") => return w.tab.reload(),
-                        (WKey::Named(NamedKey::F5), _, _) => return w.tab.reload(),
-                        (WKey::Named(NamedKey::ArrowLeft), false, true) => return w.tab.back(),
-                        (WKey::Named(NamedKey::ArrowRight), false, true) => return w.tab.forward(),
+                        _ if code == Some(KeyCode::KeyR) && ctrl && !alt => return if shift { w.tab.reload_ignore_cache() } else { w.tab.reload() },
+                        (WKey::Named(NamedKey::F5), _, _) => return if ctrl || shift { w.tab.reload_ignore_cache() } else { w.tab.reload() },
+                        _ if code == Some(KeyCode::ArrowLeft) && alt && !ctrl => return self.navigate(w_right, true),
+                        _ if code == Some(KeyCode::ArrowRight) && alt && !ctrl => return self.navigate(w_right, false),
                         (WKey::Character(c), true, false) if c == "=" || c == "+" => return w.tab.zoom(1),
                         (WKey::Character(c), true, false) if c == "-" => return w.tab.zoom(-1),
                         (WKey::Character(c), true, false) if c == "0" => return w.tab.zoom(0),
@@ -7565,17 +7721,26 @@ impl App {
                 self.activate(self.tabs.len() - 1);
             }
         } else {
+            // The focused page changes its address. A shell gets the page
+            // beside it, or a new one on its right.
             let tab = &mut self.tabs[self.active];
-            match &tab.right {
-                Some(Pane::Web(w)) => w.tab.load(url),
-                _ => {
-                    if let Some(w) = self.new_web_pane(url) {
-                        let tab = &mut self.tabs[self.active];
-                        tab.right = Some(Pane::Web(w));
-                    }
+            let (left_web, right_web) = (matches!(tab.left, Pane::Web(_)), matches!(tab.right, Some(Pane::Web(_))));
+            let to_right = right_web && (tab.focus_right || !left_web);
+            if to_right {
+                if let Some(Pane::Web(w)) = &tab.right {
+                    w.tab.load(url);
                 }
+                tab.focus_right = true;
+            } else if left_web {
+                if let Pane::Web(w) = &tab.left {
+                    w.tab.load(url);
+                }
+                tab.focus_right = false;
+            } else if let Some(w) = self.new_web_pane(url) {
+                let tab = &mut self.tabs[self.active];
+                tab.right = Some(Pane::Web(w));
+                tab.focus_right = true;
             }
-            self.tabs[self.active].focus_right = true;
         }
         self.layout();
     }
@@ -7789,7 +7954,7 @@ impl App {
         if tab.right.is_some() {
             tab.right = None;
             tab.focus_right = false;
-        } else if let Some(w) = self.new_web_pane("https://www.google.com/") {
+        } else if let Some(w) = self.new_web_pane(&self.behavior.prompt.search_home()) {
             let tab = &mut self.tabs[self.active];
             tab.right = Some(Pane::Web(w));
             tab.focus_right = true;
@@ -7914,7 +8079,7 @@ impl App {
         }
         if self.sidebar_visible() {
             let g = self.sidebar_geometry();
-            let row = g.rows.iter().find(|&&(_, ry, rh)| self.sidebar_rect().contains(x, y) && y >= ry && y < ry + rh).map(|&(i, _, _)| i);
+            let row = g.rows.iter().find(|&&(_, ry, rh)| self.sidebar_rect().contains(x, y) && y >= ry.max(g.top) && y < (ry + rh).min(g.foot_y)).map(|&(i, _, _)| i);
             if row != self.hover_row {
                 self.hover_row = row;
                 self.dirty = true;
@@ -7969,6 +8134,19 @@ impl App {
         let (x, y) = self.mouse;
         if self.timeline_mouse(button,state,x,y){return;}
         let pressed = state == ElementState::Pressed;
+        // The mouse's own back and forward buttons, on the page under them.
+        if pressed && matches!(button, MouseButton::Back | MouseButton::Forward) {
+            let under = self.tabs.get(self.active).and_then(|t| {
+                [(false, Some(&t.left)), (true, t.right.as_ref())].into_iter().find_map(|(right, p)| match p {
+                    Some(Pane::Web(w)) if w.rect.contains(x, y) => Some(right),
+                    _ => None,
+                })
+            });
+            if let Some(right) = under {
+                self.navigate(right, button == MouseButton::Back);
+            }
+            return;
+        }
         if !pressed && button == MouseButton::Left && self.settings_drag.take().is_some() {
             self.save_prefs();
             return;
@@ -8076,7 +8254,7 @@ impl App {
                 let k = if self.sidebar_icons(){((y-pinned_y)/self.px(32.0)) as usize}else{((x - sb.x) / (sb.w / g.pinned.len() as f32).floor()) as usize};
                 g.pinned.get(k).copied()
             } else {
-                g.rows.iter().find(|&&(_, ry, rh)| y >= ry && y < ry + rh).map(|&(i, _, _)| i)
+                g.rows.iter().find(|&&(_, ry, rh)| y >= ry.max(g.top) && y < (ry + rh).min(g.foot_y)).map(|&(i, _, _)| i)
             };
             if let Some(i) = hit {
                 if self.mods.control_key() || self.mods.super_key() {
@@ -8273,6 +8451,7 @@ impl App {
         let mut focus_dt: Option<(bool, bool)> = None;
         let mut loop_click: Option<(bool, f32, f32)> = None;
         let mut media_click: Option<(u64, bool)> = None;
+        let mut nav_click: Option<(bool, bool)> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
             match p {
                 Pane::Web(w) => {
@@ -8282,8 +8461,8 @@ impl App {
                         let nav_x = x - (w.rect.x + 14.0 * scale);
                         if nav_x < 3.0 * slot {
                             match (nav_x / slot) as usize {
-                                0 => w.tab.back(),
-                                1 => w.tab.forward(),
+                                0 => nav_click = Some((is_right, true)),
+                                1 => nav_click = Some((is_right, false)),
                                 _ => w.tab.reload(),
                             }
                         } else if x > w.rect.right() - 44.0 * scale {
@@ -8396,6 +8575,10 @@ impl App {
             self.play_event("toggle");
             self.dirty = true;
         }
+        if let Some((right, back)) = nav_click {
+            self.navigate(right, back);
+            return;
+        }
         if let Some((right, lx, ly)) = loop_click {
             let i = self.active;
             self.loop_click(i, right, lx, ly);
@@ -8413,18 +8596,25 @@ impl App {
                 self.activate(i);
             }
         }
+        // Physical px the wheel asks for; a notch is WHEEL SPEED.
         let dy_px = match delta {
-            MouseScrollDelta::LineDelta(_, y) => y * 40.0,
+            MouseScrollDelta::LineDelta(_, y) => y * self.wheel_step(),
             MouseScrollDelta::PixelDelta(p) => p.y as f32,
         };
         if self.timeline_wheel(x,y,dy_px){return;}
         if self.palette.is_some() {
-            self.palette_scroll=(self.palette_scroll-dy_px).clamp(0.0,self.palette_scroll_max);
+            let (at, max) = (self.palette_scroll, self.palette_scroll_max);
+            self.palette_scroll = self.glide(crate::scrolling::Glider::Palette, at, -dy_px, max);
             self.palette_reveal=false;self.dirty=true;return;
         }
-        if self.dl_menu {self.download_ui.scroll=(self.download_ui.scroll-dy_px).clamp(0.0,self.download_ui.reach);self.dirty=true;return;}
+        if self.dl_menu {
+            let (at, max) = (self.download_ui.scroll, self.download_ui.reach);
+            self.download_ui.scroll = self.glide(crate::scrolling::Glider::DownloadsMenu, at, -dy_px, max);
+            self.dirty=true;return;
+        }
         if self.look_menu && self.look_rect.is_some_and(|r|r.contains(x,y)) {
-            self.look_scroll = (self.look_scroll - dy_px).clamp(0.0,self.look_scroll_max);
+            let (at, max) = (self.look_scroll, self.look_scroll_max);
+            self.look_scroll = self.glide(crate::scrolling::Glider::Look, at, -dy_px, max);
             self.dirty = true;
             return;
         }
@@ -8432,6 +8622,11 @@ impl App {
             return;
         }
         if self.tree_wheel(x, y, dy_px) {
+            return;
+        }
+        // Over the sidebar the wheel is the sidebar's: its list scrolls when
+        // it overflows, and nothing under it moves.
+        if self.sidebar_wheel(x, y, dy_px) {
             return;
         }
         if self.board_wheel(x, y, dy_px) {
@@ -8442,90 +8637,170 @@ impl App {
         let shift = self.mods.shift_key();
         let mods = self.vt_mods();
         let motion = self.motion.clone();
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
-            match p {
-                Pane::Downloads(p) if p.rect.contains(x,y)=>{p.scroll=(p.scroll-dy_px).clamp(0.0,self.download_ui.reach);self.dirty=true;}
-                Pane::Term(t) if t.rect.contains(x, y) => {
-                    let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y * wheel_lines,
-                        MouseScrollDelta::PixelDelta(p) => p.y as f32 / t.grid.cell_size().1,
-                    };
-                    if t.wants_mouse() && !shift {
-                        use nus_vt::input::{MouseAction, MouseButton};
-                        let b = if lines > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
-                        let n = (lines.abs().round() as usize).clamp(1, 10);
-                        for _ in 0..n {
-                            t.report_mouse(b, MouseAction::Press, mods, x, y);
-                        }
-                        continue;
-                    }
-                    if t.term.modes().contains(nus_vt::Modes::ALT_SCREEN)
-                        && t.term.modes().contains(nus_vt::Modes::ALTERNATE_SCROLL)
-                    {
-                        // Alternate scroll (1007): the wheel is arrow keys.
-                        let key: &[u8] = if lines > 0.0 { b"\x1b[A" } else { b"\x1b[B" };
-                        let n = (lines.abs().round() as usize).clamp(1, 10);
-                        let _ = t.pty.write(&key.repeat(n));
-                        continue;
-                    }
-                    crate::scrolling::scroll_shell(t, lines, easing, &motion);
-                    self.dirty = true;
+        let scale = self.scale;
+        let cef_flags = cef_mods(self.mods);
+        let (settings_reach, welcome_reach, dl_reach) = (self.settings_reach, self.welcome_reach, self.download_ui.reach);
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let tab_id = tab.id;
+        // Which pane the wheel is over, and what to do there. The glides
+        // need `self`, so the pane is found first and moved after.
+        enum Do {
+            Downloads,
+            Settings,
+            Welcome,
+            Reader(bool),
+            Page(bool),
+            DevTools(bool),
+            Term(bool),
+            Editor(bool),
+        }
+        let mut what = None;
+        for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
+            what = match p {
+                Pane::Downloads(p) if p.rect.contains(x, y) => Some(Do::Downloads),
+                Pane::Term(t) if t.rect.contains(x, y) => Some(Do::Term(right)),
+                Pane::Web(w) if w.devtools.is_some() && w.dt_rect.contains(x, y) => Some(Do::DevTools(right)),
+                Pane::Settings(s) if s.rect.contains(x, y) => Some(Do::Settings),
+                Pane::Editor(e) if e.rect.contains(x, y) => Some(Do::Editor(right)),
+                Pane::Hints(h) if h.rect.contains(x, y) => Some(Do::Welcome),
+                Pane::Web(w) if w.page.contains(x, y) && w.reader.is_some() => Some(Do::Reader(right)),
+                Pane::Web(w) if w.page.contains(x, y) => Some(Do::Page(right)),
+                _ => None,
+            };
+            if what.is_some() {
+                break;
+            }
+        }
+        let Some(what) = what else { return };
+        match what {
+            Do::Downloads => {
+                let Some(Pane::Downloads(p)) = self.tabs.get(self.active).map(|t| &t.left) else { return };
+                let at = p.scroll;
+                let v = self.glide(crate::scrolling::Glider::Downloads(tab_id), at, -dy_px, dl_reach);
+                if let Some(Pane::Downloads(p)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    p.scroll = v;
                 }
-                Pane::Web(w) if w.devtools.is_some() && w.dt_rect.contains(x, y) => {
-                    let (dx, dy) = match delta {
-                        MouseScrollDelta::LineDelta(x, y) => ((x * 40.0) as i32, (y * 40.0) as i32),
-                        MouseScrollDelta::PixelDelta(p) => (p.x as i32, p.y as i32),
-                    };
-                    let (lx, ly) = ((x - w.dt_rect.x) / self.scale, (y - w.dt_rect.y) / self.scale);
-                    w.devtools.as_ref().unwrap().wheel(lx as i32, ly as i32, cef_mods(self.mods), dx, dy);
+                self.dirty = true;
+            }
+            Do::Settings => {
+                let Some(Pane::Settings(s)) = self.tabs.get(self.active).map(|t| &t.left) else { return };
+                let (at, max) = (s.scroll, (settings_reach - s.rect.h + scale * 48.0).max(0.0));
+                let v = self.glide(crate::scrolling::Glider::Settings(tab_id), at, -dy_px, max);
+                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    s.scroll = v;
                 }
-                Pane::Settings(s) if s.rect.contains(x, y) => {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y * 60.0 * self.scale,
-                        MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                    };
-                    let max = (self.settings_reach - s.rect.h + self.scale*48.0).max(0.0);
-                    s.scroll = (s.scroll - dy).clamp(0.0, max);
-                    self.dirty = true;
+                self.dirty = true;
+            }
+            Do::Welcome => {
+                let Some(Pane::Hints(h)) = self.tabs.get(self.active).map(|t| &t.left) else { return };
+                let (at, max) = (h.scroll, (welcome_reach - h.rect.h).max(0.0));
+                let v = self.glide(crate::scrolling::Glider::Welcome(tab_id), at, -dy_px, max);
+                if let Some(Pane::Hints(h)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    h.scroll = v;
                 }
-                Pane::Editor(e) if e.rect.contains(x, y) => {
-                    let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => (y * wheel_lines).round() as i64,
-                        MouseScrollDelta::PixelDelta(p) => (p.y as f32 / e.cell.1).round() as i64,
-                    };
-                    e.scroll_by(lines);
-                    e.hover = None;
-                    self.dirty = true;
-                }
-                Pane::Hints(h) if h.rect.contains(x, y) => {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y * 60.0 * self.scale,
-                        MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                    };
-                    let max = (self.welcome_reach - h.rect.h).max(0.0);
-                    h.scroll = (h.scroll - dy).clamp(0.0, max);
-                    self.dirty = true;
-                }
-                Pane::Web(w) if w.page.contains(x, y) && w.reader.is_some() => {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y * 60.0 * self.scale,
-                        MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                    };
+                self.dirty = true;
+            }
+            Do::Reader(right) => {
+                fn pane_of(t: &Tab, right: bool) -> Option<&Pane> { if right { t.right.as_ref() } else { Some(&t.left) } }
+                let Some(Pane::Web(w)) = self.tabs.get(self.active).and_then(|t| pane_of(t, right)) else { return };
+                let Some(rd) = w.reader.as_ref() else { return };
+                let (at, max) = (rd.scroll, (rd.height - w.page.h).max(0.0));
+                let v = self.glide(crate::scrolling::Glider::Reader(tab_id, right), at, -dy_px, max);
+                let tab = &mut self.tabs[self.active];
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                if let Some(Pane::Web(w)) = pane {
                     if let Some(rd) = w.reader.as_mut() {
-                        rd.scroll -= dy;
+                        rd.scroll = v;
                     }
-                    self.dirty = true;
                 }
-                Pane::Web(w) if w.page.contains(x, y) => {
-                    let (dx, dy) = match delta {
-                        MouseScrollDelta::LineDelta(x, y) => ((x * 40.0) as i32, (y * 40.0) as i32),
-                        MouseScrollDelta::PixelDelta(p) => (p.x as i32, p.y as i32),
+                self.dirty = true;
+            }
+            Do::Term(right) => {
+                let tab = &mut self.tabs[self.active];
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                let Some(Pane::Term(t)) = pane else { return };
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y * wheel_lines,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / t.grid.cell_size().1,
+                };
+                if t.wants_mouse() && !shift {
+                    use nus_vt::input::{MouseAction, MouseButton};
+                    let b = if lines > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+                    let n = (lines.abs().round() as usize).clamp(1, 10);
+                    for _ in 0..n {
+                        t.report_mouse(b, MouseAction::Press, mods, x, y);
+                    }
+                    return;
+                }
+                if t.term.modes().contains(nus_vt::Modes::ALT_SCREEN) && t.term.modes().contains(nus_vt::Modes::ALTERNATE_SCROLL) {
+                    // Alternate scroll (1007): the wheel is arrow keys.
+                    let key: &[u8] = if lines > 0.0 { b"\x1b[A" } else { b"\x1b[B" };
+                    let n = (lines.abs().round() as usize).clamp(1, 10);
+                    let _ = t.pty.write(&key.repeat(n));
+                    return;
+                }
+                crate::scrolling::scroll_shell(t, lines, easing, &motion);
+                self.dirty = true;
+            }
+            Do::Editor(right) => {
+                let tab = &mut self.tabs[self.active];
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                let Some(Pane::Editor(e)) = pane else { return };
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (y * wheel_lines).round() as i64,
+                    MouseScrollDelta::PixelDelta(p) => (p.y as f32 / e.cell.1).round() as i64,
+                };
+                e.scroll_by(lines);
+                e.hover = None;
+                self.dirty = true;
+            }
+            Do::DevTools(right) => {
+                let mut carry = (0.0, 0.0);
+                let (dx, dy) = self.page_wheel_units(delta, &mut carry);
+                let tab = &mut self.tabs[self.active];
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                let Some(Pane::Web(w)) = pane else { return };
+                let (lx, ly) = ((x - w.dt_rect.x) / scale, (y - w.dt_rect.y) / scale);
+                w.devtools.as_ref().unwrap().wheel(lx as i32, ly as i32, cef_flags, dx, dy);
+            }
+            Do::Page(right) => {
+                let mut carry = {
+                    let tab = &self.tabs[self.active];
+                    let pane = if right { tab.right.as_ref() } else { Some(&tab.left) };
+                    match pane {
+                        Some(Pane::Web(w)) => w.wheel_carry,
+                        _ => (0.0, 0.0),
+                    }
+                };
+                let (dx, dy) = self.page_wheel_units(delta, &mut carry);
+                // A sideways swipe, mostly sideways: back or forward once it
+                // has gone far enough (swipe.rs draws the arrow meanwhile).
+                let (sx, sy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * 60.0, y * 60.0),
+                    MouseScrollDelta::PixelDelta(p) => (p.x as f32 / scale, p.y as f32 / scale),
+                };
+                let sideways = sx.abs() > 2.0 * sy.abs() && sx.abs() > 0.5;
+                let tab = &mut self.tabs[self.active];
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                let Some(Pane::Web(w)) = pane else { return };
+                w.wheel_carry = carry;
+                let (lx, ly) = ((x - w.page.x) / scale, (y - w.page.y) / scale);
+                w.tab.wheel(lx as i32, ly as i32, cef_flags, dx, dy);
+                if sideways {
+                    let now = crate::clock::now();
+                    let far = match w.swipe {
+                        Some((far, at)) if crate::clock::since(at).as_millis() < 250 => far + sx,
+                        _ => sx,
                     };
-                    let (lx, ly) = ((x - w.page.x) / self.scale, (y - w.page.y) / self.scale);
-                    w.tab.wheel(lx as i32, ly as i32, cef_mods(self.mods), dx, dy);
+                    w.swipe = Some((far, now));
+                    self.dirty = true;
+                    if far.abs() >= crate::swipe::THRESHOLD {
+                        // Fired: the rest of this gesture is spent.
+                        w.swipe = Some((far.signum() * crate::swipe::THRESHOLD, now - std::time::Duration::from_secs(1)));
+                        let back = far > 0.0;
+                        self.navigate(right, back);
+                    }
                 }
-                _ => {}
             }
         }
     }
@@ -8795,79 +9070,11 @@ impl From<&WKeyEvent> for KeyIn {
     }
 }
 
+/// A winit key to a browser, as the platform's own client would send it
+/// (webkeys.rs): raw down, chars, or up.
 pub(crate) fn forward_key(tab: &BrowserTab, ev: &KeyIn, mods: ModifiersState) {
-    let pressed = ev.state == ElementState::Pressed;
-    let (ctrl, alt) = (mods.control_key(), mods.alt_key());
-    let flags = cef_mods(mods);
-    let vk = vk_code(&ev.physical_key, &ev.logical_key);
-    let mut e = cef::KeyEvent {
-        windows_key_code: vk,
-        native_key_code: vk,
-        modifiers: flags,
-        is_system_key: 0,
-        focus_on_editable_field: 0,
-        ..Default::default()
-    };
-    if pressed {
-        e.type_ = cef::KeyEventType::RAWKEYDOWN;
+    for e in crate::webkeys::events(ev, mods) {
         tab.key(&e);
-        if let Some(text) = &ev.text {
-            if !ctrl || alt {
-                for ch in text.encode_utf16() {
-                    let mut c = cef::KeyEvent { ..e };
-                    c.type_ = cef::KeyEventType::CHAR;
-                    c.character = ch;
-                    c.unmodified_character = ch;
-                    c.windows_key_code = ch as i32;
-                    tab.key(&c);
-                }
-            }
-        }
-    } else {
-        e.type_ = cef::KeyEventType::KEYUP;
-        tab.key(&e);
-    }
-}
-
-fn vk_code(phys: &PhysicalKey, logical: &WKey) -> i32 {
-    if let PhysicalKey::Code(c) = phys {
-        let v = match c {
-            KeyCode::Enter => 0x0D,
-            KeyCode::Tab => 0x09,
-            KeyCode::Backspace => 0x08,
-            KeyCode::Escape => 0x1B,
-            KeyCode::Space => 0x20,
-            KeyCode::ArrowLeft => 0x25,
-            KeyCode::ArrowUp => 0x26,
-            KeyCode::ArrowRight => 0x27,
-            KeyCode::ArrowDown => 0x28,
-            KeyCode::Home => 0x24,
-            KeyCode::End => 0x23,
-            KeyCode::PageUp => 0x21,
-            KeyCode::PageDown => 0x22,
-            KeyCode::Delete => 0x2E,
-            KeyCode::Insert => 0x2D,
-            KeyCode::ShiftLeft | KeyCode::ShiftRight => 0x10,
-            KeyCode::ControlLeft | KeyCode::ControlRight => 0x11,
-            KeyCode::AltLeft | KeyCode::AltRight => 0x12,
-            KeyCode::F5 => 0x74,
-            KeyCode::F12 => 0x7B,
-            _ => 0,
-        };
-        if v != 0 {
-            return v;
-        }
-    }
-    match logical {
-        WKey::Character(s) => {
-            let c = s.chars().next().unwrap_or('\0').to_ascii_uppercase();
-            if c.is_ascii_alphanumeric() {
-                c as i32
-            } else {
-                0
-            }
-        }
-        _ => 0,
     }
 }
 

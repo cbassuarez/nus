@@ -322,21 +322,29 @@ impl App {
             return false;
         }
         let i = self.active;
+        let mods = self.mods;
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
-        if self.mods.control_key() || self.mods.alt_key() {
+        // The line's own editing: typing, erasing, paste, copy (field.rs).
+        let took = crate::field::edit(&mut h.input, ev, mods, 2000);
+        if took.changed() {
+            h.sel = 0;
+        }
+        if took.taken() {
+            self.dirty = true;
+            return true;
+        }
+        if mods.control_key() || mods.alt_key() || mods.super_key() {
             return false;
         }
+        let shift = mods.shift_key();
         match &ev.logical_key {
             K::Named(NamedKey::Enter) => {
                 self.home_commit();
                 return true;
             }
-            K::Named(NamedKey::Backspace) => {
-                h.input.pop();
-                h.sel = 0;
-            }
-            K::Named(NamedKey::ArrowDown) => h.sel += 1, // clamped when drawn
-            K::Named(NamedKey::ArrowUp) => h.sel = h.sel.saturating_sub(1),
+            // Tab walks the rows like the arrows; Shift+Tab back.
+            K::Named(NamedKey::ArrowDown) | K::Named(NamedKey::Tab) if !(shift && matches!(ev.logical_key, K::Named(NamedKey::Tab))) => h.sel += 1, // clamped when drawn
+            K::Named(NamedKey::ArrowUp) | K::Named(NamedKey::Tab) => h.sel = h.sel.saturating_sub(1),
             K::Named(NamedKey::Escape) => {
                 if h.input.is_empty() {
                     if self.news.since.is_some() {
@@ -346,11 +354,6 @@ impl App {
                     return false;
                 }
                 h.input.clear();
-                h.sel = 0;
-            }
-            K::Named(NamedKey::Space) => h.input.push(' '),
-            K::Character(c) => {
-                h.input.push_str(c);
                 h.sel = 0;
             }
             _ => return false,

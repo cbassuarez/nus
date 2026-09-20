@@ -231,7 +231,7 @@ content), one status icon, palette to the window, settings as a tile grid
 that drills into a section under a back crumb. No manual kiosk/touch
 switch.
 
-**Reader mode.** Ctrl+Shift+R or the book: the article, extracted in the
+**Reader mode.** Ctrl+Alt+R (⌘⌥R, as Firefox) or the book: the article, extracted in the
 page, set here in Newsreader on our paper — 640px measure, 19/28 body,
 rules not boxes, signal bullets, mono code. The page keeps living
 underneath. Word count in the tools row; the text feeds "ask about this

@@ -1,6 +1,6 @@
 //! Browser downloads: one process-wide queue, persistent history, and local UI.
 use crate::app::{App, Pane};
-use cef::ImplDownloadItemCallback;
+use cef::{ImplBeforeDownloadCallback, ImplDownloadItemCallback};
 use nus_render::{Rect, Scene, Style};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -136,18 +136,124 @@ pub fn list() -> Vec<Download> {
 pub fn changed() {
     REVISION.fetch_add(1, Ordering::Relaxed);
 }
-thread_local! {static CALLBACKS:std::cell::RefCell<std::collections::HashMap<u64,cef::DownloadItemCallback>>=std::cell::RefCell::new(Default::default());}
+thread_local! {
+    static CALLBACKS:std::cell::RefCell<std::collections::HashMap<u64,cef::DownloadItemCallback>>=std::cell::RefCell::new(Default::default());
+    /// Downloads to cancel as soon as Chromium hands us their callback: a
+    /// save dialog that was dismissed, after the download had to start.
+    static DROP_WHEN_SEEN: std::cell::RefCell<std::collections::HashSet<u64>> = std::cell::RefCell::new(Default::default());
+}
 pub fn track(key: u64, cb: Option<&mut cef::DownloadItemCallback>, active: bool) {
+    let drop = DROP_WHEN_SEEN.with(|d| d.borrow_mut().remove(&key));
     CALLBACKS.with(|c| {
         let mut c = c.borrow_mut();
         if active {
             if let Some(cb) = cb {
+                if drop {
+                    cb.cancel();
+                    return;
+                }
                 c.insert(key, cb.clone());
             }
         } else {
             c.remove(&key);
         }
     });
+}
+/// Cancel this download the moment it can be.
+pub fn drop_when_seen(key: u64) {
+    DROP_WHEN_SEEN.with(|d| {
+        d.borrow_mut().insert(key);
+    });
+    let cb = CALLBACKS.with(|c| c.borrow().get(&key).cloned());
+    if let Some(cb) = cb {
+        cb.cancel();
+    }
+}
+
+impl App {
+    /// BROWSER · DOWNLOADS · CHOOSE FOLDER: the system's folder dialog;
+    /// `tend_download_dialogs` takes the answer.
+    pub(crate) fn pick_download_dir(&mut self) {
+        match crate::pick::folder(&self.window, "Where downloads go") {
+            Ok(p) => self.download_ui.dir_pick = Some(p),
+            Err(e) => self.notice(&format!("downloads · {e}")),
+        }
+    }
+
+    /// Once a tick: the folder dialog, the save dialogs, and what a
+    /// finished download asked for.
+    pub(crate) fn tend_downloads(&mut self) {
+        // The folder chooser.
+        if let Some(mut pick) = self.download_ui.dir_pick.take() {
+            match pick.poll() {
+                None => self.download_ui.dir_pick = Some(pick),
+                Some(Ok(Some(dir))) => {
+                    self.behavior.download_dir = dir.display().to_string();
+                    let b = self.behavior.clone();
+                    self.apply_behavior_statics(&b);
+                    self.save_prefs();
+                    self.notice(&format!("downloads · {}", dir.display()));
+                    self.dirty = true;
+                }
+                Some(Ok(None)) => {}
+                Some(Err(e)) => self.notice(&format!("downloads · {e}")),
+            }
+        }
+        // ASK WHERE TO SAVE: one dialog at a time, in the order they came.
+        if self.download_ui.save_ask.is_none() {
+            let next = crate::browser::SAVE_ASKS.with(|q| {
+                let mut q = q.borrow_mut();
+                if q.is_empty() { None } else { Some(q.remove(0)) }
+            });
+            if let Some(ask) = next {
+                let dir = ask.suggested.parent().map(|p| p.to_path_buf()).unwrap_or_else(crate::browser::downloads_dir);
+                let name = ask.suggested.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "download".into());
+                match crate::pick::save_as(&self.window, "Save as", dir, name) {
+                    Ok(p) => self.download_ui.save_ask = Some((ask, p)),
+                    Err(e) => {
+                        // No dialog to be had: the folder it was going to.
+                        self.notice(&format!("downloads · {e} · saved to the folder"));
+                        ask.callback.cont(Some(&ask.suggested.to_string_lossy().as_ref().into()), 0);
+                    }
+                }
+            }
+        }
+        if let Some((ask, mut pick)) = self.download_ui.save_ask.take() {
+            match pick.poll() {
+                None => self.download_ui.save_ask = Some((ask, pick)),
+                Some(Ok(Some(path))) => {
+                    {
+                        let mut rows = crate::browser::DOWNLOADS.lock().unwrap();
+                        if let Some(d) = rows.iter_mut().find(|d| d.key == ask.key) {
+                            d.path = path.display().to_string();
+                            d.name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(d.name.clone());
+                        }
+                        save(&rows);
+                    }
+                    changed();
+                    ask.callback.cont(Some(&path.to_string_lossy().as_ref().into()), 0);
+                }
+                Some(Ok(None)) | Some(Err(_)) => {
+                    // Dismissed: Chromium wants a path to start on before it
+                    // can be cancelled, so it starts and is dropped at once.
+                    drop_when_seen(ask.key);
+                    ask.callback.cont(Some(&ask.suggested.to_string_lossy().as_ref().into()), 0);
+                    self.notice("download · cancelled");
+                }
+            }
+        }
+        // WHEN A DOWNLOAD FINISHES.
+        let just_done: Vec<(u64, String)> = list().into_iter().filter(|d| d.live && d.done && !self.download_ui.finished.contains(&d.key)).map(|d| (d.key, d.name.clone())).collect();
+        for (key, name) in just_done {
+            self.download_ui.finished.insert(key);
+            match self.behavior.download_done {
+                crate::settings::DownloadDone::Notice => self.toast_with(Some(nus_render::text::icons::DOWNLOAD), "DOWNLOADED", name, Some(crate::toast::Act::RevealDownload(key))),
+                crate::settings::DownloadDone::Reveal => self.download_action(Hit::Reveal(key)),
+                crate::settings::DownloadDone::Open => self.download_action(Hit::Open(key)),
+                crate::settings::DownloadDone::Quiet => {}
+            }
+        }
+    }
 }
 
 /// Keep filenames portable and confined to Downloads, even with hostile headers.
@@ -364,6 +470,12 @@ pub struct Ui {
     pub query: String,
     pub cursor: usize,
     pub select_all: bool,
+    /// BROWSER · DOWNLOADS · LOCATION: the folder dialog while it is up.
+    pub dir_pick: Option<crate::pick::Picker>,
+    /// ASK WHERE TO SAVE: the download waiting, and its save dialog.
+    pub save_ask: Option<(crate::browser::SaveAsk, crate::pick::Picker)>,
+    /// Finished downloads already acted on (WHEN A DOWNLOAD FINISHES).
+    pub finished: std::collections::HashSet<u64>,
 }
 pub(crate) fn matches(d: &Download, query: &str) -> bool {
     let text = format!(
@@ -1141,6 +1253,9 @@ impl App {
             self.download_ui.hits.clear();
             self.download_ui.rect = Some(r);
             self.download_ui.reach = self.draw_downloads(scene, r, self.download_ui.scroll, true);
+            let (scroll, reach) = (self.download_ui.scroll, self.download_ui.reach);
+            let moving = self.gliding(crate::scrolling::Glider::DownloadsMenu);
+            self.draw_thumb(scene, r, scroll, reach + r.h, moving);
             scene.outline(r, self.px(1.0), self.theme.ink);
             return;
         }

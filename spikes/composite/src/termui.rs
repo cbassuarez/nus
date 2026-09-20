@@ -716,6 +716,7 @@ impl App {
             return false;
         }
         let shift = self.mods.shift_key();
+        let mods = self.mods;
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let Pane::Term(t) = tab.focused() else { return false };
         let mut open_url: Option<String> = None;
@@ -723,7 +724,21 @@ impl App {
         let mut consumed = false;
         if let Some(s) = t.search.as_mut() {
             consumed = true;
+            // The query's own editing: typing, erasing, paste (field.rs).
+            let took = crate::field::edit(&mut s.query, key, mods, 400);
+            if took.changed() {
+                let grew = !matches!(key.logical_key, WKey::Named(NamedKey::Backspace));
+                s.matches = t.term.search(&s.query);
+                // Latest match first: that's where the eye is.
+                s.current = s.matches.len().saturating_sub(1);
+                if grew {
+                    if let Some(&(line, _, _)) = s.matches.get(s.current) {
+                        t.term.grid_mut().scroll_to_abs(line.saturating_sub(2));
+                    }
+                }
+            }
             match &key.logical_key {
+                _ if took.taken() => {}
                 WKey::Named(NamedKey::Escape) => t.search = None,
                 WKey::Named(NamedKey::Enter) => {
                     if !s.matches.is_empty() {
@@ -731,24 +746,6 @@ impl App {
                         let line = s.matches[s.current].0;
                         t.term.grid_mut().scroll_to_abs(line.saturating_sub(2));
                     }
-                }
-                WKey::Named(NamedKey::Backspace) => {
-                    s.query.pop();
-                    s.matches = t.term.search(&s.query);
-                    s.current = s.matches.len().saturating_sub(1);
-                }
-                WKey::Character(c) => {
-                    s.query.push_str(c);
-                    s.matches = t.term.search(&s.query);
-                    // Latest match first: that's where the eye is.
-                    s.current = s.matches.len().saturating_sub(1);
-                    if let Some(&(line, _, _)) = s.matches.get(s.current) {
-                        t.term.grid_mut().scroll_to_abs(line.saturating_sub(2));
-                    }
-                }
-                WKey::Named(NamedKey::Space) => {
-                    s.query.push(' ');
-                    s.matches = t.term.search(&s.query);
                 }
                 _ => consumed = false,
             }

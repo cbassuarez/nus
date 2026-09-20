@@ -95,13 +95,13 @@ impl Theme {
     pub fn paper() -> Theme {
         Theme {
             mode: Mode::Paper,
-            paper: hex(0xf4f1ea),
+            paper: hex(0xffffff),
             ink: hex(0x141414),
             tint: hexa(0x141414, 0.06),
             hot: hexa(0x141414, 0.12),
             dim: hex(0x8a857a),
             page: hex(0xffffff),
-            scrim: hexa(0xf4f1ea, 0.55),
+            scrim: hexa(0xffffff, 0.55),
             caret: hex(0x141414),
             selection: hexa(0x141414, 0.22),
             ansi: [
@@ -120,7 +120,7 @@ impl Theme {
                 rgb(0x3b7ee0),
                 rgb(0xb04eb0),
                 rgb(0x22a3b0),
-                rgb(0xf4f1ea),
+                rgb(0xffffff),
             ],
         }
     }

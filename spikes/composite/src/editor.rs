@@ -822,6 +822,7 @@ impl App {
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
         let sup = self.mods.super_key();
+        let mods = self.mods;
         let cmd = if cfg!(target_os = "macos") { sup } else { ctrl };
         let Some(tab) = self.tabs.get(self.active) else {
             return false;
@@ -876,7 +877,17 @@ impl App {
             // The find bar.
             if e.find.is_some() && !(cmd && matches!(key.to_text(), Some("f") | Some("h"))) {
                 let f = e.find.as_mut().unwrap();
+                // The field's own editing: typing, erasing, paste (field.rs).
+                let in_replace = f.in_replace;
+                let line = if in_replace { &mut f.replace } else { &mut f.query };
+                let took = crate::field::edit(line, ev, mods, 400);
+                if took.changed() && !in_replace {
+                    e.refind();
+                    e.find_select();
+                }
+                let f = e.find.as_mut().unwrap();
                 match &key {
+                    _ if took.taken() => {}
                     WKey::Named(NamedKey::Escape) => {
                         e.find = None;
                         if let Some(b) = e.buf_mut() {
@@ -892,30 +903,9 @@ impl App {
                     }
                     WKey::Named(NamedKey::Enter) => e.find_step(!shift),
                     WKey::Named(NamedKey::Tab) if f.with_replace => f.in_replace = !f.in_replace,
-                    WKey::Named(NamedKey::Backspace) => {
-                        if f.in_replace {
-                            f.replace.pop();
-                        } else {
-                            f.query.pop();
-                            e.refind();
-                            e.find_select();
-                        }
-                    }
                     WKey::Named(NamedKey::ArrowDown) => e.find_step(true),
                     WKey::Named(NamedKey::ArrowUp) => e.find_step(false),
-                    _ => {
-                        if let Some(t) =
-                            text.as_deref().filter(|t| !t.chars().any(char::is_control))
-                        {
-                            if f.in_replace {
-                                f.replace.push_str(t);
-                            } else {
-                                f.query.push_str(t);
-                                e.refind();
-                                e.find_select();
-                            }
-                        }
-                    }
+                    _ => {}
                 }
                 self.dirty = true;
                 return true;

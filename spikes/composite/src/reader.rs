@@ -1,6 +1,6 @@
 //! Reader mode, set like a broadsheet: the page's article, extracted in
 //! the page and typeset here in Newsreader on our paper — no site CSS,
-//! no site scripts, our measure, our rules. Ctrl+Shift+R toggles it over
+//! no site scripts, our measure, our rules. Ctrl+Alt+R (⌘⌥R) toggles it over
 //! a browser pane; the page keeps living underneath.
 
 use crate::app::Caps;

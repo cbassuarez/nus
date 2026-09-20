@@ -39,10 +39,21 @@ impl App {
             return false;
         }
         let shift = self.mods.shift_key();
+        let mods = self.mods;
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let Pane::Web(w) = tab.focused() else { return false };
         let Some(f) = w.find.as_mut() else { return false };
+        // The query's own editing: typing, erasing, paste (field.rs).
+        let took = crate::field::edit(&mut f.query, key, mods, 400);
+        if took.changed() {
+            if f.query.is_empty() {
+                w.tab.stop_find();
+            } else {
+                w.tab.find(&f.query.clone(), true, false);
+            }
+        }
         match &key.logical_key {
+            _ if took.taken() => {}
             WKey::Named(NamedKey::Escape) => {
                 w.find = None;
                 w.tab.stop_find();
@@ -51,22 +62,6 @@ impl App {
                 if !f.query.is_empty() {
                     w.tab.find(&f.query.clone(), !shift, true);
                 }
-            }
-            WKey::Named(NamedKey::Backspace) => {
-                f.query.pop();
-                if f.query.is_empty() {
-                    w.tab.stop_find();
-                } else {
-                    w.tab.find(&f.query.clone(), true, false);
-                }
-            }
-            WKey::Named(NamedKey::Space) => {
-                f.query.push(' ');
-                w.tab.find(&f.query.clone(), true, false);
-            }
-            WKey::Character(c) => {
-                f.query.push_str(c);
-                w.tab.find(&f.query.clone(), true, false);
             }
             _ => return false,
         }
@@ -77,6 +72,7 @@ impl App {
     /// The find band, the permission band, the select popup and the site
     /// panel, over a page.
     pub(crate) fn draw_web_overlays(&mut self, scene: &mut Scene, w: &mut WebPane) {
+        self.draw_swipe(scene, w);
         self.draw_site_panel(scene, w);
         let t = self.theme.clone();
         let ink = t.ink;

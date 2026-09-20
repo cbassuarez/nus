@@ -18,6 +18,8 @@ pub type Icon = (&'static str, &'static str);
 pub enum Act {
     /// Bring this tab (by id) to the front.
     GoTab(u64),
+    /// Show this download (by key) in its folder.
+    RevealDownload(u64),
 }
 
 pub struct Toast {
@@ -115,10 +117,14 @@ impl App {
             return false;
         }
         let act = self.toast.take().and_then(|t| t.act);
-        if let Some(Act::GoTab(id)) = act {
-            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
-                self.activate(i);
+        match act {
+            Some(Act::GoTab(id)) => {
+                if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                    self.activate(i);
+                }
             }
+            Some(Act::RevealDownload(key)) => self.download_action(crate::downloads::Hit::Reveal(key)),
+            None => {}
         }
         self.dirty = true;
         true

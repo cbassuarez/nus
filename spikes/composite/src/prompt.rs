@@ -89,6 +89,67 @@ impl Route {
         }
     }
 }
+/// Where a search goes. The engine's own query URL, or a template of the
+/// user's with `%s` where the words go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchEngine {
+    #[default]
+    Google,
+    DuckDuckGo,
+    Bing,
+    Brave,
+    Kagi,
+    Startpage,
+    /// `Config::search_url`, a template with `%s`.
+    Custom,
+}
+impl SearchEngine {
+    pub const ALL: [Self; 7] = [
+        Self::Google,
+        Self::DuckDuckGo,
+        Self::Bing,
+        Self::Brave,
+        Self::Kagi,
+        Self::Startpage,
+        Self::Custom,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Google => "Google",
+            Self::DuckDuckGo => "DuckDuckGo",
+            Self::Bing => "Bing",
+            Self::Brave => "Brave",
+            Self::Kagi => "Kagi",
+            Self::Startpage => "Startpage",
+            Self::Custom => "Custom",
+        }
+    }
+    /// The query template: `%s` is the words, percent-encoded.
+    pub fn template(self) -> &'static str {
+        match self {
+            Self::Google => "https://www.google.com/search?q=%s",
+            Self::DuckDuckGo => "https://duckduckgo.com/?q=%s",
+            Self::Bing => "https://www.bing.com/search?q=%s",
+            Self::Brave => "https://search.brave.com/search?q=%s",
+            Self::Kagi => "https://kagi.com/search?q=%s",
+            Self::Startpage => "https://www.startpage.com/do/search?q=%s",
+            Self::Custom => "",
+        }
+    }
+}
+/// The words as a query string: spaces to `+`, the rest percent-encoded
+/// the way a form submits them.
+pub fn encode_query(q: &str) -> String {
+    let mut out = String::with_capacity(q.len());
+    for b in q.trim().bytes() {
+        match b {
+            b' ' => out.push('+'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'*' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceConfig {
     pub source: Source,
@@ -112,6 +173,10 @@ pub struct Config {
     pub top: bool,
     pub hints: bool,
     pub saved: Vec<String>,
+    /// SEARCH ENGINE: where `?` and the search row go.
+    pub engine: SearchEngine,
+    /// The custom engine's template, `%s` for the words.
+    pub search_url: String,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -163,7 +228,26 @@ impl Config {
             top: false,
             hints: true,
             saved: Vec::new(),
+            engine: SearchEngine::default(),
+            search_url: String::new(),
         }
+    }
+    /// The URL that searches for `q`: the engine's, or Google's when the
+    /// custom template has no `%s` to put the words in.
+    pub fn search_url(&self, q: &str) -> String {
+        let template = match self.engine {
+            SearchEngine::Custom if self.search_url.contains("%s") => self.search_url.as_str(),
+            SearchEngine::Custom => SearchEngine::Google.template(),
+            e => e.template(),
+        };
+        template.replacen("%s", &encode_query(q), 1)
+    }
+    /// The engine's front door: the origin of its query URL.
+    pub fn search_home(&self) -> String {
+        let url = self.search_url("");
+        let end = url.find("://").map(|i| i + 3).unwrap_or(0);
+        let path = url[end..].find('/').map(|i| end + i).unwrap_or(url.len());
+        format!("{}/", &url[..path])
     }
     pub fn ordered(&self) -> Vec<SourceConfig> {
         let mut out = Vec::new();
@@ -258,6 +342,17 @@ impl App {
                 Action::SetHome(url.into()),
             ));
         }
+        // `search https://example.com/?q=%s`: a search engine of your own.
+        if let Some(template) = q
+            .strip_prefix("search ")
+            .map(str::trim)
+            .filter(|s| s.contains("%s") && looks_like_url(s))
+        {
+            return Some(row(
+                format!("Set search engine · {template}"),
+                Action::SetSearch(template.into()),
+            ));
+        }
         if std::path::Path::new(q).is_dir() {
             return Some(row(
                 format!("Open project · {q}"),
@@ -285,7 +380,7 @@ impl App {
             ));
         }
         if let Some(query) = q.strip_prefix('?') {
-            let (url, _) = Self::url_or_search(query.trim());
+            let (url, _) = self.url_or_search(query.trim());
             return Some(row(
                 format!("Search the web · {}", query.trim()),
                 Action::NewBrowser(url),
@@ -306,7 +401,7 @@ impl App {
             ));
         }
         if route == Route::Web || (route == Route::Automatic && looks_like_url(q)) {
-            let (url, _) = Self::url_or_search(q);
+            let (url, _) = self.url_or_search(q);
             return Some(row(
                 format!(
                     "{} · {q}",
@@ -322,6 +417,19 @@ impl App {
         Some(row(
             format!("Run in a new terminal · {q}"),
             Action::PromptShell(q.into()),
+        ))
+    }
+    /// The search row: what the line says, asked of the engine. Beside the
+    /// route's own row whenever the line is words rather than an address,
+    /// so a search is one arrow away whichever way Enter goes.
+    fn prompt_search(&self, q: &str) -> Option<PaletteRow> {
+        let q = q.trim();
+        if q.is_empty() || q.starts_with(['>', '?', '@']) || looks_like_url(q) || std::path::Path::new(q).exists() {
+            return None;
+        }
+        Some(row(
+            format!("Search {} · {q}", self.behavior.prompt.engine.name()),
+            Action::NewBrowser(self.behavior.prompt.search_url(q)),
         ))
     }
     pub(crate) fn prompt_rows(&self, input: &str) -> Vec<PaletteRow> {
@@ -385,6 +493,11 @@ impl App {
                 out.push(r.clone());
             }
             if let Some(r) = self.prompt_action(q) {
+                if !out.iter().any(|i| i.action == r.action) {
+                    out.push(r);
+                }
+            }
+            if let Some(r) = self.prompt_search(q) {
                 if !out.iter().any(|i| i.action == r.action) {
                     out.push(r);
                 }
@@ -491,9 +604,12 @@ impl App {
                     }
                 }
             }
+            // The palette's own search row says the same as the prompt's.
+            let search = self.behavior.prompt.search_url(q);
             items.extend(
                 raw.iter()
                     .filter(|r| category(&r.action) == source.source)
+                    .filter(|r| !matches!(&r.action, Action::OpenInPane(u) | Action::NewBrowser(u) if *u == search))
                     .cloned(),
             );
             let mut n = 0;
@@ -557,6 +673,22 @@ mod tests {
         c.sources[0].count = 255;
         assert_eq!(c.ordered().len(), 10);
         assert_eq!(c.ordered()[0].count, 8);
+    }
+    #[test]
+    fn searches_go_to_the_engine() {
+        let mut c = Config::default();
+        assert_eq!(c.engine, SearchEngine::Google);
+        assert_eq!(c.search_url("rust wgpu"), "https://www.google.com/search?q=rust+wgpu");
+        assert_eq!(c.search_home(), "https://www.google.com/");
+        c.engine = SearchEngine::DuckDuckGo;
+        assert_eq!(c.search_url("a&b #1"), "https://duckduckgo.com/?q=a%26b+%231");
+        assert_eq!(c.search_home(), "https://duckduckgo.com/");
+        // A custom template needs a %s; without one Google answers.
+        c.engine = SearchEngine::Custom;
+        c.search_url = "https://example.org/find?words=%s&lang=en".into();
+        assert_eq!(c.search_url("é"), "https://example.org/find?words=%C3%A9&lang=en");
+        c.search_url = "https://example.org/".into();
+        assert_eq!(c.search_url("x"), "https://www.google.com/search?q=x");
     }
     #[test]
     fn urls_do_not_eat_relative_commands() {

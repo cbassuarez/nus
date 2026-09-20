@@ -47,6 +47,7 @@ impl App {
         let sb = self.sidebar_rect();
         let (mx, my) = self.mouse;
         self.side_hits.clear();
+        self.settle_sidebar_scroll();
         let g = self.sidebar_geometry();
         let isz = self.px(16.0);
         let cx = sb.x + ((sb.w - isz) / 2.0).round();
@@ -92,10 +93,10 @@ impl App {
         // Rows.
         let mut tip: Option<(usize, f32)> = None;
         for &(i, y, h) in &g.rows {
-            if h < 1.0 || y+h>g.foot_y {
-                continue;
-            }
-            let cell = Rect::new(sb.x, y, sb.w, h);
+            // Rows out of the list's window are not drawn; one half out is
+            // cut to it.
+            let Some(cell) = (if h < 1.0 { None } else { g.clip(sb, y, h) }) else { continue };
+            scene.layer(Some(cell));
             let tab = &tabs[i];
             let active = i == self.active;
             let hovered = cell.contains(mx, my);
@@ -117,7 +118,7 @@ impl App {
             let iy = y + ((h - isz) / 2.0).round();
             scene.layer(Some(cell));
             self.draw_tab_icon(scene, tab, ix, iy, isz, color);
-            scene.layer(None);
+            scene.layer(Some(cell));
             // The corner: × while the pointer is on the row — closing a
             // tab is closing what it runs, so it is one click here too.
             // Otherwise a signal dot for waiting, or a tiny tiled mark.
@@ -142,6 +143,7 @@ impl App {
             if hovered {
                 tip = Some((i, y));
             }
+            scene.layer(None);
         }
         self.draw_responsive_footer(scene,sb,g.foot_y);
         self.tabs = tabs;

@@ -222,12 +222,12 @@ fn esc(s: &str) -> String {
 }
 
 /// The page's dress: paper, ink, signal, mono; big targets; no script.
-const CSS: &str = "body{margin:0;background:#f4f1ea;color:#141413;font:15px/1.5 ui-monospace,Menlo,Consolas,monospace;padding:0 16px 40px}\
+const CSS: &str = "body{margin:0;background:#fff;color:#141413;font:15px/1.5 ui-monospace,Menlo,Consolas,monospace;padding:0 16px 40px}\
 h1{font:italic 28px Georgia,serif;margin:18px 0 2px}.dim{color:#6b6862;font-size:12px;letter-spacing:.08em;text-transform:uppercase}\
 .cap{color:#c8102e;font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin:22px 0 6px}\
-.row{display:flex;gap:10px;align-items:baseline;min-height:44px;border-bottom:1px solid #e3dfd5;padding:8px 0}.row .k{width:1.4em;color:#6b6862}\
+.row{display:flex;gap:10px;align-items:baseline;min-height:44px;border-bottom:1px solid #e4e4e4;padding:8px 0}.row .k{width:1.4em;color:#6b6862}\
 form{margin:0}input[type=text]{width:100%;box-sizing:border-box;font:inherit;padding:12px;border:1px solid #141413;background:#fff;border-radius:0}\
-button{font:inherit;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:12px 16px;border:2px solid #141413;background:#f4f1ea;color:#141413;box-shadow:3px 3px 0 #141413;min-height:44px;margin:8px 8px 0 0}\
+button{font:inherit;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:12px 16px;border:2px solid #141413;background:#fff;color:#141413;box-shadow:3px 3px 0 #141413;min-height:44px;margin:8px 8px 0 0}\
 button.go{background:#c8102e;color:#fff}pre{white-space:pre-wrap;background:#fff;border:1px solid #141413;padding:12px}\
 a{color:#c8102e}.bar{height:6px;background:#c8102e;margin:0 -16px}";
 

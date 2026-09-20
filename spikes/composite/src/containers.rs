@@ -35,7 +35,7 @@ pub fn load() -> Vec<Container> {
 }
 
 pub fn save(v: &[Container]) {
-    let _ = std::fs::write(path(), serde_json::to_string_pretty(v).unwrap_or_default());
+    let _ = crate::store::write_json(&path(), &v);
 }
 
 thread_local! {

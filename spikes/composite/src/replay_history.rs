@@ -34,6 +34,8 @@ impl App {
         if chord {
             match key {
                 Key::Character(c) if c.eq_ignore_ascii_case("f")=>tl.focus=Some(HistoryHit::Search),
+                // Paste into the search, a line of it.
+                Key::Character(c) if c.eq_ignore_ascii_case("v")=>{if let Some(text)=crate::field::clipboard_line(){tl.snapshot=false;tl.focus=Some(HistoryHit::Search);tl.query.push_str(&text);tl.filter_changed();}},
                 Key::Character(c) if c.eq_ignore_ascii_case("c")=>{self.timeline_action(HistoryHit::CopyOutput);return true;},
                 _=>{}
             }

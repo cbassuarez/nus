@@ -99,6 +99,10 @@ pub static DOWNLOADS: std::sync::Mutex<Vec<Download>> = std::sync::Mutex::new(Ve
 pub static BLOCKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 /// Chromium's smooth scrolling, read once at start from the prefs.
 pub static SMOOTH_SCROLL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// BROWSER · SCROLLBARS, read once at start: 0 overlay, 1 classic, 2 hidden.
+pub static SCROLLBARS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// BROWSER · PRIVACY SIGNAL: Sec-GPC and DNT on every request.
+pub static PRIVACY_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static BLOCKLIST: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
 
 const BUILTIN_BLOCKLIST: &[&str] = &[
@@ -157,13 +161,52 @@ pub fn blocklist_len() -> usize {
 }
 
 /// Where downloads go: ~/Downloads, else the profile.
+/// BROWSER · DOWNLOADS · LOCATION, when one was chosen; else the system's.
+static DOWNLOAD_DIR: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
+/// BROWSER · DOWNLOADS · ASK WHERE TO SAVE.
+pub static DOWNLOAD_ASK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The folder downloads go to: the chosen one when it is a folder that
+/// exists (or can be made), else ~/Downloads, else profile/downloads.
 pub fn downloads_dir() -> std::path::PathBuf {
     if std::env::var_os("NUS_SHOT").is_some() {return std::env::current_dir().unwrap_or_default().join("profile/downloads");}
+    if let Some(dir) = DOWNLOAD_DIR.read().ok().and_then(|d| d.clone()) {
+        if dir.is_dir() || std::fs::create_dir_all(&dir).is_ok() {
+            return dir;
+        }
+    }
+    default_downloads_dir()
+}
+
+/// Where downloads go when nothing was chosen.
+pub fn default_downloads_dir() -> std::path::PathBuf {
     let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).map(std::path::PathBuf::from);
     match home {
         Ok(h) if h.join("Downloads").is_dir() => h.join("Downloads"),
         _ => std::env::current_dir().unwrap_or_default().join("profile").join("downloads"),
     }
+}
+
+/// The setting, applied: empty means the default.
+pub fn set_downloads_dir(dir: &str) {
+    let dir = dir.trim();
+    if let Ok(mut d) = DOWNLOAD_DIR.write() {
+        *d = if dir.is_empty() { None } else { Some(crate::links::expand_home(dir)) };
+    }
+}
+
+/// A download waiting on the save dialog: where it would go, and the
+/// callback that starts it once a place is chosen (downloads.rs asks).
+pub struct SaveAsk {
+    pub key: u64,
+    pub suggested: std::path::PathBuf,
+    pub callback: BeforeDownloadCallback,
+}
+
+thread_local! {
+    /// Downloads that want a save dialog, for the app's tick (they arrive
+    /// on the UI thread, which is the app's).
+    pub static SAVE_ASKS: std::cell::RefCell<Vec<SaveAsk>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -264,6 +307,18 @@ wrap_app! {
             cl.append_switch(Some(&"use-mock-keychain".into()));
             if !crate::browser::SMOOTH_SCROLL.load(std::sync::atomic::Ordering::Relaxed) {
                 cl.append_switch(Some(&"disable-smooth-scrolling".into()));
+            }
+            // BROWSER · SCROLLBARS. Overlay is a Chromium feature on Windows
+            // and Linux (macOS follows the system); the feature list is
+            // merged, never replaced, in case CEF put its own there first.
+            match crate::browser::SCROLLBARS.load(std::sync::atomic::Ordering::Relaxed) {
+                0 => {
+                    let had = if cl.has_switch(Some(&"enable-features".into())) != 0 { CefString::from(&cl.switch_value(Some(&"enable-features".into()))).to_string() } else { String::new() };
+                    let all = if had.is_empty() { "OverlayScrollbar".to_string() } else { format!("{had},OverlayScrollbar") };
+                    cl.append_switch_with_value(Some(&"enable-features".into()), Some(&all.as_str().into()));
+                }
+                2 => cl.append_switch(Some(&"hide-scrollbars".into())),
+                _ => {}
             }
             if std::env::var_os("NUS_AUTOPLAY").is_some() {
                 cl.append_switch_with_value(Some(&"autoplay-policy".into()), Some(&"no-user-gesture-required".into()));
@@ -427,7 +482,7 @@ wrap_display_handler! {
             self.d.shared.borrow_mut().hover_url = value.map(|v| v.to_string()).unwrap_or_default();
         }
 
-        fn on_address_change(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {
+        fn on_address_change(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {
             let main = frame.map(|f| f.is_main() != 0).unwrap_or(true);
             if let (true, Some(u)) = (main, url) {
                 let mut s = self.d.shared.borrow_mut();
@@ -439,6 +494,15 @@ wrap_display_handler! {
                     s.favicon_url.clear();
                 }
                 s.url = u;
+            }
+            // A new page is on its way: draw it as soon as it paints, even
+            // when it arrives in a fresh process the frame clock has not met.
+            if main {
+                if let Some(h) = browser.and_then(|b| b.host()) {
+                    h.invalidate(PaintElementType::VIEW);
+                    h.send_external_begin_frame();
+                }
+                self.d.shared.borrow_mut().paints += 1;
             }
         }
 
@@ -833,6 +897,15 @@ wrap_download_handler! {
                 crate::downloads::save(&rows);path
             };
             crate::downloads::changed();
+            // ASK WHERE TO SAVE: the download waits for the dialog (the
+            // app's tick opens it and continues the callback); the row is
+            // there already, so the list shows it waiting.
+            if DOWNLOAD_ASK.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os("NUS_SHOT").is_none() {
+                let key = DOWNLOADS.lock().unwrap().iter().find(|d| d.live && d.id == item.id()).map(|d| d.key).unwrap_or(0);
+                SAVE_ASKS.with(|q| q.borrow_mut().push(SaveAsk { key, suggested: path, callback: cb.clone() }));
+                self.display.shared.borrow_mut().paints += 1;
+                return 1;
+            }
             cb.cont(Some(&path.to_string_lossy().as_ref().into()),0);
             self.display.shared.borrow_mut().paints += 1;
             1
@@ -940,11 +1013,17 @@ wrap_resource_request_handler! {
 
     impl ResourceRequestHandler {
         fn on_before_resource_load(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _callback: Option<&mut Callback>) -> ReturnValue {
+            let Some(req) = request else { return ReturnValue::CONTINUE };
+            // BROWSER · PRIVACY SIGNAL: Global Privacy Control and Do Not
+            // Track on every request, navigations included.
+            if PRIVACY_SIGNAL.load(std::sync::atomic::Ordering::Relaxed) {
+                req.set_header_by_name(Some(&"Sec-GPC".into()), Some(&"1".into()), 1);
+                req.set_header_by_name(Some(&"DNT".into()), Some(&"1".into()), 1);
+            }
             // Never block the navigation itself, only what the page pulls in.
             if self.navigation {
                 return ReturnValue::CONTINUE;
             }
-            let Some(req) = request else { return ReturnValue::CONTINUE };
             let page = browser.and_then(|b| b.main_frame()).map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
             if !crate::sites::prefs(&crate::sites::host_of(&page)).blocking {
                 return ReturnValue::CONTINUE;
@@ -1205,6 +1284,7 @@ impl BrowserTab {
         if let Some(f) = self.browser.main_frame() {
             f.load_url(Some(&url.into()));
         }
+        self.nudge();
     }
 
     pub fn resized(&self, w: f32, h: f32) {
@@ -1273,14 +1353,42 @@ impl BrowserTab {
 
     pub fn back(&self) {
         self.browser.go_back();
+        self.nudge();
     }
 
     pub fn forward(&self) {
         self.browser.go_forward();
+        self.nudge();
+    }
+
+    pub fn can_go_back(&self) -> bool {
+        self.browser.can_go_back() != 0
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        self.browser.can_go_forward() != 0
+    }
+
+    /// After a navigation: ask for a paint and a frame straight away, so
+    /// the page that comes in (from the cache, or a new process after a
+    /// cross-site hop) is drawn without waiting on the next tick.
+    pub fn nudge(&self) {
+        if let Some(h) = self.host() {
+            h.was_resized();
+            h.invalidate(cef::PaintElementType::VIEW);
+            h.send_external_begin_frame();
+        }
     }
 
     pub fn reload(&self) {
         self.browser.reload();
+        self.nudge();
+    }
+
+    /// A hard reload: the page again, past the cache.
+    pub fn reload_ignore_cache(&self) {
+        self.browser.reload_ignore_cache();
+        self.nudge();
     }
 
     /// Zoom by `steps` (Chrome-style 0.5 zoom-level steps); 0 resets.

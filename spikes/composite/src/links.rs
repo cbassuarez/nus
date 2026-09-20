@@ -31,6 +31,17 @@ pub fn normalize(url: &str) -> String {
     }
 }
 
+/// A path as typed, with `~` standing for the home folder.
+pub fn expand_home(path: &str) -> std::path::PathBuf {
+    let p = path.trim().trim_matches('"');
+    if p == "~" || p.starts_with("~/") || p.starts_with("~\\") {
+        if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+            return std::path::PathBuf::from(home).join(p[1..].trim_start_matches(['/', '\\']));
+        }
+    }
+    std::path::PathBuf::from(p)
+}
+
 /// The host, for the band: `github.com`, `localhost:8000`.
 pub fn host(url: &str) -> String {
     let u = normalize(url);

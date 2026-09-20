@@ -48,32 +48,81 @@ impl Pending {
     }
 }
 
+/// What a dialog is for: a picture, a folder, or a place to save a file.
+#[derive(Clone, Debug)]
+pub enum Kind {
+    Picture,
+    Folder,
+    /// Save as: the folder to start in and the name to offer.
+    Save { dir: PathBuf, name: String },
+}
+
+/// A dialog up for a folder or a save place; poll it each tick.
+pub struct Picker {
+    dialog: platform::Dialog,
+}
+impl Picker {
+    /// None is pending; Ok(None) is cancellation.
+    pub fn poll(&mut self) -> Option<Result<Option<PathBuf>, String>> {
+        self.dialog.poll()
+    }
+}
+
+/// The system's folder chooser.
+pub fn folder(window: &winit::window::Window, title: &str) -> Result<Picker, String> {
+    Ok(Picker { dialog: platform::Dialog::open(window, title, Kind::Folder)? })
+}
+
+/// The system's save dialog, starting in `dir` with `name` offered.
+pub fn save_as(window: &winit::window::Window, title: &str, dir: PathBuf, name: String) -> Result<Picker, String> {
+    Ok(Picker { dialog: platform::Dialog::open(window, title, Kind::Save { dir, name })? })
+}
+
 pub fn image_file(window: &winit::window::Window, title: &str, dest: PathBuf) -> Result<Pending,String> {
-    Ok(Pending{dialog:Some(platform::Dialog::open(window,title)?),writing:None,dest})
+    Ok(Pending{dialog:Some(platform::Dialog::open(window,title,Kind::Picture)?),writing:None,dest})
 }
 
 #[cfg(target_os="macos")]
 mod platform {
     use super::*;
     use objc2::{rc::Retained,MainThreadMarker};
-    use objc2_app_kit::{NSOpenPanel,NSView,NSModalResponseOK,NSModalResponseCancel};
-    use objc2_foundation::{NSArray,NSString};
+    use objc2_app_kit::{NSOpenPanel,NSSavePanel,NSView,NSModalResponseOK,NSModalResponseCancel};
+    use objc2_foundation::{NSArray,NSString,NSURL};
     use std::{cell::RefCell,rc::Rc};
     use winit::raw_window_handle::{HasWindowHandle,RawWindowHandle};
-    pub struct Dialog {panel:Retained<NSOpenPanel>,result:Rc<RefCell<Option<Result<Option<PathBuf>,String>>>>,finished:bool}
+    pub struct Dialog {panel:Retained<NSSavePanel>,result:Rc<RefCell<Option<Result<Option<PathBuf>,String>>>>,finished:bool}
     impl Dialog {
-        pub fn open(window:&winit::window::Window,title:&str)->Result<Self,String> {
-            let mtm=MainThreadMarker::new().ok_or("open the picture chooser from the main window")?;
+        pub fn open(window:&winit::window::Window,title:&str,kind:Kind)->Result<Self,String> {
+            let mtm=MainThreadMarker::new().ok_or("open the chooser from the main window")?;
             let handle=window.window_handle().map_err(|e|short(&e.to_string()))?;
             let RawWindowHandle::AppKit(handle)=handle.as_raw() else {return Err("the window is unavailable".into());};
             let view=unsafe {&*handle.ns_view.as_ptr().cast::<NSView>()};
             let parent=view.window().ok_or("the window is unavailable")?;
-            let panel=NSOpenPanel::openPanel(mtm);
+            // An open panel is a save panel with more to say; the save
+            // dialog is the plain one.
+            let panel:Retained<NSSavePanel>=match &kind {
+                Kind::Save{dir,name}=>{
+                    let panel=NSSavePanel::savePanel(mtm);
+                    panel.setNameFieldStringValue(&NSString::from_str(name));
+                    panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(&dir.to_string_lossy()))));
+                    panel.setCanCreateDirectories(true);
+                    panel
+                }
+                Kind::Folder=>{
+                    let panel=NSOpenPanel::openPanel(mtm);
+                    panel.setCanChooseFiles(false);panel.setCanChooseDirectories(true);panel.setAllowsMultipleSelection(false);panel.setCanCreateDirectories(true);
+                    Retained::into_super(panel)
+                }
+                Kind::Picture=>{
+                    let panel=NSOpenPanel::openPanel(mtm);
+                    panel.setCanChooseFiles(true);panel.setCanChooseDirectories(false);panel.setAllowsMultipleSelection(false);
+                    let types:Vec<_>=IMAGE_EXTS.iter().map(|s|NSString::from_str(s)).collect();
+                    // Available on all supported macOS versions; decoding validates content too.
+                    #[allow(deprecated)] panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&types)));
+                    Retained::into_super(panel)
+                }
+            };
             panel.setTitle(Some(&NSString::from_str(title)));
-            panel.setCanChooseFiles(true);panel.setCanChooseDirectories(false);panel.setAllowsMultipleSelection(false);
-            let types:Vec<_>=IMAGE_EXTS.iter().map(|s|NSString::from_str(s)).collect();
-            // Available on all supported macOS versions; decoding validates content too.
-            #[allow(deprecated)] panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&types)));
             let result=Rc::new(RefCell::new(None));let out=result.clone();let chosen=panel.clone();
             let callback=block2::RcBlock::new(move |response| {
                 use std::{ffi::CStr,os::unix::ffi::OsStrExt};
@@ -82,7 +131,7 @@ mod platform {
                         let bytes=unsafe {CStr::from_ptr(url.fileSystemRepresentation().as_ptr())}.to_bytes();
                         PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
                     }).map(Some).ok_or_else(||"the selected file is unavailable".to_string())
-                } else if response==NSModalResponseCancel {Ok(None)} else {Err("the picture chooser could not open".into())};
+                } else if response==NSModalResponseCancel {Ok(None)} else {Err("the chooser could not open".into())};
                 *out.borrow_mut()=Some(answer);
             });
             // Unlike rfd's run-modal fallback, a sheet cooperates with winit's pump.
@@ -112,14 +161,19 @@ mod platform {
         drop(self.future.take());
     }}
     impl Dialog {
-        pub fn open(window:&winit::window::Window,title:&str)->Result<Self,String> {
+        pub fn open(window:&winit::window::Window,title:&str,kind:Kind)->Result<Self,String> {
             #[cfg(target_os="linux")]
             let runtime={
                 static PORTAL_RUNTIME:std::sync::OnceLock<Result<tokio::runtime::Runtime,std::io::Error>>=std::sync::OnceLock::new();
                 PORTAL_RUNTIME.get_or_init(||tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()).as_ref().map_err(|e|short(&e.to_string()))?
             };
             #[cfg(target_os="linux")] let guard=runtime.enter();
-            let future=Box::pin(rfd::AsyncFileDialog::new().set_parent(window).set_title(title).add_filter("Pictures",IMAGE_EXTS).pick_file());
+            let dialog=rfd::AsyncFileDialog::new().set_parent(window).set_title(title);
+            let future:Pin<Box<dyn Future<Output=Option<rfd::FileHandle>>>>=match kind {
+                Kind::Picture=>Box::pin(dialog.add_filter("Pictures",IMAGE_EXTS).pick_file()),
+                Kind::Folder=>Box::pin(dialog.pick_folder()),
+                Kind::Save{dir,name}=>Box::pin(dialog.set_directory(dir).set_file_name(name).save_file()),
+            };
             #[cfg(target_os="linux")] drop(guard);
             Ok(Self{future:Some(future),#[cfg(target_os="linux")] runtime})
         }

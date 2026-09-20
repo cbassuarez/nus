@@ -199,7 +199,7 @@ impl Session {
         let mut v = self.to_value();
         v["saved"] = serde_json::json!(now());
         let _ = std::fs::create_dir_all(profile_dir());
-        let _ = std::fs::write(profile_dir().join("session.json"), serde_json::to_string_pretty(&v).unwrap_or_default());
+        let _ = crate::store::write_json(&profile_dir().join("session.json"), &v);
     }
 
     /// This window's session as JSON, the other windows under `windows`.
@@ -246,7 +246,7 @@ pub fn save_recent(list: &[Recent]) {
         })
         .collect();
     let _ = std::fs::create_dir_all(profile_dir());
-    let _ = std::fs::write(profile_dir().join("recent.json"), serde_json::to_string(&v).unwrap_or_default());
+    let _ = crate::store::write_json(&profile_dir().join("recent.json"), &v);
 }
 
 // ── The modal ────────────────────────────────────────────────────────────
@@ -576,10 +576,21 @@ impl App {
     }
 
     pub fn start_key(&mut self, ev: &crate::app::KeyIn) -> bool {
+        let mods = self.mods;
         let Some(s) = self.start.as_mut() else { return false };
         if ev.state != ElementState::Pressed {
             return true;
         }
+        // The line's own editing: typing, erasing, paste, copy (field.rs).
+        let took = crate::field::edit(&mut s.input, ev, mods, 2000);
+        if took.changed() {
+            s.sel = 0;
+        }
+        if took.taken() {
+            self.dirty = true;
+            return true;
+        }
+        let shift = mods.shift_key();
         match &ev.logical_key {
             WKey::Named(NamedKey::Escape) => {
                 // Persistent at launch: Esc only clears the filter.
@@ -593,17 +604,9 @@ impl App {
                 self.atlas_used = true;
                 self.start_commit()
             }
-            WKey::Named(NamedKey::Backspace) => {
-                s.input.pop();
-                s.sel = 0;
-            }
-            WKey::Named(NamedKey::ArrowDown) => s.sel += 1,
-            WKey::Named(NamedKey::ArrowUp) => s.sel = s.sel.saturating_sub(1),
-            WKey::Named(NamedKey::Space) => s.input.push(' '),
-            WKey::Character(c) if !self.mods.control_key() && !self.mods.super_key() && c.chars().all(|ch| !ch.is_control()) => {
-                s.input.push_str(c);
-                s.sel = 0;
-            }
+            // Tab walks the rows like the arrows; Shift+Tab back.
+            WKey::Named(NamedKey::ArrowDown) | WKey::Named(NamedKey::Tab) if !(shift && matches!(ev.logical_key, WKey::Named(NamedKey::Tab))) => s.sel += 1,
+            WKey::Named(NamedKey::ArrowUp) | WKey::Named(NamedKey::Tab) => s.sel = s.sel.saturating_sub(1),
             _ => {}
         }
         self.dirty = true;

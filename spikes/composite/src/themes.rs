@@ -154,8 +154,8 @@ pub fn stock() -> Vec<StockTheme> {
     let mut v = vec![
         theme(
             "broadsheet",
-            "The newspaper: warm paper, ink, one red. The default, and the measure of the rest.",
-            face(0xf4f1ea, 0x141414, 0xffffff, None),
+            "The broadsheet: white, ink, one red. The default, and the measure of the rest.",
+            face(0xffffff, 0x141414, 0xffffff, None),
             face(0x141414, 0xece7da, 0xffffff, None),
             Surface::default(),
             C::Theme, BarStyle::Comet, BarColor::Signal,
@@ -227,7 +227,7 @@ pub fn stock() -> Vec<StockTheme> {
         theme(
             "midnight",
             "Ink and paper under an aurora: blue to violet to teal, breathing.",
-            face(0xf4f1ea, 0x141414, 0xffffff, None),
+            face(0xffffff, 0x141414, 0xffffff, None),
             face(0x121420, 0xe6e4ee, 0xffffff, None),
             Surface { base: Some(hex(0x1f5fbf)), tint: 0.22, breath: 0.35, ..surface(0x1f5fbf, &[0x1f5fbf, 0x6b3fa0, 0x1a7f8a], Shell::Aurora, 4.0, 12.0, TextureKind::Linen, 0.05, 5.0) },
             C::Signal, BarStyle::Comet, BarColor::Tab,

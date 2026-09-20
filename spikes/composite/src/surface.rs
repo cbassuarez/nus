@@ -83,7 +83,7 @@ impl Default for SidebarRules {
     }
 }
 
-/// A named swatch the picker offers. The six signals plus paper and ink.
+/// A named swatch the picker offers. The six signals plus white and ink.
 pub const SWATCHES: [(&str, Color); 8] = [
     ("red", nus_render::theme::signal::RED),
     ("blue", nus_render::theme::signal::BLUE),
@@ -91,7 +91,7 @@ pub const SWATCHES: [(&str, Color); 8] = [
     ("green", nus_render::theme::signal::GREEN),
     ("violet", nus_render::theme::signal::VIOLET),
     ("teal", nus_render::theme::signal::TEAL),
-    ("paper", [0.957, 0.945, 0.918, 1.0]),
+    ("white", [1.0, 1.0, 1.0, 1.0]),
     ("ink", [0.078, 0.078, 0.078, 1.0]),
 ];
 

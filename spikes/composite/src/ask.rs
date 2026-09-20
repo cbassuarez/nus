@@ -598,11 +598,16 @@ impl App {
         if key.state != ElementState::Pressed {
             return false;
         }
-        let ctrl = self.mods.control_key();
+        let mods = self.mods;
         let Some(t) = self.ask_term() else { return false };
         let Some(ask) = t.ask.as_mut() else { return false };
         if !ask.focus {
             return false;
+        }
+        // The line's own editing: typing, erasing, paste, copy (field.rs).
+        if crate::field::edit(&mut ask.input, key, mods, 4000).taken() {
+            self.dirty = true;
+            return true;
         }
         match &key.logical_key {
             WKey::Named(NamedKey::Escape) => {
@@ -610,24 +615,6 @@ impl App {
                 self.layout();
             }
             WKey::Named(NamedKey::Enter) => self.ask_send(),
-            WKey::Named(NamedKey::Backspace) => {
-                if ctrl {
-                    let trimmed = ask.input.trim_end().to_string();
-                    let cut = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
-                    ask.input.truncate(cut);
-                } else {
-                    ask.input.pop();
-                }
-            }
-            WKey::Named(NamedKey::Space) => ask.input.push(' '),
-            WKey::Character(c) if !ctrl => ask.input.push_str(c),
-            WKey::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => {
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    if let Ok(text) = cb.get_text() {
-                        ask.input.push_str(text.lines().next().unwrap_or(""));
-                    }
-                }
-            }
             _ => return false,
         }
         self.dirty = true;

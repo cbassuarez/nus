@@ -64,16 +64,18 @@ fn device_path() -> PathBuf {
 }
 
 impl Me {
+    /// The profile, or as much of it as this nus can read (store.rs): a
+    /// face from a newer nus costs the face, not the name.
     pub fn load() -> Option<Me> {
-        let s = std::fs::read_to_string(me_path()).ok()?;
-        serde_json::from_str(&s).ok()
+        if !me_path().is_file() {
+            return None;
+        }
+        crate::store::read_json::<Option<Me>>(&me_path()).value
     }
 
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(profile_dir());
-        if let Ok(s) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(me_path(), s);
-        }
+        let _ = crate::store::write_json(&me_path(), self);
     }
 
     pub fn forget() {
@@ -651,15 +653,14 @@ impl App {
             || (self.me_card.step == Some(Step::Face) && matches!(self.me_card.face, Face::Emoji(_)))
             || (self.me_card.step == Some(Step::Forge) && self.me_card.forge != crate::forge::Kind::GitHub)
             || (self.me_card.step == Some(Step::Key) && self.me_card.key_mode == 1);
-        // Paste: a path, a token, a key — one line of it.
-        if typing && self.mods.control_key() && matches!(&ev.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("v")) {
-            if let Some(text) = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok()) {
-                let line = text.lines().next().unwrap_or("").trim().to_string();
-                let room = 200usize.saturating_sub(self.me_card.input.chars().count());
-                self.me_card.input.extend(line.chars().take(room));
+        // The line's own editing: typing, erasing, a pasted path, token or
+        // key — one line of it (field.rs). A name is short; the rest have room.
+        if typing {
+            let room = if matches!(self.me_card.step, Some(Step::Name) | Some(Step::Device) | Some(Step::Face)) { 40 } else { 200 };
+            if crate::field::edit(&mut self.me_card.input, ev, self.mods, room).taken() {
+                self.dirty = true;
+                return true;
             }
-            self.dirty = true;
-            return true;
         }
         match &ev.logical_key {
             WKey::Named(NamedKey::Escape) => {
@@ -674,16 +675,6 @@ impl App {
                     self.me_next();
                 } else {
                     self.close_me_card();
-                }
-            }
-            WKey::Named(NamedKey::Backspace) if typing => {
-                self.me_card.input.pop();
-            }
-            WKey::Named(NamedKey::Space) if typing => self.me_card.input.push(' '),
-            WKey::Character(c) if typing && !self.mods.control_key() && !self.mods.super_key() && c.chars().all(|ch| !ch.is_control()) => {
-                let room = if matches!(self.me_card.step, Some(Step::Name) | Some(Step::Device) | Some(Step::Face)) { 40 } else { 200 };
-                if self.me_card.input.chars().count() < room {
-                    self.me_card.input.push_str(c);
                 }
             }
             _ => {}

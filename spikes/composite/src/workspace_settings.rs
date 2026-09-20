@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     assistants::{self, Field},
     fonts::{Family, Weight},
-    prompt::{Preset, Route, Source},
+    prompt::{Preset, Route, SearchEngine, Source},
 };
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
@@ -24,6 +24,8 @@ pub enum Hit {
     Count(Source, i8),
     Limit(bool, i8),
     Route(Route),
+    Engine(SearchEngine),
+    EditSearchUrl,
     Layout(u8),
     Pin,
     Unpin(usize),
@@ -105,6 +107,8 @@ pub fn label(h: Hit) -> String {
             if k < 0 { "fewer" } else { "more" }
         ),
         Hit::Route(r) => format!("Enter routes to {}", r.name()),
+        Hit::Engine(e) => format!("Search with {}", e.name()),
+        Hit::EditSearchUrl => "Edit the custom search engine".into(),
         Hit::Layout(k) => [
             "Wide prompt",
             "Compact suggestions",
@@ -169,9 +173,13 @@ impl App {
             Hit::Session(i) => self.activate(i),
             Hit::Work => self.run(crate::app::Action::Hatch),
             Hit::PromptPreset(p) => {
+                // Shortcuts and the engine are yours, not the preset's.
                 let saved = std::mem::take(&mut self.behavior.prompt.saved);
+                let (engine, search_url) = (self.behavior.prompt.engine, std::mem::take(&mut self.behavior.prompt.search_url));
                 self.behavior.prompt = crate::prompt::Config::preset(p);
                 self.behavior.prompt.saved = saved;
+                self.behavior.prompt.engine = engine;
+                self.behavior.prompt.search_url = search_url;
             }
             Hit::Source(source, k) => {
                 self.behavior.prompt.sources = self.behavior.prompt.ordered();
@@ -219,6 +227,20 @@ impl App {
                 *n = (*n as i16 + delta as i16).clamp(if home { 0 } else { 1 }, 12) as u8;
             }
             Hit::Route(r) => self.behavior.prompt.route = r,
+            Hit::Engine(e) => {
+                self.behavior.prompt.engine = e;
+                // Custom with nothing to fill: ask for the template.
+                if e == SearchEngine::Custom && !self.behavior.prompt.search_url.contains("%s") {
+                    self.apply_workspace_setting(Hit::EditSearchUrl);
+                }
+            }
+            Hit::EditSearchUrl => {
+                self.open_palette(crate::app::PaletteMode::Go);
+                if let Some((_, input)) = self.palette.as_mut() {
+                    let cur = &self.behavior.prompt.search_url;
+                    *input = format!("search {}", if cur.contains("%s") { cur.as_str() } else { "https://example.com/search?q=%s" });
+                }
+            }
             Hit::Layout(k) => {
                 let c = &mut self.behavior.prompt;
                 let v = match k {
@@ -278,6 +300,13 @@ impl App {
    ("HOME PREVIEW".into(),Control::PromptProof),
    ("ENTER WITH NO SUGGESTION SELECTED".into(),strip(Route::ALL.into_iter().map(|r|(r.name(),Hit::Route(r),c.route==r)).collect())),
    info("Explicit routes always work: > command, ? web search, @claude prompt, @codex prompt, @ollama prompt. Assistant prompts open a review before sending. Home always opens this surface."),
+   ("SEARCH ENGINE".into(),strip(SearchEngine::ALL.into_iter().map(|e|(e.name(),Hit::Engine(e),c.engine==e)).collect())),
+   info(match c.engine {
+       SearchEngine::Custom if c.search_url.contains("%s") => format!("? and the search row ask {} · %s stands for the words.", c.search_url),
+       SearchEngine::Custom => "Custom needs a template with %s where the words go, such as https://example.com/search?q=%s · until then Google answers.".to_string(),
+       e => format!("? and the search row under the line ask {} · words that are not an address still run in a shell unless Enter routes to web search.", e.name()),
+   }),
+   (String::new(),buttons(vec![("Edit custom engine",Hit::EditSearchUrl)])),
    ("LAYOUT".into(),strip(vec![("Wide",Hit::Layout(0),c.wide),("Compact",Hit::Layout(1),c.compact),("Near top",Hit::Layout(2),c.top),("Route keys",Hit::Layout(3),c.hints)])),
    info("Route keys are the marks at the foot of Home: a shell, a page, an assistant, the rows. The one Enter would take is lit, the pointer names each, and a click puts its prefix on the line. Turn them off for a bare line."),
    (format!("HOME · {} RESULTS",c.home_limit),buttons(vec![("Fewer",Hit::Limit(true,-1)),("More",Hit::Limit(true,1))])),

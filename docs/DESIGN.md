@@ -18,13 +18,13 @@ color on screen: the active Space's.
 
 | token      | paper (light)          | ink (dark)                 |
 |------------|------------------------|----------------------------|
-| paper      | `#f4f1ea`              | `#141414`                  |
+| paper      | `#ffffff`              | `#141414`                  |
 | ink        | `#141414`              | `#ece7da`                  |
 | tint       | `rgba(20,20,20,0.06)`  | `rgba(236,231,218,0.07)`   |
 | hot edge   | `rgba(20,20,20,0.12)`  | `rgba(236,231,218,0.14)`   |
 | dim        | `#8a857a`              | `#8a857a`                  |
 | page       | `#ffffff` (web content)| `#ffffff`                  |
-| scrim      | `rgba(244,241,234,.55)`| `rgba(0,0,0,0.5)`          |
+| scrim      | `rgba(255,255,255,.55)`| `rgba(0,0,0,0.5)`          |
 | caret      | the ink                | the ink                    |
 | selection  | the ink at 22%         | the ink at 22%             |
 
@@ -34,7 +34,7 @@ Attention ("waiting") uses the Space's own signal as a filled label.
 
 ANSI 0–15, paper theme:
 `#141414 #b3261e #2e7d32 #9a6b00 #1f5fbf #8e3b8e #1a7f8a #8a857a`
-`#4a4740 #d63a2f #3f9a45 #c48a00 #3b7ee0 #b04eb0 #22a3b0 #f4f1ea`
+`#4a4740 #d63a2f #3f9a45 #c48a00 #3b7ee0 #b04eb0 #22a3b0 #ffffff`
 
 ANSI 0–15, ink theme:
 `#141414 #e0574c #7ac77f #e5b94a #6ea3ef #d086d0 #6fd0da #bdb8ab`
