@@ -56,8 +56,11 @@ Windows uses `WINDOWS_CERTIFICATE` (base64 PFX) and
 SHA-256, timestamps them and verifies Authenticode before packaging. An Apple
 certificate cannot sign Windows applications.
 
-Preview packaging can be unsigned/ad-hoc when signing is not configured. Its
-metadata and the website must identify that accurately. Native install, media,
+Preview packaging is unsigned/ad-hoc unless the *complete* signing set for the
+platform is configured — all six Apple secrets, or both Windows secrets. A
+partial set (a certificate without notarization keys, say) signs nothing and
+says so in the log; a stable release refuses in that case. The package record
+and the website identify the outcome accurately. Native install, media,
 focus, accessibility and clean-machine tests remain release review gates; a
 successful loader check is not a complete desktop acceptance test.
 

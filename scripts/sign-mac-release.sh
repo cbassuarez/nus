@@ -2,16 +2,16 @@
 set -euo pipefail
 app="$1"
 channel="$2"
-if [[ -z "${MACOS_CERTIFICATE:-}" ]]; then
-  [[ "$channel" != stable ]] || { echo 'Stable releases require Developer ID signing and notarization.' >&2; exit 1; }
-  echo 'Preview retains its ad-hoc signature.'
+# Signing and notarization are one step: all six or none. A preview with an
+# incomplete set keeps its ad-hoc signature and says so; a stable refuses.
+required=(MACOS_CERTIFICATE MACOS_CERTIFICATE_PASSWORD MACOS_SIGN_IDENTITY APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER)
+missing=()
+for v in "${required[@]}"; do [[ -n "${!v:-}" ]] || missing+=("$v"); done
+if (( ${#missing[@]} )); then
+  [[ "$channel" != stable ]] || { echo "Stable releases require Developer ID signing and notarization; not set: ${missing[*]}" >&2; exit 1; }
+  echo "Preview retains its ad-hoc signature (not set: ${missing[*]})."
   exit 0
 fi
-: "${MACOS_CERTIFICATE_PASSWORD:?Missing certificate password}"
-: "${MACOS_SIGN_IDENTITY:?Missing Developer ID identity}"
-: "${APPLE_API_KEY:?Missing notarization API key}"
-: "${APPLE_API_KEY_ID:?Missing notarization API key ID}"
-: "${APPLE_API_ISSUER:?Missing notarization API issuer}"
 scratch=$(mktemp -d)
 keychain="$scratch/release.keychain-db"
 keychain_password=$(openssl rand -hex 32)

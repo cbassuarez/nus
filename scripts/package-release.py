@@ -13,6 +13,10 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = {'macos-arm64', 'windows-x86_64', 'linux-x86_64'}
+# The signing scripts sign only with the complete set; the record must say the same.
+MAC_SIGNING = ['MACOS_CERTIFICATE', 'MACOS_CERTIFICATE_PASSWORD', 'MACOS_SIGN_IDENTITY', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER']
+WINDOWS_SIGNING = ['WINDOWS_CERTIFICATE', 'WINDOWS_CERTIFICATE_PASSWORD']
+configured = lambda names: all(os.environ.get(n) for n in names)
 
 def digest(path):
     with path.open('rb') as stream:
@@ -35,7 +39,7 @@ def main():
         env = dict(os.environ, NUS_BUNDLE_OUT=str(app), NUS_BUNDLE_SKIP_BUILD='1')
         subprocess.run(['bash', str(ROOT/'scripts/bundle-mac.sh')], env=env, check=True)
         subprocess.run(['bash', str(ROOT/'scripts/sign-mac-release.sh'), str(app), 'stable' if stable else 'preview'], check=True)
-        signing = 'notarized' if os.environ.get('MACOS_CERTIFICATE') else 'ad-hoc'
+        signing = 'notarized' if configured(MAC_SIGNING) else 'ad-hoc'
         archive = out / f'{name}.zip'
         subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(app), str(archive)], check=True)
     else:
@@ -67,7 +71,7 @@ def main():
             for dll in sorted(redists)[-1].glob('*.dll'): shutil.copy2(dll, stage/dll.name)
             if not (stage/'vcruntime140.dll').exists(): raise RuntimeError('MSVC runtime missing')
             subprocess.run(['pwsh','-NoProfile','-File',str(ROOT/'scripts/sign-windows-release.ps1'),str(stage),'stable' if stable else 'preview'], check=True)
-            signing = 'authenticode' if os.environ.get('WINDOWS_CERTIFICATE') else 'unsigned'
+            signing = 'authenticode' if configured(WINDOWS_SIGNING) else 'unsigned'
             instructions = 'Extract the entire folder, then open nus.exe. Keep its DLLs and locales together.\nThe shell CLI is bin/nus.exe. Settings live in %LOCALAPPDATA%/nus/profile.\n'
         else:
             shutil.copy2(build/'composite', stage/'nus-desktop')
