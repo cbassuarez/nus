@@ -16,6 +16,10 @@ runtime, and check that the packaged executable can start its loader.
   Enable Publish or push a version tag to publish a complete passing matrix.
   Build-only Mac packages are ad-hoc signed even when signing secrets exist;
   that keeps credential access limited to publication runs.
+- A manual preview can select Linux, Windows or macOS independently. All selected
+  jobs must pass; its notes explicitly list omitted platforms. This lets Linux
+  previews ship while Apple's account or signing is pending. Stable still requires
+  the complete four-platform matrix. Published previews remain immutable.
 
 The publication job verifies every archive's size and SHA-256, creates a draft,
 uploads all four packages, `SHA256SUMS.txt` and `release.json`, then publishes.

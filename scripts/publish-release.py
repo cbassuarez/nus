@@ -14,10 +14,14 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--tag',required=True)
     p.add_argument('--revision',required=True)
+    p.add_argument('--targets',default=','.join(sorted(package.TARGETS)))
     p.add_argument('--directory',type=Path,default=Path('dist/release'))
     args=p.parse_args()
+    targets=set(args.targets.split(','))
+    if not targets or not targets <= package.TARGETS: raise ValueError('Unknown release targets')
+    if '-preview.' not in args.tag and targets != package.TARGETS: raise ValueError('Stable requires every platform')
     entries=[]
-    for target in sorted(package.TARGETS):
+    for target in sorted(targets):
         entry=json.loads((args.directory/f'{target}.json').read_text())
         archive=args.directory/entry['name']
         if entry['version'] != args.tag or entry['target'] != target or archive.name != entry['name']:
@@ -33,6 +37,8 @@ def main():
     notes=args.directory/'notes.md'
     lines=[f'nus {args.tag}', '', 'A terminal, browser and workspace in one application.', '', f'Channel: **{manifest["channel"]}** · Source: `{args.revision}`', '', '## Downloads', '', '| Package | Signing |', '| --- | --- |']
     lines.extend(f'| {e["target"]} | {e["signing"]} |' for e in entries)
+    omitted=sorted(package.TARGETS-targets)
+    if omitted: lines += ['', 'Not included in this preview: '+', '.join(omitted)+'. These packages remain unavailable until their platform checks and signing setup are complete.']
     lines += ['', 'Extract the complete package before launching. macOS: move nus.app to Applications. Windows: launch nus.exe. Linux: run ./nus; see README.txt for desktop integration and runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
     # The public API returns release notes without a second cross-origin asset
     # request. Keep the same verified metadata available to the download page.

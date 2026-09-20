@@ -12,6 +12,11 @@ on:
         description: Publish the complete matrix to GitHub Releases
         type: boolean
         default: false
+      platforms:
+        description: 'Preview platforms (stable always requires all)'
+        type: choice
+        options: [all, linux, windows, macos]
+        default: all
 
 permissions:
   contents: read
@@ -29,38 +34,40 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      matrix: ${{ steps.version.outputs.matrix }}
+      targets: ${{ steps.version.outputs.targets }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 scripts/test-release.py
       - id: version
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_PLATFORMS: ${{ inputs.platforms || 'all' }}
         run: |
           python3 - <<'PY'
-          import os,re,tomllib
+          import os,re,tomllib,json
           tag=os.environ['RELEASE_TAG']
           m=re.fullmatch(r'v(\d+\.\d+\.\d+)(?:-preview\.\d+)?',tag)
           if not m: raise SystemExit('Expected vX.Y.Z or vX.Y.Z-preview.N')
           root=tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version']
           app=tomllib.load(open('spikes/composite/Cargo.toml','rb'))['package']['version']
           if m[1] != root or app != root: raise SystemExit('Tag, app and workspace versions must match')
-          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('tag='+tag+'\n')
+          selected=os.environ['RELEASE_PLATFORMS']
+          if '-preview.' not in tag and selected!='all': raise SystemExit('Stable requires every platform')
+          targets=[('macos-15','macos-arm64'),('macos-15-intel','macos-x86_64'),('windows-2022','windows-x86_64'),('ubuntu-22.04','linux-x86_64')]
+          targets=[(runner,target) for runner,target in targets if selected=='all' or target.startswith(selected)]
+          if not targets: raise SystemExit('No selected platforms')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+            out.write('tag='+tag+'\n')
+            out.write('matrix='+json.dumps({'include':[{'os':runner,'target':target} for runner,target in targets]})+'\n')
+            out.write('targets='+','.join(target for runner,target in targets)+'\n')
           PY
   package:
     needs: version
     timeout-minutes: 75
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: macos-arm64
-          - os: macos-15-intel
-            target: macos-x86_64
-          - os: windows-2022
-            target: windows-x86_64
-          - os: ubuntu-22.04
-            target: linux-x86_64
+      matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -144,4 +151,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
-        run: python3 scripts/publish-release.py --tag "$RELEASE_TAG" --revision "$GITHUB_SHA"
+          RELEASE_TARGETS: ${{ needs.version.outputs.targets }}
+        run: python3 scripts/publish-release.py --tag "$RELEASE_TAG" --revision "$GITHUB_SHA" --targets "$RELEASE_TARGETS"
