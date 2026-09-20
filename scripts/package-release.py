@@ -80,7 +80,7 @@ def main():
             signing = 'checksum'
             instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA and NSS.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/profile.\nTo add a desktop entry, copy nus.desktop to ~/.local/share/applications,\nset Exec and Icon to the absolute extracted paths, and keep the folder in place.\n'
         shutil.copy2(ROOT/'LICENSE', stage/'LICENSE')
-        (stage/'README.txt').write_text(f'nus {args.tag}\n\n{instructions}\nChannel: {"stable" if stable else "preview"}\nSigning: {signing}\nhttps://nus.dev/download/\n')
+        (stage/'README.txt').write_text(f'nus {args.tag}\n\n{instructions}\nChannel: {"stable" if stable else "preview"}\nSigning: {signing}\nhttps://cbassuarez.com/nus.dev/download/\n')
         (stage/'nus-package.json').write_text(json.dumps({'version':args.tag,'target':args.target,'signing':signing}))
         if args.target.startswith('windows'):
             archive = out/f'{name}.zip'
