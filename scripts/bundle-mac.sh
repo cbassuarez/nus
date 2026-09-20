@@ -33,15 +33,21 @@ bin="$root/spikes/composite/target/$profile"
 if [[ "${NUS_BUNDLE_SKIP_BUILD:-0}" != 1 ]]; then
   echo "· building ($profile)"
   (cd "$root/spikes/composite" && cargo build $([[ $profile == release ]] && echo --release) --locked --bins -q)
-  (cd "$root" && cargo build $([[ $profile == release ]] && echo --release) --locked -p nus-cli -q)
+  (cd "$root" && cargo build $([[ $profile == release ]] && echo --release) --locked -p nus-cli -p nus-hold -q)
 fi
 
 echo "· laying out $app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp "$bin/composite" "$app/Contents/MacOS/$name"
+cp "$root/target/$profile/nus-hold" "$app/Contents/MacOS/nus-hold"
 mkdir -p "$app/Contents/Resources/bin"
 cp "$root/target/$profile/nus" "$app/Contents/Resources/bin/nus"
+mkdir -p "$app/Contents/Resources/licenses"
+cp "$root/LICENSE" "$app/Contents/Resources/licenses/nus.txt"
+cp "$root/assets/fonts/"{OFL-*.txt,License-*} "$app/Contents/Resources/licenses/"
+cp "$root/assets/icons/LICENSE" "$app/Contents/Resources/licenses/icons.txt"
+cp "$CEF_PATH/CREDITS.html" "$app/Contents/Resources/licenses/Chromium.html"
 ditto "$framework" "$app/Contents/Frameworks/Chromium Embedded Framework.framework"
 
 plist() { # plist <path> <executable> <identifier> <is-helper>

@@ -50,8 +50,14 @@ def main():
         for folder in ['locales', 'swiftshader', 'WidevineCdm']:
             if (cef/folder).is_dir(): shutil.copytree(cef/folder, stage/folder)
         (stage/'bin').mkdir()
+        licenses=stage/'licenses'
+        licenses.mkdir()
+        for notice in (ROOT/'assets/fonts').iterdir():
+            if notice.name.startswith(('OFL-', 'License-')): shutil.copy2(notice, licenses/notice.name)
+        shutil.copy2(ROOT/'assets/icons/LICENSE',licenses/'icons.txt')
         if args.target.startswith('windows'):
             shutil.copy2(build/'composite.exe', stage/'nus.exe')
+            shutil.copy2(ROOT/'target/release/nus-hold.exe', stage/'nus-hold.exe')
             shutil.copy2(ROOT/'target/release/nus.exe', stage/'bin/nus.exe')
             # The MSVC runtime is required on clean machines, not only runners.
             redist = Path(os.environ['VCToolsRedistDir'])/'x64/Microsoft.VC143.CRT'
@@ -62,6 +68,7 @@ def main():
             instructions = 'Extract the entire folder, then open nus.exe. Keep its DLLs and locales together.\nThe shell CLI is bin/nus.exe. Settings live in %LOCALAPPDATA%/nus/profile.\n'
         else:
             shutil.copy2(build/'composite', stage/'nus-desktop')
+            shutil.copy2(ROOT/'target/release/nus-hold', stage/'nus-hold')
             shutil.copy2(ROOT/'target/release/nus', stage/'bin/nus')
             (stage/'nus').write_text('#!/bin/sh\nset -eu\ndir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport LD_LIBRARY_PATH="$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$dir/nus-desktop" "$@"\n')
             (stage/'nus').chmod(0o755)
