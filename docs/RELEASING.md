@@ -23,6 +23,11 @@ runtime, and check that the packaged executable can start its loader.
 
 The publication job verifies every archive's size and SHA-256, creates a draft,
 uploads all three packages, `SHA256SUMS.txt` and `release.json`, then publishes.
+It then sends a `release-published` dispatch to the nus.dev repository, which
+refreshes the download page's fallback snapshot; this needs a
+`SITE_DISPATCH_TOKEN` secret with write access to nus.dev, and without it the
+site refreshes on its own schedule instead. The page itself reads GitHub
+Releases live on every load.
 A failed upload remains a draft. The downloads site reads only published releases
 and only exposes assets matching this package contract. Missing channels and
 failed API requests never become invented download links.
