@@ -111,13 +111,15 @@ pub struct Env {
     pub pointer: Option<(f32, f32)>,
     pub typed: String,
     pub taps: Vec<(f32, f32)>,
+    /// Individual existing artwork pieces positioned by an embedding page.
+    pub pieces: Vec<[f32; 4]>,
     pub face: String,
     pub paper: Color,
     pub ink: Color,
     pub signal: Color,
     pub dim: Color,
     pub tint: Color,
-    pub place: (f32, f32),
+    pub place: Option<(f32, f32)>,
     pub procs: Option<crate::procs::Shared>,
     /// Logical px per… the pane's scale, so an art can size hairlines.
     pub scale: f32,
@@ -391,10 +393,19 @@ impl mlua::UserData for Canvas {
             Ok(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0))
         });
         m.add_method("place", |lua, c, ()| {
-            let (lat, lon) = c.0.borrow().env.place;
+            let Some((lat, lon)) = c.0.borrow().env.place else { return Ok(None); };
             let t = lua.create_table()?;
             t.set("lat", lat)?;
             t.set("lon", lon)?;
+            Ok(Some(t))
+        });
+        m.add_method("pieces", |lua, c, ()| {
+            let t=lua.create_table()?;
+            for (i,p) in c.0.borrow().env.pieces.iter().enumerate() {
+                let item=lua.create_table()?;
+                item.set("index",p[0])?;item.set("x",p[1])?;item.set("y",p[2])?;item.set("scale",p[3])?;
+                t.set(i+1,item)?;
+            }
             Ok(t)
         });
         m.add_method("taps", |lua, c, ()| {
@@ -516,6 +527,12 @@ impl Art {
 
     /// One frame: the script's `draw(c)`, then what it drew.
     pub fn frame(&mut self, env: Env) -> Vec<Cmd> {
+        let time = self.started.elapsed().as_secs_f32();
+        self.frame_at(env, time)
+    }
+
+    /// Sample existing artwork at a fixed time for previews and reduced motion.
+    pub fn frame_at(&mut self, env: Env, time: f32) -> Vec<Cmd> {
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().clamp(1.0 / 240.0, 0.05);
         self.last = now;
@@ -524,7 +541,7 @@ impl Art {
             s.env = env;
             s.cmds.clear();
             s.dark = false;
-            s.t = self.started.elapsed().as_secs_f32();
+            s.t = time;
             s.dt = dt;
         }
         if self.status.is_some() {
@@ -561,7 +578,11 @@ impl App {
     /// an art that ran at the pane's size. Type too small to read is
     /// greeked — a bar where the words would be.
     pub(crate) fn draw_art_cmds_scaled(&mut self, scene: &mut Scene, r: Rect, cmds: Vec<Cmd>, sc: f32) {
-        scene.layer(Some(r));
+        // Clip to the card within whatever clips the page, and give the page
+        // its clip back after: a bare layer(None) here let every card and row
+        // drawn afterwards spill over the settings header as the page scrolled.
+        let outer = scene.clip();
+        scene.layer(Some(outer.map_or(r, |o| r.intersect(&o))));
         let (ox, oy) = (r.x, r.y);
         let at = |x: f32, y: f32| -> [f32; 2] { [x * sc + ox, y * sc + oy] };
         for cmd in cmds {
@@ -612,7 +633,7 @@ impl App {
                 }
             }
         }
-        scene.layer(None);
+        scene.layer(outer);
     }
 
     /// The sampler, started the first time an art asks.
@@ -623,15 +644,9 @@ impl App {
         self.procs.clone().unwrap()
     }
 
-    /// A rough place for the sky: the setting, else the clock's zone.
-    pub(crate) fn place(&self) -> (f32, f32) {
-        if let Some([lat, lon]) = self.behavior.place {
-            return (lat, lon);
-        }
-        // Local offset from UTC, in hours, puts the longitude within a zone.
-        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        let offset_h = local_offset_hours(now);
-        (40.0, (offset_h * 15.0).clamp(-180.0, 180.0))
+    /// Only an explicitly chosen location is exposed to artwork.
+    pub(crate) fn place(&self) -> Option<(f32, f32)> {
+        self.behavior.place.map(|[lat, lon]| (lat, lon))
     }
 
     /// New art from the blank, opened in the editor.
@@ -699,32 +714,6 @@ impl App {
     }
 }
 
-/// Hours east of UTC for the local zone at `unix`, from the C library's
-/// idea of local time.
-fn local_offset_hours(unix: i64) -> f32 {
-    // Windows: _get_timezone gives seconds west of UTC; DST from _get_daylight.
-    #[cfg(windows)]
-    {
-        extern "C" {
-            fn _get_timezone(seconds: *mut std::os::raw::c_long) -> std::os::raw::c_int;
-            fn _get_daylight(hours: *mut std::os::raw::c_int) -> std::os::raw::c_int;
-        }
-        let mut tz: std::os::raw::c_long = 0;
-        let mut dl: std::os::raw::c_int = 0;
-        unsafe {
-            let _ = _get_timezone(&mut tz);
-            let _ = _get_daylight(&mut dl);
-        }
-        let _ = unix;
-        return -(tz as f32) / 3600.0 + if dl != 0 { 1.0 } else { 0.0 };
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = unix;
-        0.0
-    }
-}
-
 /// The art's own folder, for the picker's OPEN THE FOLDER.
 pub fn open_dir() {
     let d = dir();
@@ -750,7 +739,7 @@ mod tests {
         for (key, _, _) in BUILTIN {
             let mut art = Art::open(key);
             assert!(art.status.is_none(), "{key}: {:?}", art.status);
-            let env = Env { w: 1280.0, h: 800.0, line: [250.0, 300.0, 780.0, 40.0], face: "paper".into(), paper: [0.96, 0.95, 0.92, 1.0], ink: [0.08, 0.08, 0.08, 1.0], signal: [0.78, 0.06, 0.18, 1.0], dim: [0.42, 0.41, 0.38, 1.0], tint: [0.9, 0.9, 0.88, 1.0], place: (35.2, -106.6), scale: 1.0, ..Default::default() };
+            let env = Env { w: 1280.0, h: 800.0, line: [250.0, 300.0, 780.0, 40.0], face: "paper".into(), paper: [0.96, 0.95, 0.92, 1.0], ink: [0.08, 0.08, 0.08, 1.0], signal: [0.78, 0.06, 0.18, 1.0], dim: [0.42, 0.41, 0.38, 1.0], tint: [0.9, 0.9, 0.88, 1.0], place: Some((35.2, -106.6)), scale: 1.0, ..Default::default() };
             // Memphis drops in on the beat: give it a beat.
             std::thread::sleep(std::time::Duration::from_millis(320));
             let mut total = 0;
@@ -761,6 +750,27 @@ mod tests {
             }
             assert!(total > 0, "{key} drew nothing");
         }
+    }
+
+    #[test]
+    fn location_art_waits_for_an_explicit_place() {
+        for key in ["sky","space"] {
+            let mut art=Art::open(key);
+            let commands=art.frame_at(Env {w:800.0,h:600.0,..Default::default()},3.0);
+            assert!(art.status.is_none(),"{key}: {:?}",art.status);
+            assert!(commands.iter().any(|c|matches!(c,Cmd::Text(_,_,text,..) if text.contains("Choose your location"))));
+            assert!(!commands.iter().any(|c|matches!(c,Cmd::Sky(..))));
+        }
+    }
+
+    #[test]
+    fn welcome_places_existing_memphis_vectors_individually() {
+        let mut art=Art::open("memphis");
+        let commands=art.frame_at(Env {w:800.0,h:600.0,pieces:vec![[2.0,100.0,100.0,0.3],[6.0,650.0,480.0,0.4]],face:"paper".into(),paper:[1.0;4],ink:[0.0,0.0,0.0,1.0],..Default::default()},3.0);
+        assert!(art.status.is_none(),"{:?}",art.status);
+        let polys:Vec<_>=commands.iter().filter_map(|c|if let Cmd::Poly(points,_)=c {Some(points)} else {None}).collect();
+        assert!(polys.iter().any(|p|p.iter().all(|xy|xy[0]<180.0 && xy[1]<180.0)));
+        assert!(polys.iter().any(|p|p.iter().all(|xy|xy[0]>550.0 && xy[1]>450.0)));
     }
 
     #[test]

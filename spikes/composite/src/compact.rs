@@ -65,6 +65,10 @@ impl App {
         self.icon_button(scene, icons::PLUS, isz, cx, nr.y + ((row - isz) / 2.0).round(), ink, nr, hover_key("compact-new", 0), IconMotion::Spin(90.0));
         self.side_hits.push((nr, SideHit::NewShell));
         scene.hline(sb.x, sb.y + COMPACT_HEAD * self.scale - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
+        if self.side_page==crate::files::SidePage::Files {
+            self.draw_tree(scene,sb,sb.y+self.px(COMPACT_HEAD),g.foot_y);
+            self.draw_responsive_footer(scene,sb,g.foot_y);self.draw_sidebar_menus(scene,sb);return;
+        }
         // Pinned tabs first, as a block.
         let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids.clone()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
@@ -88,7 +92,7 @@ impl App {
         // Rows.
         let mut tip: Option<(usize, f32)> = None;
         for &(i, y, h) in &g.rows {
-            if h < 1.0 {
+            if h < 1.0 || y+h>g.foot_y {
                 continue;
             }
             let cell = Rect::new(sb.x, y, sb.w, h);
@@ -126,13 +130,7 @@ impl App {
                 tip = Some((i, y));
             }
         }
-        // Footer: settings.
-        let fy = g.foot_y;
-        scene.hline(sb.x, fy, sb.w, self.px(m::STRUCTURE), ink);
-        let fh = self.px(m::FOOT_H);
-        let fr = Rect::new(sb.x, fy, sb.w, fh);
-        self.icon_button(scene, icons::SETTINGS, isz, cx, fy + ((fh - isz) / 2.0).round(), ink, fr, hover_key("compact-settings", 0), IconMotion::Spin(30.0));
-        self.side_hits.push((fr, SideHit::Settings));
+        self.draw_responsive_footer(scene,sb,g.foot_y);
         self.tabs = tabs;
         self.compact_tip = tip;
         self.draw_sidebar_menus(scene, sb);
@@ -172,6 +170,7 @@ impl App {
 
     /// A tab's icon: its emoji, its favicon, or its kind.
     fn draw_tab_icon(&mut self, scene: &mut Scene, tab: &crate::app::Tab, x: f32, y: f32, isz: f32, color: nus_render::Color) {
+        if self.draw_small_tab(scene,tab,x,y,isz,color){return;}
         if let Some(e) = &tab.emoji {
             let st = Style { font: self.f.ui, px: self.px(14.0), color, tracking: 0.0 };
             let ew = self.fonts.measure(st, e);

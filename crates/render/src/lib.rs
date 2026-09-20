@@ -5,6 +5,7 @@
 pub mod gpu;
 pub mod grid;
 pub mod icon;
+pub mod dock_icon;
 pub mod policy;
 pub mod scene;
 pub mod text;

@@ -89,6 +89,10 @@ function draw(c)
   local star = if paper then "#141413" else "#f4f1ea"
   local warm = if paper then "#c8102e" else "#e8604a"
   local place = c:place()
+  if not place then
+    c:text(c.w / 2, c.h * 0.2, "Choose your location in Settings → Startup", 14, c.ink, 1, { align = "center" })
+    return
+  end
   local lat, lon = place.lat, place.lon
   local sinLat, cosLat = math.sin(lat * D), math.cos(lat * D)
   local nowMs = c:now()

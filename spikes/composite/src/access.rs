@@ -20,6 +20,7 @@ pub enum Target {
     Setting(Hit, f32),
     Palette(usize),
     HintSkip,
+    Download(crate::downloads::Hit),
     None,
 }
 
@@ -49,7 +50,7 @@ impl App {
                 if n > 0 { format!("{n} tabs waiting") } else { "no tabs waiting".into() }
             }
             CrumbHit::Close => "close window".into(),
-            CrumbHit::Maximize => "maximize window".into(),
+            CrumbHit::Maximize => if cfg!(target_os="macos") {"enter full screen"} else {"maximize window"}.into(),
             CrumbHit::Minimize => "minimize window".into(),
             CrumbHit::Start => "atlas: last session and recent places".into(),
         }
@@ -115,6 +116,7 @@ impl App {
         for (r, hit) in self.side_hits.clone() {
             use crate::app::SideHit as S;
             let label = match hit {
+                S::MenuDrawer => "nus menu drawer".into(),
                 S::Close(i) => format!("close tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::Profile => "profile".into(),
                 S::NewTab => "new tab, choose a kind".into(),
@@ -137,7 +139,6 @@ impl App {
                 S::FilesUp => "up one folder".into(),
                 S::FileRow(k) => self.tree.rows.get(k).map(|n| if n.dir { format!("folder {}", n.name) } else { format!("file {}", n.name) }).unwrap_or_default(),
                 S::Downloads => "downloads".into(),
-                S::DlOpen(i) => format!("download {}", i + 1),
                 S::Fold(i) => format!("{} {}", if self.collapsed.contains(&self.tabs[i].id) { "unfold" } else { "fold" }, self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::Settings => "settings".into(),
                 S::TabRename(i) => format!("rename tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
@@ -161,7 +162,7 @@ impl App {
             side_kids.push(id);
         }
         // The welcome page's buttons.
-        for (i, (r, act)) in self.welcome_hits.clone().into_iter().enumerate() {
+        for (i, (r, act)) in self.welcome_hits.clone().into_iter().enumerate().filter(|_| self.tabs.get(self.active).is_some_and(|t|matches!(t.left,Pane::Hints(_))||matches!(t.right,Some(Pane::Hints(_))))) {
             let id = fresh(&mut map, Target::Welcome(i));
             let mut n = Node::new(Role::Button);
             n.set_label(format!("welcome {:?}", act).to_lowercase());
@@ -214,6 +215,7 @@ impl App {
                         n.set_bounds(bounds(s.rect));
                         n
                     }
+                    Pane::Downloads(p) => {let mut n=Node::new(Role::Document);n.set_label("downloads");n.set_bounds(bounds(p.rect));n}
                     Pane::Ports(p) => {
                         let mut n = Node::new(Role::Document);
                         n.set_label("ports");
@@ -247,7 +249,8 @@ impl App {
                 }
                 n.add_action(Action::Focus);
                 // Settings controls hang off the settings pane.
-                if matches!(p, Pane::Settings(_)) {
+                if let Pane::Settings(settings) = p {
+                    let states = self.setting_states(settings.section);
                     let mut kids = Vec::new();
                     let hits: Vec<(nus_render::Rect, Hit, String)> = self.settings_hits.iter().map(|(r, h)| (*r, *h, self.setting_label(*h))).collect();
                     for (r, hit, label) in hits {
@@ -257,12 +260,24 @@ impl App {
                             Hit::Slider(kind, _, _) => {
                                 let mut c = Node::new(Role::Slider);
                                 c.set_numeric_value(self.slider_value(kind) as f64 * 100.0);
+                                c.set_min_numeric_value(0.0);
+                                c.set_max_numeric_value(100.0);
+                                c.set_numeric_value_step(5.0);
+                                c.add_action(Action::SetValue);
+                                c.add_action(Action::Increment);
+                                c.add_action(Action::Decrement);
                                 c
                             }
-                            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::Back => Node::new(Role::Button),
+                            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::Back |
+                            Hit::AddArt | Hit::AskArt | Hit::OpenArtFolder | Hit::EditHomeUrl | Hit::SetLaunchTabs | Hit::ClearLaunchTabs => Node::new(Role::Button),
+                            h if App::setting_is_action(h) => Node::new(Role::Button),
+                            Hit::AskCtx(_) | Hit::FooterTheme(_) => Node::new(Role::CheckBox),
                             _ => Node::new(Role::RadioButton),
                         };
                         c.set_label(label);
+                        if let Some(selected) = match hit { Hit::Section(k)|Hit::Tile(k) => if let Pane::Settings(s)=p {Some(k==s.section)}else{None}, _=>None }.or_else(||states.iter().find(|(h,_)|*h==hit).map(|(_,v)|*v).or_else(||self.startup_choice_selected(hit))) {
+                            c.set_toggled(if selected { accesskit::Toggled::True } else { accesskit::Toggled::False });
+                        }
                         c.set_bounds(bounds(r));
                         c.add_action(Action::Click);
                         nodes.push((cid, c));
@@ -331,6 +346,19 @@ impl App {
             root_kids.push(NodeId(PALETTE));
         }
 
+        if !self.download_ui.hits.is_empty() {
+            let mut kids=Vec::new();
+            for d in crate::downloads::list() {
+                let id=fresh(&mut map,Target::None);let mut n=Node::new(Role::Label);n.set_label(format!("{} · {}",d.name,d.status()));nodes.push((id,n));kids.push(id);
+            }
+            for (i,(r,hit)) in self.download_ui.hits.iter().enumerate() {
+                let id=fresh(&mut map,Target::Download(*hit));let mut n=Node::new(Role::Button);n.set_label(hit.label());n.set_bounds(bounds(*r));n.add_action(Action::Click);nodes.push((id,n));kids.push(id);
+                if self.dl_menu&&i==self.download_ui.focus.unwrap_or(0){focus=id;}
+            }
+            let mut group=Node::new(if self.dl_menu{Role::Dialog}else{Role::Group});group.set_label("Downloads");group.set_children(kids);
+            if self.dl_menu{group.set_modal();if let Some(r)=self.download_ui.rect{group.set_bounds(bounds(r));}}
+            nodes.push((NodeId(6),group));root_kids.push(NodeId(6));
+        }
         let mut root = Node::new(Role::Window);
         root.set_label("nus");
         root.set_children(root_kids);
@@ -357,6 +385,15 @@ impl App {
                     self.welcome_act(act);
                 }
             }
+            (action @ (Action::SetValue | Action::Increment | Action::Decrement), Target::Setting(Hit::Slider(kind, _, _), _)) => {
+                let value = match action {
+                    Action::Increment => self.slider_value(kind) + 0.05,
+                    Action::Decrement => self.slider_value(kind) - 0.05,
+                    _ => match req.data { Some(accesskit::ActionData::NumericValue(v)) if v.is_finite() => v as f32 / 100.0, _ => return },
+                };
+                self.set_slider(kind, value);
+                self.save_prefs();
+            }
             (Action::Click, Target::Setting(hit, x)) => {
                 self.apply_setting(hit, x);
                 self.save_prefs();
@@ -365,6 +402,7 @@ impl App {
                 self.palette_sel = i;
                 self.palette_commit();
             }
+            (Action::Click, Target::Download(hit)) => self.download_action(hit),
             (Action::Click, Target::HintSkip) => self.dismiss_hints(),
             _ => {}
         }

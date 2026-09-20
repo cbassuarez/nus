@@ -96,11 +96,7 @@ pub struct Backend {
     pub how: String,
 }
 
-fn on_path(bin: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else { return false };
-    let names: Vec<String> = if cfg!(windows) { vec![format!("{bin}.exe"), format!("{bin}.cmd"), format!("{bin}.bat"), bin.to_string()] } else { vec![bin.to_string()] };
-    std::env::split_paths(&path).any(|d| names.iter().any(|n| d.join(n).is_file()))
-}
+fn on_path(bin: &str) -> bool { crate::assistants::resolve(bin, "").is_some() }
 
 fn copilot_installed() -> bool {
     if on_path("copilot") {
@@ -132,15 +128,15 @@ pub fn declared() -> Vec<Backend> {
         .unwrap_or_default()
 }
 
-/// The backend in use: the one named in the settings when it is on the
-/// machine, else the first. LOCAL is a declared assistant or ollama.
+/// Honor an explicit backend selection. Only the automatic choice may use
+/// the first discovered backend; missing selections must fail visibly.
 pub fn chosen(name: &str) -> Option<Backend> {
     let all = backends();
-    all.iter().find(|b| b.name == name).cloned().or_else(|| all.into_iter().next())
+    if name.is_empty() { all.into_iter().next() } else { all.into_iter().find(|b| b.name == name) }
 }
 
 pub fn is_local(b: &Backend) -> bool {
-    b.name.starts_with("declared:") || b.name == "ollama"
+    b.name == "ollama" && std::env::var("OLLAMA_HOST").map(|h|h.starts_with("127.0.0.1")||h.starts_with("http://127.0.0.1")||h.starts_with("http://localhost")).unwrap_or(true) && !crate::prefs::Prefs::load().behavior.map(|b|b.assistants.providers[2].model.contains("cloud")).unwrap_or(false)
 }
 
 /// One question, answered whole, with no context but the machine's: what
@@ -151,26 +147,27 @@ pub fn answer(q: &str) -> Result<String, String> {
     let prompt = format!("You are the assistant inside nus, a terminal that is also a browser, answering from a phone: short, plain, at most one fenced code block.
 Question: {q}
 ");
-    run(&backend, &prompt, None)
+    run(&backend, &prompt, None, None)
 }
 
 /// The backends this machine has, best first.
 pub fn backends() -> Vec<Backend> {
     let mut v = declared();
+    let config = crate::prefs::Prefs::load().behavior.map(|b|b.assistants).unwrap_or_default();
     if let Ok(cmd) = std::env::var("NUS_ASK_CMD") {
         v.push(Backend { name: "custom".into(), how: cmd });
     }
-    if on_path("claude") {
+    if crate::assistants::resolve("claude", &config.providers[0].executable).is_some() {
         v.push(Backend { name: "claude".into(), how: "claude -p --output-format text".into() });
     }
-    if on_path("codex") {
+    if crate::assistants::resolve("codex", &config.providers[1].executable).is_some() {
         v.push(Backend { name: "codex".into(), how: "codex exec -".into() });
     }
     if on_path("gh") && copilot_installed() {
         v.push(Backend { name: "copilot".into(), how: "gh copilot -p".into() });
     }
-    if on_path("ollama") {
-        v.push(Backend { name: "ollama".into(), how: "ollama run llama3.2".into() });
+    if crate::assistants::resolve("ollama", &config.providers[2].executable).is_some() {
+        v.push(Backend { name: "ollama".into(), how: format!("ollama run {}", if config.providers[2].model.is_empty() {"<choose model>"} else {&config.providers[2].model}) });
     }
     if std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.is_empty()) && on_path("curl") {
         v.push(Backend { name: "anthropic api".into(), how: "curl · claude-sonnet-5".into() });
@@ -188,9 +185,11 @@ fn no_window(c: &mut std::process::Command) {
 
 /// Run one prompt through a backend, blocking; called on a worker thread.
 /// With `stream`, each line of the answer is sent as it arrives.
-fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<String>>) -> Result<String, String> {
+fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<String>>, cwd: Option<&str>) -> Result<String, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    let config = crate::prefs::Prefs::load().behavior.map(|b|b.assistants).unwrap_or_default();
+    let program = |i: usize| crate::assistants::resolve(crate::assistants::BINS[i], &config.providers[i].executable).ok_or_else(|| format!("{} is unavailable. Check Assistants settings.", crate::assistants::NAMES[i]));
     let mut c = match backend.name.as_str() {
         n if n.starts_with("declared:") => {
             let mut c = if cfg!(windows) { Command::new("cmd") } else { Command::new("sh") };
@@ -203,13 +202,15 @@ fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<S
             c
         }
         "claude" => {
-            let mut c = Command::new("claude");
-            c.args(["-p", "--output-format", "text"]);
+            let mut c = Command::new(program(0)?);
+            c.args(["-p", "--output-format", "text", "--tools", "", "--disallowedTools", "mcp__*"]);
+            if !config.providers[0].model.is_empty() {c.args(["--model", &config.providers[0].model]);}
             c
         }
         "codex" => {
-            let mut c = Command::new("codex");
-            c.args(["exec", "-"]);
+            let mut c = Command::new(program(1)?);
+            c.args(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-"]);
+            if !config.providers[1].model.is_empty() {c.args(["--model", &config.providers[1].model]);}
             c
         }
         "copilot" => {
@@ -218,8 +219,9 @@ fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<S
             c
         }
         "ollama" => {
-            let mut c = Command::new("ollama");
-            c.args(["run", "llama3.2"]);
+            if config.providers[2].model.is_empty() {return Err("Choose an Ollama model in Assistants settings.".into());}
+            let mut c = Command::new(program(2)?);
+            c.args(["run", &config.providers[2].model]);
             c
         }
         "anthropic api" => {
@@ -249,33 +251,29 @@ fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<S
         }
         _ => return Err("no backend".into()),
     };
+    if let Some(cwd) = cwd.filter(|p| std::path::Path::new(p).is_dir()) { c.current_dir(cwd); }
     no_window(&mut c);
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = c.spawn().map_err(|e| format!("{}: {e}", backend.name))?;
-    if let Some(mut si) = child.stdin.take() {
-        let _ = si.write_all(prompt.as_bytes());
-    }
-    // The answer as it comes: read stdout line by line, sending each.
-    let mut text = String::new();
-    if let Some(so) = child.stdout.take() {
+    let mut child=c.spawn().map_err(|e|format!("{}: {e}",backend.name))?;
+    let prompt=prompt.to_string();
+    if let Some(mut input)=child.stdin.take(){std::thread::spawn(move||{let _=input.write_all(prompt.as_bytes());});}
+    let output=child.stdout.take().unwrap();let errors=child.stderr.take().unwrap();
+    let reader=std::thread::spawn(move||{
         use std::io::BufRead;
-        let reader = std::io::BufReader::new(so);
-        for line in reader.split(b'\n').map_while(Result::ok) {
-            let l = String::from_utf8_lossy(&line).to_string();
-            text.push_str(&l);
-            text.push('\n');
-            if let Some(tx) = &stream {
-                let _ = tx.send(format!("{l}\n"));
-            }
-        }
-    }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    let text = text.trim().to_string();
-    if !out.status.success() && text.is_empty() {
-        let e = String::from_utf8_lossy(&out.stderr);
-        return Err(crate::surface::first_line(e.trim()));
-    }
-    Ok(text)
+        let mut text=String::new();
+        for line in std::io::BufReader::new(output).split(b'\n').map_while(Result::ok){
+            let line=String::from_utf8_lossy(&line);if text.len()<4*1024*1024 {text.push_str(&line);text.push('\n');if let Some(tx)=&stream{let _=tx.send(format!("{line}\n"));}}
+        }text
+    });
+    let stderr=std::thread::spawn(move||{use std::io::Read;let mut data=Vec::new();let mut errors=errors;let _=errors.by_ref().take(64*1024).read_to_end(&mut data);let _=std::io::copy(&mut errors,&mut std::io::sink());String::from_utf8_lossy(&data).to_string()});
+    let start=Instant::now();let status=loop{
+        match child.try_wait(){Ok(Some(status))=>break status,Ok(None) if start.elapsed().as_secs()<110=>std::thread::sleep(std::time::Duration::from_millis(40)),_=>{let _=child.kill();let _=child.wait();return Err("Assistant timed out. Open its terminal session or check its connection.".into());}}
+    };
+    let text=reader.join().unwrap_or_default();let errors=stderr.join().unwrap_or_default();
+    if !status.success(){let detail=crate::surface::first_line(errors.trim());return Err(if detail.is_empty(){format!("{} exited with {}",backend.name,status)}else{detail});}
+    if text.trim().is_empty(){return Err("The assistant returned no answer. Check its connection in Assistants.".into());}
+    Ok(text.trim().into())
+
 }
 
 /// Prose wrapped paragraph by paragraph: a newline in the text is a
@@ -359,6 +357,7 @@ impl App {
     /// Ctrl+Shift+?: open the panel (and focus its field), or close it.
     pub(crate) fn toggle_ask(&mut self) {
         let keys = self.behavior.ask_ctx.clone();
+        if self.ask_term().is_none() {self.open_settings_at(crate::settings::SEC_ASSISTANTS,None);return;}
         let Some(t) = self.ask_term() else { return };
         if t.ask.is_some() {
             t.ask = None;
@@ -465,7 +464,11 @@ impl App {
     /// The gathered context is complete (or the page timed out): build
     /// the prompt and fire the backend.
     fn ask_fire(&mut self, q: String, mut g: crate::askctx::Gathered, page: Option<(String, String, String)>, skill_prompt: Option<String>) {
-        let Some(backend) = chosen(&self.behavior.ask_backend) else { return };
+        let Some(backend) = chosen(&self.behavior.ask_backend) else {
+            let error=format!("{} is unavailable. Choose or reconnect it in Assistants; nus has not switched providers.",self.behavior.ask_backend);
+            if let Some(ask)=self.ask_term().and_then(|t|t.ask.as_mut()){if let Some(turn)=ask.turns.last_mut(){turn.error=Some(error.clone());}}
+            self.notice(&error);return;
+        };
         if let Some(p) = page {
             g.page = Some(p);
         }
@@ -484,8 +487,9 @@ impl App {
         let (stx, srx) = channel::<String>();
         let b = backend.clone();
         let p = prompt.clone();
+        let cwd = self.assistant_folder();
         std::thread::spawn(move || {
-            let _ = tx.send(run(&b, &p, Some(stx)));
+            let _ = tx.send(run(&b, &p, Some(stx), Some(&cwd)));
         });
         if let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) {
             ask.pending = Some((rx, Instant::now(), backend.name.clone()));

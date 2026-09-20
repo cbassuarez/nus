@@ -46,11 +46,30 @@ tree-sitter-go = "0.25"
 tree-sitter-toml-ng = "0.7"
 libloading = "0.8"
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation", "Win32_System_Power"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[target.'cfg(not(windows))'.dependencies]
+global-hotkey = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSImage", "NSScreen", "NSWindow", "NSView", "NSRunningApplication", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation", "Win32_System_Power"] }
+
 [workspace]
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# Compile the Linux tray adapter in native unit checks as well.
+ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
 
 [build-dependencies]
 winresource = "0.1"

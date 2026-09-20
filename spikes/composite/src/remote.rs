@@ -188,6 +188,8 @@ impl App {
         match cmd {
             "version" => Ok(json!({ "nus": env!("CARGO_PKG_VERSION") })),
             "raise" => {
+                self.hatch_state.main_hidden = false;
+                self.window.set_visible(true);
                 self.window.focus_window();
                 Ok(Value::Null)
             }
@@ -209,6 +211,7 @@ impl App {
                             Pane::Hints(_) => json!({ "kind": "welcome" }),
                             Pane::Home(_) => json!({ "kind": "home" }),
                             Pane::Ports(_) => json!({ "kind": "ports" }),
+            Pane::Downloads(_) => json!({ "kind": "downloads" }),
                         };
                         json!({
                             "index": i + 1,
@@ -425,12 +428,22 @@ impl App {
             }
             "hatch" => {
                 match s("do").as_deref().unwrap_or("toggle") {
-                    "toggle" => self.toggle_hatch(),
-                    "show" => self.show_hatch(),
-                    "hide" => self.hide_hatch(),
+                    "toggle" => {let _=self.proxy.send_event(crate::UserEvent::Hatch);},
+                    "show" => {let _=self.proxy.send_event(crate::UserEvent::HatchShow);},
+                    "work" => { let _=self.proxy.send_event(crate::UserEvent::HatchWork); return Ok(json!({"work": self.hatch_state.work})); },
+                    "list" => return Ok(json!({"work": self.hatch_state.work})),
+                    "open" => {
+                        let tab = args.get("tab_id").and_then(Value::as_u64).ok_or("hatch open requires --tab-id from hatch list")?;
+                        let window = args.get("window").and_then(Value::as_u64).unwrap_or(u64::from(self.window.id()));
+                        let target = crate::hatch_work::Target {window,tab,right:b("right")};
+                        if !self.hatch_state.work.iter().any(|i|i.target==target) {return Err("That session is no longer available".into());}
+                        let _ = self.proxy.send_event(crate::UserEvent::HatchSelect(target));
+                    }
+                    "quit" => { let _=self.proxy.send_event(crate::UserEvent::HatchQuit); },
+                    "hide" => {let _=self.proxy.send_event(crate::UserEvent::HatchHide);},
                     "hoist" => self.hoist(),
                     "land" => self.land(),
-                    other => return Err(format!("hatch: toggle · show · hide · hoist · land, not {other}")),
+                    other => return Err(format!("hatch: toggle · show · hide · work · list · open · hoist · land · quit, not {other}")),
                 }
                 Ok(Value::Null)
             }

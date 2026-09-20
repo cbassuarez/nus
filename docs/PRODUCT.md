@@ -984,7 +984,7 @@ small to read is greeked); ADD YOUR OWN writes the blank into
 `profile/art/` and opens it in the editor — save and it redraws; ASK FOR
 ONE sends the canvas doc to the assistant and the ```luau block it
 answers with lands in the picker; OPEN THE FOLDER; PLACE sets lat, lon for
-the sky (else guessed from the clock's zone). A file in `profile/art/`
+the sky (unset until the user chooses it; no clock or location inference). A file in `profile/art/`
 named like a built-in replaces it. The renderer grew a polygon for this:
 any simple polygon filled from the signed distance to its outline, one
 anti-aliased edge and no seams inside however translucent.
@@ -1081,7 +1081,7 @@ the screen, the input, the engine, the network, the model's latency, and
   `ps` elsewhere); the login item is a Startup-folder shortcut; the build
   wants Ninja on PATH; paths were being turned to backslashes (fixed).
 - **Place**: the sky faced south (now: the equator); the star catalogue is
-  northern; the place is guessed from the clock's zone.
+  northern; location was once guessed from the clock's zone (now: explicitly chosen, or unset).
 - **Assistants**: `backends()` was a roll call of 2026's CLIs (now: a
   declared list comes first); the panel assumes a cloud round-trip.
 - **Power**: the arts redrew at 60fps whether or not anyone looked (now:
@@ -1175,3 +1175,337 @@ Asked, answered, built:
 ASSUMED: one laptop and one phone on one network; a mouse with a touch
 screen imagined, not held; git on PATH; the shell's own colours for a
 diff's + and −; an answer that fits one screen of the phone.
+
+## Startup settings (revised 2026-09-19)
+
+Startup and New tab share four destinations: **Prompt palette**, **Home page**,
+**Custom layout**, and **The last page**. Cmd+T on macOS (Ctrl+Shift+T elsewhere),
+the header button, and the sidebar button all use this selection. A custom
+layout adds its saved tabs and panes without replacing existing work. A missing
+layout or absent recent page falls back to the prompt. The home address and
+saved layout are editable from Startup. Terminal/browser preference controls
+palette ordering and external links without changing the selected start page.
+
+**Splash page look** has a **Minimal** preview row (Prompt only, Logo & prompt),
+followed by **Art** previews. Artwork actions have captions: Add your own,
+Ask for one, Open folder. Preview clipping and click targets stay inside the
+scrolling content; selected previews have a check mark as well as a signal shadow.
+The separate launch animation controls Draws in / Still / None and its duration.
+
+**New window behavior**, labeled Cmd+N / Ctrl+N, offers Prompt palette,
+Shell in the current window's folder, or Same as launch, each with a preview.
+Saved sessions remain accessible through the atlas. Existing legacy session
+restore and shell startup preferences remain readable.
+
+Native regression checks: build the macOS bundle, then run
+`python3 scripts/check-startup.py dist/nus.app`. The checks use temporary profiles
+and local pages, assert destinations and tab counts, exercise all new-window
+modes, and capture narrow/wide settings in paper and ink for visual review.
+
+## Settings and onboarding (revised 2026-09-19)
+
+Sidebar, Tabs, Terminal, Browser, Ports, Hatch, Assistants, Rules, Sync and
+Profile use captioned visual choices and actions. Independent switches have
+separate On / Off cards. Action buttons do not masquerade as selected values.
+Keys remain readable keycaps; unavailable features are described as unavailable.
+Terminal settings are grouped by shells, command editing, clipboard/scrolling,
+history/replay, and colours/progress. Sliders support dragging and accessibility
+value changes. Browser smooth scrolling explicitly requires a restart; replay
+recording and phone access change immediately. Disabling phone access revokes
+its URL and closes the listener.
+
+Preferences merge only fields changed by a window, so a stale window saving its
+size cannot undo another window's settings. Open windows adopt shared changes.
+Manual light/dark appearance and the selected preset name survive relaunch.
+
+First launch opens exactly one welcome tab, with profile setup over it. Its
+links open the existing profile editor, prompt, theme studio, Startup, Settings
+and keyboard guide. A page-based launch never creates a temporary held shell.
+Existing saved launch choices are preserved. Onboarding uses the existing
+`assets/art/memphis.luau` composition and renderer, profile face, theme card,
+startup previews and Phosphor icons. Memphis entry settles after three seconds;
+pointer interaction and entry respect Reduce Motion, including the macOS setting.
+
+Run `python3 scripts/check-settings.py dist/nus.app` for isolated native checks
+of selection/persistence, sliders, shared windows, phone shutdown, theme
+relaunch, profile onboarding and narrow/wide screenshots. Run the Startup
+regressions as well when changing initial pane creation.
+
+
+## Settings discovery and window polish (2026-09-19)
+
+The footer theme picker has three columns and three visible rows. Its viewport
+clips previews and click targets; additional chosen themes scroll below those
+nine slots. Look → Presets → Footer theme slots lets users add or remove stock,
+ported and saved themes, or restore the curated default nine.
+
+Every settings page exposes Search settings (Cmd+F on macOS, Ctrl+F elsewhere).
+The search index is built from the rendered controls, option captions and nearby
+explanations, including all five Look tabs. It ranks exact labels, then prefixes,
+feature synonyms and single-character typos/transpositions; all query words must
+match. Results identify their section and navigate to the actual row with a
+brief highlight. An unmatched query says so instead of returning random rows.
+
+Location is optional and explicitly configured in Startup. Clearing it removes
+coordinates from the art environment. Sky and star artwork asks for a location
+until one is chosen. Neither the time zone nor any network lookup infers it.
+
+The compositor clips the entire window to the carapace radius, including chrome
+and web content, and clears the outside corners to transparent. macOS traffic
+lights sit beside the wordmark, without adding a title bar. They are composited
+in the same frame as the shell and call the normal window actions.
+
+Onboarding distributes the existing Memphis Luau vector pieces around the
+introduction and guide sections. They are individual polygons, lines and circles,
+not a raster image or a miniature composition. Hover and tap reactions respect
+Reduce Motion; the profile setup remains part of first launch.
+
+Look → Type & Motion has independent interface and terminal family/weight choices.
+Bundled families: IBM Plex Mono, Victor Mono, JetBrains Mono, ABC Areal, ABC Areal
+Semi Mono and ABC Areal Mono. Terminal choices include only fixed-width families.
+Regular (400), Medium (500) and Bold (700) load the corresponding supplied files;
+preferences persist across launches and windows. Interface emphasis uses the
+family's real Bold face. Areal files and licensing terms came from the supplied
+ABCAreal.zip; upstream Victor Mono and JetBrains Mono licenses are retained under
+assets/fonts. No system font installation is required.
+
+Run scripts/check-refinements.py against the built macOS app for search ranking
+and reveal, location clearing, font selection/persistence, footer containment and
+scrolling, onboarding and rounded-corner screenshots.
+
+
+## Hatch: ongoing work (revised 2026-09-19)
+
+This direction replaces the sixteenth-pass Hatch interaction above. Hatch opens
+an overview of real terminal work across all open Spaces. Rows show running,
+finished, failed, needs attention, or needs input, with the session name, Space,
+folder, and exit status. Selecting a row opens the original pane and PTY; it
+does not re-run its command. Work and Terminal switch views within the same
+surface. + Shell explicitly creates a shell. The summon shortcut resumes the
+last view and session across Spaces in the default One for all mode; opening
+the overview by itself creates no shell. Existing explicit Follow preferences
+remain available for people who want the focused Space to choose Hatch. Existing Hatch
+tabs and the HOIST/LAND commands remain valid.
+
+Dropdown unfolds from the actual camera housing on notched Macs. AppKit
+`NSScreen.safeAreaInsets` and both auxiliary top areas determine the housing
+height, width, and center; `visibleFrame` is only the non-notched fallback.
+A passive black island joins the hardware cutout at the top of `screen.frame`;
+its side indicators remain outside the camera exclusion. The dropdown sits at
+status-window level and reveals downward from the housing without moving text
+through the cutout. Bundle safe-area compatibility mode is explicitly off.
+On other displays it unfolds from the top center. Modal floats in the center. Presentation and height changes preserve
+session identity. Pin prevents dismissal on focus loss; Hide and the summon
+shortcut always dismiss. Escape reaches the terminal in Terminal view and
+dismisses the overview in Work view. Arrow keys and Tab select work, Enter
+opens it, Ctrl+N creates a shell, and Ctrl+P pins from Work. Ctrl+Shift+O returns
+to Work, Ctrl+Shift+Down expands the session into nus, and Ctrl+Shift+Up pins.
+
+Hatch settings add Compact work status (on), Keep nus in background (on),
+Completion notices (off), and Dim behind modal (off). Closing a main window
+with background enabled hides its surface but retains its live session owner.
+Quit nus deliberately exits all windows and processes. macOS and Windows have
+a native NSStatusItem/menu or tray entry for Work, Show/hide, Open nus window, and Quit. The optional
+compact top-edge status is clickable. Optional six-second completion notices
+use that surface and open their specific session when clicked. Neither status
+changes nor completion notices activate a window. Status can be disabled
+independently of notices. This is an in-app notice, not notification-center
+integration.
+
+Desktop identity uses the existing orbit geometry with a pure-white n, a dark
+contrast edge and shadow, and the lower letter clipped beneath the orbit.
+The macOS Dock and menu bar follow the last-focused window's signal colour;
+completion notices use the same mark. The Dock loops the promo's Plex,
+Silkscreen, Plex Italic, Bungee, Rubik Mono and Newsreader sequence while
+launch is pending. Embedded clipped frames install before shell discovery,
+CEF and window creation; native launch completion or the first rendered
+window settles on Newsreader, whichever is observed first.
+Launch does not request an additional attention bounce. macOS controls the
+physical bounce timing. Informational attention runs the sequence once in
+about half a second and cancels when nus becomes active. Reduce Motion keeps
+the final mark throughout. Completion bounces follow the existing optional
+Completion notices setting. Quit cancels any remaining icon animation and
+restores AppKit's packaged default before window and browser teardown, through
+both the native Quit callback and normal app cleanup. Native
+checks compare that restored image and the post-exit system icon against the
+clipped artwork; the legacy protruding letter is a negative comparison.
+
+The signed macOS app and CEF helper bundles include the same multi-resolution
+icon for Stage Manager, Finder and system notification identity. Packaging
+names that resource by its content and refreshes Launch Services registration
+so new artwork replaces the prior bundle icon reference. Those system
+surfaces use the packaged red orbit; live theme changes and font animation are
+limited to surfaces the app controls. Runtime Finder custom-icon metadata is
+deliberately avoided because it fails strict code-signature verification.
+Linux keeps the themed X11 window icon and publishes a matching per-user
+desktop-entry icon for Wayland launchers; launcher refresh timing belongs to
+the desktop environment. There is no Linux or Windows font-bounce animation.
+
+Status evidence comes from existing OSC 133 shell marks, exit codes, progress,
+and explicit attention signals. A bell during work means Needs attention;
+only an actual nus confirmation means Needs input. Agent processes use those
+same signals. Silence is never interpreted as a request for input. Unsupported
+shell integration cannot supply running/completion status. Already restored
+history never triggers a completion notice. Updates reuse cached command data
+and do not rescan terminal scrollback on every status poll.
+
+CLI additions preserve existing commands:
+
+```text
+nus hatch work
+nus hatch list
+nus hatch open --window WINDOW_ID --tab-id TAB_ID [--right]
+nus hatch quit
+```
+
+The list provides stable window/tab/pane targets; closed or stale targets are
+rejected. `toggle`, `show`, `hide`, `hoist`, and `land` retain their spelling.
+No directory change or command execution occurs on summon or selection.
+
+Platform integration: Windows retains RegisterHotKey and adds tray access and
+foreground-window restoration. macOS uses registered Carbon shortcuts without
+Accessibility permission, restores the previous application, and joins Spaces
+with fullscreen-auxiliary window behavior. Linux X11 uses global-hotkey; the
+compositor controls final focus/placement. Wayland users must bind
+`nus hatch toggle` through their desktop shortcut settings; global positioning
+and focus restoration are not promised. Linux uses a StatusNotifierItem tray
+where the desktop provides a host, with the in-app drawer as a fallback. Launch at
+login on macOS/Linux, dedicated per-session global shortcuts, and richer agent-specific
+request-for-input protocols remain future work.
+
+Validation: `python3 scripts/check-hatch.py /path/to/nus.app` uses isolated
+profiles and real PTYs to check status, handoff identity, presentation changes,
+pinning/dismissal, background lifetime, cross-Space selection, passive notices,
+and narrow Paper/Ink rendering. Native fullscreen desktops, mixed-scale
+monitors, Windows/Linux behavior, and p95 warm keyboard readiness under 100 ms
+require reference-hardware validation; no latency claim follows from animation
+duration or these functional tests.
+
+## Downloads and resizable chrome (2026-09-19)
+
+The footer Downloads icon shows active status; hovering reveals filenames and
+progress without leaving the page. Clicking opens a modal with pause, resume,
+cancel, source and reveal actions. All downloads opens a dedicated tab; Cmd+J
+on macOS or Ctrl+J elsewhere and the command palette open that page directly.
+Completed, cancelled and interrupted transfers remain in local downloads.json.
+Clear finished removes history entries and leaves downloaded files in place.
+Transfers interrupted by quitting are labelled honestly on the next launch.
+
+Browser settings → File naming defaults to Off, preserving supplied filenames.
+All downloads uses the originating page's title with the original extension.
+Selective (beta) permits readable names for documents, images and media but
+preserves technical, unknown, versioned and checksum-like names. Missing or
+generic titles retain the original filename. Names are sanitized and concurrent
+or existing filename collisions receive a numeric suffix, without replacing files.
+
+Drag the sidebar's inner edge to resize it, or the footer's top rule to change
+its row height. Settings → Sidebar exposes both dimensions. Below 105 logical
+pixels, the tab list and file tree show icons with title/path tooltips; choose
+kind icons, favicons, or web previews in Settings. Footer actions wrap into
+rows; Downloads and Settings remain reachable in the narrow column. Dimensions
+and the small-sidebar style persist and update other windows through preferences.
+
+Pane headers share a 32px logical height, and browser/editor footers share 32px.
+Layout edges are rounded once in physical pixels; hidden DevTools reserves no
+separator. Traffic lights are 12px (10px in narrow windows), with hover glyphs
+and full-height click targets. Initial shell rendering happens before the main
+window becomes visible.
+
+Run scripts/check-downloads-sidebar.py for local CEF transfers, naming and
+collision handling, pause/resume/cancel, history, sidebar drags and screenshots,
+plus terminal/browser pane-boundary checks. It uses temporary profiles and saves
+all test downloads there, leaving the user's Downloads folder untouched.
+
+## Assistants, typography, and the shared prompt (2026-09-19)
+
+Settings → Assistants is a CLI connection and session hub for Claude, Codex and
+Ollama. Connections checks installed executables, CLI versions, sign-in presence
+and Ollama service/model availability without sending a model prompt. It does
+not claim that a paid request, a selected model, or every tool is working merely
+because an account is present. Checks are asynchronous, bounded, and omit account
+output. Explicit executable overrides fail visibly; a selected missing provider
+is not silently replaced by another provider. macOS app launch includes the
+bundled nus command and ~/.local/bin as well as the login shell's PATH.
+
+Work opens editable task, planning and review prompts and resumes actual terminal
+sessions. Every assistant draft shows its command and working folder before
+starting a persistent shell session. Long commands wrap and the review scrolls
+inside narrow windows. Prompt text is quoted as a literal argument;
+Ollama requires a chosen model. These sessions retain the CLI's own instructions,
+account and permission controls and can move into Hatch. Context configures nus
+Ask attachments and nus browser-tool access separately. Advanced provides custom
+executable paths, diagnostics, instruction-file editing, and staged MCP setup
+commands. MCP registration is checked, but is not advertised as proof of a
+successful tool call. Registration commands wait in a terminal for review and
+Enter. The bundled CLI provides `nus mcp`; nus never rewrites provider accounts.
+The existing one-shot Ask uses configured executable/model settings, surfaces
+process errors, and limits runtime. It is separate from interactive CLI sessions.
+
+Settings → Prompt offers Shell, Web, Assistants, Mixed and Minimal starting
+points. Home and the Go palette share routing and ordered sources: saved
+shortcuts, projects, sessions, shell history, browser history, assistants,
+attention items, layouts, app actions and settings. Each source has independent
+idle/search visibility and a result limit. Users can reorder sources, adjust
+width, density and vertical placement, hide route hints, set total result limits,
+and save/remove shortcuts. Presets preserve saved shortcuts. Sources with no
+results take no space. Suggestions briefly cache filesystem-backed data so
+animated Home backgrounds do not repeatedly scan history and project folders.
+
+The default Enter destination is configurable. Explicit `> command`, `? search`,
+`@claude prompt`, `@codex prompt` and `@ollama prompt` remain available regardless
+of hidden sources. Assistant routes always open a review. A bare `home` opens the
+prompt and its selected background; `home URL` preserves the existing startup
+website setting. Startup distinguishes Home/prompt from Website. Background
+Welcome hit targets cannot intercept settings clicks. All settings content,
+including navigation actions inside a page, is clipped to the visible region.
+
+Settings → Fonts has curated pairings and a live specimen, with independent UI,
+terminal and editor families, weights and sizes; terminal/editor line spacing;
+and terminal column spacing. It supports bundled and installed fonts, restricts
+terminal/editor choices to monospaced faces, persists changes and updates live
+terminal grid metrics. Settings controls wrap in narrow windows and support Tab,
+Shift+Tab, Enter/Space and Page Up/Down. Reduced motion samples a completed Home
+art composition instead of leaving artwork at an empty entrance frame.
+
+Validation: `scripts/check-workspace-router.py /path/to/nus.app` uses isolated
+profiles and explicitly simulated assistant executables. Native pointer checks
+cover all 18 settings sections with Welcome in a background tab, shared routing,
+real PTY launches with literal prompts, preference persistence, terminal font
+metrics and narrow Paper/Ink layouts. Every requested screenshot must be saved
+for the test to pass. Unit checks cover presets, source normalization, routing,
+quoting, explicit executable failure and bundled font contracts. These checks do
+not prove live cloud model responses, provider MCP tool calls, or Windows/Linux
+runtime behavior; those require separate platform and account validation.
+
+## Signal icons and a modular menu drawer (2026-09-19)
+
+Signal is the menu-bar/tray entry point. A single drawer combines compact work
+rows with expanded Desk cards; these are independent section choices, not
+mutually exclusive modes. Settings → Desktop → Menu & Tray controls the icon
+(dot, count, or short status), section order, and Hidden/Compact/Expanded for
+Work, Downloads, and Quick actions. The default is compact Work, expanded
+Downloads, and quick-action tiles. Names and finished items can each be hidden.
+Choices persist and synchronize across nus windows. The footer always opens
+the same drawer, including when the native icon is disabled or unavailable.
+
+Work rows target the original window, tab, and pane. Opening the drawer creates
+no terminal. Downloads use the real Chromium queue, with live progress and
+Pause/Resume/Show controls in expanded cards. Quick actions open the configured
+new tab, a terminal, a window, or search. Open nus, Customize, and Quit stay in
+the footer. Escape, the close button, a second icon click, or clicking outside
+dismisses the drawer. Keyboard navigation scrolls focused actions into view;
+the drawer exposes its buttons to platform accessibility.
+
+The existing white n and authored orbit remain the icon, with a still activity,
+attention, or count badge. Its orbit follows the theme. macOS can place count
+or status text beside the icon; Windows and Linux use badges and tooltips.
+Linux's StatusNotifierItem runs off the UI thread, waits for a tray host, and
+retries an unavailable session bus. Wayland focus and placement remain under
+the compositor's control. Right-click exposes a small native fallback menu.
+
+Validation: `scripts/check-menu-drawer.py /path/to/nus.app` exercises isolated
+profiles, native setting controls and footer hit targets, preference reload,
+mixed sections, hidden names, real PTY selection, a real local Chromium
+transfer, and pause/resume. Unit checks cover config normalization, status
+classification, privacy, display bounds, and Linux ARGB icon transport. Native
+Windows/Linux tray hosts and mixed-scale monitor behavior need platform QA.

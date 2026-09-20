@@ -1,5 +1,7 @@
 struct Globals {
     screen: vec2<f32>,
+    corner_radius: f32,
+    padding: f32,
 };
 var<immediate> globals: Globals;
 @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -210,8 +212,7 @@ fn sky(in: VsOut) -> vec4<f32> {
 // 3: rounded fill (params.x = radius). 4: rounded stroke (params.x = radius,
 // params.y = thickness). 3 and 4 blend toward color2 along a diagonal
 // gradient when color2.a > 0; `phase` slides it (aurora).
-@fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn shade(in: VsOut) -> vec4<f32> {
     if in.kind == 0u {
         return in.color;
     }
@@ -376,4 +377,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         color = mix(in.color, in.color2, g);
     }
     return vec4(color.rgb, color.a * cov);
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let color = shade(in);
+    let radius = min(globals.corner_radius, min(globals.screen.x, globals.screen.y) * 0.5);
+    if radius <= 0.0 { return color; }
+    let half_size = globals.screen * 0.5;
+    let q = abs(in.clip.xy - half_size) - half_size + vec2(radius);
+    let distance = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    return color * (1.0 - smoothstep(-0.5, 0.5, distance));
 }

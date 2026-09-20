@@ -9,8 +9,7 @@ use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 use winit::event::ElementState;
 
-use crate::app::{Caps, hover_key, App, IconMotion, Pane, SideHit, WebPane};
-use crate::browser::DOWNLOADS;
+use crate::app::{Caps, hover_key, App, IconMotion, Pane, WebPane};
 use nus_render::theme::metric as m;
 
 /// Find in page state on a web pane.
@@ -129,14 +128,14 @@ impl App {
         self.draw_hands(scene, w);
         // Dedupe band: this page is open in another tab. Two icon chips.
         w.dedupe_hits.clear();
-        if let Some((here, there)) = w.dedupe {
+        if let Some((here, _)) = w.dedupe {
             let bh = self.header_h();
             let br = Rect::new(page.x, page.y, page.w, bh);
             scene.rect(br, crate::surface::mix(t.paper, ink, 0.08));
             scene.hline(br.x, br.bottom() - self.px(m::HAIRLINE), br.w, self.px(m::HAIRLINE), ink);
             let by = br.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
             let mut x = br.x + self.px(m::HEADER_PAD_X);
-            let label_there = self.tab_label(there);
+            let label_there = &w.dedupe_label;
             x += self.fonts.draw(scene, strong, x, by, &format!("ALREADY OPEN IN {label_there}")) + self.px(18.0);
             let isz = self.px(14.0);
             let (mx, my) = self.mouse;
@@ -219,88 +218,6 @@ impl App {
             }
         }
         false
-    }
-
-    /// The downloads list, rising from the footer.
-    pub(crate) fn draw_downloads_menu(&mut self, scene: &mut Scene, sb: Rect) {
-        let t = self.theme.clone();
-        let ink = t.ink;
-        let paper = self.paper();
-        let label = self.label();
-        let strong = self.label_strong();
-        let k = self.dl_anim.value();
-        if k <= 0.001 {
-            return;
-        }
-        let (mx, my) = self.mouse;
-        let live = self.dl_menu;
-        let list: Vec<crate::browser::Download> = DOWNLOADS.lock().unwrap().iter().rev().take(8).cloned().collect();
-        let row = self.px(44.0);
-        let cap = self.px(26.0);
-        let n = list.len().max(1);
-        let h_full = cap + n as f32 * row + self.px(6.0);
-        let h = h_full * k;
-        let foot_y = sb.bottom() - self.px(m::FOOT_H);
-        let r = Rect::new(sb.x, foot_y - h, sb.w, h);
-        scene.layer(Some(r));
-        scene.rect(r, paper);
-        scene.hline(r.x, r.y, r.w, self.px(m::STRUCTURE), ink);
-        let mut y = foot_y - h_full + self.px(m::STRUCTURE);
-        let cap_st = Style { color: t.dim, px: self.px(10.0), ..label };
-        self.fonts.draw(scene, Style { color: ink, ..strong }, sb.x + self.px(12.0), y + self.px(17.0), "DOWNLOADS");
-        let dir = crate::browser::downloads_dir();
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-        let where_ = dir.to_string_lossy().replace(&home, "~").replace(char::from(92), "/").caps();
-        let ww = self.fonts.measure(cap_st, &where_);
-        self.fonts.draw(scene, cap_st, sb.right() - self.px(12.0) - ww, y + self.px(17.0), &where_);
-        y += cap;
-        if list.is_empty() {
-            self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.x + self.px(12.0), y + self.px(26.0), "NOTHING YET · FILES LAND HERE");
-        }
-        for (i, d) in list.iter().enumerate() {
-            let cell = Rect::new(sb.x, y, sb.w, row);
-            let hot = cell.contains(mx, my) && live;
-            if hot {
-                scene.rect(cell, t.tint);
-            }
-            let isz = self.px(14.0);
-            let icon = if d.done { nus_render::text::icons::CHECK } else if d.cancelled { nus_render::text::icons::CLOSE } else { nus_render::text::icons::DOWNLOAD };
-            self.icon_button(scene, icon, isz, sb.x + self.px(12.0), y + self.px(8.0), if d.done { ink } else { t.dim }, cell, hover_key("dl", i), IconMotion::Bob);
-            let name = self.fit(Style { color: ink, ..strong }, &d.name.caps(), sb.w - self.px(48.0));
-            self.fonts.draw(scene, Style { color: ink, ..strong }, sb.x + self.px(34.0), y + self.px(18.0), &name);
-            // Progress: a rule that fills; done shows size, cancelled says so.
-            let bar = Rect::new(sb.x + self.px(34.0), y + self.px(28.0), sb.w - self.px(46.0), self.px(2.0));
-            scene.rect(bar, t.tint);
-            let frac = if d.done { 1.0 } else if d.total > 0 { (d.received as f32 / d.total as f32).clamp(0.0, 1.0) } else { 0.0 };
-            scene.rect(Rect::new(bar.x, bar.y, bar.w * frac, bar.h), if d.cancelled { t.dim } else { self.surface.signal });
-            let note = if d.cancelled { "CANCELLED".to_string() } else if d.done { human_bytes(d.total.max(d.received)) } else if d.total > 0 { format!("{} OF {}", human_bytes(d.received), human_bytes(d.total)) } else { human_bytes(d.received) };
-            self.fonts.draw(scene, cap_st, sb.x + self.px(34.0), y + self.px(40.0), &note);
-            if live {
-                self.side_hits.push((cell, SideHit::DlOpen(i)));
-            }
-            y += row;
-        }
-        scene.layer(None);
-    }
-
-    /// Reveal a download in the file manager.
-    pub(crate) fn reveal_download(&mut self, i: usize) {
-        let list: Vec<crate::browser::Download> = DOWNLOADS.lock().unwrap().iter().rev().take(8).cloned().collect();
-        let Some(d) = list.get(i) else { return };
-        let path = d.path.clone();
-        #[cfg(windows)]
-        {
-            let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let dir = std::path::Path::new(&path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-        }
     }
 
     /// Idle tabs: sleep pages after a while (blank them, keep the URL),

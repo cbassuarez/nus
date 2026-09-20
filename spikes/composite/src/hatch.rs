@@ -5,21 +5,55 @@
 //! (Ctrl+Shift+↑), LAND it down (Ctrl+Shift+↓). Two looks: the SHEET,
 //! 960 wide from the top edge with the Space's band as a lip you drag to
 //! resize; the CARD, centred, framed by the carapace. Autohide on focus
-//! loss unless pinned; Esc hides.
+//! loss unless pinned. Escape belongs to the live terminal.
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use nus_render::gpu::Target;
 use nus_render::text::Style;
-use nus_render::theme::{metric as m, Theme};
+use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key as WKey, NamedKey};
 use winit::window::Window;
 
-use crate::app::{App, Caps, Pane};
+use crate::app::{App, Pane};
 use crate::settings::{HatchLook, HatchMonitor};
+use crate::hatch_work::{Item, Target as WorkTarget};
+#[path = "hatch_ui.rs"]
+mod ui;
+
+pub struct Overlay {
+    pub window: Arc<Window>,
+    pub target: Target,
+    pub scene: Scene,
+    pub visible: bool,
+    pub text: String,
+    pub position: Option<(i32, i32)>,
+}
+
+pub struct State {
+    pub work: Vec<Item>,
+    pub overview: bool,
+    pub selected: usize,
+    pub scroll: usize,
+    pub main_hidden: bool,
+    pub summoned: Option<Instant>,
+    pub badge_suppressed: bool,
+    pub access: std::collections::HashMap<u64, Hit>,
+    pub badge: Option<Overlay>,
+    pub shade: Option<Overlay>,
+    pub foreground: crate::hatch_native::Foreground,
+    pub completion: Option<(Item, Instant)>,
+    pub island_open: Option<(i32,i32,u32,u32,f32)>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self { work: Vec::new(), overview: true, selected: 0, scroll: 0, main_hidden: false, summoned: None, badge_suppressed: false, access: Default::default(), badge: None, shade: None, foreground: Default::default(), completion: None, island_open: None }
+    }
+}
 
 pub struct Hatch {
     pub window: Arc<Window>,
@@ -40,6 +74,8 @@ pub struct Hatch {
     pub mon: (i32, i32, u32, u32, f32),
     /// Where the window sits when fully shown, physical px.
     pub home: (i32, i32),
+    pub position: (i32, i32),
+    pub notch: Option<crate::hatch_native::Notch>,
     pub size: (u32, u32),
     /// Sheet: the height as a fraction of the monitor, once dragged.
     pub frac: f32,
@@ -58,6 +94,14 @@ pub enum Hit {
     Lip,
     Frame,
     Corner,
+    Work,
+    Terminal,
+    New,
+    Job(WorkTarget),
+    Previous,
+    Next,
+    Main,
+    Quit,
 }
 
 impl App {
@@ -77,11 +121,7 @@ impl App {
             Pane::Term(term) => term.term.cwd.clone(),
             _ => None,
         });
-        let mut t = self.new_term_pane(false, profile).ok()?;
-        if let Some(c) = cwd {
-            // The shell starts at home; a cd typed ahead lands it where you are.
-            let _ = t.pty.write(format!("cd \"{c}\"\r").as_bytes());
-        }
+        let t = self.new_term_pane_at(false, profile, cwd).ok()?;
         let mut tab = self.make_tab(Pane::Term(t), None);
         tab.hatch = true;
         self.tabs.push(tab);
@@ -98,8 +138,12 @@ impl App {
     }
 
     pub(crate) fn show_hatch(&mut self) {
-        if self.ensure_hatch_tab().is_none() {
+        self.hatch_state.summoned = Some(Instant::now());
+        if !self.hatch_state.overview && self.ensure_hatch_tab().is_none() {
             return;
+        }
+        if self.hatch.as_ref().is_none_or(|h| !h.visible) {
+            self.hatch_state.foreground = crate::hatch_native::Foreground::capture();
         }
         if self.hatch.is_none() {
             let (home, size, _) = self.hatch_geometry();
@@ -113,12 +157,17 @@ impl App {
         h.visible = true;
         h.slide.go(1.0, d);
         h.window.set_visible(true);
-        h.window.focus_window();
+        if crate::hatch_native::interactive() { h.window.focus_window(); }
+        self.hatch_shade();
         self.hatch_layout();
         self.dirty = true;
     }
 
     pub(crate) fn hide_hatch(&mut self) {
+        self.hide_hatch_inner(true);
+    }
+
+    pub(crate) fn hide_hatch_inner(&mut self, restore: bool) {
         let d = self.motion.dur(crate::anim::base::PALETTE);
         if let Some(h) = self.hatch.as_mut() {
             if !h.visible {
@@ -131,11 +180,16 @@ impl App {
                 h.window.set_visible(false);
             }
         }
+        if let Some(shade) = &mut self.hatch_state.shade { shade.window.set_visible(false); shade.visible = false; }
+        if restore && crate::hatch_native::interactive() { self.hatch_state.foreground.restore(); }
         self.dirty = true;
     }
 
     /// The window exists now: keep it, sized and placed for the look.
     pub fn attach_hatch(&mut self, window: Arc<Window>) {
+        crate::hatch_native::configure(&window);
+        crate::macos::prepare_window(&window);
+        window.set_ime_allowed(true);
         let Ok(target) = self.gpu.target(window.clone()) else { return };
         let look = self.behavior.hatch_look;
         let scale = window.scale_factor() as f32;
@@ -154,6 +208,8 @@ impl App {
             hiding: false,
             mon: (0, 0, 1920, 1080, scale),
             home: window.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0)),
+            notch: None,
+            position: window.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0)),
             size: (window.inner_size().width, window.inner_size().height),
             frac: self.behavior.hatch_size as f32 / 100.0,
             lip_drag: None,
@@ -166,7 +222,7 @@ impl App {
 
     /// Where the hatch goes and how big, for the look and the monitor
     /// setting: (home, size, monitor) in physical px.
-    fn hatch_geometry(&self) -> ((i32, i32), (u32, u32), (i32, i32, u32, u32, f32)) {
+    pub(crate) fn hatch_geometry(&self) -> ((i32, i32), (u32, u32), (i32, i32, u32, u32, f32)) {
         let which = self.behavior.hatch_monitor;
         let main = self.window.clone();
         let look = self.behavior.hatch_look;
@@ -177,6 +233,10 @@ impl App {
                 monitors.iter().find(|mo| {
                     let p = mo.position();
                     let s = mo.size();
+                    // CoreGraphics uses logical desktop points; winit's
+                    // monitor rectangles are physical pixels.
+                    #[cfg(target_os = "macos")]
+                    let (x,y)=((x as f64*mo.scale_factor()) as i32,(y as f64*mo.scale_factor()) as i32);
                     x >= p.x && y >= p.y && x < p.x + s.width as i32 && y < p.y + s.height as i32
                 })
             }),
@@ -188,15 +248,19 @@ impl App {
         let (mx, my) = (mo.position().x, mo.position().y);
         let (mw, mh) = (mo.size().width, mo.size().height);
         let scale = mo.scale_factor() as f32;
+        let top = crate::hatch_native::top_area(mx, my, scale);
+        let safe = top.content_top();
         let (size, home) = match look {
             HatchLook::Sheet => {
                 let w = ((960.0 * scale) as u32).min(mw.saturating_sub((32.0 * scale) as u32));
-                let hh = ((mh as f32 * frac) as u32).clamp((160.0 * scale) as u32, mh - (40.0 * scale) as u32);
-                ((w, hh), (mx + (mw as i32 - w as i32) / 2, my))
+                let max_h = mh.saturating_sub(safe as u32 + (32.0 * scale) as u32).max(1);
+                let hh = ((mh as f32 * frac) as u32).clamp(((200.0 * scale) as u32).min(max_h), max_h);
+                ((w.max(1), hh), (mx + top.notch.map(|n|n.left+n.width as i32/2-w as i32/2).unwrap_or((mw as i32-w as i32)/2).clamp(0,mw.saturating_sub(w) as i32), my + safe))
             }
             HatchLook::Card => {
                 let w = (mw as f32 * 0.7) as u32;
-                let hh = (mh as f32 * 0.6) as u32;
+                let max_h = mh.saturating_sub((40.0 * scale) as u32).max(1);
+                let hh = ((mh as f32 * frac) as u32).clamp(((200.0 * scale) as u32).min(max_h), max_h);
                 ((w, hh), (mx + (mw as i32 - w as i32) / 2, my + (mh as i32 - hh as i32) / 2))
             }
         };
@@ -208,24 +272,32 @@ impl App {
         let (home, size, mon) = self.hatch_geometry();
         let Some(h) = self.hatch.as_mut() else { return };
         h.mon = mon;
+        h.notch = if h.look==HatchLook::Sheet {crate::hatch_native::top_area(mon.0,mon.1,mon.4).notch} else {None};
+        crate::hatch_native::island_level(&h.window,h.notch.is_some());
         h.home = home;
         h.size = size;
+        h.target.resize(&self.gpu.device,size.0,size.1);
         let _ = h.window.request_inner_size(winit::dpi::PhysicalSize::new(size.0, size.1));
         h.window.set_outer_position(winit::dpi::PhysicalPosition::new(home.0, home.1));
+        h.position = home;
     }
 
     /// Where the window is right now on its slide.
-    fn hatch_ride(&mut self) {
+    pub(crate) fn hatch_ride(&mut self) {
         let Some(h) = self.hatch.as_mut() else { return };
         if !h.visible {
             return;
         }
         let s = h.slide.value();
         let (x, y) = match h.look {
+            HatchLook::Sheet if h.notch.is_some() => h.home,
             HatchLook::Sheet => (h.home.0, h.home.1 - ((1.0 - s) * h.size.1 as f32) as i32),
             HatchLook::Card => (h.home.0, h.home.1 + ((1.0 - s) * 12.0 * h.mon.4) as i32),
         };
-        h.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        if h.position != (x, y) {
+            h.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+            h.position = (x, y);
+        }
         if h.hiding && !h.slide.active() {
             h.visible = false;
             h.hiding = false;
@@ -236,30 +308,17 @@ impl App {
     /// The tab's panes get their rects inside the window.
     fn hatch_layout(&mut self) {
         let Some(i) = self.hatch_tab() else { return };
-        let header = self.header_h();
-        let pad_x = self.px(18.0);
-        let pad_y = self.px(12.0);
-        let scale = self.scale;
-        let rule = self.px(m::STRUCTURE);
+        let scale = self.hatch.as_ref().map(|h| h.window.scale_factor() as f32).unwrap_or(self.scale);
+        let header = self.header_h() * scale / self.scale;
+        let pad_x = 18.0 * scale;
+        let pad_y = 12.0 * scale;
+        let rule = m::STRUCTURE * scale;
         let Some(h) = self.hatch.as_ref() else { return };
         let (w, hh) = (h.target.size.0 as f32, h.target.size.1 as f32);
-        let content = match h.look {
-            HatchLook::Sheet => {
-                let edge = (2.0 * scale).round();
-                let head = (34.0 * scale).round();
-                let foot = (26.0 * scale).round();
-                let lip = (6.0 * scale).round();
-                Rect::new(edge, head, w - 2.0 * edge, hh - head - foot - lip - edge)
-            }
-            HatchLook::Card => {
-                let frame = (22.0 * scale).round();
-                let head = (22.0 * scale).round();
-                let foot = (16.0 * scale).round();
-                let border = (2.0 * scale).round();
-                Rect::new(frame + border, frame + head + border, w - 2.0 * (frame + border), hh - 2.0 * (frame + border) - head - foot)
-            }
-        };
-        let split_w = self.split_width(i, content.w);
+        let edge = if h.look == HatchLook::Card { 16.0 } else { 2.0 } * scale;
+        let content = Rect::new(edge, 82.0 * scale, (w-2.0*edge).max(1.0), (hh-116.0*scale).max(1.0));
+        let min = (180.0 * scale).min(content.w / 2.0);
+        let split_w = (self.tabs[i].split_w.unwrap_or(m::SPLIT) * scale).clamp(min, (content.w-min-rule).max(min));
         let Some(tab) = self.tabs.get_mut(i) else { return };
         if tab.right.is_some() {
             let lw = content.w - split_w - rule;
@@ -291,12 +350,10 @@ impl App {
         let next = self.mru.iter().copied().find(|&i| i != active && i < self.tabs.len() && !self.tabs[i].hatch).or_else(|| (0..self.tabs.len()).find(|&i| !self.tabs[i].hatch));
         match next {
             Some(n) => self.activate(n),
-            None => {
-                let p = self.behavior.default_profile;
-                self.new_tab(p);
-            }
+            None => self.open_home(),
         }
         self.play_event("toggle");
+        self.hatch_state.overview = false;
         self.show_hatch();
     }
 
@@ -304,9 +361,11 @@ impl App {
     pub(crate) fn land(&mut self) {
         let Some(i) = self.hatch_tab() else { return };
         self.tabs[i].hatch = false;
-        self.hide_hatch();
+        self.hide_hatch_inner(false);
         self.activate(i);
-        self.window.focus_window();
+        self.hatch_state.main_hidden = false;
+        self.window.set_visible(true);
+        if crate::hatch_native::interactive() { self.window.focus_window(); }
         self.play_event("toggle");
         self.layout();
         self.dirty = true;
@@ -316,13 +375,16 @@ impl App {
     /// main window's world back.
     fn in_hatch<R>(&mut self, f: impl FnOnce(&mut App) -> R) -> Option<R> {
         let i = self.hatch_tab()?;
-        let (active, mouse) = (self.active, self.mouse);
+        let (active, mouse, mods, scale) = (self.tabs.get(self.active).map(|t| t.id), self.mouse, self.mods, self.scale);
         let pos = self.hatch.as_ref().map(|h| h.pos).unwrap_or((0.0, 0.0));
         self.active = i;
         self.mouse = pos;
+        if let Some(h) = &self.hatch { self.mods = h.mods; self.scale = h.window.scale_factor() as f32; }
         let r = f(self);
-        self.active = active;
+        self.active = active.and_then(|id| self.tabs.iter().position(|t| t.id == id)).unwrap_or(0).min(self.tabs.len().saturating_sub(1));
         self.mouse = mouse;
+        self.mods = mods;
+        self.scale = scale;
         self.hatch_layout();
         Some(r)
     }
@@ -333,6 +395,9 @@ impl App {
         if let Some(hat) = self.hatch.as_mut() {
             hat.target.resize(&self.gpu.device, w, h);
             hat.size = (w, h);
+            if let Some(notch)=hat.notch {
+                hat.home.0=hat.mon.0+notch.left+(notch.width as i32-w as i32)/2;
+            }
         }
         self.hatch_layout();
         self.apply_term_resizes(true);
@@ -341,14 +406,21 @@ impl App {
     pub fn hatch_focus(&mut self, f: bool) {
         let autohide = self.behavior.hatch_autohide;
         if let Some(i) = self.hatch_tab() {
-            if let Pane::Web(w) = &self.tabs[i].left {
-                w.tab.focus(f);
+            let tab=&mut self.tabs[i];
+            for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
+                let focused=f && !self.hatch_state.overview && right==tab.focus_right;
+                match p {
+                    Pane::Web(w)=>w.tab.focus(focused),
+                    Pane::Term(t)=>{if focused {t.waiting=false;} if t.term.modes().contains(nus_vt::Modes::FOCUS_EVENTS) {let _=t.pty.write(if focused {b"\x1b[I"} else {b"\x1b[O"});}},
+                    _=>{}
+                }
             }
         }
         let Some(h) = self.hatch.as_mut() else { return };
         h.focused = f;
+        if !f {h.mods=Default::default();}
         if !f && autohide && !h.pinned && h.visible && !h.hiding && h.lip_drag.is_none() && h.frame_drag.is_none() {
-            self.hide_hatch();
+            self.hide_hatch_inner(false);
         }
         self.dirty = true;
     }
@@ -357,30 +429,57 @@ impl App {
         if let Some(h) = self.hatch.as_mut() {
             h.mods = mo;
         }
-        self.mods = mo;
     }
 
     pub fn hatch_key(&mut self, ev: &KeyEvent) {
+        let mods = self.hatch.as_ref().map(|h| h.mods).unwrap_or_default();
         let pressed = ev.state == ElementState::Pressed;
-        let ctrl = self.mods.control_key();
-        let shift = self.mods.shift_key();
-        if pressed {
+        if pressed && self.behavior.hatch_hotkey.matches(ev, mods) {
+            // A successfully registered OS shortcut is delivered only by the OS.
+            if self.hotkey.as_ref().is_none_or(|k| !k.status.is_empty()) { self.toggle_hatch(); }
+            return;
+        }
+        if pressed && mods.control_key() && mods.shift_key() {
             match &ev.logical_key {
-                WKey::Named(NamedKey::Escape) if !ctrl => {
-                    // Esc hides — unless something inside wants it (a find, hints).
-                    if self.in_hatch(|a| a.term_mode_key(ev)).unwrap_or(false) {
-                        self.dirty = true;
-                        return;
-                    }
-                    self.hide_hatch();
-                    return;
-                }
-                WKey::Named(NamedKey::ArrowDown) if ctrl && shift => return self.land(),
-                WKey::Named(NamedKey::ArrowUp) if ctrl && shift => return self.toggle_pin(),
+                WKey::Named(NamedKey::ArrowDown) => return self.land(),
+                WKey::Named(NamedKey::ArrowUp) => return self.toggle_pin(),
+                WKey::Character(c) if c.eq_ignore_ascii_case("o") => return self.hatch_click(Hit::Work),
                 _ => {}
             }
         }
+        if self.hatch_state.overview {
+            if pressed {
+                let count = self.hatch_state.work.len();
+                match ev.logical_key {
+                    WKey::Named(NamedKey::Escape) => { self.hide_hatch(); return; }
+                    WKey::Named(NamedKey::Tab) if mods.shift_key() => self.hatch_state.selected = self.hatch_state.selected.saturating_sub(1),
+                    WKey::Named(NamedKey::ArrowDown) | WKey::Named(NamedKey::Tab) => self.hatch_state.selected = (self.hatch_state.selected + 1).min(count.saturating_sub(1)),
+                    WKey::Named(NamedKey::ArrowUp) => self.hatch_state.selected = self.hatch_state.selected.saturating_sub(1),
+                    WKey::Named(NamedKey::Home) => self.hatch_state.selected = 0,
+                    WKey::Named(NamedKey::End) => self.hatch_state.selected = count.saturating_sub(1),
+                    WKey::Character(ref c) if mods.control_key() && c.eq_ignore_ascii_case("n") => return self.hatch_click(Hit::New),
+                    WKey::Character(ref c) if mods.control_key() && c.eq_ignore_ascii_case("p") => return self.toggle_pin(),
+                    WKey::Named(NamedKey::Enter) => {
+                        if let Some(item) = self.hatch_state.work.get(self.hatch_state.selected) { self.hatch_click(Hit::Job(item.target)); }
+                    }
+                    _ => {}
+                }
+                if self.hatch_state.selected < self.hatch_state.scroll { self.hatch_state.scroll = self.hatch_state.selected; }
+                let shown = self.hatch_visible_rows();
+                if self.hatch_state.selected >= self.hatch_state.scroll + shown { self.hatch_state.scroll = self.hatch_state.selected + 1 - shown; }
+                self.dirty = true;
+            }
+            return;
+        }
+        // Escape is encoded by the terminal (including Vim, tmux, and agents).
+        // It is not a universal dismiss key for a live shell.
         self.in_hatch(|a| a.key(ev));
+        self.dirty = true;
+    }
+
+    pub fn hatch_ime(&mut self, text: &str) {
+        if self.hatch_state.overview { return; }
+        self.in_hatch(|a| { if let Some(Pane::Term(t)) = a.tabs.get_mut(a.active).map(|tab| tab.focused()) { let _ = t.pty.write(text.as_bytes()); } });
         self.dirty = true;
     }
 
@@ -414,8 +513,14 @@ impl App {
             h.window.set_outer_position(winit::dpi::PhysicalPosition::new(h.home.0, h.home.1));
             return;
         }
+        if self.hatch_state.overview { self.dirty = true; return; }
         self.in_hatch(|a| a.term_drag(pos.0, pos.1));
         self.in_hatch(|a| a.editor_motion(pos.0, pos.1));
+        self.in_hatch(|a| {
+            if let Some(tab)=a.tabs.get(a.active) {for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Web(w)=p {if w.page.contains(pos.0,pos.1) {w.tab.mouse_move(((pos.0-w.page.x)/a.scale) as i32,((pos.1-w.page.y)/a.scale) as i32,crate::app::cef_mods(a.mods),false);}}
+            }}
+        });
     }
 
     pub fn hatch_mouse(&mut self, button: MouseButton, state: ElementState, pos: (f32, f32)) {
@@ -451,10 +556,21 @@ impl App {
                     h.lip_drag = Some((pos.1, h.frac));
                     return;
                 }
+                Some(hit) => return self.hatch_click(hit),
                 None => {}
             }
         }
+        if self.hatch_state.overview { return; }
         self.in_hatch(|a| {
+            if let Some(tab)=a.tabs.get_mut(a.active) {
+                if pressed {if tab.right.as_ref().is_some_and(|p|p.rect().contains(pos.0,pos.1)){tab.focus_right=true;} else if tab.left.rect().contains(pos.0,pos.1){tab.focus_right=false;}}
+                for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                    if let Pane::Web(w)=p {if w.page.contains(pos.0,pos.1) {
+                        let b=match button {MouseButton::Left=>cef::MouseButtonType::LEFT,MouseButton::Right=>cef::MouseButtonType::RIGHT,MouseButton::Middle=>cef::MouseButtonType::MIDDLE,_=>return};
+                        w.tab.mouse_click(((pos.0-w.page.x)/a.scale) as i32,((pos.1-w.page.y)/a.scale) as i32,crate::app::cef_mods(a.mods),b,!pressed,1);w.tab.focus(true);return;
+                    }}
+                }
+            }
             if a.editor_mouse(button, state, pos.0, pos.1) {
                 return;
             }
@@ -467,177 +583,22 @@ impl App {
         if let Some(h) = self.hatch.as_mut() {
             h.pos = pos;
         }
-        self.in_hatch(|a| a.wheel(delta));
+        if self.hatch_state.overview {
+            let y = match delta { MouseScrollDelta::LineDelta(_, y) => y, MouseScrollDelta::PixelDelta(p) => p.y as f32 / 30.0 };
+            if y < 0.0 { self.hatch_state.scroll = (self.hatch_state.scroll + 1).min(self.hatch_state.work.len().saturating_sub(self.hatch_visible_rows())); }
+            else if y > 0.0 { self.hatch_state.scroll = self.hatch_state.scroll.saturating_sub(1); }
+        } else { self.in_hatch(|a| a.wheel(delta)); }
         self.dirty = true;
     }
 
     // --- the frame ---
 
     pub fn hatch_frame(&mut self) {
-        self.hatch_ride();
         let Some(h) = self.hatch.as_ref() else { return };
-        if h.slide.active() {
-            self.dirty = true;
-            h.window.request_redraw();
-        }
-        if !h.visible || h.last_frame.elapsed().as_millis() < 16 {
-            return;
-        }
-        let Some(i) = self.hatch_tab() else { return };
+        if !h.visible || h.last_frame.elapsed().as_millis() < 16 { return; }
         let mut h = self.hatch.take().unwrap();
         h.last_frame = Instant::now();
-        h.hits.clear();
-        let scale = h.window.scale_factor() as f32;
-        let (w, hh) = (h.target.size.0 as f32, h.target.size.1 as f32);
-        let t: Theme = self.theme.clone();
-        let ink = t.ink;
-        let paper = t.paper;
-        let signal = self.surface.signal;
-        let label = Style { font: self.f.ui, px: (m::LABEL_PX * scale).round(), color: ink, tracking: m::LABEL_PX * scale * m::LABEL_TRACKING };
-        let strong = Style { font: self.f.strong, ..label };
-        let dim = Style { color: t.dim, ..label };
-        let (mx, my) = h.pos;
-        h.scene.clear();
-        h.scene.layer(None);
-        h.scene.rect(Rect::new(0.0, 0.0, w, hh), paper);
-        let px = |v: f32| (v * scale).round();
-
-        // Masthead geometry per look.
-        let (head_y, head_h, head_x0, head_x1, content_edge) = match h.look {
-            HatchLook::Sheet => (0.0, px(34.0), px(16.0), w - px(16.0), px(2.0)),
-            HatchLook::Card => {
-                let frame = px(22.0);
-                // The carapace frame: the one surface texture belongs on.
-                h.scene.rect(Rect::new(0.0, 0.0, w, hh), crate::surface::mix(paper, ink, 0.03));
-                if let (Some(kind), true) = (self.surface.texture_kind.shader_kind(), self.surface.texture > 0.0) {
-                    h.scene.push(nus_render::Instance::texture_kind(Rect::new(0.0, 0.0, w, hh), kind, [1.0, 1.0, 1.0, self.surface.texture], self.surface.texture_scale * scale, 0.0));
-                }
-                (frame - px(14.0), px(22.0), frame, w - frame, frame + px(2.0))
-            }
-        };
-        let _ = content_edge;
-        // Wordmark · signal · space · tab title.
-        let wm = Style { font: self.f.wordmark, px: px(if h.look == HatchLook::Sheet { 20.0 } else { 18.0 }), color: ink, tracking: 0.0 };
-        let base = head_y + head_h / 2.0 + px(m::LABEL_PX) / 2.0 - px(2.0);
-        let mut x = head_x0;
-        let word = if h.look == HatchLook::Sheet { "quick" } else { "hatch" };
-        x += self.fonts.draw(&mut h.scene, wm, x, base + px(1.0), word) + px(14.0);
-        let sq = px(10.0);
-        h.scene.rect(Rect::new(x, base - sq + px(1.0), sq, sq), signal);
-        x += sq + px(10.0);
-        x += self.fonts.draw(&mut h.scene, strong, x, base, &self.space_name.clone().caps()) + px(8.0);
-        let title = self.tabs[i].title().caps();
-        let title_w = head_x1 - x - px(260.0);
-        let title = self.fit(dim, &format!("· {title}"), title_w.max(px(60.0)));
-        self.fonts.draw(&mut h.scene, dim, x, base, &title);
-        // Chords, right to left: ESC · PIN · LAND.
-        let mut rx = head_x1;
-        let chords: [(String, Hit, bool); 3] = [
-            ("ESC".into(), Hit::Close, false),
-            (if h.pinned { "PINNED".into() } else { "PIN · CTRL+SHIFT+↑".into() }, Hit::Pin, h.pinned),
-            ("LAND · CTRL+SHIFT+↓".into(), Hit::Land, false),
-        ];
-        for (word, hit, on) in chords {
-            let ww = self.fonts.measure(label, &word);
-            rx -= ww;
-            let hr = Rect::new(rx - px(6.0), head_y, ww + px(12.0), head_h);
-            let hot = hr.contains(mx, my);
-            let color = if on || hot { ink } else { t.dim };
-            self.fonts.draw(&mut h.scene, Style { color, ..label }, rx, base, &word);
-            h.hits.push((hr, hit));
-            rx -= px(18.0);
-        }
-        match h.look {
-            HatchLook::Sheet => {
-                h.scene.hline(0.0, head_h - px(1.0), w, px(1.0), ink);
-            }
-            HatchLook::Card => {}
-        }
-
-        // The panes.
-        let n = self.tab_label(i);
-        let look = self.tabs[i].look.clone();
-        let focus_right = self.tabs[i].focus_right;
-        let has_right = self.tabs[i].right.is_some();
-        let saved = (self.active, self.mouse);
-        self.active = i;
-        self.mouse = h.pos;
-        let mut tabs = std::mem::take(&mut self.tabs);
-        {
-            let tab = &mut tabs[i];
-            let left_focused = !(focus_right && has_right);
-            let split = tab.right.is_some();
-            self.draw_pane(&mut h.scene, &mut tab.left, &n, h.focused && left_focused, &look, split);
-            if let Some(r) = tab.right.as_mut() {
-                self.draw_pane(&mut h.scene, r, &n, h.focused && !left_focused, &look, true);
-            }
-        }
-        self.tabs = tabs;
-        self.active = saved.0;
-        self.mouse = saved.1;
-        h.scene.layer(None);
-        if let Some(tab) = self.tabs.get(i) {
-            if tab.right.is_some() {
-                let lr = tab.left.rect();
-                h.scene.vline(lr.right(), lr.y, lr.h, px(m::STRUCTURE), ink);
-            }
-        }
-
-        // Foot and edges per look.
-        match h.look {
-            HatchLook::Sheet => {
-                let edge = px(2.0);
-                let lip = px(6.0);
-                let foot = px(26.0);
-                let fy = hh - lip - edge - foot;
-                h.scene.hline(edge, fy, w - 2.0 * edge, px(1.0), ink);
-                let fb = fy + foot / 2.0 + px(m::LABEL_PX) / 2.0 - px(2.0);
-                let left = match (&h.notice, &self.board.toast) {
-                    (Some((s, at)), _) if at.elapsed().as_secs() < 4 => s.clone(),
-                    (_, Some((s, _, _))) => s.clone(),
-                    _ => format!("{} · {}", self.behavior.hatch_hotkey.label(), if self.hotkey.as_ref().is_some_and(|k| k.status.is_empty()) { "summons from anywhere" } else { "chord inside nus only" }).to_lowercase(),
-                };
-                self.fonts.draw(&mut h.scene, dim, px(16.0), fb, &self.fit(dim, &left.caps(), w * 0.6));
-                let hint = "DRAG THE EDGE TO RESIZE";
-                let hw = self.fonts.measure(dim, hint);
-                self.fonts.draw(&mut h.scene, dim, w - px(16.0) - hw, fb, hint);
-                // Edges: left, right, bottom; no top. Then the lip.
-                h.scene.rect(Rect::new(0.0, 0.0, edge, hh - lip), ink);
-                h.scene.rect(Rect::new(w - edge, 0.0, edge, hh - lip), ink);
-                h.scene.rect(Rect::new(0.0, hh - lip - edge, w, edge), ink);
-                let lip_r = Rect::new(0.0, hh - lip, w, lip);
-                h.scene.rect(lip_r, signal);
-                if let (Some(kind), true) = (self.surface.texture_kind.shader_kind(), self.surface.texture > 0.0) {
-                    h.scene.push(nus_render::Instance::texture_kind(lip_r, kind, [1.0, 1.0, 1.0, self.surface.texture], self.surface.texture_scale * scale, 0.0));
-                }
-                h.hits.push((Rect::new(0.0, hh - lip - px(6.0), w, lip + px(6.0)), Hit::Lip));
-            }
-            HatchLook::Card => {
-                let frame = px(22.0);
-                let border = px(2.0);
-                let inner = Rect::new(frame, frame + px(22.0), w - 2.0 * frame, hh - 2.0 * frame - px(22.0) - px(16.0));
-                h.scene.push(nus_render::Instance::stroke(inner, 0.0, px(m::STRUCTURE), ink, None, 0.0));
-                // Frame foot: a short signal mark, the hint.
-                let fy = hh - frame - px(6.0);
-                h.scene.rect(Rect::new(frame, fy, px(120.0), px(4.0)), signal);
-                let hint = "DRAG THE FRAME TO MOVE · THE CORNER RESIZES";
-                let hw = self.fonts.measure(dim, hint);
-                self.fonts.draw(&mut h.scene, dim, w - frame - hw, fy + px(5.0), hint);
-                // Outer edge, hard shadow is the OS's job we don't have: 2px ink.
-                h.scene.push(nus_render::Instance::stroke(Rect::new(0.0, 0.0, w, hh), 0.0, border, ink, None, 0.0));
-                // Frame hits: anywhere on the frame drags; the bottom-right corner resizes.
-                let corner = Rect::new(w - frame, hh - frame, frame, frame);
-                h.hits.push((corner, Hit::Corner));
-                for r in [Rect::new(0.0, 0.0, w, frame), Rect::new(0.0, hh - frame, w, frame), Rect::new(0.0, 0.0, frame, hh), Rect::new(w - frame, 0.0, frame, hh)] {
-                    h.hits.push((r, Hit::Frame));
-                }
-            }
-        }
-        h.scene.finish();
-        for (x, y, w, hgt, data) in self.fonts.uploads.drain(..) {
-            self.gpu.upload_glyph(x, y, w, hgt, &data);
-        }
-        self.gpu.render(&mut h.target, &h.scene, paper);
+        self.draw_hatch(&mut h);
         self.hatch = Some(h);
     }
 
@@ -660,9 +621,10 @@ impl App {
             self.place_hatch();
             self.hatch_layout();
             self.apply_term_resizes(true);
+            self.hatch_shade();
         }
         let chord = self.behavior.hatch_hotkey;
-        if self.hotkey.as_ref().is_none_or(|k| k.chord != chord) {
+        if (self.ordinal == 0 || self.hotkey.is_some()) && self.hotkey.as_ref().is_none_or(|k| k.chord != chord) {
             self.hotkey = None;
             self.hotkey = Some(crate::hotkey::Hotkey::register(chord, self.proxy.clone()));
         }

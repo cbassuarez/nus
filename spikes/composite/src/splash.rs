@@ -41,7 +41,7 @@ impl App {
     /// to `pane` alone, when it is still the shell it was born with.
     pub(crate) fn replace_birth(&mut self, pane: crate::app::Pane) {
         if let Some(t) = self.tabs.first_mut() {
-            if matches!(t.left, crate::app::Pane::Term(_)) {
+            if matches!(t.left, crate::app::Pane::Term(_) | crate::app::Pane::Home(_)) {
                 t.left = pane;
                 t.right = None;
                 t.focus_right = false;

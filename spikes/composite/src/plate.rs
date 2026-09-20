@@ -148,6 +148,42 @@ impl App {
         bind
     }
 
+    /// The app icon at `size` px with its band `progress` of the way, for a
+    /// picture card in settings: cached by size, progress (in hundredths)
+    /// and colours, apart from the plate's single texture.
+    pub(crate) fn pic_icon(&mut self, size: u32, progress: f32) -> Arc<wgpu::BindGroup> {
+        let (n_color, band) = (self.theme.ink, self.surface.signal);
+        let q = |c: nus_render::Color| [(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, (c[3] * 255.0) as u8];
+        let k = (size, (progress.clamp(0.0, 1.0) * 100.0).round() as u16, q(n_color), q(band));
+        if let Some(b) = self.pic_icons.get(&k) {
+            return b.clone();
+        }
+        let rgba = nus_render::icon::app_icon_at(size, n_color, band, progress);
+        let bgra: Vec<u8> = rgba.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("pic icon"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bgra,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size * 4), rows_per_image: Some(size) },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        );
+        let bind = (self.bind_texture)(&tex);
+        if self.pic_icons.len() > 32 {
+            self.pic_icons.clear(); // a theme or signal change leaves old ones behind
+        }
+        self.pic_icons.insert(k, bind.clone());
+        bind
+    }
+
     /// The icon above the line, the band drawing in unless the splash
     /// already drew it. Returns the line's baseline and how far the line
     /// and the stops have come up (0..1) — they come up once the band closes.

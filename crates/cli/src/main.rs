@@ -10,7 +10,7 @@
 //!   nus theme [<name>]              the stock themes, or apply one
 //!   nus look [ink|paper] [--signal #rrggbb]
 //!   nus ports                       what's listening, as the board sees it
-//!   nus hatch [toggle|show|hide|hoist|land]
+//!   nus hatch [toggle|show|hide|work|list|open --window ID --tab-id ID [--right]|hoist|land|quit]
 //!   nus block [last|all] [--tab N]  a shell's blocks, command and output
 //!   nus ask <question…>             the assistant, beside this shell
 //!   nus raise                       bring the window up
@@ -100,7 +100,7 @@ fn parse(args: &[String]) -> (Vec<String>, serde_json::Map<String, Value>) {
         let a = &args[i];
         if let Some(k) = a.strip_prefix("--") {
             let key = k.replace('-', "_");
-            let takes_value = matches!(k, "tab" | "profile" | "cwd" | "run" | "signal" | "which");
+            let takes_value = matches!(k, "tab" | "tab-id" | "window" | "profile" | "cwd" | "run" | "signal" | "which");
             if takes_value && i + 1 < args.len() {
                 let v = &args[i + 1];
                 let val = v
@@ -435,7 +435,7 @@ fn main() -> ExitCode {
 const USAGE: &str = "usage: nus <command> [args] [--json]
   ls · open <url> [--split] · edit <file> [--split] · launch [--profile P] [--cwd D] [--run CMD] [--split]
   send-text <text> [--tab N] [--right] [--enter] · focus <tab> · close [<tab>] [--force]
-  theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|hoist|land]
+  theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|work|list|open --window ID --tab-id ID [--right]|hoist|land|quit]
   block [last|all] [--tab N] · ask <question> · raise · version
   layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
   sync [now] · sync key · sync join <key> · sync status · sync folder <path> · sync git <remote>

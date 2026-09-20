@@ -25,6 +25,18 @@ impl Rect {
     pub fn bottom(&self) -> f32 {
         self.y + self.h
     }
+    /// The overlap of two rects (empty, at `self`'s origin, when they miss).
+    pub fn intersect(&self, o: &Rect) -> Rect {
+        let x = self.x.max(o.x);
+        let y = self.y.max(o.y);
+        let r = self.right().min(o.right());
+        let b = self.bottom().min(o.bottom());
+        if r <= x || b <= y {
+            return Rect::new(self.x, self.y, 0.0, 0.0);
+        }
+        Rect::new(x, y, r - x, b - y)
+    }
+
     pub fn inset(&self, d: f32) -> Rect {
         Rect::new(self.x + d, self.y + d, self.w - 2.0 * d, self.h - 2.0 * d)
     }
@@ -291,6 +303,8 @@ pub struct Layer {
 /// layer draw in push order, layers draw in creation order.
 #[derive(Default)]
 pub struct Scene {
+    /// Round the complete window, including child surfaces and chrome.
+    pub corner_radius: f32,
     instances: Vec<Instance>,
     layers: Vec<Layer>,
     open: Option<(usize, Option<Rect>)>,
@@ -307,6 +321,7 @@ impl Scene {
     }
 
     pub fn clear(&mut self) {
+        self.corner_radius = 0.0;
         self.instances.clear();
         self.layers.clear();
         self.open = None;
@@ -370,6 +385,20 @@ impl Scene {
         });
     }
 
+    /// The clip of the layer being drawn now, if any: read it before
+    /// opening a nested clip, and restore it after, so a card clipped to
+    /// itself inside a scrolling page doesn't leave the page unclipped.
+    pub fn clip(&self) -> Option<Rect> {
+        self.open.and_then(|(_, c)| c)
+    }
+
+    /// Apply a reveal to the entire composed surface, including nested panes.
+    /// Existing clips are intersected, so a reveal cannot expose pane overflow.
+    pub fn clip_all(&mut self, rect: Rect) {
+        self.close();
+        for layer in &mut self.layers { layer.clip=Some(layer.clip.map(|c|c.intersect(&rect)).unwrap_or(rect)); }
+    }
+
     /// Start (or restart) an atlas-bound layer with an optional clip.
     pub fn layer(&mut self, clip: Option<Rect>) {
         self.close();
@@ -414,9 +443,14 @@ impl Scene {
         bind: Arc<wgpu::BindGroup>,
         clip: Option<Rect>,
     ) {
+        self.texture_uv_alpha(rect, uv, bind, clip, 1.0);
+    }
+
+    /// A texture with both opacity and an explicit clip, for nested previews.
+    pub fn texture_uv_alpha(&mut self, rect: Rect, uv: [f32; 4], bind: Arc<wgpu::BindGroup>, clip: Option<Rect>, alpha: f32) {
         self.close();
         let start = self.instances.len();
-        let mut i = Instance::textured(rect, 1.0);
+        let mut i = Instance::textured(rect, alpha);
         i.uv = uv;
         self.instances.push(i);
         self.layers.push(Layer {

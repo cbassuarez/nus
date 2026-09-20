@@ -12,3 +12,6 @@
 /design/nus-look-and-feel.html
 /spikes/composite/profile/
 /spikes/composite/video-test.html
+/dist
+__pycache__/
+*.pyc

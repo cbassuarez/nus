@@ -13,6 +13,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -25,6 +26,8 @@ pub struct Phone {
     pub token: String,
     /// The LAN address the phone should use, if one could be told.
     pub host: String,
+    alive: Arc<AtomicBool>,
+    worker: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 static PHONE: std::sync::Mutex<Option<Phone>> = std::sync::Mutex::new(None);
@@ -32,6 +35,17 @@ static PHONE: std::sync::Mutex<Option<Phone>> = std::sync::Mutex::new(None);
 /// The server, if it is up.
 pub fn current() -> Option<Phone> {
     PHONE.lock().ok().and_then(|g| g.clone())
+}
+
+/// Revoke the address immediately and release the listening socket.
+pub fn stop() {
+    if let Ok(mut guard) = PHONE.lock() {
+        if let Some(phone) = guard.take() {
+            phone.alive.store(false, Ordering::Release);
+            if let Ok(mut worker) = phone.worker.lock() { if let Some(worker) = worker.take() { let _ = worker.join(); } }
+        }
+    }
+    let _ = std::fs::remove_file(std::env::current_dir().unwrap_or_default().join("profile/phone"));
 }
 
 /// Turn it on once per process; on again is the same server.
@@ -70,22 +84,32 @@ pub fn serve(tx: Sender<Inbound>) -> Option<Phone> {
     let port = l.local_addr().ok()?.port();
     let token = crate::remote::new_token();
     let t2 = token.clone();
-    std::thread::Builder::new()
+    l.set_nonblocking(true).ok()?;
+    let alive = Arc::new(AtomicBool::new(true));
+    let running = alive.clone();
+    let worker = std::thread::Builder::new()
         .name("nus-phone".into())
         .spawn(move || {
-            for conn in l.incoming().flatten() {
-                let tx = tx.clone();
-                let token = t2.clone();
-                std::thread::spawn(move || handle(conn, tx, &token));
+            while running.load(Ordering::Acquire) {
+                match l.accept() {
+                    Ok((conn, _)) => {
+                        let tx = tx.clone();
+                        let token = t2.clone();
+                        let running = running.clone();
+                        std::thread::spawn(move || handle(conn, tx, &token, &running));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(30)),
+                    Err(_) => break,
+                }
             }
         })
         .ok()?;
-    Some(Phone { port, token, host: lan_ip() })
+    Some(Phone { port, token, host: lan_ip(), alive, worker: Arc::new(std::sync::Mutex::new(Some(worker))) })
 }
 
 /// One request, answered in full. Only what the page needs: GET /, POST
 /// /ask, POST /hands; the token on every one.
-fn handle(mut conn: TcpStream, tx: Sender<Inbound>, token: &str) {
+fn handle(mut conn: TcpStream, tx: Sender<Inbound>, token: &str, alive: &AtomicBool) {
     let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
     let mut reader = BufReader::new(conn.try_clone().ok().unwrap_or_else(|| conn.try_clone().unwrap()));
     let mut line = String::new();
@@ -115,10 +139,11 @@ fn handle(mut conn: TcpStream, tx: Sender<Inbound>, token: &str) {
     if method == "POST" {
         form.extend(parse_form(&body));
     }
-    if form.get("t").map(String::as_str) != Some(token) {
+    if !alive.load(Ordering::Acquire) || form.get("t").map(String::as_str) != Some(token) {
         return respond(&mut conn, 403, "text/plain", "no");
     }
     let ask = |cmd: &str, args: Value| -> Value {
+        if !alive.load(Ordering::Acquire) { return Value::Null; }
         let (rtx, rrx) = channel();
         if tx.send(Inbound::Request(crate::remote::Request { cmd: cmd.into(), args, reply: rtx })).is_err() {
             return Value::Null;

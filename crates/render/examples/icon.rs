@@ -1,18 +1,17 @@
 //! Write the bundled app icon: `cargo run -p nus-render --example icon [dir]`.
-//! Default paper/red; the running app regenerates it from the surface.
+//! White desktop mark/red orbit; the running app follows the surface colour.
 
-use nus_render::icon::{app_icon, app_icon_svg, band_stops, ico, png};
-use nus_render::theme::{signal, Theme};
+use nus_render::icon::{app_icon_svg, band_stops, ico, png};
+use nus_render::theme::signal;
 
 fn main() {
     let dir = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "assets/icon".into());
     std::fs::create_dir_all(&dir).unwrap();
-    let ink = Theme::paper().ink;
     let mut entries = Vec::new();
     for size in [16u32, 24, 32, 48, 64, 128, 256, 512, 1024] {
-        let rgba = app_icon(size, ink, signal::RED);
+        let rgba = nus_render::dock_icon::render(size, signal::RED, nus_render::dock_icon::Face::Newsreader);
         let p = png(&rgba, size, size);
         std::fs::write(format!("{dir}/nus-{size}.png"), &p).unwrap();
         if size <= 256 {
@@ -20,9 +19,12 @@ fn main() {
         }
     }
     std::fs::write(format!("{dir}/nus.ico"), ico(&entries)).unwrap();
-    // Ink variant for dark docks/taskbars.
-    let rgba = app_icon(512, Theme::ink().ink, signal::RED);
-    std::fs::write(format!("{dir}/nus-512-ink.png"), png(&rgba, 512, 512)).unwrap();
+    // Dock variant (pure white n, clipped by its orbit, with a contrast shadow), at every
+    // size a macOS .icns wants (scripts/bundle-mac.sh builds it from these).
+    for size in [16u32, 32, 64, 128, 256, 512, 1024] {
+        let rgba = nus_render::dock_icon::render(size, signal::RED, nus_render::dock_icon::Face::Newsreader);
+        std::fs::write(format!("{dir}/nus-{size}-ink.png"), png(&rgba, size, size)).unwrap();
+    }
     // The vector, for the site and anything that scales.
     std::fs::write(
         format!("{dir}/nus.svg"),

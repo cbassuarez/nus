@@ -273,12 +273,13 @@ impl App {
         let label = self.label();
         let ui = self.ui();
         let dim = Style { color: t.dim, ..label };
-        let row_h = self.px(m::ROW_H) * 0.86;
+        let row_h = self.px(m::ROW_H);
+        let icons_only=self.sidebar_icons();
         let (mx, my) = self.mouse;
         let area = Rect::new(sb.x, top, sb.w, (bottom - top).max(0.0));
         self.tree.rect = area;
         // The head: FILES · the root's name; a pin when bound, the path in the tooltip.
-        let head_h = self.px(34.0);
+        let head_h = self.header_h();
         let base = top + self.px(22.0);
         let bound = self.workspace.is_some();
         let root = self.tree.root.clone();
@@ -287,7 +288,7 @@ impl App {
         self.fonts.draw_icon(scene, if bound { icons::PIN } else { icons::FOLDER_SIMPLE }, isz, sb.x + self.px(m::ROW_PAD_X), base - isz + self.px(2.0), if bound { self.surface.signal } else { ink });
         let nx = sb.x + self.px(m::ROW_PAD_X) + isz + self.px(8.0);
         let shown = self.fit(label, &name.to_uppercase(), sb.w - (nx - sb.x) - self.px(36.0));
-        self.fonts.draw(scene, Style { color: ink, ..label }, nx, base, &shown);
+        if !icons_only {self.fonts.draw(scene, Style { color: ink, ..label }, nx, base, &shown);}
         let head = Rect::new(sb.x, top, sb.w, head_h);
         let words = match (&root, bound) {
             (Some(r), true) => format!("{} · this window's folder · click to let it follow the shell", r.display()),
@@ -298,7 +299,7 @@ impl App {
         self.side_hits.push((head, SideHit::FilesPin));
         // Up one: a small caret at the right, when there is an up.
         if let Some(r) = &root {
-            if r.parent().is_some() {
+            if !icons_only && r.parent().is_some() {
                 let usz = self.px(11.0);
                 let ur = Rect::new(sb.right() - self.px(m::ROW_PAD_X) - usz - self.px(8.0), top, usz + self.px(16.0), head_h);
                 self.fonts.draw_icon(scene, icons::CARET_DOWN, usz, ur.x + self.px(8.0), base - usz + self.px(1.0), t.dim);
@@ -333,6 +334,13 @@ impl App {
             let is_preview = preview.as_deref() == Some(n.path.as_path());
             if is_preview {
                 scene.rect(Rect::new(sb.x, y, self.px(2.0), row_h), self.surface.signal);
+            }
+            if icons_only {
+                let size=self.px(16.0);let x=(sb.x+(sb.w-size)*0.5).round()+n.depth.min(3) as f32*self.px(2.0);
+                self.fonts.draw_icon(scene,if n.dir{icons::FOLDER_SIMPLE}else{icons::CODE},size,x,y+(row_h-size)*0.5,if n.dim{t.dim}else{ink});
+                self.side_tip(hover_key("tree-file").wrapping_add(k as u64),rr,n.path.to_string_lossy().into());
+                if rr.y>=list.y&&rr.bottom()<=list.bottom(){self.side_hits.push((rr,SideHit::FileRow(k)));}
+                y+=row_h;continue;
             }
             let x = sb.x + self.px(m::ROW_PAD_X) + n.depth as f32 * self.px(14.0);
             let b = y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0);

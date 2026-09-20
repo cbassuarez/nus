@@ -4,6 +4,8 @@
 //! page is native chrome like everything else. The Luau file is the other
 //! way in; the RULES section shows it and reloads it.
 
+#[path = "workspace_settings.rs"]
+pub(crate) mod workspace;
 use crate::anim::Anim;
 use crate::app::{Caps, fade, hover_key, Hover};
 use crate::app::{App, Pane, SettingsPane};
@@ -42,8 +44,8 @@ pub enum HatchMonitor {
 /// One hatch per Space (follows the Space you're in), or one for all.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum HatchSpaces {
-    #[default]
     Follow,
+    #[default]
     One,
 }
 
@@ -319,7 +321,7 @@ pub enum SplashMode {
 
 /// Which comes first: a terminal that also browses, or a browser that
 /// also has shells. It sets what NEW TAB opens with nothing typed, what
-/// leads the palette, and (once, when picked) THEN and LINKS FROM OUTSIDE.
+/// leads the palette, and (once, when picked) LINKS FROM OTHER APPS.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum Lead {
     #[default]
@@ -503,15 +505,29 @@ pub struct Behavior {
     /// ASSISTANTS · the backend the ask panel uses ("" = the best on the machine).
     #[serde(default)]
     pub ask_backend: String,
+    #[serde(default)]
+    pub prompt: crate::prompt::Config,
+    #[serde(default)]
+    pub assistants: crate::assistants::Config,
+    #[serde(default)]
+    pub typography: crate::fonts::Typography,
     /// SYNC · THE PHONE: this window served as a page on the LAN.
     #[serde(default)]
     pub phone: bool,
     /// HOME · ART: which art plays behind the line (a built-in's name or a file's stem).
     #[serde(default = "default_home_art")]
     pub home_art: String,
-    /// Where this machine is, for the sky: [lat, lon]; none = a rough guess from the clock.
+    /// Where this machine is, for the sky: [lat, lon]; none = not configured; never inferred.
     #[serde(default)]
     pub place: Option<[f32; 2]>,
+    /// None uses the curated nine; a list is the user's footer collection.
+    #[serde(default)]
+    pub footer_themes: Option<Vec<String>>,
+    #[serde(default)] pub download_rename: crate::downloads::Rename,
+    #[serde(default)] pub ui_font: crate::fonts::Family,
+    #[serde(default)] pub ui_weight: crate::fonts::Weight,
+    #[serde(default)] pub term_font: crate::fonts::Family,
+    #[serde(default)] pub term_weight: crate::fonts::Weight,
     /// Remember tabs and windows between launches (session.json); off, nothing is written.
     #[serde(default = "default_true")]
     pub remember: bool,
@@ -574,6 +590,16 @@ pub struct Behavior {
     pub hatch_autohide: bool,
     #[serde(default)]
     pub hatch_spaces: HatchSpaces,
+    #[serde(default = "default_true")]
+    pub hatch_status: bool,
+    #[serde(default = "default_true")]
+    pub hatch_background: bool,
+    #[serde(default)]
+    pub hatch_dim: bool,
+    #[serde(default)]
+    pub hatch_notify: bool,
+    #[serde(default)]
+    pub menu_drawer: crate::menu_drawer::Config,
     /// Ghost the history entry that continues what's typed; Right/End accepts.
     #[serde(default = "default_true")]
     pub predict: bool,
@@ -775,9 +801,15 @@ impl Default for Behavior {
             opened_by_others: OpenedBy::Behind,
             new_window: NewWindow::Prompt,
             ask_backend: String::new(),
+            prompt: Default::default(),
+            assistants: Default::default(),
+            typography: Default::default(),
             phone: false,
             home_art: default_home_art(),
             place: None,
+            footer_themes: None,
+            download_rename: Default::default(),
+            ui_font: Default::default(), ui_weight: Default::default(), term_font: Default::default(), term_weight: Default::default(),
             remember: true,
             hands_hosts: Vec::new(),
             hands_confirm_submit: true,
@@ -813,7 +845,12 @@ impl Default for Behavior {
             hatch_size: 40,
             hatch_monitor: HatchMonitor::Pointer,
             hatch_autohide: true,
-            hatch_spaces: HatchSpaces::Follow,
+            hatch_spaces: HatchSpaces::One,
+            hatch_status: true,
+            hatch_background: true,
+            hatch_dim: false,
+            hatch_notify: false,
+            menu_drawer: crate::menu_drawer::Config::default(),
             predict: true,
             block_content: true,
             sleep_after_min: 30,
@@ -839,6 +876,8 @@ pub enum Slider {
     ShellWidth,
     Radius,
     Grace,
+    SidebarWidth,
+    FooterSize,
     Motion,
     BarThickness,
     BarChase,
@@ -859,6 +898,7 @@ pub enum Slider {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
+    Workspace(workspace::Hit),
     Section(usize),
     Theme(Option<bool>),
     Signal(Color),
@@ -991,6 +1031,17 @@ pub enum Hit {
     HatchMonitor(HatchMonitor),
     HatchAutohide(bool),
     HatchSpaces(HatchSpaces),
+    HatchStatus(bool),
+    HatchBackground(bool),
+    HatchDim(bool),
+    HatchNotify(bool),
+    MenuEnabled(bool),
+    MenuSignal(crate::menu_drawer::SignalStyle),
+    MenuDensity(crate::menu_drawer::Module,crate::menu_drawer::Density),
+    MenuMove(crate::menu_drawer::Module,bool),
+    MenuNames(bool),
+    MenuRecent(bool),
+    MenuPreview,
     HdrStyle(HeaderStyle),
     HdrMasthead(bool),
     HdrDateline(bool),
@@ -1001,6 +1052,9 @@ pub enum Hit {
     HdrRailHover(bool),
     HdrFlash(bool),
     Compact(bool),
+    SmallTabs(crate::sidebar::SmallTabs),
+    DownloadRename(crate::downloads::Rename),
+    Downloads,
     CurShape(CursorShapePref),
     CurBlink(Blink),
     CurColor(CursorColor),
@@ -1024,7 +1078,14 @@ pub enum Hit {
     AskArt,
     OpenArtFolder,
     PlaceEdit,
+    FooterTheme(usize),
+    FooterDefaults,
+    Search,
+    UiFont(crate::fonts::Family), UiWeight(crate::fonts::Weight),
+    TermFont(crate::fonts::Family), TermWeight(crate::fonts::Weight),
     Then(Then),
+    StartupLayout(usize),
+    EditHomeUrl,
     Atlas(AtlasMode),
     Outside(Outside),
     LoginItem(bool),
@@ -1038,7 +1099,7 @@ pub enum Hit {
 
 /// The sections, grouped by what they're about: how nus looks, how it
 /// feels, what you work in, and the machine.
-pub const GROUPS: [(&str, std::ops::Range<usize>); 5] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("SYSTEM", 9..12), ("YOU", 12..15)];
+pub const GROUPS: [(&str, std::ops::Range<usize>); 7] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("SYSTEM", 9..12), ("DESKTOP", 17..18), ("YOU", 12..15), ("PERSONALIZE", 15..17)];
 
 /// The look studio's tabs.
 pub const LOOK_TABS: [&str; 5] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CURSOR"];
@@ -1061,7 +1122,7 @@ pub enum TokSel {
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 15] = [
+pub const SECTIONS: [(&str, (&str, &str)); 18] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("STARTUP", icons::ROCKET),
@@ -1077,8 +1138,15 @@ pub const SECTIONS: [(&str, (&str, &str)); 15] = [
     ("SYNC", icons::BROADCAST),
     ("PROFILE", icons::USER),
     ("UPDATES", icons::DOWNLOAD),
+    ("FONTS", icons::CODE),
+    ("PROMPT", icons::SEARCH),
+    ("MENU & TRAY", icons::SQUARES),
 ];
 
+pub const SEC_MENU: usize = 17;
+pub const SEC_FONTS: usize = 15;
+pub const SEC_PROMPT: usize = 16;
+pub const SEC_ASSISTANTS: usize = 9;
 pub const SEC_LOOK: usize = 0;
 pub const SEC_SOUND: usize = 1;
 pub const SEC_STARTUP: usize = 2;
@@ -1114,6 +1182,8 @@ fn key(k: &str, shift: bool) -> String {
 
 /// One row's control.
 enum Control {
+    FontProof,
+    PromptProof,
     /// The live proof of the current look: a miniature window.
     Studio,
     /// The studio's tab strip.
@@ -1140,6 +1210,35 @@ enum Control {
     Keys(Vec<String>, String),
     /// A group heading within a page: the row's label, small and dim.
     Caption,
+    /// Picture cards: (name, caption, picture, hit, current). Each option
+    /// drawn as what it does, so it's clear what you're clicking on.
+    Pics(Vec<(String, String, Pic, Hit, bool)>),
+    /// Buttons that say what they do: (label, caption, icon, hit).
+    Actions(Vec<(String, String, (&'static str, &'static str), Hit)>),
+}
+
+/// What a picture card shows: a small drawing of the option itself.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Pic {
+    Setting(Hit),
+    LeadTerminal,
+    LeadBrowser,
+    WinLast,
+    WinMax,
+    WinFull,
+    WinCentered,
+    SplashDraw,
+    SplashStill,
+    SplashNone,
+    StartPrompt,
+    StartHome,
+    StartLayout,
+    StartLast,
+    LookLine,
+    LookPlate,
+    NewPrompt,
+    NewShell,
+    NewLaunch,
 }
 
 /// Group headings for a page's rows: each caption goes in before the row
@@ -1162,6 +1261,8 @@ impl App {
             Slider::ShellWidth => (self.surface.shell_width - 1.0) / 11.0,
             Slider::Radius => self.surface.shell_radius / 24.0,
             Slider::Grace => self.sidebar_rules.grace_ms as f32 / 1000.0,
+            Slider::SidebarWidth => (self.sidebar_rules.width-48.0)/432.0,
+            Slider::FooterSize => (self.sidebar_rules.footer_row-28.0)/36.0,
             Slider::Smear => self.cursor.smear,
             Slider::Motion => self.motion.register,
             Slider::BarThickness => (self.load_bar.thickness - 1.0) / 5.0,
@@ -1181,7 +1282,7 @@ impl App {
         }
     }
 
-    fn set_slider(&mut self, s: Slider, v: f32) {
+    pub(crate) fn set_slider(&mut self, s: Slider, v: f32) {
         let v = v.clamp(0.0, 1.0);
         match s {
             Slider::Tint => self.surface.tint = v,
@@ -1190,11 +1291,13 @@ impl App {
             Slider::ShellWidth => self.surface.shell_width = (1.0 + v * 11.0).round(),
             Slider::Radius => self.surface.shell_radius = (v * 24.0).round(),
             Slider::Grace => self.sidebar_rules.grace_ms = (v * 1000.0).round() as u64,
+            Slider::SidebarWidth => {self.sidebar_rules.compact=false;self.sidebar_rules.width=(48.0+v*432.0).round();},
+            Slider::FooterSize => self.sidebar_rules.footer_row=(28.0+v*36.0).round(),
             Slider::Smear => self.cursor.smear = v.clamp(0.1, 0.9),
             Slider::Motion => self.motion.register = v,
             Slider::BarThickness => self.load_bar.thickness = (1.0 + v * 5.0).round(),
             Slider::BarChase => self.load_bar.chase = (2.0 + v * 14.0).round(),
-            Slider::TexScale => self.surface.texture_scale = (1.0 + v * 9.0 * 2.0).round() / 2.0,
+            Slider::TexScale => self.surface.texture_scale = ((1.0 + v * 9.0) * 2.0).round() / 2.0,
             Slider::Angle => self.surface.angle = (v * 360.0 / 15.0).round() * 15.0 % 360.0,
             Slider::Drift => self.surface.drift = (v * 0.5 * 100.0).round() / 100.0,
             Slider::Breath => self.surface.breath = (v * 20.0).round() / 20.0,
@@ -1202,9 +1305,9 @@ impl App {
                 self.sound.prefs.volume = (v * 20.0).round() / 20.0;
                 self.sound.cue("tick");
             }
-            Slider::SplashHold => self.behavior.splash_hold = (0.4 + v * 2.2 * 10.0).round() / 10.0,
+            Slider::SplashHold => self.behavior.splash_hold = ((0.4 + v * 2.2) * 10.0).round() / 10.0,
             Slider::Saturation => {
-                self.theme_edit.saturation = (0.5 + v * 20.0).round() / 20.0;
+                self.theme_edit.saturation = ((0.5 + v) * 20.0).round() / 20.0;
                 self.rebuild_theme();
             }
             Slider::Hue | Slider::Sat | Slider::Light => {
@@ -1217,7 +1320,7 @@ impl App {
                 self.set_tok(c);
             }
             Slider::BlinkPeriod => self.cursor.period = ((200.0 + v * 1000.0) / 10.0).round() as u32 * 10,
-            Slider::CurWeight => self.cursor.weight = (1.0 + v * 5.0 * 2.0).round() / 2.0,
+            Slider::CurWeight => self.cursor.weight = ((1.0 + v * 5.0) * 2.0).round() / 2.0,
         }
         self.layout();
     }
@@ -1234,6 +1337,20 @@ impl App {
     }
 
     /// A click inside the settings pane. Returns true when it was handled.
+    pub(crate) fn settings_key(&mut self, ev:&winit::event::KeyEvent)->bool {
+        use winit::keyboard::{Key,NamedKey};
+        if ev.state!=winit::event::ElementState::Pressed || !self.tabs.get(self.active).is_some_and(|t|matches!(t.left,Pane::Settings(_))) {return false;}
+        if self.settings_hits.is_empty(){return false;}
+        match &ev.logical_key {
+            Key::Named(NamedKey::Tab)=>{let n=self.settings_hits.len();self.settings_focus=Some(match self.settings_focus{Some(i) if self.mods.shift_key()=>(i+n-1)%n,Some(i)=>(i+1)%n,None=>0});},
+            Key::Named(NamedKey::Enter)|Key::Named(NamedKey::Space) if self.settings_focus.is_some()=>{let i=self.settings_focus.take().unwrap();if let Some((r,h))=self.settings_hits.get(i).copied(){self.apply_setting(h,r.x+r.w*0.5);self.save_prefs();}},
+            Key::Named(NamedKey::PageDown)|Key::Named(NamedKey::PageUp)=>{let down=matches!(ev.logical_key,Key::Named(NamedKey::PageDown));if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|&mut t.left){p.scroll=(p.scroll+if down{p.rect.h*0.7}else{-p.rect.h*0.7}).clamp(0.0,(self.settings_reach-p.rect.h+self.scale*80.0).max(0.0));}self.settings_focus=None;},
+            Key::Named(NamedKey::Escape) if self.settings_focus.is_some()=>self.settings_focus=None,
+            _=>return false,
+        }
+        self.dirty=true;true
+    }
+
     pub(crate) fn settings_click(&mut self, x: f32, y: f32) -> bool {
         let Some(tab) = self.tabs.get(self.active) else { return false };
         let Pane::Settings(s) = &tab.left else { return false };
@@ -1241,6 +1358,7 @@ impl App {
             return false;
         }
         let pad = self.touch_pad();
+        self.settings_focus=None;
         let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) else { return true };
         match hit {
             Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) => {}
@@ -1249,6 +1367,7 @@ impl App {
             }
             _ => self.play_event("toggle"),
         }
+        if matches!(hit, Hit::Slider(..)) { self.settings_drag = Some(hit); }
         self.apply_setting(hit, x);
         self.save_prefs();
         self.dirty = true;
@@ -1256,8 +1375,34 @@ impl App {
     }
 
     /// A spoken label for a control (AccessKit).
+    pub(crate) fn setting_is_action(hit: Hit) -> bool { catalog::is_action(hit) }
+
+    pub(crate) fn setting_states(&self, section: usize) -> Vec<(Hit, bool)> {
+        self.rows_for(section).into_iter().flat_map(|(_,control)| match control {
+            Control::Pics(cards) => cards.into_iter().map(|(_,_,_,hit,on)|(hit,on)).collect(),
+            Control::Choice(cards) | Control::Strip(cards) => cards.into_iter().map(|(_,hit,on)|(hit,on)).collect(),
+            _ => Vec::new(),
+        }).collect()
+    }
+
+    pub(crate) fn startup_choice_selected(&self, hit: Hit) -> Option<bool> {
+        let b = &self.behavior;
+        Some(match hit {
+            Hit::Lead(v) => b.lead == v,
+            Hit::WindowStart(v) => b.window_start == v,
+            Hit::Splash(v) => b.splash == v,
+            Hit::Then(v) => b.then == v,
+            Hit::HomeLook(v) => b.home_look == v,
+            Hit::HomeArt(i) => b.home_look == HomeLook::Art && crate::art::list().get(i).is_some_and(|a| a.key == b.home_art),
+            Hit::NewWindow(v) => b.new_window == v,
+            Hit::StartupLayout(i) => b.then == Then::Layout && crate::layout_file::saved().get(i).is_some_and(|(name, _)| *name == b.then_layout || (b.then_layout.is_empty() && i == 0)),
+            _ => return None,
+        })
+    }
+
     pub(crate) fn setting_label(&self, hit: Hit) -> String {
         match hit {
+            Hit::Workspace(h) => workspace::label(h),
             Hit::Section(k) | Hit::Tile(k) => SECTIONS[k].0.to_lowercase(),
             Hit::Back => "back to settings".into(),
             Hit::Theme(None) => "theme follows the OS".into(),
@@ -1269,6 +1414,9 @@ impl App {
             Hit::Shell(s) => format!("carapace {}", s.name()),
             Hit::Slider(k, _, _) => format!("{:?}", k).to_lowercase(),
             Hit::Side(s) => format!("sidebar {:?}", s).to_lowercase(),
+            Hit::SmallTabs(mode)=>format!("small sidebar {mode:?}"),
+            Hit::Downloads => "open downloads".into(),
+            Hit::DownloadRename(mode) => format!("download naming {mode:?}"),
             Hit::Compact(c) => (if c { "compact sidebar" } else { "full sidebar" }).into(),
             Hit::HoverFrom(h) => format!("reveal from {:?}", h).to_lowercase(),
             Hit::Fullscreen(f) => format!("fullscreen {:?}", f).to_lowercase(),
@@ -1368,9 +1516,20 @@ impl App {
             Hit::PortsTunnel(t) => format!("tunnel: {:?}", t).to_lowercase(),
             Hit::PortsHidden => "hidden processes reset".into(),
             Hit::HatchLook(l) => format!("the {:?}", l).to_lowercase(),
+            Hit::MenuEnabled(b)=>if b{"menu bar / tray icon on"}else{"menu bar / tray icon off"}.into(),
+            Hit::MenuSignal(style)=>format!("signal icon {style:?}"),
+            Hit::MenuDensity(module,density)=>format!("{} section {density:?}",module.label()),
+            Hit::MenuMove(module,down)=>format!("move {} {}",module.label(),if down{"down"}else{"up"}),
+            Hit::MenuNames(b)=>if b{"show task and file names"}else{"hide task and file names"}.into(),
+            Hit::MenuRecent(b)=>if b{"include finished work and downloads"}else{"only active work and downloads"}.into(),
+            Hit::MenuPreview=>"open menu drawer".into(),
             Hit::HatchHotkey(c) => c.label().to_lowercase(),
             Hit::HatchSize(n) => format!("{n}% tall"),
             Hit::HatchMonitor(m) => format!("on the {:?} monitor", m).to_lowercase(),
+            Hit::HatchStatus(b) => if b { "compact work status on".into() } else { "compact work status off".into() },
+            Hit::HatchBackground(b) => if b { "keep nus available in the background".into() } else { "closing windows ends their sessions".into() },
+            Hit::HatchNotify(b) => if b { "brief completion notices on".into() } else { "completion notices off".into() },
+            Hit::HatchDim(b) => if b { "dim behind the modal".into() } else { "leave the desktop visible".into() },
             Hit::HatchAutohide(b) => if b { "hides when you look away".into() } else { "stays up".into() },
             Hit::HatchSpaces(s) => match s { HatchSpaces::Follow => "one hatch per space".into(), HatchSpaces::One => "one hatch for all".into() },
             Hit::HdrStyle(s) => format!("header {:?}", s).to_lowercase(),
@@ -1401,8 +1560,18 @@ impl App {
             Hit::AddArt => "a new art of your own".into(),
             Hit::AskArt => "asking for an art".into(),
             Hit::OpenArtFolder => "the art folder".into(),
-            Hit::PlaceEdit => "place".into(),
-            Hit::Then(t) => format!("then {:?}", t).to_lowercase(),
+            Hit::PlaceEdit => "location".into(),
+            Hit::FooterTheme(i) => format!("footer theme {}", crate::themes::all().get(i).map(|t|t.name.as_str()).unwrap_or("")),
+            Hit::FooterDefaults => "reset footer themes".into(),
+            Hit::Search => "Search settings".into(),
+            Hit::UiFont(f)|Hit::TermFont(f) => f.name().into(),
+            Hit::UiWeight(w)|Hit::TermWeight(w) => w.name().into(),
+            Hit::Then(t) => format!("start page: {}", match t {
+                Then::Prompt => "prompt palette", Then::HomePage => "home page", Then::Layout => "custom layout",
+                Then::LastPage => "the last page", Then::Restore => "saved session", Then::Shell => "shell",
+            }),
+            Hit::StartupLayout(i) => format!("startup layout {}", crate::layout_file::saved().get(i).map(|(n, _)| n.as_str()).unwrap_or("missing")),
+            Hit::EditHomeUrl => "edit home page address".into(),
             Hit::Atlas(a) => format!("atlas {:?}", a).to_lowercase(),
             Hit::Outside(o) => format!("links from outside {:?}", o).to_lowercase(),
             Hit::Lead(l) => match l { Lead::Terminal => "terminal first".into(), Lead::Browser => "browser first".into() },
@@ -1432,7 +1601,9 @@ impl App {
 
     pub(crate) fn apply_setting(&mut self, hit: Hit, x: f32) {
         match hit {
+            Hit::Workspace(h) => self.apply_workspace_setting(h),
             Hit::Section(k) => {
+                if k == SEC_ASSISTANTS { self.assistants.refresh(self.behavior.assistants.clone()); }
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.section = k;
                     s.scroll = 0.0;
@@ -1441,7 +1612,12 @@ impl App {
                     self.refresh_register_note();
                 }
             }
-            Hit::Theme(None) => self.behavior.follow_os_theme = true,
+            Hit::Theme(None) => {
+                self.behavior.follow_os_theme = true;
+                if let Some(theme) = self.window.theme() {
+                    self.set_mode(if theme == winit::window::Theme::Dark { nus_render::Mode::Ink } else { nus_render::Mode::Paper });
+                }
+            },
             Hit::Theme(Some(ink)) => {
                 self.behavior.follow_os_theme = false;
                 self.set_mode(if ink { nus_render::Mode::Ink } else { nus_render::Mode::Paper });
@@ -1472,6 +1648,9 @@ impl App {
                 self.layout();
             }
             Hit::HoverFrom(h) => self.sidebar_rules.hover_from = h,
+            Hit::SmallTabs(mode)=>{self.sidebar_rules.small_tabs=mode;self.layout();},
+            Hit::Downloads => self.open_downloads(),
+            Hit::DownloadRename(mode) => { self.behavior.download_rename=mode;crate::downloads::set_rename(mode); },
             Hit::Compact(c) => {
                 if self.sidebar_rules.compact != c {
                     self.toggle_compact();
@@ -1513,6 +1692,7 @@ impl App {
             Hit::Tile(k) => {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.section = k;
+                    s.scroll = 0.0;
                     s.drill = true;
                 }
                 if k == SEC_BROWSER {
@@ -1522,6 +1702,7 @@ impl App {
             Hit::Back => {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.drill = false;
+                    s.scroll = 0.0;
                 }
             }
             Hit::MakeDefault => match crate::little::register() {
@@ -1689,7 +1870,7 @@ impl App {
             Hit::WheelLines(n) => self.behavior.wheel_lines = n,
             Hit::PageSmooth(b) => {
                 self.behavior.page_smooth_scroll = b;
-                self.refresh_register_note();
+                self.notice("Page scrolling will change after you restart nus.");
             }
             Hit::PaneDivider(b) => self.behavior.pane_divider = b,
             Hit::MiddlePaste(b) => self.behavior.middle_paste = b,
@@ -1704,7 +1885,13 @@ impl App {
             Hit::PortsRemember(b) => self.behavior.ports_remember = b,
             Hit::KeepAlive(k) => self.behavior.keep_alive = k,
             Hit::Hands(h) => self.behavior.hands = h,
-            Hit::Replay(k) => self.behavior.replay = k,
+            Hit::Replay(k) => {
+                if self.behavior.replay != k {
+                    self.recorder = k.days().and_then(crate::replay::Recorder::new);
+                    self.behavior.replay = if k.days().is_some() && self.recorder.is_none() { ReplayKeep::Off } else { k };
+                    if k.days().is_some() && self.recorder.is_none() { self.notice("Could not start recording. Check that the profile folder is writable."); }
+                }
+            },
             Hit::ClickToSource(b) => self.behavior.click_to_source = b,
             Hit::LinkClick(l) => self.behavior.link_click = l,
             Hit::Remember(b) => {
@@ -1798,6 +1985,13 @@ impl App {
                 self.behavior.hatch_look = l;
                 self.hatch_settings_changed();
             }
+            Hit::MenuEnabled(b)=>self.behavior.menu_drawer.enabled=b,
+            Hit::MenuSignal(style)=>self.behavior.menu_drawer.signal=style,
+            Hit::MenuDensity(module,density)=>self.behavior.menu_drawer.set_density(module,density),
+            Hit::MenuMove(module,down)=>self.behavior.menu_drawer.move_section(module,down),
+            Hit::MenuNames(b)=>self.behavior.menu_drawer.names=b,
+            Hit::MenuRecent(b)=>self.behavior.menu_drawer.recent=b,
+            Hit::MenuPreview=>self.toggle_menu_drawer(None),
             Hit::HatchHotkey(c) => {
                 self.behavior.hatch_hotkey = c;
                 self.hatch_settings_changed();
@@ -1806,14 +2000,15 @@ impl App {
                 self.behavior.hatch_size = n;
                 self.hatch_settings_changed();
             }
-            Hit::HatchMonitor(m) => self.behavior.hatch_monitor = m,
+            Hit::HatchMonitor(m) => { self.behavior.hatch_monitor = m; self.hatch_settings_changed(); },
             Hit::HatchAutohide(b) => self.behavior.hatch_autohide = b,
+            Hit::HatchStatus(b) => self.behavior.hatch_status = b,
+            Hit::HatchNotify(b) => { self.behavior.hatch_notify = b; if !b { self.hatch_state.completion = None; } },
+            Hit::HatchBackground(b) => self.behavior.hatch_background = b,
+            Hit::HatchDim(b) => { self.behavior.hatch_dim = b; self.hatch_settings_changed(); },
             Hit::HatchSpaces(s) => self.behavior.hatch_spaces = s,
             Hit::HdrStyle(s) => {
                 self.header.style = s;
-                if s == HeaderStyle::Rail && self.header.style != s {
-                    self.header.header_button = false;
-                }
             }
             Hit::HdrMasthead(b) => self.header.masthead = b,
             Hit::HdrDateline(b) => self.header.dateline = b,
@@ -1859,8 +2054,10 @@ impl App {
                 self.behavior.phone = on;
                 if on {
                     self.phone_on();
+                    self.behavior.phone = crate::phone::current().is_some();
                 } else {
-                    self.notice("the phone's page stops at the next launch · the token is forgotten");
+                    crate::phone::stop();
+                    self.notice("Phone access stopped. The old address no longer works.");
                 }
             }
             Hit::CopyPhoneUrl => {
@@ -1881,7 +2078,35 @@ impl App {
             Hit::AskArt => self.ask_for_art(),
             Hit::OpenArtFolder => crate::art::open_dir(),
             Hit::PlaceEdit => self.open_palette(crate::app::PaletteMode::Place),
+            Hit::FooterTheme(i) => {
+                if let Some(theme) = crate::themes::all().get(i) {
+                    let mut names = self.footer_theme_names();
+                    if let Some(at) = names.iter().position(|name| name == &theme.name) { names.remove(at); }
+                    else { names.push(theme.name.clone()); }
+                    self.behavior.footer_themes = Some(names);
+                    self.look_scroll = 0.0;
+                }
+            }
+            Hit::Search => self.open_palette(crate::app::PaletteMode::Settings),
+            Hit::FooterDefaults => { self.behavior.footer_themes = None; self.look_scroll = 0.0; }
+            Hit::UiFont(f) => {self.behavior.typography.system[0].clear();self.behavior.ui_font=f;self.apply_fonts();}
+            Hit::UiWeight(w) => {self.behavior.ui_weight=w;self.apply_fonts();}
+            Hit::TermFont(f) => {self.behavior.typography.system[1].clear();self.behavior.term_font=f;self.apply_fonts();}
+            Hit::TermWeight(w) => {self.behavior.term_weight=w;self.apply_fonts();}
+
             Hit::Then(t) => self.behavior.then = t,
+            Hit::StartupLayout(i) => {
+                if let Some((name, _)) = crate::layout_file::saved().get(i) {
+                    self.behavior.then_layout = name.clone();
+                    self.behavior.then = Then::Layout;
+                }
+            }
+            Hit::EditHomeUrl => {
+                self.open_palette(crate::app::PaletteMode::Go);
+                if let Some((_, input)) = self.palette.as_mut() {
+                    *input = format!("home {}", self.behavior.home_url);
+                }
+            }
             Hit::Atlas(a) => {
                 self.behavior.atlas = a;
                 self.behavior.start_on_launch = a != AtlasMode::Planet;
@@ -1890,20 +2115,10 @@ impl App {
             Hit::Lead(l) => {
                 self.behavior.lead = l;
                 // Picked, not merely loaded: the two settings that follow from it.
-                match l {
-                    Lead::Terminal => {
-                        self.behavior.outside = Outside::Little;
-                        if self.behavior.then == Then::LastPage {
-                            self.behavior.then = Then::Shell;
-                        }
-                    }
-                    Lead::Browser => {
-                        self.behavior.outside = Outside::NewTab;
-                        if self.behavior.then == Then::Shell {
-                            self.behavior.then = Then::LastPage;
-                        }
-                    }
-                }
+                self.behavior.outside = match l {
+                    Lead::Terminal => Outside::Little,
+                    Lead::Browser => Outside::NewTab,
+                };
             }
             Hit::LoginItem(on) => {
                 self.login_note = match crate::little::login_item(on) {
@@ -1980,6 +2195,10 @@ impl App {
             Hit::BarStyle(b) => self.load_bar.style = b,
             Hit::BarColor(c) => self.load_bar.color = c,
         }
+        // A preference can change row heights, hit targets and pane geometry.
+        // Recompute them for every input path, including accessibility.
+        self.layout();
+        self.dirty = true;
     }
 
     /// The colour of the token the picker is on.
@@ -2062,12 +2281,254 @@ impl App {
     /// set in Newsreader; hard shadow, ink outline.
     #[allow(clippy::too_many_arguments)]
     /// An art's card: the art itself, small and alive, a paper strip with its name, its line beneath.
+    /// A picture card: a small drawing of what the option does, its name,
+    /// and a plain line saying what you get. The same neobrutal card as
+    /// the theme chips — outline, hard shadow, the signal under the one
+    /// that's on.
+    fn draw_pic_card(&mut self, scene: &mut Scene, r: Rect, name: &str, caption: &str, pic: Pic, on: bool) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let hk = hover_key("piccard", r.y as usize * 4096 + r.x as usize);
+        let (mx, my) = self.mouse;
+        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my);
+        let dur = self.motion.dur(140.0);
+        let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
+        if hot != h.hot {
+            h.hot = hot;
+            h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
+        }
+        let a = h.alpha.value();
+        if h.alpha.active() {
+            self.dirty = true;
+        }
+        let lift = self.px(3.0) * a;
+        let off = self.px(5.0) + lift;
+        let card = Rect::new(r.x - lift, r.y - lift, r.w, r.h);
+        scene.rect(Rect::new(card.x + off, card.y + off, card.w, card.h), if on { self.surface.signal } else { ink });
+        scene.rect(card, t.paper);
+        let pad = self.px(12.0);
+        self.draw_pic(scene, Rect::new(card.x + pad, card.y + pad, card.w - pad * 2.0, card.h - pad * 2.0), pic);
+        scene.outline(card, self.px(m::STRUCTURE), ink);
+        if on {
+            let badge = Rect::new(card.right() - self.px(22.0), card.y, self.px(22.0), self.px(22.0));
+            scene.rect(badge, ink);
+            self.fonts.draw_icon(scene, icons::CHECK, self.px(14.0), badge.x + self.px(4.0), badge.y + self.px(4.0), t.paper);
+        }
+        let label = self.label();
+        let dim = Style { color: t.dim, ..label };
+        let nm = self.fit(label, name, r.w + self.px(6.0));
+        self.fonts.draw(scene, Style { color: ink, ..label }, r.x, r.y + r.h + self.px(18.0), &nm);
+        let lines = crate::reader::wrap(&self.fonts, dim, caption, r.w + self.px(6.0));
+        let mut cy = r.y + r.h + self.px(31.0);
+        for l in lines.into_iter().take(2) {
+            self.fonts.draw(scene, dim, r.x, cy, &l);
+            cy += self.px(12.0);
+        }
+    }
+
+    /// The drawing inside a picture card: windows, pages, shells and the
+    /// icon, at a size where the shape is the whole message.
+    pub(crate) fn draw_pic(&mut self, scene: &mut Scene, r: Rect, pic: Pic) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let sig = self.surface.signal;
+        let hair = self.px(m::HAIRLINE).max(1.0);
+        let edge = self.px(1.5).max(1.0);
+        let faint = fade(ink, 0.28);
+        let mid = fade(ink, 0.5);
+        // A window: its frame, and the rule under its tab bar.
+        let frame = |scene: &mut Scene, w: Rect, bar: bool, c: Color| {
+            scene.outline(w, edge, c);
+            if bar {
+                scene.hline(w.x, w.y + (w.h * 0.22).round(), w.w, hair, c);
+            }
+        };
+        // Lines of text: n of them, from a fraction of the way down.
+        let text = |scene: &mut Scene, w: Rect, from: f32, n: usize, c: Color| {
+            let step = self.px(7.0);
+            let widths = [0.62f32, 0.84, 0.46, 0.72];
+            for i in 0..n {
+                let y = w.y + w.h * from + i as f32 * step;
+                scene.hline(w.x + self.px(7.0), y, (w.w - self.px(14.0)) * widths[i % 4], hair * 2.0, c);
+            }
+        };
+        // A shell's body: ink, with paper lines and a caret waiting.
+        let shell = |scene: &mut Scene, b: Rect| {
+            scene.rect(b, ink);
+            let step = self.px(7.0);
+            for (i, f) in [0.6f32, 0.4, 0.75].iter().enumerate() {
+                let y = b.y + self.px(9.0) + i as f32 * step;
+                scene.hline(b.x + self.px(7.0), y, (b.w - self.px(14.0)) * f, hair * 2.0, fade(t.paper, 0.75));
+            }
+            scene.rect(Rect::new(b.x + self.px(7.0), b.y + self.px(9.0) + step * 3.0 - self.px(4.0), self.px(5.0), self.px(6.0)), sig);
+        };
+        // The prompt: one line across the middle, with the caret at its head.
+        let prompt = |app: &Self, scene: &mut Scene, b: Rect, rows: bool| {
+            let y = (b.y + b.h * 0.46).round();
+            let x = b.x + b.w * 0.16;
+            let w = b.w * 0.68;
+            scene.hline(x, y, w, hair * 2.0, mid);
+            scene.rect(Rect::new(x, y - app.px(7.0), app.px(4.0), app.px(8.0)), sig);
+            if rows {
+                for i in 0..2 {
+                    scene.hline(x, y + app.px(10.0) + i as f32 * app.px(7.0), w * if i == 0 { 0.8 } else { 0.55 }, hair, faint);
+                }
+            }
+        };
+        // A page: its masthead, a picture, and prose.
+        let page = |scene: &mut Scene, b: Rect| {
+            scene.rect(Rect::new(b.x + self.px(7.0), b.y + self.px(7.0), (b.w - self.px(14.0)) * 0.5, self.px(6.0)), ink);
+            scene.rect(Rect::new(b.x + self.px(7.0), b.y + self.px(18.0), (b.w - self.px(14.0)) * 0.38, b.h - self.px(25.0)), faint);
+            let x = b.x + self.px(7.0) + (b.w - self.px(14.0)) * 0.44;
+            let w = (b.w - self.px(14.0)) * 0.56;
+            for i in 0..4 {
+                scene.hline(x, b.y + self.px(22.0) + i as f32 * self.px(7.0), w * [0.94f32, 0.8, 0.9, 0.5][i], hair * 2.0, mid);
+            }
+        };
+        // The app icon at a moment of its draw-in.
+        let icon = |app: &mut Self, scene: &mut Scene, b: Rect, progress: f32, alpha: f32| {
+            let size = (b.w.min(b.h).round() as u32).clamp(32, 512);
+            let bind = app.pic_icon(size, progress);
+            let d = b.w.min(b.h);
+            let rect = Rect::new((b.x + (b.w - d) / 2.0).round(), (b.y + (b.h - d) / 2.0).round(), d, d);
+            let outer = scene.clip();
+            let clip = outer.map_or(rect, |o| rect.intersect(&o));
+            if alpha >= 0.999 {
+                scene.texture(rect, bind, Some(clip));
+            } else {
+                scene.texture_uv_alpha(rect, [0.0, 0.0, 1.0, 1.0], bind, Some(clip), alpha);
+            }
+            scene.layer(outer);
+        };
+        // The screen a window comes up on.
+        let screen = |scene: &mut Scene, r: Rect| {
+            scene.outline(r, hair, faint);
+        };
+        let body = |w: Rect| Rect::new(w.x, w.y + (w.h * 0.22).round(), w.w, w.h - (w.h * 0.22).round());
+        match pic {
+            Pic::Setting(hit) => self.draw_setting_picture(scene, r, hit),
+            Pic::LeadTerminal => {
+                frame(scene, r, true, ink);
+                // The live tab, filled; a page waiting beside it.
+                scene.rect(Rect::new(r.x + hair, r.y + hair, r.w * 0.42, (r.h * 0.22).round() - hair), ink);
+                scene.hline(r.x + r.w * 0.5, r.y + (r.h * 0.11).round(), r.w * 0.3, hair * 2.0, faint);
+                shell(scene, body(r).inset(hair));
+            }
+            Pic::LeadBrowser => {
+                frame(scene, r, true, ink);
+                // The address, across the bar.
+                let bar = Rect::new(r.x + self.px(6.0), r.y + self.px(4.0), r.w - self.px(12.0), (r.h * 0.22).round() - self.px(8.0));
+                scene.outline(bar, hair, mid);
+                scene.hline(bar.x + self.px(4.0), bar.y + bar.h / 2.0, bar.w * 0.5, hair * 2.0, mid);
+                page(scene, body(r));
+            }
+            Pic::WinLast => {
+                screen(scene, r);
+                // Where it was, and where it comes back.
+                let ghost = Rect::new(r.x + self.px(6.0), r.y + self.px(5.0), r.w * 0.5, r.h * 0.5);
+                scene.outline(ghost, hair, faint);
+                let w = Rect::new(r.x + r.w * 0.34, r.y + r.h * 0.34, r.w * 0.58, r.h * 0.56);
+                scene.rect(w, t.paper);
+                frame(scene, w, true, ink);
+            }
+            Pic::WinMax => {
+                screen(scene, r);
+                // The system bar stays; the window takes the rest.
+                scene.rect(Rect::new(r.x + hair, r.y + hair, r.w - hair * 2.0, self.px(6.0)), faint);
+                let w = Rect::new(r.x + self.px(3.0), r.y + self.px(9.0), r.w - self.px(6.0), r.h - self.px(12.0));
+                scene.rect(w, t.paper);
+                frame(scene, w, true, ink);
+            }
+            Pic::WinFull => {
+                let w = r;
+                scene.rect(w, t.paper);
+                frame(scene, w, false, ink);
+                shell(scene, w.inset(self.px(6.0)));
+            }
+            Pic::WinCentered => {
+                screen(scene, r);
+                let w = Rect::new((r.x + r.w * 0.22).round(), (r.y + r.h * 0.24).round(), r.w * 0.56, r.h * 0.52);
+                scene.rect(w, t.paper);
+                frame(scene, w, true, ink);
+            }
+            Pic::SplashDraw => {
+                icon(self, scene, Rect::new(r.x, r.y, r.w, r.h - self.px(6.0)), 0.62, 1.0);
+            }
+            Pic::SplashStill => {
+                icon(self, scene, Rect::new(r.x, r.y, r.w, r.h - self.px(6.0)), 1.0, 1.0);
+            }
+            Pic::SplashNone => {
+                // No icon on the way in: the start page, straight away.
+                icon(self, scene, Rect::new(r.x, r.y, r.w, r.h - self.px(6.0)), 1.0, 0.12);
+                frame(scene, r, true, ink);
+                prompt(self, scene, body(r), false);
+            }
+            Pic::StartPrompt => {
+                frame(scene, r, true, ink);
+                prompt(self, scene, body(r), true);
+            }
+            Pic::StartHome => {
+                frame(scene, r, true, ink);
+                let bar = Rect::new(r.x + self.px(6.0), r.y + self.px(4.0), r.w * 0.5, (r.h * 0.22).round() - self.px(8.0));
+                scene.outline(bar, hair, mid);
+                page(scene, body(r));
+            }
+            Pic::StartLayout => {
+                frame(scene, r, true, ink);
+                // Tabs across the top, two panes below.
+                let bh = (r.h * 0.22).round();
+                scene.rect(Rect::new(r.x + hair, r.y + hair, r.w * 0.3, bh - hair), ink);
+                for i in 1..3 {
+                    scene.vline(r.x + r.w * (0.3 + 0.24 * i as f32), r.y + hair, bh - hair, hair, faint);
+                }
+                let b = body(r);
+                let split = (b.x + b.w * 0.5).round();
+                shell(scene, Rect::new(b.x + hair, b.y + hair, split - b.x - hair, b.h - hair * 2.0));
+                scene.vline(split, b.y, b.h, hair, ink);
+                text(scene, Rect::new(split, b.y, b.w - (split - b.x), b.h), 0.18, 4, mid);
+            }
+            Pic::StartLast => {
+                frame(scene, r, true, ink);
+                page(scene, body(r));
+                // The one you had open: its tab, still lit.
+                scene.rect(Rect::new(r.x + hair, r.y + hair, r.w * 0.4, (r.h * 0.22).round() - hair), ink);
+                let isz = self.px(11.0);
+                self.fonts.draw_icon(scene, icons::BACK, isz, r.x + self.px(6.0), r.y + (r.h * 0.11).round() - isz / 2.0, t.paper);
+            }
+            Pic::LookLine => {
+                prompt(self, scene, r, true);
+            }
+            Pic::LookPlate => {
+                let d = (r.h * 0.62).min(r.w * 0.62);
+                icon(self, scene, Rect::new((r.x + (r.w - d) / 2.0).round(), r.y, d, d), 1.0, 1.0);
+                let y = (r.y + d + self.px(10.0)).round();
+                scene.hline(r.x + r.w * 0.14, y, r.w * 0.72, hair * 2.0, mid);
+                scene.rect(Rect::new(r.x + r.w * 0.14, y - self.px(7.0), self.px(4.0), self.px(8.0)), sig);
+            }
+            Pic::NewPrompt | Pic::NewShell | Pic::NewLaunch => {
+                // This window, and the one the keystroke makes.
+                let here = Rect::new(r.x, r.y, r.w * 0.6, r.h * 0.62);
+                scene.rect(here, t.paper);
+                frame(scene, here, true, faint);
+                let w = Rect::new((r.x + r.w * 0.3).round(), (r.y + r.h * 0.3).round(), r.w * 0.7, r.h * 0.7);
+                scene.rect(w, t.paper);
+                frame(scene, w, true, ink);
+                let b = body(w);
+                match pic {
+                    Pic::NewShell => shell(scene, b.inset(hair)),
+                    Pic::NewLaunch => icon(self, scene, Rect::new(b.x, b.y, b.w, b.h - self.px(2.0)), 0.62, 1.0),
+                    _ => prompt(self, scene, b, true),
+                }
+            }
+        }
+    }
+
     fn draw_art_card(&mut self, scene: &mut Scene, r: Rect, key: &str, name: &str, says: &str, on: bool, builtin: bool) {
         let t = self.theme.clone();
         let ink = t.ink;
         let hk = hover_key("artcard", r.y as usize * 4096 + r.x as usize);
         let (mx, my) = self.mouse;
-        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(36.0)).contains(mx, my);
+        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my);
         let dur = self.motion.dur(140.0);
         let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
         if hot != h.hot {
@@ -2100,6 +2561,7 @@ impl App {
                 dim: t.dim,
                 tint: t.tint,
                 place: self.place(),
+                pieces: Vec::new(),
                 procs: Some(self.procs_shared()),
                 scale: self.scale,
             };
@@ -2114,19 +2576,25 @@ impl App {
         scene.hline(lx, ly, card.w * 0.6, self.px(m::HAIRLINE), fade(ink, 0.5));
         scene.rect(Rect::new(lx, ly - self.px(6.0), self.px(3.0), self.px(5.0)), self.surface.signal);
         scene.outline(card, self.px(m::STRUCTURE), ink);
+        if on {
+            let badge = Rect::new(card.right() - self.px(22.0), card.y, self.px(22.0), self.px(22.0));
+            scene.rect(badge, ink);
+            self.fonts.draw_icon(scene, icons::CHECK, self.px(14.0), badge.x + self.px(4.0), badge.y + self.px(4.0), t.paper);
+        }
         let label = self.label();
         let dim = Style { color: t.dim, ..label };
         let nm = self.fit(label, &name.to_uppercase(), r.w);
         self.fonts.draw(scene, Style { color: ink, ..label }, r.x, r.y + r.h + self.px(18.0), &nm);
         let sub = if says.is_empty() { if builtin { "ships with nus".to_string() } else { "yours".to_string() } } else { says.to_string() };
-        let sb = self.fit(dim, &sub, r.w);
-        self.fonts.draw(scene, dim, r.x, r.y + r.h + self.px(31.0), &sb);
+        for (i, line) in crate::reader::wrap(&self.fonts, dim, &sub, r.w).into_iter().take(2).enumerate() {
+            self.fonts.draw(scene, dim, r.x, r.y + r.h + self.px(31.0 + i as f32 * 12.0), &line);
+        }
         if self.art_wants_frame() {
             self.dirty = true;
         }
     }
 
-    fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool, faces: Option<(Color, Color, Color, Color)>) {
+    pub(crate) fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool, faces: Option<(Color, Color, Color, Color)>) {
         let t = self.theme.clone();
         let ink = t.ink;
         let key = hover_key("card", r.y as usize * 4096 + r.x as usize);
@@ -2194,6 +2662,9 @@ impl App {
     /// carapace with its ramp and texture, chrome, sidebar, a shell with
     /// coloured runs and the cursor, a page.
     fn draw_studio(&mut self, scene: &mut Scene, r: Rect) {
+        // The page's own clip: nested clips sit inside it and hand it back.
+        let outer = scene.clip();
+        let within = |r: Rect| outer.map_or(r, |o| r.intersect(&o));
         let t = self.theme.clone();
         let ink = t.ink;
         let paper = self.paper();
@@ -2206,9 +2677,9 @@ impl App {
         scene.push(nus_render::Instance::rounded(win, radius, paper));
         match self.surface.shell {
             Shell::Band => {
-                scene.layer(Some(Rect::new(win.x, win.y, win.w, sw)));
+                scene.layer(Some(within(Rect::new(win.x, win.y, win.w, sw))));
                 scene.push(nus_render::Instance::rounded(win, radius, self.surface.signal));
-                scene.layer(None);
+                scene.layer(outer);
             }
             Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, None, 0.0)),
             Shell::Gradient => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &ramp, self.surface.angle, 0.0, false)),
@@ -2220,9 +2691,9 @@ impl App {
                 let tm = if self.surface.texture_motion { self.started.elapsed().as_secs_f32() % 3600.0 } else { 0.0 };
                 let pitch = self.px(self.surface.texture_scale);
                 if self.surface.shell == Shell::Band {
-                    scene.layer(Some(Rect::new(win.x, win.y, win.w, sw)));
+                    scene.layer(Some(within(Rect::new(win.x, win.y, win.w, sw))));
                     scene.push(nus_render::Instance::texture_stroke(win, kind, gc, pitch, tm, radius, sw));
-                    scene.layer(None);
+                    scene.layer(outer);
                 } else {
                     scene.push(nus_render::Instance::texture_stroke(win, kind, gc, pitch, tm, radius, sw));
                 }
@@ -2230,7 +2701,7 @@ impl App {
         }
         // Inside the carapace.
         let inner = Rect::new(win.x + sw, win.y + sw, win.w - 2.0 * sw, win.h - 2.0 * sw);
-        scene.layer(Some(inner));
+        scene.layer(Some(within(inner)));
         let strip_h = self.px(20.0);
         let wm = Style { font: self.f.wordmark, px: self.px(13.0), color: ink, tracking: 0.0 };
         self.fonts.draw(scene, wm, inner.x + self.px(10.0), inner.y + self.px(14.0), "nus");
@@ -2296,7 +2767,7 @@ impl App {
         for i in 0..16 {
             scene.rect(Rect::new(pane.x + self.px(10.0) + i as f32 * cell, strip_y, cell - 1.0, self.px(6.0)), ansi[i]);
         }
-        scene.layer(None);
+        scene.layer(outer);
         scene.outline(win, self.px(m::STRUCTURE), ink);
     }
 
@@ -2306,23 +2777,47 @@ impl App {
     }
 
     fn rows_for(&self, section: usize) -> Vec<(String, Control)> {
-        let rows = self.rows_for_raw(section);
+        self.rows_for_at(section, self.look_tab)
+    }
+
+    fn rows_for_at(&self, section: usize, look_tab: usize) -> Vec<(String,Control)> {
+        let rows = self.visual_settings(section, self.rows_for_raw(section, look_tab));
         match section {
-            2 => captioned(rows, &[("SPLASH", "THE SPLASH"), ("HOME", "THE PROMPT"), ("A NEW WINDOW", "WINDOWS"), ("LAUNCH TABS", "LAUNCH"), ("FIRST", "FROM OUTSIDE")]),
-            5 => captioned(rows, &[("CLIPBOARD", "CLIPBOARD & SCROLL"), ("COMMAND LINE", "THE LINE"), ("EDITOR", "BLOCKS & LINKS"), ("JOURNAL", "MEMORY"), ("SHELL COLOURS", "COLOUR"), ("SSH", "ELSEWHERE"), ("DEFAULT SHELL", "SHELLS")]),
+            2 => captioned(rows, &[("TERMINAL OR BROWSER", "LAUNCH"), ("START PAGE", "STARTUP & NEW TABS"), (key("N", false).as_str(), "NEW WINDOW BEHAVIOR"), ("SAVE CURRENT LAYOUT", "SAVED WORK"), ("LINKS FROM OTHER APPS", "FROM OUTSIDE")]),
+            5 => rows,
             6 => captioned(rows, &[("LOADING BAR", "LOADING"), ("DEFAULT BROWSER", "THE SYSTEM"), ("SEARCH", "AS SHIPPED")]),
             12 => captioned(rows, &[("THE PHONE", "ANOTHER DEVICE")]),
             _ => rows,
         }
     }
 
-    fn rows_for_raw(&self, section: usize) -> Vec<(String, Control)> {
+    fn rows_for_raw(&self, section: usize, look_tab: usize) -> Vec<(String, Control)> {
         use Control::*;
         let hex = surface::hex;
         let ink = self.theme.mode == nus_render::Mode::Ink;
         match section {
+            SEC_MENU=>{
+                use crate::menu_drawer::{SignalStyle,Density};
+                let c=&self.behavior.menu_drawer;
+                let mut rows=vec![
+                    ("".into(),Info("Choose your Signal icon, then arrange its drawer. Mix compact work lists with expanded download cards and quick actions. Each section has its own look and position.".into())),
+                    ("MENU BAR / TRAY ICON".into(),Choice(vec![("ON".into(),Hit::MenuEnabled(true),c.enabled),("OFF".into(),Hit::MenuEnabled(false),!c.enabled)])),
+                    ("SIGNAL ICON".into(),Choice(vec![("DOT".into(),Hit::MenuSignal(SignalStyle::Dot),c.signal==SignalStyle::Dot),("COUNT".into(),Hit::MenuSignal(SignalStyle::Count),c.signal==SignalStyle::Count),("STATUS TEXT".into(),Hit::MenuSignal(SignalStyle::Text),c.signal==SignalStyle::Text)])),
+                    ("".into(),Info("macOS can show a count or status beside the icon. Windows and Linux use an icon badge and tooltip. The orbit follows your theme.".into())),
+                    ("".into(),Buttons(vec![("OPEN YOUR DRAWER".into(),icons::SQUARES,Hit::MenuPreview)])),
+                ];
+                for (i,s) in c.sections().iter().enumerate(){
+                    rows.push((format!("{}. {}",i+1,s.module.label().to_uppercase()),Choice(vec![("HIDDEN".into(),Hit::MenuDensity(s.module,Density::Hidden),s.density==Density::Hidden),("COMPACT".into(),Hit::MenuDensity(s.module,Density::Compact),s.density==Density::Compact),("EXPANDED".into(),Hit::MenuDensity(s.module,Density::Expanded),s.density==Density::Expanded)])));
+                    let mut buttons=Vec::new();if i>0{buttons.push(("MOVE UP".into(),icons::SQUARES,Hit::MenuMove(s.module,false)));}if i<2{buttons.push(("MOVE DOWN".into(),icons::SQUARES,Hit::MenuMove(s.module,true)));}rows.push(("ORDER".into(),Buttons(buttons)));
+                }
+                rows.extend([
+                    ("SHOW TASK & FILE NAMES".into(),Choice(vec![("ON".into(),Hit::MenuNames(true),c.names),("OFF".into(),Hit::MenuNames(false),!c.names)])),
+                    ("INCLUDE FINISHED ITEMS".into(),Choice(vec![("ON".into(),Hit::MenuRecent(true),c.recent),("OFF".into(),Hit::MenuRecent(false),!c.recent)])),
+                    ("".into(),Info("The drawer is also in the nus footer, including desktops without a tray. Escape or clicking outside closes it. Opening the drawer never starts a terminal.".into())),
+                ]);rows
+            }
             0 => {
-                let tab = self.look_tab.min(LOOK_TABS.len() - 1);
+                let tab = look_tab.min(LOOK_TABS.len() - 1);
                 let strip: Vec<(String, Hit, bool)> = LOOK_TABS.iter().enumerate().map(|(k, n)| (n.to_string(), Hit::LookTab(k), k == tab)).collect();
                 let mut v: Vec<(String, Control)> = vec![("".into(), Studio), ("".into(), Strip(strip))];
                 let rest: Vec<(String, Control)> = match tab {
@@ -2340,6 +2835,11 @@ impl App {
                             ("THEMES".into(), Cards(originals)),
                             ("".into(), Info(current)),
                             ("PORTS".into(), Cards(ports)),
+                            ("FOOTER THEME SLOTS".into(), Info("Nine visible slots in a 3 × 3 grid. Select themes below to add or remove them; scroll the footer picker to reach additional rows.".into())),
+                            ("SHOW IN FOOTER".into(), Cards(themes.iter().enumerate().map(|(i,t)| {
+                                let mut c = card(i,t); c.4 = Hit::FooterTheme(i); c.5 = self.footer_theme_names().contains(&t.name); c
+                            }).collect())),
+                            ("".into(), Buttons(vec![("RESTORE DEFAULT NINE".into(),icons::UNDO,Hit::FooterDefaults)])),
                             ("".into(), Info("a theme is the whole look: both faces' tokens and sixteens, the carapace, the cursor, the bar, a few sounds · saved ones live in profile/themes".into())),
                             ("".into(), Buttons(vec![("OPEN THEMES FOLDER".into(), icons::FOLDER, Hit::OpenThemes)])),
                         ]
@@ -2607,8 +3107,11 @@ impl App {
                         ("ON".into(), Hit::Reduce(Some(true)), self.motion.reduce == Some(true)),
                     ]),
                 ),
-                ("UI FONT".into(), Info("IBM Plex Mono · 13 / 1.5 · any installed mono via init.luau".into())),
-                ("TERMINAL FONT".into(), Info("IBM Plex Mono · 13pt · ligatures on".into())),
+                ("INTERFACE FONT".into(), Choice(crate::fonts::Family::ALL.iter().map(|&f|(f.name().into(),Hit::UiFont(f),self.behavior.ui_font==f)).collect())),
+                ("INTERFACE WEIGHT".into(), Choice(crate::fonts::Weight::ALL.iter().map(|&w|(w.name().into(),Hit::UiWeight(w),self.behavior.ui_weight==w)).collect())),
+                ("TERMINAL FONT".into(), Choice(crate::fonts::Family::MONO.iter().map(|&f|(f.name().into(),Hit::TermFont(f),self.behavior.term_font==f)).collect())),
+                ("TERMINAL WEIGHT".into(), Choice(crate::fonts::Weight::ALL.iter().map(|&w|(w.name().into(),Hit::TermWeight(w),self.behavior.term_weight==w)).collect())),
+                ("".into(), Info("Bundled fonts work without installation. Interface and terminal weights change independently. Terminal choices use fixed-width families so columns stay aligned.".into())),
                 ("WORDMARK".into(), Info("Newsreader Italic".into())),
             ],
                     _ => {
@@ -2720,138 +3223,155 @@ impl App {
                     }
                     v
                 };
+                let layouts: Vec<String> = crate::layout_file::saved().into_iter().map(|(n, _)| n).collect();
+                let new_tab = key("T", !cfg!(target_os = "macos"));
+                let home_host = crate::links::host(&b.home_url);
                 vec![
                     (
-                        "FIRST".into(),
-                        Choice(vec![
-                            ("TERMINAL".into(), Hit::Lead(Lead::Terminal), b.lead == Lead::Terminal),
-                            ("BROWSER".into(), Hit::Lead(Lead::Browser), b.lead == Lead::Browser),
+                        "TERMINAL OR BROWSER".into(),
+                        Pics(vec![
+                            ("TERMINAL".into(), "shells first in the prompt palette".into(), Pic::LeadTerminal, Hit::Lead(Lead::Terminal), b.lead == Lead::Terminal),
+                            ("BROWSER".into(), "pages first in the prompt palette".into(), Pic::LeadBrowser, Hit::Lead(Lead::Browser), b.lead == Lead::Browser),
                         ]),
                     ),
-                    ("".into(), Info("a terminal that also browses, or a browser that also has shells: NEW TAB and Ctrl+T with nothing typed open a shell or the atlas, the palette leads with shells or with the address, the kinds fan out in that order · picking one sets THEN and LINKS FROM OUTSIDE below to match, once".into())),
+                    ("".into(), Info("Sets the order of palette suggestions and what an empty prompt opens. Also sets where links from other apps open; you can change that below.".into())),
                     (
-                        "WINDOW".into(),
-                        Choice(vec![
-                            ("LAST SIZE & PLACE".into(), Hit::WindowStart(WindowStart::Last), b.window_start == WindowStart::Last),
-                            ("MAXIMIZED".into(), Hit::WindowStart(WindowStart::Maximized), b.window_start == WindowStart::Maximized),
-                            ("FULLSCREEN".into(), Hit::WindowStart(WindowStart::Fullscreen), b.window_start == WindowStart::Fullscreen),
-                            ("CENTERED 1440×900".into(), Hit::WindowStart(WindowStart::Centered), b.window_start == WindowStart::Centered),
-                        ]),
-                    ),
-                    (
-                        "SPLASH".into(),
-                        Choice(vec![
-                            ("ICON · DRAWS IN".into(), Hit::Splash(SplashMode::Draw), b.splash == SplashMode::Draw),
-                            ("ICON · STILL".into(), Hit::Splash(SplashMode::Still), b.splash == SplashMode::Still),
-                            ("NONE".into(), Hit::Splash(SplashMode::None), b.splash == SplashMode::None),
+                        "WINDOW AT LAUNCH".into(),
+                        Pics(vec![
+                            ("LAST SIZE & PLACE".into(), "where you left it".into(), Pic::WinLast, Hit::WindowStart(WindowStart::Last), b.window_start == WindowStart::Last),
+                            ("MAXIMIZED".into(), "fills the screen; the system bar stays".into(), Pic::WinMax, Hit::WindowStart(WindowStart::Maximized), b.window_start == WindowStart::Maximized),
+                            ("FULLSCREEN".into(), "the whole screen, nothing else".into(), Pic::WinFull, Hit::WindowStart(WindowStart::Fullscreen), b.window_start == WindowStart::Fullscreen),
+                            ("CENTERED".into(), "1440 × 900, in the middle".into(), Pic::WinCentered, Hit::WindowStart(WindowStart::Centered), b.window_start == WindowStart::Centered),
                         ]),
                     ),
                     (
-                        "HOLD".into(),
-                        Slider(self::Slider::SplashHold, self.slider_value(self::Slider::SplashHold), format!("{:.1}s at least · until the first tab is ready", b.splash_hold)),
-                    ),
-                    (
-                        "THEN".into(),
-                        Choice(vec![
-                            ("RESTORE LAST SESSION".into(), Hit::Then(Then::Restore), b.then == Then::Restore),
-                            ("A NEW SHELL".into(), Hit::Then(Then::Shell), b.then == Then::Shell),
-                            ("THE LAST PAGE".into(), Hit::Then(Then::LastPage), b.then == Then::LastPage),
-                            ("THE PROMPT".into(), Hit::Then(Then::Prompt), b.then == Then::Prompt),
-                            (format!("HOME PAGE · {}", crate::links::host(&b.home_url).to_uppercase()), Hit::Then(Then::HomePage), b.then == Then::HomePage),
-                            (if b.then_layout.is_empty() { "A LAYOUT".to_string() } else { format!("LAYOUT · {}", b.then_layout.to_uppercase()) }, Hit::Then(Then::Layout), b.then == Then::Layout),
+                        "LAUNCH ANIMATION".into(),
+                        Pics(vec![
+                            ("DRAWS IN".into(), "the nus logo animates before opening".into(), Pic::SplashDraw, Hit::Splash(SplashMode::Draw), b.splash == SplashMode::Draw),
+                            ("STILL".into(), "the icon, no motion".into(), Pic::SplashStill, Hit::Splash(SplashMode::Still), b.splash == SplashMode::Still),
+                            ("NONE".into(), "straight to your start page".into(), Pic::SplashNone, Hit::Splash(SplashMode::None), b.splash == SplashMode::None),
                         ]),
                     ),
                     (
-                        "".into(),
-                        Info({
-                            let names: Vec<String> = crate::layout_file::saved().into_iter().map(|(n, _)| n).collect();
-                            if names.is_empty() { "layouts: save one from the palette (save this window as a layout) or write a .nus.luau · a folder with one offers it when a shell lands there".into() } else { format!("layouts: {} · pick which with the palette's layout rows; the first is used when none is picked", names.join(" · ")) }
-                        }),
+                        "ANIMATION DURATION".into(),
+                        Slider(self::Slider::SplashHold, self.slider_value(self::Slider::SplashHold), format!("{:.1} seconds", b.splash_hold)),
                     ),
-                    ("".into(), Info("the prompt is a terminal with no shell behind it: a url becomes a page, a command a shell running it, enter alone a shell · the home page is set from the palette: home <url>".into())),
                     (
-                        "HOME".into(),
-                        Choice(vec![
-                            ("THE LINE".into(), Hit::HomeLook(HomeLook::Line), b.home_look == HomeLook::Line),
-                            ("THE PLATE".into(), Hit::HomeLook(HomeLook::Plate), b.home_look == HomeLook::Plate),
-                            ("ART".into(), Hit::HomeLook(HomeLook::Art), b.home_look == HomeLook::Art),
+                        "START PAGE".into(),
+                        Pics(vec![
+                            ("HOME · PROMPT".into(), "one line: type a URL, a command or a folder".into(), Pic::StartPrompt, Hit::Then(Then::Prompt), b.then == Then::Prompt),
+                            ("WEBSITE".into(), format!("open {home_host}"), Pic::StartHome, Hit::Then(Then::HomePage), b.then == Then::HomePage),
+                            (
+                                "CUSTOM LAYOUT".into(),
+                                if layouts.is_empty() { "your saved tabs and panes · none saved yet".into() } else if b.then_layout.is_empty() { format!("your saved tabs and panes · {}", layouts[0]) } else { format!("your saved tabs and panes · {}", b.then_layout) },
+                                Pic::StartLayout,
+                                Hit::Then(Then::Layout),
+                                b.then == Then::Layout,
+                            ),
+                            ("THE LAST PAGE".into(), "reopen your most recent web page".into(), Pic::StartLast, Hit::Then(Then::LastPage), b.then == Then::LastPage),
                         ]),
                     ),
-                    ("".into(), Info("what the prompt looks like: the line alone; the line under the plate — the icon at a plate's size, your last places as stops on its band; or an art behind the line · the same typing, rows and enter either way".into())),
+                    ("".into(), Info(format!("Opens at launch and with {new_tab} or New tab. A custom layout adds its saved tabs and panes. With no saved page or usable layout, the prompt palette opens."))),
+                    ("HOME ADDRESS".into(), Buttons(vec![("EDIT ADDRESS".into(), icons::PENCIL, Hit::EditHomeUrl)])),
+                    ("".into(), Info(b.home_url.clone())),
+                    (
+                        "SAVED LAYOUT".into(),
+                        if layouts.is_empty() {
+                            Info("No layouts saved yet. Use Save current layout below to keep these tabs and panes.".into())
+                        } else {
+                            Choice(layouts.iter().enumerate().map(|(i, name)| (name.caps(), Hit::StartupLayout(i), b.then == Then::Layout && (*name == b.then_layout || (b.then_layout.is_empty() && i == 0)))).collect())
+                        },
+                    ),
+                    ("SPLASH PAGE LOOK".into(), Caption),
+                    ("".into(), Info("Choose the background for the prompt palette. These previews do not change a web home page.".into())),
+                    (
+                        "MINIMAL".into(),
+                        Pics(vec![
+                            ("PROMPT ONLY".into(), "a clean background for typing".into(), Pic::LookLine, Hit::HomeLook(HomeLook::Line), b.home_look == HomeLook::Line),
+                            ("LOGO & PROMPT".into(), "the nus logo and your recent places".into(), Pic::LookPlate, Hit::HomeLook(HomeLook::Plate), b.home_look == HomeLook::Plate),
+                        ]),
+                    ),
                     (
                         "ART".into(),
-                        Art(crate::art::list().into_iter().enumerate().map(|(i, a)| (a.key.clone(), a.name, a.says, Hit::HomeArt(i), b.home_look == HomeLook::Art && b.home_art == a.key, a.path.is_none())).collect()),
+                        Art(crate::art::list().into_iter().enumerate().map(|(i, a)| (a.key.clone(), a.name, if a.path.is_none() { match a.key.as_str() {
+                            "pond" => "koi swimming behind the prompt".into(),
+                            "memphis" => "colorful shapes in motion".into(),
+                            "space" => "stars for your chosen location".into(),
+                            "sky" => "sky and sun for your chosen location".into(),
+                            "brain" => "a live view of running processes".into(),
+                            _ => a.says,
+                        } } else { a.says }, Hit::HomeArt(i), b.home_look == HomeLook::Art && b.home_art == a.key, a.path.is_none())).collect()),
                     ),
                     (
                         "".into(),
-                        Buttons(vec![
-                            ("ADD YOUR OWN".into(), icons::PLUS, Hit::AddArt),
-                            ("ASK FOR ONE".into(), icons::ASSISTANT, Hit::AskArt),
-                            ("OPEN THE FOLDER".into(), icons::FOLDER, Hit::OpenArtFolder),
+                        Actions(vec![
+                            ("ADD YOUR OWN".into(), "create artwork in the editor".into(), icons::PLUS, Hit::AddArt),
+                            ("ASK FOR ONE".into(), "ask your assistant to create artwork".into(), icons::ASSISTANT, Hit::AskArt),
+                            ("OPEN FOLDER".into(), "browse your saved artwork files".into(), icons::FOLDER, Hit::OpenArtFolder),
                         ]),
                     ),
-                    ("".into(), Info("one Luau file each in profile/art — the four that ship are files too, so they are worked examples · add your own from a blank in the editor, or ask your assistant for one and it lands in the picker · a saved file redraws at once".into())),
+                    ("".into(), Info("Built-in artwork includes editable examples. Your saved changes appear in the preview automatically.".into())),
                     (
-                        "PLACE".into(),
+                        "YOUR LOCATION".into(),
                         Choice(vec![(
                             match b.place {
                                 Some([lat, lon]) => format!("{:.1}° {} · {:.1}° {}", lat.abs(), if lat >= 0.0 { "N" } else { "S" }, lon.abs(), if lon >= 0.0 { "E" } else { "W" }),
-                                None => { let (lat, lon) = self.place(); format!("ABOUT {:.0}° {} · {:.0}° {} · FROM THE CLOCK", lat.abs(), if lat >= 0.0 { "N" } else { "S" }, lon.abs(), if lon >= 0.0 { "E" } else { "W" }) }
+                                None => "NOT SET · CHOOSE LOCATION".into()
                             },
                             Hit::PlaceEdit,
                             b.place.is_some(),
                         )]),
                     ),
-                    ("".into(), Info("for the sky: where this machine is, as lat, lon · never leaves it".into())),
+                    ("".into(), Info("Optional: enter latitude and longitude for sky artwork. Location stays on this machine and is never inferred. Clear it any time.".into())),
                     (
-                        "A NEW WINDOW".into(),
-                        Choice(vec![
-                            ("THE PROMPT · FOLDERS IN ITS ROWS".into(), Hit::NewWindow(NewWindow::Prompt), b.new_window == NewWindow::Prompt),
-                            ("A SHELL IN THIS WINDOW'S FOLDER".into(), Hit::NewWindow(NewWindow::Shell), b.new_window == NewWindow::Shell),
-                            ("AS LAUNCH".into(), Hit::NewWindow(NewWindow::Launch), b.new_window == NewWindow::Launch),
+                        key("N", false),
+                        Pics(vec![
+                            ("PROMPT PALETTE".into(), "start at the prompt and choose a folder".into(), Pic::NewPrompt, Hit::NewWindow(NewWindow::Prompt), b.new_window == NewWindow::Prompt),
+                            ("SHELL".into(), "a terminal in the current window’s folder".into(), Pic::NewShell, Hit::NewWindow(NewWindow::Shell), b.new_window == NewWindow::Shell),
+                            ("SAME AS LAUNCH".into(), "use the animation and start page above".into(), Pic::NewLaunch, Hit::NewWindow(NewWindow::Launch), b.new_window == NewWindow::Launch),
                         ]),
                     ),
-                    ("".into(), Info("a window is a surface of its own — its tabs, its name, the folder it works in — never a copy of the one that asked · the prompt's rows offer folders: pick one and the window becomes that folder's, a shell born there and FILES on its tree".into())),
+                    ("".into(), Info("Each new window has its own tabs and working folder.".into())),
                     (
-                        "LAUNCH TABS".into(),
+                        "SAVE CURRENT LAYOUT".into(),
                         Choice(vec![
                             ("SET FROM THIS WINDOW".into(), Hit::SetLaunchTabs, false),
-                            (if crate::layout_file::saved().iter().any(|(n, _)| n == "launch") { "CLEAR".into() } else { "NONE SET".into() }, Hit::ClearLaunchTabs, false),
+                            (if layouts.iter().any(|n| n == "launch") { "CLEAR".into() } else { "NONE SET".into() }, Hit::ClearLaunchTabs, false),
                         ]),
                     ),
-                    ("".into(), Info("what is open now, saved as the layout named launch, and THEN set to open it: shells with their folders, pages, the editor, the hatch".into())),
+                    ("".into(), Info("Saves these tabs and panes as the layout “launch” and selects Custom layout above.".into())),
                     (
-                        "REMEMBER".into(),
+                        "ON QUIT, KEEP".into(),
                         Choice(vec![
                             ("TABS AND WINDOWS".into(), Hit::Remember(true), b.remember),
                             ("NOTHING".into(), Hit::Remember(false), !b.remember),
                         ]),
                     ),
-                    ("".into(), Info("remembered: every window's tabs, stacks, folders and pages come back through restore or the atlas · nothing: each launch starts as THEN says, and the atlas has only recents".into())),
+                    ("".into(), Info("Saved sessions are available in the atlas (the planet button). Startup still opens the start page selected above.".into())),
                     (
-                        "ATLAS".into(),
+                        "SESSION PICKER".into(),
                         Choice(vec![
-                            ("FROM THE PLANET".into(), Hit::Atlas(AtlasMode::Planet), b.atlas == AtlasMode::Planet),
-                            ("ALSO AT LAUNCH".into(), Hit::Atlas(AtlasMode::AtLaunch), b.atlas == AtlasMode::AtLaunch),
-                            ("AT LAUNCH · UNTIL YOU PICK".into(), Hit::Atlas(AtlasMode::Persistent), b.atlas == AtlasMode::Persistent),
+                            ("WHEN I OPEN IT".into(), Hit::Atlas(AtlasMode::Planet), b.atlas == AtlasMode::Planet),
+                            ("SHOW AT LAUNCH".into(), Hit::Atlas(AtlasMode::AtLaunch), b.atlas == AtlasMode::AtLaunch),
+                            ("KEEP OPEN UNTIL I PICK".into(), Hit::Atlas(AtlasMode::Persistent), b.atlas == AtlasMode::Persistent),
                         ]),
                     ),
-                    ("SOUND".into(), Choice(sound_chips)),
+                    ("LAUNCH SOUND".into(), Choice(sound_chips)),
                     (
-                        "LINKS FROM OUTSIDE".into(),
+                        "LINKS FROM OTHER APPS".into(),
                         Choice(vec![
                             ("LITTLE WINDOW".into(), Hit::Outside(Outside::Little), b.outside == Outside::Little),
                             ("NEW TAB HERE".into(), Hit::Outside(Outside::NewTab), b.outside == Outside::NewTab),
                         ]),
                     ),
                     (
-                        "AT LOGIN".into(),
+                        "OPEN AT LOGIN".into(),
                         Choice(vec![
-                            ("START WITH THE SYSTEM".into(), Hit::LoginItem(true), crate::little::login_item_registered()),
+                            ("YES".into(), Hit::LoginItem(true), crate::little::login_item_registered()),
                             ("NO".into(), Hit::LoginItem(false), !crate::little::login_item_registered()),
                         ]),
                     ),
-                    ("".into(), Info(if self.login_note.is_empty() { "a shortcut in the Startup folder · reversible".into() } else { self.login_note.clone() })),
+                    ("".into(), Info(if self.login_note.is_empty() { "nus starts when you log in · change it any time".into() } else { self.login_note.clone() })),
                 ]
             }
             3 => vec![
@@ -2862,7 +3382,7 @@ impl App {
                         ("RAIL".into(), Hit::HdrStyle(HeaderStyle::Rail), self.header.style == HeaderStyle::Rail),
                     ]),
                 ),
-                ("".into(), Info(match self.header.style { HeaderStyle::Bar => "bar: the window's name and NEW TAB share one ruled row".into(), HeaderStyle::Rail => "rail: every window as its square along the edge; the name above the tabs".into() })),
+                ("".into(), Info(match self.header.style { HeaderStyle::Bar => "The bar puts the window name and New tab button above the tabs.".into(), HeaderStyle::Rail => "The rail shows a square for each window along the edge, with the current window name above its tabs.".into() })),
                 (
                     "TITLE".into(),
                     Choice(vec![
@@ -2884,7 +3404,7 @@ impl App {
                         ("AS THE NEXT ROW".into(), Hit::HdrNextRow(!self.header.next_row), self.header.next_row),
                     ]),
                 ),
-                ("".into(), Info("both can be on; click for a shell in the default profile, hold or right-click for the kinds".into())),
+                ("".into(), Info("Show either or both New tab buttons. Clicking opens the start page chosen in Startup. Hold or right-click to choose a tab type.".into())),
                 (
                     "KINDS CARET".into(),
                     Choice(vec![("ON".into(), Hit::HdrCaret(true), self.header.kinds_caret), ("OFF".into(), Hit::HdrCaret(false), !self.header.kinds_caret)]),
@@ -2901,6 +3421,14 @@ impl App {
                     "PRESS".into(),
                     Choice(vec![("FLASH".into(), Hit::HdrFlash(true), self.header.flash), ("NONE".into(), Hit::HdrFlash(false), !self.header.flash)]),
                 ),
+                ("SIDEBAR WIDTH".into(),Slider(self::Slider::SidebarWidth,self.slider_value(self::Slider::SidebarWidth),format!("{} px · drag the sidebar's inner edge",self.sidebar_rules.width as u32))),
+                ("FOOTER HEIGHT".into(),Slider(self::Slider::FooterSize,self.slider_value(self::Slider::FooterSize),format!("{} px per row · drag the footer's top edge",self.sidebar_rules.footer_row as u32))),
+                ("SMALL SIDEBAR".into(),Choice(vec![
+                    ("ICONS".into(),Hit::SmallTabs(crate::sidebar::SmallTabs::Icons),self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Icons),
+                    ("FAVICONS".into(),Hit::SmallTabs(crate::sidebar::SmallTabs::Favicons),self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Favicons),
+                    ("WEB PREVIEWS".into(),Hit::SmallTabs(crate::sidebar::SmallTabs::Preview),self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Preview),
+                ])),
+                ("".into(),Info("Below 105 px, tab and file names give way to icons. Hover to read the full title or path. Web previews use the page's current image; pages without one show their icon. Footer buttons wrap to fit.".into())),
                 (
                     "DENSITY".into(),
                     Choice(vec![
@@ -2941,7 +3469,7 @@ impl App {
                         (format!("HOVER · {} PINS", key("S", true)), Hit::Pin(false), !self.sidebar),
                     ]),
                 ),
-                ("ROWS".into(), Info("compact · preview on hover and while waiting".into())),
+                ("ROWS".into(), Info("Compact rows show a preview when you hover over them.".into())),
             ],
             4 => vec![
                 (
@@ -2951,7 +3479,7 @@ impl App {
                         ("IN FRONT".into(), Hit::OpenedBy(OpenedBy::Front), self.behavior.opened_by_others == OpenedBy::Front),
                     ]),
                 ),
-                ("".into(), Info("a tab opened by nus open from a shell, an assistant's hands, a rule or a link handed from outside · your own clicks and palette rows always come to the front".into())),
+                ("".into(), Info("Applies to tabs opened by commands, assistants, rules and other apps. Tabs you open yourself always come to the front.".into())),
                 (
                     "PANE CONTROLS".into(),
                     Choice(vec![
@@ -2972,7 +3500,7 @@ impl App {
                     "ARCHIVE IDLE PAGES".into(),
                     Choice(vec![("NEVER".into(), Hit::ArchiveAfter(0), self.behavior.archive_after_h == 0), ("12 H".into(), Hit::ArchiveAfter(12), self.behavior.archive_after_h == 12), ("24 H".into(), Hit::ArchiveAfter(24), self.behavior.archive_after_h == 24), ("A WEEK".into(), Hit::ArchiveAfter(168), self.behavior.archive_after_h == 168)]),
                 ),
-                ("".into(), Info("a sleeping page keeps its place and wakes when shown · archived pages go to recently closed · pinned tabs and shells never".into())),
+                ("".into(), Info("Sleeping pages wake when selected. Archived pages move to Recently closed. Pinned tabs and terminals are excluded.".into())),
                 (
                     "LINKS FROM PAGES".into(),
                     Choice(vec![
@@ -2995,9 +3523,9 @@ impl App {
                         ("NEVER ASK".into(), Hit::CloseAsks(false), !self.behavior.close_asks),
                     ]),
                 ),
-                ("STACKS".into(), Info("one level · collapse when not active · closing the parent asks".into())),
+                ("STACKS".into(), Info("Related tabs can be grouped one level deep. Closing a stack asks before closing its children.".into())),
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
-                ("COLOURS".into(), Info("new tabs are coloured by rules.luau → RULES".into())),
+                ("COLOURS".into(), Info("Choose tab colours in Look, or customize them in Rules.".into())),
                 ("TIDY".into(), Choice(vec![
                     ("OFF".into(), Hit::TidyEvery(TidyEvery::Off), self.behavior.tidy_every == TidyEvery::Off),
                     ("HOURLY".into(), Hit::TidyEvery(TidyEvery::Hourly), self.behavior.tidy_every == TidyEvery::Hourly),
@@ -3005,7 +3533,7 @@ impl App {
                 ])),
                 ("".into(), Info("tidy suggests groups — tabs sharing a host or a project folder, or what group(tab) in rules.luau names — as a sheet: make a stack, archive, or skip, each a tap; nothing moves on its own · the palette has it any time".into())),
                 ("DEDUPE".into(), Choice(vec![("ON".into(), Hit::Dedupe(!self.behavior.dedupe), self.behavior.dedupe)])),
-                ("".into(), Info("a page already open elsewhere gets a band: switch there, or keep both".into())),
+                ("".into(), Info("When a page is already open, a notice lets you switch to it or keep both copies.".into())),
             ],
             5 => {
                 let mut v: Vec<(String, Control)> = vec![(
@@ -3244,11 +3772,17 @@ impl App {
                     "".into(),
                     Info(self.register_note.clone()),
                 ),
-                ("SEARCH".into(), Info("google · configurable".into())),
-                ("NEW TAB".into(), Info("opens the palette; no new-tab page".into())),
-                ("COOKIES".into(), Info("one jar per Space · third-party blocked (v1)".into())),
-                ("DOWNLOADS".into(), Info("~/Downloads · silent · ruled toast (v1)".into())),
-                ("PASSWORDS".into(), Info("1Password via op (v1)".into())),
+                ("SEARCH".into(), Info("Text entered as a search opens Google.".into())),
+                ("NEW TAB".into(), Info("Uses the start page selected in Startup: prompt palette, home page, saved layout or last page.".into())),
+                ("COOKIES".into(), Info("Website storage is managed by Chromium. Use the site settings beside the address for site-specific controls.".into())),
+                ("DOWNLOADS".into(), Buttons(vec![("OPEN DOWNLOADS".into(),icons::DOWNLOAD,Hit::Downloads)])),
+                ("FILE NAMING".into(), Choice(vec![
+                    ("OFF · ORIGINAL NAMES".into(),Hit::DownloadRename(crate::downloads::Rename::Off),self.behavior.download_rename==crate::downloads::Rename::Off),
+                    ("ALL DOWNLOADS".into(),Hit::DownloadRename(crate::downloads::Rename::All),self.behavior.download_rename==crate::downloads::Rename::All),
+                    ("SELECTIVE · BETA".into(),Hit::DownloadRename(crate::downloads::Rename::Selective),self.behavior.download_rename==crate::downloads::Rename::Selective),
+                ])),
+                ("".into(),Info("Off keeps the site's filename. All downloads uses a readable page title and keeps the extension. Selective (beta) renames documents, images and media, preserving technical, versioned and unknown filenames. Existing files are never replaced; duplicates receive a number.".into())),
+                ("PASSWORDS".into(), Info("No built-in password manager. Password integration is not available in this build.".into())),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
             7 => {
@@ -3307,12 +3841,12 @@ impl App {
                 let hk = self.hotkey.as_ref().map(|k| k.status.clone()).unwrap_or_else(|| "not registered".into());
                 let status = if hk.is_empty() { format!("{} summons it from anywhere", b.hatch_hotkey.label()) } else { format!("{} · {} inside nus", hk, b.hatch_hotkey.label()) };
                 vec![
-                    ("".into(), Info("the quick terminal: a tab of this Space that lives above every window · hoist a tab up, land it down".into())),
+                    ("".into(), Info("Ongoing work across every Space. Select a job to open its existing terminal; expand it into nus without restarting.".into())),
                     ("LOOK".into(), Choice(vec![
-                        ("SHEET".into(), Hit::HatchLook(HatchLook::Sheet), b.hatch_look == HatchLook::Sheet),
-                        ("CARD".into(), Hit::HatchLook(HatchLook::Card), b.hatch_look == HatchLook::Card),
+                        ("DROPDOWN".into(), Hit::HatchLook(HatchLook::Sheet), b.hatch_look == HatchLook::Sheet),
+                        ("MODAL".into(), Hit::HatchLook(HatchLook::Card), b.hatch_look == HatchLook::Card),
                     ])),
-                    ("".into(), Info("sheet: 960 wide from the top edge, the band as a lip you drag · card: 70% centred, framed by the carapace, drag the frame".into())),
+                    ("".into(), Info("Dropdown opens below the Mac camera cutout or the screen top. Modal is centered. Drag the lower edge to resize.".into())),
                     ("HOTKEY".into(), Choice(vec![
                         ("CTRL+`".into(), Hit::HatchHotkey(crate::hotkey::Chord::CtrlGrave), b.hatch_hotkey == crate::hotkey::Chord::CtrlGrave),
                         (crate::hotkey::Chord::SuperGrave.label().into(), Hit::HatchHotkey(crate::hotkey::Chord::SuperGrave), b.hatch_hotkey == crate::hotkey::Chord::SuperGrave),
@@ -3334,7 +3868,13 @@ impl App {
                         ("ON".into(), Hit::HatchAutohide(true), b.hatch_autohide),
                         ("OFF".into(), Hit::HatchAutohide(false), !b.hatch_autohide),
                     ])),
-                    ("".into(), Info(format!("hides when it loses focus unless pinned · {} pins · esc hides", key("↑", true)))),
+                    ("".into(), Info(format!("hides when it loses focus unless pinned · {} pins · Escape belongs to the terminal", key("↑", true)))),
+                    ("LIVE STATUS".into(), Choice(vec![("ON".into(), Hit::HatchStatus(true), b.hatch_status), ("OFF".into(), Hit::HatchStatus(false), !b.hatch_status)])),
+                    ("COMPLETION NOTICES".into(), Choice(vec![("ON".into(), Hit::HatchNotify(true), b.hatch_notify), ("OFF".into(), Hit::HatchNotify(false), !b.hatch_notify)])),
+                    ("".into(), Info("Brief notices appear beside the top edge without taking focus. Clicking a notice opens that session.".into())),
+                    ("BACKGROUND".into(), Choice(vec![("ON".into(), Hit::HatchBackground(true), b.hatch_background), ("OFF".into(), Hit::HatchBackground(false), !b.hatch_background)])),
+                    ("DIM MODAL".into(), Choice(vec![("ON".into(), Hit::HatchDim(true), b.hatch_dim), ("OFF".into(), Hit::HatchDim(false), !b.hatch_dim)])),
+                    ("".into(), Info("Closing a window keeps its sessions while background mode is on. Use Quit nus in the menu bar or tray to exit. No command runs when you summon Hatch.".into())),
                     ("SPACES".into(), Choice(vec![
                         ("FOLLOW".into(), Hit::HatchSpaces(HatchSpaces::Follow), b.hatch_spaces == HatchSpaces::Follow),
                         ("ONE FOR ALL".into(), Hit::HatchSpaces(HatchSpaces::One), b.hatch_spaces == HatchSpaces::One),
@@ -3342,50 +3882,9 @@ impl App {
                     ("".into(), Info(format!("chords: {} hoists the tab you're on · {} lands the hatch's tab", key("↑", true), key("↓", true)))),
                 ]
             }
-            9 => {
-                let asks = crate::ask::backends();
-                let mut v: Vec<(String, Control)> = Vec::new();
-                v.push(("ASK".into(), Info(format!("Ctrl+Shift+? beside a shell · {}", if asks.is_empty() { "no assistant found · claude, codex, copilot, ollama on PATH, or ANTHROPIC_API_KEY (curl)".to_string() } else { asks.iter().map(|b| format!("{} ({})", b.name, b.how)).collect::<Vec<_>>().join(" · ") }))));
-                if !asks.is_empty() {
-                    let now = crate::ask::chosen(&self.behavior.ask_backend).map(|b| b.name).unwrap_or_default();
-                    v.push(("ASK WITH".into(), Choice(asks.iter().enumerate().map(|(i, b)| ((if crate::ask::is_local(b) { format!("LOCAL · {}", b.name.trim_start_matches("declared:")) } else { b.name.clone() }).to_uppercase(), Hit::AskBackend(i), b.name == now)).collect())));
-                    v.push(("".into(), Info("the panel's head cycles these too · a local model answers as it writes · declare your own in profile/assistants.json: [{\"name\": \"qwen\", \"command\": \"llm -m qwen\"}] — the prompt on stdin, the answer on stdout".into())));
-                }
-                v.push(("EYES".into(), Info("nus mcp gives the assistant in the shell the page beside it: its text, DOM, console, network and a screenshot from our own texture · claude mcp add nus -- nus mcp".into())));
-                let hm = self.behavior.hands;
-                v.push((
-                    "HANDS".into(),
-                    Choice(vec![
-                        ("ASK".into(), Hit::Hands(HandsMode::Ask), hm == HandsMode::Ask),
-                        ("ALWAYS".into(), Hit::Hands(HandsMode::Always), hm == HandsMode::Always),
-                        ("NEVER".into(), Hit::Hands(HandsMode::Never), hm == HandsMode::Never),
-                        ("CONFIRM SUBMIT".into(), Hit::HandsSubmit(!self.behavior.hands_confirm_submit), self.behavior.hands_confirm_submit),
-                        (format!("{} HOSTS ALLOWED · FORGET", self.behavior.hands_hosts.len()), Hit::HandsForget, false),
-                    ]),
-                ));
-                v.push(("".into(), Info("click, type, scroll and navigate on the page, by the assistant, in sight: a band over the page asks first, every hand leaves a chip, and your own click or key while it waits takes over".into())));
-                v.extend(self.llm_tools.iter().map(|(n, c)| (format!("LOCAL · {}", n.caps()), Info(c.clone()))));
-                if self.llm_tools.is_empty() {
-                    v.push(("LOCAL".into(), Info("none on PATH (claude, codex, ollama are detected)".into())));
-                }
-                let on = |c: crate::askctx::Ctx| self.behavior.ask_ctx.iter().any(|k| k == c.key());
-                v.push((
-                    "GOES ALONG".into(),
-                    Choice(crate::askctx::Ctx::ALL.iter().map(|&c| (c.key().to_uppercase(), Hit::AskCtx(c), on(c))).collect()),
-                ));
-                v.push(("".into(), Info("the default chips on a new panel: this shell, the block in focus, the page beside · tabs and the editor are a tap away · a skill's own context overrides".into())));
-                let mem = crate::askctx::read_memory();
-                let n = mem.lines().filter(|l| !l.trim().is_empty()).count();
-                v.push(("MEMORY".into(), Choice(vec![(format!("{n} LINE{} · FORGET ALL", if n == 1 { "" } else { "S" }), Hit::ForgetMemory, false)])));
-                v.push(("".into(), Info(if n == 0 { "nothing remembered yet · the book on an answer keeps its first line in profile/memory.md".into() } else { crate::app::fit_cmd(&mem.replace('\n', " · "), 160) })));
-                let skills = self.rules.skills();
-                if !skills.is_empty() {
-                    v.push(("SKILLS".into(), Info(skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(" · ") + " · from rules.luau · chips in the panel, ask <name> in the palette")));
-                }
-                v.push(("WEB · CHATGPT".into(), Info("https://chatgpt.com/?q=…".into())));
-                v.push(("WEB · CLAUDE".into(), Info("https://claude.ai/new?q=…".into())));
-                v
-            }
+            SEC_ASSISTANTS => self.assistants_settings(),
+            SEC_FONTS => self.fonts_settings(),
+            SEC_PROMPT => self.prompt_settings(),
             10 => {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
@@ -3405,7 +3904,6 @@ impl App {
                     (d.bg, d.signal, "4  github".to_string(), false),
                 ];
                 let try4 = mk("terminal", 3, "", None);
-                let tried: Vec<(Option<Color>, Hit, bool)> = vec![(try4.bg, Hit::Starter(0), false), (try4.signal, Hit::Starter(0), false)];
                 vec![
                 ("FILE".into(), Info(self.rules.path.to_string_lossy().to_string())),
                 ("STATUS".into(), Info(self.rules.status.clone())),
@@ -3413,7 +3911,7 @@ impl App {
                 ("".into(), Info("a starter replaces new_tab and new_space; on_page and on_event are kept".into())),
                 ("NOW".into(), Tabs(preview)),
                 ("TRY".into(), Info("new_tab { kind = \"terminal\", index = 4 } →".into())),
-                ("".into(), Swatches(tried)),
+                ("EXAMPLE COLOURS".into(), Tabs(vec![(try4.bg, try4.signal, "Next terminal tab".into(), false)])),
                 ("HOOKS".into(), Info("new_tab · new_space · on_page · on_event   helpers: hue · mix · hsl · family".into())),
                 (
                     "".into(),
@@ -3436,27 +3934,23 @@ impl App {
                     ),
                     None => (crate::me::os_user(), "the initial".to_string(), "not yet".to_string(), "not set up".to_string()),
                 };
-                let is_emoji = matches!(self.me.as_ref().map(|m| &m.face), Some(crate::me::Face::Emoji(_)));
                 let mut v: Vec<(String, Control)> = vec![
-                    ("".into(), Info("you, on this machine: a name, a face, the day it began · profile/me.json — a file in a folder is the whole account: no server behind it, nothing counted, nothing sent".into())),
+                    ("".into(), Info("Your name, picture and device name. Your profile is stored locally; no online account is required.".into())),
                 ];
                 if self.me.is_none() {
                     v.push(("".into(), Buttons(vec![("SET UP THE PROFILE".into(), icons::USER, Hit::MeCard)])));
                 }
                 v.extend(vec![
                     ("NAME".into(), Choice(vec![(name.caps(), Hit::MeEdit(0), true)])),
-                    ("FACE".into(), Choice(vec![
-                        ("THE INITIAL".into(), Hit::MeEdit(1), face == "the initial"),
-                        (if is_emoji { format!("EMOJI · {face}") } else { "AN EMOJI".into() }, Hit::MeEdit(1), is_emoji),
-                        ("A PICTURE".into(), Hit::MeEdit(1), face == "profile/avatar.png"),
-                    ])),
+                    ("PROFILE PICTURE".into(), Buttons(vec![("CHANGE PICTURE".into(), icons::USER, Hit::MeEdit(1))])),
+                    ("".into(), Info(format!("Current picture: {face}. Choose an initial, emoji or image in the profile editor."))),
                     ("".into(), Info("the face is the avatar in the footer; a picture is profile/avatar.png, any size, drawn at 22px".into())),
                     ("DEVICE".into(), Choice(vec![(device.caps(), Hit::MeEdit(2), true)])),
-                    ("".into(), Info("sync names what this machine wrote by it (the manifest, the .lost files); it lives in profile/sync/device and never syncs itself".into())),
+                    ("".into(), Info("The device name identifies changes made by this machine when you sync.".into())),
                     ("SINCE".into(), Info(format!("{since} · {days}"))),
                     ("SYNC".into(), Info(self.sync_status())),
                     ("".into(), Buttons(vec![("HOW IT LIVES".into(), icons::BROADCAST, Hit::MeWalk(0)), ("SYNC SETTINGS".into(), icons::SLIDERS, Hit::Section(SEC_SYNC))])),
-                    ("PRIVATE".into(), Info("this profile is a folder: settings, rules, layouts, folders, ports, memory, sites, containers, the browser's own state · nothing leaves it unless you set up sync, and then only sealed · no account, no crash reports, no counters, no phone-home".into())),
+                    ("PRIVATE".into(), Info("Profile data is stored in a folder on this device. Sync is optional. Opening the folder lets you inspect or back up your files.".into())),
                     ("".into(), Buttons(vec![("OPEN THE PROFILE FOLDER".into(), icons::FOLDER, Hit::MeFolder), ("START OVER".into(), icons::WARNING, Hit::MeForget)])),
                 ]);
                 v
@@ -3465,7 +3959,7 @@ impl App {
                 let b = &self.behavior;
                 let has_key = crate::syncui::key().is_some();
                 vec![
-                    ("".into(), Info("your profile on more than one device, no account: sealed with a key you copy, carried by a folder your OS already syncs or a private repo on a forge, last writer wins and the loser is kept beside it as .lost".into())),
+                    ("".into(), Info("Use your profile on another device. Choose an encrypted sync destination and share your key with that device. Sync stays off until both are set up.".into())),
                     ("STATUS".into(), Info(self.sync_status())),
                     ("".into(), Buttons({
                         let mut b = vec![("HOW IT LIVES · THE WALK".into(), icons::USER, Hit::MeWalk(0)), ("SIGN IN TO A FORGE".into(), icons::GITHUB, Hit::MeWalk(1))];
@@ -3476,24 +3970,22 @@ impl App {
                     })),
                     ("".into(), Info(match crate::forge::load() {
                         Some(f) => format!("{} · the token stays in profile/sync/forge.token, sent to the forge as a header, never in a url or on the carrier", f.word()),
-                        None => "the walk sets up any of the three ways in the card; a forge is github (sign in from the card, or a token), forgejo, gitea or gitlab (a token) — nus makes nus-profile, private".into(),
+                        None => "The setup guide can connect a private repository on GitHub, Forgejo, Gitea or GitLab.".into(),
                     })),
                     ("KEY".into(), Choice(vec![
                         (if has_key { "SHOW · COPY".into() } else { "MAKE ONE".into() }, Hit::SyncKey, has_key),
                         ("JOIN WITH A KEY".into(), Hit::SyncEdit(2), false),
                         ("FORGET".into(), Hit::SyncForget, false),
                     ])),
-                    ("".into(), Info("make the key on the first device, copy the word to the next (nus sync key · nus sync join <word>); it never leaves your devices".into())),
+                    ("".into(), Info("Create a key on your first device. On the next device, choose Join with a key and paste it.".into())),
                     ("CARRIERS".into(), Choice(vec![
                         (if b.sync_folder.is_empty() { "FOLDER · NONE".into() } else { format!("FOLDER · {}", crate::app::fit_cmd(&b.sync_folder, 28).to_uppercase()) }, Hit::SyncEdit(0), !b.sync_folder.is_empty()),
                         (if b.sync_git.is_empty() { "GIT · NONE".into() } else { format!("GIT · {}", crate::app::fit_cmd(&b.sync_git, 28).to_uppercase()) }, Hit::SyncEdit(1), !b.sync_git.is_empty()),
                     ])),
-                    ("".into(), Info("either or both: a folder (iCloud Drive, OneDrive, Dropbox, Syncthing, a stick) holds sealed files per device; a git remote does the same with history · only ciphertext leaves this machine".into())),
-                    ("WHAT TRAVELS".into(), Choice(vec![
-                        ("PREFS · RULES · LAYOUTS · FOLDERS · PORTS · MEMORY · SITES".into(), Hit::SyncSession(b.sync_session), true),
-                        ("THE SESSION TOO".into(), Hit::SyncSession(!b.sync_session), b.sync_session),
-                    ])),
-                    ("".into(), Info("never cookies, caches, downloads or shell history · the session (open tabs) is off unless you say".into())),
+                    ("".into(), Info("Choose a folder already synced by your system, a private Git repository, or both. Files are encrypted before they leave this device.".into())),
+                    ("SYNC CONTENTS".into(), Info("Settings, rules, layouts, folders, ports, memory and site preferences sync when a key and destination are configured.".into())),
+                    ("INCLUDE OPEN TABS".into(), Choice(vec![("ON".into(), Hit::SyncSession(true), b.sync_session), ("OFF".into(), Hit::SyncSession(false), !b.sync_session)])),
+                    ("".into(), Info("Cookies, caches, downloads and shell history are excluded. Open tabs sync only when Include open tabs is enabled.".into())),
                     ("EVERY".into(), Choice(vec![
                         ("ON DEMAND".into(), Hit::SyncEvery(0), b.sync_every_min == 0),
                         ("5 MIN".into(), Hit::SyncEvery(5), b.sync_every_min == 5),
@@ -3520,8 +4012,9 @@ impl App {
                 };
                 let chord = |k: &str, shift: bool| -> Vec<String> { let mut v = mod_(shift); v.push(k.to_string()); v };
                 vec![
-                    ("".into(), Info("the chords are nus's own; the shell keeps everything else, ctrl+c and ctrl+shift+c included".into())),
-                    ("NEW TAB".into(), Keys(chord("T", true), "a shell in the default profile".into())),
+                    ("".into(), Info("These shortcuts control nus. Other keys are passed to the active page or terminal.".into())),
+                    ("NEW TAB".into(), Keys(chord("T", !mac), "the start page selected in Startup".into())),
+                    ("NEW WINDOW".into(), Keys(chord("N", false), "the new window behavior selected in Startup".into())),
                     ("GO".into(), Keys(chord("K", true), "the palette: commands, tabs, places".into())),
                     ("URL".into(), Keys(chord("L", true), "a page, by address".into())),
                     ("CLOSE".into(), Keys(chord("W", true), "the tab; the stack folds first".into())),
@@ -3541,7 +4034,7 @@ impl App {
                 ]
             }
             _ => vec![
-                ("CHANNEL".into(), Info("GitHub Releases · self-update (v1)".into())),
+                ("CHANNEL".into(), Info("Install a newer build to update nus. Automatic updates are not available in this build.".into())),
                 ("TELEMETRY".into(), Info("none".into())),
                 ("VERSION".into(), Info(format!("nus spike 4 · CEF {}", crate::chromium_version()))),
             ],
@@ -3553,31 +4046,37 @@ impl App {
         match k {
             0 => format!("{} · {} · {}", self.preset_name.to_lowercase(), if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.surface.shell.name()),
             1 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
-            2 => format!("{:?} first · {:?} · then {:?}", self.behavior.lead, self.behavior.splash, self.behavior.then).to_lowercase(),
+            2 => format!("start page: {}", match self.behavior.then {
+                Then::Prompt => "prompt palette", Then::HomePage => "home page", Then::Layout => "custom layout",
+                Then::LastPage => "the last page", Then::Restore => "saved session", Then::Shell => "shell",
+            }),
             3 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
             4 => format!("links → {:?}", self.behavior.links).to_lowercase(),
             5 => self.profiles.get(self.behavior.default_profile).map(|p| p.name.clone()).unwrap_or_default(),
             6 => format!("{} bar · google", self.load_bar.style.name()),
             7 => format!("{} · {}", self.behavior.ports_grouping.name(), if self.behavior.ports_toast { "toast on" } else { "toast off" }),
             8 => format!("{:?} · {}", self.behavior.hatch_look, self.behavior.hatch_hotkey.label()).to_lowercase(),
-            9 => format!("{} local · chatgpt · claude", self.llm_tools.len()),
+            9 => "claude · codex · ollama".into(),
             10 => self.rules.status.clone(),
             11 => "chords · the shell keeps its own".into(),
             12 => if self.sync_ready() { "on".into() } else { "off · no key or carrier".into() },
             13 => match &self.me { Some(me) => format!("{} · {}", me.name.to_lowercase(), me.day_word()), None => "not set up · local, no account".into() },
+            SEC_FONTS => "interface · terminal · editor".into(),
+            SEC_PROMPT => "presets · sources · layout".into(),
             _ => "github releases".into(),
         }
     }
 
     /// The tile grid: icon, name, a one-line state; 44px+ targets.
-    fn draw_tiles(&mut self, scene: &mut Scene, r: Rect) {
+    fn draw_tiles(&mut self, scene: &mut Scene, r: Rect, scroll: f32) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
         let strong = self.label_strong();
         let dim = Style { color: t.dim, ..label };
         let pad = self.px(18.0);
-        let mut y = r.y + self.px(28.0);
+        scene.layer(Some(r));
+        let mut y = r.y + self.px(28.0) - scroll;
         let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
         self.fonts.draw(scene, wm, r.x + pad, y + self.px(30.0), "settings");
         y += self.px(58.0);
@@ -3603,35 +4102,46 @@ impl App {
                 let row = slot / cols;
                 slot += 1;
                 let tile = Rect::new(r.x + pad + col as f32 * (tw + gap), y + row as f32 * (th + gap) + (gy - y), tw, th);
-                if tile.bottom() > r.bottom() {
-                    break;
-                }
+                self.settings_reach=(tile.bottom()+scroll-r.y+self.px(24.0)).max(self.settings_reach);
+                if tile.bottom() < r.y || tile.y > r.bottom() { continue; }
             scene.outline(tile, self.px(m::HAIRLINE), ink);
             self.fonts.draw_icon(scene, *icon, isz, tile.x + self.px(16.0), tile.y + self.px(16.0), ink);
             let base = tile.y + self.px(16.0) + isz + self.px(22.0);
             self.fonts.draw(scene, strong, tile.x + self.px(16.0), base, name);
             let hint = self.fit(dim, &self.tile_hint(k), tw - self.px(32.0));
             self.fonts.draw(scene, dim, tile.x + self.px(16.0), base + self.px(18.0), &hint);
-            self.settings_hits.push((tile, Hit::Tile(k)));
+            self.settings_hits.push((tile.intersect(&r), Hit::Tile(k)));
             }
         }
     }
 
-    pub(crate) fn draw_settings(&mut self, scene: &mut Scene, p: &SettingsPane) {
+    pub(crate) fn draw_settings(&mut self, scene: &mut Scene, p: &mut SettingsPane) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
         let strong = self.label_strong();
         let ui = self.ui();
         let dim = Style { color: t.dim, ..label };
-        let r = p.rect;
+        let mut r = p.rect;
         self.settings_hits.clear();
+        let search=Rect::new(r.x+self.px(12.0),r.y+self.px(8.0),r.w-self.px(24.0),self.px(32.0));
+        scene.outline(search,self.px(1.0),t.dim);
+        self.fonts.draw_icon(scene,icons::SEARCH,self.px(14.0),search.x+self.px(10.0),search.y+self.px(8.0),ink);
+        let hint=self.fit(label,&format!("Search settings · {}",key("F",false)),search.w-self.px(50.0));
+        self.fonts.draw(scene,label,search.x+self.px(32.0),search.y+self.px(21.0),&hint);
+        self.settings_hits.push((search,Hit::Search));
+        r.y+=self.px(48.0);r.h-=self.px(48.0);
 
-        // Narrow panes get tiles instead of a nav: a grid first, then one
-        // section under a back crumb. Width decides; there is no manual mode.
-        let tiles = r.w / self.scale < crate::app::NARROW;
+        // Use a scrolling index when width or height cannot fit the complete
+        // navigation. Even the last section must remain reachable.
+        let nav_min = SECTIONS.len() as f32 * self.px(m::LABEL_PX + 10.0)
+            + GROUPS.len() as f32 * self.px(24.0) + self.px(40.0);
+        let tiles = r.w / self.scale < crate::app::NARROW || r.h < nav_min;
         if tiles && !p.drill {
-            return self.draw_tiles(scene, r);
+            self.settings_reach=0.0;
+            self.draw_tiles(scene, r, p.scroll);
+            scene.layer(None);
+            return;
         }
 
         // Nav (or, drilled in, a back crumb).
@@ -3690,7 +4200,7 @@ impl App {
             }
         }
         if !tiles {
-            let cfg = "~/.config/nus/init.luau";
+            let cfg = "Changes save automatically";
             self.fonts.draw(scene, dim, r.x + self.px(18.0), r.bottom() - self.px(14.0), cfg);
         }
 
@@ -3698,6 +4208,7 @@ impl App {
         let cx = r.x + nav_w + if tiles { self.px(18.0) } else { self.px(40.0) };
         let content = Rect::new(r.x + nav_w, top, r.w - nav_w, r.bottom() - top);
         let scroll = p.scroll.max(0.0);
+        let content_hit_start = self.settings_hits.len();
         scene.layer(Some(content));
         let mut y = top + self.px(28.0) - scroll;
         let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
@@ -3706,24 +4217,30 @@ impl App {
         let maxw = (r.w - nav_w - if tiles { self.px(36.0) } else { self.px(80.0) }).min(self.px(760.0));
         let label_w = if tiles { self.px(140.0) } else { self.px(200.0) };
         let rows = self.rows_for(p.section);
-        for (k, control) in rows {
+        for (row_index, (k, control)) in rows.into_iter().enumerate() {
             // Full-width controls: caption above, the control across the column.
-            let full = matches!(control, Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_));
-            let cap_h = if full && !k.is_empty() { self.px(22.0) } else { 0.0 };
-            let card_w = self.px(168.0);
+            let stacked = tiles && matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..));
+            let full = stacked || matches!(control, Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_))
+                || matches!(control, Control::Info(_));
+            let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
+            let card_w = self.px(168.0).min((maxw - self.px(6.0)).max(self.px(60.0)));
             let card_h = self.px(104.0);
             let gap = self.px(14.0);
             let per_row = ((maxw + gap) / (card_w + gap)).floor().max(1.0) as usize;
+            let text_w = if full { maxw } else { maxw - label_w };
             let rh = match &control {
+                Control::FontProof | Control::PromptProof => self.px(226.0) + cap_h,
+                Control::Pics(cards) => cap_h + cards.len().div_ceil(per_row) as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0),
+                Control::Actions(items) => cap_h + items.len().div_ceil(per_row) as f32 * (self.px(94.0) + gap) + self.px(10.0),
                 Control::Studio => self.px(180.0) + self.px(18.0),
-                Control::Strip(_) => self.px(44.0) + self.px(10.0),
+                Control::Strip(items) => cap_h + self.px(10.0) + wrap_count(&items.iter().map(|(text,_,_)|(self.fonts.measure(strong,text)+self.px(28.0)+1.0).ceil().min(maxw)).collect::<Vec<_>>(),self.px(10.0),maxw) as f32*self.px(44.0),
                 Control::Cards(cards) => {
                     let rows = (cards.len() + per_row - 1) / per_row;
                     cap_h + rows as f32 * (card_h + self.px(8.0) + gap) + self.px(10.0)
                 }
                 Control::Art(cards) => {
                     let rows = (cards.len() + per_row - 1) / per_row;
-                    cap_h + rows as f32 * (card_h + self.px(36.0) + gap) + self.px(10.0)
+                    cap_h + rows as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0)
                 }
                 Control::Tokens(items, big) => {
                     let (tw, th) = if *big { (self.px(84.0), self.px(64.0) + self.px(34.0)) } else { (self.px(34.0), self.px(34.0)) };
@@ -3735,31 +4252,43 @@ impl App {
                 Control::Swatches(_) => self.px(12.0) * 2.0 + self.px(18.0) + self.px(m::HAIRLINE),
                 // Prose wraps; a row grows with its lines.
                 Control::Info(v) => {
-                    let lines = crate::reader::wrap(&self.fonts, ui, v, maxw - label_w).len().max(1);
+                    let lines = crate::reader::wrap(&self.fonts, ui, v, text_w).len().max(1);
                     self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * self.px(m::UI_PX * 1.5)
                 }
                 // Chips and buttons wrap when the column is narrow.
                 Control::Choice(opts) => {
                     let widths: Vec<f32> = opts.iter().map(|(t, _, _)| self.fonts.measure(label, t) + self.px(20.0)).collect();
-                    let lines = wrap_count(&widths, self.px(8.0), maxw - label_w);
+                    let lines = wrap_count(&widths, self.px(8.0), text_w);
                     self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * (self.px(m::LABEL_PX) + self.px(20.0))
                 }
                 Control::Buttons(items) => {
                     let widths: Vec<f32> = items.iter().map(|(t, _, _)| self.fonts.measure(strong, t) + self.px(24.0) + self.px(13.0) + self.px(8.0)).collect();
-                    let lines = wrap_count(&widths, self.px(14.0), maxw - label_w);
+                    let lines = wrap_count(&widths, self.px(14.0), text_w);
                     self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * (self.px(m::LABEL_PX) + self.px(24.0))
                 }
                 Control::Tabs(rows) => self.px(8.0) + rows.len() as f32 * self.px(26.0) + self.px(12.0),
                 Control::Caption => self.px(40.0),
                 Control::Keys(keys, note) => {
                     let kw: f32 = (keys.iter().map(|k| self.fonts.measure(strong, k) + self.px(16.0) + self.px(10.0)).sum::<f32>() + self.px(8.0)).max(self.px(236.0));
-                    let lines = crate::reader::wrap(&self.fonts, dim, note, (maxw - label_w - kw).max(self.px(80.0))).len().max(1);
-                    self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * self.px(m::UI_PX * 1.5)
+                    let lines = crate::reader::wrap(&self.fonts, dim, note, if tiles {maxw} else {(maxw - label_w - kw).max(self.px(80.0))}).len().max(1);
+                    self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * self.px(m::UI_PX * 1.5) + if tiles {self.px(34.0)} else {0.0}
                 }
                 _ => self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE),
             };
+            let rh = rh + if stacked || matches!(control, Control::Info(_)) { cap_h } else { 0.0 };
+            if self.settings_target == Some((p.section,self.look_tab,row_index)) {
+                p.scroll=(y+scroll-top-self.px(16.0)).max(0.0);
+                self.settings_target=None;
+                self.settings_highlight=Some((p.section,self.look_tab,row_index,std::time::Instant::now()));
+                self.dirty=true;
+            }
+            if self.settings_highlight.is_some_and(|(s,t,i,at)|s==p.section && t==self.look_tab && i==row_index && at.elapsed().as_secs_f32()<3.0) {
+                scene.rect(Rect::new(cx-self.px(8.0),y,maxw+self.px(16.0),rh),fade(self.surface.signal,0.1));
+                scene.vline(cx-self.px(8.0),y,rh,self.px(3.0),self.surface.signal);
+                self.dirty=true;
+            }
             let control_kind = if matches!(control, Control::Studio | Control::Strip(_) | Control::Caption) { 0 } else { 1 };
-            let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);
+            let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0) + if stacked || matches!(control, Control::Info(_)) { cap_h } else { 0.0 };
             if matches!(control, Control::Caption) {
                 let cap = Style { color: t.dim, px: self.px(10.0), tracking: self.px(1.2), ..label };
                 self.fonts.draw(scene, cap, cx, y + self.px(30.0), &k);
@@ -3774,9 +4303,38 @@ impl App {
                 self.fonts.draw(scene, dim, cx, base, &k);
             }
             // In the studio, unlabelled rows run the full column.
-            let vx = if p.section == SEC_LOOK && k.is_empty() { cx } else { cx + label_w };
+            let vx = if full || (p.section == SEC_LOOK && k.is_empty()) { cx } else { cx + label_w };
             match control {
+                Control::FontProof | Control::PromptProof => {self.draw_type_proof(scene,Rect::new(cx,y+cap_h,maxw,self.px(206.0)),matches!(control,Control::PromptProof));}
                 Control::Caption => {}
+                Control::Pics(cards) => {
+                    for (i, (name, caption, pic, hit, on)) in cards.into_iter().enumerate() {
+                        let card = Rect::new(cx + (i % per_row) as f32 * (card_w + gap), y + cap_h + (i / per_row) as f32 * (card_h + self.px(50.0) + gap), card_w, card_h);
+                        let target = Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(50.0));
+                        if target.bottom() > content.y && target.y < content.bottom() {
+                            self.draw_pic_card(scene, card, &name, &caption, pic, on);
+                            self.settings_hits.push((target, hit));
+                        }
+                    }
+                }
+                Control::Actions(items) => {
+                    for (i, (name, caption, icon, hit)) in items.into_iter().enumerate() {
+                        let x = cx + (i % per_row) as f32 * (card_w + gap);
+                        let cy = y + cap_h + (i / per_row) as f32 * (self.px(94.0) + gap);
+                        let button = Rect::new(x, cy + self.px(6.0), card_w, self.px(40.0));
+                        let hot = button.contains(mx, my);
+                        scene.rect(Rect::new(button.x + self.px(3.0), button.y + self.px(3.0), button.w, button.h), ink);
+                        scene.rect(button, if hot { t.tint } else { t.paper });
+                        scene.outline(button, self.px(m::STRUCTURE), ink);
+                        self.fonts.draw_icon(scene, icon, self.px(16.0), x + self.px(10.0), button.y + self.px(12.0), ink);
+                        let name = self.fit(label, &name, card_w - self.px(42.0));
+                        self.fonts.draw(scene, label, x + self.px(34.0), button.y + self.px(24.0), &name);
+                        for (line, text) in crate::reader::wrap(&self.fonts, dim, &caption, card_w).into_iter().take(3).enumerate() {
+                            self.fonts.draw(scene, dim, x, cy + self.px(63.0 + line as f32 * 12.0), &text);
+                        }
+                        self.settings_hits.push((button, hit));
+                    }
+                }
                 Control::Studio => {
                     let r = Rect::new(cx, y, maxw, self.px(180.0));
                     self.draw_studio(scene, r);
@@ -3785,9 +4343,11 @@ impl App {
                     // Neobrutal tab strip: outlined chips, the current one filled with a hard shadow.
                     let mut x = cx;
                     let ch = self.px(34.0);
-                    let sy = y + self.px(5.0);
+                    let mut sy = y + cap_h + self.px(5.0);
                     for (text, hit, on) in items {
-                        let w = self.fonts.measure(strong, &text) + self.px(28.0);
+                        let w = (self.fonts.measure(strong, &text) + self.px(28.0) + 1.0).ceil().min(maxw);
+                        if x > cx && x+w > cx+maxw {x=cx;sy+=self.px(44.0);}
+                        let text=self.fit(strong,&text,(w-self.px(28.0)).max(1.0));
                         let chip = Rect::new(x, sy, w, ch);
                         let hot = chip.contains(self.mouse.0, self.mouse.1);
                         let off = if on { self.px(4.0) } else if hot { self.px(3.0) } else { 0.0 };
@@ -3825,11 +4385,13 @@ impl App {
                     for (key, name, says, hit, on, builtin) in cards {
                         if n > 0 && n % per_row == 0 {
                             x = cx;
-                            cy += card_h + self.px(36.0) + gap;
+                            cy += card_h + self.px(50.0) + gap;
                         }
                         let card = Rect::new(x, cy, card_w, card_h);
-                        self.draw_art_card(scene, card, &key, &name, &says, on, builtin);
-                        self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(36.0)), hit));
+                        if card.bottom() + self.px(50.0) > content.y && card.y < content.bottom() {
+                            self.draw_art_card(scene, card, &key, &name, &says, on, builtin);
+                            self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(50.0)), hit));
+                        }
                         x += card_w + gap;
                         n += 1;
                     }
@@ -3869,7 +4431,7 @@ impl App {
                 }
                 Control::Info(v) => {
                     let mut ly = base;
-                    for line in crate::reader::wrap(&self.fonts, ui, &v, maxw - label_w) {
+                    for line in crate::reader::wrap(&self.fonts, ui, &v, text_w) {
                         self.fonts.draw(scene, ui, vx, ly, &line);
                         ly += self.px(m::UI_PX * 1.5);
                     }
@@ -3894,7 +4456,8 @@ impl App {
                     }
                     // The notes line up in a column when the caps allow.
                     x = (x + self.px(8.0)).max(vx + self.px(236.0));
-                    let mut ly = base;
+                    let mut ly = if tiles {base+self.px(34.0)} else {base};
+                    if tiles {x=vx;}
                     for line in crate::reader::wrap(&self.fonts, dim, &note, (cx + maxw - x).max(self.px(80.0))) {
                         self.fonts.draw(scene, dim, x, ly, &line);
                         ly += self.px(m::UI_PX * 1.5);
@@ -3985,14 +4548,14 @@ impl App {
                     }
                 }
                 Control::Slider(kind, v, text) => {
-                    let bw = self.px(200.0);
+                    let bw = self.px(200.0).min((text_w - self.px(100.0)).max(self.px(40.0)));
                     let bar = Rect::new(vx, base - self.px(6.0), bw, self.px(2.0));
                     scene.rect(bar, t.tint);
                     scene.rect(Rect::new(vx, bar.y, bw * v, bar.h), self.surface.signal);
                     let knob = self.px(10.0);
                     scene.rect(Rect::new(vx + bw * v - knob / 2.0, bar.y - knob / 2.0 + bar.h / 2.0, knob, knob), ink);
                     self.settings_hits.push((Rect::new(vx - knob, bar.y - self.px(12.0), bw + 2.0 * knob, self.px(26.0)), Hit::Slider(kind, vx, bw)));
-                    let ts = self.fit(dim, &text, maxw - label_w - bw - self.px(20.0));
+                    let ts = self.fit(dim, &text, text_w - bw - self.px(20.0));
                     self.fonts.draw(scene, dim, vx + bw + self.px(20.0), base, &ts);
                 }
                 Control::Swatches(items) => {
@@ -4047,7 +4610,11 @@ impl App {
         self.settings_reach = (y + scroll - top + self.px(40.0)).max(0.0);
         scene.layer(None);
         // Hits above or below the column are unreachable.
-        self.settings_hits.retain(|(hr, h)| matches!(h, Hit::Section(_) | Hit::Back | Hit::Tile(_)) || (hr.bottom() > content.y && hr.y < content.bottom()));
+        for (hr, _) in self.settings_hits.iter_mut().skip(content_hit_start) {
+            *hr = hr.intersect(&content);
+        }
+        self.settings_hits.retain(|(hr, _)| hr.w > 0.0 && hr.h > 0.0);
+        if let Some((r,_))=self.settings_focus.and_then(|i|self.settings_hits.get(i)){scene.outline(*r,self.px(3.0),self.surface.signal);}
 
         // RULES: the file itself, as far as it fits.
         if p.section == RULES {
@@ -4055,7 +4622,7 @@ impl App {
             let code = Style { font: self.f.ui, px: self.px(11.5), color: ink, tracking: 0.0 };
             let lh = self.px(11.5 * 1.55);
             let src = self.rules.source.clone();
-            let clip = Rect::new(cx, y, maxw, r.bottom() - y - self.px(20.0));
+            let clip = Rect::new(cx, y, maxw, (r.bottom() - y - self.px(20.0)).max(0.0)).intersect(&content);
             scene.layer(Some(clip));
             let mut ly = y + self.px(12.0);
             for (n, line) in src.lines().enumerate() {
@@ -4163,3 +4730,9 @@ fn luau_tokens(line: &str) -> Vec<(Tok, String)> {
     }
     out
 }
+
+#[path = "settings_catalog.rs"]
+mod catalog;
+
+#[path = "settings_search.rs"]
+mod search;

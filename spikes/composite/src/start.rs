@@ -24,6 +24,7 @@ pub enum Saved {
     Page { url: String, title: String },
     File { path: String },
     Ports,
+    Downloads,
     Layout { path: String },
 }
 
@@ -113,6 +114,7 @@ fn saved_to_json(s: &Saved) -> serde_json::Value {
         Saved::Page { url, title } => serde_json::json!({ "kind": "page", "url": url, "title": title }),
         Saved::File { path } => serde_json::json!({ "kind": "file", "path": path }),
         Saved::Ports => serde_json::json!({ "kind": "ports" }),
+            Saved::Downloads => serde_json::json!({ "kind": "downloads" }),
         Saved::Layout { path } => serde_json::json!({ "kind": "layout", "path": path }),
     }
 }
@@ -124,6 +126,7 @@ fn saved_from_json(v: &serde_json::Value) -> Option<Saved> {
         "page" => Some(Saved::Page { url: s("url"), title: s("title") }),
         "file" => Some(Saved::File { path: s("path") }),
         "ports" => Some(Saved::Ports),
+            "downloads" => Some(Saved::Downloads),
         "layout" => Some(Saved::Layout { path: s("path") }),
         _ => None,
     }
@@ -290,6 +293,7 @@ impl App {
                 Saved::Shell { profile } => (profile.clone(), "shell".to_string()),
                 Saved::File { path } => (std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), "file".to_string()),
                 Saved::Ports => ("ports".to_string(), "board".to_string()),
+            Saved::Downloads => ("downloads".into(), "files".into()),
                 Saved::Layout { path } => (std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().trim_end_matches(".nus.luau").to_string()).unwrap_or_default(), "layout".to_string()),
                 Saved::Page { url, title } => {
                     let host = url.split("//").nth(1).unwrap_or(url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
@@ -327,6 +331,7 @@ impl App {
             StartRow::Recent(Saved::Page { url, .. }) => self.open_url(&url, true),
             StartRow::Recent(Saved::File { path }) => self.open_file(std::path::Path::new(&path), false),
             StartRow::Recent(Saved::Ports) => self.expand_board(),
+            StartRow::Recent(Saved::Downloads) => self.open_downloads(),
             StartRow::Recent(Saved::Layout { path }) => self.open_layout(std::path::Path::new(&path)),
             StartRow::Recent(Saved::Shell { profile }) => {
                 let idx = self.profiles.iter().position(|p| p.name == profile).unwrap_or(self.behavior.default_profile);
@@ -411,6 +416,7 @@ impl App {
                     let mut e = crate::editor::EditorPane::new(nus_render::Rect::new(0.0, 0.0, 1.0, 1.0));
                     e.open(std::path::Path::new(path)).ok().map(|_| Pane::Editor(e))
                 }
+                Some(Saved::Downloads) => Some(Pane::Downloads(Default::default())),
                 Some(Saved::Ports) => Some(Pane::Ports(crate::ports::PortsPane { rect: nus_render::Rect::new(0.0, 0.0, 1.0, 1.0) })),
                 Some(Saved::Layout { .. }) | None => None,
             };
@@ -429,6 +435,7 @@ impl App {
                     let mut e = crate::editor::EditorPane::new(nus_render::Rect::new(0.0, 0.0, 1.0, 1.0));
                     e.open(std::path::Path::new(path)).ok().map(|_| Pane::Editor(e))
                 }
+                Some(Saved::Downloads) => Some(Pane::Downloads(Default::default())),
                 Some(Saved::Ports) => Some(Pane::Ports(crate::ports::PortsPane { rect: nus_render::Rect::new(0.0, 0.0, 1.0, 1.0) })),
                 Some(Saved::Layout { .. }) | None => None,
             };
@@ -473,6 +480,14 @@ impl App {
             self.drop_birth = false;
             return;
         }
+        if matches!(&self.tabs[0].left, Pane::Home(_)) {
+            self.tabs.remove(0);
+            self.active = self.active.saturating_sub(1);
+            self.tab_removed(0);
+            self.drop_birth = false;
+            self.layout();
+            return;
+        }
         if !matches!(&self.tabs[0].left, Pane::Term(t) if t.term.at_prompt()) {
             return;
         }
@@ -501,6 +516,7 @@ impl App {
             }
             Pane::Editor(e) => e.buf().and_then(|b| b.path.as_ref()).map(|p| Saved::File { path: p.display().to_string() }),
             Pane::Ports(_) => Some(Saved::Ports),
+            Pane::Downloads(_) => Some(Saved::Downloads),
             _ => None,
         };
         // A shell's state: cwd, what is running, and its screen as text under
@@ -683,6 +699,7 @@ impl App {
                 StartRow::Recent(Saved::Shell { .. }) => icons::TERMINAL,
                 StartRow::Recent(Saved::File { .. }) => icons::CODE,
                 StartRow::Recent(Saved::Ports) => icons::PORTS,
+            StartRow::Recent(Saved::Downloads) => icons::DOWNLOAD,
                 StartRow::Recent(Saved::Layout { .. }) => icons::STACK,
                 StartRow::Held(_) => icons::TERMINAL,
                 StartRow::Fresh => icons::PLUS,

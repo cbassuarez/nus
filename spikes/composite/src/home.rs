@@ -49,47 +49,16 @@ fn is_url(s: &str) -> bool {
 impl App {
     /// The rows under the line: the palette's, for what is typed; a short
     /// list of places to go when nothing is — under the plate, the stops.
-    fn home_rows(&self, input: &str, places: &[PaletteRow]) -> Vec<PaletteRow> {
-        let empty = input.trim().is_empty();
-        // A fresh window: folders first, so it can become one of them.
-        if self.fresh {
-            let folders = self.workspace_rows(input);
-            if empty {
-                return folders;
-            }
-            let mut rows = folders;
-            rows.extend(self.palette_rows(PaletteMode::Go, input).into_iter().filter(|r| !r.text.starts_with("search ") && !r.text.starts_with("open ")));
-            rows.truncate(9);
-            return rows;
-        }
-        if empty && self.behavior.home_look == HomeLook::Plate {
-            return places.to_vec();
-        }
-        let mut rows: Vec<PaletteRow> = self.palette_rows(PaletteMode::Go, input).into_iter().filter(|r| !r.text.starts_with("search ") && !r.text.starts_with("open ")).collect();
-        rows.truncate(if empty { 7 } else { 9 });
-        // While you were away: the news first, the usual rows after.
-        if empty && self.news.since.is_some() && !self.news.rows.is_empty() {
-            let mut all = self.news.rows.clone();
-            let room = 9usize.saturating_sub(all.len());
-            all.extend(rows.into_iter().take(room));
-            return all;
-        }
-        rows
+    fn home_rows(&self, input: &str, _places: &[PaletteRow]) -> Vec<PaletteRow> {
+        self.prompt_rows(input)
     }
 
-    /// How many of the rows are news, for the caption above them.
-    fn news_count(&self, input: &str) -> usize {
-        if input.trim().is_empty() && self.news.since.is_some() && self.behavior.home_look != HomeLook::Plate {
-            self.news.rows.len()
-        } else {
-            0
-        }
-    }
+    fn news_count(&self, _input: &str) -> usize { 0 }
 
     /// Folders this window could be: the other windows', the last
     /// sessions' shells', the journal's — and the line itself when it
     /// names a folder.
-    fn workspace_rows(&self, input: &str) -> Vec<PaletteRow> {
+    pub(crate) fn workspace_rows(&self, input: &str) -> Vec<PaletteRow> {
         let q = input.trim();
         let mut out: Vec<PaletteRow> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -146,6 +115,72 @@ impl App {
         p.places.as_ref().map(|(_, v)| v.to_vec()).unwrap_or_default()
     }
 
+    /// Launch and the new-tab command share the same destination. Only launch
+    /// replaces the temporary shell; opening a tab preserves existing work.
+    pub(crate) fn open_start_page(&mut self, launch: bool) {
+        use crate::settings::Then;
+        match self.behavior.then {
+            Then::Restore if launch => {
+                self.restore_session_pub();
+                self.drop_birth = self.tabs.len() > 1;
+                self.drop_birth_shell();
+                return;
+            },
+            Then::Shell if launch => return,
+            Then::Shell => return self.new_tab(self.behavior.default_profile),
+            Then::Layout => {
+                let layouts = crate::layout_file::saved();
+                let pick = layouts.iter().find(|(name, _)| *name == self.behavior.then_layout)
+                    .or_else(|| if self.behavior.then_layout.is_empty() { layouts.first() } else { None });
+                if let Some((_, path)) = pick {
+                    let before = self.tabs.len();
+                    self.open_layout(path);
+                    if self.tabs.len() > before {
+                        if launch {
+                            self.tabs.remove(0);
+                            self.tab_removed(0);
+                            self.active = self.active.saturating_sub(1);
+                            self.layout();
+                        }
+                        return;
+                    }
+                }
+                self.notice("No startup layout could be opened. Choose a saved layout in Startup.");
+            }
+            Then::HomePage | Then::LastPage => {
+                let url = if self.behavior.then == Then::HomePage {
+                    Some(self.behavior.home_url.clone())
+                } else {
+                    self.recent.iter().find_map(|r| match &r.item {
+                        crate::start::Saved::Page { url, .. } => Some(url.clone()),
+                        _ => None,
+                    })
+                };
+                if let Some(url) = url.filter(|u| !u.trim().is_empty()) {
+                    if let Some(web) = self.new_web_pane(&url) {
+                        self.show_start_pane(Pane::Web(web), launch);
+                        return;
+                    }
+                }
+            }
+            Then::Prompt | Then::Restore => {}
+        }
+        self.show_start_pane(Pane::Home(HomePane::new()), launch);
+    }
+
+    fn show_start_pane(&mut self, pane: Pane, launch: bool) {
+        self.palette = None;
+        if launch {
+            self.replace_birth(pane);
+        } else {
+            let tab = self.make_tab(pane, None);
+            self.tabs.push(tab);
+            self.activate(self.tabs.len() - 1);
+            self.layout();
+            self.dirty = true;
+        }
+    }
+
     /// A tab whose pane is the prompt, in front.
     pub(crate) fn open_home(&mut self) {
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Home(_))) {
@@ -173,17 +208,20 @@ impl App {
             self.dismiss_news();
         }
         // A row only when you moved to one (sel is 1-based; 0 is the line itself).
-        if let Some(row) = sel.checked_sub(1).and_then(|k| rows.get(k)) {
+        let direct = if sel == 0 && !input.is_empty() { rows.first().cloned() } else { None };
+        if let Some(row) = sel.checked_sub(1).and_then(|k| rows.get(k)).or(direct.as_ref()) {
             {
                 let action = row.action.clone();
                 let before = self.tabs.len();
                 self.run(action);
                 // The prompt gives way when something else came up.
                 if self.tabs.len() > before || self.active != i {
-                    if let Some(k) = self.tabs.iter().position(|t| matches!(t.left, Pane::Home(_))) {
+                    if let Some(k) = self.tabs.get(i).filter(|t| matches!(t.left, Pane::Home(_))).map(|_| i) {
                         self.tabs.remove(k);
                         self.tab_removed(k);
-                        if self.active >= self.tabs.len() {
+                        if self.active > k {
+                            self.active -= 1;
+                        } else if self.active >= self.tabs.len() {
                             self.active = self.tabs.len().saturating_sub(1);
                         }
                     }
@@ -193,8 +231,13 @@ impl App {
                 return;
             }
         }
+        if input.starts_with('@') {self.notice("Choose @claude, @codex or @ollama, followed by your prompt.");return;}
         if self.fresh && !input.is_empty() && std::path::Path::new(&input).is_dir() {
             self.open_folder(&input);
+            return;
+        }
+        if input.is_empty() && self.behavior.lead == crate::settings::Lead::Browser {
+            self.open_start();
             return;
         }
         let profile = self.behavior.default_profile;
@@ -299,7 +342,7 @@ impl App {
         let art = self.behavior.home_look == HomeLook::Art;
         // Under the plate the line sits beneath the icon and comes up once
         // the band closes; alone, it sits a third of the way down.
-        let (y0, up) = if plate { self.draw_plate_icon(scene, p) } else { (r.y + r.h * 0.34, 1.0) };
+        let (y0, up) = if plate { self.draw_plate_icon(scene, p) } else { (r.y + r.h * if self.behavior.prompt.top { 0.18 } else { 0.34 }, 1.0) };
         if art {
             self.draw_home_art(scene, p, y0);
         }
@@ -314,7 +357,7 @@ impl App {
         // The line: a caret in signal, the input in mono, a rule beneath.
         let px = self.px(20.0);
         let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
-        let line_w = (r.w * 0.62).max(self.px(320.0)).min(r.w - self.px(56.0));
+        let line_w = (r.w * if self.behavior.prompt.wide { 0.84 } else { 0.62 }).max(self.px(320.0)).min(r.w - self.px(56.0));
         let x0 = r.x + (r.w - line_w) / 2.0;
         let caret_w = self.draw_lit(scene, Style { color: fade(self.surface.signal, up), ..mono }, x0, y0, "»", dark) + self.px(12.0);
         let shown = self.fit(mono, &p.input, line_w - caret_w - px);
@@ -343,7 +386,7 @@ impl App {
         if plate && p.input.trim().is_empty() {
             self.draw_stops(scene, p, &rows, sel, up);
         } else {
-            let row_h = self.px(30.0);
+            let row_h = self.px(if self.behavior.prompt.compact { 25.0 } else { 34.0 });
             let mut y = y0 + self.px(30.0);
             let (mx, my) = self.mouse;
             if news_n > 0 {
@@ -377,17 +420,14 @@ impl App {
             }
         }
         // One dim line at the foot, the only words on the page.
-        let foot = if sel > 0 {
-            "enter · this row"
-        } else if p.input.is_empty() {
-            if plate { "enter · a shell   ·   a url · a page   ·   a command · a shell running it   ·   ↓ the stops" } else { "enter · a shell   ·   a url · a page   ·   a command · a shell running it   ·   ↓ the rows" }
-        } else if is_url(&p.input) {
-            "enter · this page"
-        } else {
-            "enter · a shell running this"
-        };
-        let fw = self.fonts.measure(dim, foot);
-        self.draw_lit(scene, dim, r.x + (r.w - fw) / 2.0, foot_y, foot, dark);
+        if self.behavior.prompt.hints {
+            let foot = if sel > 0 { "Enter · selected suggestion".into() }
+                else if let Some(row) = self.prompt_action(&p.input) { format!("Enter · {}", row.text) }
+                else { "> shell   ·   ? web   ·   @claude / @codex / @ollama   ·   ↓ suggestions".into() };
+            let foot = self.fit(dim, &foot, r.w-self.px(40.0));
+            let fw = self.fonts.measure(dim, &foot);
+            self.draw_lit(scene, dim, r.x+(r.w-fw)/2.0, foot_y, &foot, dark);
+        }
     }
 
     /// Text over an art: with `dark`, an ink shadow a pixel under the words.
@@ -417,7 +457,7 @@ impl App {
         let r = p.rect;
         let t = self.theme.clone();
         let px = self.px(20.0);
-        let line_w = (r.w * 0.62).max(self.px(320.0)).min(r.w - self.px(56.0));
+        let line_w = (r.w * if self.behavior.prompt.wide { 0.84 } else { 0.62 }).max(self.px(320.0)).min(r.w - self.px(56.0));
         let x0 = r.x + (r.w - line_w) / 2.0;
         // The rows' reach below the line, from the last frame's rows.
         let line_bottom = y0 - px * 0.78 + px * 0.95 + self.px(14.0);
@@ -439,13 +479,18 @@ impl App {
             dim: t.dim,
             tint: t.tint,
             place: self.place(),
+                pieces: Vec::new(),
             procs: Some(self.procs_shared()),
             scale: self.scale,
         };
+        let reduced = self.motion.reduced();
         let (cmds, status) = {
             let art = self.art.as_mut().unwrap();
             art.tend();
-            (art.frame(env), art.status.clone())
+            // Keep the completed composition visible when animation is disabled;
+            // an initial frame can contain only the artwork's entrance delay.
+            let cmds = if reduced { art.frame_at(env, 8.0) } else { art.frame(env) };
+            (cmds, art.status.clone())
         };
         self.draw_art_cmds(scene, r, cmds);
         if let Some(err) = status {
@@ -454,7 +499,7 @@ impl App {
             self.fonts.draw(scene, dim, r.x + self.px(28.0), r.bottom() - self.px(48.0), &line);
         }
         // Alive: keep drawing — as the power budget allows (power.rs).
-        if self.art_wants_frame() {
+        if !reduced && self.art_wants_frame() {
             self.dirty = true;
         }
     }

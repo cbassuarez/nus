@@ -69,7 +69,9 @@ impl Recorder {
                 }
             }
         }
-        let dir = root.join(now_secs().to_string());
+        let mut stamp = now_secs();
+        while root.join(stamp.to_string()).exists() { stamp += 1; }
+        let dir = root.join(stamp.to_string());
         std::fs::create_dir_all(dir.join("blobs")).ok()?;
         Some(Recorder { dir, t0: Instant::now(), casts: HashMap::new(), stills: 0 })
     }

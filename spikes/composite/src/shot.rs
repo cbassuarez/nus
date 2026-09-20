@@ -20,7 +20,8 @@
 //!   ask why did that fail?     the ask panel, with the question sent
 //!   theme nord                 a stock theme by name
 //!   board | compact | atlas | settings | devtools | reader | split | sidebar
-//!   settingsat 2               settings at a section (2 = startup)
+//!   settingsat 2               open settings at a section (2 is STARTUP)
+//!   settingsscroll 900         scroll the open settings page to 900 logical px
 //!   hover 40 200               the pointer at logical px from the top-left
 //!   click 900 500              a left click there
 //!   rclick 900 500             a right click there (the page's menu)
@@ -45,7 +46,14 @@
 //!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
 //!   copyurl                    the focused page's url to the clipboard, with its toast
 //!   link allow | deny          answer the link band on the focused shell
+//!   newtab                     open the configured start page in a new tab
+//!   startpage prompt|home|last|layout [url or layout name]   set the start page
+//!   assertpane home|web|term|settings   assert the focused pane kind
+//!   asserttabs <count>          assert the number of tabs
+//!   newwindowlook prompt|shell|launch   set new-window behavior
 //!   newwindow                  a second window
+//!
+//! NUS_SHOT_DIR isolates a macOS bundle's profile during scripted checks.
 //!   quit                       (implicit at the end)
 
 use std::path::PathBuf;
@@ -121,6 +129,7 @@ impl App {
         let rest = rest.trim();
         eprintln!("shot: {step}");
         match verb {
+            "dockattention" => {let _=self.proxy.send_event(crate::UserEvent::DockAttention);}
             "wait" => {
                 let ms: u64 = rest.parse().unwrap_or(500);
                 if let Some(s) = self.shot.as_mut() {
@@ -151,6 +160,7 @@ impl App {
                     "new" => PaletteMode::New,
                     "url" => PaletteMode::Url,
                     "place" => PaletteMode::Place,
+                    "settings" => PaletteMode::Settings,
                     _ => PaletteMode::Go,
                 };
                 self.open_palette(mode);
@@ -256,6 +266,40 @@ impl App {
                 let k = if rest == "deny" { Key::Named(NamedKey::Escape) } else { Key::Named(NamedKey::Enter) };
                 self.link_band_key(&k);
             }
+            "newtab" => self.open_start_page(false),
+            "startpage" => {
+                use crate::settings::{Hit, Then};
+                let (kind, value) = rest.split_once(' ').unwrap_or((rest, ""));
+                let page = match kind {
+                    "home" => { self.behavior.home_url = value.into(); Then::HomePage }
+                    "last" => Then::LastPage,
+                    "layout" => { self.behavior.then_layout = value.into(); Then::Layout }
+                    "prompt" => Then::Prompt,
+                    _ => panic!("unknown start page: {kind}"),
+                };
+                self.apply_setting(Hit::Then(page), 0.0);
+                self.save_prefs();
+            }
+            "assertpane" => {
+                let kind = self.tabs.get(self.active).map(|t| match &t.left {
+                    Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",
+                }).unwrap_or("missing");
+                assert_eq!(kind, rest, "focused pane at script step {}", s.next);
+            }
+            "asserturl" => {
+                let Some(Pane::Web(web)) = self.tabs.get(self.active).map(|t| &t.left) else { panic!("expected web page") };
+                assert_eq!(web.tab.shared.borrow().url, rest);
+            }
+            "asserttabs" => assert_eq!(self.tabs.len(), rest.parse::<usize>().expect("tab count")),
+            "newwindowlook" => {
+                self.behavior.new_window = match rest {
+                    "prompt" => crate::settings::NewWindow::Prompt,
+                    "shell" => crate::settings::NewWindow::Shell,
+                    "launch" => crate::settings::NewWindow::Launch,
+                    _ => panic!("unknown new-window behavior"),
+                };
+                self.save_prefs();
+            }
             "newwindow" => self.run(crate::app::Action::NewWindow),
             "hands" => {
                 let a = match rest {
@@ -271,9 +315,330 @@ impl App {
             "compact" => self.toggle_compact(),
             "atlas" => self.open_start(),
             "settings" => self.open_settings(),
+            "hatchname" => self.tabs[self.active].name=Some(rest.into()),
+            "hatchwork" => self.show_hatch_work(),
+            "menudrawer"=>self.toggle_menu_drawer(None),
+            "menutray"=>{let _=self.proxy.send_event(crate::UserEvent::MenuDrawer(None));},
+            "menufooter"=>{let r=self.menu_drawer.footer.expect("drawer footer icon");self.mouse_moved(r.x+r.w/2.0,r.y+r.h/2.0);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);},
+            "menuassert"=>{
+                let visible=self.menu_drawer.window.as_ref().is_some_and(|d|d.visible);assert_eq!(visible,rest!="hidden");
+                if visible{let d=self.menu_drawer.window.as_ref().unwrap();assert!(d.target.size.0<=d.monitor.2&&d.target.size.1<=d.monitor.3);let p=d.window.outer_position().unwrap();assert!(p.x>=d.monitor.0&&p.y>=d.monitor.1&&p.x+d.target.size.0 as i32<=d.monitor.0+d.monitor.2 as i32&&p.y+d.target.size.1 as i32<=d.monitor.1+d.monitor.3 as i32,"drawer escaped its display");}
+            },
+            "menuprivacy"=>{let d=self.menu_drawer.window.as_ref().unwrap();assert!(!d.hits.iter().any(|(_,_,label,_)|label.contains(rest)),"private name in drawer accessibility labels");},
+            "menuclick"=>{
+                self.menu_drawer_frame();let d=self.menu_drawer.window.as_mut().expect("drawer exists");let (r,_,_,content)=d.hits.iter().find(|(_,hit,_,_)|format!("{hit:?}").starts_with(rest)).cloned().expect("drawer action exists");
+                if content {d.scroll=(d.scroll+(r.y-d.viewport.y).max(0.0)).min(d.reach);}self.menu_drawer_frame();
+                let d=self.menu_drawer.window.as_mut().unwrap();let(r,_,_,_)=d.hits.iter().find(|(_,hit,_,_)|format!("{hit:?}").starts_with(rest)).unwrap();d.pos=(r.x+r.w/2.0,r.y+r.h/2.0);
+                self.menu_drawer_event(winit::event::WindowEvent::MouseInput{device_id:winit::event::DeviceId::dummy(),state:ElementState::Released,button:MouseButton::Left});
+            },
+            "menushot"=>{
+                self.menu_drawer_frame();let d=self.menu_drawer.window.as_ref().expect("drawer exists");let bytes=self.gpu.snapshot(d.target.size,&d.scene,self.theme.paper);let shot=self.shot.as_ref().unwrap();std::fs::create_dir_all(&shot.out).unwrap();let path=shot.out.join(format!("{rest}-{}.png",shot.face));let mut enc=png::Encoder::new(std::fs::File::create(&path).unwrap(),d.target.size.0,d.target.size.1);enc.set_color(png::ColorType::Rgba);enc.set_depth(png::BitDepth::Eight);enc.write_header().unwrap().write_image_data(&bytes).unwrap();eprintln!("MENU SHOT: {}",path.display());
+            },
+            "hatchtoggle" => {let _=self.proxy.send_event(crate::UserEvent::Hatch);},
+            "hatchhide" => self.hide_hatch(),
+            "hatchshow" => self.show_hatch(),
+            "hatchterminal" => self.hatch_click(crate::hatch::Hit::Terminal),
+            "hatchclick" => {
+                let hit=match rest {"work"=>crate::hatch::Hit::Work,"terminal"=>crate::hatch::Hit::Terminal,"pin"=>crate::hatch::Hit::Pin,"expand"=>crate::hatch::Hit::Land,"new"=>crate::hatch::Hit::New,_=>panic!("unknown hatch click")};
+                let rect=self.hatch.as_ref().unwrap().hits.iter().find(|(_,h)|*h==hit).map(|(r,_)|*r).expect("hatch control visible");
+                self.hatch_mouse(MouseButton::Left,ElementState::Pressed,(rect.x+rect.w/2.0,rect.y+rect.h/2.0));
+            }
+            "hatchassertstatus" => {
+                let rows=crate::hatch_work::collect(self);
+                assert!(rows.iter().any(|r|format!("{:?}",r.status).eq_ignore_ascii_case(rest)),"missing {rest}: {rows:?}");
+            }
+            "hatchassertvisible" => assert_eq!(self.hatch.as_ref().is_some_and(|h|h.visible),rest=="true"),
+            "hatchbadgeshot" => {
+                let badge=self.hatch_state.badge.as_ref().expect("island exists");
+                let bytes=self.gpu.snapshot(badge.target.size,&badge.scene,[0.0;4]);
+                let shot=self.shot.as_ref().unwrap();std::fs::create_dir_all(&shot.out).unwrap();
+                let path=shot.out.join(format!("{rest}-{}.png",shot.face));
+                let mut enc=png::Encoder::new(std::fs::File::create(&path).unwrap(),badge.target.size.0,badge.target.size.1);
+                enc.set_color(png::ColorType::Rgba);enc.set_depth(png::BitDepth::Eight);
+                enc.write_header().unwrap().write_image_data(&bytes).unwrap();
+            }
+            "hatchshot" => {
+                self.hatch_frame();
+                let h=self.hatch.as_ref().expect("hatch exists");
+                let bytes=self.gpu.snapshot(h.target.size,&h.scene,self.theme.paper);
+                let shot=self.shot.as_ref().unwrap();std::fs::create_dir_all(&shot.out).unwrap();
+                let path=shot.out.join(format!("{rest}-{}.png",shot.face));
+                let mut enc=png::Encoder::new(std::fs::File::create(&path).unwrap(),h.target.size.0,h.target.size.1);
+                enc.set_color(png::ColorType::Rgba);enc.set_depth(png::BitDepth::Eight);
+                enc.write_header().unwrap().write_image_data(&bytes).unwrap();
+                eprintln!("HATCH SHOT: {}",path.display());
+            }
+            "hatchcheck" => {
+                let target=crate::hatch_work::collect(self).first().expect("a real shell").target;
+                let before=self.tabs.iter().find(|t|t.id==target.tab).unwrap();
+                let Pane::Term(term)=&before.left else {panic!("shell")};
+                let pid=term.pty.pid();let cwd=term.term.cwd.clone();
+                let count=self.tabs.len();
+                assert!(self.open_hatch_target(target));
+                self.hatch_click(crate::hatch::Hit::Work);
+                self.hide_hatch();self.show_hatch();
+                assert!(self.open_hatch_target(target));
+                self.apply_setting(crate::settings::Hit::HatchLook(crate::settings::HatchLook::Card),0.0);
+                self.apply_setting(crate::settings::Hit::HatchLook(crate::settings::HatchLook::Sheet),0.0);
+                let tab=self.tabs.iter().find(|t|t.id==target.tab).unwrap();
+                let Pane::Term(term)=&tab.left else {panic!("shell")};
+                assert_eq!(pid,term.pty.pid(),"handoff restarted shell");assert_eq!(cwd,term.term.cwd,"handoff changed cwd");
+                assert!(self.tabs.len()<=count+1,"unexpected sessions created");
+                self.land();assert!(!self.tabs.iter().find(|t|t.id==target.tab).unwrap().hatch);
+                assert!(self.open_hatch_target(target));
+                let mut stale=target;stale.tab=u64::MAX;assert!(!self.open_hatch_target(stale));
+                eprintln!("HATCH CHECK: real PTY identity, cwd, work/terminal switching, presentation, land, stale targets passed");
+            }
+            "hatchbackground" => {
+                self.behavior.hatch_background=true;self.hide_hatch_inner(false);
+                let _=self.proxy.send_event(crate::UserEvent::WindowControl(self.window.id(),0));
+            }
+            "hatchassertbackground" => assert!(self.hatch_state.main_hidden),
+            "hatchopen" => {
+                let target=self.hatch_state.work.iter().find(|i|i.title==rest).expect("named real session").target;
+                self.hatch_click(crate::hatch::Hit::Job(target));
+            }
+            "hatchassertsession" => assert_eq!(self.tabs[self.hatch_tab().expect("session in hatch")].name.as_deref(),Some(rest)),
+            "hatchnarrow" => {
+                let h=self.hatch.as_ref().unwrap();let scale=h.window.scale_factor();
+                let _=self.proxy.send_event(crate::UserEvent::HatchResize(self.window.id(),(360.0*scale) as u32,(420.0*scale) as u32));
+            }
+            "hatchassertnarrow" => {
+                let h=self.hatch.as_ref().unwrap();
+                assert_eq!(h.target.size.0,(360.0*h.window.scale_factor()) as u32,"render surface did not resize");
+                assert_eq!(h.window.inner_size().width,h.target.size.0,"native and rendered widths differ");
+            }
+            "hatchoptionscheck" => {
+                use crate::settings::{Hit,HatchLook};
+                self.apply_setting(Hit::HatchAutohide(true),0.0);
+                self.hatch.as_mut().unwrap().pinned=true;self.hatch_focus(false);
+                assert!(!self.hatch.as_ref().unwrap().hiding,"pinned Hatch dismissed");
+                self.hatch.as_mut().unwrap().pinned=false;self.hatch_focus(false);
+                assert!(self.hatch.as_ref().is_some_and(|h|h.hiding||!h.visible),"blur did not dismiss");
+                self.show_hatch();self.apply_setting(Hit::HatchLook(HatchLook::Card),0.0);
+                self.apply_setting(Hit::HatchDim(true),0.0);
+                self.apply_setting(Hit::HatchNotify(true),0.0);
+                self.apply_setting(Hit::HatchStatus(false),0.0);
+            }
+            "hatchassertnotch" => {
+                let hatch=self.hatch.as_ref().expect("Hatch window");
+                let top=crate::hatch_native::top_area(hatch.mon.0,hatch.mon.1,hatch.mon.4);
+                if let Some(notch)=top.notch {
+                    let position=hatch.window.outer_position().expect("native position");
+                    assert_eq!(position.y,hatch.mon.1+notch.height as i32,"dropdown is below the menu bar instead of joined to the notch");
+                    assert_eq!(position.x+hatch.size.0 as i32/2,hatch.mon.0+notch.left+notch.width as i32/2,"dropdown is not centered on the camera housing");
+                    let badge=self.hatch_state.badge.as_ref().expect("island connector");
+                    assert!(badge.visible,"island connector missing");
+                    assert_eq!(badge.window.outer_position().unwrap().y,hatch.mon.1,"island must start at screen.frame, not visibleFrame");
+                    eprintln!("HATCH NOTCH: {:?}, native dropdown {:?}, native island {:?}",top,position,badge.window.outer_position());
+                } else {eprintln!("HATCH NOTCH: no camera cutout on this display; top-edge fallback");}
+            }
+            "hatchassertshade" => assert!(self.hatch_state.shade.as_ref().is_some_and(|s|s.visible)),
+            "hatchassertnotice" => {
+                let (item,_) = self.hatch_state.completion.as_ref().expect("real completion notice");
+                assert!(matches!(item.status,crate::hatch_work::Status::Finished|crate::hatch_work::Status::Failed));
+                assert!(self.hatch_state.badge.as_ref().is_some_and(|b|b.visible),"notice not visible");
+                assert!(!self.hatch.as_ref().is_some_and(|h|h.visible),"completion opened Hatch");
+                assert!(!self.hatch_state.badge.as_ref().unwrap().window.has_focus(),"completion notice stole focus");
+            }
+            "hatchassertquiet" => assert!(!self.hatch_state.badge.as_ref().is_some_and(|b|b.visible),"disabled status stayed visible"),
+            "hatchsize" => {
+                use crate::settings::{Hit,HatchLook};
+                self.apply_setting(Hit::HatchAutohide(false),0.0);
+                self.apply_setting(Hit::HatchLook(HatchLook::Card),0.0);
+                self.apply_setting(Hit::HatchSize(rest.parse().unwrap()),0.0);
+                if self.hatch.is_none() {self.toggle_hatch();}
+            }
+            "asserthatchsize" => {
+                let hatch=self.hatch.as_ref().expect("hatch created");
+                let expected=rest.parse::<f32>().unwrap()/100.0;
+                let actual=hatch.window.inner_size().height as f32/hatch.mon.3 as f32;
+                assert!((actual-expected).abs()<0.02,"hatch height {actual} did not follow {expected}");
+            }
+            "assertnoshells" => {
+                assert!(!self.tabs.iter().any(|t| matches!(t.left,Pane::Term(_)) || matches!(t.right,Some(Pane::Term(_)))), "unexpected shell tab");
+                assert!(self.held_loose().is_empty(), "launch created a hidden held shell");
+            }
+            "appearance" => {
+                self.apply_setting(crate::settings::Hit::Theme(Some(rest=="ink")),0.0);
+                self.save_prefs();
+            }
+            "assertappearance" => assert_eq!(if self.theme.mode==nus_render::Mode::Ink {"ink"} else {"paper"},rest),
+            "settingseek" => {
+                if !self.settings_hits.iter().any(|(_,h)|format!("{h:?}").starts_with(rest)) {
+                    let Pane::Settings(page)=&mut self.tabs[self.active].left else {panic!("not settings")};
+                    let next=(page.scroll+page.rect.h*0.6).min((self.settings_reach-page.rect.h+self.scale*48.0).max(0.0));
+                    assert!(next>page.scroll,"setting not found: {rest}");page.scroll=next;
+                    let script=self.shot.as_mut().unwrap();script.next-=1;script.until=Some(Instant::now()+Duration::from_millis(80));
+                    self.dirty=true;
+                }
+            }
+            "sliderdrag" => {
+                let v=rest.parse::<f32>().unwrap();
+                let (rect,kind,x,w)=self.settings_hits.iter().find_map(|(r,h)|match h {crate::settings::Hit::Slider(k,x,w)=>Some((*r,*k,*x,*w)),_=>None}).expect("visible slider");
+                self.mouse_moved(rect.x+rect.w/2.0,rect.y+rect.h/2.0);
+                self.mouse_button(MouseButton::Left,ElementState::Pressed);
+                self.mouse_moved(x+w*v,rect.y+rect.h/2.0);
+                self.mouse_button(MouseButton::Left,ElementState::Released);
+                assert!((self.slider_value(kind)-v).abs()<0.02,"slider did not follow drag");
+            }
+            "settingclick" => {
+                let (rect,_) = self.settings_hits.iter().find(|(_,hit)|format!("{hit:?}")==rest).copied().unwrap_or_else(||panic!("setting not visible: {rest}"));
+                self.mouse_moved(rect.x+rect.w/2.0,rect.y+rect.h/2.0);
+                self.mouse_button(MouseButton::Left,ElementState::Pressed);
+                self.mouse_button(MouseButton::Left,ElementState::Released);
+            }
+            "assertchoice" => {
+                let Pane::Settings(p)=&self.tabs[self.active].left else {panic!("not settings")};
+                assert!(self.setting_states(p.section).iter().any(|(hit,on)|format!("{hit:?}")==rest && *on),"choice is not selected: {rest}");
+            }
+            "welcomeclick" => {
+                let (rect,_) = self.welcome_hits.iter().find(|(_,act)|format!("{act:?}")==rest).cloned().unwrap_or_else(||panic!("welcome action not visible: {rest}"));
+                self.mouse_moved(rect.x+rect.w/2.0,rect.y+rect.h/2.0);
+                self.mouse_button(MouseButton::Left,ElementState::Pressed);
+                self.mouse_button(MouseButton::Left,ElementState::Released);
+            }
+            "searchcheck" => {
+                for (query,expected) in [("locatoin","YOUR LOCATION"),("new tab","START PAGE"),("font wieght","WEIGHT"),("rounded corners","RADIUS"),("theme favorites","FOOTER"),("replay","REPLAY"),("areal","FONT")] {
+                    let rows=self.search_settings(query);
+                    assert!(rows.iter().take(3).any(|r|r.text.to_uppercase().contains(expected)),"{query}: {:?}",rows.iter().map(|r|r.text.clone()).collect::<Vec<_>>());
+                }
+                assert!(matches!(self.search_settings("zzzz impossible")[0].action,crate::app::Action::Noop));
+            }
+            "assertsearch" => {
+                let (_,q)=self.palette.as_ref().expect("search open");
+                let results=self.search_settings(q);
+                assert!(results[0].text.to_lowercase().contains(&rest.to_lowercase()),"top result: {}",results[0].text);
+            }
+            "assertrevealed" => {
+                assert!(self.settings_target.is_none(),"search did not scroll to its row");
+                let (sec,_,_,_)=self.settings_highlight.expect("search highlight");
+                let Pane::Settings(p)=&self.tabs[self.active].left else {panic!("not settings")};
+                assert_eq!(p.section,sec);
+            }
+            "assertplace" => {
+                assert_eq!(self.place().is_some(),rest=="set");
+                if rest=="unset" { assert!(self.behavior.place.is_none()); }
+            }
+            "fontcheck" => {
+                use crate::fonts::{Family,Weight};
+                let saved=self.behavior.clone();
+                for family in Family::ALL {for weight in Weight::ALL {
+                    self.apply_setting(crate::settings::Hit::UiFont(family),0.0);
+                    self.apply_setting(crate::settings::Hit::UiWeight(weight),0.0);
+                    self.save_prefs();
+                    assert!(self.setting_states(0).iter().any(|(h,on)|*h==crate::settings::Hit::UiWeight(weight) && *on));
+                    assert_eq!(crate::prefs::Prefs::load().behavior.unwrap().ui_weight,weight);
+                }}
+                for family in Family::MONO {for weight in Weight::ALL {
+                    self.apply_setting(crate::settings::Hit::TermFont(family),0.0);
+                    self.apply_setting(crate::settings::Hit::TermWeight(weight),0.0);
+                    self.save_prefs();
+                    assert_eq!(crate::prefs::Prefs::load().behavior.unwrap().term_font,family);
+                }}
+                self.behavior=saved;self.apply_fonts();self.save_prefs();
+            }
+            "footer" => {
+                self.sidebar=true;self.layout();self.open_look_menu();
+                if let Some((r,_))=self.side_hits.iter().find(|(_,h)|*h==crate::app::SideHit::Look) {self.mouse=(r.x+r.w/2.0,r.y+r.h/2.0);}
+            }
+            "footeradd" => {
+                let names=crate::themes::all().into_iter().map(|t|t.name).collect();
+                self.behavior.footer_themes=Some(names);self.save_prefs();
+            }
+            "footercheck" => {
+                let r=self.look_rect.expect("footer menu open");let sb=self.sidebar_rect();
+                assert!(r.x>=sb.x && r.right()<=sb.right()+1.0,"footer exceeds sidebar");
+                let hits:Vec<_>=self.side_hits.iter().filter(|(_,h)|matches!(h,crate::app::SideHit::LookPreset(_))).collect();
+                assert_eq!(hits.len(),9,"nine visible slots");
+                for (tile,_) in hits { assert_eq!(tile.intersect(&r),*tile,"tile escapes menu"); }
+            }
+            "themeoutsideclick"=>{let sb=self.sidebar_rect();let (r,index)=self.side_hits.iter().find_map(|(r,h)|if let crate::app::SideHit::LookPreset(i)=h{(!sb.contains(r.x+r.w*0.5,r.y+r.h*0.5)).then_some((*r,*i))}else{None}).expect("theme card outside narrow sidebar");let name=crate::themes::all()[index].name.clone();self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);assert_eq!(self.preset_name,name);}
+            "footerscroll" => {
+                let r=self.look_rect.expect("footer menu");self.mouse=(r.x+r.w/2.0,r.y+r.h/2.0);
+                self.wheel(winit::event::MouseScrollDelta::LineDelta(0.0,-6.0));
+                assert!(self.look_scroll>0.0,"footer scroll did not move");
+            }
+            "radius" => {self.surface.shell_radius=rest.parse().unwrap();self.save_prefs();self.dirty=true;}
+            "looktab" => {self.open_settings_at(0,Some(rest.parse().unwrap()));}
+            "welcomescroll" => {
+                if let Pane::Hints(p)=&mut self.tabs[self.active].left {p.scroll=rest.parse::<f32>().unwrap()*self.scale;}
+            }
+            "welcometap" => {
+                let hit=*self.welcome_shapes.first().expect("live welcome vectors");
+                assert!(self.welcome_click(hit.x+hit.w/2.0,hit.y+hit.h/2.0));
+            }
+            "download" => {let tab=&self.tabs[self.active];let pane=if tab.focus_right{tab.right.as_ref().unwrap_or(&tab.left)}else{&tab.left};let Pane::Web(w)=pane else{panic!("download needs web page")};w.tab.download(rest);}
+            "downloads" => {if rest=="modal"{self.side_action(crate::app::SideHit::Downloads,false);}else{self.open_downloads();}}
+            "downloadmode" => {let mode=match rest{"all"=>crate::downloads::Rename::All,"selective"=>crate::downloads::Rename::Selective,_=>crate::downloads::Rename::Off};self.apply_setting(crate::settings::Hit::DownloadRename(mode),0.0);self.save_prefs();}
+            "downloadclick"=>{let (r,_)=self.download_ui.hits.iter().find(|(_,h)|h.label().to_lowercase().starts_with(&rest.to_lowercase())).copied().expect("download button");self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);}
+            "downloadact" => {let d=crate::downloads::list().into_iter().find(|d|d.active()).expect("active download");let h=match rest{"pause"=>crate::downloads::Hit::Pause(d.key),"resume"=>crate::downloads::Hit::Resume(d.key),_=>crate::downloads::Hit::Cancel(d.key)};self.download_action(h);}
+            "downloadassert" => {let rows=crate::downloads::list();match rest{
+                "paused"=>assert!(rows.iter().any(|d|d.paused&&d.active())),
+                "active"=>assert!(rows.iter().any(|d|d.active()&&d.received>0&&d.received<d.total)),
+                "complete"=>assert!(rows.iter().any(|d|d.done&&std::path::Path::new(&d.path).is_file())),
+                "cancelled"=>assert!(rows.iter().any(|d|d.cancelled)),
+                "unique"=>{let paths:std::collections::HashSet<_>=rows.iter().map(|d|&d.path).collect();assert_eq!(paths.len(),rows.len());},
+                name=>assert!(rows.iter().any(|d|d.name==name),"missing {name}: {rows:?}"),
+            }}
+            "downloadhover"=>{let r=self.download_ui.anchor.expect("footer download icon");self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);}
+            "sidebarwidth"=>{self.sidebar=true;self.sidebar_hover=true;self.sidebar_leave=None;self.sidebar_shift=0.0;self.sidebar_rules.compact=false;self.sidebar_rules.width=rest.parse().unwrap();self.layout();self.save_prefs();}
+            "smallsidetype"=>{self.sidebar_rules.small_tabs=match rest{"icons"=>crate::sidebar::SmallTabs::Icons,"preview"=>crate::sidebar::SmallTabs::Preview,_=>crate::sidebar::SmallTabs::Favicons};self.layout();}
+            "sidebardrag"=>{let sb=self.sidebar_rect();let x=if self.sidebar_right(){sb.x}else{sb.right()};self.mouse_moved(x,sb.y+self.px(120.0));self.mouse_button(MouseButton::Left,ElementState::Pressed);assert!(self.sidebar_resize.is_some());let width=rest.parse::<f32>().unwrap()*self.scale;let x=if self.sidebar_right(){sb.right()-width}else{sb.x+width};self.mouse_moved(x,sb.y+self.px(120.0));self.mouse_button(MouseButton::Left,ElementState::Released);assert!(self.sidebar_resize.is_none());assert!((self.sidebar_w()-width).abs()<1.1);}
+            "sidebarcheck"=>{let sb=self.sidebar_rect();for (r,h) in &self.side_hits{if matches!(h,crate::app::SideHit::Profile|crate::app::SideHit::Settings|crate::app::SideHit::Files|crate::app::SideHit::Downloads|crate::app::SideHit::MenuDrawer|crate::app::SideHit::Look){assert!(r.x>=sb.x-1.0&&r.right()<=sb.right()+1.0&&r.y>=sb.y&&r.bottom()<=sb.bottom()+1.0,"footer target escapes: {h:?} {r:?}");}}assert!(self.download_ui.anchor.is_some());}
+            "footerdrag"=>{let sb=self.sidebar_rect();let y=sb.bottom()-self.sidebar_footer_h();self.mouse_moved(sb.x+sb.w*0.5,y);self.mouse_button(MouseButton::Left,ElementState::Pressed);assert_eq!(self.sidebar_resize,Some(crate::sidebar::Resize::Footer));self.mouse_moved(sb.x+sb.w*0.5,y-self.px(12.0));self.mouse_button(MouseButton::Left,ElementState::Released);assert!(self.sidebar_rules.footer_row>32.0);}
+            "gridcheck"=>{let tab=&self.tabs[self.active];let Some(right)=&tab.right else{panic!("expected split")};let a=tab.left.rect();let b=right.rect();assert_eq!(a.y,b.y);assert_eq!(a.bottom(),b.bottom());for p in [&tab.left,right]{let r=p.rect();assert_eq!(r.x,r.x.round());assert_eq!(r.y,r.y.round());match p{Pane::Term(t)=>assert_eq!(t.origin.1-self.px(16.0),r.y+self.header_h()),Pane::Web(w)=>{assert_eq!(w.page.y,r.y+self.header_h());assert_eq!(w.page.bottom()+self.px(nus_render::theme::metric::PANE_FOOTER),r.bottom());},_=>{}}}}
+            "assertsection"=>{let Pane::Settings(p)=&self.tabs[self.active].left else{panic!("not settings")};assert_eq!(p.section,rest.parse::<usize>().unwrap());assert!(!self.me_card.open,"hidden Welcome intercepted navigation");},
+            "promptcheck"=>{
+                use crate::app::Action;
+                let c=self.behavior.prompt.clone();
+                for preset in crate::prompt::Preset::ALL {
+                    self.behavior.prompt=crate::prompt::Config::preset(preset);
+                    for query in ["", "cargo test", "nus.dev", "@codex review this", "? hello", "home"] {
+                        let home=self.prompt_rows(query);let palette=self.palette_rows(PaletteMode::Go,query);
+                        assert_eq!(home.iter().map(|r|&r.action).collect::<Vec<_>>(),palette.iter().map(|r|&r.action).collect::<Vec<_>>());
+                        if query=="home" {assert!(matches!(home[0].action,Action::Home));}
+                        if query=="@codex review this" {assert!(matches!(&home[0].action,Action::AssistantDraft(1,p) if p=="review this"));}
+                    }
+                    let rows=self.prompt_rows("");assert!(!rows.iter().any(|r|r.text.contains("fold every stack")));
+                    if preset==crate::prompt::Preset::Minimal{assert!(rows.is_empty());}
+                }
+                self.behavior.prompt=c;
+            },
+            "assertpromptfirst"=>{let Some((mode,input))=&self.palette else{panic!("palette not open")};let rows=self.palette_rows(*mode,input);assert!(rows.first().is_some_and(|r|r.text.contains(rest)),"unexpected route: {:?}",rows.iter().map(|r|&r.text).collect::<Vec<_>>());},
+            "assertconnections"=>{assert!(self.assistants.pending.is_none(),"connection checks did not finish");for entry in &self.assistants.entries{assert!(entry.checked);assert!(entry.path.is_some());assert!(!entry.version.is_empty());}assert_eq!(self.assistants.entries[2].models,vec!["test-model:latest"],"connections: {:?}",self.assistants.entries);},
+            "assertfonts"=>{let c=&self.behavior.typography;let Pane::Term(t)=&self.tabs[self.active].left else{panic!("not terminal")};assert!((t.grid.px-self.terminal_px()).abs()<0.01);let plain=self.fonts.metrics(self.f.term,self.terminal_px());assert!(t.grid.metrics.advance>=plain.advance+c.terminal_spacing*self.scale-0.01);assert!(t.grid.metrics.line_height>=plain.line_height);},
+            "assistantdraft"=>{let (id,q)=rest.split_once(' ').unwrap_or((rest,""));self.draft_assistant(id.parse().unwrap(),q);},
+            "reviewbounds"=>{assert!(matches!(self.palette,Some((PaletteMode::Assistant(_),_))));let size=self.window.inner_size();for r in self.palette_hits.iter().filter(|r|r.h>0.0){assert!(r.x>=0.0&&r.right()<=size.width as f32&&r.y>=0.0&&r.bottom()<=size.height as f32,"review row outside window: {r:?}");}if rest=="scrollable"{assert!(self.palette_scroll_max>0.0);}},
+            "reviewscroll"=>{self.wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0,-rest.parse::<f64>().unwrap())));},
+            "settingsbounds"=>{let Pane::Settings(p)=&self.tabs[self.active].left else{panic!("not settings")};for (r,h) in &self.settings_hits{assert!(r.x>=p.rect.x-1.0&&r.right()<=p.rect.right()+1.0&&r.bottom()<=p.rect.bottom()+1.0,"escaped hit {h:?} {r:?} {:?}",p.rect);}},
+            "settingscheck" => self.check_settings_bindings(),
+            "assertprofile" => assert_eq!(self.me_card.open, rest == "open"),
+            "closeprofile" => self.close_me_card(),
+            "welcome" => self.open_welcome(),
+            "welcomedismiss" => self.dismiss_hints(),
+            "phonecheck" => {
+                let tx = self.inbound.clone().expect("instance server");
+                let first = crate::phone::start(tx.clone()).expect("phone listener");
+                crate::phone::stop();
+                assert!(crate::phone::current().is_none());
+                assert!(std::net::TcpStream::connect(("127.0.0.1", first.port)).is_err(), "listener must close when disabled");
+                assert!(!std::path::Path::new("profile/phone").exists());
+                let second = crate::phone::start(tx).expect("phone listener restarted");
+                assert_ne!(first.token, second.token, "old phone token must be revoked");
+                crate::phone::stop();
+            },
             "settingsat" => {
                 let sec = rest.trim().parse::<usize>().unwrap_or(0);
                 self.run(crate::app::Action::SettingsAt(sec, None));
+            }
+            "settingsscroll" => {
+                // Scroll the open settings page to a logical offset.
+                let y = rest.trim().parse::<f32>().unwrap_or(0.0) * self.scale;
+                if let Some(crate::app::Pane::Settings(sp)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                    sp.scroll = y;
+                }
+                self.dirty = true;
             }
             "devtools" => self.toggle_devtools(),
             "reader" => self.toggle_reader(),

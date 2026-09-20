@@ -253,6 +253,20 @@ impl FontSystem {
 
     /// Load a system font by family name, or fall back to `fallback`.
     pub fn load_system(&mut self, family: &str, fallback: FontId) -> FontId {
+        self.load_system_weight(family, 400, fallback)
+    }
+
+    pub fn system_families(&self) -> Vec<(String, bool)> {
+        let mut db = self.db.borrow_mut();
+        if db.is_none() { let mut d=fontdb::Database::new(); d.load_system_fonts(); *db=Some(d); }
+        let mut families=std::collections::BTreeMap::new();
+        for face in db.as_ref().unwrap().faces() {
+            for (name,_) in &face.families { families.entry(name.clone()).and_modify(|mono| *mono |= face.monospaced).or_insert(face.monospaced); }
+        }
+        families.into_iter().collect()
+    }
+
+    pub fn load_system_weight(&mut self, family: &str, weight: u16, fallback: FontId) -> FontId {
         {
             let mut db = self.db.borrow_mut();
             if db.is_none() {
@@ -267,6 +281,7 @@ impl FontSystem {
         };
         let id = db.query(&fontdb::Query {
             families: &[fontdb::Family::Name(family)],
+            weight: fontdb::Weight(weight),
             ..Default::default()
         });
         let Some(id) = id else {

@@ -111,9 +111,32 @@ pub fn os_reduce_motion() -> bool {
     ok != 0 && on == 0
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn os_reduce_motion() -> bool {
     false
+}
+
+/// AppKit exposes the same Reduce Motion preference as System Settings.
+#[cfg(target_os = "macos")]
+pub fn os_reduce_motion() -> bool {
+    use std::ffi::{c_char, c_void};
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    // SAFETY: these two parameterless Objective-C methods are declared by
+    // AppKit's NSWorkspace and NSAccessibility headers. Their return ABIs
+    // are object pointer and BOOL respectively; no retained object escapes.
+    unsafe {
+        let class = objc_getClass(c"NSWorkspace".as_ptr());
+        if class.is_null() { return false; }
+        let get: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
+        let flag: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool = std::mem::transmute(objc_msgSend as *const ());
+        let workspace = get(class, sel_registerName(c"sharedWorkspace".as_ptr()));
+        !workspace.is_null() && flag(workspace, sel_registerName(c"accessibilityDisplayShouldReduceMotion".as_ptr()))
+    }
 }
 
 /// A value that chases a target smoothly (loading bars). `rate` is the

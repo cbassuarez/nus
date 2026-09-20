@@ -1577,9 +1577,9 @@ impl App {
             color: t.dim,
             ..label
         };
-        let term_px = 13.0 * self.scale * 96.0 / 72.0;
+        let term_px = self.behavior.typography.editor_size * self.scale * 96.0 / 72.0;
         let mono = Style {
-            font: self.f.term,
+            font: self.f.editor,
             px: term_px,
             color: ink,
             tracking: 0.0,
@@ -1589,14 +1589,14 @@ impl App {
             ..mono
         };
         let cw = self.fonts.measure(mono, "M").max(1.0);
-        let metrics = self.fonts.metrics(self.f.term, term_px);
-        let ch = metrics.line_height.max(term_px * 1.25);
+        let metrics = self.fonts.metrics(self.f.editor, term_px);
+        let ch = metrics.line_height.max(term_px * self.behavior.typography.editor_line);
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
         let signal = self.surface.signal;
         let caret = self.caret_color();
         let (mx, my) = self.mouse;
-        let strip_h = self.px(30.0);
-        let status_h = self.px(26.0);
+        let strip_h = self.header_h();
+        let status_h = self.px(m::PANE_FOOTER);
         let hair = self.px(m::HAIRLINE);
         let pad = self.px(10.0);
         let motion_reduced = self.motion.reduced();

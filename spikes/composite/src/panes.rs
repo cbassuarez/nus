@@ -338,6 +338,7 @@ impl App {
                 Pane::Home(_) => "home".into(),
                 Pane::Editor(e) => e.title(),
                 Pane::Ports(_) => "ports".into(),
+            Pane::Downloads(_) => "downloads".into(),
             }
         }).unwrap_or_default();
         let strong = self.label_strong();

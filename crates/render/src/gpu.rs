@@ -152,7 +152,7 @@ impl Gpu {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("quad pl"),
             bind_group_layouts: &[Some(&bgl), Some(&points_bgl)],
-            immediate_size: 8,
+            immediate_size: 16,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("quad"),
@@ -501,7 +501,7 @@ impl Gpu {
             });
             pass.set_pipeline(&self.pipeline);
             let (sw, sh) = size;
-            pass.set_immediates(0, bytemuck::cast_slice(&[sw as f32, sh as f32]));
+            pass.set_immediates(0, bytemuck::cast_slice(&[sw as f32, sh as f32, scene.corner_radius, 0.0]));
             pass.set_vertex_buffer(0, self.instances.slice(..));
             pass.set_bind_group(1, &self.points_bind, &[]);
             for layer in scene.layers() {

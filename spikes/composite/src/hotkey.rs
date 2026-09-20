@@ -1,9 +1,8 @@
 //! The global hotkey that summons the hatch: registered with the OS so it
 //! works whether or not nus is in front. Windows: `RegisterHotKey` on its
 //! own thread with a message loop, `WM_HOTKEY` → a `UserEvent::Hatch` on
-//! the event loop. macOS needs the Accessibility permission and a Carbon
-//! hot key; Linux the portal's GlobalShortcuts — both are stubs that say
-//! so for now, so the chord inside nus still works everywhere.
+//! the event loop. macOS uses a registered Carbon shortcut (no input
+//! monitoring). Linux uses X11; Wayland exposes the CLI shortcut fallback.
 
 use winit::event_loop::EventLoopProxy;
 
@@ -21,6 +20,17 @@ pub enum Chord {
 }
 
 impl Chord {
+    pub fn matches(self, event: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersState) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let key = match event.physical_key { PhysicalKey::Code(key) => key, _ => return false };
+        let ctrl = mods.control_key(); let shift = mods.shift_key(); let sup = mods.super_key();
+        !mods.alt_key() && match self {
+            Self::CtrlGrave => key == KeyCode::Backquote && ctrl && !shift && !sup,
+            Self::SuperGrave => key == KeyCode::Backquote && sup && !shift && !ctrl,
+            Self::CtrlShiftSpace => key == KeyCode::Space && ctrl && shift && !sup,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Chord::CtrlGrave => "CTRL+`",
@@ -40,6 +50,8 @@ impl Chord {
 pub struct Hotkey {
     #[cfg(windows)]
     thread: Option<u32>,
+    #[cfg(not(windows))]
+    registration: Option<(global_hotkey::GlobalHotKeyManager, global_hotkey::hotkey::HotKey)>,
     pub chord: Chord,
     /// What the OS said: empty when it took, else why not.
     pub status: String,
@@ -90,19 +102,31 @@ impl Hotkey {
         }
         #[cfg(not(windows))]
         {
-            let _ = proxy;
-            let why = if cfg!(target_os = "macos") {
-                "global hotkeys on macOS wait on the Accessibility permission (coming)"
-            } else {
-                "global hotkeys on Linux wait on the portal (coming)"
+            use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::{HotKey, Modifiers, Code}};
+            if crate::hatch_native::wayland() {
+                return Hotkey { registration: None, chord, status: "Set a desktop shortcut to: nus hatch toggle (Wayland manages global shortcuts)".into() };
+            }
+            let (mods, code) = match chord {
+                Chord::CtrlGrave => (Modifiers::CONTROL, Code::Backquote),
+                Chord::SuperGrave => (Modifiers::SUPER, Code::Backquote),
+                Chord::CtrlShiftSpace => (Modifiers::CONTROL | Modifiers::SHIFT, Code::Space),
             };
-            Hotkey { chord, status: why.into() }
+            GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+                if event.state == HotKeyState::Pressed { let _ = proxy.send_event(UserEvent::Hatch); }
+            }));
+            let key = HotKey::new(Some(mods), code);
+            match GlobalHotKeyManager::new().and_then(|manager| { manager.register(key)?; Ok(manager) }) {
+                Ok(manager) => Hotkey { registration: Some((manager, key)), chord, status: String::new() },
+                Err(e) => Hotkey { registration: None, chord, status: format!("Shortcut unavailable: {e}. Choose another shortcut.") },
+            }
         }
     }
 }
 
 impl Drop for Hotkey {
     fn drop(&mut self) {
+        #[cfg(not(windows))]
+        if let Some((manager,key)) = self.registration.take() { let _ = manager.unregister(key); }
         #[cfg(windows)]
         if let Some(tid) = self.thread.take() {
             unsafe {
@@ -125,8 +149,28 @@ pub fn pointer() -> Option<(i32, i32)> {
         }
         None
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
-        None
+        use std::ffi::c_void;
+        #[repr(C)]
+        struct Point { x:f64, y:f64 }
+        #[link(name="CoreGraphics",kind="framework")]
+        unsafe extern "C" {
+            fn CGEventCreate(source:*const c_void)->*const c_void;
+            fn CGEventGetLocation(event:*const c_void)->Point;
+        }
+        #[link(name="CoreFoundation",kind="framework")]
+        unsafe extern "C" { fn CFRelease(value:*const c_void); }
+        // SAFETY: a newly created event samples the pointer. The event is
+        // released after copying its CGPoint; no event is posted or retained.
+        unsafe {
+            let event=CGEventCreate(std::ptr::null());
+            if event.is_null() {return None;}
+            let point=CGEventGetLocation(event);
+            CFRelease(event);
+            Some((point.x as i32,point.y as i32))
+        }
     }
+    #[cfg(not(any(windows,target_os="macos")))]
+    { None }
 }

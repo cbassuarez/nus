@@ -90,17 +90,7 @@ pub struct SelectPopup {
 
 /// A download, as the footer shows it. Downloads outlive tabs, so they
 /// live in one list for the process.
-#[derive(Clone, Debug)]
-pub struct Download {
-    pub id: u32,
-    pub name: String,
-    pub path: String,
-    pub url: String,
-    pub received: i64,
-    pub total: i64,
-    pub done: bool,
-    pub cancelled: bool,
-}
+pub use crate::downloads::Download;
 
 pub static DOWNLOADS: std::sync::Mutex<Vec<Download>> = std::sync::Mutex::new(Vec::new());
 
@@ -168,6 +158,7 @@ pub fn blocklist_len() -> usize {
 
 /// Where downloads go: ~/Downloads, else the profile.
 pub fn downloads_dir() -> std::path::PathBuf {
+    if std::env::var_os("NUS_SHOT").is_some() {return std::env::current_dir().unwrap_or_default().join("profile/downloads");}
     let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).map(std::path::PathBuf::from);
     match home {
         Ok(h) if h.join("Downloads").is_dir() => h.join("Downloads"),
@@ -867,39 +858,46 @@ wrap_download_handler! {
 
         fn on_before_download(&self, _browser: Option<&mut Browser>, download_item: Option<&mut DownloadItem>, suggested_name: Option<&CefString>, callback: Option<&mut BeforeDownloadCallback>) -> ::std::os::raw::c_int {
             let Some(item) = download_item else { return 0 };
-            let name = suggested_name.map(|s| s.to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "download".into());
-            // ~/Downloads/name, numbered when taken.
-            let dir = downloads_dir();
-            let _ = std::fs::create_dir_all(&dir);
-            let mut path = dir.join(&name);
-            let mut n = 1;
-            while path.exists() {
-                n += 1;
-                let (stem, ext) = match name.rsplit_once('.') { Some((s, e)) => (s.to_string(), format!(".{e}")), None => (name.clone(), String::new()) };
-                path = dir.join(format!("{stem} ({n}){ext}"));
-            }
-            let d = Download { id: item.id(), name: name.clone(), path: path.to_string_lossy().to_string(), url: CefString::from(&item.url()).to_string(), received: 0, total: item.total_bytes(), done: false, cancelled: false };
-            DOWNLOADS.lock().unwrap().push(d);
-            if let Some(cb) = callback {
-                cb.cont(Some(&path.to_string_lossy().as_ref().into()), 0);
-            }
+            let Some(cb)=callback else {return 0;};
+            let original=suggested_name.map(|s|s.to_string()).filter(|s|!s.is_empty()).unwrap_or_else(||"download".into());
+            let title=self.display.shared.borrow().title.clone();
+            let name=crate::downloads::filename(&original,&title,crate::downloads::rename_mode());
+            let dir=downloads_dir();if std::fs::create_dir_all(&dir).is_err(){return 0;}
+            let path={
+                let mut rows=DOWNLOADS.lock().unwrap();
+                let path=crate::downloads::available_path(&dir,&name,&rows);
+                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                let key=(now.as_micros() as u64).max(rows.iter().map(|d|d.key).max().unwrap_or(0)+1);
+                rows.push(Download{key,id:item.id(),name:path.file_name().unwrap().to_string_lossy().into(),original:crate::downloads::safe_name(&original),path:path.to_string_lossy().into(),url:CefString::from(&item.url()).to_string(),title,total:item.total_bytes(),started:now.as_secs(),live:true,..Default::default()});
+                crate::downloads::save(&rows);path
+            };
+            crate::downloads::changed();
+            cb.cont(Some(&path.to_string_lossy().as_ref().into()),0);
             self.display.shared.borrow_mut().paints += 1;
             1
         }
 
-        fn on_download_updated(&self, _browser: Option<&mut Browser>, download_item: Option<&mut DownloadItem>, _callback: Option<&mut DownloadItemCallback>) {
+        fn on_download_updated(&self, _browser: Option<&mut Browser>, download_item: Option<&mut DownloadItem>, callback: Option<&mut DownloadItemCallback>) {
             let Some(item) = download_item else { return };
             let id = item.id();
             let mut list = DOWNLOADS.lock().unwrap();
-            if let Some(d) = list.iter_mut().find(|d| d.id == id) {
+            if let Some(d) = list.iter_mut().find(|d| d.live && d.id == id) {
+                let before=(d.done,d.cancelled,d.interrupted,d.paused);
                 d.received = item.received_bytes();
                 d.total = item.total_bytes();
                 d.done = item.is_complete() != 0;
                 d.cancelled = item.is_canceled() != 0;
+                d.interrupted = item.is_interrupted() != 0;
+                d.paused = item.is_paused() != 0;
+                d.speed = item.current_speed();
+                crate::downloads::track(d.key,callback,d.active());
                 let p = CefString::from(&item.full_path()).to_string();
                 if !p.is_empty() {
+                    d.name = std::path::Path::new(&p).file_name().unwrap_or_default().to_string_lossy().into();
                     d.path = p;
                 }
+                if before!=(d.done,d.cancelled,d.interrupted,d.paused){crate::downloads::save(&list);}
+                crate::downloads::changed();
             }
             self.display.shared.borrow_mut().paints += 1;
         }

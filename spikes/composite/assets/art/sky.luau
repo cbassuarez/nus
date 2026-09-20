@@ -31,6 +31,10 @@ end
 
 function draw(c)
   local place = c:place()
+  if not place then
+    c:text(c.w / 2, c.h * 0.2, "Choose your location in Settings → Startup", 14, c.ink, 1, { align = "center" })
+    return
+  end
   local ms = c:now()
   local alt, az = sun(ms, place.lat, place.lon)
   -- Facing the equator: from the north, east is on the left; from the

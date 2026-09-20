@@ -34,6 +34,7 @@ impl Pane {
             Pane::Home(h) => h.rect,
             Pane::Editor(e) => e.rect,
             Pane::Ports(p) => p.rect,
+            Pane::Downloads(p) => p.rect,
         }
     }
 }

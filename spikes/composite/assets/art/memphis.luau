@@ -174,6 +174,33 @@ local function drawPiece(c, p, t, sc, ink, paper, white, pointer)
 end
 
 function draw(c)
+  -- Onboarding places the very same vector pieces among its sections.
+  -- No thumbnail, texture, or duplicate geometry definition.
+  local placed = c:pieces()
+  if #placed > 0 then
+    local taps = c:taps()
+    for _, at in placed do
+      local source = pieces[at.index]
+      if source then
+        local p = table.clone(source)
+        local sc = at.scale
+        p.x, p.y = at.x / sc, at.y / sc
+        p.at = (at.index - 1) * 0.07
+        local w, h = (p.w or p.s) * sc, (p.h or p.s) * sc
+        local pointer = c.pointer
+        local hot = pointer and math.abs(pointer.x-at.x) < w/2+6 and math.abs(pointer.y-at.y) < h/2+6
+        for _, tap in taps do
+          if math.abs(tap.x-at.x) < w/2+6 and math.abs(tap.y-at.y) < h/2+6 then source.lift = c.t end
+        end
+        p.lift = source.lift
+        if hot then p.rot += 5 end
+        -- Entry and tap motion use drawPiece; page position stays exact.
+        p.depth = 0
+        drawPiece(c, p, c.t, sc, c.ink, c.paper, if c.face == "paper" then "#ffffff" else "#1e1e1d", nil)
+      end
+    end
+    return
+  end
   local sc = math.min(c.w / 1280, c.h / 800)
   local ink = c.ink
   local paper = c.paper
