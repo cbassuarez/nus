@@ -1,7 +1,7 @@
 //! Write the bundled app icon: `cargo run -p nus-render --example icon [dir]`.
 //! White desktop mark/red orbit; the running app follows the surface colour.
 
-use nus_render::icon::{app_icon_svg, band_stops, ico, png};
+use nus_render::icon::{band_stops, clipped_app_icon_svg, ico, png};
 use nus_render::theme::signal;
 
 fn main() {
@@ -36,7 +36,7 @@ fn main() {
     // The vector, for the site and anything that scales.
     std::fs::write(
         format!("{dir}/nus.svg"),
-        app_icon_svg(512.0, "#141413", "#c8102e"),
+        clipped_app_icon_svg(512.0, "currentColor", "var(--signal, #c8102e)"),
     )
     .unwrap();
     // Where four stops sit clear of the n, for anything laying out the plate.

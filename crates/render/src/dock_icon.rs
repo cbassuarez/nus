@@ -285,7 +285,7 @@ impl Field {
 }
 
 /// Lower screen-space intersection with the authored tilted ellipse.
-fn front_y(b: &Band, x: f32) -> f32 {
+pub(crate) fn front_y(b: &Band, x: f32) -> f32 {
     let (cos, sin) = (b.tilt.cos(), b.tilt.sin());
     let dx = x - b.cx;
     let a = sin * sin / (b.a * b.a) + cos * cos / (b.b * b.b);

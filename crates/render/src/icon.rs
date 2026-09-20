@@ -345,6 +345,25 @@ pub fn app_icon_svg(size: f32, n_color: &str, band: &str) -> String {
     )
 }
 
+/// Themeable site mark with the current desktop icon's clipped lower edge.
+/// Shares the authored outline, orbit and clipping intersection with the Dock.
+pub fn clipped_app_icon_svg(size: f32, n_color: &str, band: &str) -> String {
+    let parts = app_icon_paths(size);
+    let mut edge = String::new();
+    for x in 0..=size.ceil() as u32 {
+        let y = crate::dock_icon::front_y(&parts.band, x as f32);
+        if y.is_finite() {
+            if edge.is_empty() {
+                edge.push_str(&format!("M{x} 0 L{x} {y:.2} "));
+            } else {
+                edge.push_str(&format!("L{x} {y:.2} "));
+            }
+        }
+    }
+    edge.push_str(&format!("L{size} 0 Z"));
+    format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {size} {size}\"><defs><clipPath id=\"nus-letter-edge\"><path d=\"{edge}\"/></clipPath></defs><path d=\"{}\" fill=\"{band}\"/><path d=\"{}\" fill=\"{n_color}\" clip-path=\"url(#nus-letter-edge)\"/><path d=\"{}\" fill=\"{band}\"/></svg>",parts.back,parts.n,parts.front)
+}
+
 /// The icon's three paths (`d` attributes) in a `size` frame, back to front.
 pub struct IconPaths {
     pub back: String,

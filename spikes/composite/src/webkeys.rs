@@ -68,6 +68,9 @@ pub fn events(ev: &KeyIn, mods: ModifiersState) -> Vec<cef::KeyEvent> {
 
 /// What the platform calls this physical key.
 fn native_code(phys: &PhysicalKey) -> i32 {
+    // winit maps a wholly unidentified key to KEY_UNKNOWN (240) on Linux.
+    // That is not a real physical key and must not become X keycode 248.
+    if matches!(phys, PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified)) { return 0; }
     let Some(code) = phys.to_scancode() else { return 0 };
     // X keycodes are the kernel's plus eight; winit hands back the kernel's.
     if cfg!(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")) {
