@@ -1,24 +1,23 @@
 # nus
 
-*terminus* — a terminal emulator that is also a browser.
+*terminus*: the endpoint. the last terminal emulator, multiplexer, and browser you’ll install.
 
 ## What this is, and isn't
 
-nus is my terminal and my browser. I built it for one user — me — the way I
-want it, and I use it every day. It is open source because open is the right
-way to ship software I depend on, not because it is a community project.
+nus is my terminal and my browser. I built it for one user (me!) the way I
+want it, and I use it every day. I made it for personal and professional work, because none of the popular cross-platform tools integrated with the popular cross-platform browsers. I leave it FOSS as someone else might get some use out of this.
 
 That means:
 
-- **I decide the design.** The product truth lives in [docs/PRODUCT.md](docs/PRODUCT.md)
+- **I decide the design.** The product decisions live in [docs/PRODUCT.md](docs/PRODUCT.md)
   and [docs/DESIGN.md](docs/DESIGN.md); each "settled" pass there is a decision
   already made. A change that contradicts them is out of scope, however good.
 - **Feature requests are welcome.** Describe the problem you want to solve;
   requests inform development without promising implementation. Check whether
   a setting, `rules.luau`, a theme or a layout already covers it.
 - **I read bug reports and small fixes.** A crash with a reproduction, a
-  platform build fix, a typo, a wrong doc: welcome. See
-  [CONTRIBUTING.md](CONTRIBUTING.md) before opening anything.
+  platform build fix, a typo, a wrong doc: very much welcome. I’ll try to stamp out bugs as quickly as they come in. See
+  [CONTRIBUTING.md](CONTRIBUTING.md) before opening anything, and email contact@cbassuarez.com for secured/responsible disclosure of vulnerabilities. There are limited funds available (I am one person, funding this by themselves, though I am awaiting extra funding to establish an actual program).
 - **Pre-alpha, no releases, no support.** It builds; it is not packaged. Until
   there are releases, expect breakage and expect no answer on a schedule.
 
@@ -31,7 +30,7 @@ That means:
 - **Browser:** Chromium (CEF) rendered offscreen and composited by us. Native DevTools,
   a reader, per-site rules, ad blocking in the request handler,
   userscripts, containers, our own picture-in-picture. **No Chrome
-  extensions** — windowless CEF cannot host them; [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
+  extensions** (coming soon) — windowless CEF cannot host them; [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
   explains the wall and the routes through it.
 - **Incognito:** ⇧⌘N on macOS or Ctrl+Shift+N on Windows/Linux opens a private
   browser window with temporary cookies and storage, no saved browsing history
@@ -59,8 +58,7 @@ That means:
   with a key you copy, carried by a folder you already sync or a private git
   remote; last writer wins ([docs/SYNC.md](docs/SYNC.md)).
 - **Targets:** Windows 11 (daily), macOS (Apple silicon) and Linux (Wayland +
-  X11) build in CI; the OS-specific pieces (global hotkey, taskbar) land per
-  platform as they're done.
+  X11).
 
 ## Building
 
