@@ -699,6 +699,18 @@ impl App {
                 assert_eq!(self.place().is_some(),rest=="set");
                 if rest=="unset" { assert!(self.behavior.place.is_none()); }
             }
+            "asserthomeart" => {
+                assert!(matches!(self.tabs[self.active].left, Pane::Home(_)), "not a Home prompt");
+                assert_eq!(self.behavior.home_look, crate::settings::HomeLook::Art);
+                assert_eq!(self.behavior.home_art, rest);
+                let art = self.art.as_ref().expect("Home artwork rendered");
+                assert_eq!(art.key, rest);
+                assert!(art.status.is_none(), "artwork failed: {:?}", art.status);
+                assert_eq!(art.backdrop != crate::art::Backdrop::Theme, rest == "sky");
+                let saved = crate::prefs::Prefs::load().behavior.expect("saved background choice");
+                assert_eq!(saved.home_art, rest);
+                assert_eq!(saved.home_look, crate::settings::HomeLook::Art);
+            }
             "fontcheck" => {
                 use crate::fonts::{Family,Weight};
                 let saved=self.behavior.clone();

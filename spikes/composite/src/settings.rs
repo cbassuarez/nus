@@ -1409,6 +1409,7 @@ impl App {
     pub(crate) fn setting_states(&self, section: usize) -> Vec<(Hit, bool)> {
         self.rows_for(section).into_iter().flat_map(|(_,control)| match control {
             Control::Pics(cards) => cards.into_iter().map(|(_,_,_,hit,on)|(hit,on)).collect(),
+            Control::Art(cards) => cards.into_iter().map(|(_,_,_,hit,on,_)|(hit,on)).collect(),
             Control::Choice(cards) | Control::Strip(cards) => cards.into_iter().map(|(_,hit,on)|(hit,on)).collect(),
             _ => Vec::new(),
         }).collect()
@@ -2578,7 +2579,8 @@ impl App {
         scene.rect(card, t.paper);
         // The art, alive, run at a pane's size and shrunk into the card;
         // its line a small box a third of the way down.
-        let sc = card.w / self.px(1280.0);
+        // Stars need a closer view to remain distinct in a small preview.
+        let sc = card.w / self.px(if key == "space" { 480.0 } else { 1280.0 });
         let cmds = {
             let (w, h) = (card.w / sc, card.h / sc);
             let env = crate::art::Env {
@@ -2602,13 +2604,14 @@ impl App {
             };
             let art = self.art_previews.entry(key.to_string()).or_insert_with(|| crate::art::Art::open(key));
             art.tend();
-            art.frame(env)
+            if self.motion.reduced() { art.frame_at(env, 8.0) } else { art.frame(env) }
         };
         self.draw_art_cmds_scaled(scene, card, cmds, sc);
         // The line, in miniature.
         let lx = card.x + card.w * 0.2;
         let ly = card.y + card.h * 0.34 + self.px(10.0);
-        scene.hline(lx, ly, card.w * 0.6, self.px(m::HAIRLINE), fade(ink, 0.5));
+        let line_ink = self.art_previews.get(key).map(|a| a.backdrop).unwrap_or_default().foreground(t.mode, ink, t.paper);
+        scene.hline(lx, ly, card.w * 0.6, self.px(m::HAIRLINE), fade(line_ink, 0.5));
         scene.rect(Rect::new(lx, ly - self.px(6.0), self.px(3.0), self.px(5.0)), self.surface.signal);
         scene.outline(card, self.px(m::STRUCTURE), ink);
         if on {
@@ -2624,7 +2627,7 @@ impl App {
         for (i, line) in crate::reader::wrap(&self.fonts, dim, &sub, r.w).into_iter().take(2).enumerate() {
             self.fonts.draw(scene, dim, r.x, r.y + r.h + self.px(31.0 + i as f32 * 12.0), &line);
         }
-        if self.art_wants_frame() {
+        if !self.motion.reduced() && self.art_wants_frame() {
             self.dirty = true;
         }
     }
@@ -3317,8 +3320,8 @@ impl App {
                             Choice(layouts.iter().enumerate().map(|(i, name)| (name.caps(), Hit::StartupLayout(i), b.then == Then::Layout && (*name == b.then_layout || (b.then_layout.is_empty() && i == 0)))).collect())
                         },
                     ),
-                    ("SPLASH PAGE LOOK".into(), Caption),
-                    ("".into(), Info("Choose the background for the prompt palette. These previews do not change a web home page.".into())),
+                    ("HOME BACKGROUND".into(), Caption),
+                    ("".into(), Info("Applies to every Home prompt, including new tabs and startup when Home · Prompt is selected.".into())),
                     (
                         "MINIMAL".into(),
                         Pics(vec![
@@ -3331,8 +3334,8 @@ impl App {
                         Art(crate::art::list().into_iter().enumerate().map(|(i, a)| (a.key.clone(), a.name, if a.path.is_none() { match a.key.as_str() {
                             "pond" => "koi swimming behind the prompt".into(),
                             "memphis" => "colorful shapes in motion".into(),
-                            "space" => "stars for your chosen location".into(),
-                            "sky" => "sky and sun for your chosen location".into(),
+                            "space" => "constellations · location optional".into(),
+                            "sky" => "sun and clouds · location optional".into(),
                             "brain" => "a live view of running processes".into(),
                             _ => a.says,
                         } } else { a.says }, Hit::HomeArt(i), b.home_look == HomeLook::Art && b.home_art == a.key, a.path.is_none())).collect()),
@@ -3357,7 +3360,7 @@ impl App {
                             b.place.is_some(),
                         )]),
                     ),
-                    ("".into(), Info("Optional: enter latitude and longitude for sky artwork. Location stays on this machine and is never inferred. Clear it any time.".into())),
+                    ("".into(), Info("Sky and Space show illustrated skies by default. Add latitude and longitude to show your local sky. Location stays on this machine and is never inferred. Clear it any time.".into())),
                     (
                         key("N", false),
                         Pics(vec![

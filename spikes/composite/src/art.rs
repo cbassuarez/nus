@@ -125,13 +125,30 @@ pub struct Env {
     pub scale: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backdrop {
+    #[default]
+    Theme,
+    Light,
+    Dark,
+}
+
+impl Backdrop {
+    pub fn foreground(self, mode: nus_render::Mode, ink: Color, paper: Color) -> Color {
+        match (self, mode) {
+            (Self::Dark, nus_render::Mode::Paper) | (Self::Light, nus_render::Mode::Ink) => paper,
+            _ => ink,
+        }
+    }
+}
+
 struct State {
     env: Env,
     cmds: Vec<Cmd>,
     t: f32,
     dt: f32,
-    /// The art says its backdrop is dark: the line goes paper over it.
-    dark: bool,
+    /// An artwork can request readable text independently of the app theme.
+    backdrop: Backdrop,
 }
 
 #[derive(Clone)]
@@ -379,10 +396,10 @@ impl mlua::UserData for Canvas {
             s.cmds.push(Cmd::Sky(r, g("az", 0.0).clamp(-1.0, 1.0), g("alt", 0.5).clamp(-1.0, 1.0), g("cover", 0.4).clamp(0.0, 1.0), g("wind", 1.0), seed));
             Ok(())
         });
-        // What the art is drawn on: "dark" puts the line in paper with a
-        // shadow; "paper" (the default) keeps it in ink.
+        // Explicit artwork brightness wins over the application theme.
+        // "paper" remains the theme-following default for existing scripts.
         m.add_method("backdrop", |_, c, which: String| {
-            c.0.borrow_mut().dark = which == "dark";
+            c.0.borrow_mut().backdrop = match which.as_str() { "dark" => Backdrop::Dark, "light" => Backdrop::Light, _ => Backdrop::Theme };
             Ok(())
         });
         // The clock, in unix milliseconds; NUS_CLOCK pins it (for photographs of a night sky at noon).
@@ -456,8 +473,8 @@ pub struct Art {
     state: Rc<RefCell<State>>,
     /// The last error, if the script broke; it draws at the foot.
     pub status: Option<String>,
-    /// Set by the last frame: the line goes paper over this art.
-    pub dark: bool,
+    /// Set by the last frame: text contrast for this artwork.
+    pub backdrop: Backdrop,
     started: Instant,
     last: Instant,
     /// Keep the koi and the stars where they were across a reload.
@@ -483,8 +500,8 @@ impl Art {
             path,
             checked: crate::clock::now(),
             lua: mlua::Lua::new(),
-            state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, dark: false })),
-            dark: false,
+            state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, backdrop: Backdrop::Theme })),
+            backdrop: Backdrop::Theme,
             status: None,
             started: crate::clock::now(),
             last: crate::clock::now(),
@@ -540,7 +557,7 @@ impl Art {
             let mut s = self.state.borrow_mut();
             s.env = env;
             s.cmds.clear();
-            s.dark = false;
+            s.backdrop = Backdrop::Theme;
             s.t = time;
             s.dt = dt;
         }
@@ -556,7 +573,7 @@ impl Art {
         if let Err(e) = result {
             self.status = Some(short_error(&e));
         }
-        self.dark = self.state.borrow().dark;
+        self.backdrop = self.state.borrow().backdrop;
         std::mem::take(&mut self.state.borrow_mut().cmds)
     }
 }
@@ -614,7 +631,8 @@ impl App {
                 }
                 Cmd::Sky(rr, az, alt, cover, wind, seed) => {
                     let rr = Rect::new(rr.x * sc + ox, rr.y * sc + oy, rr.w * sc, rr.h * sc);
-                    scene.sky(rr, az, alt, cover, wind, crate::clock::since(self.started).as_secs_f32(), seed);
+                    let time = if self.motion.reduced() { 8.0 } else { crate::clock::since(self.started).as_secs_f32() };
+                    scene.sky(rr, az, alt, cover, wind, time, seed);
                 }
                 Cmd::Text(x, y, text, px, c, font, align, tracked) => {
                     let size = self.px(px) * sc;
@@ -753,13 +771,34 @@ mod tests {
     }
 
     #[test]
-    fn location_art_waits_for_an_explicit_place() {
-        for key in ["sky","space"] {
+    fn artwork_contrast_is_independent_of_the_app_theme() {
+        use nus_render::Mode;
+        let black = [0.0, 0.0, 0.0, 1.0];
+        let white = [1.0; 4];
+        for (mode, ink, paper) in [(Mode::Paper, black, white), (Mode::Ink, white, black)] {
+            assert_eq!(Backdrop::Light.foreground(mode, ink, paper), black);
+            assert_eq!(Backdrop::Dark.foreground(mode, ink, paper), white);
+            assert_eq!(Backdrop::Theme.foreground(mode, ink, paper), ink);
+        }
+    }
+
+    #[test]
+    fn sky_art_draws_without_location_and_with_an_explicit_place() {
+        for (key, place) in ["sky", "space"].into_iter().flat_map(|key| [None, Some((35.2, -106.6)), Some((-33.9, 151.2))].map(|place| (key, place))) {
             let mut art=Art::open(key);
-            let commands=art.frame_at(Env {w:800.0,h:600.0,..Default::default()},3.0);
+            let commands=art.frame_at(Env {w:800.0,h:600.0,place,..Default::default()},8.0);
             assert!(art.status.is_none(),"{key}: {:?}",art.status);
-            assert!(commands.iter().any(|c|matches!(c,Cmd::Text(_,_,text,..) if text.contains("Choose your location"))));
-            assert!(!commands.iter().any(|c|matches!(c,Cmd::Sky(..))));
+            if key == "sky" {
+                assert!(commands.iter().any(|c|matches!(c,Cmd::Sky(..))), "sky has no sky layer");
+                assert_ne!(art.backdrop, Backdrop::Theme);
+            } else {
+                assert!(commands.iter().filter(|c|matches!(c,Cmd::Rect(..))).count() > 40, "space has no star field");
+                assert!(commands.iter().any(|c|matches!(c,Cmd::Line(..))), "space has no constellation map");
+            }
+            assert_eq!(art.state.borrow().env.place, place, "art must not invent a user location");
+            if place.is_none() {
+                assert!(!commands.iter().any(|c| matches!(c, Cmd::Text(_,_,text,..) if text.contains('°') || text.starts_with("LST "))), "sample chart must not display a fabricated user location or local time");
+            }
         }
     }
 
@@ -775,7 +814,7 @@ mod tests {
 
     #[test]
     fn a_script_draws() {
-        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: crate::clock::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, dark: false })), status: None, dark: false, started: crate::clock::now(), last: crate::clock::now(), reloads: 0 };
+        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: crate::clock::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, backdrop: Backdrop::Theme })), status: None, backdrop: Backdrop::Theme, started: crate::clock::now(), last: crate::clock::now(), reloads: 0 };
         art.load("function draw(c) c:rect(1, 2, 3, 4, c.ink) c:circle(5, 5, 2, '#c8102e', 0.5) c:text(0, 10, 'hi', 11, c.dim, 1, { caps = true }) c:blob({ {0,0}, {10,0}, {10,10}, {0,10} }, c.signal) end");
         let cmds = art.frame(Env { w: 100.0, h: 100.0, ..Default::default() });
         assert!(cmds.len() >= 4, "{}", cmds.len());

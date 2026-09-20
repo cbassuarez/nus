@@ -1205,11 +1205,16 @@ layout or absent recent page falls back to the prompt. The home address and
 saved layout are editable from Startup. Terminal/browser preference controls
 palette ordering and external links without changing the selected start page.
 
-**Splash page look** has a **Minimal** preview row (Prompt only, Logo & prompt),
+**Home background** has a **Minimal** preview row (Prompt only, Logo & prompt),
 followed by **Art** previews. Artwork actions have captions: Add your own,
 Ask for one, Open folder. Preview clipping and click targets stay inside the
 scrolling content; selected previews have a check mark as well as a signal shadow.
 The separate launch animation controls Draws in / Still / None and its duration.
+The selected background applies to all Home prompts and persists across launches.
+Sky and Space include visible illustrated skies without a location. An optional,
+explicit location enables the local sun and star chart; it is never inferred.
+The preview cards render the same artwork, with legible stars at thumbnail size.
+Reduced motion shows a settled composition and freezes the sky shader's clouds.
 
 **New window behavior**, labeled Cmd+N / Ctrl+N, offers Prompt palette,
 Shell in the current window's folder, or Same as launch, each with a preview.
@@ -1244,6 +1249,10 @@ Existing saved launch choices are preserved. Onboarding uses the existing
 `assets/art/memphis.luau` composition and renderer, profile face, theme card,
 startup previews and Phosphor icons. Memphis entry settles after three seconds;
 pointer interaction and entry respect Reduce Motion, including the macOS setting.
+The welcome introduction appears once. Optional tour progress remains saved,
+but unfinished exercises do not replace the selected start page on relaunch.
+Remembering a session does not reopen its tabs automatically; a selected custom
+layout opens only its own saved tabs.
 
 Run `python3 scripts/check-settings.py dist/nus.app` for isolated native checks
 of selection/persistence, sliders, shared windows, phone shutdown, theme

@@ -9,7 +9,7 @@
 -- and the place, so the Dipper is where it is; SPEED turns the sky faster
 -- than the hour does (1 = real).
 
-local SPEED = 30
+local SPEED = 1
 local TAU = math.pi * 2
 local D = math.pi / 180
 local function rnd(a, b) return a + math.random() * (b - a) end
@@ -72,6 +72,7 @@ local faint = {}
 for i = 1, 420 do faint[i] = { rnd(0, 24), math.asin(rnd(math.sin(-35 * D), 1)) / D, rnd(4.6, 6.0), rnd(0, TAU) } end
 local streaks = {}
 local started = nil
+local lastFrame = nil
 local pos = {}
 
 -- Sidereal time in hours at a longitude (east positive) for unix ms.
@@ -82,6 +83,11 @@ local function lst(ms, lon)
 end
 
 function draw(c)
+  -- Repeated fixed-time samples are reduced-motion frames. Do not leave
+  -- a randomly spawned meteor hanging forever across the prompt.
+  local animated = lastFrame ~= nil and c.t > lastFrame
+  lastFrame = c.t
+  if not animated then streaks = {} end
   local W, H = c.w, c.h
   local cx, cy = W / 2, H / 2
   local K = (H / 2 - 4) / 90
@@ -89,16 +95,15 @@ function draw(c)
   local star = if paper then "#141413" else "#f4f1ea"
   local warm = if paper then "#c8102e" else "#e8604a"
   local place = c:place()
-  if not place then
-    c:text(c.w / 2, c.h * 0.2, "Choose your location in Settings → Startup", 14, c.ink, 1, { align = "center" })
-    return
-  end
-  local lat, lon = place.lat, place.lon
+  -- Without a place, show an illustrated northern star chart. These are
+  -- drawing coordinates, never stored or exposed as the user's location.
+  local lat, lon = 45, 0
+  if place then lat, lon = place.lat, place.lon end
   local sinLat, cosLat = math.sin(lat * D), math.cos(lat * D)
   local nowMs = c:now()
   if not started then started = nowMs end
   local now = started + (nowMs - started) * SPEED
-  local LST = lst(now, lon)
+  local LST = if place then lst(now, lon) else 8 + c.t / 3600
   local typed = string.lower(c.typed)
   local R = 90 * K
 
@@ -221,8 +226,10 @@ function draw(c)
     c:text(p[1] + 9, p[2] - 9, string.format("%s · %.1f", s[1], s[4]), 10, c.ink, 0.85)
   end
   -- Meteors: a tap makes one; one on its own every so often.
-  for _, tp in c:taps() do streaks[#streaks + 1] = { x = tp.x, y = tp.y, a = rnd(0, TAU), t = c.t } end
-  if math.random() < 0.0015 then
+  if animated then
+    for _, tp in c:taps() do streaks[#streaks + 1] = { x = tp.x, y = tp.y, a = rnd(0, TAU), t = c.t } end
+  end
+  if animated and math.random() < 0.0015 then
     local ang, rr = rnd(0, TAU), rnd(0.3, 0.8) * R
     streaks[#streaks + 1] = { x = cx + math.cos(ang) * rr, y = cy + math.sin(ang) * rr, a = rnd(0, TAU), t = c.t }
   end
@@ -242,6 +249,10 @@ function draw(c)
     end
   end
   -- The chart's card: where and when.
+  if not place then
+    c:text(32, H - 86, "Illustrated northern sky", 10, c.ink, 0.45, { caps = true })
+    return
+  end
   local lh = math.floor(LST)
   local lm = math.floor((LST - lh) * 60)
   local ns = if lat >= 0 then "N" else "S"

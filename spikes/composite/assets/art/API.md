@@ -17,7 +17,7 @@ the rows beneath it reach while something is typed.
     c.typed               what is typed on the line
     c:taps()              {{x=, y=}, …} clicks since the last frame
     c:now()               unix milliseconds
-    c:place()             {lat, lon} — the machine's, for a sky
+    c:place()             {lat, lon} chosen by the user, or nil; draw a fallback when unset
     c:processes()         {list = {{pid, ppid, name, cpu, mem, threads}, …},
                            ctx, syscalls, threads, handles, ready}
 
@@ -39,7 +39,7 @@ optional `alpha` multiplies.
     c:sky({az=, alt=, cover=, wind=, seed={x,y}, x?, y?, w?, h?})
                                  a whole sky in the shader: az -1 (east, left) … 1 (west, right), alt the sine of the
                                  sun's altitude (night below 0: a moon, stars), cover 0..1, wind 1 = a breeze
-    c:backdrop("dark")           say the art is dark: the line goes paper with a shadow (default "paper")
+    c:backdrop("dark")           light text over dark artwork; "light" for dark text; default "paper" follows the theme
 
 The file's first lines say what it is:
 

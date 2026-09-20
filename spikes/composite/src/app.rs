@@ -1322,6 +1322,9 @@ impl App {
             app.tabs.push(welcome);
             app.then_done = true;
             app.start_shown = true;
+            // The welcome page is an introduction, not a prerequisite for
+            // the user's startup choice. Keep tour progress independently.
+            app.save_hints();
         } else {
             let pane = if needs_shell {
                 Pane::Term(app.new_term_pane_at(false, first, if secondary { born_in.clone() } else { None })?)
@@ -5381,13 +5384,15 @@ impl App {
         std::env::current_dir().unwrap_or_default().join("profile").join("onboarded")
     }
 
-    /// The marker holds the ticks ("10110") or "skip"; done when all five.
+    /// An existing tour marker means the introduction has been shown.
+    /// Unfinished optional exercises must not override the saved start page.
     fn onboarded() -> bool {
         if std::env::var_os("NUS_ONBOARD").is_some() {
             return false;
         }
         let s = std::fs::read_to_string(App::onboarded_marker()).unwrap_or_default();
-        s.trim() == "skip" || s.trim() == "11111"
+        let marker = s.trim();
+        marker == "skip" || (marker.len() == 5 && marker.bytes().all(|b| b == b'0' || b == b'1'))
     }
 
     fn load_hints() -> [bool; 5] {
@@ -5401,6 +5406,7 @@ impl App {
 
     fn save_hints(&self) {
         let s: String = self.hints.iter().map(|&h| if h { '1' } else { '0' }).collect();
+        let _ = std::fs::create_dir_all(App::onboarded_marker().parent().unwrap());
         let _ = std::fs::write(App::onboarded_marker(), s);
     }
 
@@ -6150,7 +6156,7 @@ impl App {
                 let parsed = crate::app::parse_place(&q);
                 if q.trim().is_empty() {
                     if self.behavior.place.is_some() {
-                        rows.push(row("×", "Clear location · turn off location-based artwork".into(), Action::SetPlace(None)));
+                        rows.push(row("×", "Clear location · use illustrated skies".into(), Action::SetPlace(None)));
                     }
                     rows.push(row("·", "Enter latitude, longitude — for example 35.2, -106.6".into(), Action::Noop));
                 } else if let Some([lat, lon]) = parsed {

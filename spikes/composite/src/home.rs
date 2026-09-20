@@ -416,9 +416,10 @@ impl App {
         if art {
             self.draw_home_art(scene, p, y0);
         }
-        // Over a dark art the words go paper, with a hair of ink beneath.
-        let dark = art && self.art.as_ref().is_some_and(|a| a.dark);
-        let ink = if dark { t.paper } else { ink };
+        // Match the artwork's brightness independently of the chrome theme.
+        let backdrop = if art { self.art.as_ref().map(|a| a.backdrop).unwrap_or_default() } else { crate::art::Backdrop::Theme };
+        let dark = backdrop == crate::art::Backdrop::Dark;
+        let ink = backdrop.foreground(t.mode, ink, t.paper);
         // The line: a caret in signal, the input in mono, a rule beneath.
         let px = self.px(20.0);
         let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
@@ -446,7 +447,7 @@ impl App {
         let sel = p.sel.min(rows.len());
         p.sel = sel;
         let label = self.label();
-        let dim = Style { color: fade(if dark { fade(t.paper, 0.75) } else { t.dim }, up), ..label };
+        let dim = Style { color: fade(if backdrop != crate::art::Backdrop::Theme { fade(ink, 0.75) } else { t.dim }, up), ..label };
         let foot_y = r.bottom() - self.px(26.0);
         if plate && p.input.trim().is_empty() {
             self.draw_stops(scene, p, &rows, sel, up);

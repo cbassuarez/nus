@@ -31,21 +31,20 @@ end
 
 function draw(c)
   local place = c:place()
-  if not place then
-    c:text(c.w / 2, c.h * 0.2, "Choose your location in Settings → Startup", 14, c.ink, 1, { align = "center" })
-    return
-  end
   local ms = c:now()
-  local alt, az = sun(ms, place.lat, place.lon)
+  -- An illustrated afternoon works without location access. Only an
+  -- explicitly chosen place turns this into the user's local sky.
+  local alt, az = 25 * D, 0.4
+  if place then alt, az = sun(ms, place.lat, place.lon) end
   -- Facing the equator: from the north, east is on the left; from the
   -- south, the sun crosses the northern sky and east is on the right.
   local x = -math.sin(az)
-  if place.lat < 0 then x = -x end
+  if place and place.lat < 0 then x = -x end
   -- The cover eases over the hours; a tap on the paper gusts the wind.
   local hours = ms / 3600000
   local cover = 0.2 + 0.22 * (0.5 + 0.5 * math.sin(hours * 0.7 + seed[1]))
   for _ in c:taps() do gust = 1 end
   gust = math.max(0, gust - c.dt * 0.15)
-  c:backdrop("dark")
+  c:backdrop(if alt > -0.05 then "light" else "dark")
   c:sky({ az = x, alt = math.sin(alt), cover = cover, wind = 1 + gust * 3, seed = seed })
 end
