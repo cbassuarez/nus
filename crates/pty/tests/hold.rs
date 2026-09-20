@@ -27,13 +27,22 @@ fn shell() -> Profile {
     }
 }
 
-fn wait_for(pty: &Pty, needle: &str, secs: u64) -> String {
+/// Read until `needle` shows up, answering as a terminal would on the way:
+/// ConPTY's conhost asks where the cursor is (DSR 6) and draws nothing
+/// until it hears back. The app's VT core answers that; here we do.
+fn wait_for(pty: &mut Pty, needle: &str, secs: u64) -> String {
     let mut got = String::new();
+    let mut answered = 0;
     let deadline = Instant::now() + Duration::from_secs(secs);
     while Instant::now() < deadline {
         got.push_str(&String::from_utf8_lossy(&pty.take_output()));
         if got.contains(needle) {
             break;
+        }
+        let asks = got.matches("[6n").count();
+        while answered < asks {
+            pty.write(b"[1;1R").expect("answer DSR");
+            answered += 1;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -51,9 +60,9 @@ fn spawn_detach_attach_kill() {
     let _ = std::fs::remove_dir_all(&dir);
 
     // Spawn through the holder; the shell's greeting arrives over the socket.
-    let pty = Pty::spawn_held(&shell(), 80, 24, &dir, || {}).expect("spawn held");
+    let mut pty = Pty::spawn_held(&shell(), 80, 24, &dir, || {}).expect("spawn held");
     let id = pty.held_id().expect("held").to_string();
-    let got = wait_for(&pty, "held-hello", 15);
+    let got = wait_for(&mut pty, "held-hello", 15);
     assert!(got.contains("held-hello"), "no greeting: {got:?}");
     let info = Info::read(&dir, &id).expect("info file");
     assert_eq!(info.id, id);
@@ -71,13 +80,13 @@ fn spawn_detach_attach_kill() {
 
     // Attach: the ring replays the greeting, then the shell is live.
     let mut again = Pty::attach(info.clone(), 80, 24, || {}).expect("attach");
-    let replay = wait_for(&again, "held-hello", 5);
+    let replay = wait_for(&mut again, "held-hello", 5);
     assert!(
         replay.contains("held-hello"),
         "no ring on attach: {replay:?}"
     );
     again.write(b"echo held-again\r\n").unwrap();
-    let live = wait_for(&again, "held-again", 10);
+    let live = wait_for(&mut again, "held-again", 10);
     assert!(
         live.contains("held-again"),
         "not live after attach: {live:?}"
