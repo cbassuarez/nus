@@ -12,7 +12,7 @@ import tarfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGETS = {'macos-arm64', 'macos-x86_64', 'windows-x86_64', 'linux-x86_64'}
+TARGETS = {'macos-arm64', 'windows-x86_64', 'linux-x86_64'}
 
 def digest(path):
     with path.open('rb') as stream:

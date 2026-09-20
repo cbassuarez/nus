@@ -325,7 +325,24 @@ impl Pty {
             }
             Inner::Held(c) => c.kill(),
         }
+        self.release_output();
         self.reaped = true;
+    }
+
+    /// Keep the pipe draining while the pty closes. The reader thread
+    /// parks on a full channel when nobody is taking output — a tab that
+    /// is closing, a test that never read — and ConPTY's conhost blocks
+    /// `ClosePseudoConsole` until its output has been read, so a master
+    /// dropped over a full channel never comes back. A drain thread takes
+    /// the receiver and eats until the reader sees EOF.
+    fn release_output(&mut self) {
+        if let Inner::Local { output, .. } = &mut self.inner {
+            let (_, parked) = mpsc::sync_channel(0);
+            let rx = std::mem::replace(output, parked);
+            let _ = thread::Builder::new()
+                .name("pty-drain".into())
+                .spawn(move || for _ in rx {});
+        }
     }
 }
 

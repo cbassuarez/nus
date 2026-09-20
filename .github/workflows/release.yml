@@ -54,7 +54,7 @@ jobs:
           if m[1] != root or app != root: raise SystemExit('Tag, app and workspace versions must match')
           selected=os.environ['RELEASE_PLATFORMS']
           if '-preview.' not in tag and selected!='all': raise SystemExit('Stable requires every platform')
-          targets=[('macos-15','macos-arm64'),('macos-15-intel','macos-x86_64'),('windows-2022','windows-x86_64'),('ubuntu-22.04','linux-x86_64')]
+          targets=[('macos-15','macos-arm64'),('windows-2025','windows-x86_64'),('ubuntu-22.04','linux-x86_64')]
           targets=[(runner,target) for runner,target in targets if selected=='all' or target.startswith(selected)]
           if not targets: raise SystemExit('No selected platforms')
           with open(os.environ['GITHUB_OUTPUT'],'a') as out:

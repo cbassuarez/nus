@@ -1,7 +1,7 @@
 # Releasing nus
 
-The Release workflow builds four native packages: Apple Silicon and Intel Macs,
-Windows x86-64, and Linux x86-64. Native runners fetch the CEF version pinned by
+The Release workflow builds three native packages: Apple Silicon Macs,
+Windows x86-64, and Linux x86-64. Intel Macs are not a target. Native runners fetch the CEF version pinned by
 the submodule, test both workspaces, build the app and CLI, package the complete
 runtime, and check that the packaged executable can start its loader.
 
@@ -19,10 +19,10 @@ runtime, and check that the packaged executable can start its loader.
 - A manual preview can select Linux, Windows or macOS independently. All selected
   jobs must pass; its notes explicitly list omitted platforms. This lets Linux
   previews ship while Apple's account or signing is pending. Stable still requires
-  the complete four-platform matrix. Published previews remain immutable.
+  the complete three-platform matrix. Published previews remain immutable.
 
 The publication job verifies every archive's size and SHA-256, creates a draft,
-uploads all four packages, `SHA256SUMS.txt` and `release.json`, then publishes.
+uploads all three packages, `SHA256SUMS.txt` and `release.json`, then publishes.
 A failed upload remains a draft. The downloads site reads only published releases
 and only exposes assets matching this package contract. Missing channels and
 failed API requests never become invented download links.
