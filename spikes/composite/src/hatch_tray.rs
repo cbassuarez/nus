@@ -12,12 +12,11 @@ impl Tray {
     pub fn new(proxy:winit::event_loop::EventLoopProxy<crate::UserEvent>)->Option<Self>{
         #[cfg(any(windows,target_os="macos"))]
         {
-            use tray_icon::{TrayIconBuilder,TrayIconEvent,MouseButton,MouseButtonState,menu::{Menu,MenuItem,MenuEvent}};
+            use tray_icon::{TrayIconBuilder,TrayIconEvent,MouseButton,MouseButtonState,menu::{Menu,MenuItem}};
             let menu=Menu::new();let work=MenuItem::with_id("nus-drawer","Open nus drawer",true,None);
             let hatch=MenuItem::with_id("hatch-show","Show / hide Hatch",true,None);let main=MenuItem::with_id("hatch-main","Open nus window",true,None);let quit=MenuItem::with_id("hatch-quit","Quit nus",true,None);
             menu.append_items(&[&work,&hatch,&main,&quit]).ok()?;let click_proxy=proxy.clone();
             TrayIconEvent::set_event_handler(Some(move |event|{if let TrayIconEvent::Click{rect,button:MouseButton::Left,button_state:MouseButtonState::Down,..}=event{let _=click_proxy.send_event(crate::UserEvent::MenuDrawer(Some(crate::menu_drawer::Anchor{x:rect.position.x,y:rect.position.y,width:rect.size.width,height:rect.size.height})));}}));
-            MenuEvent::set_event_handler(Some(move |event:MenuEvent|{let action=match event.id.0.as_str(){"nus-drawer"=>crate::UserEvent::MenuDrawer(None),"hatch-show"=>crate::UserEvent::Hatch,"hatch-main"=>crate::UserEvent::HatchMain,"hatch-quit"=>crate::UserEvent::HatchQuit,_=>return};let _=proxy.send_event(action);}));
             let signal=nus_render::theme::signal::RED;let icon=tray_icon::Icon::from_rgba(nus_render::dock_icon::render(36,signal,nus_render::dock_icon::Face::Newsreader),36,36).ok()?;
             match TrayIconBuilder::new().with_menu(Box::new(menu)).with_menu_on_left_click(false).with_icon(icon).with_tooltip("nus · All quiet").build(){Ok(icon)=>{let tray=Self{icon,work,state:Signal::default(),style:SignalStyle::Dot,enabled:true,signal};tray.trace_icon();Some(tray)},Err(e)=>{tracing::warn!("nus tray: {e}");None}}
         }

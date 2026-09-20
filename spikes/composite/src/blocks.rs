@@ -373,6 +373,8 @@ impl App {
         }
         // A diff in a block: chips on each hunk's line — stage, revert, apply.
         p.hunk_hits.clear();
+        let first = blocks.first().map_or(u64::MAX, |b| b.start);
+        p.diff_cache.retain(|start, _| *start >= first);
         let diff_blocks: Vec<Block> = blocks.iter().filter(|b| !b.running && !p.is_folded(b)).cloned().collect();
         for b in &diff_blocks {
             let fresh = p.diff_cache.get(&b.start).is_some_and(|(end, _)| *end == b.end);

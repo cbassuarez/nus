@@ -45,7 +45,8 @@ notify-rust = "4"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-debug = 1
+debug = 0
+strip = "symbols"
 
 # Backport the macOS first-drawable fix until wgpu ships PR #10302.
 [patch.crates-io]

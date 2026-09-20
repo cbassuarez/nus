@@ -6,6 +6,7 @@
 .DS_Store
 /.env
 /spikes/*/Cargo.lock
+!/spikes/composite/Cargo.lock
 /spikes/vt-render/lig.rs
 /spikes/cef-osr/ext/
 /spikes/cef-osr/profile/

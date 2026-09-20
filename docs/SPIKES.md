@@ -27,7 +27,7 @@ On top of #1: load uBlock Origin Lite and the 1Password extension. Log in.
 If this fails, "daily-driver browser" is redefined before any UI is written.
 
 ## 3. `vt-render` — own VT core + glyph atlas
-**Windows done 2026-09-15: vim + ligatures correct, 2.8 ms key→present,
+**Windows done 2026-09-15: vim + ligatures correct, 2.77 ms mean key-event→present-call in the isolated spike,
 <2 ms full-screen frames in release.** Core lives in `crates/vt` and
 `crates/pty`; findings in `spikes/vt-render/README.md`. macOS/Linux TODO.
 

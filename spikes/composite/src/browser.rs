@@ -169,7 +169,15 @@ pub static DOWNLOAD_ASK: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// The folder downloads go to: the chosen one when it is a folder that
 /// exists (or can be made), else ~/Downloads, else profile/downloads.
 pub fn downloads_dir() -> std::path::PathBuf {
-    if std::env::var_os("NUS_SHOT").is_some() {return std::env::current_dir().unwrap_or_default().join("profile/downloads");}
+    if std::env::var_os("NUS_SHOT").is_some() {
+        if crate::private::enabled() {
+            if let Some(dir) = std::env::var_os("NUS_SHOT_DIR") { return std::path::PathBuf::from(dir).join("downloads"); }
+        }
+        return std::env::current_dir().unwrap_or_default().join("profile/downloads");
+    }
+    if crate::private::enabled() {
+        if let Some(dir) = crate::private::downloads_dir() { return dir.to_path_buf(); }
+    }
     if let Some(dir) = DOWNLOAD_DIR.read().ok().and_then(|d| d.clone()) {
         if dir.is_dir() || std::fs::create_dir_all(&dir).is_ok() {
             return dir;
@@ -182,7 +190,7 @@ pub fn downloads_dir() -> std::path::PathBuf {
 pub fn default_downloads_dir() -> std::path::PathBuf {
     let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).map(std::path::PathBuf::from);
     match home {
-        Ok(h) if h.join("Downloads").is_dir() => h.join("Downloads"),
+        Ok(h) if crate::private::enabled() || h.join("Downloads").is_dir() => h.join("Downloads"),
         _ => std::env::current_dir().unwrap_or_default().join("profile").join("downloads"),
     }
 }
@@ -278,7 +286,40 @@ pub struct Video {
     pub dur: f64,
 }
 
-pub const DEVTOOLS_PORT: u16 = 9229;
+fn debug_port(value: Option<&str>, private: bool) -> Option<u16> {
+    if private { return None; }
+    value.and_then(|s| s.parse::<u16>().ok()).filter(|p| *p >= 1024)
+}
+fn external_debug_port() -> Option<u16> {
+    debug_port(std::env::var("NUS_REMOTE_DEBUGGING_PORT").ok().as_deref(), crate::private::enabled())
+}
+
+#[cfg(test)]
+mod debugging_tests {
+    #[test] fn external_debugging_requires_a_valid_explicit_port_and_is_never_private() {
+        for value in [None, Some(""), Some("0"), Some("80"), Some("65536"), Some("localhost:9229")] {assert_eq!(super::debug_port(value, false),None);}
+        assert_eq!(super::debug_port(Some("9229"), false),Some(9229));
+        assert_eq!(super::debug_port(Some("9229"), true),None);
+    }
+}
+
+wrap_life_span_handler! {
+    struct NativeDevToolsLife { _unit: () }
+    impl LifeSpanHandler {
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            if let Some(b) = browser { LIVE_BROWSERS.with(|v| v.borrow_mut().insert(b.identifier())); }
+        }
+        fn on_before_close(&self, browser: Option<&mut Browser>) {
+            if let Some(b) = browser { LIVE_BROWSERS.with(|v| v.borrow_mut().remove(&b.identifier())); }
+        }
+    }
+}
+wrap_client! {
+    struct NativeDevToolsClient { life: LifeSpanHandler }
+    impl Client {
+        fn life_span_handler(&self) -> Option<LifeSpanHandler> { Some(self.life.clone()) }
+    }
+}
 
 pub type SharedRef = StdRc<RefCell<Shared>>;
 
@@ -302,9 +343,17 @@ wrap_app! {
         ) {
             let Some(cl) = command_line else { return };
             cl.append_switch(Some(&"no-startup-window".into()));
+            // Disposable HTTP cache; cookies and site storage stay.
+            cl.append_switch_with_value(Some(&"disk-cache-size".into()), Some(&"67108864".into()));
             cl.append_switch(Some(&"noerrdialogs".into()));
             cl.append_switch(Some(&"hide-crash-restore-bubble".into()));
-            cl.append_switch(Some(&"use-mock-keychain".into()));
+            // Production uses the OS keychain. Only explicitly isolated
+            // screenshot fixtures may bypass it to avoid credential dialogs.
+            cl.remove_switch(Some(&"use-mock-keychain".into()));
+            if cfg!(target_os="macos") && std::env::var_os("NUS_SHOT").is_some()
+                && std::env::var_os("NUS_SHOT_DIR").is_some() && std::env::var_os("NUS_TEST_REAL_KEYCHAIN").is_none() {
+                cl.append_switch(Some(&"use-mock-keychain".into()));
+            }
             if !crate::browser::SMOOTH_SCROLL.load(std::sync::atomic::Ordering::Relaxed) {
                 cl.append_switch(Some(&"disable-smooth-scrolling".into()));
             }
@@ -323,9 +372,15 @@ wrap_app! {
             if std::env::var_os("NUS_AUTOPLAY").is_some() {
                 cl.append_switch_with_value(Some(&"autoplay-policy".into()), Some(&"no-user-gesture-required".into()));
             }
-            // Loopback-only; our DevTools pane is the frontend attached through it.
-            cl.append_switch_with_value(Some(&"remote-debugging-port".into()), Some(&DEVTOOLS_PORT.to_string().as_str().into()));
-            cl.append_switch_with_value(Some(&"remote-allow-origins".into()), Some(&format!("http://127.0.0.1:{DEVTOOLS_PORT},devtools://devtools").as_str().into()));
+            // Native DevTools uses CEF's in-process connection. Exposing CDP
+            // over TCP is a deliberate developer opt-in, never incognito.
+            cl.remove_switch(Some(&"remote-debugging-port".into()));
+            cl.remove_switch(Some(&"remote-debugging-pipe".into()));
+            cl.remove_switch(Some(&"remote-allow-origins".into()));
+            if let Some(port) = external_debug_port() {
+                cl.append_switch_with_value(Some(&"remote-debugging-address".into()), Some(&"127.0.0.1".into()));
+                cl.append_switch_with_value(Some(&"remote-debugging-port".into()), Some(&port.to_string().as_str().into()));
+            }
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -539,7 +594,7 @@ wrap_display_handler! {
         fn on_loading_progress_change(&self, _browser: Option<&mut Browser>, progress: f64) {
             let mut s = self.d.shared.borrow_mut();
             if progress >= 1.0 && s.loading {
-                tracing::info!("loaded {} +{}ms", s.url, s.created.elapsed().as_millis());
+                if !crate::private::enabled() { tracing::info!("loaded {} +{}ms", s.url, s.created.elapsed().as_millis()); }
             }
             s.loading = progress < 1.0;
             s.progress = progress;
@@ -595,12 +650,18 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             let Some(result) = result else { return };
+            if result.len() > 1024 * 1024 {
+                let mut s=self.o.shared.borrow_mut();
+                if s.replies.len()>=16 {s.replies.remove(0);}
+                s.replies.push((message_id,serde_json::json!({"exceptionDetails":{"text":"Result exceeds nus’s 1 MiB inspection limit. Request a smaller section."}})));
+                return;
+            }
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(result) {
                 if let Some(id) = v.pointer("/targetInfo/targetId").and_then(|t| t.as_str()) {
                     self.o.shared.borrow_mut().target_id = Some(id.to_string());
                 }
                 let mut s = self.o.shared.borrow_mut();
-                if s.replies.len() > 32 {
+                if s.replies.len() >= 16 {
                     s.replies.remove(0);
                 }
                 s.replies.push((message_id, v));
@@ -611,6 +672,9 @@ wrap_dev_tools_message_observer! {
             let Some(method) = method else { return };
             let method = method.to_string();
             let Some(params) = params else { return };
+            // Inspectors retain a bounded diagnostic sample, not arbitrarily
+            // large console objects or page-generated payloads.
+            if params.len() > 256 * 1024 { return; }
             let Ok(v) = serde_json::from_slice::<serde_json::Value>(params) else { return };
             // The page's console and network, kept for eyes (`nus mcp`) and the block beside.
             let entry = match method.as_str() {
@@ -624,7 +688,12 @@ wrap_dev_tools_message_observer! {
                 "Network.loadingFailed" => Some(serde_json::json!({ "kind": "response", "id": v.get("requestId"), "status": 0, "error": v.get("errorText"), "type": v.get("type"), "at": v.get("timestamp") })),
                 _ => None,
             };
-            if let Some(e) = entry {
+            if let Some(mut e) = entry {
+                for key in ["text","url","id"] {
+                    if let Some(serde_json::Value::String(text))=e.get_mut(key) {
+                        if text.len()>4096 {let mut end=4096;while !text.is_char_boundary(end){end-=1;}text.truncate(end);text.push_str("…");}
+                    }
+                }
                 let mut s = self.o.shared.borrow_mut();
                 if s.log.len() >= 400 {
                     s.log.remove(0);
@@ -801,6 +870,13 @@ wrap_life_span_handler! {
     }
 
     impl LifeSpanHandler {
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            if let Some(b) = browser { LIVE_BROWSERS.with(|v| { v.borrow_mut().insert(b.identifier()); }); }
+        }
+        fn on_before_close(&self, browser: Option<&mut Browser>) {
+            if let Some(b) = browser { LIVE_BROWSERS.with(|v| { v.borrow_mut().remove(&b.identifier()); }); }
+        }
+
         // Popups would be separate native windows; hand the URL to the app instead.
         fn on_before_popup(
             &self,
@@ -973,7 +1049,7 @@ wrap_permission_handler! {
             let video = requested_permissions & MediaAccessPermissionTypes::DEVICE_VIDEO_CAPTURE.get_raw() as u32 != 0;
             let audio = requested_permissions & MediaAccessPermissionTypes::DEVICE_AUDIO_CAPTURE.get_raw() as u32 != 0;
             let what = match (video, audio) { (true, true) => "camera and microphone", (true, false) => "camera", (false, true) => "microphone", _ => "screen capture" }.to_string();
-            if let Some(allow) = crate::sites::remembered(&crate::sites::host_of(&origin), &what) {
+            if let Some(allow) = crate::sites::remembered(&origin, &what) {
                 cb.cont(if allow { requested_permissions } else { 0 });
                 return 1;
             }
@@ -987,7 +1063,7 @@ wrap_permission_handler! {
             let Some(cb) = callback else { return 0 };
             let origin = requesting_origin.map(|s| s.to_string()).unwrap_or_default();
             let what = permission_words(requested_permissions);
-            if let Some(allow) = crate::sites::remembered(&crate::sites::host_of(&origin), &what) {
+            if let Some(allow) = crate::sites::remembered(&origin, &what) {
                 cb.cont(if allow { PermissionRequestResult::ACCEPT } else { PermissionRequestResult::DENY });
                 return 1;
             }
@@ -1070,6 +1146,39 @@ wrap_request_handler! {
         fn resource_request_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, is_navigation: ::std::os::raw::c_int, _is_download: ::std::os::raw::c_int, _request_initiator: Option<&CefString>, _disable_default_handling: Option<&mut ::std::os::raw::c_int>) -> Option<ResourceRequestHandler> {
             Some(BlockBuilder::new(self.display.clone(), is_navigation != 0))
         }
+
+        /// One certificate is trusted without asking: the one this window is
+        /// serving to the phone right now, matched by its exact bytes. The
+        /// phone has to decide for itself, but nus knows its own key, so
+        /// opening the phone's page in a tab here is not a lesson in clicking
+        /// through warnings. Every other certificate error is Chromium's to
+        /// show, including anything at the same address after the phone stops.
+        fn on_certificate_error(&self, _browser: Option<&mut Browser>, _cert_error: Errorcode, request_url: Option<&CefString>, ssl_info: Option<&mut Sslinfo>, callback: Option<&mut Callback>) -> ::std::os::raw::c_int {
+            let Some(phone) = crate::phone::current() else { return 0 };
+            let url = request_url.map(CefString::to_string).unwrap_or_default();
+            let Ok(url) = url::Url::parse(&url) else { return 0 };
+            let host = url.host_str().unwrap_or_default();
+            let ours = url.port() == Some(phone.port)
+                && (host == phone.host || host == "127.0.0.1" || host == "localhost" || host == "[::1]");
+            if !ours {
+                return 0;
+            }
+            let Some(der) = ssl_info.and_then(|i| i.x509_certificate()).and_then(|c| c.derencoded()) else { return 0 };
+            let mut bytes = vec![0u8; der.size()];
+            if der.data(Some(&mut bytes), 0) != bytes.len() {
+                return 0;
+            }
+            if !crate::phone::is_session_certificate(&phone, &bytes) {
+                return 0;
+            }
+            match callback {
+                Some(c) => {
+                    c.cont();
+                    1
+                }
+                None => 0,
+            }
+        }
     }
 }
 
@@ -1113,10 +1222,24 @@ wrap_client! {
     }
 }
 
+thread_local! { static LIVE_BROWSERS: RefCell<std::collections::HashSet<i32>> = RefCell::new(Default::default()); }
+pub fn live_count() -> usize { LIVE_BROWSERS.with(|b| b.borrow().len()) }
+
 pub struct BrowserTab {
     pub browser: Browser,
     pub shared: SharedRef,
     _observer: Option<Registration>,
+}
+
+impl Drop for BrowserTab {
+    fn drop(&mut self) {
+        self._observer.take();
+        let menu = self.shared.borrow_mut().menu.take();
+        if let Some(menu) = menu { menu.callback.cancel(); }
+        // Releasing the Rust wrapper does not close a CEF browser. Without
+        // this, closed/sleeping tabs keep renderers, timers and GPU surfaces.
+        if let Some(host) = self.browser.host() { host.close_dev_tools(); host.close_browser(1); }
+    }
 }
 
 impl BrowserTab {
@@ -1166,7 +1289,11 @@ impl BrowserTab {
         );
         // The container's context: the global one for PERSONAL, else its own
         // cookie jar and cache under profile/containers.
-        let mut context = crate::containers::context(container);
+        let mut context = crate::containers::context(container)?;
+        if crate::private::enabled() && !CefString::from(&context.cache_path()).to_string().is_empty() {
+            tracing::error!("Refusing a persistent browser context in incognito");
+            return None;
+        }
         let t0 = crate::clock::now();
         let browser = browser_host_create_browser_sync(
             Some(&window_info),
@@ -1174,9 +1301,9 @@ impl BrowserTab {
             Some(&url.into()),
             Some(&settings),
             None,
-            context.as_mut(),
+            Some(&mut context),
         )?;
-        tracing::info!("create_browser_sync {url} took {}ms", crate::clock::since(t0).as_millis());
+        if !crate::private::enabled() { tracing::info!("create_browser_sync {url} took {}ms", crate::clock::since(t0).as_millis()); }
         let mut observer = ObserverBuilder::new(Observer { shared: shared.clone() });
         let registration = browser.host().and_then(|h| h.add_dev_tools_message_observer(Some(&mut observer)));
         let tab = BrowserTab { browser, shared, _observer: registration };
@@ -1269,16 +1396,23 @@ impl BrowserTab {
         }
     }
 
-    /// Open the DevTools frontend for this page as a browser we composite.
-    /// (CEF refuses windowless DevTools windows in the Chrome runtime.)
-    pub fn open_devtools(&self, device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, scale: f32, panel: &str) -> Option<DevToolsView> {
-        let target = self.shared.borrow().target_id.clone()?;
-        let url = format!("http://127.0.0.1:{DEVTOOLS_PORT}/devtools/inspector.html?ws=127.0.0.1:{DEVTOOLS_PORT}/devtools/page/{target}&panel={panel}");
-        let shared: SharedRef = StdRc::new(RefCell::new(Shared { scale, size: (400.0, 300.0), ..Default::default() }));
-        BrowserTab::create(&url, shared, device, bind_texture)
+    /// Native DevTools talks directly to this browser; no listening socket.
+    pub fn open_devtools(&self, _device: wgpu::Device, _bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, _scale: f32, _panel: &str) -> Option<DevToolsView> {
+        let host = self.host()?;
+        let info = WindowInfo {
+            window_name: "nus Developer Tools".into(),
+            hidden: i32::from(std::env::var_os("NUS_SHOT").is_some()),
+            bounds: cef::Rect { x: 100, y: 100, width: 1000, height: 700 },
+            runtime_style: RuntimeStyle::CHROME,
+            ..Default::default()
+        };
+        let mut client = NativeDevToolsClient::new(NativeDevToolsLife::new(()));
+        host.show_dev_tools(Some(&info), Some(&mut client), Some(&BrowserSettings::default()), None);
+        None
     }
 
-    pub fn close_devtools(&self) {}
+    pub fn has_devtools(&self) -> bool { self.host().is_some_and(|h| h.has_dev_tools() != 0) }
+    pub fn close_devtools(&self) { if let Some(host) = self.host() { host.close_dev_tools(); } }
 
     pub fn load(&self, url: &str) {
         if let Some(f) = self.browser.main_frame() {

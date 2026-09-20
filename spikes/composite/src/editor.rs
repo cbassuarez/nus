@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use crate::{editor_work as work, work::Task};
 
 use nus_lsp::lsp_types::{CompletionItem, Diagnostic, DiagnosticSeverity, Url};
 use nus_render::text::Style;
@@ -48,8 +49,17 @@ pub struct Buffer {
     last_edit: Instant,
     /// Diagnostics from the server, by the text they were published for.
     pub diags: Vec<Diagnostic>,
-    /// Spans per line, cached by a hash of the text.
-    spans: Option<(u64, Vec<Vec<(usize, usize, crate::predict::Tok)>>)>,
+    /// Revision changes only on edits; painting never hashes the document.
+    pub revision: u64,
+    pub synced_revision: u64,
+    pub lsp_key: Option<String>,
+    spans: Option<(usize, usize, work::LineSpans)>,
+    highlighting: Option<(usize, usize, Task<work::LineSpans>)>,
+    loading: Option<Task<std::io::Result<Rope>>>,
+    pub load_error: Option<String>,
+    pub scroll_col: usize,
+    pub pending_position: Option<nus_lsp::lsp_types::Position>,
+    opened_at: Option<Instant>,
     /// The server has this document open.
     pub in_lsp: bool,
     /// A save waits on the formatter's answer (sent at this instant).
@@ -58,29 +68,53 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn from_path(path: &Path) -> anyhow::Result<Buffer> {
-        let s = std::fs::read_to_string(path)?;
-        let s = s.replace("\r\n", "\n");
-        let language = nus_lsp::registry::language_for(path);
+        let mut b = Buffer::empty();
+        b.opened_at = crate::perf::enabled().then(Instant::now);
         let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let abs = PathBuf::from(abs.to_string_lossy().trim_start_matches(r"\\?\"));
-        Ok(Buffer {
-            uri: Url::from_file_path(&abs).ok(),
-            path: Some(abs),
-            text: Rope::from_str(&s),
-            cursor: 0,
-            anchor: None,
-            want_col: None,
-            language,
-            dirty: false,
-            scroll: 0,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            last_edit: crate::clock::now(),
-            diags: Vec::new(),
-            spans: None,
-            in_lsp: false,
-            save_pending: None,
-        })
+        b.uri = Url::from_file_path(&abs).ok();
+        b.language = nus_lsp::registry::language_for(&abs);
+        b.path = Some(abs.clone());
+        b.loading = Some(Task::start(move |cancel| work::load(&abs, cancel))
+            .ok_or_else(|| anyhow::anyhow!("File workers are busy. Try opening the file again."))?);
+        Ok(b)
+    }
+
+    pub fn ready(&self) -> bool { self.loading.is_none() && self.load_error.is_none() }
+
+    pub fn presented(&mut self) {
+        if !self.ready() { return; }
+        if let Some(at) = self.opened_at.take() {
+            let name = if self.text.len_bytes() >= 100 * 1024 * 1024 { "file_100m_open_submit" }
+                else if self.text.len_bytes() >= 10 * 1024 * 1024 { "file_10m_open_submit" } else { "file_open_submit" };
+            crate::perf::record(name, at.elapsed().as_secs_f64()*1000.0);
+        }
+    }
+
+    pub fn poll(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(job) = &self.loading {
+            match job.take() {
+                Ok(Ok(text)) => {
+                    self.text = text; self.loading = None; self.revision += 1; changed = true;
+                    if let Some(pos) = self.pending_position.take() { self.cursor = work::offset(&self.text, pos); self.scroll = (pos.line as usize).saturating_sub(5); }
+                }
+                Ok(Err(e)) => { self.load_error = Some(e.to_string()); self.loading = None; changed = true; }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.load_error = Some("File worker stopped. Close this buffer and open it again.".into());
+                    self.loading = None; changed = true;
+                }
+                Err(_) => {}
+            }
+        }
+        if let Some((start, end, job)) = &self.highlighting {
+            match job.take() {
+                Ok(spans) => { self.spans = Some((*start, *end, spans)); self.highlighting = None; changed = true; }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.highlighting = None; }
+                Err(_) => {}
+            }
+        }
+        changed
     }
 
     pub fn empty() -> Buffer {
@@ -99,6 +133,15 @@ impl Buffer {
             last_edit: crate::clock::now(),
             diags: Vec::new(),
             spans: None,
+            revision: 0,
+            synced_revision: 0,
+            lsp_key: None,
+            highlighting: None,
+            loading: None,
+            load_error: None,
+            scroll_col: 0,
+            pending_position: None,
+            opened_at: None,
             in_lsp: false,
             save_pending: None,
         }
@@ -137,17 +180,14 @@ impl Buffer {
     pub fn line_len(&self, line: usize) -> usize {
         let l = self.text.line(line);
         let n = l.len_chars();
-        if n > 0 && l.char(n - 1) == '\n' {
-            n - 1
-        } else {
-            n
-        }
+        let n = n - usize::from(n > 0 && l.char(n-1) == '\n');
+        n - usize::from(n > 0 && l.char(n-1) == '\r')
     }
 
     pub fn line_text(&self, line: usize) -> String {
         let l = self.text.line(line);
         let s: String = l.chars().collect();
-        s.trim_end_matches('\n').to_string()
+        s.trim_end_matches(['\r', '\n']).to_string()
     }
 
     pub fn selection(&self) -> Option<(usize, usize)> {
@@ -188,6 +228,8 @@ impl Buffer {
     fn changed(&mut self) {
         self.dirty = true;
         self.spans = None;
+        self.highlighting = None;
+        self.revision = self.revision.wrapping_add(1);
         self.want_col = None;
     }
 
@@ -221,6 +263,7 @@ impl Buffer {
 
     /// Replace the selection (or insert at the caret) with `s`.
     pub fn insert(&mut self, s: &str, merge: bool) {
+        if !self.ready() { return; }
         self.remember(merge);
         if let Some((a, b)) = self.selection() {
             self.text.remove(a..b);
@@ -234,6 +277,7 @@ impl Buffer {
 
     /// Delete a range; the caret lands at its start.
     pub fn delete(&mut self, a: usize, b: usize) {
+        if !self.ready() { return; }
         if a >= b {
             return;
         }
@@ -251,8 +295,7 @@ impl Buffer {
             // Backspace at the start of a soft indent eats a tab's worth.
             let line = self.line_of(self.cursor);
             let col = self.col_of(self.cursor);
-            let lt = self.line_text(line);
-            let all_space = lt.chars().take(col).all(|c| c == ' ') && col > 0;
+            let all_space = self.text.line(line).chars().take(col).all(|c| c == ' ') && col > 0;
             let n = if all_space { ((col - 1) % 4) + 1 } else { 1 };
             self.delete(self.cursor - n, self.cursor);
         }
@@ -269,7 +312,7 @@ impl Buffer {
     /// Enter: newline plus the current line's leading whitespace.
     pub fn newline(&mut self) {
         let line = self.line_of(self.cursor);
-        let lt = self.line_text(line);
+        let lt: String = self.text.line(line).chars().take(8192).collect();
         let indent: String = lt.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
         let indent: String = indent.chars().take(self.col_of(self.cursor)).collect();
         let extra = if lt.trim_end().ends_with(['{', '(', '[', ':']) {
@@ -282,6 +325,7 @@ impl Buffer {
 
     /// Tab: indent the selected lines, or insert spaces to the next stop.
     pub fn indent(&mut self, out: bool) {
+        if !self.ready() { return; }
         match self.selection() {
             Some((a, b)) if self.line_of(a) != self.line_of(b.saturating_sub(1)) || out => {
                 self.remember(false);
@@ -289,8 +333,7 @@ impl Buffer {
                 for l in (l0..=l1).rev() {
                     let start = self.text.line_to_char(l);
                     if out {
-                        let lt = self.line_text(l);
-                        let n = lt.chars().take(4).take_while(|c| *c == ' ').count();
+                        let n = self.text.line(l).chars().take(4).take_while(|c| *c == ' ').count();
                         self.text.remove(start..start + n);
                     } else {
                         self.text.insert(start, "    ");
@@ -306,8 +349,7 @@ impl Buffer {
                 self.remember(false);
                 let l = self.line_of(self.cursor);
                 let start = self.text.line_to_char(l);
-                let lt = self.line_text(l);
-                let n = lt.chars().take(4).take_while(|c| *c == ' ').count();
+                let n = self.text.line(l).chars().take(4).take_while(|c| *c == ' ').count();
                 self.text.remove(start..start + n);
                 self.cursor = self.cursor.saturating_sub(n).max(start);
                 self.changed();
@@ -323,6 +365,7 @@ impl Buffer {
     /// Replace the whole text (a formatter's answer), keeping the caret's
     /// line and column where it can.
     pub fn replace_all(&mut self, s: &str) {
+        if !self.ready() { return; }
         let (line, col) = (self.line_of(self.cursor), self.col_of(self.cursor));
         self.remember(false);
         self.text = Rope::from_str(s);
@@ -387,46 +430,36 @@ impl Buffer {
         }
     }
 
-    pub fn spans_for(&mut self, line: usize) -> Vec<(usize, usize, crate::predict::Tok)> {
-        let hash = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            self.text.len_bytes().hash(&mut h);
-            for chunk in self.text.chunks() {
-                chunk.hash(&mut h);
-            }
-            h.finish()
+    fn prepare_spans(&mut self, first: usize, rows: usize, columns: usize) {
+        if !self.ready() || self.language == "plaintext" { return; }
+        let line = first.min(self.text.len_lines()-1);
+        let start = self.text.line_to_char(line) + self.scroll_col.min(self.line_len(line));
+        let last = (line + rows).min(self.text.len_lines()-1);
+        let end = (self.text.line_to_char(last) + self.line_len(last).min(self.scroll_col + columns)).min(self.len_chars());
+        // Small files keep full grammar context. Large files color a bounded
+        // window with preceding context; neither copying nor parsing runs on
+        // the event thread, and an edit/scroll cancels superseded work.
+        let (a, z) = if self.text.len_bytes() <= 512 * 1024 {
+            (0, self.len_chars())
+        } else {
+            let a = self.text.line_to_char(line.saturating_sub(32)).max(start.saturating_sub(4096));
+            (a, (a + 16384).min(self.len_chars()))
         };
-        if self.spans.as_ref().map(|(h, _)| *h) != Some(hash) {
-            let grammar = grammar_for(self.language);
-            let all = if crate::syntax::has(grammar) {
-                let text = self.text.to_string();
-                crate::syntax::spans(grammar, &text).unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            // Split the file-wide spans by line.
-            let mut per: Vec<Vec<(usize, usize, crate::predict::Tok)>> =
-                vec![Vec::new(); self.text.len_lines()];
-            for (a, len, class) in all {
-                let l0 = self.text.char_to_line(a.min(self.len_chars()));
-                let l1 = self.text.char_to_line((a + len).min(self.len_chars()));
-                for l in l0..=l1.min(per.len().saturating_sub(1)) {
-                    let ls = self.text.line_to_char(l);
-                    let le = ls + self.line_len(l);
-                    let (s0, s1) = (a.max(ls), (a + len).min(le));
-                    if s1 > s0 {
-                        per[l].push((s0 - ls, s1 - s0, class));
-                    }
-                }
-            }
-            self.spans = Some((hash, per));
+        let covers = |a: usize, z: usize| a <= start && z >= end.min(start + columns);
+        if self.spans.as_ref().is_some_and(|(a,z,_)| covers(*a,*z))
+            || self.highlighting.as_ref().is_some_and(|(a,z,_)| covers(*a,*z)) { return; }
+        self.highlighting = None;
+        let text = self.text.clone();
+        let grammar = grammar_for(self.language);
+        if let Some(job) = Task::start(move |cancel| work::highlight(&text, grammar, a, z, cancel)) {
+            self.highlighting = Some((a,z,job));
         }
-        self.spans
-            .as_ref()
-            .and_then(|(_, p)| p.get(line).cloned())
-            .unwrap_or_default()
     }
+
+    fn spans_for(&self, line: usize) -> &[(usize, usize, crate::predict::Tok)] {
+        self.spans.as_ref().and_then(|(_,_,p)| p.get(&line)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
 }
 
 /// The tree-sitter grammar folder for a language id.
@@ -459,6 +492,7 @@ pub struct Find {
     pub with_replace: bool,
     pub matches: Vec<(usize, usize)>,
     pub current: usize,
+    pub truncated: bool,
 }
 
 pub struct Completion {
@@ -475,6 +509,7 @@ pub struct HoverBox {
 }
 
 pub struct EditorPane {
+    pub zoom: u32,
     pub rect: Rect,
     pub buffers: Vec<Buffer>,
     pub active: usize,
@@ -497,11 +532,14 @@ pub struct EditorPane {
     pub status: String,
     /// A one-line notice (saved, formatted, error), and when.
     pub notice: Option<(String, Instant)>,
+    search: Option<(usize, u64, String, Task<work::Matches>)>,
+    search_needed: bool,
 }
 
 impl EditorPane {
     pub fn new(rect: Rect) -> EditorPane {
         EditorPane {
+            zoom: 100,
             rect,
             buffers: Vec::new(),
             active: 0,
@@ -518,6 +556,8 @@ impl EditorPane {
             hover_sent_at: None,
             status: String::new(),
             notice: None,
+            search: None,
+            search_needed: false,
         }
     }
 
@@ -564,7 +604,7 @@ impl EditorPane {
             return None;
         }
         let row = ((y - self.origin.1) / ch).floor() as usize;
-        let col = ((x - self.origin.0) / cw + 0.5).floor().max(0.0) as usize;
+        let col = b.scroll_col + ((x - self.origin.0) / cw + 0.5).floor().max(0.0) as usize;
         let line = b.scroll + row;
         if line >= b.text.len_lines() {
             return Some((b.text.len_lines().saturating_sub(1), usize::MAX));
@@ -604,29 +644,47 @@ impl EditorPane {
             return;
         };
         f.matches.clear();
+        f.truncated = false;
+        self.search = None;
+        self.search_needed = false;
         if f.query.is_empty() {
             return;
         }
-        let text = b.text.to_string();
-        let q = f.query.to_lowercase();
-        let lower = text.to_lowercase();
-        // Byte offsets in the lowered text line up with the original only
-        // for ASCII; walk chars to be safe.
-        let qlen = q.chars().count();
-        let chars: Vec<char> = lower.chars().collect();
-        let qc: Vec<char> = q.chars().collect();
-        let mut i = 0;
-        while i + qlen <= chars.len() {
-            if chars[i..i + qlen] == qc[..] {
-                f.matches.push((i, i + qlen));
-                i += qlen.max(1);
-            } else {
-                i += 1;
-            }
+        self.search = None;
+        self.search_needed = true;
+        let text = b.text.clone();
+        let query = f.query.clone();
+        let q = query.clone();
+        if let Some(job) = Task::start(move |cancel| work::search(&text, &q, cancel)) {
+            self.search = Some((self.active, b.revision, query, job));
+            self.search_needed = false;
         }
-        // Current: the first match at or after the caret.
-        let cur = b.cursor;
-        f.current = f.matches.iter().position(|&(a, _)| a >= cur).unwrap_or(0);
+    }
+
+    fn poll_search(&mut self) -> bool {
+        if self.search_needed { self.refind(); }
+        let Some((active, revision, query, job)) = &self.search else { return false };
+        if *active != self.active || self.buf().is_none_or(|b| b.revision != *revision)
+            || self.find.as_ref().is_none_or(|f| f.query != *query) {
+            self.search = None;
+            if self.find.is_some() { self.refind(); }
+            return true;
+        }
+        match job.take() {
+            Ok(matches) => {
+                let cur = self.buf().map(|b| b.cursor).unwrap_or(0);
+                if let Some(f) = &mut self.find {
+                    f.matches = matches.ranges;
+                    f.truncated = matches.truncated;
+                    f.current = f.matches.iter().position(|&(a,_)| a >= cur).unwrap_or(0);
+                }
+                self.search = None;
+                return true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.search = None; self.search_needed = true; }
+            Err(_) => {}
+        }
+        false
     }
 
     pub fn find_step(&mut self, forward: bool) {
@@ -678,7 +736,9 @@ impl EditorPane {
 
     pub fn replace_all(&mut self) {
         let Some(f) = self.find.as_ref() else { return };
-        if f.matches.is_empty() {
+        if f.matches.is_empty() { return; }
+        if f.truncated {
+            self.notice = Some(("More than 10,000 matches. Narrow the query before replacing all.".into(), crate::clock::now()));
             return;
         }
         let rep = f.replace.clone();
@@ -698,12 +758,8 @@ impl EditorPane {
 }
 
 /// Text, as far as a look at the first bytes can tell: no NULs, and
-/// mostly printable. Big files go to the OS too.
+/// mostly printable. File size is not a reason to reject a text file.
 pub(crate) fn looks_text(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else { return false };
-    if meta.len() > 8 * 1024 * 1024 {
-        return false;
-    }
     let Ok(mut f) = std::fs::File::open(path) else { return false };
     let mut buf = [0u8; 4096];
     let n = std::io::Read::read(&mut f, &mut buf).unwrap_or(0);
@@ -731,6 +787,7 @@ impl App {
     /// Open a file in the editor: the focused editor pane, else the tab's
     /// other pane if it's one, else a new tab (or a split when `split`).
     pub(crate) fn open_file(&mut self, path: &Path, split: bool) {
+        if crate::private::enabled() { self.notice("Open local files in a regular nus window."); return; }
         if !path.is_file() {
             self.notice(&format!("not a file · {}", path.display()));
             return;
@@ -799,8 +856,7 @@ impl App {
                 }
             }
         };
-        if let Some((ti, right, bi)) = idx {
-            self.lsp_open_buffer(ti, right, bi);
+        if idx.is_some() {
             self.files_root_from(path);
             self.apply_term_resizes(false);
         }
@@ -852,6 +908,7 @@ impl App {
             let Some(e) = self.focused_editor() else {
                 return false;
             };
+            if e.buf().is_some_and(|b| !b.ready()) { return true; }
             // Goto line.
             if let Some(g) = e.goto.as_mut() {
                 match &key {
@@ -1151,6 +1208,7 @@ impl App {
                                 with_replace: false,
                                 matches: Vec::new(),
                                 current: 0,
+                                truncated: false,
                             });
                             e.refind();
                             e.find_select();
@@ -1170,6 +1228,7 @@ impl App {
                                 with_replace: true,
                                 matches: Vec::new(),
                                 current: 0,
+                                truncated: false,
                             });
                             e.refind();
                             e.find_select();
@@ -1486,11 +1545,18 @@ impl App {
     pub(crate) fn editor_tick(&mut self) {
         let mut hover_req: Option<(usize, bool)> = None;
         let mut expired = false;
+        let mut loaded = Vec::new();
         for (ti, tab) in self.tabs.iter_mut().enumerate() {
             for (right, p) in
                 std::iter::once((false, &mut tab.left)).chain(tab.right.as_mut().map(|r| (true, r)))
             {
                 let Pane::Editor(e) = p else { continue };
+                for (bi, b) in e.buffers.iter_mut().enumerate() {
+                    let was_loading = b.loading.is_some();
+                    expired |= b.poll();
+                    if was_loading && b.ready() { loaded.push((ti, right, bi)); }
+                }
+                expired |= e.poll_search();
                 if let Some(((x, y), at)) = e.rest {
                     if crate::clock::since(at).as_millis() > 450 && e.hover.is_none() {
                         if let Some((line, col)) = e.cell_at(x, y) {
@@ -1521,6 +1587,7 @@ impl App {
                 }
             }
         }
+        for (ti, right, bi) in loaded { self.lsp_open_buffer(ti, right, bi); }
         if let Some((c, _)) = hover_req {
             self.editor_hover_at(c);
         }
@@ -1567,7 +1634,7 @@ impl App {
             color: t.dim,
             ..label
         };
-        let term_px = self.behavior.typography.editor_size * self.scale * 96.0 / 72.0;
+        let term_px = self.behavior.typography.editor_size * self.scale * 96.0 / 72.0 * e.zoom as f32 / 100.0;
         let mono = Style {
             font: self.f.editor,
             px: term_px,
@@ -1714,25 +1781,36 @@ impl App {
         let b = &mut e.buffers[bi];
         let max_scroll = b.text.len_lines().saturating_sub(1);
         b.scroll = b.scroll.min(max_scroll);
+        let columns = ((r.right() - ox) / cw).ceil().max(1.0) as usize;
+        let caret_col = b.col_of(b.cursor);
+        if caret_col < b.scroll_col { b.scroll_col = caret_col; }
+        else if caret_col >= b.scroll_col + columns { b.scroll_col = caret_col + 1 - columns; }
+        b.prepare_spans(b.scroll, rows, columns);
+        let first_visible = b.text.line_to_char(b.scroll);
+        let last_visible = b.text.line_to_char((b.scroll + rows + 1).min(b.text.len_lines()));
+        let scroll_col = b.scroll_col;
         let cur_line = b.line_of(b.cursor);
         let sel = b.selection();
         let n_lines = b.text.len_lines();
         let find_matches: Vec<(usize, usize)> = e
             .find
             .as_ref()
-            .map(|f| f.matches.clone())
+            .map(|f| {
+                let start = f.matches.partition_point(|&(_,z)| z <= first_visible);
+                f.matches[start..].iter().take_while(|&&(a,_)| a < last_visible).copied().collect()
+            })
             .unwrap_or_default();
         let find_cur = e
             .find
             .as_ref()
             .and_then(|f| f.matches.get(f.current).copied());
         let diags: Vec<(usize, usize, usize, usize, usize)> = {
-            let text = b.text.to_string();
             b.diags
                 .iter()
+                .filter(|d| (d.range.end.line as usize) >= b.scroll && (d.range.start.line as usize) < b.scroll + rows)
                 .map(|d| {
-                    let a = nus_lsp::offset_of(&text, d.range.start);
-                    let z = nus_lsp::offset_of(&text, d.range.end).max(a + 1);
+                    let a = work::offset(&b.text, d.range.start);
+                    let z = work::offset(&b.text, d.range.end).max(a + 1);
                     (
                         a,
                         z,
@@ -1756,6 +1834,8 @@ impl App {
             let base = ly + baseline_off;
             let ls = b.text.line_to_char(line);
             let len = b.line_len(line);
+            let visible_start = ls + scroll_col.min(len);
+            let visible_end = ls + len.min(scroll_col + columns);
             // Current line wash.
             if line == cur_line && focused {
                 scene.rect(Rect::new(r.x, ly, r.w, ch), wash);
@@ -1787,18 +1867,18 @@ impl App {
             }
             // Selection and matches under the text.
             if let Some((a, z)) = sel {
-                let (s0, s1) = (a.max(ls), z.min(ls + len + 1));
+                let (s0, s1) = (a.max(visible_start), z.min(visible_end + 1));
                 if s1 > s0 {
                     let w = if z > ls + len {
                         (s1 - s0) as f32 * cw + cw * 0.4
                     } else {
                         (s1 - s0) as f32 * cw
                     };
-                    scene.rect(Rect::new(ox + (s0 - ls) as f32 * cw, ly, w, ch), sel_color);
+                    scene.rect(Rect::new(ox + (s0 - ls - scroll_col.min(len)) as f32 * cw, ly, w, ch), sel_color);
                 }
             }
             for &(a, z) in &find_matches {
-                let (s0, s1) = (a.max(ls), z.min(ls + len));
+                let (s0, s1) = (a.max(visible_start), z.min(visible_end));
                 if s1 > s0 {
                     let c = if Some((a, z)) == find_cur {
                         fade(ansi(3), 0.5)
@@ -1806,23 +1886,22 @@ impl App {
                         match_color
                     };
                     scene.rect(
-                        Rect::new(ox + (s0 - ls) as f32 * cw, ly, (s1 - s0) as f32 * cw, ch),
+                        Rect::new(ox + (s0 - ls - scroll_col.min(len)) as f32 * cw, ly, (s1 - s0) as f32 * cw, ch),
                         c,
                     );
                 }
             }
             // The text, as coloured runs.
-            let lt = b.line_text(line);
             let spans = b.spans_for(line);
-            let chars: Vec<char> = lt.chars().collect();
-            let mut col = 0usize;
-            let mut spans = spans;
-            spans.sort_by_key(|s| s.0);
+            let chars: Vec<char> = b.text.slice(visible_start..visible_end).chars().collect();
+            let mut col = scroll_col;
             let mut draw_run = |scene: &mut Scene,
                                 fonts: &mut nus_render::text::FontSystem,
                                 from: usize,
                                 to: usize,
                                 color: nus_render::Color| {
+                let from = from.saturating_sub(scroll_col);
+                let to = to.saturating_sub(scroll_col);
                 if to <= from || from >= chars.len() {
                     return;
                 }
@@ -1836,7 +1915,7 @@ impl App {
                     &run,
                 );
             };
-            for (a, l, class) in spans {
+            for &(a, l, class) in spans {
                 if a > col {
                     draw_run(scene, fonts, col, a, ink);
                 }
@@ -1852,14 +1931,14 @@ impl App {
                 draw_run(scene, fonts, a.max(col), a + l, color);
                 col = (a + l).max(col);
             }
-            draw_run(scene, fonts, col, chars.len(), ink);
+            draw_run(scene, fonts, col, scroll_col + chars.len(), ink);
             // Diagnostics: a dotted underline.
             for &(a, z, sev, _, _) in &diags {
-                let (s0, s1) = (a.max(ls), z.min(ls + len.max(1)));
+                let (s0, s1) = (a.max(visible_start), z.min(visible_end.max(visible_start + 1)));
                 if s1 > s0 {
                     let uy = ly + ch - px(2.5);
-                    let mut ux = ox + (s0 - ls) as f32 * cw;
-                    let end = ox + (s1 - ls) as f32 * cw;
+                    let mut ux = ox + (s0 - ls - scroll_col.min(len)) as f32 * cw;
+                    let end = ox + (s1 - ls - scroll_col.min(len)) as f32 * cw;
                     while ux < end {
                         scene.rect(Rect::new(ux, uy, px(2.0), px(1.5)), ansi(sev));
                         ux += px(4.0);
@@ -1868,7 +1947,7 @@ impl App {
             }
             // The caret.
             if line == cur_line && focused && e.goto.is_none() && e.find.is_none() {
-                let cx = ox + b.col_of(b.cursor) as f32 * cw;
+                let cx = ox + b.col_of(b.cursor).saturating_sub(scroll_col) as f32 * cw;
                 scene.rect(Rect::new(cx - px(0.5), ly, px(2.0), ch), caret);
             }
         }
@@ -1897,6 +1976,9 @@ impl App {
                     .filter(|d| d.severity == Some(DiagnosticSeverity::WARNING))
                     .count();
                 let mut s = p;
+                if b.loading.is_some() { s.push_str(" · loading…"); }
+                else if let Some(error) = &b.load_error { s.push_str(&format!(" · {error}")); }
+                else if b.text.len_bytes() > 8 * 1024 * 1024 { s.push_str(" · large file · language server paused"); }
                 if n_err + n_warn > 0 {
                     s.push_str(&format!(" · {n_err} errors · {n_warn} warnings"));
                 }
@@ -1971,14 +2053,16 @@ impl App {
                     &rp,
                 ) + pad * 2.0;
             }
-            let count = if f.matches.is_empty() {
+            let count = if e.search.is_some() || e.search_needed {
+                "SEARCHING…".into()
+            } else if f.matches.is_empty() {
                 if f.query.is_empty() {
                     String::new()
                 } else {
                     "NO MATCHES".into()
                 }
             } else {
-                format!("{} OF {}", f.current + 1, f.matches.len())
+                format!("{} OF {}{}", f.current + 1, f.matches.len(), if f.truncated { "+" } else { "" })
             };
             fonts.draw(scene, dim, x, base, &count);
             let hint = if f.with_replace {
@@ -2111,3 +2195,48 @@ pub fn buffer_with<'a>(
 }
 
 pub type Diags = HashMap<Url, Vec<Diagnostic>>;
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    fn settle(b: &mut Buffer) {
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        while b.loading.is_some() || b.highlighting.is_some() {
+            b.poll(); assert!(Instant::now() < until);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    #[test]
+    fn loading_does_not_allow_partial_edits_and_keeps_definition_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.rs");
+        std::fs::write(&path, "// α\r\nlet x = 1;\r\n").unwrap();
+        let mut b = Buffer::from_path(&path).unwrap();
+        assert!(!b.ready());
+        b.insert("must not overwrite", false);
+        b.pending_position = Some(nus_lsp::lsp_types::Position::new(1, 4));
+        settle(&mut b);
+        assert_eq!(b.text.to_string(), "// α\r\nlet x = 1;\r\n");
+        assert_eq!(b.cursor, b.text.line_to_char(1)+4);
+        assert!(!b.dirty);
+        assert_eq!(b.line_len(0), 4);
+    }
+    #[test]
+    fn large_file_highlight_window_is_bounded_and_edits_cancel_old_spans() {
+        let mut b = Buffer::empty();
+        b.text = Rope::from_str(&"let value = 123;\n".repeat(40_000));
+        b.language = "rust";
+        b.scroll = 30_000;
+        b.prepare_spans(b.scroll, 50, 100);
+        let (a,z,_) = b.highlighting.as_ref().unwrap();
+        assert!(z-a <= 16384);
+        settle(&mut b);
+        assert!(!b.spans_for(30_000).is_empty());
+        let revision = b.revision;
+        for _ in 0..100 { b.spans_for(30_000); }
+        assert_eq!(b.revision, revision);
+        b.insert("x", false);
+        assert!(b.spans.is_none()); assert!(b.highlighting.is_none());
+        assert_eq!(b.revision, revision+1);
+    }
+}

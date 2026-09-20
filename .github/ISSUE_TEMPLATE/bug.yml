@@ -1,31 +1,30 @@
-name: Bug
-description: Something is wrong, and you can show it happening.
+name: Bug report
+description: Tell us what went wrong and how to reproduce it.
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        nus is one person's terminal and browser (see the README). Bugs with a reproduction are welcome; without one they close.
+        Thanks for helping improve nus. This report will be public. Remove passwords, tokens, private URLs, file paths and personal details from anything you attach.
   - type: input
-    id: commit
+    id: version
     attributes:
-      label: Commit
-      description: "`git rev-parse --short HEAD` of the build that misbehaves"
-      placeholder: 97712a5
+      label: App version and build
+      description: Find this in Settings → Updates. Reports opened from nus fill it in automatically.
     validations:
       required: true
-  - type: dropdown
+  - type: input
     id: os
     attributes:
-      label: OS
-      options: [Windows 11, macOS, Linux (Wayland), Linux (X11)]
+      label: Operating system
+      description: Add your OS version and, on Linux, Wayland or X11 if known.
     validations:
       required: true
   - type: textarea
     id: repro
     attributes:
       label: What you did
-      description: The exact steps. A shell command, a URL, a chord.
+      description: What did you do just before the problem? Use a safe example where possible.
     validations:
       required: true
   - type: textarea
@@ -38,4 +37,4 @@ body:
     id: extra
     attributes:
       label: Anything else
-      description: A screenshot, a `NUS_DUMP` capture of the terminal bytes, the relevant lines of `rules.luau`.
+      description: Optional screenshots or short log excerpts. Review and redact them before posting.

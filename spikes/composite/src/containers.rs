@@ -57,9 +57,16 @@ cef::wrap_request_context_handler! {
     }
 }
 
+/// Release cached context references before CEF shutdown.
+pub fn shutdown() {
+    CONTEXTS.with(|c|c.borrow_mut().clear());
+    READY.with(|r|r.borrow_mut().clear());
+}
+
 /// The request context for a container: the global one for PERSONAL,
 /// else one made (once) with its own cache directory.
 pub fn context(name: &str) -> Option<cef::RequestContext> {
+    if crate::private::enabled() { return private_context(); }
     if name.is_empty() || name == PERSONAL {
         return cef::request_context_get_global_context();
     }
@@ -89,6 +96,31 @@ pub fn context(name: &str) -> Option<cef::RequestContext> {
         tracing::info!("container {name}: context ready in {}ms", crate::clock::since(t0).as_millis());
         Some(ctx)
     })
+}
+
+/// Chrome runtime's global profile may have a cache path even when the
+/// global setting was empty. Explicit non-shared contexts are off the record.
+fn private_context() -> Option<cef::RequestContext> {
+    const KEY: &str = "__nus_private";
+    if let Some(context) = CONTEXTS.with(|c| c.borrow().get(KEY).cloned()) { return Some(context); }
+    let settings = cef::RequestContextSettings::default();
+    let mut handler = Ready::new(KEY.into());
+    let context = cef::request_context_create_context(Some(&settings), Some(&mut handler))?;
+    let deadline = std::time::Instant::now()+std::time::Duration::from_secs(3);
+    while !READY.with(|r| r.borrow().contains(KEY)) {
+        if std::time::Instant::now() >= deadline { return None; }
+        cef::do_message_loop_work();
+        std::thread::sleep(std::time::Duration::from_millis(4));
+    }
+    CONTEXTS.with(|c| c.borrow_mut().insert(KEY.into(), context.clone()));
+    Some(context)
+}
+
+pub fn release_private_context() {
+    if crate::private::enabled() {
+        CONTEXTS.with(|c| c.borrow_mut().clear());
+        READY.with(|r| r.borrow_mut().clear());
+    }
 }
 
 impl App {

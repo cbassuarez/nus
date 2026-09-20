@@ -93,6 +93,16 @@ fn is_url(s: &str) -> bool {
 }
 
 impl App {
+    /// The existing Newsreader n, with a small vector fedora. Inherits the page ink.
+    fn draw_private_mark(&mut self, scene: &mut Scene, r: Rect, ink: nus_render::Color, paper: nus_render::Color) {
+        let at = |x:f32,y:f32| [r.x+x*r.w, r.y+(y+0.07)*r.h];
+        self.fonts.draw(scene, Style { font:self.f.wordmark,px:r.h*0.94,color:ink,tracking:0.0 },r.x+r.w*0.20,r.bottom()-r.h*0.08,"n");
+        // Pinched crown, ribbon and upturned brim; no raster asset or new logo font.
+        scene.poly(&[at(0.22,0.30),at(0.28,0.11),at(0.35,0.06),at(0.47,0.11),at(0.61,0.07),at(0.70,0.12),at(0.78,0.29)],ink);
+        scene.poly(&[at(0.24,0.26),at(0.76,0.25),at(0.78,0.32),at(0.22,0.33)],paper);
+        scene.poly(&[at(0.04,0.32),at(0.24,0.31),at(0.78,0.29),at(0.96,0.25),at(0.91,0.36),at(0.66,0.41),at(0.28,0.41),at(0.04,0.37)],ink);
+    }
+
     /// The rows under the line: the palette's, for what is typed; a short
     /// list of places to go when nothing is — under the plate, the stops.
     fn home_rows(&self, input: &str, _places: &[PaletteRow]) -> Vec<PaletteRow> {
@@ -246,6 +256,7 @@ impl App {
         let i = self.active;
         let Some(Pane::Home(h)) = self.tabs.get(i).map(|t| &t.left) else { return };
         let input = h.input.trim().to_string();
+        if crate::private::enabled() && input.is_empty() { return; }
         let sel = h.sel;
         let places = h.places.as_ref().map(|(_, v)| v.to_vec()).unwrap_or_default();
         let rows = self.home_rows(&input, &places);
@@ -415,7 +426,7 @@ impl App {
         let art = self.behavior.home_look == HomeLook::Art;
         // Under the plate the line sits beneath the icon and comes up once
         // the band closes; alone, it sits a third of the way down.
-        let (y0, up) = if plate { self.draw_plate_icon(scene, p) } else { (r.y + r.h * if self.behavior.prompt.top { 0.18 } else { 0.34 }, 1.0) };
+        let (mut y0, up) = if plate { self.draw_plate_icon(scene, p) } else { (r.y + r.h * if self.behavior.prompt.top { 0.18 } else { 0.34 }, 1.0) };
         if art {
             self.draw_home_art(scene, p, y0);
         }
@@ -428,16 +439,36 @@ impl App {
         let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
         let line_w = (r.w * if self.behavior.prompt.wide { 0.84 } else { 0.62 }).max(self.px(320.0)).min(r.w - self.px(56.0));
         let x0 = r.x + (r.w - line_w) / 2.0;
+        if crate::private::enabled() {
+            let label = Style { font: self.f.strong, px: self.px(16.0), color: ink, tracking: 0.0 };
+            let note = Style { font: self.f.ui, px: self.px(12.0), color: ink, tracking: 0.0 };
+            let text_x=x0+self.px(66.0);
+            let lines:Vec<String>=crate::private::NOTE.iter().flat_map(|text|crate::reader::wrap(&self.fonts,note,text,(line_w-self.px(66.0)).max(self.px(160.0)))).collect();
+            let note_h=self.px(26.0+lines.len() as f32*18.0);
+            let head_y=(y0-note_h-self.px(36.0)).max(r.y+self.px(68.0));
+            y0=y0.max(head_y+note_h+self.px(30.0));
+            let mark = Rect::new(x0, head_y-self.px(42.0), self.px(52.0), self.px(58.0));
+            self.draw_private_mark(scene,mark,ink,t.paper);
+            self.fonts.draw(scene,label,text_x,head_y,"INCOGNITO");
+            for (i,text) in lines.iter().enumerate() {
+                self.fonts.draw(scene,note,text_x,head_y+self.px(26.0)+i as f32*self.px(18.0),text);
+            }
+        }
         let caret_w = self.draw_lit(scene, Style { color: fade(self.surface.signal, up), ..mono }, x0, y0, "»", dark) + self.px(12.0);
         let shown = self.fit(mono, &p.input, line_w - caret_w - px);
         let tw = self.draw_lit(scene, mono, x0 + caret_w, y0, &shown, dark);
         // The block caret, breathing.
         if focused {
-            let on = (crate::clock::since(self.started).as_secs_f32() * 2.0) as u32 % 2 == 0 || crate::clock::since(p.since).as_millis() < 600;
+            let blinking = match self.cursor.blink {
+                crate::settings::Blink::Never => false,
+                crate::settings::Blink::AfterIdle => crate::clock::since(p.since).as_secs_f32() > 2.0,
+                crate::settings::Blink::Always => true,
+            };
+            let on = !blinking || (crate::clock::since(self.started).as_millis() / self.cursor.period.max(100) as u128) % 2 == 0;
             if on {
                 scene.rect(Rect::new(x0 + caret_w + tw + self.px(2.0), y0 - px * 0.78, px * 0.5, px * 0.95), fade(ink, up));
             }
-            self.dirty = true;
+            // App::tick requests a frame only when the blink phase changes.
         }
         scene.hline(x0, y0 + self.px(12.0), line_w, self.px(m::HAIRLINE), fade(ink, 0.45 * up));
         // Rows beneath: the palette's, for what is typed. Under the plate
@@ -531,6 +562,7 @@ impl App {
     /// pointer names a mark; a click puts its prefix on the line, so the
     /// row teaches the typing rather than describing it.
     fn draw_home_keys(&mut self, scene: &mut Scene, p: &mut HomePane, foot_y: f32, up: f32, ink: [f32; 4], sel: usize, rows_n: usize) {
+        if crate::private::enabled() { p.keys.clear(); return; }
         let r = p.rect;
         let live = if sel > 0 { Some(Key::Rows) } else { self.live_key(&p.input) };
         let mut cells = vec![Key::Shell, Key::Page, Key::Ask];

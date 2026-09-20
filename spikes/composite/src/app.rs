@@ -29,6 +29,7 @@ pub(crate) fn key(k: &str, shift: bool) -> String {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PaletteMode {
+    Application,
     /// ⌘K: tabs, actions, then URL/search.
     Go,
     /// ⌘T: profiles for a terminal tab, or a URL/search for a browser tab.
@@ -58,6 +59,7 @@ pub enum PaletteMode {
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Action {
+    Application(crate::application_menu::Command),
     Preference(crate::assistants::Field, String),
     AssistantDraft(u8, String),
     AssistantStart(u8, String),
@@ -111,6 +113,8 @@ pub enum Action {
     Pip,
     RenameWindow(String),
     NewWindow,
+    NewPrivateWindow,
+    Report(crate::support::Kind),
     Welcome,
     FoldAll,
     NameTab(usize, String),
@@ -173,6 +177,7 @@ pub enum Closed {
 /// Click targets in the top strip.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CrumbHit {
+    Menu,
     Space,
     Tab,
     Url,
@@ -206,6 +211,7 @@ pub struct Fonts {
 }
 
 pub struct TermPane {
+    pub zoom: u32,
     pub term: Term,
     pub pty: nus_pty::Pty,
     pub grid: GridRenderer,
@@ -449,6 +455,7 @@ pub enum SideHit {
     /// A swatch by number; 0 is none.
     TabColour(usize, usize),
     TabPin(usize),
+    Pinned(crate::pins::Act),
     TabClose(usize),
     /// Tile this tab with the selection, or untile it.
     TabTile(usize),
@@ -767,6 +774,7 @@ pub struct App {
     pub scene: Scene,
     pub theme: Theme,
     pub scale: f32,
+    pub ui_zoom: u32,
     pub proxy: EventLoopProxy<UserEvent>,
     pub device: wgpu::Device,
     pub bind_texture: Rc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
@@ -782,6 +790,7 @@ pub struct App {
     /// How far the sidebar's list is scrolled (physical px), when the
     /// rows and folders outgrow the space between the header and the footer.
     pub sidebar_scroll: f32,
+    pub pins: crate::pins::Pins,
     /// Trips in flight for the surfaces that scroll in pixels (scrolling.rs).
     pub glides: std::collections::HashMap<crate::scrolling::Glider, crate::scrolling::Trip>,
     /// The tab whose panes are being drawn, while the tab list is out of `App`.
@@ -825,7 +834,7 @@ pub struct App {
     /// Creation order among this process's windows.
     pub ordinal: usize,
     /// Every window in the process, kept fresh by the host.
-    pub windows: Vec<crate::windows::Entry>,
+    pub windows: Arc<Vec<crate::windows::Entry>>,
     /// Asks the host answers: front that window; open a new one.
     pub front_request: Option<u64>,
     pub new_window_request: bool,
@@ -882,6 +891,7 @@ pub struct App {
     /// The ports board (airport control).
     pub board: crate::ports::Board,
     pub files_root: Option<std::path::PathBuf>,
+    pub files_listing: Option<crate::work::Task<(std::path::PathBuf, std::collections::HashSet<std::path::PathBuf>, Vec<crate::folders::Item>)>>,
     pub files_open: std::collections::HashSet<std::path::PathBuf>,
     /// Editor click counting: when, where, how many.
     pub click_at: Option<(Instant, (f32, f32), u32)>,
@@ -897,6 +907,7 @@ pub struct App {
     /// When the window was last resized, for the cols × rows overlay.
     pub resized_at: Option<Instant>,
     pub hovers: std::collections::HashMap<u64, Hover>,
+    pub memory_tended: Instant,
     /// The icon under the pointer this frame, with its words; drawn last.
     pub tip: Option<Tip>,
     pub tip_since: Option<Instant>,
@@ -1131,6 +1142,7 @@ impl App {
             scene: Scene::new(),
             theme,
             scale,
+            ui_zoom: 100,
             proxy,
             device,
             bind_texture,
@@ -1142,6 +1154,7 @@ impl App {
             sidebar_leave: None,
             hover_row: None,
             sidebar_scroll: 0.0,
+            pins: Default::default(),
             glides: Default::default(),
             drawing_tab: 0,
             surface: Surface::default(),
@@ -1175,7 +1188,7 @@ impl App {
             new_window_request: false,
             fresh: false,
             born_in: None,
-            windows: Vec::new(),
+            windows: Arc::new(Vec::new()),
             win_menu: false,
             win_anim: Anim::at(0.0),
             kinds_menu: false,
@@ -1208,6 +1221,7 @@ impl App {
             lsp: Default::default(),
             board: crate::ports::Board::new(),
             files_root: None,
+            files_listing: None,
             files_open: Default::default(),
             click_at: None,
             next_folder_id: 100,
@@ -1221,6 +1235,7 @@ impl App {
             last_tend: crate::clock::now(),
             resized_at: None,
             hovers: std::collections::HashMap::new(),
+            memory_tended: crate::clock::now(),
             tip: None,
             tip_since: None,
             auto_name: std::cell::RefCell::new(None),
@@ -1379,7 +1394,7 @@ impl App {
         }
         // The hatch's global hotkey: the first window registers it; a
         // second Space shares it (main routes the event to the focused one).
-        if !secondary {
+        if !secondary && !crate::private::enabled() {
             app.news_at_launch();
             if app.hotkey.is_none() { app.hotkey = Some(crate::hotkey::Hotkey::register(app.behavior.hatch_hotkey, app.proxy.clone())); }
             if let Some(k) = &app.hotkey {
@@ -1461,6 +1476,7 @@ impl App {
     /// Back to a held shell: a pane over the holder's socket. The ring
     /// replays through the VT core, so the screen is what it would have been.
     pub(crate) fn new_term_pane_attached(&mut self, split: bool, info: nus_pty::hold::Info) -> anyhow::Result<TermPane> {
+        anyhow::ensure!(!crate::private::enabled(), "Shells are unavailable in incognito windows");
         let profile_index = self.profiles.iter().position(|p| p.program.eq_ignore_ascii_case(&info.program)).unwrap_or(self.behavior.default_profile);
         let mut pane = self.new_term_pane_prepared(split, profile_index)?;
         let proxy = self.proxy.clone();
@@ -1490,6 +1506,7 @@ impl App {
 
     /// The same, starting in `cwd` when one is given (session restore).
     pub(crate) fn new_term_pane_at(&mut self, split: bool, profile: usize, cwd: Option<String>) -> anyhow::Result<TermPane> {
+        anyhow::ensure!(!crate::private::enabled(), "Shells are unavailable in incognito windows");
         let term_px = self.terminal_px();
         let mut grid = GridRenderer::new(&self.fonts, self.f.term, term_px);
         grid.set_spacing(&self.fonts,self.behavior.typography.terminal_line,self.behavior.typography.terminal_spacing*self.scale);
@@ -1546,6 +1563,7 @@ impl App {
             })?
         };
         Ok(TermPane {
+            zoom: 100,
             term,
             pty,
             grid,
@@ -1860,9 +1878,11 @@ impl App {
         if revision!=self.download_ui.revision {self.download_ui.revision=revision;self.dirty=true;}
         self.tend_downloads();
         self.refresh_shared_prefs();
+        self.trim_memory();
         self.drain_popups();
         self.poll_lsp();
         self.editor_tick();
+        self.poll_files_folder();
         self.prompt_lsp_tick();
         self.ports_tick();
         self.sync_taskbar_progress();
@@ -1964,7 +1984,7 @@ impl App {
         if self.anims_active() {
             self.dirty = true;
         }
-        if self.surface.texture_motion && self.surface.texture > 0.0 && self.surface.texture_kind != crate::surface::TextureKind::None {
+        if !self.motion.reduced() && self.surface.texture_motion && self.surface.texture > 0.0 && self.surface.texture_kind != crate::surface::TextureKind::None {
             self.dirty = true;
         }
         if self.registered_tabs != usize::MAX && self.registered_tabs != self.tabs.len() {
@@ -2036,9 +2056,9 @@ impl App {
                 self.dirty = true;
             }
         }
-        if self.surface.shell == Shell::Aurora {
-            // Drift is turns per second; the loop runs at ~60 frames.
-            self.shell_phase = (self.shell_phase + self.surface.drift / 60.0) % 1.0;
+        if self.surface.shell == Shell::Aurora && !self.motion.reduced() && self.surface.drift.abs() > f32::EPSILON {
+            // Drift is time based, independent of event-loop and monitor rate.
+            self.shell_phase = (crate::clock::since(self.started).as_secs_f32() * self.surface.drift).rem_euclid(1.0);
             self.dirty = true;
         }
         if let Some(t) = self.sidebar_leave {
@@ -2132,6 +2152,7 @@ impl App {
     /// Apply `on_page` boosts to pages whose address changed. Runs at the
     /// address change and again once loaded, so late documents get it too.
     fn apply_boosts(&mut self) {
+        if crate::private::enabled() { return; }
         let mut jobs: Vec<(usize, bool, String, crate::surface::Boost)> = Vec::new();
         for (i, tab) in self.tabs.iter().enumerate() {
             for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
@@ -3022,8 +3043,8 @@ impl App {
         for tab in &mut self.tabs {
             for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
                 if let Pane::Term(t) = p {
-                    t.grid.set_font(&self.fonts, self.f.term, term_px);
-                    t.grid.set_spacing(&self.fonts,self.behavior.typography.terminal_line,self.behavior.typography.terminal_spacing*scale);
+                    t.grid.set_font(&self.fonts, self.f.term, term_px * t.zoom as f32 / 100.0);
+                    t.grid.set_spacing(&self.fonts,self.behavior.typography.terminal_line,self.behavior.typography.terminal_spacing*scale*t.zoom as f32/100.0);
                 }
             }
         }
@@ -3138,6 +3159,7 @@ impl App {
                                         if !finished.is_empty() && t.history.last() != Some(&finished) {
                                             crate::predict::append_history(&t.profile_name, &finished);
                                             t.history.push(finished.clone());
+                                            if t.history.len() > crate::storage::HISTORY_LINES { t.history.drain(..t.history.len() - crate::storage::HISTORY_LINES); }
                                         }
                                         // Replay: a checkpoint at the block's end (its still on the next draw).
                                         if self.recorder.is_some() {
@@ -3351,6 +3373,7 @@ impl App {
         if !(changed || self.dirty || self.frames == 0) {
             return;
         }
+        let _frame = crate::perf::scope("frame_build_submit");
         self.dirty = false;
         self.build();
         self.scene.finish();
@@ -3369,7 +3392,16 @@ impl App {
             let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
             [p[0] * a, p[1] * a, p[2] * a, a]
         };
-        self.gpu.render(&mut self.target, &self.scene, clear);
+        let presented = self.gpu.render(&mut self.target, &self.scene, clear);
+        if presented {
+        crate::perf::first_frame();
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            for pane in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Editor(e) = pane { if let Some(b) = e.buf_mut() { b.presented(); } }
+            }
+        }
+        } else { self.dirty = true; }
+        drop(_frame);
         self.shot_capture(clear);
         self.deferred_shots(clear);
         self.checkpoint_draw(clear);
@@ -3458,6 +3490,14 @@ impl App {
         };
         // The Space lives in the sidebar; the header keeps the wordmark once.
         let _ = CrumbHit::Space;
+        if crate::private::enabled() {
+            let private_label = "INCOGNITO";
+            let width = self.fonts.measure(label, private_label) + p12;
+            let badge = Rect::new(x-p6, strip.y+p4, width, strip.h-p8);
+            scene.outline(badge, self.px(1.0), ink);
+            self.fonts.draw(scene, label, x, lbase, private_label);
+            x += width+p12;
+        }
         let (focused_web, url) = {
             let tab = &self.tabs[self.active];
             let pane = if tab.focus_right && tab.right.is_some() { tab.right.as_ref().unwrap() } else { &tab.left };
@@ -3521,7 +3561,7 @@ impl App {
             Pane::Downloads(_) => (nus_render::text::icons::DOWNLOAD, "downloads".into()),
             };
             let title = format!("{} {}", self.tab_label(self.active), title).caps();
-            let reserve = self.px((if self.width_class() == Width::Narrow { 142.0 } else { 270.0 }) + if cfg!(target_os = "macos") { 0.0 } else { 100.0 });
+            let reserve = self.px((if self.width_class() == Width::Narrow { 142.0 } else { 270.0 }) + if cfg!(target_os = "macos") { 0.0 } else { 132.0 });
             let title = self.fit(label, &title, (strip.right()-reserve-x-ic-p8).max(0.0));
             let tw = self.fonts.measure(label, &title);
             let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..label };
@@ -3550,6 +3590,13 @@ impl App {
             }
             rx -= self.px(6.0);
         }
+        #[cfg(not(target_os="macos"))]
+        {
+            rx -= ic;
+            let hr = Rect::new(rx-self.px(4.0),strip.y,ic+self.px(8.0),strip.h);
+            self.icon_button(scene,nus_render::text::icons::MORE,ic,rx,iy,ink,hr,hover_key("application-menu",0),IconMotion::Still);
+            self.crumb_hits.push((hr,CrumbHit::Menu)); rx-=gap;
+        }
         rx -= ic;
         let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
         self.icon_button(scene, nus_render::text::icons::SIDEBAR, ic, rx, iy, if self.sidebar { ink } else { t.dim }, hr, hover_key("sidebar", 0), IconMotion::Pop);
@@ -3572,9 +3619,10 @@ impl App {
             let count = if waiting > 0 { waiting.to_string() } else { String::new() };
             cluster.push((nus_render::text::icons::MORE, count, CrumbHit::Waiting, lit));
         } else {
-        if !self.ports.is_empty() || true {
-            cluster.push((nus_render::text::icons::PORTS, if self.ports.is_empty() { String::new() } else { self.ports.len().to_string() }, CrumbHit::Ports, !self.ports.is_empty()));
-        }
+        // Ports and the assistant always keep their place in the cluster,
+        // dim until there is something to count; only pip and the bell come
+        // and go, so the icons either side of them do not shift about.
+        cluster.push((nus_render::text::icons::PORTS, if self.ports.is_empty() { String::new() } else { self.ports.len().to_string() }, CrumbHit::Ports, !self.ports.is_empty()));
         cluster.push((nus_render::text::icons::ASSISTANT, String::new(), CrumbHit::Assistant, !self.llm_tools.is_empty()));
         if self.pip.is_some() {
             cluster.push((nus_render::text::icons::PIP, String::new(), CrumbHit::Pip, true));
@@ -3886,7 +3934,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin => "save" };
+            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin => "save" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -4197,6 +4245,7 @@ impl App {
 
     /// The window's name: the user's, else where we are (git root, dominant host), else nus.
     pub(crate) fn window_name(&self) -> String {
+        if crate::private::enabled() { return "Incognito".into(); }
         if let Some(n) = &self.window_named {
             if !n.trim().is_empty() {
                 return n.clone();
@@ -4276,10 +4325,10 @@ impl App {
     pub(crate) fn sidebar_geometry(&self) -> SidebarGeom {
         let sb = self.list_rect();
         let space_row = self.side_header_h();
-        let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned && !self.tabs[i].hatch).collect();
+        let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned && !self.tabs[i].hatch && !self.pins.owns(self.tabs[i].id)).collect();
         let pinned_h = if pinned.is_empty() { 0.0 } else if self.sidebar_icons() {self.px(32.0)*pinned.len() as f32} else {self.header_h()};
         let row = self.px(if self.sidebar_icons() && self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Preview {48.0}else{m::ROW_H});
-        let top = sb.y + space_row + pinned_h;
+        let top = sb.y + space_row + self.pins_height() + pinned_h;
         let foot_y = sb.bottom() - self.sidebar_footer_h();
         let mut y = top - self.sidebar_scroll;
         let mut rows = Vec::new();
@@ -4330,6 +4379,7 @@ impl App {
         if !self.sidebar_visible() || !self.sidebar_rect().contains(x, y) || self.dl_menu {
             return false;
         }
+        if self.side_page!=crate::files::SidePage::Files && self.pins_wheel(x,y,dy_px) {return true;}
         let max = self.settle_sidebar_scroll();
         if max > 0.0 {
             let at = self.sidebar_scroll;
@@ -4341,6 +4391,7 @@ impl App {
     }
 
     fn draw_sidebar(&mut self, scene: &mut Scene) {
+        self.adopt_pins();
         if self.sidebar_icons() {
             return self.draw_sidebar_compact(scene);
         }
@@ -4369,12 +4420,13 @@ impl App {
             self.draw_sidebar_menus(scene, sb);
             return;
         }
+        self.draw_pins(scene,sb);
         let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids.clone()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
 
-        // Pinned row.
+        // Legacy shell/file pins retain their session behavior.
         if !g.pinned.is_empty() {
-            let py = sb.y + row_h;
+            let py = sb.y + row_h + self.pins_height();
             let cell_w = (sb.w / g.pinned.len() as f32).floor();
             for (k, &i) in g.pinned.iter().enumerate() {
                 let cx = sb.x + k as f32 * cell_w;
@@ -4720,6 +4772,7 @@ impl App {
     /// release (a hold fans out); from the accessibility tree it acts at once.
     pub(crate) fn side_action(&mut self, hit: SideHit, from_mouse: bool) {
         match hit {
+            SideHit::Pinned(act) => self.pin_action(act),
             SideHit::MenuDrawer => self.toggle_menu_drawer(self.menu_footer_anchor()),
             SideHit::Close(i) => {
                 // The × does what Ctrl+W does: a row in the selection takes
@@ -4875,14 +4928,7 @@ impl App {
                     self.untile();
                 }
             }
-            SideHit::TabPin(i) => {
-                self.close_menus();
-                if let Some(t) = self.tabs.get_mut(i) {
-                    t.pinned = !t.pinned;
-                }
-                self.layout();
-                self.save_session();
-            }
+            SideHit::TabPin(i) => { self.close_menus(); self.pin_tab(i); }
             SideHit::TabClose(i) => {
                 self.close_menus();
                 self.selected.clear();
@@ -4910,7 +4956,7 @@ impl App {
         let row = self.px(m::ROW_H);
         let sq = self.px(10.0);
         let me = u64::from(self.window.id());
-        let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal, colour: self.container_colour() }] } else { self.windows.clone() };
+        let entries = if self.windows.is_empty() { Arc::new(vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal, colour: self.container_colour() }]) } else { self.windows.clone() };
         let (mx, my) = self.mouse;
         for (k, e) in entries.iter().enumerate() {
             let cy = r.y + k as f32 * row;
@@ -5089,7 +5135,7 @@ impl App {
             scene.layer(Some(r));
             scene.rect(r, t.paper);
             let mut y = top;
-            let entries = if self.windows.is_empty() { vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal, colour: self.container_colour() }] } else { self.windows.clone() };
+            let entries = if self.windows.is_empty() { Arc::new(vec![crate::windows::Entry { id: me, name: self.window_name(), tabs: self.tabs.len(), ordinal: self.ordinal, colour: self.container_colour() }]) } else { self.windows.clone() };
             for (i, e) in entries.iter().enumerate() {
                 let cell = Rect::new(sb.x, y, sb.w, row);
                 let hot = cell.contains(mx, my);
@@ -5442,6 +5488,7 @@ impl App {
 
     /// Open settings on a section, and on a LOOK tab when given.
     pub(crate) fn open_settings_at(&mut self, sec: usize, tab: Option<usize>) {
+        if crate::private::enabled() { self.notice("Open Settings in a regular nus window."); return; }
         self.open_settings();
         if sec == crate::settings::SEC_ASSISTANTS { self.assistants.refresh(self.behavior.assistants.clone()); }
         if let Some(t) = tab {
@@ -5515,6 +5562,7 @@ impl App {
     }
 
     pub(crate) fn open_settings(&mut self) {
+        if crate::private::enabled() { self.notice("Open Settings in a regular nus window."); return; }
         self.refresh_register_note();
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
             return self.activate(i);
@@ -5534,6 +5582,7 @@ impl App {
     /// An existing tour marker means the introduction has been shown.
     /// Unfinished optional exercises must not override the saved start page.
     fn onboarded() -> bool {
+        if crate::private::enabled() { return true; }
         if std::env::var_os("NUS_ONBOARD").is_some() {
             return false;
         }
@@ -5590,6 +5639,8 @@ impl App {
                 let next = self.mru.first().copied().unwrap_or(0).min(self.tabs.len() - 1);
                 self.activate(next);
             } else {
+                let id=self.tabs[i].id;self.pins.live.retain(|_,live|*live!=id);
+                self.tabs[i].pinned=false;
                 self.tabs[i].left = Pane::Home(crate::home::HomePane::new());
                 self.active = i;
             }
@@ -5666,6 +5717,14 @@ impl App {
     }
 
     pub(crate) fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides, split: bool) {
+        // Native page zoom changes content, not window controls or browser DPI.
+        let scale=self.scale;
+        if matches!(pane,Pane::Home(_)|Pane::Settings(_)|Pane::Hints(_)|Pane::Downloads(_)|Pane::Ports(_)) {self.scale*=self.ui_zoom as f32/100.0;}
+        self.draw_pane_content(scene,pane,n,focused,look,split);
+        self.scale=scale;
+    }
+
+    fn draw_pane_content(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides, split: bool) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
@@ -6041,12 +6100,29 @@ impl App {
     }
 
     pub(crate) fn palette_rows_raw(&self, mode: PaletteMode, input: &str) -> Vec<PaletteRow> {
+        if crate::private::enabled() && mode != PaletteMode::Application { return self.private_rows(input); }
         let q = input.trim().to_lowercase();
         let hit = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
         let mut rows = Vec::new();
         let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
         match mode {
+            PaletteMode::Application => {
+                for item in crate::application_menu::ITEMS {
+                    let text = format!("{} · {}", item.group, item.label);
+                    if hit(&text) && self.command_enabled(item.command) { rows.push(row("", text, Action::Application(item.command))); }
+                }
+            }
             PaletteMode::Go => {
+                if hit("incognito private new window") {
+                    rows.push(row("◌", "New incognito window".into(), Action::NewPrivateWindow));
+                }
+                if hit("help report bug feedback") {
+                    rows.push(row("?", "Report a bug · GitHub draft".into(), Action::Report(crate::support::Kind::Bug)));
+                }
+                if hit("help request feature feedback") {
+                    rows.push(row("+", "Request a feature · GitHub draft".into(), Action::Report(crate::support::Kind::Feature)));
+                }
+                if hit("menu") { rows.push(row("", "application menu · File, Edit, View, Window, Help (F10)".into(), Action::OpenPalette(PaletteMode::Application))); }
                 if hit("fold") || hit("collapse") || hit("stacks") {
                     rows.push(row("▾", "fold every stack · again unfolds (ctrl+shift+-)".into(), Action::FoldAll));
                 }
@@ -6421,6 +6497,10 @@ impl App {
     }
 
     pub(crate) fn run(&mut self, action: Action) {
+        if crate::private::enabled() && !crate::private::allows(&action) {
+            self.notice("This feature is available in a regular nus window.");
+            return;
+        }
         match action {
             Action::SwitchTab(i) => self.activate(i),
             Action::NewTerminal(p) => self.new_tab(p),
@@ -6431,6 +6511,11 @@ impl App {
                 self.dirty = true;
             }
             Action::NewWindow => self.new_window_request = true,
+            Action::NewPrivateWindow => {
+                if crate::private::enabled() { self.new_window_request = true; }
+                else if let Err(e) = crate::private::launch() { self.notice(&format!("Could not open incognito: {e}")); }
+            }
+            Action::Report(kind) => self.open_url(&crate::support::issue_url(kind), true),
             Action::Welcome => self.open_welcome(),
             Action::FoldAll => self.fold_all(),
             Action::KeepPeek => self.keep_peek(),
@@ -6449,6 +6534,7 @@ impl App {
             Action::SaveLayout(n) => self.save_layout(&n),
             Action::OpenPalette(m) => self.open_palette(m),
             Action::Tidy => self.open_tidy(),
+            Action::Application(command) => self.application_command(command),
             Action::Noop => {}
             Action::SyncNow => self.sync_now(),
             Action::SyncKey => {
@@ -6696,17 +6782,42 @@ impl App {
     }
 
     pub fn key_in(&mut self, ev: &KeyIn) {
+        let _key = crate::perf::scope("input_handler");
         let pressed = ev.state == ElementState::Pressed;
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
         let sup = self.mods.super_key();
+        if pressed && ev.physical_key == PhysicalKey::Code(KeyCode::KeyN) && (if cfg!(target_os="macos") {sup} else {ctrl}) && shift {
+            return self.run(Action::NewPrivateWindow);
+        }
+        // Private windows contain browser tabs only, so standard browser
+        // chords cannot collide with a terminal's input.
+        if crate::private::enabled() && pressed && !alt && (if cfg!(target_os="macos") {sup} else {ctrl}) {
+            match ev.physical_key {
+                PhysicalKey::Code(KeyCode::KeyW) if shift => {
+                    let _ = self.proxy.send_event(crate::UserEvent::WindowControl(self.window.id(), 0));
+                    return;
+                }
+                PhysicalKey::Code(KeyCode::KeyW) => return self.close_tabs(false),
+                PhysicalKey::Code(KeyCode::KeyT) if !shift => return self.open_start_page(false),
+                PhysicalKey::Code(KeyCode::KeyT) => return self.reopen_closed(),
+                PhysicalKey::Code(KeyCode::KeyL) => return self.open_palette(PaletteMode::Url),
+                _ => {}
+            }
+        }
         // App chords: ⌘ on macOS, Ctrl+Shift elsewhere — never reaches the shell.
         let app = if cfg!(target_os = "macos") { sup } else { ctrl && shift };
-        if pressed && self.behavior.hatch_hotkey.matches(ev, self.mods) && self.hotkey.as_ref().is_none_or(|k| !k.status.is_empty()) {
+        if !crate::private::enabled() && pressed && self.behavior.hatch_hotkey.matches(ev, self.mods) && self.hotkey.as_ref().is_none_or(|k| !k.status.is_empty()) {
             return self.toggle_hatch();
         }
 
+
+        if let Some(step) = crate::zoom::shortcut(ev, self.mods) {
+            if pressed { self.zoom_focused(step); }
+            return;
+        }
+        if pressed && ev.physical_key == PhysicalKey::Code(KeyCode::F10) { self.open_palette(PaletteMode::Application); return; }
 
         if self.timeline.is_some() && self.palette.is_none() {
             if pressed {
@@ -6757,7 +6868,11 @@ impl App {
         if self.palette.is_none() && !app && self.board_key(ev) {
             return;
         }
-        if self.palette.is_none() && !app && self.editor_key(ev) {
+        // Standard editing shortcuts belong to a focused editor even when
+        // Command is also the application's shortcut modifier on macOS.
+        let editor_chord = (if cfg!(target_os="macos") { sup } else { ctrl }) && !alt
+            && matches!(ev.logical_key.to_text().map(str::to_ascii_lowercase).as_deref(), Some("a" | "c" | "x" | "v" | "z" | "y" | "s" | "f"));
+        if self.palette.is_none() && (!app || editor_chord) && self.editor_key(ev) {
             return;
         }
         if let Some((_, input)) = self.palette.as_mut() {
@@ -6880,7 +6995,7 @@ impl App {
                 return;
             }
             match code {
-                Some(KeyCode::Minus) => return self.fold_all(),
+                Some(KeyCode::Minus) if shift => return self.fold_all(),
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
                 Some(KeyCode::KeyF) => return self.search_open(),
@@ -7193,9 +7308,6 @@ impl App {
                         (WKey::Named(NamedKey::F5), _, _) => return if ctrl || shift { w.tab.reload_ignore_cache() } else { w.tab.reload() },
                         _ if code == Some(KeyCode::ArrowLeft) && alt && !ctrl => return self.navigate(w_right, true),
                         _ if code == Some(KeyCode::ArrowRight) && alt && !ctrl => return self.navigate(w_right, false),
-                        (WKey::Character(c), true, false) if c == "=" || c == "+" => return w.tab.zoom(1),
-                        (WKey::Character(c), true, false) if c == "-" => return w.tab.zoom(-1),
-                        (WKey::Character(c), true, false) if c == "0" => return w.tab.zoom(0),
                         (WKey::Named(NamedKey::F12), _, _) => {
                             self.toggle_devtools();
                             return;
@@ -7614,6 +7726,18 @@ impl App {
         self.layout();
     }
 
+    fn trim_memory(&mut self) {
+        if crate::clock::since(self.memory_tended).as_secs() < 10 { return; }
+        self.memory_tended = crate::clock::now();
+        self.trim_language_servers();
+        self.hovers.retain(|_, h| h.hot || h.alpha.active() || h.pulse.active() || crate::clock::since(h.since).as_secs() < 30);
+        if self.closed.len() > crate::storage::CLOSED_TABS { self.closed.drain(..self.closed.len() - crate::storage::CLOSED_TABS); }
+        let urls: std::collections::HashSet<_> = self.tabs.iter().flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref())).filter_map(|p| match p { Pane::Web(w) => Some(w.tab.shared.borrow().url.clone()), _ => None }).collect();
+        self.block_pages.retain(|url, _| urls.contains(url));
+        let streams: std::collections::HashSet<_> = self.tabs.iter().flat_map(|t| [crate::replay::stream_id(t.id, false), crate::replay::stream_id(t.id, true)]).collect();
+        if let Some(rec) = &mut self.recorder { rec.retain(&streams); }
+    }
+
     /// Keep `mru`/`selected` valid after `tabs[i]` was removed.
     pub(crate) fn tab_removed(&mut self, i: usize) {
         if let Some(p) = self.pip.as_mut() {
@@ -7652,7 +7776,7 @@ impl App {
             },
         };
         if let Pane::Web(w) = pane {
-            if w.devtools.is_some() {
+            if w.devtools.is_some() || w.tab.has_devtools() {
                 w.tab.close_devtools();
                 w.devtools = None;
                 w.focus_devtools = false;
@@ -7692,7 +7816,7 @@ impl App {
             let panel = DT_PANELS[w.dt_panel.min(DT_PANELS.len() - 1)].0;
             w.devtools = w.tab.open_devtools(device, binder, scale, panel);
             w.focus_devtools = w.devtools.is_some();
-            tracing::info!("devtools opened: {}", w.devtools.is_some());
+            tracing::info!("native devtools requested");
         }
         self.layout();
     }
@@ -7845,6 +7969,10 @@ impl App {
     /// with a foreground process asks first.
     pub(crate) fn close_tabs(&mut self, force: bool) {
         self.close_timeline();
+        if self.tabs.len()==1 && self.pins.owns(self.tabs[0].id) && !crate::private::enabled() {
+            // Closing the last live pinned page leaves its pin and an empty prompt.
+            let tab=self.make_tab(Pane::Home(crate::home::HomePane::new()),None);self.tabs.push(tab);
+        }
         let force = force || !self.behavior.close_asks;
         let mut targets: Vec<usize> = if self.selected.is_empty() {
             vec![self.active]
@@ -7871,6 +7999,10 @@ impl App {
             }
         }
         if targets.len() >= self.tabs.len() {
+            if crate::private::enabled() {
+                let _ = self.proxy.send_event(crate::UserEvent::WindowControl(self.window.id(), 0));
+                return;
+            }
             // Never close the last tab; keep one.
             targets.retain(|&t| t != self.active);
             if targets.is_empty() {
@@ -7993,6 +8125,7 @@ impl App {
     }
 
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
+        self.pin_drag_move(y);
         let was = self.mouse;
         self.mouse = (x, y);
         if self.timeline_pointer(x,y){self.dirty=true;return;}
@@ -8112,6 +8245,7 @@ impl App {
             CrumbHit::Close => {let _=self.proxy.send_event(UserEvent::WindowControl(self.window.id(),0));},
             CrumbHit::Maximize => if cfg!(target_os="macos") {self.toggle_fullscreen();} else {self.window.set_maximized(!self.window.is_maximized());},
             CrumbHit::Minimize => self.window.set_minimized(true),
+            CrumbHit::Menu => self.open_palette(PaletteMode::Application),
             CrumbHit::Space | CrumbHit::Tab | CrumbHit::Search => self.open_palette(PaletteMode::Go),
             CrumbHit::Url => self.open_palette(PaletteMode::Url),
             CrumbHit::Start => self.open_start(),
@@ -8161,7 +8295,7 @@ impl App {
         if self.start_mouse(button, state, x, y) {
             return;
         }
-        if pressed && button==MouseButton::Left && self.download_click(x,y) {return;}
+        if pressed && button==MouseButton::Left && (self.dl_menu || !(self.sidebar_visible()&&self.sidebar_rect().contains(x,y))) && self.download_click(x,y) {return;}
         if pressed && self.page_menu.is_some() {
             if button == MouseButton::Left {
                 self.page_menu_click(x, y);
@@ -8207,6 +8341,14 @@ impl App {
         }
         // Right-click on NEW TAB fans out the kinds; on a row, the tab's menu.
         if pressed && button == MouseButton::Right && self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
+            if self.pins.rect.contains(x,y) {
+                let live=self.side_hits.iter().find_map(|(r,h)|match h {
+                    SideHit::Pinned(crate::pins::Act::Open(k)) if r.contains(x,y)=>self.pins.items.get(*k).and_then(|p|self.pins.live.get(&p.id)).and_then(|id|self.tabs.iter().position(|t|&t.id==id)).map(|i|(i,r.bottom())),_=>None,
+                });
+                if let Some((i,top))=live {self.close_menus();self.tab_menu=Some((i,top));self.tab_menu_anim.replay(0.0,1.0,self.motion.dur(140.0));self.dirty=true;}
+                else if !self.pins.editing {self.pin_action(crate::pins::Act::Edit);}
+                return;
+            }
             if self.side_hits.iter().any(|(r, h)| *h == SideHit::NewShell && r.contains(x, y)) {
                 self.open_kinds_menu();
                 return;
@@ -8221,6 +8363,7 @@ impl App {
             return;
         }
         // NEW TAB acts on release: a hold fans the kinds out instead.
+        if !pressed && button==MouseButton::Left && self.pin_drag_release(y) {return;}
         if !pressed && button == MouseButton::Left {
             if let Some((at, SideHit::NewShell)) = self.press.take() {
                 let still = self.side_hits.iter().any(|(r, h)| *h == SideHit::NewShell && r.contains(x, y));
@@ -8241,7 +8384,8 @@ impl App {
             let g = self.sidebar_geometry();
             let pad = self.touch_pad();
             if let Some(&(_, hit)) = self.side_hits.iter().rev().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) {
-                self.side_action(hit, true);
+                if let SideHit::Pinned(crate::pins::Act::Open(k))=hit {self.pins.drag=Some((k,y,false));}
+                else {self.side_action(hit, true);}
                 self.dirty = true;
                 return;
             }
@@ -8249,7 +8393,7 @@ impl App {
                 return;
             }
             let space_row = self.side_header_h();
-            let pinned_y = sb.y + space_row;
+            let pinned_y = sb.y + space_row + self.pins_height();
             let hit = if !g.pinned.is_empty() && y >= pinned_y && y < pinned_y + g.pinned_h {
                 let k = if self.sidebar_icons(){((y-pinned_y)/self.px(32.0)) as usize}else{((x - sb.x) / (sb.w / g.pinned.len() as f32).floor()) as usize};
                 g.pinned.get(k).copied()

@@ -78,6 +78,18 @@ pub struct Gathered {
 }
 
 impl Gathered {
+    /// Did anything nus did not author go into this prompt? Page text and
+    /// tab titles come off the web, where a page can write whatever it
+    /// likes — including a line addressed to the assistant. An answer built
+    /// on that is an answer a stranger had a hand in.
+    ///
+    /// Shell output is not counted, though a hostile repository or a curl
+    /// can reach it too: almost every question carries a block, so marking
+    /// those would mark everything and mean nothing.
+    pub fn from_the_web(&self) -> bool {
+        self.page.is_some() || !self.tabs.is_empty()
+    }
+
     /// The prompt's context section: what's there, in a fixed order.
     pub fn render(&self) -> String {
         let mut s = String::new();

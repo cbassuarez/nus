@@ -55,13 +55,12 @@ impl Dock {
         let _ = reduced;
     }
 
-    /// The first window has actually been drawn. Do not wait for the worker or
-    /// request another native bounce: settle while AppKit completes its launch.
+    /// The window is ready; finish the current font cycle without delaying it
+    /// or requesting another native bounce.
     pub fn finish_launch(&mut self) {
         #[cfg(target_os = "macos")]
-        if let Some(mut launch) = self.launch.take() {
-            launch.finish();
-            self.shown = Some(Face::Newsreader);
+        if let Some(launch) = &mut self.launch {
+            launch.ready();
             register_bundle();
         }
     }
@@ -117,6 +116,9 @@ impl Dock {
                     let first = self.images.is_empty();
                     self.images = frames.iter().map(|png| image(png)).collect();
                     self.shown = None;
+                    if let Some(launch) = &mut self.launch {
+                        launch.update(&self.images, palette, reduced);
+                    }
                     if first {
                         register_bundle();
                     }
@@ -125,6 +127,15 @@ impl Dock {
             }
             if self.images.is_empty() {
                 return;
+            }
+            if let Some(launch) = &mut self.launch {
+                // The launch timer owns the tile until its final visible frame.
+                // The idle updater must not reset it to Newsreader each tick.
+                if launch.update(&self.images, launch.signal(), reduced) {
+                    return;
+                }
+                self.launch = None;
+                self.shown = None;
             }
             let face = self
                 .cycle

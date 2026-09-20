@@ -1005,6 +1005,7 @@ pub enum Slider {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
+    Report(crate::support::Kind),
     Workspace(workspace::Hit),
     Section(usize),
     Theme(Option<bool>),
@@ -1597,6 +1598,8 @@ impl App {
             Hit::TokSet(c) => format!("set to {}", surface::hex(c)),
             Hit::ShellInt(b) => if b { "shell integration auto".into() } else { "shell integration off".into() },
             Hit::Welcome => "open the welcome page".into(),
+            Hit::Report(crate::support::Kind::Bug) => "Report a bug · opens a GitHub draft with version and OS".into(),
+            Hit::Report(crate::support::Kind::Feature) => "Request a feature · opens a GitHub draft with version and OS".into(),
             Hit::Block(b) => if b { "content blocking on".into() } else { "content blocking off".into() },
             Hit::StatusStyle(s) => format!("page status {:?}", s).to_lowercase(),
             Hit::SleepAfter(n) => if n == 0 { "never sleep tabs".into() } else { format!("sleep after {n} minutes") },
@@ -2013,6 +2016,7 @@ impl App {
             Hit::TokSet(c) => self.set_tok(c),
             Hit::ShellInt(b) => self.behavior.shell_integration = b,
             Hit::Welcome => self.open_welcome(),
+            Hit::Report(kind) => self.run(crate::app::Action::Report(kind)),
             Hit::Block(b) => {
                 self.behavior.block_content = b;
                 crate::browser::BLOCKING.store(b, std::sync::atomic::Ordering::Relaxed);
@@ -3780,7 +3784,7 @@ impl App {
                         ("OFF".into(), Hit::Replay(ReplayKeep::Off), rk == ReplayKeep::Off),
                     ]),
                 ));
-                v.insert(14, ("".into(), Info("every shell's bytes, and at each command a still of the page beside: Ctrl+Shift+H scrubs the tab back through its checkpoints, B compares the page before and after, and share writes one HTML file that replays anywhere · takes effect at the next launch".into())));
+                v.insert(14, ("".into(), Info("Recent command history with optional playback and page snapshots. Up to 8 MiB per pane, 32 MiB per window, and 128 MiB of closed sessions. Oldest history rolls off at the selected age or size limit. Shared exports are kept. Ctrl+Shift+H opens history.".into())));
                 let ka = self.behavior.keep_alive;
                 v.insert(15, (
                     "KEEP ALIVE".into(),
@@ -4191,7 +4195,13 @@ impl App {
                     ("THE PHONE".into(), Choice(vec![("ON".into(), Hit::Phone(true), b.phone), ("OFF".into(), Hit::Phone(false), !b.phone)])),
                     ("".into(), match crate::phone::current() {
                         Some(p) if b.phone => Buttons(vec![(format!("COPY · {}", p.url().to_uppercase()), icons::COPY, Hit::CopyPhoneUrl)]),
-                        _ => Info("this window as a page on your network, for the phone: what ran and failed while you were away, what is listening, hands to allow or deny, a line to ask · a token in the address, plain http, this network only".into()),
+                        _ => Info("this window as a page on your network, for the phone: what ran and failed while you were away, what is listening, hands to allow or deny, a line to ask · a token in the address, https with this session's own certificate, this network only".into()),
+                    }),
+                    // The phone will ask whether to trust the certificate,
+                    // because nothing signed it. This is what it should say.
+                    ("".into(), match crate::phone::current() {
+                        Some(p) if b.phone => Info(format!("the phone will ask once about this certificate · sha-256 {}", p.fingerprint.to_lowercase())),
+                        _ => Info("".into()),
                     }),
                 ]
             }
@@ -4228,9 +4238,11 @@ impl App {
                 ]
             }
             _ => vec![
+                ("HELP".into(), Buttons(vec![("REPORT A BUG".into(), icons::BUG, Hit::Report(crate::support::Kind::Bug)), ("REQUEST A FEATURE".into(), icons::CHAT, Hit::Report(crate::support::Kind::Feature))])),
+                ("PRIVACY".into(), Info("GitHub opens an editable draft with your app version and OS. URLs, file paths, logs and other personal details are not attached. Review anything you add before posting publicly.".into())),
                 ("CHANNEL".into(), Info("Install a newer build to update nus. Automatic updates are not available in this build.".into())),
                 ("TELEMETRY".into(), Info("none".into())),
-                ("VERSION".into(), Info(format!("nus spike 4 · CEF {}", crate::chromium_version()))),
+                ("VERSION".into(), Info(crate::support::version())),
             ],
         }
     }
@@ -4417,7 +4429,8 @@ impl App {
             let full = stacked || matches!(control, Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_))
                 || matches!(control, Control::Info(_));
             let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
-            let card_w = self.px(168.0).min((maxw - self.px(6.0)).max(self.px(60.0)));
+            let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
+            let card_w = self.px(if report_actions {220.0} else {168.0}).min((maxw - self.px(6.0)).max(self.px(60.0)));
             let card_h = self.px(104.0);
             let gap = self.px(14.0);
             let per_row = ((maxw + gap) / (card_w + gap)).floor().max(1.0) as usize;

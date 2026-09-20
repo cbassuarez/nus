@@ -3,6 +3,7 @@
 #
 #   scripts/bundle-mac.sh            release build → dist/nus.app
 #   scripts/bundle-mac.sh --debug    debug build   → dist/nus.app
+#   NUS_BUNDLE_OUT=/tmp/nus.app scripts/bundle-mac.sh  isolated release artifact
 #
 # CEF on macOS runs only from a bundle: the Chromium Embedded Framework in
 # Contents/Frameworks, and one helper app per subprocess role
@@ -25,7 +26,8 @@ framework="$CEF_PATH/Chromium Embedded Framework.framework"
 name=nus
 id=dev.nus.app
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
-app="$root/dist/$name.app"
+app="${NUS_BUNDLE_OUT:-$root/dist/$name.app}"
+[[ "$app" == /* && "$app" == *.app ]] || { echo "NUS_BUNDLE_OUT must be an absolute .app path" >&2; exit 1; }
 bin="$root/spikes/composite/target/$profile"
 
 echo "· building ($profile)"

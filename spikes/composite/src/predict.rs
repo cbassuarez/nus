@@ -88,7 +88,7 @@ fn history_file(profile: &str) -> std::path::PathBuf {
 
 /// The last 2000 commands run under this profile.
 pub fn load_history(profile: &str) -> Vec<String> {
-    std::fs::read_to_string(history_file(profile))
+    crate::storage::tail(&history_file(profile), crate::storage::HISTORY_FILE)
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).map(|l| l.to_string()).collect::<Vec<_>>())
         .map(|mut v| {
             if v.len() > 2000 {
@@ -104,11 +104,7 @@ pub fn append_history(profile: &str, cmd: &str) {
     if cmd.is_empty() || cmd.contains('\n') {
         return;
     }
-    let _ = std::fs::create_dir_all(history_dir());
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(history_file(profile)) {
-        let _ = writeln!(f, "{cmd}");
-    }
+    let _ = crate::storage::append_line(&history_file(profile), cmd, crate::storage::HISTORY_FILE, crate::storage::HISTORY_LINES);
 }
 
 impl TermPane {

@@ -1,6 +1,6 @@
 [package]
 name = "composite"
-version = "0.0.0"
+version = "0.0.1"
 edition = "2021"
 publish = false
 
@@ -22,12 +22,14 @@ wgpu = "30"
 winit = "0.30"
 anyhow = "1"
 serde_json = "1"
+url = "2.5"
 serde = { version = "1", features = ["derive"] }
 png = "0.17"
 # Browsing for a file: the system's own dialog on each platform, and
 # whatever picture it hands back, read and squared off (pick.rs).
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "tokio"] }
 tempfile = "3"
+getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
 cpal = "0.15"
 mlua = { version = "0.12", features = ["luau", "vendored"] }
@@ -52,9 +54,16 @@ tree-sitter-toml-ng = "0.7"
 libloading = "0.8"
 
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12", "ring"] }
+ring = "0.17.14"
+rcgen = { version = "0.14.10", default-features = false, features = ["ring"] }
 
 [target.'cfg(not(windows))'.dependencies]
 global-hotkey = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+# Only for kill(pid, 0): whether an abandoned private root's process is gone.
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
@@ -71,9 +80,19 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppl
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation", "Win32_System_Power"] }
+windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation", "Win32_System_Power"] }
 
 [workspace]
+
+# This is a separate workspace: the root release profile does not apply here.
+# Keep hot-path optimization; remove shipping debug/symbol tables instead of
+# trading runtime speed for opt-level="s".
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 0
+strip = "symbols"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # Compile the Linux tray adapter in native unit checks as well.

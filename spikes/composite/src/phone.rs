@@ -3,15 +3,23 @@
 //! failed while you were away, what is listening, what is asking for
 //! hands, the tabs — and a line to ask the assistant; hands are answered
 //! from the phone. Off unless SYNC · THE PHONE turns it on; a token in
-//! the URL, made when it is turned on; plain HTTP on the local network
-//! and nothing else. No app to ship: the phone's own browser.
+//! the URL, made when it is turned on; HTTPS on the local network and
+//! nothing else. No app to ship: the phone's own browser.
+//!
+//! The certificate is made in memory when the server starts and dies with
+//! it — nothing is written to disk and nothing is installed on the phone.
+//! Being self-signed, the phone asks once whether to trust it. That makes
+//! the first connection trust-on-first-use: it stops anyone on the network
+//! from reading the token or the page, but it cannot by itself tell you
+//! apart from someone standing in the middle. SYNC · THE PHONE shows the
+//! fingerprint so the phone's own certificate view can be compared to it.
 //!
 //! The server is a thread on a socket; everything it knows comes from the
 //! same request channel `nus` remote control uses (a `front` verb, a
 //! `hands-answer` verb), so nothing here reaches the app any other way.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufReader, Read, Write};
+use std::net::TcpListener;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
@@ -26,6 +34,8 @@ pub struct Phone {
     pub token: String,
     /// The LAN address the phone should use, if one could be told.
     pub host: String,
+    /// The session certificate's SHA-256, for comparing against the phone.
+    pub fingerprint: String,
     alive: Arc<AtomicBool>,
     worker: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
@@ -50,6 +60,7 @@ pub fn stop() {
 
 /// Turn it on once per process; on again is the same server.
 pub fn start(tx: Sender<Inbound>) -> Option<Phone> {
+    if crate::private::enabled() { return None; }
     if let Some(p) = current() {
         return Some(p);
     }
@@ -59,13 +70,16 @@ pub fn start(tx: Sender<Inbound>) -> Option<Phone> {
     }
     // The address beside the instance file, for the CLI and for you.
     let dir = std::env::current_dir().unwrap_or_default().join("profile");
-    let _ = std::fs::write(dir.join("phone"), p.url());
+    if crate::security::write_secret(&dir.join("phone"), p.url().as_bytes()).is_err() {
+        stop();
+        return None;
+    }
     Some(p)
 }
 
 impl Phone {
     pub fn url(&self) -> String {
-        format!("http://{}:{}/?t={}", self.host, self.port, self.token)
+        format!("https://{}:{}/?t={}", self.host, self.port, self.token)
     }
 }
 
@@ -78,8 +92,43 @@ pub fn lan_ip() -> String {
         .unwrap_or_else(|_| "127.0.0.1".into())
 }
 
-/// Serve on every interface; the port is the OS's pick.
+/// A certificate for this session and no other: generated in memory when
+/// the server starts, never written anywhere, gone when it stops. Turning
+/// the phone off and on again is a new certificate and a new token.
+fn credentials(host: &str) -> Option<(Arc<rustls::ServerConfig>, String)> {
+    let mut names = vec!["localhost".to_string()];
+    if host != "localhost" {
+        names.push(host.to_string());
+    }
+    let issued = rcgen::generate_simple_self_signed(names).ok()?;
+    let certificate = issued.cert.der().clone();
+    // What the phone will show under the certificate's details.
+    let digest = ring::digest::digest(&ring::digest::SHA256, certificate.as_ref());
+    let fingerprint = digest.as_ref().iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":");
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(issued.signing_key.serialize_der().into());
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .ok()?
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], key)
+        .ok()?;
+    Some((Arc::new(config), fingerprint))
+}
+
+/// Is this the certificate that phone is serving? Compared by the whole
+/// encoding, so nothing about the name, the dates or the issuer matters.
+pub fn is_session_certificate(phone: &Phone, der: &[u8]) -> bool {
+    let digest = ring::digest::digest(&ring::digest::SHA256, der);
+    let shown: Vec<String> = digest.as_ref().iter().map(|b| format!("{b:02X}")).collect();
+    crate::security::token_matches(&phone.fingerprint, &shown.join(":"))
+}
+
+/// Serve on every interface; the port is the OS's pick. A connection that
+/// cannot complete the handshake never reaches `handle`, so the token is
+/// only ever read off an encrypted stream.
 pub fn serve(tx: Sender<Inbound>) -> Option<Phone> {
+    let host = lan_ip();
+    let (tls, fingerprint) = credentials(&host)?;
     let l = TcpListener::bind("0.0.0.0:0").ok()?;
     let port = l.local_addr().ok()?.port();
     let token = crate::remote::new_token();
@@ -93,10 +142,22 @@ pub fn serve(tx: Sender<Inbound>) -> Option<Phone> {
             while running.load(Ordering::Acquire) {
                 match l.accept() {
                     Ok((conn, _)) => {
+                        let Some(permit) = crate::security::Connection::acquire() else { continue };
                         let tx = tx.clone();
                         let token = t2.clone();
                         let running = running.clone();
-                        std::thread::spawn(move || handle(conn, tx, &token, &running));
+                        let tls = tls.clone();
+                        std::thread::spawn(move || {
+                            let _permit = permit;
+                            // The timeouts belong to the socket underneath; the
+                            // handshake has to be bounded like everything else.
+                            let _ = conn.set_read_timeout(Some(crate::security::IO_TIMEOUT));
+                            let _ = conn.set_write_timeout(Some(crate::security::IO_TIMEOUT));
+                            let _ = conn.set_nonblocking(false);
+                            let Ok(session) = rustls::ServerConnection::new(tls) else { return };
+                            let mut stream = rustls::StreamOwned::new(session, conn);
+                            handle(&mut stream, tx, &token, &running);
+                        });
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(30)),
                     Err(_) => break,
@@ -104,48 +165,55 @@ pub fn serve(tx: Sender<Inbound>) -> Option<Phone> {
             }
         })
         .ok()?;
-    Some(Phone { port, token, host: lan_ip(), alive, worker: Arc::new(std::sync::Mutex::new(Some(worker))) })
+    Some(Phone { port, token, host, fingerprint, alive, worker: Arc::new(std::sync::Mutex::new(Some(worker))) })
 }
 
 /// One request, answered in full. Only what the page needs: GET /, POST
 /// /ask, POST /hands; the token on every one.
-fn handle(mut conn: TcpStream, tx: Sender<Inbound>, token: &str, alive: &AtomicBool) {
-    let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
-    let mut reader = BufReader::new(conn.try_clone().ok().unwrap_or_else(|| conn.try_clone().unwrap()));
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return;
-    }
-    let mut parts = line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("/").to_string();
-    let mut len = 0usize;
-    loop {
-        let mut h = String::new();
-        if reader.read_line(&mut h).is_err() || h == "\r\n" || h == "\n" || h.is_empty() {
-            break;
+fn handle<S: Read + Write>(conn: &mut S, tx: Sender<Inbound>, token: &str, alive: &AtomicBool) {
+    let deadline = std::time::Instant::now()+crate::security::IO_TIMEOUT;
+    // Read the whole request first, then answer: the reader borrows the
+    // stream, and nothing is written back until it has let go.
+    let request = {
+        let mut reader = BufReader::new(&mut *conn);
+        let Ok(Some(line)) = crate::security::line(&mut reader, 8192, deadline) else { return };
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or("").to_string();
+        let target = parts.next().unwrap_or("/").to_string();
+        let mut len = 0usize;
+        let mut header_bytes = line.len();
+        loop {
+            let Ok(Some(h)) = crate::security::line(&mut reader, 8192, deadline) else { return };
+            header_bytes += h.len()+2;
+            if header_bytes > 16*1024 { return; }
+            if h.is_empty() { break; }
+            if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                let Ok(value) = v.trim().parse::<usize>() else { return };
+                if value > 64*1024 { return; }
+                len = value;
+            }
         }
-        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
-            len = v.trim().parse().unwrap_or(0);
+        let mut body = vec![0u8; len];
+        let mut read = 0;
+        while read < len {
+            if std::time::Instant::now() >= deadline { return; }
+            match reader.read(&mut body[read..]) { Ok(0) | Err(_) => return, Ok(n) => read += n }
         }
-    }
-    let mut body = vec![0u8; len.min(64 * 1024)];
-    if len > 0 {
-        let _ = reader.read_exact(&mut body);
-    }
-    let body = String::from_utf8_lossy(&body).to_string();
+        (method, target, String::from_utf8_lossy(&body).to_string())
+    };
+    let (method, target, body) = request;
     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
     let mut form = parse_form(query);
     if method == "POST" {
         form.extend(parse_form(&body));
     }
-    if !alive.load(Ordering::Acquire) || form.get("t").map(String::as_str) != Some(token) {
-        return respond(&mut conn, 403, "text/plain", "no");
+    if !alive.load(Ordering::Acquire) || !crate::security::token_matches(token, form.get("t").map(String::as_str).unwrap_or("")) {
+        return respond(conn, 403, "text/plain", "no");
     }
     let ask = |cmd: &str, args: Value| -> Value {
         if !alive.load(Ordering::Acquire) { return Value::Null; }
         let (rtx, rrx) = channel();
-        if tx.send(Inbound::Request(crate::remote::Request { cmd: cmd.into(), args, reply: rtx })).is_err() {
+        if tx.send(Inbound::Request(crate::remote::Request { cmd: cmd.into(), args, reply: rtx, origin: crate::remote::Origin::Phone })).is_err() {
             return Value::Null;
         }
         // The wire's shape: {"ok": true, "result": …}.
@@ -158,21 +226,21 @@ fn handle(mut conn: TcpStream, tx: Sender<Inbound>, token: &str, alive: &AtomicB
     match (method.as_str(), path) {
         ("GET", "/") => {
             let front = ask("front", Value::Null);
-            respond(&mut conn, 200, "text/html; charset=utf-8", &front_html(&front, token));
+            respond(conn, 200, "text/html; charset=utf-8", &front_html(&front, token));
         }
         ("POST", "/ask") => {
             let q = form.get("q").cloned().unwrap_or_default();
             let answer = if q.trim().is_empty() { Err("nothing asked".to_string()) } else { crate::ask::answer(&q) };
-            respond(&mut conn, 200, "text/html; charset=utf-8", &answer_html(&q, answer, token));
+            respond(conn, 200, "text/html; charset=utf-8", &answer_html(&q, answer, token));
         }
         ("POST", "/hands") => {
             let tab = form.get("tab").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
             let right = form.get("right").map(|v| v == "1").unwrap_or(false);
             let a = form.get("a").cloned().unwrap_or_else(|| "deny".into());
             let _ = ask("hands-answer", serde_json::json!({ "tab": tab, "right": right, "answer": a }));
-            respond(&mut conn, 303, "text/plain", &format!("/?t={token}"));
+            respond(conn, 303, "text/plain", &format!("/?t={token}"));
         }
-        _ => respond(&mut conn, 404, "text/plain", "not here"),
+        _ => respond(conn, 404, "text/plain", "not here"),
     }
 }
 
@@ -209,7 +277,7 @@ fn unescape(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-fn respond(conn: &mut TcpStream, code: u16, kind: &str, body: &str) {
+fn respond<S: Write>(conn: &mut S, code: u16, kind: &str, body: &str) {
     let reason = match code { 200 => "OK", 303 => "See Other", 403 => "Forbidden", _ => "Not Found" };
     let extra = if code == 303 { format!("Location: {body}\r\n") } else { String::new() };
     let body = if code == 303 { "" } else { body };
@@ -303,5 +371,119 @@ mod tests {
         assert!(html.contains("value=\"tok\""));
         assert!(html.contains("name=tab value=2"));
         assert!(html.contains("nothing listening"));
+    }
+
+    /// A verifier that trusts anything and writes down what it was shown.
+    /// Only the test uses it: the phone's own browser does the asking.
+    #[derive(Debug)]
+    struct Capture(std::sync::Mutex<Vec<u8>>);
+
+    impl rustls::client::danger::ServerCertVerifier for Capture {
+        fn verify_server_cert(
+            &self,
+            end_entity: &rustls::pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            *self.0.lock().unwrap() = end_entity.as_ref().to_vec();
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+        }
+    }
+
+    /// The phone really is spoken to over TLS, the certificate it is shown
+    /// is the one whose fingerprint SYNC · THE PHONE displays, and a wrong
+    /// token is still refused on the encrypted stream.
+    #[test]
+    fn the_phone_is_served_over_tls_with_the_fingerprint_it_shows() {
+        use std::io::{Read, Write};
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let phone = serve(tx).expect("no server");
+        assert!(phone.url().starts_with("https://"));
+
+        let seen = Arc::new(Capture(std::sync::Mutex::new(Vec::new())));
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(seen.clone())
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let session = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
+        let socket = std::net::TcpStream::connect(("127.0.0.1", phone.port)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut stream = rustls::StreamOwned::new(session, socket);
+
+        write!(stream, "GET /?t=wrong HTTP/1.1\r\nHost: nus\r\nConnection: close\r\n\r\n").unwrap();
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        assert!(answer.starts_with("HTTP/1.1 403"), "a wrong token was answered: {answer}");
+
+        let shown = seen.0.lock().unwrap().clone();
+        assert!(!shown.is_empty(), "no certificate was presented");
+        let digest = ring::digest::digest(&ring::digest::SHA256, &shown);
+        let fingerprint: Vec<String> = digest.as_ref().iter().map(|b| format!("{b:02X}")).collect();
+        assert_eq!(phone.fingerprint, fingerprint.join(":"));
+        assert_eq!(phone.fingerprint.split(':').count(), 32);
+        stop();
+    }
+
+    /// A plaintext request is not answered, so no token crosses the
+    /// network in the clear even if something speaks HTTP at the port.
+    #[test]
+    fn plaintext_requests_are_refused() {
+        use std::io::{Read, Write};
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let phone = serve(tx).expect("no server");
+        let mut conn = std::net::TcpStream::connect(("127.0.0.1", phone.port)).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(conn, "GET /?t={} HTTP/1.1\r\nHost: nus\r\n\r\n", phone.token).unwrap();
+        let mut answer = Vec::new();
+        let _ = conn.read_to_end(&mut answer);
+        let text = String::from_utf8_lossy(&answer);
+        assert!(!text.contains("HTTP/1.1"), "a plaintext request was answered: {text}");
+        stop();
+    }
+
+    /// Pinning compares the whole encoding: the session's own certificate
+    /// is trusted in a tab here, and nothing else at that address is.
+    #[test]
+    fn only_this_session_certificate_is_pinned() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let phone = serve(tx).expect("no server");
+        let mine = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let ours = credentials(&phone.host).unwrap();
+        assert!(!is_session_certificate(&phone, mine.cert.der()));
+        assert!(!is_session_certificate(&phone, &[]));
+        assert!(!is_session_certificate(&phone, ours.1.as_bytes()));
+        stop();
+    }
+
+    /// Turning the phone off and on again cannot be recognised from before.
+    #[test]
+    fn every_session_gets_its_own_certificate() {
+        let a = credentials("192.0.2.7").unwrap().1;
+        let b = credentials("192.0.2.7").unwrap().1;
+        assert_ne!(a, b);
     }
 }

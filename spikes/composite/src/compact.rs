@@ -70,10 +70,11 @@ impl App {
             self.draw_tree(scene,sb,sb.y+self.px(COMPACT_HEAD),g.foot_y);
             self.draw_responsive_footer(scene,sb,g.foot_y);self.draw_sidebar_menus(scene,sb);return;
         }
+        self.draw_pins(scene,sb);
         // Pinned tabs first, as a block.
         let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids.clone()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
-        let mut py = sb.y + COMPACT_HEAD * self.scale;
+        let mut py = sb.y + COMPACT_HEAD * self.scale + self.pins_height();
         let pin_h = self.px(32.0);
         for &i in &g.pinned {
             let cell = Rect::new(sb.x, py, sb.w, pin_h);

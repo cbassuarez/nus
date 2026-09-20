@@ -127,6 +127,10 @@ pub fn available() -> Vec<String> {
 /// Spans of `text` as (char start, char len, class), from the grammar's
 /// highlight captures. None when there's no grammar for `lang`.
 pub fn spans(lang: &str, text: &str) -> Option<Vec<(usize, usize, Tok)>> {
+    spans_cancellable(lang, text, None)
+}
+
+pub fn spans_cancellable(lang: &str, text: &str, cancel: Option<&std::sync::atomic::AtomicUsize>) -> Option<Vec<(usize, usize, Tok)>> {
     let loaded = language(lang)?;
     let bytes = text.as_bytes();
     // Byte offsets → char offsets, once.
@@ -145,7 +149,7 @@ pub fn spans(lang: &str, text: &str) -> Option<Vec<(usize, usize, Tok)>> {
     let mut out = Vec::new();
     HL.with(|h| {
         let mut h = h.borrow_mut();
-        let Ok(events) = h.highlight(&loaded.config, bytes, None, None, |_| None) else { return };
+        let Ok(events) = h.highlight(&loaded.config, bytes, None, cancel, |_| None) else { return };
         let mut stack: Vec<usize> = Vec::new();
         for ev in events.flatten() {
             match ev {

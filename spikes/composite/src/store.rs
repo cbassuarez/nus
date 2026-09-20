@@ -142,29 +142,26 @@ mod tests {
         name: Option<String>,
     }
 
-    fn dir() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("nus-store-{}-{}", std::process::id(), crate::clock::now().elapsed().as_nanos()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn dir() -> tempfile::TempDir {
+        tempfile::Builder::new().prefix("nus-store-").tempdir().unwrap()
     }
 
     #[test]
     fn a_whole_file_reads_whole() {
         let d = dir();
-        let p = d.join("settings.json");
+        let p = d.path().join("settings.json");
         write_json(&p, &Prefs { behavior: Some(Inner { lead: "x".into(), count: 2, mode: Mode::B }), pinned: Some(true), name: None }).unwrap();
         let r = read_json::<Prefs>(&p);
         assert!(r.dropped.is_empty());
         assert_eq!(r.value.pinned, Some(true));
         assert_eq!(r.value.behavior.unwrap().count, 2);
-        assert!(!d.join(".settings.json.tmp").exists());
-        let _ = std::fs::remove_dir_all(&d);
+        assert!(!d.path().join(".settings.json.tmp").exists());
     }
 
     #[test]
     fn one_unknown_variant_costs_one_key() {
         let d = dir();
-        let p = d.join("settings.json");
+        let p = d.path().join("settings.json");
         // `mode: "Z"` is from a nus this one does not know; `pinned` is a string.
         std::fs::write(&p, r#"{"behavior":{"lead":"keep","count":7,"mode":"Z"},"pinned":"yes","name":"win"}"#).unwrap();
         let r = read_json::<Prefs>(&p);
@@ -173,18 +170,16 @@ mod tests {
         assert_eq!((b.lead.as_str(), b.count, b.mode), ("keep", 7, Mode::A));
         assert_eq!(r.value.pinned, None);
         assert_eq!(r.value.name.as_deref(), Some("win"));
-        assert!(d.join("settings.unread").exists());
-        let _ = std::fs::remove_dir_all(&d);
+        assert!(d.path().join("settings.unread").exists());
     }
 
     #[test]
     fn not_json_is_the_default() {
         let d = dir();
-        let p = d.join("settings.json");
+        let p = d.path().join("settings.json");
         std::fs::write(&p, "{not json").unwrap();
         let r = read_json::<Prefs>(&p);
         assert_eq!(r.value, Prefs::default());
         assert_eq!(r.dropped, vec!["(not json)".to_string()]);
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

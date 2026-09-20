@@ -22,7 +22,7 @@ use crate::app::{Caps, App, WebPane};
 // ── Single instance ──────────────────────────────────────────────────────
 // The first instance listens on a loopback port written to
 // profile/instance; a second one hands its URLs over and exits. v1 moves
-// this to a named pipe / unix socket; the protocol is one URL per line.
+// this to a named pipe / unix socket; all requests use authenticated JSON lines.
 
 pub enum Claim {
     /// We are the instance: URLs from later launches arrive here; the
@@ -45,17 +45,21 @@ pub enum Inbound {
 
 /// Claim the instance, handing `urls` to a running one if there is one.
 pub fn claim(urls: &[String]) -> Claim {
-    if let Ok(port) = std::fs::read_to_string(instance_file()).map(|s| s.lines().next().unwrap_or("").trim().to_string()) {
-        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap_or(0))) {
-            let mut ok = true;
-            for u in urls {
-                ok &= writeln!(s, "{u}").is_ok();
-            }
-            if urls.is_empty() {
-                ok &= writeln!(s, "raise").is_ok();
-            }
-            if ok {
-                return Claim::HandedOff;
+    if let Ok(instance) = std::fs::read_to_string(instance_file()) {
+        let mut lines = instance.lines();
+        let port = lines.next().unwrap_or("").parse::<u16>().unwrap_or(0);
+        let token = lines.next().unwrap_or("");
+        if !token.is_empty() {
+            let addr = std::net::SocketAddr::from(([127,0,0,1],port));
+            if let Ok(mut s) = TcpStream::connect_timeout(&addr, crate::security::IO_TIMEOUT) {
+                let _ = s.set_read_timeout(Some(crate::security::IO_TIMEOUT));
+                let _ = s.set_write_timeout(Some(crate::security::IO_TIMEOUT));
+                let request = serde_json::json!({"token":token,"cmd":"__handoff","args":urls});
+                if writeln!(s, "{request}").is_ok() {
+                    if let Ok(Some(reply)) = crate::security::line(&mut BufReader::new(s), 4096, Instant::now()+crate::security::IO_TIMEOUT) {
+                        if serde_json::from_str::<serde_json::Value>(&reply).ok().is_some_and(|v| v["ok"] == true) { return Claim::HandedOff; }
+                    }
+                }
             }
         }
     }
@@ -64,14 +68,15 @@ pub fn claim(urls: &[String]) -> Claim {
     if port != 0 {
         let _ = std::fs::create_dir_all(instance_file().parent().unwrap());
         // The port on the first line, the token on the second; the CLI reads both.
-        let _ = std::fs::write(instance_file(), format!("{port}\n{token}\n"));
+        if let Err(e) = crate::security::write_secret(&instance_file(), format!("{port}\n{token}\n").as_bytes()) {
+            tracing::error!("Could not publish owner-only instance credentials: {e}");
+        }
     }
     Claim::Primary(rx, port, tx)
 }
 
-/// Listen on a loopback port for URLs and "raise" (one per line, from
-/// another launch) and for remote-control requests (JSON lines carrying
-/// the token; one reply per request); `urls` are queued first.
+/// Listen on loopback for authenticated launch handoff and remote-control
+/// requests (JSON lines carrying the token); `urls` are queued first.
 pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16, Sender<Inbound>) {
     let (tx, rx) = channel();
     let tx_out = tx.clone();
@@ -84,16 +89,21 @@ pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16, Sender
             port = l.local_addr().map(|a| a.port()).unwrap_or(0);
             std::thread::spawn(move || {
                 for conn in l.incoming().flatten() {
+                    let Some(permit) = crate::security::Connection::acquire() else { continue };
                     let tx = tx.clone();
                     let token = token.clone();
                     std::thread::spawn(move || {
+                        let _permit = permit;
+                        let _ = conn.set_read_timeout(Some(crate::security::IO_TIMEOUT));
+                        let _ = conn.set_write_timeout(Some(crate::security::IO_TIMEOUT));
                         use std::io::Write as _;
                         let mut w = match conn.try_clone() {
                             Ok(w) => w,
                             Err(_) => return,
                         };
-                        let r = BufReader::new(conn);
-                        for line in r.lines().map_while(Result::ok) {
+                        let mut r = BufReader::new(conn);
+                        for _ in 0..256 {
+                            let Ok(Some(line)) = crate::security::line(&mut r, crate::security::MAX_REQUEST, Instant::now()+crate::security::IO_TIMEOUT) else { break };
                             if line.starts_with('{') {
                                 let v: serde_json::Value = match serde_json::from_str(&line) {
                                     Ok(v) => v,
@@ -102,7 +112,7 @@ pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16, Sender
                                         continue;
                                     }
                                 };
-                                if v.get("token").and_then(|t| t.as_str()) != Some(token.as_str()) {
+                                if !crate::security::token_matches(&token, v.get("token").and_then(|t| t.as_str()).unwrap_or("")) {
                                     let _ = writeln!(w, "{}", serde_json::json!({ "ok": false, "error": "bad token" }));
                                     break;
                                 }
@@ -110,8 +120,16 @@ pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16, Sender
                                 // A hand may wait on the user; the rest answers within seconds.
                                 let patience = if cmd == "hands" { 180 } else { 10 };
                                 let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                                if cmd == "__handoff" {
+                                    let Some(urls) = args.as_array().filter(|a| a.len() <= 128) else { break };
+                                    if urls.iter().any(|u| !u.as_str().is_some_and(|u| u.starts_with("file://") || crate::app::strict_url(u).is_some())) { break; }
+                                    if urls.is_empty() { let _ = tx.send(Inbound::Url("raise".into())); }
+                                    for u in urls { let _ = tx.send(Inbound::Url(u.as_str().unwrap().into())); }
+                                    let _ = writeln!(w, "{{\"ok\":true}}");
+                                    break;
+                                }
                                 let (reply_tx, reply_rx) = channel();
-                                if tx.send(Inbound::Request(crate::remote::Request { cmd, args, reply: reply_tx })).is_err() {
+                                if tx.send(Inbound::Request(crate::remote::Request { cmd, args, reply: reply_tx, origin: crate::remote::Origin::Cli })).is_err() {
                                     break;
                                 }
                                 // A hand may wait on the user; the rest answers within seconds.
@@ -125,14 +143,8 @@ pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16, Sender
                                 }
                                 continue;
                             }
-                            // Only what another nus would say: a URL, a file, or "raise".
-                            // Anything else (a port probe, a stray HTTP request) is noise.
-                            let ok = line == "raise" || line.starts_with("file://") || crate::app::strict_url(&line).is_some() || line.starts_with("http");
-                            if ok {
-                                let _ = tx.send(Inbound::Url(line));
-                            } else {
-                                break;
-                            }
+                            // Launch handoff uses authenticated JSON too.
+                            break;
                         }
                     });
                 }

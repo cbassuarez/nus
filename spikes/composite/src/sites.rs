@@ -27,9 +27,6 @@ pub struct SitePrefs {
     pub boosts: bool,
     #[serde(default = "yes")]
     pub blocking: bool,
-    /// What the site asked for and what it was told: "camera" → true.
-    #[serde(default)]
-    pub perms: BTreeMap<String, bool>,
 }
 
 fn yes() -> bool {
@@ -45,7 +42,7 @@ pub fn default_zoom() -> u32 {
 
 impl Default for SitePrefs {
     fn default() -> Self {
-        SitePrefs { zoom: default_zoom(), autoplay: true, js: true, cookies: true, boosts: true, blocking: true, perms: BTreeMap::new() }
+        SitePrefs { zoom: default_zoom(), autoplay: true, js: true, cookies: true, boosts: true, blocking: true }
     }
 }
 
@@ -68,6 +65,7 @@ fn load() -> HashMap<String, SitePrefs> {
 }
 
 fn save(map: &HashMap<String, SitePrefs>) {
+    if crate::private::enabled() { return; }
     let _ = crate::store::write_json(&path(), map);
 }
 
@@ -103,27 +101,114 @@ pub fn set(host: &str, p: SitePrefs) {
     save(&map);
 }
 
-/// Remember a permission answer for a host.
-pub fn remember(host: &str, what: &str, allow: bool) {
-    let mut p = prefs(host);
-    p.perms.insert(what.to_string(), allow);
-    set(host, p);
+type PermissionBook = BTreeMap<String, BTreeMap<String, bool>>;
+static PERMISSIONS: LazyLock<RwLock<PermissionBook>> = LazyLock::new(|| {
+    // Legacy host-only grants in sites.json deliberately do not migrate:
+    // there is no safe way to reconstruct their scheme, port or IPv6 host.
+    RwLock::new(crate::store::read_json::<PermissionBook>(&permission_path()).value)
+});
+
+fn permission_path() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_default().join("profile/permissions.json")
 }
 
-/// A remembered answer, if the host has one for every word asked
-/// ("camera and microphone" needs both).
-pub fn remembered(host: &str, what: &str) -> Option<bool> {
-    let p = prefs(host);
-    let words: Vec<&str> = what.split(" and ").collect();
+/// Security origins use a URL parser, never the shortened display hostname.
+pub fn permission_origin(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || !url.has_host() { return None; }
+    Some(url.origin().ascii_serialization())
+}
+
+fn save_permissions(book: &PermissionBook) {
+    if !crate::private::enabled() { let _ = crate::store::write_json(&permission_path(), book); }
+}
+
+pub fn permissions_for(url: &str) -> BTreeMap<String, bool> {
+    permission_origin(url).and_then(|origin| PERMISSIONS.read().unwrap().get(&origin).cloned()).unwrap_or_default()
+}
+
+/// Remember only this origin's answer. Opaque/invalid origins remain temporary.
+pub fn remember(url: &str, what: &str, allow: bool) {
+    let Some(origin) = permission_origin(url) else { return };
+    let mut book = PERMISSIONS.write().unwrap();
+    book.entry(origin).or_default().insert(what.to_string(), allow);
+    save_permissions(&book);
+}
+
+fn forget_permission(url: &str, what: Option<&str>) {
+    let Some(origin) = permission_origin(url) else { return };
+    let mut book = PERMISSIONS.write().unwrap();
+    if let Some(what) = what {
+        if let Some(grants) = book.get_mut(&origin) { grants.remove(what); }
+        if book.get(&origin).is_some_and(|grants| grants.is_empty()) { book.remove(&origin); }
+    } else { book.remove(&origin); }
+    save_permissions(&book);
+}
+
+fn permission_answer(book: &PermissionBook, url: &str, what: &str) -> Option<bool> {
+    let origin = permission_origin(url)?;
+    let grants = book.get(&origin)?;
     let mut all = true;
-    for w in words {
-        match p.perms.get(w) {
+    for w in what.split(" and ") {
+        match grants.get(w.trim()) {
             Some(false) => return Some(false),
             Some(true) => {}
             None => all = false,
         }
     }
     if all { Some(true) } else { None }
+}
+
+/// All requested permissions must belong to the exact requesting origin.
+pub fn remembered(url: &str, what: &str) -> Option<bool> {
+    permission_answer(&PERMISSIONS.read().unwrap(), url, what)
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    fn allowed(url: &str) -> PermissionBook {
+        BTreeMap::from([(permission_origin(url).unwrap(), BTreeMap::from([("camera".into(), true)]))])
+    }
+
+    #[test]
+    fn origin_canonicalization_preserves_security_boundaries() {
+        let book = allowed("https://Example.com:443/first");
+        assert_eq!(permission_answer(&book, "https://example.com/second?q=1", "camera"), Some(true));
+        for other in ["http://example.com", "https://example.com:8443", "https://www.example.com", "https://elsewhere.example"] {
+            assert_eq!(permission_answer(&book, other, "camera"), None, "{other}");
+        }
+        let book = allowed("http://localhost:3000");
+        assert_eq!(permission_answer(&book, "http://localhost:4000", "camera"), None);
+    }
+
+    #[test]
+    fn ipv6_addresses_do_not_collapse_to_a_shared_grant() {
+        let book = allowed("https://[2001:db8::1]:443");
+        assert_eq!(permission_answer(&book, "https://[2001:0db8:0:0:0:0:0:1]/page", "camera"), Some(true));
+        assert_eq!(permission_answer(&book, "https://[2001:db8::2]", "camera"), None);
+        assert_eq!(permission_answer(&book, "https://[2001:db8::1]:8443", "camera"), None);
+    }
+
+    #[test]
+    fn legacy_and_opaque_permissions_require_a_new_decision() {
+        let old = BTreeMap::from([("example.com".into(), BTreeMap::from([("camera".into(), true)]))]);
+        assert_eq!(permission_answer(&old, "https://example.com", "camera"), None);
+        for invalid in ["", "null", "example.com", "file:///tmp/page.html", "data:text/html,test", "about:blank"] {
+            assert_eq!(permission_origin(invalid), None);
+        }
+    }
+
+    #[test]
+    fn combined_requests_require_every_grant_and_respect_denials() {
+        let mut book = allowed("https://example.com");
+        assert_eq!(permission_answer(&book, "https://example.com", "camera and microphone"), None);
+        book.get_mut("https://example.com").unwrap().insert("microphone".into(), true);
+        assert_eq!(permission_answer(&book, "https://example.com", "camera and microphone"), Some(true));
+        book.get_mut("https://example.com").unwrap().insert("microphone".into(), false);
+        assert_eq!(permission_answer(&book, "https://example.com", "camera and microphone"), Some(false));
+    }
 }
 
 /// Chromium's zoom level for a percentage: each level is a 1.2× step.
@@ -223,8 +308,8 @@ impl App {
     pub(crate) fn site_panel_rect(&self, w: &WebPane) -> Rect {
         let width = self.px(300.0).min(w.rect.w - self.px(16.0));
         let rows = 6.0;
-        let perms = prefs(&host_of(&w.tab.shared.borrow().url)).perms.len().max(1) as f32;
-        let h = self.px(42.0) + rows * self.px(32.0) + self.px(26.0) + self.px(22.0) + perms * self.px(26.0) + self.px(40.0);
+        let perms = permissions_for(&w.tab.shared.borrow().url).len().max(1) as f32;
+        let h = self.px(42.0) + rows * self.px(32.0) + self.px(26.0) + self.px(44.0) + perms * self.px(26.0) + self.px(40.0);
         Rect::new(w.rect.right() - width - self.px(8.0), w.page.y + self.px(4.0), width, h.min(w.page.h - self.px(8.0)))
     }
 
@@ -340,11 +425,16 @@ impl App {
         let base0 = y + self.px(17.0);
         self.fonts.draw(scene, dim, r.x + pad, base0, "PERMISSIONS");
         y += self.px(22.0);
-        if p.perms.is_empty() {
+        let origin = permission_origin(&url).unwrap_or_else(|| "Temporary permissions".into());
+        let origin = self.fit(dim, &origin, r.w - 2.0 * pad);
+        self.fonts.draw(scene, dim, r.x + pad, y + self.px(15.0), &origin);
+        y += self.px(22.0);
+        let permissions = permissions_for(&url);
+        if permissions.is_empty() {
             self.fonts.draw(scene, dim, r.x + pad, y + self.px(15.0), "nothing asked yet");
             y += self.px(26.0);
         }
-        for (k, (what, allow)) in p.perms.iter().enumerate() {
+        for (k, (what, allow)) in permissions.iter().enumerate() {
             let cell = Rect::new(r.x, y, r.w, self.px(26.0));
             let hot = cell.contains(mx, my);
             if hot {
@@ -433,11 +523,12 @@ impl App {
                 reload = true;
             }
             SiteHit::Forget(k) => {
-                if let Some(key) = p.perms.keys().nth(k).cloned() {
-                    p.perms.remove(&key);
+                if let Some(key) = permissions_for(&url).keys().nth(k) {
+                    forget_permission(&url, Some(key));
                 }
             }
             SiteHit::Reset => {
+                forget_permission(&url, None);
                 p = SitePrefs::default();
                 reload = true;
             }

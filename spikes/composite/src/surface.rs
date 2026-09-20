@@ -75,11 +75,13 @@ pub struct SidebarRules {
     #[serde(default="crate::sidebar::default_width")] pub width:f32,
     #[serde(default="crate::sidebar::default_footer")] pub footer_row:f32,
     #[serde(default)] pub small_tabs:crate::sidebar::SmallTabs,
+    #[serde(default)] pub live_github: bool,
+    #[serde(default)] pub live_ports: bool,
 }
 
 impl Default for SidebarRules {
     fn default() -> Self {
-        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 300, compact: false, width:248.0, footer_row:32.0, small_tabs:Default::default() }
+        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 300, compact: false, width:248.0, footer_row:32.0, small_tabs:Default::default(), live_github:false, live_ports:false }
     }
 }
 

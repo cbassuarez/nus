@@ -1,24 +1,27 @@
 name: Feature request
-description: Read the first line before you open this.
+description: Describe something you would like to do in nus.
 labels: [feature]
 body:
   - type: markdown
     attributes:
       value: |
-        **This is likely a no.** nus is built for one user, and its design is settled in `docs/PRODUCT.md`. I don't take feature requests; the license lets you fork it and I mean that kindly.
-
-        Before opening this, check whether it's already a rule: `rules.luau` covers new-tab colours, folders, chains, skills, ports, blocks, grouping and layouts, and `nus.run` reaches every remote-control verb. The look studio and layouts cover most of the rest.
-
-        If it survives that, keep it to one paragraph.
+        Describe the problem you want to solve. Requests help inform development; they are not a promise of implementation. This issue will be public, so leave out personal information.
+  - type: input
+    id: version
+    attributes:
+      label: App version and build
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
   - type: textarea
     id: what
     attributes:
-      label: What, in one paragraph
+      label: What would you like to do, and how would it help?
     validations:
       required: true
   - type: textarea
     id: rule
     attributes:
-      label: Why it can't be a rule, a theme or a layout
-    validations:
-      required: true
+      label: Alternatives you have tried
+      description: Optional. Include relevant settings, rules, themes or layouts.

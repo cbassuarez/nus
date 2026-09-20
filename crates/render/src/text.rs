@@ -73,10 +73,50 @@ pub struct ShapedGlyph {
     pub y_offset: f32,
 }
 
+type FontBytes = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;
+type FontDb = std::rc::Rc<std::cell::RefCell<fontdb::Database>>;
+thread_local! {
+    static FONT_DB: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<fontdb::Database>>> = Default::default();
+    static FONT_DATA: std::cell::RefCell<HashMap<std::path::PathBuf, std::sync::Weak<dyn AsRef<[u8]> + Send + Sync>>> = Default::default();
+}
+fn system_database() -> FontDb {
+    FONT_DB.with(|cache| {
+        if let Some(db) = cache.borrow().upgrade() { return db; }
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let db = std::rc::Rc::new(std::cell::RefCell::new(db));
+        *cache.borrow_mut() = std::rc::Rc::downgrade(&db);
+        db
+    })
+}
+fn face_bytes(db: &mut fontdb::Database, id: fontdb::ID) -> Option<(FontBytes,u32)> {
+    let face = db.face(id)?;
+    let index = face.index;
+    let path = match &face.source {
+        fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_,data) => return Some((data.clone(),index)),
+        fontdb::Source::File(path) => path.clone(),
+    };
+    // macOS's sealed, read-only system fonts cannot be modified in-place.
+    // Mapping these avoids copying the 180 MB Apple Color Emoji collection.
+    // Mutable user/third-party files are copied once and shared by weak cache.
+    #[cfg(target_os="macos")]
+    if path.starts_with("/System/Library/Fonts") {
+        // SAFETY: only immutable files on macOS's sealed system volume above.
+        return unsafe { db.make_shared_face_data(id) };
+    }
+    FONT_DATA.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.retain(|_,v| v.strong_count() > 0);
+        if let Some(data) = cache.get(&path).and_then(std::sync::Weak::upgrade) { return Some((data,index)); }
+        let data: FontBytes = std::sync::Arc::new(std::fs::read(&path).ok()?);
+        cache.insert(path, std::sync::Arc::downgrade(&data));
+        Some((data,index))
+    })
+}
+
 struct Face {
-    data: &'static [u8],
+    data: FontBytes,
     index: u32,
-    hb: rustybuzz::Face<'static>,
     units_per_em: f32,
 }
 
@@ -96,16 +136,19 @@ pub struct FontSystem {
     shelf_h: u32,
     /// Pending atlas uploads: (x, y, w, h, data).
     pub uploads: Vec<(u32, u32, u32, u32, Vec<u8>)>,
-    db: std::cell::RefCell<Option<fontdb::Database>>,
+    db: std::cell::RefCell<Option<FontDb>>,
     icons: HashMap<IconKey, Option<AtlasGlyph>>,
     /// System faces for what the bundled fonts lack — symbols, emoji,
     /// other scripts — loaded the first time a glyph is missing. They
     /// live behind a RefCell so shaping (and measuring) stays `&self`.
     extra: std::cell::RefCell<Vec<Face>>,
-    fallbacks: std::cell::RefCell<Option<Vec<FontId>>>,
+    fallbacks: std::cell::RefCell<HashMap<&'static str, FontId>>,
+    fallback_chars: std::cell::RefCell<HashMap<char, Option<FontId>>>,
     /// Measured widths by (font, px, tracking, text): the sidebar measures
     /// the same strings every frame. Cleared when it grows large.
     widths: std::cell::RefCell<HashMap<(u16, u32, u32, String), f32>>,
+    shaped: std::cell::RefCell<HashMap<(u16, u32, String), Vec<ShapedGlyph>>>,
+    shaped_glyphs: std::cell::Cell<usize>,
 }
 
 /// Font ids at or above this index the `extra` (fallback) faces.
@@ -160,8 +203,11 @@ impl FontSystem {
             db: std::cell::RefCell::new(None),
             icons: HashMap::new(),
             extra: std::cell::RefCell::new(Vec::new()),
-            fallbacks: std::cell::RefCell::new(None),
+            fallbacks: std::cell::RefCell::new(HashMap::new()),
+            fallback_chars: std::cell::RefCell::new(HashMap::new()),
             widths: std::cell::RefCell::new(HashMap::new()),
+            shaped: std::cell::RefCell::new(HashMap::new()),
+            shaped_glyphs: std::cell::Cell::new(0),
         }
     }
 
@@ -175,77 +221,57 @@ impl FontSystem {
         }
     }
 
-    /// Load a system family as a fallback face, if it exists.
-    fn try_load_fallback(&self, family: &str) -> Option<FontId> {
-        {
-            let mut db = self.db.borrow_mut();
-            if db.is_none() {
-                let mut d = fontdb::Database::new();
-                d.load_system_fonts();
-                *db = Some(d);
-            }
-        }
-        let db = self.db.borrow();
-        let db = db.as_ref()?;
-        let id = db.query(&fontdb::Query {
-            families: &[fontdb::Family::Name(family)],
-            ..Default::default()
-        })?;
-        let face = db.face(id)?;
-        let index = face.index;
-        let data = match &face.source {
-            fontdb::Source::File(p) => std::fs::read(p).ok(),
-            fontdb::Source::Binary(b) => Some(b.as_ref().as_ref().to_vec()),
-            fontdb::Source::SharedFile(_, b) => Some(b.as_ref().as_ref().to_vec()),
-        }?;
-        let data: &'static [u8] = Box::leak(data.into_boxed_slice());
-        let hb = rustybuzz::Face::from_slice(data, index)?;
-        let font = FontRef::from_index(data, index as usize)?;
-        let units_per_em = font.metrics(&[]).units_per_em as f32;
-        let mut extra = self.extra.borrow_mut();
-        extra.push(Face {
-            data,
-            index,
-            hb,
-            units_per_em,
-        });
-        Some(FontId(EXTRA_BASE + (extra.len() - 1) as u16))
+    fn database(&self) -> FontDb {
+        let mut db = self.db.borrow_mut();
+        db.get_or_insert_with(system_database).clone()
     }
 
-    fn fallbacks(&self) -> Vec<FontId> {
-        if let Some(f) = self.fallbacks.borrow().as_ref() {
-            return f.clone();
-        }
-        let mut out = Vec::new();
-        for fam in FALLBACK_FAMILIES {
-            if let Some(id) = self.try_load_fallback(fam) {
-                out.push(id);
-            }
-        }
-        tracing::info!(
-            "font fallbacks: {} of {} families",
-            out.len(),
-            FALLBACK_FAMILIES.len()
-        );
-        *self.fallbacks.borrow_mut() = Some(out.clone());
-        out
-    }
-
-    /// A face among the fallbacks that has `ch`.
+    /// Load only a family that actually contains this character. In particular,
+    /// one missing symbol must not eagerly load every CJK and emoji collection.
     fn fallback_for(&self, ch: char) -> Option<FontId> {
-        self.fallbacks()
-            .into_iter()
-            .find(|&id| self.swash(id).charmap().map(ch) != 0)
+        if let Some(found) = self.fallback_chars.borrow().get(&ch) { return *found; }
+        let database = self.database();
+        let mut result = None;
+        for &family in FALLBACK_FAMILIES {
+            if let Some(&font) = self.fallbacks.borrow().get(family) {
+                if self.with_swash(font, |f| f.charmap().map(ch) != 0) { result = Some(font); break; }
+                continue;
+            }
+            let mut db = database.borrow_mut();
+            let Some(id) = db.query(&fontdb::Query {families:&[fontdb::Family::Name(family)], ..Default::default()}) else {continue};
+            let covers = db.with_face_data(id, |data,index| FontRef::from_index(data,index as usize).is_some_and(|f| f.charmap().map(ch) != 0)).unwrap_or(false);
+            if !covers {continue;}
+            let Some((data,index)) = face_bytes(&mut db,id) else {continue};
+            let Some(font) = FontRef::from_index(data.as_ref().as_ref(),index as usize) else {continue};
+            let units_per_em = font.metrics(&[]).units_per_em as f32;
+            let mut extra = self.extra.borrow_mut();
+            let id = FontId(EXTRA_BASE + extra.len() as u16);
+            extra.push(Face {data,index,units_per_em});
+            self.fallbacks.borrow_mut().insert(family,id);
+            result = Some(id);
+            break;
+        }
+        let mut cache = self.fallback_chars.borrow_mut();
+        if cache.len() >= 4096 {cache.clear();}
+        cache.insert(ch,result);
+        result
     }
 
     pub fn load_bytes(&mut self, data: &'static [u8], index: u32) -> Result<FontId> {
-        let hb = rustybuzz::Face::from_slice(data, index).ok_or_else(|| anyhow!("bad font"))?;
-        let font = FontRef::from_index(data, index as usize).ok_or_else(|| anyhow!("bad font"))?;
+        self.load_data(std::borrow::Cow::Borrowed(data), index)
+    }
+
+    fn load_data(&mut self, data: std::borrow::Cow<'static, [u8]>, index: u32) -> Result<FontId> {
+        self.load_shared(std::sync::Arc::new(data), index)
+    }
+
+    fn load_shared(&mut self, data: FontBytes, index: u32) -> Result<FontId> {
+        rustybuzz::Face::from_slice(data.as_ref().as_ref(), index).ok_or_else(|| anyhow!("bad font"))?;
+        let font = FontRef::from_index(data.as_ref().as_ref(), index as usize).ok_or_else(|| anyhow!("bad font"))?;
         let units_per_em = font.metrics(&[]).units_per_em as f32;
         self.faces.push(Face {
             data,
             index,
-            hb,
             units_per_em,
         });
         Ok(FontId((self.faces.len() - 1) as u16))
@@ -257,28 +283,18 @@ impl FontSystem {
     }
 
     pub fn system_families(&self) -> Vec<(String, bool)> {
-        let mut db = self.db.borrow_mut();
-        if db.is_none() { let mut d=fontdb::Database::new(); d.load_system_fonts(); *db=Some(d); }
+        let database = self.database();
+        let db = database.borrow();
         let mut families=std::collections::BTreeMap::new();
-        for face in db.as_ref().unwrap().faces() {
+        for face in db.faces() {
             for (name,_) in &face.families { families.entry(name.clone()).and_modify(|mono| *mono |= face.monospaced).or_insert(face.monospaced); }
         }
         families.into_iter().collect()
     }
 
     pub fn load_system_weight(&mut self, family: &str, weight: u16, fallback: FontId) -> FontId {
-        {
-            let mut db = self.db.borrow_mut();
-            if db.is_none() {
-                let mut d = fontdb::Database::new();
-                d.load_system_fonts();
-                *db = Some(d);
-            }
-        }
-        let guard = self.db.borrow();
-        let Some(db) = guard.as_ref() else {
-            return fallback;
-        };
+        let database = self.database();
+        let mut db = database.borrow_mut();
         let id = db.query(&fontdb::Query {
             families: &[fontdb::Family::Name(family)],
             weight: fontdb::Weight(weight),
@@ -288,19 +304,9 @@ impl FontSystem {
             tracing::warn!("font {family:?} not found; using fallback");
             return fallback;
         };
-        let Some(face) = db.face(id) else {
-            return fallback;
-        };
-        let index = face.index;
-        let data = match &face.source {
-            fontdb::Source::File(p) => std::fs::read(p).ok(),
-            fontdb::Source::Binary(b) => Some(b.as_ref().as_ref().to_vec()),
-            fontdb::Source::SharedFile(_, b) => Some(b.as_ref().as_ref().to_vec()),
-        };
-        let Some(data) = data else { return fallback };
-        drop(guard);
-        let data: &'static [u8] = Box::leak(data.into_boxed_slice());
-        match self.load_bytes(data, index) {
+        let Some((data,index)) = face_bytes(&mut db,id) else {return fallback};
+        drop(db);
+        match self.load_shared(data, index) {
             Ok(f) => {
                 tracing::info!("font {family:?} loaded");
                 f
@@ -309,27 +315,16 @@ impl FontSystem {
         }
     }
 
-    fn swash(&self, font: FontId) -> FontRef<'static> {
-        self.with_face(font, |f| {
-            FontRef::from_index(f.data, f.index as usize).expect("parsed at load")
-        })
+    fn with_swash<R>(&self, font: FontId, f: impl FnOnce(FontRef<'_>) -> R) -> R {
+        self.with_face(font, |face| f(FontRef::from_index(face.data.as_ref().as_ref(), face.index as usize).expect("parsed at load")))
     }
 
     pub fn metrics(&self, font: FontId, px: f32) -> Metrics {
-        let f = self.swash(font);
-        let m = f.metrics(&[]).scale(px);
-        let advance = f
-            .glyph_metrics(&[])
-            .scale(px)
-            .advance_width(f.charmap().map('0'));
-        let line_height = (m.ascent + m.descent + m.leading).round().max(1.0);
-        Metrics {
-            advance: advance.round().max(1.0),
-            line_height,
-            ascent: m.ascent,
-            descent: m.descent,
-            baseline: (m.ascent + m.leading / 2.0).round(),
-        }
+        self.with_swash(font, |f| {
+            let m = f.metrics(&[]).scale(px);
+            let advance = f.glyph_metrics(&[]).scale(px).advance_width(f.charmap().map('0'));
+            Metrics { advance: advance.round().max(1.0), line_height: (m.ascent + m.descent + m.leading).round().max(1.0), ascent: m.ascent, descent: m.descent, baseline: (m.ascent + m.leading / 2.0).round() }
+        })
     }
 
     fn shape_one(&self, font: FontId, px: f32, text: &str, cluster_base: u32) -> Vec<ShapedGlyph> {
@@ -342,7 +337,8 @@ impl FontSystem {
                 1,
                 ..,
             )];
-            let out = rustybuzz::shape(&face.hb, &features, buf);
+            let hb = rustybuzz::Face::from_slice(face.data.as_ref().as_ref(), face.index).expect("validated font");
+            let out = rustybuzz::shape(&hb, &features, buf);
             let s = px / face.units_per_em;
             out.glyph_infos()
                 .iter()
@@ -362,6 +358,20 @@ impl FontSystem {
     /// Shape with `font`; runs it has no glyphs for are reshaped with the
     /// first fallback face that has them.
     pub fn shape(&self, font: FontId, px: f32, text: &str) -> Vec<ShapedGlyph> {
+        if text.len() > 512 { return self.shape_uncached(font, px, text); }
+        let key = (font.0, px.to_bits(), text.to_owned());
+        if let Some(glyphs) = self.shaped.borrow().get(&key) { return glyphs.clone(); }
+        let glyphs = self.shape_uncached(font, px, text);
+        let mut cache = self.shaped.borrow_mut();
+        if cache.len() >= 1024 || self.shaped_glyphs.get() + glyphs.len() > 8192 {
+            cache.clear(); self.shaped_glyphs.set(0);
+        }
+        self.shaped_glyphs.set(self.shaped_glyphs.get() + glyphs.len());
+        cache.insert(key, glyphs.clone());
+        glyphs
+    }
+
+    fn shape_uncached(&self, font: FontId, px: f32, text: &str) -> Vec<ShapedGlyph> {
         let glyphs = self.shape_one(font, px, text, 0);
         if !glyphs.iter().any(|g| g.id == 0) {
             return glyphs;
@@ -415,7 +425,8 @@ impl FontSystem {
         if let Some(g) = self.glyphs.get(&key) {
             return *g;
         }
-        let fref = self.swash(font);
+        let (data, index) = self.with_face(font, |f| (f.data.clone(), f.index));
+        let fref = FontRef::from_index(data.as_ref().as_ref(), index as usize).expect("parsed at load");
         let mut scaler = self.scale.builder(fref).size(px).hint(true).build();
         let image = Render::new(&[
             Source::ColorOutline(0),
@@ -450,7 +461,7 @@ impl FontSystem {
                 height: h,
             })
         });
-        self.glyphs.insert(key, entry);
+        if self.glyphs.len() < 65_536 { self.glyphs.insert(key, entry); }
         entry
     }
 
@@ -527,10 +538,10 @@ impl FontSystem {
             .map(|g| g.x_advance + s.tracking)
             .sum();
         let mut cache = self.widths.borrow_mut();
-        if cache.len() > 8192 {
+        if cache.len() >= 4096 {
             cache.clear();
         }
-        cache.insert(key, w);
+        if text.len() <= 256 { cache.insert(key, w); }
         w
     }
 }
@@ -747,6 +758,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn owned_font_bytes_are_released_with_the_font_system() {
+        let mut fonts = FontSystem::new();
+        let id = fonts.load_data(std::borrow::Cow::Owned(bundled::PLEX_MONO.to_vec()), 0).unwrap();
+        let weak = fonts.with_face(id, |f| std::sync::Arc::downgrade(&f.data));
+        let glyph = fonts.shape(id, 18.0, "owned font")[0].id;
+        assert!(fonts.glyph(id, 18.0, glyph).is_some());
+        assert!(fonts.metrics(id, 18.0).advance > 0.0);
+        drop(fonts);
+        assert!(weak.upgrade().is_none(), "system font buffers must not be leaked for static lifetimes");
+    }
+
+    #[test]
+    fn repeated_shaping_is_bounded_and_database_is_shared() {
+        let mut fonts = FontSystem::new();
+        let id = fonts.load_bytes(bundled::PLEX_MONO,0).unwrap();
+        let a = fonts.shape(id,16.0,"-> != ffi");
+        let b = fonts.shape(id,16.0,"-> != ffi");
+        assert_eq!(a.iter().map(|g|(g.id,g.cluster,g.x_advance)).collect::<Vec<_>>(), b.iter().map(|g|(g.id,g.cluster,g.x_advance)).collect::<Vec<_>>());
+        for i in 0..3000 { fonts.shape(id,16.0,&format!("line {i}")); }
+        assert!(fonts.shaped_glyphs.get() <= 8192);
+        assert!(fonts.shaped.borrow().len() <= 1024);
+        let other = FontSystem::new();
+        assert!(std::rc::Rc::ptr_eq(&fonts.database(), &other.database()));
+        assert!(fonts.fallbacks.borrow().is_empty(), "ASCII must not load fallback collections");
+    }
+
+    #[test]
     fn missing_glyphs_come_from_a_fallback_face() {
         let mut fonts = FontSystem::new();
         let plex = fonts.load_bytes(bundled::PLEX_MONO, 0).unwrap();
@@ -761,7 +799,7 @@ mod tests {
             .filter(|g| g.font != plex && g.id != 0)
             .count();
         // On a machine with system fonts, both symbols resolve; on a bare CI box at least the code runs.
-        if fonts.fallbacks().is_empty() {
+        if fonts.fallbacks.borrow().is_empty() {
             return;
         }
         assert!(

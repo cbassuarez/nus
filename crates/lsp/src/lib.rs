@@ -6,8 +6,8 @@
 //! the caller.
 //!
 //! The wire format is JSON-RPC 2.0 with `Content-Length` headers, per the
-//! protocol; types are `lsp_types`. Document sync is full-text: simple,
-//! and every server supports it.
+//! protocol; types are `lsp_types`. Rope-backed editor documents use incremental
+//! sync when supported; full-sync servers retain their protocol behavior.
 
 pub mod registry;
 
@@ -16,7 +16,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
 pub use lsp_types;
@@ -65,9 +65,59 @@ struct Doc {
     language: String,
 }
 
+enum Outbound {
+    Ready(Value),
+    Deferred(Box<dyn FnOnce(&mut HashMap<Url, ropey::Rope>) -> Value + Send>),
+}
+impl Outbound {
+    fn value(self, snapshots: &mut HashMap<Url, ropey::Rope>) -> Value {
+        match self {
+            Self::Ready(v) => {
+                if v["method"] == "textDocument/didClose" {
+                    if let Some(uri) = v.pointer("/params/textDocument/uri").and_then(Value::as_str).and_then(|u| Url::parse(u).ok()) { snapshots.remove(&uri); }
+                }
+                v
+            }
+            Self::Deferred(f) => f(snapshots),
+        }
+    }
+}
+
+/// Find one replacement using shared rope chunks. Comparing unchanged
+/// chunks uses slice equality, rather than allocating/serializing the file.
+fn rope_change(old: &ropey::Rope, new: &ropey::Rope) -> TextDocumentContentChangeEvent {
+    let mut prefix = 0;
+    for (a,b) in old.chunks().zip(new.chunks()) {
+        if a == b { prefix += a.len(); }
+        else { prefix += a.bytes().zip(b.bytes()).take_while(|(a,b)| a == b).count(); break; }
+    }
+    let start = old.byte_to_char(prefix);
+    prefix = old.char_to_byte(start);
+    let mut suffix = 0;
+    for (a,b) in old.chunks_at_byte(old.len_bytes()).0.reversed().zip(new.chunks_at_byte(new.len_bytes()).0.reversed()) {
+        if a == b { suffix += a.len(); }
+        else { suffix += a.bytes().rev().zip(b.bytes().rev()).take_while(|(a,b)| a == b).count(); break; }
+    }
+    suffix = suffix.min(old.len_bytes()-prefix).min(new.len_bytes()-prefix);
+    // Round the end forward to a complete character if two different Unicode
+    // characters share their final UTF-8 byte(s).
+    let mut old_end = old.len_bytes()-suffix;
+    while old.char_to_byte(old.byte_to_char(old_end)) != old_end { old_end += 1; suffix -= 1; }
+    let new_end = new.len_bytes()-suffix;
+    let end = old.byte_to_char(old_end);
+    let position = |at| {
+        let line = old.char_to_line(at);
+        Position::new(line as u32, (old.char_to_utf16_cu(at)-old.char_to_utf16_cu(old.line_to_char(line))) as u32)
+    };
+    TextDocumentContentChangeEvent {
+        range:Some(Range::new(position(start),position(end))),range_length:None,
+        text:new.byte_slice(prefix..new_end).to_string(),
+    }
+}
+
 pub struct Client {
     child: Arc<Mutex<Option<Child>>>,
-    tx: Sender<Value>,
+    tx: SyncSender<Outbound>,
     next_id: AtomicI64,
     /// Method names by outstanding request id, so responses can say
     /// what they answer.
@@ -112,8 +162,8 @@ impl Client {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
 
-        let (ev_tx, ev_rx) = channel::<Event>();
-        let (out_tx, out_rx) = channel::<Value>();
+        let (ev_tx, ev_rx) = sync_channel::<Event>(32);
+        let (out_tx, out_rx) = sync_channel::<Outbound>(32);
         let pending: Arc<Mutex<HashMap<RequestId, &'static str>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let child = Arc::new(Mutex::new(Some(child)));
@@ -123,8 +173,9 @@ impl Client {
             .name(format!("lsp-{name}-out"))
             .spawn(move || {
                 let mut w = std::io::BufWriter::new(stdin);
+                let mut snapshots = HashMap::new();
                 while let Ok(v) = out_rx.recv() {
-                    let body = v.to_string();
+                    let body = v.value(&mut snapshots).to_string();
                     if write!(w, "Content-Length: {}\r\n\r\n{}", body.len(), body)
                         .and_then(|_| w.flush())
                         .is_err()
@@ -140,10 +191,9 @@ impl Client {
             std::thread::Builder::new()
                 .name(format!("lsp-{name}-err"))
                 .spawn(move || {
-                    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                        if ev_tx.send(Event::Log(line)).is_err() {
-                            break;
-                        }
+                    let mut reader = BufReader::new(stderr);
+                    while let Some(line) = bounded_line(&mut reader, 8192) {
+                        if ev_tx.send(Event::Log(line)).is_err() { break; }
                     }
                 })?;
         }
@@ -161,11 +211,12 @@ impl Client {
                     while let Some(msg) = read_frame(&mut r) {
                         handle_incoming(msg, &ev_tx, &out_tx, &pending);
                     }
-                    let code = child
-                        .lock()
-                        .ok()
-                        .and_then(|mut c| c.as_mut().and_then(|c| c.wait().ok()))
-                        .and_then(|s| s.code());
+                    let code = child.lock().ok().and_then(|mut c| c.as_mut().and_then(|c| {
+                        // EOF/malformed framing: terminate a server that left its
+                        // process alive. Never wait on a live child while holding
+                        // the mutex that shutdown needs to kill it.
+                        let _ = c.kill(); c.wait().ok()
+                    })).and_then(|s| s.code());
                     let _ = ev_tx.send(Event::Exited(code));
                 })?;
         }
@@ -248,14 +299,22 @@ impl Client {
         self.request("initialize", params);
     }
 
-    fn send(&self, v: Value) {
-        let _ = self.tx.send(v);
+    fn send(&self, v: Value) { self.enqueue(Outbound::Ready(v)); }
+
+    fn enqueue(&self, v: Outbound) {
+        if let Err(TrySendError::Full(_)) = self.tx.try_send(v) {
+            // A wedged server must not freeze typing or collect unlimited
+            // full-document updates. End it and report its exit to the host.
+            tracing::warn!("language server stopped reading; ending {}", self.name);
+            if let Ok(mut child)=self.child.lock() {if let Some(child)=child.as_mut(){let _=child.kill();}}
+        }
     }
 
     /// Send a request; the answer arrives as [`Event::Response`] with this id.
     pub fn request<P: serde::Serialize>(&self, method: &'static str, params: P) -> RequestId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut p) = self.pending.lock() {
+            if p.len() >= 512 {if let Some(oldest)=p.keys().min().copied(){p.remove(&oldest);}}
             p.insert(id, method);
         }
         self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
@@ -307,6 +366,47 @@ impl Client {
         );
     }
 
+    /// Editor snapshots are O(1) rope clones. Expanding and serializing their
+    /// text belongs to the writer, never the input or render thread.
+    pub fn did_open_rope(&self, uri: Url, language: &str, text: ropey::Rope) {
+        let language = language.to_owned();
+        if let Ok(mut docs) = self.docs.lock() {
+            docs.insert(uri.clone(), Doc { version: 1, language: language.clone() });
+        }
+        self.enqueue(Outbound::Deferred(Box::new(move |snapshots| {
+            let body = json!({
+                "jsonrpc":"2.0", "method":"textDocument/didOpen", "params": {
+                    "textDocument": { "uri":uri, "languageId":language, "version":1, "text":text.to_string() }
+                }
+            });
+            snapshots.insert(uri, text);
+            body
+        })));
+    }
+
+    pub fn did_change_rope(&self, uri: Url, text: ropey::Rope) -> i32 {
+        let version = self.docs.lock().map(|mut docs| {
+            let doc = docs.entry(uri.clone()).or_insert(Doc {version:0, language:String::new()});
+            doc.version += 1;
+            doc.version
+        }).unwrap_or(1);
+        let incremental = self.capabilities.lock().ok().and_then(|c| c.as_ref().and_then(|c| c.text_document_sync.clone())).is_some_and(|sync| match sync {
+            TextDocumentSyncCapability::Kind(k) => k == TextDocumentSyncKind::INCREMENTAL,
+            TextDocumentSyncCapability::Options(o) => o.change == Some(TextDocumentSyncKind::INCREMENTAL),
+        });
+        self.enqueue(Outbound::Deferred(Box::new(move |snapshots| {
+            let change = if incremental { snapshots.get(&uri).map(|old| rope_change(old, &text)) } else { None }
+                .unwrap_or_else(|| TextDocumentContentChangeEvent {range:None,range_length:None,text:text.to_string()});
+            snapshots.insert(uri.clone(), text);
+            json!({
+                "jsonrpc":"2.0", "method":"textDocument/didChange", "params": {
+                    "textDocument": { "uri":uri, "version":version }, "contentChanges": [change]
+                }
+            })
+        })));
+        version
+    }
+
     /// The whole text again; returns the new version.
     pub fn did_change(&self, uri: Url, text: &str) -> i32 {
         let version = match self.docs.lock() {
@@ -354,6 +454,12 @@ impl Client {
                 text_document: TextDocumentIdentifier { uri },
             },
         );
+    }
+
+    /// Release server-side document state when tabs or buffers are closed.
+    pub fn retain_documents(&self, live: &std::collections::HashSet<Url>) {
+        let closed: Vec<_> = self.docs.lock().map(|docs| docs.keys().filter(|uri| !live.contains(*uri)).cloned().collect()).unwrap_or_default();
+        for uri in closed { self.did_close(uri); }
     }
 
     pub fn language_of(&self, uri: &Url) -> Option<String> {
@@ -492,14 +598,34 @@ impl Drop for Client {
     }
 }
 
+fn clipped(text: &str) -> String {
+    let mut end=text.len().min(8192);
+    while !text.is_char_boundary(end) {end-=1;}
+    text[..end].to_string()
+}
+
+/// Read through one line, retaining only its bounded prefix.
+fn bounded_line<R: BufRead>(r: &mut R, max: usize) -> Option<String> {
+    let mut out = Vec::new(); let mut read = false;
+    loop {
+        let part = r.fill_buf().ok()?;
+        if part.is_empty() { break; }
+        read = true;
+        let end = part.iter().position(|b| *b == b'\n').map(|i| i + 1);
+        let n = end.unwrap_or(part.len());
+        out.extend_from_slice(&part[..n.min(max.saturating_sub(out.len()))]);
+        r.consume(n);
+        if end.is_some() { break; }
+    }
+    read.then(|| String::from_utf8_lossy(&out).trim_end().to_string())
+}
+
 /// One JSON-RPC frame: headers, blank line, body of `Content-Length` bytes.
 fn read_frame<R: BufRead>(r: &mut R) -> Option<Value> {
     let mut len: Option<usize> = None;
     loop {
-        let mut line = String::new();
-        if r.read_line(&mut line).ok()? == 0 {
-            return None;
-        }
+        let line = bounded_line(r, 8192)?;
+        if line.len() >= 8192 { return None; }
         let line = line.trim_end();
         if line.is_empty() {
             // A blank line before any header is noise (a chatty server, a
@@ -514,6 +640,7 @@ fn read_frame<R: BufRead>(r: &mut R) -> Option<Value> {
         }
     }
     let len = len?;
+    if len > 16 * 1024 * 1024 { return None; }
     let mut body = vec![0u8; len];
     r.read_exact(&mut body).ok()?;
     serde_json::from_slice(&body).ok()
@@ -521,8 +648,8 @@ fn read_frame<R: BufRead>(r: &mut R) -> Option<Value> {
 
 fn handle_incoming(
     msg: Value,
-    ev: &Sender<Event>,
-    out: &Sender<Value>,
+    ev: &SyncSender<Event>,
+    out: &SyncSender<Outbound>,
     pending: &Arc<Mutex<HashMap<RequestId, &'static str>>>,
 ) {
     let method = msg.get("method").and_then(Value::as_str);
@@ -542,14 +669,14 @@ fn handle_incoming(
                 "workspace/workspaceFolders" => Value::Array(vec![]),
                 "window/showMessageRequest" => {
                     if let Some(s) = msg.pointer("/params/message").and_then(Value::as_str) {
-                        let _ = ev.send(Event::Status(s.into()));
+                        let _ = ev.send(Event::Status(clipped(s)));
                     }
                     Value::Null
                 }
                 // registerCapability, workDoneProgress/create, applyEdit…: ok.
                 _ => Value::Null,
             };
-            let _ = out.send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+            let _ = out.send(Outbound::Ready(json!({ "jsonrpc": "2.0", "id": id, "result": result })));
         }
         // A notification.
         (Some(m), None) => match m {
@@ -564,12 +691,12 @@ fn handle_incoming(
             }
             "window/logMessage" => {
                 if let Some(s) = msg.pointer("/params/message").and_then(Value::as_str) {
-                    let _ = ev.send(Event::Log(s.into()));
+                    let _ = ev.send(Event::Log(clipped(s)));
                 }
             }
             "window/showMessage" => {
                 if let Some(s) = msg.pointer("/params/message").and_then(Value::as_str) {
-                    let _ = ev.send(Event::Status(s.into()));
+                    let _ = ev.send(Event::Status(clipped(s)));
                 }
             }
             "$/progress" => {
@@ -587,7 +714,7 @@ fn handle_incoming(
                     (_, None, Some(m)) => m.to_string(),
                     _ => String::new(),
                 };
-                let _ = ev.send(Event::Status(line));
+                let _ = ev.send(Event::Status(clipped(&line)));
             }
             _ => {}
         },
@@ -671,6 +798,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn oversized_protocol_data_and_logs_are_bounded() {
+        let mut invalid=std::io::Cursor::new(b"Content-Length: 999999999999\r\n\r\n");
+        assert!(read_frame(&mut invalid).is_none());
+        let mut log=std::io::Cursor::new(format!("{}\nnext\n", "x".repeat(1_000_000)));
+        assert_eq!(bounded_line(&mut log, 128).unwrap().len(), 128);
+        assert_eq!(bounded_line(&mut log, 128).unwrap(), "next");
+        assert!(bounded_line(&mut log, 128).is_none());
+    }
+
+    #[test]
     fn positions_round_trip() {
         let t = "ab\ncdé\nf";
         assert_eq!(position_of(t, 0), Position::new(0, 0));
@@ -694,5 +831,31 @@ mod tests {
         let v = read_frame(&mut r).unwrap();
         assert_eq!(v["id"], 1);
         assert!(read_frame(&mut r).is_none());
+    }
+}
+
+#[cfg(test)]
+mod rope_sync_tests {
+    use super::*;
+    #[test]
+    fn incremental_edits_preserve_unicode_crlf_and_chunk_boundaries() {
+        for initial in ["α😀\r\nhello world".to_string(), "hello α😀\n".repeat(1000)] {
+            let old = ropey::Rope::from_str(&initial);
+            for at in [0, 2, old.len_chars()/2, old.len_chars()] {
+                for insertion in ["x", "😀", "\r\n", ""] {
+                    let mut new = old.clone();
+                    if at < new.len_chars() { new.remove(at..at+1); }
+                    new.insert(at, insertion);
+                    let change = rope_change(&old, &new);
+                    let range = change.range.unwrap();
+                    let a = offset_of(&initial, range.start);
+                    let b = offset_of(&initial, range.end);
+                    let mut applied = old.clone();
+                    applied.remove(a..b); applied.insert(a, &change.text);
+                    assert_eq!(applied, new);
+                    assert!(change.text.len() < 5000);
+                }
+            }
+        }
     }
 }

@@ -30,6 +30,7 @@ pub struct Prefs {
     pub load_bar: Option<LoadBar>,
     pub behavior: Option<Behavior>,
     pub sidebar_pinned: Option<bool>,
+    pub pinned_tabs: Option<Vec<crate::pins::Pin>>,
     pub sound: Option<crate::sound::SoundPrefs>,
     pub window_rect: Option<(i32, i32, u32, u32)>,
     pub theme: Option<crate::theme_edit::ThemeEdit>,
@@ -54,6 +55,7 @@ impl Prefs {
         }
         let mut p = read.value;
         migrate(&mut p);
+        if crate::private::enabled() { crate::private::constrain(&mut p); }
         p
     }
 }
@@ -107,6 +109,7 @@ pub fn apply_start_switches() {
 impl App {
     pub(crate) fn apply_prefs(&mut self, p: Prefs) {
         crate::downloads::init();
+        if !crate::private::enabled() { if let Some(pins)=p.pinned_tabs {self.apply_pins(pins);} }
         crate::browser::BLOCKING.store(p.behavior.as_ref().map(|b| b.block_content).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
         crate::browser::SMOOTH_SCROLL.store(p.behavior.as_ref().map(|b| b.page_smooth_scroll).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
         if let Some(b) = p.behavior.as_ref() {
@@ -117,6 +120,7 @@ impl App {
         }
         if let Some(s) = p.sidebar {
             self.sidebar_rules = s;
+            self.sync_live_folders();
         }
         if let Some(m) = p.motion {
             self.motion = m;
@@ -213,6 +217,7 @@ impl App {
             load_bar: Some(self.load_bar.clone()),
             behavior: Some(self.behavior.clone()),
             sidebar_pinned: Some(self.sidebar),
+            pinned_tabs: Some(self.pins.items.clone()),
             sound: Some(self.sound.prefs.clone()),
             window_rect: self.window_rect,
             theme: Some(self.theme_edit.clone()),
@@ -227,6 +232,7 @@ impl App {
     }
 
     pub(crate) fn save_prefs(&self) {
+        if crate::private::enabled() { return; }
         let current = self.prefs_snapshot();
         let mut latest = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| current.clone());
         merge_changes(&self.prefs_baseline.borrow(), &current, &mut latest);

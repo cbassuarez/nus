@@ -20,7 +20,8 @@ const FRAMES: [&[u8]; 6] = [
 
 struct State {
     images: Vec<Retained<NSImage>>,
-    started: Option<Instant>,
+    sequence: Option<Sequence>,
+    signal: nus_render::Color,
     shown: Option<Face>,
 }
 impl State {
@@ -36,24 +37,45 @@ impl State {
                 .setApplicationIconImage(Some(&self.images[face as usize]));
         }
         self.shown = Some(face);
-        trace(event, Some(face), RED);
+        trace(event, Some(face), self.signal);
     }
     fn tick(&mut self) {
-        if let Some(at) = self.started {
-            // AppKit ends the native launch bounce at launch completion. Settle
-            // on the first main-loop opportunity, even if window setup follows.
-            if unsafe {
-                objc2_app_kit::NSRunningApplication::currentApplication().isFinishedLaunching()
-            } {
-                self.started = None;
-                self.show(Face::Newsreader, "launch-settled");
-                return;
+        if let Some(sequence) = &mut self.sequence {
+            let (face, done) = sequence.tick(crate::clock::now());
+            if done {
+                trace("launch-settled", Some(face), self.signal);
+                self.sequence = None;
+            } else {
+                self.show(face, "launch-frame");
             }
-            self.show(
-                dock_icon::launch_face_at(crate::clock::since(at).as_secs_f32()),
-                "launch-frame",
-            );
         }
+    }
+}
+
+// Advance by visible frames, not elapsed phase: CEF/GPU initialization can
+// block the main loop. A delayed callback must not skip the entire sequence.
+struct Sequence {
+    next: Instant,
+    index: usize,
+    ready: bool,
+}
+impl Sequence {
+    fn new(now: Instant) -> Self {
+        Self {
+            next: now + std::time::Duration::from_secs_f32(dock_icon::STEP_SECONDS),
+            index: 0,
+            ready: false,
+        }
+    }
+    fn tick(&mut self, now: Instant) -> (Face, bool) {
+        if now >= self.next {
+            if self.ready && self.index == Face::ALL.len() - 1 {
+                return (Face::Newsreader, true);
+            }
+            self.index = (self.index + 1) % Face::ALL.len();
+            self.next = now + std::time::Duration::from_secs_f32(dock_icon::STEP_SECONDS);
+        }
+        (Face::ALL[self.index], false)
     }
 }
 
@@ -66,7 +88,8 @@ impl Launch {
     pub(super) fn new() -> Self {
         let mut state = State {
             images: FRAMES.iter().map(|png| image(png)).collect(),
-            started: None,
+            sequence: None,
+            signal: RED,
             shown: None,
         };
         state.show(Face::Newsreader, "bootstrap");
@@ -74,6 +97,9 @@ impl Launch {
             state: Box::new(RefCell::new(state)),
             timer: ptr::null_mut(),
         }
+    }
+    pub(super) fn signal(&self) -> nus_render::Color {
+        self.state.borrow().signal
     }
     pub(super) fn images(&self) -> Vec<Retained<NSImage>> {
         self.state.borrow().images.clone()
@@ -85,7 +111,7 @@ impl Launch {
         }
         {
             let mut state = self.state.borrow_mut();
-            state.started = Some(crate::clock::now());
+            state.sequence = Some(Sequence::new(crate::clock::now()));
             state.tick();
         }
         let mut context = TimerContext {
@@ -112,12 +138,30 @@ impl Launch {
             }
         }
     }
-    pub(super) fn finish(&mut self) {
-        self.invalidate();
+    pub(super) fn ready(&mut self) {
         let mut state = self.state.borrow_mut();
-        state.started = None;
-        state.show(Face::Newsreader, "launch-settled");
-        trace("ready", Some(Face::Newsreader), RED);
+        if let Some(sequence) = &mut state.sequence {
+            sequence.ready = true;
+        }
+        trace("ready", state.shown, state.signal);
+    }
+    pub(super) fn update(
+        &mut self,
+        images: &[Retained<NSImage>],
+        signal: nus_render::Color,
+        reduced: bool,
+    ) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.signal != signal {
+            state.images = images.to_vec();
+            state.signal = signal;
+            state.shown = None;
+        }
+        if reduced {
+            state.sequence = None;
+        }
+        state.tick();
+        state.sequence.is_some()
     }
     fn invalidate(&mut self) {
         if !self.timer.is_null() {
@@ -183,6 +227,35 @@ extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fast_launch_and_stalled_callbacks_show_every_face_before_settling() {
+        let now = Instant::now();
+        let mut seq = Sequence::new(now);
+        seq.ready = true;
+        assert_eq!(seq.tick(now), (Face::Plex, false));
+        // A long synchronous launch block still advances just one frame.
+        let mut at = now + std::time::Duration::from_secs(4);
+        for face in Face::ALL.into_iter().skip(1) {
+            assert_eq!(seq.tick(at), (face, false));
+            at += std::time::Duration::from_secs_f32(dock_icon::STEP_SECONDS + 0.001);
+        }
+        assert_eq!(seq.tick(at), (Face::Newsreader, true));
+    }
+    #[test]
+    fn unfinished_launch_keeps_looping() {
+        let now = Instant::now();
+        let mut seq = Sequence::new(now);
+        for i in 0..18 {
+            assert_eq!(
+                seq.tick(
+                    now + std::time::Duration::from_secs_f32(
+                        i as f32 * (dock_icon::STEP_SECONDS + 0.001)
+                    )
+                ),
+                (Face::ALL[i % 6], false)
+            );
+        }
+    }
     #[test]
     fn startup_frames_are_the_current_clipped_desktop_artwork() {
         for (png, face) in FRAMES.into_iter().zip(Face::ALL) {

@@ -13,6 +13,7 @@ mod macos;
 mod dock;
 mod downloads;
 mod sidebar;
+mod pins;
 mod fonts;
 mod prompt;
 mod assistants;
@@ -31,6 +32,9 @@ mod panes;
 mod scrolling;
 mod bundles;
 mod editor;
+mod editor_work;
+mod perf;
+mod work;
 mod lsp_host;
 mod prompt_lsp;
 mod ports;
@@ -50,6 +54,9 @@ mod field;
 mod webkeys;
 mod swipe;
 mod store;
+mod storage;
+mod zoom;
+mod application_menu;
 #[path = "loop_.rs"]
 mod loop_;
 mod blockpage;
@@ -83,6 +90,9 @@ mod touch;
 mod news;
 mod diffs;
 mod phone;
+mod private;
+mod security;
+mod support;
 mod pick;
 mod files;
 mod procs;
@@ -107,6 +117,8 @@ use app::App;
 #[derive(Debug)]
 pub enum UserEvent {
     Wake,
+    ApplicationCommand(application_menu::Command),
+    ApplicationMenuCheck(application_menu::Command),
     DockAttention,
     WindowControl(WindowId,usize),
     Access(accesskit_winit::Event),
@@ -143,6 +155,7 @@ struct Host {
     /// The instance port's request channel, for the phone's page to speak through.
     inbound: std::sync::mpsc::Sender<little::Inbound>,
     tray: Option<hatch_tray::Tray>,
+    application_menu: Option<application_menu::NativeMenu>,
     work_at: Option<std::time::Instant>,
     hatch_owner: Option<WindowId>,
     dock: dock::Dock,
@@ -171,6 +184,9 @@ impl Host {
     }
 
     fn refresh_hatch_work(&mut self) {
+        if let Some(a) = self.apps.first() {
+            storage::tick(self.apps.iter().filter_map(|a| a.recorder.as_ref().map(|r| r.dir.clone())).collect(), a.behavior.journal_keep, a.behavior.replay.days().unwrap_or(7));
+        }
         let owner=self.apps.iter().filter_map(|a|a.hatch.as_ref()).find(|h|h.visible&&!h.hiding).map(|h|h.window.id());
         if self.hatch_owner==owner && self.work_at.is_some_and(|at|crate::clock::since(at).as_millis()<200){return;}
         let app_focused=self.any_window_focused();
@@ -282,6 +298,7 @@ impl Host {
         // The adapter must exist before the window is first shown.
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
         crate::macos::prepare_window(&window);
+        if let Some(menu)=&self.application_menu {menu.attach(&window);}
         // The folder the asking window works in, for a shell born here.
         let born_in = from.and_then(|i| self.apps.get(i)).and_then(|a| a.workspace.as_ref().map(|w| w.to_string_lossy().to_string()).or_else(|| a.focused_cwd()));
         match App::new(window.clone(), self.proxy.clone(), secondary, self.made, born_in) {
@@ -320,11 +337,13 @@ impl Host {
             .iter()
             .map(|a| windows::Entry { id: u64::from(a.window.id()), name: a.window_name(), tabs: a.tabs.len(), ordinal: a.ordinal, colour: a.container_colour() })
             .collect();
-        for a in self.apps.iter_mut() {
-            if a.windows != entries {
-                a.windows = entries.clone();
-                a.dirty = true;
-            }
+        // One shared snapshot: N windows used to each retain and compare N
+        // entries on every loop, making both storage and comparisons quadratic.
+        if self.apps.first().is_some_and(|a| a.windows.as_ref() == &entries) { return; }
+        let entries = Arc::new(entries);
+        for a in &mut self.apps {
+            a.windows = entries.clone();
+            a.dirty = true;
         }
     }
 }
@@ -337,16 +356,31 @@ impl ApplicationHandler<UserEvent> for Host {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.application_menu.is_none() { self.application_menu = Some(application_menu::NativeMenu::new(self.proxy.clone())); }
         if self.apps.is_empty() {
             self.spawn_window(event_loop, None);
         }
-        if self.tray.is_none() && hatch_native::interactive() {
+        if self.tray.is_none() && hatch_native::interactive() && !private::enabled() {
             self.tray = hatch_tray::Tray::new(self.proxy.clone());
         }
     }
 
     fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
         match ev {
+            UserEvent::ApplicationMenuCheck(command) => {
+                let menu=self.application_menu.as_ref().expect("native application menu");
+                assert_eq!(menu.labels(),["nus","File","Edit","View","Window","Help"]);
+                menu.activate_for_check(command);
+            }
+            UserEvent::ApplicationCommand(command) => {
+                if command == application_menu::Command::Quit { _el.exit(); return; }
+                if self.apps.is_empty() { self.spawn_window(_el, None); }
+                let i=self.focused.and_then(|id|self.app_index(id)).unwrap_or(0);
+                if let Some(a)=self.apps.get_mut(i) {
+                    if a.hatch.as_ref().is_some_and(|h|h.window.has_focus()) { a.in_hatch(|a|a.application_command(command)); }
+                    else {a.application_command(command);}
+                }
+            }
             UserEvent::DockAttention => {
                 if let Some(a)=self.apps.first(){self.dock.attention(&a.window,a.motion.reduced(),self.any_window_focused());}
             }
@@ -439,6 +473,7 @@ impl ApplicationHandler<UserEvent> for Host {
             if let Some(tray)=&mut self.tray {tray.refresh_icon(a.surface.signal);}
         }
         self.refresh_hatch_work();
+        if let Some(menu)=&self.application_menu {if let Some(a)=self.focused.and_then(|id|self.app_index(id)).and_then(|i|self.apps.get(i)).or(self.apps.first()){menu.refresh(a);}}
         // Requests the apps can't answer themselves: new windows, fronting.
         let mut spawn_from: Vec<usize> = Vec::new();
         let mut front: Vec<u64> = Vec::new();
@@ -679,7 +714,7 @@ impl ApplicationHandler<UserEvent> for Host {
         match event {
             WindowEvent::CloseRequested => {
                 // Keep the owning App/PTYs alive; closing a window is not Quit.
-                if a.behavior.hatch_background {
+                if a.behavior.hatch_background && !private::enabled() {
                     a.hatch_state.main_hidden=true;
                     a.window.set_visible(false);
                     a.save_session();
@@ -691,7 +726,7 @@ impl ApplicationHandler<UserEvent> for Host {
                     let a = self.apps.remove(i);
                     self.access.retain(|(wid, _, _)| *wid != a.window.id());
                     drop(a);
-                    if !self.apps.iter().any(|a|a.hotkey.is_some()) {
+                    if !private::enabled() && !self.apps.iter().any(|a|a.hotkey.is_some()) {
                         if let Some(a)=self.apps.first_mut() { a.hotkey=Some(hotkey::Hotkey::register(a.behavior.hatch_hotkey,self.proxy.clone())); }
                     }
                 }
@@ -747,6 +782,7 @@ fn chromium_version() -> String {
 /// servers and tools installed with Homebrew are found.
 #[cfg(target_os = "macos")]
 fn settle_as_app(dock: &mut dock::Dock) {
+    if private::enabled() { return; }
     let in_bundle = std::env::current_exe().map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/")).unwrap_or(false);
     if !in_bundle {
         return;
@@ -802,6 +838,11 @@ fn settle_as_app(dock: &mut dock::Dock) {
 }
 
 fn main() -> ExitCode {
+    perf::start();
+    let _private_root = match private::prepare() {
+        Ok(root) => root,
+        Err(_) => { eprintln!("Could not create an isolated incognito session."); return ExitCode::FAILURE; }
+    };
     let mut dock = dock::Dock::bootstrap();
     #[cfg(target_os = "macos")]
     settle_as_app(&mut dock);
@@ -835,7 +876,10 @@ fn main() -> ExitCode {
 
     // One instance: a second launch hands its URLs to the first and exits.
     let urls = little::urls_from_args();
-    let (urls_rx, port, inbound_tx) = match little::claim(&urls) {
+    let (urls_rx, port, inbound_tx) = match if private::enabled() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        little::Claim::Primary(rx, 0, tx)
+    } else { little::claim(&urls) } {
         little::Claim::HandedOff => return ExitCode::SUCCESS,
         little::Claim::Primary(rx, port, tx) => (rx, port, tx),
     };
@@ -848,8 +892,10 @@ fn main() -> ExitCode {
         external_message_pump: 1,
         // Brands "Google Chrome" in Sec-CH-UA; sites treat bare "Chromium" as a bot.
         user_agent_product: format!("Chrome/{}", chromium_version()).as_str().into(),
+        // Chromium otherwise appends an unbounded debug.log in production.
+        log_severity: cef::LogSeverity::DISABLE,
         root_cache_path: root.to_string_lossy().as_ref().into(),
-        cache_path: cache.to_string_lossy().as_ref().into(),
+        cache_path: if private::enabled() { "".into() } else { cache.to_string_lossy().as_ref().into() },
         ..Default::default()
     };
     assert_eq!(
@@ -860,14 +906,17 @@ fn main() -> ExitCode {
     let mut event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
-    let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None, inbound: inbound_tx, tray: None, work_at: None, hatch_owner: None, dock };
+    let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None, inbound: inbound_tx, tray: None, application_menu: None, work_at: None, hatch_owner: None, dock };
     let mut urls_rx = Some(urls_rx);
     let _ = port;
     let code = loop {
         do_message_loop_work();
         let background=!host.apps.is_empty() && host.apps.iter().all(|a| a.hatch_state.main_hidden && a.hatch.as_ref().is_none_or(|h|!h.visible) && a.little.is_none() && a.pip.is_none());
         let wait=Duration::from_millis(if background {50} else {2});
-        event_loop.set_control_flow(if background {ControlFlow::WaitUntil(std::time::Instant::now()+wait)} else {ControlFlow::Poll});
+        // Poll ignores the pump timeout and spins tens of thousands of times
+        // a second even on an idle editor. Native input/proxy events wake this
+        // wait immediately; the short deadline also services CEF and PTYs.
+        event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now()+wait));
         let status = event_loop.pump_app_events(Some(wait), &mut host);
         if let PumpStatus::Exit(code) = status {
             break code;
@@ -876,6 +925,7 @@ fn main() -> ExitCode {
         if host.apps.iter().any(|a| a.shot.as_ref().is_some_and(|s| s.done)) {
             break 0;
         }
+        let _turn = perf::scope("ui_turn_work");
         host.share_registry();
         // URLs from other launches go to the window the user was last in.
         if let Some(rx) = urls_rx.as_ref() {
@@ -944,7 +994,19 @@ fn main() -> ExitCode {
         a.reap_local_shells();
     }
     host.apps.clear();
+    // CEF owns native browser references until its asynchronous close callback.
+    let closing = std::time::Instant::now();
+    while browser::live_count() > 0 && closing.elapsed() < Duration::from_secs(3) {
+        cef::do_message_loop_work();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    containers::shutdown();
+    containers::release_private_context();
     cef::shutdown();
+    if private::enabled() {
+        // Windows cannot remove the current working directory.
+        let _ = std::env::set_current_dir(std::env::temp_dir());
+    }
     ExitCode::from(code as u8)
 }
 

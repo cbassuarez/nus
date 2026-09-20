@@ -49,6 +49,7 @@ pub enum Update {
 
 pub struct Live {
     pub rx: Receiver<Update>,
+    pub github: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub ports_at: Instant,
     pub rules_at: Instant,
 }
@@ -67,14 +68,24 @@ fn folders_path() -> std::path::PathBuf {
 /// Start the fetcher: `gh` every two minutes, when it's there and signed in.
 pub fn start() -> Live {
     let (tx, rx) = channel();
-    std::thread::spawn(move || loop {
-        let r = gh_prs();
-        if tx.send(Update::Github(r)).is_err() {
-            break;
-        }
-        std::thread::sleep(Duration::from_secs(120));
-    });
-    Live { rx, ports_at: crate::clock::now() - Duration::from_secs(60), rules_at: crate::clock::now() - Duration::from_secs(60) }
+    let github=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let enabled=github.clone();
+    if !crate::private::enabled() && std::env::var_os("NUS_SHOT").is_none() {
+        std::thread::spawn(move || {
+            let mut next=crate::clock::now();
+            loop {
+                if enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                    if crate::clock::now()>=next {
+                        if tx.send(Update::Github(gh_prs())).is_err(){break;}
+                        next=crate::clock::now()+Duration::from_secs(120);
+                    }
+                } else {next=crate::clock::now();}
+                if std::sync::Arc::strong_count(&enabled)==1 {break;}
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+    Live { rx, github, ports_at: crate::clock::now() - Duration::from_secs(60), rules_at: crate::clock::now() - Duration::from_secs(60) }
 }
 
 fn gh(args: &[&str]) -> Result<String, String> {
@@ -118,8 +129,7 @@ impl App {
     /// Load plain folders from disk and seed the live ones.
     pub(crate) fn load_folders(&mut self) {
         let mut v: Vec<Folder> = Vec::new();
-        v.push(Folder { id: 1, name: "GITHUB".into(), kind: Kind::Github, items: Vec::new(), open: true, note: "asking gh…".into() });
-        v.push(Folder { id: 2, name: "PORTS".into(), kind: Kind::Ports, items: Vec::new(), open: true, note: "nothing listening".into() });
+        if crate::private::enabled(){self.folders.clear();return;}
         let mut next = 100;
         if let Ok(text) = std::fs::read_to_string(folders_path()) {
             if let Ok(saved) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
@@ -133,11 +143,23 @@ impl App {
             }
         }
         self.folders = v;
+        self.sync_live_folders();
         self.next_folder_id = next;
         self.refresh_rules_folders();
     }
 
+    pub(crate) fn sync_live_folders(&mut self) {
+        let github=self.sidebar_rules.live_github&&!crate::private::enabled();
+        let ports=self.sidebar_rules.live_ports&&!crate::private::enabled();
+        self.live.github.store(github,std::sync::atomic::Ordering::Relaxed);
+        self.folders.retain(|f|match f.kind {Kind::Github=>github,Kind::Ports=>ports,_=>true});
+        for (on,id,name,kind,note) in [(github,1,"GITHUB",Kind::Github,"checking pull requests…"),(ports,2,"PORTS",Kind::Ports,"nothing listening")] {
+            if on&&!self.folders.iter().any(|f|f.kind==kind){self.folders.push(Folder{id,name:name.into(),kind,items:vec![],open:true,note:note.into()});}
+        }
+    }
+
     pub(crate) fn save_folders(&self) {
+        if crate::private::enabled() { return; }
         let v: Vec<serde_json::Value> = self
             .folders
             .iter()
@@ -162,6 +184,7 @@ impl App {
 
     /// Once a loop: drain gh, refresh ports and rules folders on their clocks.
     pub(crate) fn tend_folders(&mut self) {
+        if crate::private::enabled(){return;}
         let mut changed = false;
         while let Ok(u) = self.live.rx.try_recv() {
             match u {
@@ -182,7 +205,7 @@ impl App {
                 }
             }
         }
-        if crate::clock::since(self.live.ports_at).as_secs() >= 10 {
+        if self.sidebar_rules.live_ports && crate::clock::since(self.live.ports_at).as_secs() >= 10 {
             self.live.ports_at = crate::clock::now();
             let ports: Vec<Item> = nus_pty::listening_ports()
                 .into_iter()

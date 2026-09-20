@@ -27,6 +27,7 @@ pub struct News {
 impl App {
     /// SYNC · THE PHONE turned on: the page is served, the address told.
     pub(crate) fn phone_on(&mut self) {
+        if crate::private::enabled() { return; }
         let Some(tx) = self.inbound.clone() else {
             self.notice("no instance port · the phone needs one");
             return;
@@ -36,7 +37,7 @@ impl App {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     let _ = cb.set_text(p.url());
                 }
-                self.toast_with(Some(nus_render::text::icons::COPY), "THE PHONE", format!("{} · copied", p.url()), None);
+                self.toast_with(Some(nus_render::text::icons::COPY), "THE PHONE", format!("{} · copied · the phone will ask about this certificate once", p.url()), None);
             }
             None => self.notice("the phone's page could not listen"),
         }

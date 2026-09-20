@@ -13,10 +13,9 @@ That means:
 - **I decide the design.** The product truth lives in [docs/PRODUCT.md](docs/PRODUCT.md)
   and [docs/DESIGN.md](docs/DESIGN.md); each "settled" pass there is a decision
   already made. A change that contradicts them is out of scope, however good.
-- **I don't take feature requests.** If you want it to work differently, the
-  MIT license means you can fork it, and I mean that kindly — go build yours.
-  Most "I wish it did X" is already a rule in `rules.luau`, a theme, or a layout
-  file; try those first.
+- **Feature requests are welcome.** Describe the problem you want to solve;
+  requests inform development without promising implementation. Check whether
+  a setting, `rules.luau`, a theme or a layout already covers it.
 - **I read bug reports and small fixes.** A crash with a reproduction, a
   platform build fix, a typo, a wrong doc: welcome. See
   [CONTRIBUTING.md](CONTRIBUTING.md) before opening anything.
@@ -29,11 +28,14 @@ That means:
   protocol, Kitty/iTerm2/Sixel images, OSC 133 blocks with lamps, folds and a
   share page, OSC 9;4 progress in the sidebar and taskbar, mouse reporting,
   DECRQSS/XTGETTCAP/XTVERSION.
-- **Browser:** Chromium (CEF) rendered offscreen and composited by us. DevTools
-  as a pane, a reader, per-site rules, ad blocking in the request handler,
+- **Browser:** Chromium (CEF) rendered offscreen and composited by us. Native DevTools,
+  a reader, per-site rules, ad blocking in the request handler,
   userscripts, containers, our own picture-in-picture. **No Chrome
   extensions** — windowless CEF cannot host them; [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
   explains the wall and the routes through it.
+- **Incognito:** ⇧⌘N on macOS or Ctrl+Shift+N on Windows/Linux opens a private
+  browser window with temporary cookies and storage, no saved browsing history
+  or session restore, and downloads kept on disk. See [privacy and diagnostics](docs/PRIVACY_AND_DIAGNOSTICS.md).
 - **One window model:** Spaces → tabs → splits. A shell and a page are peers;
   a URL typed at a prompt opens beside it. Stacks, folders (GitHub, ports,
   files), tiles, peeks, a compact mode, a quick terminal (the hatch).

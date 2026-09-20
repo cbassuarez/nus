@@ -105,7 +105,7 @@ impl App {
             let inv = Style { color: t.paper, ..strong };
             let inv_l = Style { color: t.paper, ..label };
             let by = br.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
-            let host = origin.split("//").nth(1).unwrap_or(&origin).trim_end_matches('/').caps();
+            let host = crate::sites::permission_origin(&origin).unwrap_or(origin).caps();
             let mut x = br.x + self.px(m::HEADER_PAD_X);
             x += self.fonts.draw(scene, inv, x, by, &host) + self.px(10.0);
             x += self.fonts.draw(scene, inv_l, x, by, &format!("ASKS FOR {}", what.caps())) + self.px(18.0);
@@ -202,9 +202,8 @@ impl App {
             let Pane::Web(w) = p else { continue };
             if let Some(&(_, allow)) = w.perm_hits.iter().find(|(r, _)| r.contains(x, y)) {
                 if let Some(ask) = w.tab.shared.borrow().permission.as_ref() {
-                    let host = crate::sites::host_of(&ask.origin);
                     for word in ask.what.split(" and ") {
-                        crate::sites::remember(&host, word.trim(), allow);
+                        crate::sites::remember(&ask.origin, word.trim(), allow);
                     }
                 }
                 w.tab.answer_permission(allow);

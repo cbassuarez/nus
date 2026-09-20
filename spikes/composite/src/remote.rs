@@ -14,11 +14,40 @@ use serde_json::{json, Value};
 
 use crate::app::{App, Pane};
 
+/// Which door a request came through. Both are authenticated, but they are
+/// not the same strength: the CLI's token is a 0600 file on this machine,
+/// while the phone's travels in a URL to a device on the network and may be
+/// read over someone's shoulder. So the phone gets the verbs its page needs
+/// and nothing else, checked here rather than trusted to the caller.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Origin {
+    /// The instance socket: the `nus` CLI, launch handoff, rules.
+    Cli,
+    /// The page served to the phone.
+    Phone,
+}
+
+impl Origin {
+    /// Everything the phone's page is allowed to ask for. Adding a verb
+    /// here gives a device on the network a new power, so the list is
+    /// meant to be read in full before it grows.
+    pub const PHONE_VERBS: [&'static str; 2] = ["front", "hands-answer"];
+
+    pub fn allows(self, cmd: &str) -> bool {
+        match self {
+            Origin::Cli => true,
+            Origin::Phone => Self::PHONE_VERBS.contains(&cmd),
+        }
+    }
+}
+
 /// A request from the wire, with where its answer goes.
 pub struct Request {
     pub cmd: String,
     pub args: Value,
     pub reply: Sender<Value>,
+    /// Which door it came through; see `Origin`.
+    pub origin: Origin,
 }
 
 /// An answer that waits on the page: a CDP reply by id, or a capture
@@ -46,18 +75,9 @@ pub enum Shape {
 
 /// The per-launch token: random, written with the port.
 pub fn new_token() -> String {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let pid = std::process::id() as u128;
-    let mut x = t ^ (pid << 64) ^ 0x9e37_79b9_7f4a_7c15_9e37_79b9_7f4a_7c15u128;
-    let mut out = String::new();
-    for _ in 0..24 {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        let c = b"abcdefghijklmnopqrstuvwxyz0123456789"[(x % 36) as usize];
-        out.push(c as char);
-    }
-    out
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).expect("OS randomness unavailable; refusing an insecure control token");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl App {
@@ -66,6 +86,12 @@ impl App {
     /// A request from the instance port: answered now, or parked in
     /// `deferred` until the page answers (a CDP reply, a capture).
     pub fn remote_request(&mut self, req: Request) {
+        if crate::private::enabled() { let _ = req.reply.send(json!({"ok":false,"error":"Remote control is unavailable in incognito"})); return; }
+        // The door decides what may be asked, before anything is done.
+        if !req.origin.allows(&req.cmd) {
+            let _ = req.reply.send(json!({"ok":false,"error":format!("{} is not available from the phone", req.cmd)}));
+            return;
+        }
         // Hands answer through the band, on their own time.
         if req.cmd == "hands" {
             return self.hands_request(&req.args, req.reply);
@@ -182,6 +208,7 @@ impl App {
     }
 
     pub fn remote(&mut self, cmd: &str, args: &Value) -> Result<Value, String> {
+        if crate::private::enabled() { return Err("Remote control is unavailable in incognito".into()); }
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
         let n = |k: &str| args.get(k).and_then(Value::as_u64).map(|v| v as usize);
         let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
@@ -590,6 +617,29 @@ impl App {
                 Ok(json!({ "cwd": cwd, "entries": out, "folders": crate::journal::folders().into_iter().map(|(c, n)| json!({ "cwd": c, "commands": n })).collect::<Vec<_>>() }))
             }
             other => Err(format!("unknown command {other}")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Origin;
+
+    /// The phone's page needs two verbs. Everything that reaches the shell,
+    /// the filesystem, the assistant or the pages has to stay behind the
+    /// CLI's door, whatever a future endpoint happens to send.
+    #[test]
+    fn the_phone_reaches_only_its_own_page() {
+        for cmd in Origin::PHONE_VERBS {
+            assert!(Origin::Phone.allows(cmd), "the phone's page needs {cmd}");
+        }
+        for cmd in [
+            "launch", "send-text", "ask", "edit", "open", "page", "block",
+            "hatch", "sync", "layout", "ls", "raise", "close", "split",
+            "focus", "theme", "look", "ports", "version", "hands",
+        ] {
+            assert!(!Origin::Phone.allows(cmd), "the phone could reach {cmd}");
+            assert!(Origin::Cli.allows(cmd), "the CLI lost {cmd}");
         }
     }
 }

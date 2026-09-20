@@ -116,6 +116,7 @@ pub fn init() {
     });
 }
 pub fn save(rows: &[Download]) {
+    if crate::private::enabled() { return; }
     if let Ok(data) = serde_json::to_vec_pretty(rows) {
         let path = history_path();
         let tmp = path.with_extension("json.tmp");

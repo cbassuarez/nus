@@ -59,20 +59,21 @@ fn from_json(line: &str) -> Option<Entry> {
 /// Append one finished block. Every so often the file is pruned to
 /// `keep_days`; a file that is all old lines goes away.
 pub fn append(e: &Entry, keep_days: u32) {
-    let _ = std::fs::create_dir_all(dir());
     let path = path_for(&e.cwd);
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{}", to_json(e));
-    }
-    // Prune on the hundredth line, so a busy folder never rewrites per command.
-    if e.start % 100 == 0 {
+    let _ = crate::storage::append_line(&path, &to_json(e), crate::storage::HISTORY_FILE, 4000);
+    static LAST: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut last = LAST.lock().unwrap();
+    let now = now();
+    if last.get(&path).is_none_or(|t| now.saturating_sub(*t) >= 60) {
+        if last.len() >= 128 { last.clear(); }
+        last.insert(path.clone(), now);
         prune(&path, keep_days);
     }
 }
 
 fn prune(path: &PathBuf, keep_days: u32) {
-    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let _guard = crate::storage::FILE_ACCESS.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(text) = crate::storage::tail(path, crate::storage::HISTORY_FILE) else { return };
     let cutoff = now().saturating_sub(keep_days as u64 * 86_400);
     let kept: Vec<&str> = text.lines().filter(|l| from_json(l).is_some_and(|e| e.start >= cutoff)).collect();
     if kept.len() == text.lines().count() {
@@ -81,13 +82,13 @@ fn prune(path: &PathBuf, keep_days: u32) {
     if kept.is_empty() {
         let _ = std::fs::remove_file(path);
     } else {
-        let _ = std::fs::write(path, kept.join("\n") + "\n");
+        let _ = crate::store::write_atomic(path, (kept.join("\n") + "\n").as_bytes());
     }
 }
 
 /// The folder's entries, newest first, at most `limit`.
 pub fn entries(cwd: &str, limit: usize) -> Vec<Entry> {
-    let Ok(text) = std::fs::read_to_string(path_for(cwd)) else { return Vec::new() };
+    let Ok(text) = crate::storage::tail(&path_for(cwd), crate::storage::HISTORY_FILE) else { return Vec::new() };
     let mut v: Vec<Entry> = text.lines().filter_map(from_json).collect();
     v.reverse();
     v.truncate(limit);
@@ -98,19 +99,20 @@ pub fn entries(cwd: &str, limit: usize) -> Vec<Entry> {
 /// folder, newest first.
 pub fn since(since: u64) -> Vec<Entry> {
     let Ok(rd) = std::fs::read_dir(dir()) else { return Vec::new() };
-    let mut out: Vec<Entry> = rd
-        .flatten()
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .flat_map(|text| text.lines().filter_map(from_json).filter(|e| e.start >= since).collect::<Vec<_>>())
-        .collect();
-    out.sort_by(|a, b| b.start.cmp(&a.start));
-    out.truncate(200);
+    let mut out: Vec<Entry> = Vec::new();
+    for file in rd.flatten() {
+        let Ok(text) = crate::storage::tail(&file.path(), crate::storage::HISTORY_FILE) else { continue; };
+        for entry in text.lines().filter_map(from_json).filter(|e| e.start >= since) {
+            let at = out.partition_point(|e| e.start >= entry.start);
+            if at < 200 { out.insert(at, entry); out.truncate(200); }
+        }
+    }
     out
 }
 
 /// How many commands ran in this folder since `since` (unix seconds).
 pub fn count_since(cwd: &str, since: u64) -> usize {
-    let Ok(text) = std::fs::read_to_string(path_for(cwd)) else { return 0 };
+    let Ok(text) = crate::storage::tail(&path_for(cwd), crate::storage::HISTORY_FILE) else { return 0 };
     text.lines().filter_map(from_json).filter(|e| e.start >= since).count()
 }
 
@@ -120,7 +122,7 @@ pub fn folders() -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize, u64)> = rd
         .flatten()
         .filter_map(|e| {
-            let text = std::fs::read_to_string(e.path()).ok()?;
+            let text = crate::storage::tail(&e.path(), crate::storage::HISTORY_FILE).ok()?;
             let mut last = 0;
             let mut cwd = String::new();
             let mut n = 0;

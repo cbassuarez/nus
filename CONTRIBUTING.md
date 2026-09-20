@@ -5,6 +5,9 @@ open because open is right. This file says what that means in practice.
 
 ## What I welcome
 
+- **Feature requests** that explain the problem and how the change would help.
+  Check existing settings, rules, themes and layouts first. A request does not
+  promise implementation.
 - **Bug reports** with a reproduction: what you did, what happened, what you
   expected, your OS, and the commit. A screenshot or a `NUS_DUMP` capture of
   the terminal bytes helps. No reproduction, no bug.
@@ -21,10 +24,6 @@ open because open is right. This file says what that means in practice.
   isn't about the code. The design is settled in [docs/PRODUCT.md](docs/PRODUCT.md)
   and [docs/DESIGN.md](docs/DESIGN.md); a PR that contradicts a settled pass is
   out of scope by definition.
-- **Feature requests.** Most of them are a rule: `rules.luau` covers new-tab
-  colours, folders, chains, skills, ports, blocks, grouping, layouts, and
-  `nus.run` reaches every remote-control verb. Try that. If it can't be a
-  rule, it's a fork.
 - **Refactors for their own sake**, dependency swaps, formatting churn, and
   anything that widens the surface without a settled design behind it.
 

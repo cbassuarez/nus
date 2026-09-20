@@ -19,10 +19,12 @@ Font found: Cascadia Code @ 13pt × 1.25 DPI = 21.7px → 13×25 px cells.
 - **Ligatures:** `->` `=>` `!=` `==` `>=` `<=` `&&` `||` `...` `::` shape
   correctly via rustybuzz `calt`; a ligature glyph lands on its first
   cluster's column and the following columns emit nothing.
-- **Latency (release):** mean **key→present 2.77 ms** over 134 keystrokes,
+- **Latency (release):** mean **key-event→present-call 2.77 ms** over 134 keystrokes,
   measured from winit key event to `queue.present()` of the frame containing
-  the echo — i.e. including ConPTY and PowerShell's own round trip. Add up to
-  one refresh (≤ 6.9 ms @ 144 Hz) for photons.
+  the echo — including ConPTY and PowerShell's own round trip. This historical
+  spike result is not a measurement of the current full application or physical
+  key-to-screen latency. GPU scheduling, compositor queues, refresh and scanout
+  add latency; a present call alone cannot establish an upper bound for photons.
 - **Throughput (release):** full-screen vim frame build 1.5–1.8 ms
   (~330 instances); 0.88 ms/frame average while dumping a 10k-line file.
   Debug build: 28 ms/frame full-screen — shaping every row every frame is

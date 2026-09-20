@@ -130,6 +130,7 @@ impl App {
 
     /// The hotkey, or the chord: show it, or hide it if it's up.
     pub(crate) fn toggle_hatch(&mut self) {
+        if crate::private::enabled() { self.notice("The hatch is available in regular nus windows."); return; }
         if self.hatch.as_ref().is_some_and(|h| h.visible && !h.hiding) {
             self.hide_hatch();
         } else {
@@ -373,7 +374,7 @@ impl App {
 
     /// Run `f` as if the hatch tab were active (keys, mouse), then put the
     /// main window's world back.
-    fn in_hatch<R>(&mut self, f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    pub(crate) fn in_hatch<R>(&mut self, f: impl FnOnce(&mut App) -> R) -> Option<R> {
         let i = self.hatch_tab()?;
         let (active, mouse, mods, scale) = (self.tabs.get(self.active).map(|t| t.id), self.mouse, self.mods, self.scale);
         let pos = self.hatch.as_ref().map(|h| h.pos).unwrap_or((0.0, 0.0));

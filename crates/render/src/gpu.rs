@@ -10,7 +10,10 @@ use winit::window::Window;
 use crate::scene::{Bind, Instance, Scene};
 use crate::text::ATLAS_SIZE;
 
-pub struct Gpu {
+/// Device and immutable pipelines are shared by all main windows. Each
+/// compositor still owns its glyph atlas and transient buffers: font atlas
+/// coordinates belong to that window's FontSystem.
+pub struct SharedGpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     instance: wgpu::Instance,
@@ -18,16 +21,29 @@ pub struct Gpu {
     pipeline: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    points_bgl: wgpu::BindGroupLayout,
+    adapter: wgpu::Adapter,
+}
+
+thread_local! {
+    // Weak ownership releases the device after the final window closes.
+    static SHARED: std::cell::RefCell<std::sync::Weak<SharedGpu>> = Default::default();
+}
+
+pub struct Gpu {
+    shared: Arc<SharedGpu>,
     atlas: wgpu::Texture,
     atlas_bind: wgpu::BindGroup,
     instances: wgpu::Buffer,
     instance_cap: usize,
-    /// Polygon corners for `Scene::poly`, read by the fragment shader.
     points: wgpu::Buffer,
     points_cap: usize,
-    points_bgl: wgpu::BindGroupLayout,
     points_bind: wgpu::BindGroup,
-    adapter: wgpu::Adapter,
+}
+
+impl std::ops::Deref for Gpu {
+    type Target = SharedGpu;
+    fn deref(&self) -> &SharedGpu { &self.shared }
 }
 
 /// A window's surface.
@@ -51,6 +67,10 @@ impl Target {
 
 impl Gpu {
     pub fn new(window: Arc<Window>) -> Result<(Gpu, Target)> {
+        if let Some(shared) = SHARED.with(|s| s.borrow().upgrade()) {
+            let surface = shared.instance.create_surface(window.clone())?;
+            return Self::with_shared(shared, window, surface);
+        }
         // Shared-texture import from CEF needs DX12 on Windows (D3D11 handles),
         // Metal on macOS (IOSurface) and Vulkan on Linux (dmabuf).
         let backends = if cfg!(target_os = "windows") {
@@ -86,21 +106,6 @@ impl Gpu {
             }))?;
         let format = wgpu::TextureFormat::Bgra8Unorm;
 
-        let atlas = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("glyph atlas"),
-            size: wgpu::Extent3d {
-                width: ATLAS_SIZE,
-                height: ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            // COPY_SRC so the app can photograph its own glyph atlas.
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -127,9 +132,6 @@ impl Gpu {
                 },
             ],
         });
-        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-        let atlas_bind = Self::make_bind(&device, &bgl, &atlas_view, &sampler);
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("quad"),
             source: wgpu::ShaderSource::Wgsl(include_str!("quad.wgsl").into()),
@@ -147,9 +149,6 @@ impl Gpu {
                 count: None,
             }],
         });
-        let points_cap = 4096;
-        let points = Self::make_points(&device, points_cap);
-        let points_bind = Self::bind_points(&device, &points_bgl, &points);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("quad pl"),
             bind_group_layouts: &[Some(&bgl), Some(&points_bgl)],
@@ -186,6 +185,34 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
+        let shared = Arc::new(SharedGpu { device, queue, instance, format, pipeline, bgl, sampler, points_bgl, adapter });
+        SHARED.with(|s| *s.borrow_mut() = Arc::downgrade(&shared));
+        Self::with_shared(shared, window, surface)
+    }
+
+    fn with_shared(shared: Arc<SharedGpu>, window: Arc<Window>, surface: wgpu::Surface<'static>) -> Result<(Gpu, Target)> {
+        let SharedGpu { device, bgl, sampler, points_bgl, format, .. } = shared.as_ref();
+        let atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas"),
+            size: wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            // COPY_SRC so the app can photograph its own glyph atlas.
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
+        let atlas_bind = Self::make_bind(&device, &bgl, &atlas_view, &sampler);
+
+        let points_cap = 4096;
+        let points = Self::make_points(&device, points_cap);
+        let points_bind = Self::bind_points(&device, &points_bgl, &points);
         let instance_cap = 8192;
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
@@ -194,24 +221,8 @@ impl Gpu {
             mapped_at_creation: false,
         });
         let size = window.inner_size();
-        let gpu = Gpu {
-            device,
-            queue,
-            instance,
-            format,
-            pipeline,
-            bgl,
-            sampler,
-            atlas,
-            atlas_bind,
-            instances,
-            instance_cap,
-            points,
-            points_cap,
-            points_bgl,
-            points_bind,
-            adapter,
-        };
+        let format = *format;
+        let gpu = Gpu { shared, atlas, atlas_bind, instances, instance_cap, points, points_cap, points_bind };
         let mut target = Target {
             surface,
             size: (size.width.max(1), size.height.max(1)),

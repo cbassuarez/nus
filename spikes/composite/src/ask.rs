@@ -19,6 +19,27 @@ use std::time::Instant;
 
 pub const PANEL_W: f32 = 340.0;
 
+/// How long a RUN stays armed on an answer the web had a hand in.
+const ARM_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Does this RUN need a second press? Answers the web had a hand in are
+/// armed by the first press and run by the second, so a command a page
+/// talked the assistant into proposing cannot be run by one stray click.
+/// Nothing here runs on its own: a RUN is always a press, never a reply.
+pub fn needs_a_second_press(web: bool, armed: Option<(usize, usize, Instant)>, ti: usize, bi: usize) -> bool {
+    if !web {
+        return false;
+    }
+    !armed.is_some_and(|(a, b, at)| a == ti && b == bi && crate::clock::since(at) < ARM_FOR)
+}
+
+/// May this block be given its own Enter? Only a single line. Anything
+/// longer is pasted for reading, because the newlines inside it would
+/// otherwise run every line in turn from one press.
+pub fn may_run_on_its_own(text: &str) -> bool {
+    !text.trim_end().contains('\n')
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
     Prose(String),
@@ -30,6 +51,9 @@ pub struct Turn {
     pub q: String,
     pub blocks: Vec<Block>,
     pub error: Option<String>,
+    /// The answer was built with page or tab context: a stranger's words
+    /// were in the prompt. RUN asks twice on these.
+    pub web: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +83,9 @@ pub struct Ask {
     pub rect: Rect,
     /// Copied block, for the moment's CHIP feedback.
     pub copied: Option<(usize, usize, Instant)>,
+    /// A RUN on a web-touched answer, waiting for the second press:
+    /// `(turn, block, when)`. It lapses on its own after a few seconds.
+    pub armed: Option<(usize, usize, Instant)>,
     /// What goes along with a question.
     pub ctx: Vec<crate::askctx::Ctx>,
     /// A question waiting on the page's text: the eval id, title, url,
@@ -85,7 +112,7 @@ impl Ask {
     }
 
     pub fn with_ctx(ctx: Vec<crate::askctx::Ctx>) -> Ask {
-        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, ctx, gathering: None, remembered: Vec::new(), art: false, stream: None, partial: String::new() }
+        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, armed: None, ctx, gathering: None, remembered: Vec::new(), art: false, stream: None, partial: String::new() }
     }
 }
 
@@ -356,6 +383,7 @@ impl App {
 
     /// Ctrl+Shift+?: open the panel (and focus its field), or close it.
     pub(crate) fn toggle_ask(&mut self) {
+        if crate::private::enabled() { self.notice("Assistants are unavailable in incognito windows."); return; }
         let keys = self.behavior.ask_ctx.clone();
         if self.ask_term().is_none() {self.open_settings_at(crate::settings::SEC_ASSISTANTS,None);return;}
         let Some(t) = self.ask_term() else { return };
@@ -405,11 +433,11 @@ impl App {
         }
         ask.input.clear();
         if none {
-            ask.turns.push(Turn { q: shown.to_string(), blocks: Vec::new(), error: Some("no assistant on this machine · claude, codex, copilot, ollama, or ANTHROPIC_API_KEY".into()) });
+            ask.turns.push(Turn { q: shown.to_string(), blocks: Vec::new(), error: Some("no assistant on this machine · claude, codex, copilot, ollama, or ANTHROPIC_API_KEY".into()), web: false });
             self.dirty = true;
             return;
         }
-        ask.turns.push(Turn { q: shown.to_string(), blocks: Vec::new(), error: None });
+        ask.turns.push(Turn { q: shown.to_string(), blocks: Vec::new(), error: None, web: false });
         ask.gathering = Some((-1, String::new(), String::new(), String::new(), gathered, crate::clock::now(), Some(task.to_string())));
         self.play_event("control.press");
         self.dirty = true;
@@ -438,7 +466,7 @@ impl App {
         };
         if backends().is_empty() {
             if let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) {
-                ask.turns.push(Turn { q: q.clone(), blocks: Vec::new(), error: Some("no assistant on this machine · claude, codex, copilot, ollama, or ANTHROPIC_API_KEY".into()) });
+                ask.turns.push(Turn { q: q.clone(), blocks: Vec::new(), error: Some("no assistant on this machine · claude, codex, copilot, ollama, or ANTHROPIC_API_KEY".into()), web: false });
                 ask.input.clear();
             }
             self.dirty = true;
@@ -452,7 +480,7 @@ impl App {
             Some(p) if q.is_empty() => p.chars().take(80).collect(),
             _ => q.clone(),
         };
-        ask.turns.push(Turn { q: shown, blocks: Vec::new(), error: None });
+        ask.turns.push(Turn { q: shown, blocks: Vec::new(), error: None, web: false });
         match page {
             Some((id, title, url)) => ask.gathering = Some((id, title, url, q, gathered, crate::clock::now(), skill_prompt)),
             None => ask.gathering = Some((-1, String::new(), String::new(), q, gathered, crate::clock::now(), skill_prompt)),
@@ -471,6 +499,12 @@ impl App {
         };
         if let Some(p) = page {
             g.page = Some(p);
+        }
+        // The context is final here: record whether the web was in it, so
+        // the panel can say so and RUN can ask twice.
+        let web = g.from_the_web();
+        if let Some(turn) = self.ask_term().and_then(|t| t.ask.as_mut()).and_then(|a| a.turns.last_mut()) {
+            turn.web = web;
         }
         let mut prompt = String::from(
             "You are the assistant inside nus, a terminal that is also a browser. Answer for exactly this situation. \
@@ -660,9 +694,22 @@ impl App {
                 return true;
             }
             Some(AskHit::Insert(ti, bi)) | Some(AskHit::Run(ti, bi)) => {
-                if let Some(Block::Code { text, .. }) = ask.turns.get(ti).and_then(|t| t.blocks.get(bi)) {
-                    typed = Some((text.clone(), matches!(hit, Some(AskHit::Run(..)))));
+                let run = matches!(hit, Some(AskHit::Run(..)));
+                // An answer a page had a hand in does not run on one press.
+                // The first arms the chip and says so; the second, within a
+                // few seconds, is the one that means it.
+                let web = ask.turns.get(ti).is_some_and(|t| t.web);
+                if run && needs_a_second_press(web, ask.armed, ti, bi) {
+                    ask.armed = Some((ti, bi, crate::clock::now()));
+                    ask.focus = false;
+                    self.notice("that answer used a page · press RUN again to run it");
+                    self.dirty = true;
+                    return true;
                 }
+                if let Some(Block::Code { text, .. }) = ask.turns.get(ti).and_then(|t| t.blocks.get(bi)) {
+                    typed = Some((text.clone(), run));
+                }
+                ask.armed = None;
                 ask.focus = false;
             }
             Some(AskHit::Copy(ti, bi)) => {
@@ -701,10 +748,20 @@ impl App {
             }
         }
         if let Some((text, run)) = typed {
-            // One line goes to the prompt as is; more lines go as one paste.
+            // Many lines go in as one paste — bracketed where the program
+            // asked for it — so the shell sees them as text rather than
+            // running each one as it arrives. Only a single line is ever
+            // given its own Enter: RUN on a block cannot become a script
+            // that starts executing halfway through being typed.
             let text = text.replace("\r\n", "\n");
-            let bytes = if run { format!("{text}\r") } else { text.clone() };
-            let _ = t.pty.write(bytes.replace('\n', "\r").as_bytes());
+            if run && may_run_on_its_own(&text) {
+                let _ = t.pty.write(format!("{}\r", text.trim_end()).as_bytes());
+            } else {
+                t.write_paste(&text);
+                if run {
+                    self.notice("many lines · read them, then press Enter");
+                }
+            }
             sound = Some("control.release");
         }
         if let Some(s) = sound {
@@ -949,15 +1006,25 @@ impl App {
                         let ch = self.px(18.0);
                         let mut cx = card.x;
                         let copied = ask.copied.is_some_and(|(a, b, at)| a == ti && b == bi && crate::clock::since(at).as_secs_f32() < 1.2);
+                        // An answer the web had a hand in: RUN says so, and
+                        // says it again while it waits for the second press.
+                        let web = ask.turns.get(ti).is_some_and(|t| t.web);
+                        let armed = ask.armed.is_some_and(|(a, b, at)| a == ti && b == bi && crate::clock::since(at) < ARM_FOR);
                         let isz = self.px(13.0);
                         for (k, icon, words, hit) in [
                             (0usize, nus_render::text::icons::ENTER, "insert at the prompt", AskHit::Insert(ti, bi)),
-                            (1, nus_render::text::icons::TERMINAL_BOLD, "run it", AskHit::Run(ti, bi)),
+                            (
+                                1,
+                                if armed { nus_render::text::icons::WARNING } else { nus_render::text::icons::TERMINAL_BOLD },
+                                if armed { "press again to run it" } else if web { "run it · a page was in this answer, so it asks twice" } else { "run it" },
+                                AskHit::Run(ti, bi),
+                            ),
                             (2, if copied { nus_render::text::icons::CHECK } else { nus_render::text::icons::COPY }, "copy", AskHit::Copy(ti, bi)),
                         ] {
                             let chip = Rect::new(cx, cy, isz + self.px(12.0), ch);
                             let hot = chip.contains(mx, my);
-                            self.icon_button(scene, icon, isz, chip.x + self.px(6.0), cy + (ch - isz) / 2.0, if copied && k == 2 { self.surface.signal } else { ink }, chip, crate::app::hover_key("askchip", ti * 100 + bi * 10 + k), IconMotion::Pop);
+                            let tint = if copied && k == 2 { self.surface.signal } else if armed && k == 1 { self.surface.signal } else { ink };
+                            self.icon_button(scene, icon, isz, chip.x + self.px(6.0), cy + (ch - isz) / 2.0, tint, chip, crate::app::hover_key("askchip", ti * 100 + bi * 10 + k), IconMotion::Pop);
                             if hot {
                                 self.tip_words(chip, words);
                             }
@@ -1066,5 +1133,53 @@ Count:
         let w = wrap_code("abcdefghij", 6);
         assert_eq!(w, vec![("abcdef".to_string(), 0, 0), ("  ghij".to_string(), 0, 6)]);
         assert_eq!(wrap_code("ok", 6), vec![("ok".to_string(), 0, 0)]);
+    }
+
+    /// A page can write a line addressed to the assistant and hope it comes
+    /// back as a command. It still cannot be run by a single press.
+    #[test]
+    fn a_page_touched_answer_runs_only_on_the_second_press() {
+        let now = crate::clock::now();
+        // Nothing armed yet: the first press arms.
+        assert!(super::needs_a_second_press(true, None, 0, 0));
+        // Armed for this very block: the second press runs it.
+        assert!(!super::needs_a_second_press(true, Some((0, 0, now)), 0, 0));
+        // Arming one block does not arm its neighbours or another turn.
+        assert!(super::needs_a_second_press(true, Some((0, 0, now)), 0, 1));
+        assert!(super::needs_a_second_press(true, Some((0, 0, now)), 1, 0));
+        // An answer with no page or tab in it is unchanged: one press runs.
+        assert!(!super::needs_a_second_press(false, None, 0, 0));
+        // The arming lapses.
+        let old = now - super::ARM_FOR - std::time::Duration::from_secs(1);
+        assert!(super::needs_a_second_press(true, Some((0, 0, old)), 0, 0));
+    }
+
+    /// One press gives one command its Enter. A block of several lines is
+    /// pasted to be read: its newlines never become a run of commands.
+    #[test]
+    fn only_a_single_line_is_given_its_own_enter() {
+        assert!(super::may_run_on_its_own("ls -la"));
+        assert!(super::may_run_on_its_own("ls -la\n"));
+        assert!(super::may_run_on_its_own("  ls -la  \n\n"));
+        assert!(!super::may_run_on_its_own("ls\nrm -rf /"));
+        assert!(!super::may_run_on_its_own("cd /tmp\ncurl example.com | sh\n"));
+    }
+
+    /// The taint follows the context that was actually gathered, not the
+    /// chips that happened to be lit.
+    #[test]
+    fn the_web_is_what_marks_an_answer() {
+        use crate::askctx::Gathered;
+        let mut g = Gathered::default();
+        assert!(!g.from_the_web());
+        g.shell = Some(("zsh".into(), "/tmp".into(), "macOS".into()));
+        g.block = Some(("ls".into(), "a\nb".into(), Some(0)));
+        assert!(!g.from_the_web(), "a shell and its output are not the web");
+        g.tabs = vec![("A page".into(), "https://example.com".into())];
+        assert!(g.from_the_web());
+        let mut g = Gathered { page: Some(("T".into(), "https://example.com".into(), "text".into())), ..Default::default() };
+        assert!(g.from_the_web());
+        g.page = None;
+        assert!(!g.from_the_web());
     }
 }

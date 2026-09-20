@@ -26,10 +26,19 @@ expected=['Plex','Silkscreen','Plex Italic','Bungee','Rubik Mono','Newsreader']
 assert rows[0]['event']=='bootstrap' and rows[0]['face']=='Newsreader',rows[0]
 launch=[row for row in rows if row['event']=='launch-frame']
 assert [row['face'] for row in launch][:12]==expected*2,launch
-assert all(not row['native_launch_finished'] for row in launch),launch
+assert [row['face'] for row in launch]==[expected[i%6] for i in range(len(launch))],launch
 ready=next(i for i,row in enumerate(rows) if row['event']=='ready')
-assert rows[ready]['face']=='Newsreader',rows[ready]
-assert not any(row['event']=='launch-frame' for row in rows[ready+1:]),rows
+settled_at=next(i for i,row in enumerate(rows) if row['event']=='launch-settled')
+assert settled_at>=ready,rows
+assert not any(row['event']=='launch-frame' for row in rows[settled_at+1:]),rows
+# Fast launch, without the old artificial run-loop hold, must show all six faces.
+os.environ['NUS_DOCK_TRACE']=str(root/'fast-launch/dock')
+run('fast-launch','wait 1400',{'motion':{'register':0.5,'reduce':False}})
+fast=events('fast-launch')
+faces=[row['face'] for row in fast if row['event']=='launch-frame']
+assert faces[:6]==expected,faces
+assert all(face==expected[i%6] for i,face in enumerate(faces)),faces
+assert not any(row['event']=='attention' for row in fast),fast
 assert not any(row['event']=='attention' for row in rows),rows
 settled=[row for row in rows if row['face']=='Newsreader']
 colours={tuple(round(v*255) for v in row['signal'][:3]) for row in settled}

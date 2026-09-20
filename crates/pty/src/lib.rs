@@ -195,7 +195,8 @@ impl Pty {
 
         let mut reader = pair.master.try_clone_reader().context("clone reader")?;
         let writer = pair.master.take_writer().context("take writer")?;
-        let (tx, rx) = mpsc::channel();
+        // Apply backpressure while the UI is busy: at most 2 MiB queued.
+        let (tx, rx) = mpsc::sync_channel(32);
         thread::Builder::new()
             .name("pty-reader".into())
             .spawn(move || {
@@ -236,7 +237,8 @@ impl Pty {
             Inner::Held(c) => &c.output,
         };
         let mut out = Vec::new();
-        while let Ok(chunk) = rx.try_recv() {
+        while out.len() < 1024 * 1024 {
+            let Ok(chunk) = rx.try_recv() else { break };
             out.extend_from_slice(&chunk);
         }
         out

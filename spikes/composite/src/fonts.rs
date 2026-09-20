@@ -89,8 +89,8 @@ impl App {
         self.f.editor=self.font_face(config.editor_family,config.editor_weight,&config.system[2]);
         let px=self.terminal_px();
         for tab in &mut self.tabs {for pane in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {if let crate::app::Pane::Term(t)=pane {
-            t.grid.set_font(&self.fonts,self.f.term,px);
-            t.grid.set_spacing(&self.fonts,config.terminal_line,config.terminal_spacing*self.scale);
+            t.grid.set_font(&self.fonts,self.f.term,px*t.zoom as f32/100.0);
+            t.grid.set_spacing(&self.fonts,config.terminal_line,config.terminal_spacing*self.scale*t.zoom as f32/100.0);
         }}}
         if !self.tabs.is_empty() {self.layout();} self.dirty=true;
     }

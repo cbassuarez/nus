@@ -433,6 +433,7 @@ impl App {
         ))
     }
     pub(crate) fn prompt_rows(&self, input: &str) -> Vec<PaletteRow> {
+        if crate::private::enabled() { return self.private_rows(input); }
         // Home can animate at display refresh rate. Do not rescan project folders,
         // saved layouts and command history on each painted frame. Tab identity
         // and order belong in the key because session actions contain indices.

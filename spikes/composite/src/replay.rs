@@ -32,105 +32,155 @@ pub fn dir() -> PathBuf {
     std::env::current_dir().unwrap_or_default().join("profile").join("replay")
 }
 
-/// One session's casts, written as the shells produce bytes.
+/// Rolling recent history. Each pane retains two segments, and all generated
+/// casts/stills in this window share a budget. Explicitly exported replays stay.
 pub struct Recorder {
     pub dir: PathBuf,
     t0: Instant,
     casts: HashMap<u64, Cast>,
     stills: u32,
+    pending_bytes: u64,
 }
 
 struct Cast {
     path: PathBuf,
-    file: std::io::BufWriter<std::fs::File>,
-    marks: usize,
+    file: Option<std::io::BufWriter<std::fs::File>>,
+    header: String,
+    bytes: u64,
     utf8: Vec<u8>,
 }
 
-fn now_secs() -> u64 {
-    crate::journal::now()
+impl Cast {
+    fn write(&mut self, event: &Value, limit: u64) {
+        let line = format!("{event}\n");
+        if line.len() as u64 > limit / 2 { return; }
+        if self.bytes + line.len() as u64 > limit {
+            // Close before renaming, including on Windows. Failure stops this
+            // write rather than allowing the current file to grow indefinitely.
+            if let Some(mut file) = self.file.take() { let _ = file.flush(); }
+            let previous = self.path.with_extension("previous.cast");
+            if previous.exists() && std::fs::remove_file(&previous).is_err() { return; }
+            if std::fs::rename(&self.path, &previous).is_err() { return; }
+            let Ok(mut file) = std::fs::File::create(&self.path).map(std::io::BufWriter::new) else { return; };
+            if file.write_all(self.header.as_bytes()).is_err() { return; }
+            self.bytes = self.header.len() as u64;
+            self.file = Some(file);
+        }
+        if let Some(file) = self.file.as_mut() {
+            if file.write_all(line.as_bytes()).is_ok() { self.bytes += line.len() as u64; }
+        }
+    }
 }
 
+fn now_secs() -> u64 { crate::journal::now() }
+
 impl Recorder {
-    /// A new session directory; sessions older than `keep_days` go.
-    pub fn new(keep_days: u32) -> Option<Recorder> {
+    pub fn new(_keep_days: u32) -> Option<Recorder> {
+        if crate::private::enabled() { return None; }
         let root = dir();
         std::fs::create_dir_all(&root).ok()?;
-        let cutoff = now_secs().saturating_sub(keep_days as u64 * 86_400);
-        if let Ok(rd) = std::fs::read_dir(&root) {
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.parse::<u64>().is_ok_and(|t| t < cutoff) {
-                    let _ = std::fs::remove_dir_all(e.path());
+        let mut stamp = now_secs();
+        loop {
+            let dir = root.join(stamp.to_string());
+            match std::fs::create_dir(&dir) {
+                Ok(()) => {
+                    std::fs::create_dir(dir.join("blobs")).ok()?;
+                    return Some(Recorder { dir, t0: crate::clock::now(), casts: HashMap::new(), stills: 0, pending_bytes: 0 });
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => stamp += 1,
+                Err(_) => return None,
             }
         }
-        let mut stamp = now_secs();
-        while root.join(stamp.to_string()).exists() { stamp += 1; }
-        let dir = root.join(stamp.to_string());
-        std::fs::create_dir_all(dir.join("blobs")).ok()?;
-        Some(Recorder { dir, t0: crate::clock::now(), casts: HashMap::new(), stills: 0 })
     }
 
-    fn t(&self) -> f64 {
-        crate::clock::since(self.t0).as_secs_f64()
-    }
+    fn t(&self) -> f64 { crate::clock::since(self.t0).as_secs_f64() }
 
     fn cast(&mut self, tab: u64, cols: usize, rows: usize) -> Option<&mut Cast> {
         if !self.casts.contains_key(&tab) {
             let path = self.dir.join(format!("tab-{tab}.cast"));
-            let mut file = std::io::BufWriter::new(std::fs::File::create(&path).ok()?);
-            let header = json!({ "version": 2, "width": cols, "height": rows, "timestamp": now_secs(), "env": { "TERM": "xterm-256color", "SHELL": "nus" } });
-            let _ = writeln!(file, "{header}");
-            self.casts.insert(tab, Cast { path, file, marks: 0, utf8: Vec::new() });
+            let mut file = std::io::BufWriter::new(std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?);
+            let header = format!("{}\n", json!({ "version": 2, "width": cols, "height": rows, "timestamp": now_secs(), "env": { "TERM": "xterm-256color", "SHELL": "nus" } }));
+            let mut bytes = file.get_ref().metadata().ok()?.len();
+            if bytes == 0 { file.write_all(header.as_bytes()).ok()?; bytes = header.len() as u64; }
+            self.casts.insert(tab, Cast { path, file: Some(file), header, bytes, utf8: Vec::new() });
         }
         self.casts.get_mut(&tab)
     }
 
-    /// Bytes the shell produced.
     pub fn output(&mut self, tab: u64, cols: usize, rows: usize, bytes: &[u8]) {
         let t = self.t();
-        if let Some(c) = self.cast(tab, cols, rows) {
-            let text=decode_chunk(&mut c.utf8,bytes);
-            if !text.is_empty(){let ev=json!([t,"o",text]);let _=writeln!(c.file,"{ev}");}
+        for chunk in bytes.chunks(16 * 1024) {
+            if let Some(c) = self.cast(tab, cols, rows) {
+                let text = decode_chunk(&mut c.utf8, chunk);
+                if !text.is_empty() { c.write(&json!([t, "o", text]), crate::storage::REPLAY_SEGMENT); }
+            }
+            self.pending_bytes += chunk.len() as u64 * 6; // JSON escaping upper bound.
+            if self.pending_bytes >= 64 * 1024 { self.enforce_budget(Some(tab), crate::storage::REPLAY_WINDOW); }
         }
     }
 
-    /// The shell's size changed.
     pub fn resize(&mut self, tab: u64, cols: usize, rows: usize) {
         let t = self.t();
-        if let Some(c) = self.cast(tab, cols, rows) {
-            let ev = json!([t, "r", format!("{cols}x{rows}")]);
-            let _ = writeln!(c.file, "{ev}");
-        }
+        if let Some(c) = self.cast(tab, cols, rows) { c.write(&json!([t, "r", format!("{cols}x{rows}")]), crate::storage::REPLAY_SEGMENT); }
+        self.pending_bytes += 128;
+        if self.pending_bytes >= 64 * 1024 { self.enforce_budget(Some(tab), crate::storage::REPLAY_WINDOW); }
     }
 
-    /// A checkpoint: the marker event, flushed so the timeline can read it.
     pub fn mark(&mut self, tab: u64, cols: usize, rows: usize, payload: &Value) {
         let t = self.t();
-        if let Some(c) = self.cast(tab, cols, rows) {
-            c.marks += 1;
-            let ev = json!([t, "m", payload.to_string()]);
-            let _ = writeln!(c.file, "{ev}");
-            let _ = c.file.flush();
+        let mut payload = payload.clone();
+        // Keep command boundaries even when a command produced enormous output.
+        if let Some(output) = payload.get_mut("output") {
+            if let Some(text) = output.as_str().filter(|s| s.len() > 128 * 1024) {
+                let mut start = text.len() - 128 * 1024;
+                while !text.is_char_boundary(start) { start += 1; }
+                *output = json!(format!("[Earlier output omitted from recent history]\n{}", &text[start..]));
+            }
         }
+        if let Some(c) = self.cast(tab, cols, rows) {
+            c.write(&json!([t, "m", payload.to_string()]), crate::storage::REPLAY_SEGMENT);
+        }
+        self.enforce_budget(Some(tab), crate::storage::REPLAY_WINDOW);
     }
 
     pub fn flush(&mut self) {
-        for c in self.casts.values_mut() {
-            let _ = c.file.flush();
+        for c in self.casts.values_mut() { if let Some(f) = c.file.as_mut() { let _ = f.flush(); } }
+    }
+
+    /// Closing a pane releases its file descriptor immediately at maintenance.
+    pub fn retain(&mut self, streams: &std::collections::HashSet<u64>) {
+        self.casts.retain(|id, _| streams.contains(id));
+    }
+
+    fn enforce_budget(&mut self, current: Option<u64>, budget: u64) {
+        self.flush(); self.pending_bytes = 0;
+        let mut entries = crate::storage::files(&self.dir, true);
+        let protected = current.map(|id| self.dir.join(format!("tab-{id}.cast")));
+        entries.sort_by_key(|e| (protected.as_ref() == Some(&e.path), e.modified));
+        let mut total: u64 = entries.iter().map(|e| e.bytes).sum();
+        for e in entries {
+            if total <= budget { break; }
+            // Close buffered handles before deletion, on every platform.
+            self.casts.retain(|_, c| c.path != e.path);
+            if std::fs::remove_file(&e.path).is_ok() { total = total.saturating_sub(e.bytes); }
         }
     }
 
     pub fn cast_path(&self, tab: u64) -> Option<PathBuf> {
-        self.casts.get(&tab).map(|c| c.path.clone())
+        let path = self.dir.join(format!("tab-{tab}.cast"));
+        path.exists().then_some(path)
     }
 
-    /// Where the next still goes: `blobs/<tab>-<n>.png`.
     pub fn still_path(&mut self, tab: u64) -> PathBuf {
-        self.stills += 1;
+        self.stills = self.stills.wrapping_add(1);
         self.dir.join("blobs").join(format!("{tab}-{}.png", self.stills))
     }
+}
+
+fn read_cast(path: &Path) -> std::io::Result<String> {
+    let mut text = crate::storage::tail(&path.with_extension("previous.cast"), crate::storage::REPLAY_SEGMENT).unwrap_or_default();
+    text.push_str(&crate::storage::tail(path, crate::storage::REPLAY_SEGMENT)?);
+    Ok(text)
 }
 
 /// A checkpoint waiting on the next draw for its page still.
@@ -388,7 +438,7 @@ impl App {
             self.notice("nothing recorded for this tab yet");
             return;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else { return };
+        let Ok(text) = read_cast(&path) else { return };
         let (cols, rows, events) = parse_cast(&text);
         let marks: Vec<usize> = events.iter().enumerate().filter(|(_, e)| matches!(e, Ev::Mark(..))).map(|(k, _)| k).collect();
         if marks.is_empty() {
@@ -482,7 +532,7 @@ impl App {
         rec.flush();
         let cast_path = rec.cast_path(stream_id(id,right)).ok_or("nothing recorded for this tab")?;
         let session = rec.dir.clone();
-        let cast = std::fs::read_to_string(&cast_path).map_err(|e| e.to_string())?;
+        let cast = read_cast(&cast_path).map_err(|e| e.to_string())?;
         let (cols, rows, events) = parse_cast(&cast);
         // The stills, inlined as data URLs.
         let mut stills=records(cols,rows,&events);
@@ -548,6 +598,45 @@ fn share_html(title: &str, cast: &str, stills: &[Value], _theme: &nus_render::th
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn noisy_replay_rotates_and_keeps_recent_command_boundaries() {
+        let root = tempfile::tempdir().unwrap();
+        let mut rec = Recorder { dir: root.path().to_path_buf(), t0: Instant::now(), casts: HashMap::new(), stills: 0, pending_bytes: 0 };
+        for i in 0..100 {
+            let cast = rec.cast(1, 80, 24).unwrap();
+            cast.write(&json!([i, "m", json!({"cmd":format!("command-{i}")}).to_string()]), 512);
+        }
+        rec.flush();
+        let path = rec.cast_path(1).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() <= 512);
+        assert!(std::fs::metadata(path.with_extension("previous.cast")).unwrap().len() <= 512);
+        let (_, _, events) = parse_cast(&read_cast(&path).unwrap());
+        assert!(events.len() > 1 && events.len() < 100);
+        assert!(matches!(events.last(), Some(Ev::Mark(_, p)) if p["cmd"] == "command-99"));
+        rec.retain(&Default::default());
+        assert!(rec.casts.is_empty());
+        let before = std::fs::metadata(&path).unwrap().len();
+        rec.mark(1, 80, 24, &json!({"cmd":"reopened"}));
+        assert!(std::fs::metadata(path).unwrap().len() > before, "reopening must append, not truncate");
+    }
+
+    #[test]
+    fn session_budget_counts_stills_and_closes_evicted_cast_handles() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("blobs")).unwrap();
+        let mut rec = Recorder { dir: root.path().to_path_buf(), t0: Instant::now(), casts: HashMap::new(), stills: 0, pending_bytes: 0 };
+        for id in 1..15 {
+            rec.mark(id, 80, 24, &json!({"cmd":"test"}));
+            std::fs::write(rec.still_path(id), vec![0; 500]).unwrap();
+        }
+        rec.enforce_budget(Some(14), 1500);
+        assert!(crate::storage::files(&rec.dir,true).iter().map(|e|e.bytes).sum::<u64>() <= 1500);
+        assert!(rec.cast_path(14).is_some());
+        assert!(rec.casts.values().all(|c|c.path.exists()));
+        rec.output(1, 80, 24, b"after eviction"); rec.flush();
+        assert!(read_cast(&rec.cast_path(1).unwrap()).unwrap().contains("after eviction"));
+    }
 
     #[test]
     fn utf8_split_across_every_byte_is_lossless() {

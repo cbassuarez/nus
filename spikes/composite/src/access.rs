@@ -38,6 +38,7 @@ fn bounds(r: nus_render::Rect) -> accesskit::Rect {
 impl App {
     fn crumb_label(&self, hit: CrumbHit) -> String {
         match hit {
+            CrumbHit::Menu => "Application menu (F10)".into(),
             CrumbHit::Space => format!("Space {}", self.space_name),
             CrumbHit::Tab => format!("tab {}", self.tabs.get(self.active).map(|t| t.title()).unwrap_or_default()),
             CrumbHit::Url => "address".into(),
@@ -117,6 +118,7 @@ impl App {
         for (r, hit) in self.side_hits.clone() {
             use crate::app::SideHit as S;
             let label = match hit {
+                S::Pinned(act) => act.label(&self.pins.items),
                 S::MenuDrawer => "nus menu drawer".into(),
                 S::Close(i) => format!("close tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::Profile => "profile".into(),

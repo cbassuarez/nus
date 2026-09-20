@@ -195,6 +195,7 @@ impl Session {
     }
 
     pub fn save(&self) {
+        if crate::private::enabled() { return; }
 
         let mut v = self.to_value();
         v["saved"] = serde_json::json!(now());
@@ -404,6 +405,12 @@ impl App {
         }
         let mut ids: Vec<Option<u64>> = Vec::new();
         for t in &sess.tabs {
+            // Persistent sidebar pages are opened on demand. Shell pins still restore.
+            if t.pinned && !matches!(t.left,Some(Saved::Shell{..})|Some(Saved::File{..})) && self.pins.items.iter().any(|p|match (&p.target,&t.left) {
+                (crate::pins::Target::Page{url,container},Some(Saved::Page{url:old,..}))=>url==old&&t.container.as_ref().unwrap_or(&sess.container)==container,
+                (crate::pins::Target::Ports,Some(Saved::Ports))|(crate::pins::Target::Downloads,Some(Saved::Downloads))=>true,
+                _=>false,
+            }) {ids.push(None);continue;}
             let container = t.container.clone().filter(|c| self.containers.iter().any(|k| &k.name == c)).unwrap_or_else(|| self.container.clone());
             let left = match &t.left {
                 Some(Saved::Shell { profile }) => {
@@ -549,6 +556,7 @@ impl App {
 
     /// Save the current tabs as the session (called when tabs change).
     pub(crate) fn save_session(&self) {
+        if crate::private::enabled() { return; }
         if !self.behavior.remember {
             return;
         }
@@ -557,6 +565,7 @@ impl App {
 
     /// Remember a page or shell in the recent list (deduped, newest first).
     pub(crate) fn remember(&mut self, item: Saved) {
+        if crate::private::enabled() { return; }
         if let Saved::Page { url, .. } = &item {
             if url.is_empty() || url.starts_with("http://127.0.0.1:9229") {
                 return;

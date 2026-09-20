@@ -31,6 +31,8 @@ pub enum Act {
     DefaultBrowser,
     LoginItem,
     NewWindow,
+    NewPrivateWindow,
+    Report(crate::support::Kind),
     Rename,
     RenameTab,
     Close,
@@ -38,6 +40,8 @@ pub enum Act {
     Lead(crate::settings::Lead),
     /// The profile card.
     Me,
+    Pins(crate::pins::Act),
+    EditPins,
     Scroll(f32),
     /// GET or REMOVE an optional tool by id.
     Bundle(String),
@@ -63,6 +67,7 @@ fn k(key: &str) -> String {
 impl App {
     /// Open the welcome page as its own tab (or go to it).
     pub(crate) fn open_welcome(&mut self) {
+        if crate::private::enabled() { self.open_home(); return; }
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Hints(_))) {
             return self.activate(i);
         }
@@ -157,6 +162,9 @@ impl App {
             row("ESC", "Little nus", "links from other apps open in a small floating window; Ctrl+Shift+O keeps one as a tab", None),
         ];
         let windows = vec![
+            row(k("N"), "New incognito window", "Private browser tabs with temporary cookies and no saved history. Downloaded files stay on disk.", Some(("OPEN INCOGNITO", Act::NewPrivateWindow))),
+            row("", "Report a bug", "Open a GitHub draft with the version and OS. Review it before posting; no pages, paths or logs are attached.", Some(("REPORT A BUG", Act::Report(crate::support::Kind::Bug)))),
+            row("", "Request a feature", "Describe what you want to do and how nus could help. You review and submit the draft on GitHub.", Some(("REQUEST A FEATURE", Act::Report(crate::support::Kind::Feature)))),
             row("SHIFT+F2", "Name this window", format!("“{}” · auto-named from the git root or the host; the name is in the title bar and Alt-Tab", self.window_name()), Some(("RENAME", Act::Rename))),
             row("CTRL+N", "New window", "windows own their tabs; the rail or the header lists them", Some(("OPEN ONE", Act::NewWindow))),
             row("CTRL+1–9", "Tabs by number", "Ctrl+` goes back to the last one; Ctrl+PgUp / PgDn walk them", None),
@@ -261,6 +269,28 @@ impl App {
             y+=self.px(36.0);
         }
         y += self.px(24.0);
+        if !narrow {y=y.max(r.y+self.px(278.0)-scroll);}
+        self.fonts.draw(scene,strong,x,y,"YOUR PINNED TABS");y+=self.px(24.0);
+        for line in crate::reader::wrap(&self.fonts,ui,"Keep your everyday pages in the sidebar. They open when you click; closing a page keeps its pin.",width) {self.fonts.draw(scene,dim,x,y,&line);y+=self.px(21.0);}
+        y+=self.px(12.0);
+        let pin_cols=if width>=self.px(560.0){3}else{1};
+        let pin_w=(width-self.px(12.0)*(pin_cols-1) as f32)/pin_cols as f32;
+        for (i,pin) in crate::pins::Pin::defaults().into_iter().enumerate() {
+            let chosen=self.pins.items.iter().any(|p|p.target==pin.target);
+            let cell=Rect::new(x+(i%pin_cols) as f32*(pin_w+self.px(12.0)),y+(i/pin_cols) as f32*self.px(64.0),pin_w,self.px(52.0));
+            scene.rect(cell,if chosen{t.tint}else{t.paper});scene.outline(cell,self.px(1.0),if chosen{signal}else{t.dim});
+            let icon=match i {0=>nus_render::text::icons::HOME,1=>nus_render::text::icons::DOWNLOAD,_=>nus_render::text::icons::PORTS};
+            self.fonts.draw_icon(scene,icon,self.px(19.0),cell.x+self.px(12.0),cell.y+self.px(17.0),ink);
+            self.fonts.draw(scene,strong,cell.x+self.px(40.0),cell.y+self.px(31.0),&self.fit(strong,&pin.title,cell.w-self.px(74.0)));
+            let check=Rect::new(cell.right()-self.px(27.0),cell.y+self.px(18.0),self.px(15.0),self.px(15.0));
+            scene.outline(check,self.px(1.0),if chosen{signal}else{ink});
+            if chosen {self.fonts.draw_icon(scene,nus_render::text::icons::CHECK,self.px(14.0),check.x,check.y,signal);}
+            self.welcome_hits.push((cell,Act::Pins(crate::pins::Act::ToggleDefault(i))));
+        }
+        y+=3usize.div_ceil(pin_cols) as f32*self.px(64.0);
+        let edit=Rect::new(x,y,self.px(204.0).min(width),self.px(30.0));
+        self.fonts.draw(scene,Style{color:signal,..strong},x+self.px(8.0),y+self.px(20.0),"EDIT IN SIDEBAR →");
+        self.welcome_hits.push((edit,Act::EditPins));y+=self.px(58.0);
         self.fonts.draw(scene,strong,x,y,"YOUR STARTING POINTS");
         y += self.px(18.0);
         let cards = [
@@ -446,7 +476,11 @@ impl App {
                 self.apply_setting(Hit::LoginItem(on), 0.0);
             }
             Act::NewWindow => self.new_window_request = true,
+            Act::NewPrivateWindow => self.run(crate::app::Action::NewPrivateWindow),
+            Act::Report(kind) => self.run(crate::app::Action::Report(kind)),
             Act::Me => self.open_me_card(),
+            Act::Pins(act)=>self.pin_action(act),
+            Act::EditPins=>{self.sidebar=true;self.sidebar_hover=true;self.sidebar_leave=None;self.side_page=crate::files::SidePage::Tabs;self.pins.editing=true;self.sidebar_rules.compact=false;self.sidebar_rules.width=self.sidebar_rules.width.max(248.0);self.layout();},
             Act::Lead(l) => {
                 self.apply_setting(Hit::Lead(l), 0.0);
                 self.notice(match l {

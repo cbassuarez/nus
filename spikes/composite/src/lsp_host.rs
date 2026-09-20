@@ -51,7 +51,7 @@ fn pses_launch() -> Option<(PathBuf, Vec<String>)> {
         "-BundledModulesPath", &dir.display().to_string(),
         "-LogPath", &profile.join("pses.log").display().to_string(),
         "-SessionDetailsPath", &profile.join("pses-session.json").display().to_string(),
-        "-LogLevel", "Warning",
+        "-LogLevel", "None",
     ].iter().map(|s| s.to_string()).collect();
     Some((host, args))
 }
@@ -129,7 +129,8 @@ impl App {
             let (Some(p), Some(u)) = (b.path.clone(), b.uri.clone()) else {
                 return;
             };
-            (p, u, b.language, b.text.to_string(), b.in_lsp)
+            if !b.ready() || b.text.len_bytes() > 8 * 1024 * 1024 { return; }
+            (p, u, b.language, b.text.clone(), b.in_lsp)
         };
         if already {
             return;
@@ -137,11 +138,13 @@ impl App {
         let Some(key) = self.lsp_key_for(&path) else {
             return;
         };
-        let Some(s) = self.lsp.map.get(&key) else {
-            return;
-        };
+        if let Some(tab) = self.tabs.get_mut(ti) {
+            let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+            if let Some(Pane::Editor(e)) = pane { if let Some(b) = e.buffers.get_mut(bi) { b.lsp_key = Some(key.clone()); } }
+        }
+        let Some(s) = self.lsp.map.get(&key) else { return; };
         if s.client.is_ready() {
-            s.client.did_open(uri, language, &text);
+            s.client.did_open_rope(uri, language, text);
             if let Some(tab) = self.tabs.get_mut(ti) {
                 let pane = if right {
                     tab.right.as_mut()
@@ -151,6 +154,7 @@ impl App {
                 if let Some(Pane::Editor(e)) = pane {
                     if let Some(b) = e.buffers.get_mut(bi) {
                         b.in_lsp = true;
+                        b.synced_revision = b.revision;
                     }
                 }
             }
@@ -160,13 +164,10 @@ impl App {
 
     /// The key and client for the focused editor's active buffer.
     fn lsp_for_focused(&mut self) -> Option<(String, Url)> {
-        let (path, uri) = {
-            let e = self.focused_editor()?;
-            let b = e.buf()?;
-            (b.path.clone()?, b.uri.clone()?)
-        };
-        let key = self.lsp_key_for(&path)?;
-        Some((key, uri))
+        let e = self.focused_editor()?;
+        let b = e.buf()?;
+        if !b.ready() || b.text.len_bytes() > 8 * 1024 * 1024 { return None; }
+        Some((b.lsp_key.clone()?, b.uri.clone()?))
     }
 
     /// Push the buffer's text to the server if it changed.
@@ -179,13 +180,14 @@ impl App {
                 return;
             };
             let Some(b) = e.buf_mut() else { return };
-            if !b.in_lsp || !b.dirty {
+            if !b.in_lsp || b.revision == b.synced_revision {
                 return;
             }
-            b.text.to_string()
+            b.synced_revision = b.revision;
+            b.text.clone()
         };
         if let Some(s) = self.lsp.map.get(&key) {
-            s.client.did_change(uri, &text);
+            s.client.did_change_rope(uri, text);
         }
     }
 
@@ -199,8 +201,7 @@ impl App {
                 return;
             };
             let Some(b) = e.buf() else { return };
-            let text = b.text.to_string();
-            (nus_lsp::position_of(&text, b.cursor), b.cursor, b.in_lsp)
+            (crate::editor_work::position(&b.text, b.cursor), b.cursor, b.in_lsp)
         };
         if !ready {
             return;
@@ -258,8 +259,7 @@ impl App {
                 return;
             };
             let Some(b) = e.buf() else { return };
-            let text = b.text.to_string();
-            (nus_lsp::position_of(&text, at), b.in_lsp)
+            (crate::editor_work::position(&b.text, at), b.in_lsp)
         };
         if !ready {
             return;
@@ -284,6 +284,7 @@ impl App {
 
     /// Ctrl+S: format through the server when it can, then write.
     pub(crate) fn editor_save(&mut self) {
+        if self.focused_editor().and_then(|e| e.buf()).is_some_and(|b| !b.ready()) { return; }
         let can_format = self.lsp_for_focused().and_then(|(key, uri)| {
             let s = self.lsp.map.get(&key)?;
             let caps = s.client.capabilities.lock().ok()?.clone()?;
@@ -324,6 +325,7 @@ impl App {
                 return;
             };
             let Some(b) = e.buf_mut() else { return };
+            if !b.ready() { return; }
             let Some(path) = b.path.clone() else { return };
             let text = b.text.to_string();
             match std::fs::write(&path, text.as_bytes()) {
@@ -354,6 +356,36 @@ impl App {
         }
     }
 
+    /// Closed documents must leave the server too. Servers with no clients
+    /// are dropped, releasing their subprocess, pipes, diagnostics and index.
+    pub(crate) fn trim_language_servers(&mut self) {
+        let mut live: HashMap<String, HashSet<Url>> = HashMap::new();
+        for pane in self.tabs.iter().flat_map(|t|std::iter::once(&t.left).chain(t.right.as_ref())) {
+            match pane {
+                Pane::Term(t) => if let Some(l)=&t.plsp {live.entry(l.key.clone()).or_default().insert(l.uri.clone());},
+                Pane::Editor(e) => for buffer in &e.buffers {
+                    if let (Some(path),Some(uri))=(&buffer.path,&buffer.uri) {
+                        if let Some(server)=nus_lsp::registry::server_for(path) {
+                            let root=nus_lsp::registry::root_for(server,path);
+                            live.entry(format!("{}@{}",server.command,root.display())).or_default().insert(uri.clone());
+                        }
+                    }
+                },
+                _=>{}
+            }
+        }
+        self.lsp.map.retain(|key,server| {
+            if let Some(uris)=live.get(key) {server.client.retain_documents(uris);true} else {false}
+        });
+        self.lsp.pending.retain(|(key,_),_|self.lsp.map.contains_key(key));
+        if self.lsp.pending.len()>512 {
+            let mut keys:Vec<_>=self.lsp.pending.keys().cloned().collect();
+            keys.sort_by_key(|(_,id)|*id);
+            for key in keys.into_iter().take(self.lsp.pending.len()-512) {self.lsp.pending.remove(&key);}
+        }
+        if self.lsp.failed.len()>128 {self.lsp.failed.clear();}
+    }
+
     /// Once a loop: drain every server's events.
     pub(crate) fn poll_lsp(&mut self) {
         let keys: Vec<String> = self.lsp.map.keys().cloned().collect();
@@ -361,7 +393,8 @@ impl App {
         for key in keys {
             let mut events = Vec::new();
             if let Some(s) = self.lsp.map.get(&key) {
-                while let Ok(ev) = s.rx.try_recv() {
+                for _ in 0..32 {
+                    let Ok(ev)=s.rx.try_recv() else {break;};
                     events.push(ev);
                 }
             }
@@ -448,14 +481,12 @@ impl App {
         for tab in &mut self.tabs {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Editor(e) = p {
-                    let status = e.buf().and_then(|b| b.path.as_ref()).and_then(|path| {
-                        let server = nus_lsp::registry::server_for(path)?;
-                        let root = nus_lsp::registry::root_for(server, path);
-                        let key = format!("{}@{}", server.command, root.display());
-                        if let Some(why) = self.lsp.failed.get(&key) {
+                    let status = e.buf().and_then(|b| b.lsp_key.as_ref()).and_then(|key| {
+                        let command = key.split('@').next().unwrap_or(key);
+                        if let Some(why) = self.lsp.failed.get(key) {
                             return Some(why.clone());
                         }
-                        let s = self.lsp.map.get(&key)?;
+                        let s = self.lsp.map.get(key)?;
                         // Progress lines can be long paths; keep the tail short.
                         let st: String = s.status.chars().take(48).collect();
                         let st = if st.len() < s.status.len() {
@@ -464,9 +495,9 @@ impl App {
                             st
                         };
                         Some(if st.is_empty() {
-                            server.command.to_string()
+                            command.to_string()
                         } else {
-                            format!("{} · {}", server.command, st)
+                            format!("{} · {}", command, st)
                         })
                     });
                     let status = status.unwrap_or_default();
@@ -492,7 +523,7 @@ impl App {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 let Pane::Editor(e) = p else { continue };
                 for b in &mut e.buffers {
-                    if b.in_lsp {
+                    if b.in_lsp || !b.ready() || b.text.len_bytes() > 8 * 1024 * 1024 {
                         continue;
                     }
                     let (Some(path), Some(uri)) = (&b.path, b.uri.clone()) else {
@@ -509,7 +540,8 @@ impl App {
                     {
                         continue;
                     }
-                    s.client.did_open(uri, b.language, &b.text.to_string());
+                    s.client.did_open_rope(uri, b.language, b.text.clone());
+                    b.synced_revision = b.revision;
                     b.in_lsp = true;
                 }
             }
@@ -626,7 +658,8 @@ impl App {
                 if let Some(e) = self.focused_editor() {
                     let rows = e.rows;
                     if let Some(b) = e.buf_mut() {
-                        b.cursor = b.at(range.start.line as usize, range.start.character as usize);
+                        if b.ready() { b.cursor = crate::editor_work::offset(&b.text, range.start); }
+                        else { b.pending_position = Some(range.start); }
                         b.anchor = None;
                         // Centre it.
                         b.scroll = (range.start.line as usize).saturating_sub(rows / 3);
@@ -679,39 +712,43 @@ impl App {
 
     /// Point the FILES folder at the project of a file.
     pub(crate) fn files_root_from(&mut self, path: &Path) {
-        let markers = [
-            ".git",
-            "Cargo.toml",
-            "package.json",
-            "pyproject.toml",
-            "go.mod",
-        ];
-        let dir = path.parent().unwrap_or(path);
-        let root = dir
-            .ancestors()
-            .find(|a| markers.iter().any(|m| a.join(m).exists()))
-            .unwrap_or(dir)
-            .to_path_buf();
-        if self.files_root.as_deref() != Some(root.as_path()) {
-            self.files_root = Some(root.clone());
-            self.files_open.clear();
-            // Open the way to the file.
-            for anc in dir.ancestors() {
-                if anc == root {
-                    break;
-                }
-                self.files_open.insert(anc.to_path_buf());
-            }
-        }
-        self.refresh_files_folder();
+        self.files_listing = None;
+        let path = path.to_path_buf();
+        let old_root = self.files_root.clone();
+        let old_open = self.files_open.clone();
+        self.files_listing = crate::work::Task::start(move |cancel| {
+            let markers = [".git", "Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
+            let dir = path.parent().unwrap_or(&path);
+            let root = dir.ancestors().find(|a| markers.iter().any(|m| a.join(m).exists())).unwrap_or(dir).to_path_buf();
+            let mut open = if old_root.as_ref() == Some(&root) { old_open } else { HashSet::new() };
+            for anc in dir.ancestors().take_while(|a| *a != root) { open.insert(anc.to_path_buf()); }
+            let mut items = Vec::new();
+            walk(&root,0,&open,&mut items,cancel);
+            (root,open,items)
+        });
     }
 
     pub(crate) fn refresh_files_folder(&mut self) {
-        let Some(root) = self.files_root.clone() else {
-            return;
+        let Some(root) = self.files_root.clone() else { return; };
+        self.files_listing = None;
+        let open = self.files_open.clone();
+        self.files_listing = crate::work::Task::start(move |cancel| {
+            let mut items = Vec::new();
+            walk(&root,0,&open,&mut items,cancel);
+            (root,open,items)
+        });
+    }
+
+    pub(crate) fn poll_files_folder(&mut self) {
+        let Some(job) = &self.files_listing else {return};
+        let (root,open,items) = match job.take() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {self.files_listing=None; return;}
+            Err(_) => return,
         };
-        let mut items = Vec::new();
-        walk(&root, 0, &self.files_open, &mut items);
+        self.files_listing = None;
+        self.files_root = Some(root.clone());
+        self.files_open = open;
         let name = root
             .file_name()
             .map(|s| s.to_string_lossy().to_uppercase())
@@ -763,8 +800,8 @@ impl App {
     }
 }
 
-fn walk(dir: &Path, depth: usize, open: &HashSet<PathBuf>, out: &mut Vec<Item>) {
-    if depth > 8 || out.len() > 600 {
+fn walk(dir: &Path, depth: usize, open: &HashSet<PathBuf>, out: &mut Vec<Item>, cancel: &std::sync::atomic::AtomicUsize) {
+    if depth > 8 || out.len() >= 600 || cancel.load(std::sync::atomic::Ordering::Relaxed) != 0 {
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -772,9 +809,10 @@ fn walk(dir: &Path, depth: usize, open: &HashSet<PathBuf>, out: &mut Vec<Item>) 
     };
     let mut entries: Vec<(bool, String, PathBuf)> = rd
         .flatten()
+        .take(4000)
         .map(|e| {
             let p = e.path();
-            (p.is_dir(), e.file_name().to_string_lossy().into_owned(), p)
+            (e.file_type().is_ok_and(|t| t.is_dir()), e.file_name().to_string_lossy().into_owned(), p)
         })
         .filter(|(_, n, _)| {
             !matches!(
@@ -789,6 +827,7 @@ fn walk(dir: &Path, depth: usize, open: &HashSet<PathBuf>, out: &mut Vec<Item>) 
     });
     let indent = "\u{2007}\u{2007}".repeat(depth);
     for (is_dir, name, p) in entries {
+        if out.len() >= 600 || cancel.load(std::sync::atomic::Ordering::Relaxed) != 0 {break;}
         if is_dir {
             let opened = open.contains(&p);
             out.push(Item {
@@ -797,7 +836,7 @@ fn walk(dir: &Path, depth: usize, open: &HashSet<PathBuf>, out: &mut Vec<Item>) 
                 detail: String::new(),
             });
             if opened {
-                walk(&p, depth + 1, open, out);
+                walk(&p, depth + 1, open, out, cancel);
             }
         } else {
             out.push(Item {

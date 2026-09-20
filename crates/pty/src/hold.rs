@@ -155,10 +155,13 @@ impl Ring {
         }
     }
     pub fn push(&mut self, bytes: &[u8]) {
-        self.buf.extend_from_slice(bytes);
-        if self.buf.len() > self.cap {
-            let cut = self.buf.len() - self.cap;
+        if bytes.len() >= self.cap {
+            self.buf.clear();
+            self.buf.extend_from_slice(&bytes[bytes.len() - self.cap..]);
+        } else {
+            let cut = (self.buf.len() + bytes.len()).saturating_sub(self.cap);
             self.buf.drain(..cut);
+            self.buf.extend_from_slice(bytes);
         }
     }
     pub fn bytes(&self) -> &[u8] {
@@ -188,7 +191,7 @@ impl Client {
         };
         let info: Info = serde_json::from_slice(&greeting).context("holder greeting")?;
         let exited = Arc::new(Mutex::new(None));
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(32);
         let mut reader = stream.try_clone().context("clone the socket")?;
         let flag = exited.clone();
         thread::Builder::new()
@@ -197,10 +200,10 @@ impl Client {
                 loop {
                     match recv(&mut reader) {
                         Ok(Some((b'h', bytes))) | Ok(Some((b'o', bytes))) => {
-                            if tx.send(bytes).is_err() {
-                                break;
+                            for chunk in bytes.chunks(64 * 1024) {
+                                if tx.send(chunk.to_vec()).is_err() { return; }
+                                on_output();
                             }
-                            on_output();
                         }
                         Ok(Some((b'x', code))) => {
                             let code = code
@@ -394,5 +397,11 @@ mod tests {
         ring.push(b"abcdef");
         ring.push(b"ghij");
         assert_eq!(ring.bytes(), b"cdefghij");
+        ring.push(&vec![b'x'; 1024 * 1024]);
+        assert_eq!(ring.bytes(), b"xxxxxxxx");
+        assert!(ring.buf.capacity() <= 16, "oversized writes must not inflate the retained allocation");
+        let mut empty = Ring::new(0);
+        empty.push(b"ignored");
+        assert!(empty.bytes().is_empty());
     }
 }

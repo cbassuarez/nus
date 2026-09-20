@@ -8,7 +8,7 @@
 //! a double-click keeps it. Heavy folders — node_modules, target, .git —
 //! sit dim and closed until asked.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -26,7 +26,7 @@ pub enum SidePage {
     Files,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     pub path: PathBuf,
     pub name: String,
@@ -45,8 +45,8 @@ pub struct Tree {
     pub open: HashSet<PathBuf>,
     /// The visible rows, root's children first.
     pub rows: Vec<Node>,
-    /// Listings, by folder, with when they were read.
-    cache: HashMap<PathBuf, (Instant, Vec<Node>)>,
+    pending: Option<crate::work::Task<Vec<Node>>>,
+    refreshed: Instant,
     pub scroll: f32,
     pub rect: Rect,
     /// The file previewed in the editor split, if any.
@@ -58,7 +58,7 @@ pub struct Tree {
 
 impl Default for Tree {
     fn default() -> Self {
-        Tree { root: None, open: HashSet::new(), rows: Vec::new(), cache: HashMap::new(), scroll: 0.0, rect: Rect::new(0.0, 0.0, 0.0, 0.0), preview: None, last_click: None, hover: None }
+        Tree { root: None, open: HashSet::new(), rows: Vec::new(), pending: None, refreshed: crate::clock::now(), scroll: 0.0, rect: Rect::new(0.0, 0.0, 0.0, 0.0), preview: None, last_click: None, hover: None }
     }
 }
 
@@ -70,67 +70,70 @@ impl Tree {
         }
         self.root = root;
         self.open.clear();
+        self.pending = None;
+        self.rows.clear();
+        self.preview = None;
+        self.last_click = None;
+        self.hover = None;
         self.scroll = 0.0;
         self.rebuild();
     }
 
-    /// One folder's entries: folders first, then files, each by name.
-    fn list(&mut self, dir: &Path, depth: usize) -> Vec<Node> {
-        if let Some((at, v)) = self.cache.get(dir) {
-            if crate::clock::since(at).as_secs() < 3 {
-                return v.clone();
-            }
-        }
-        let mut dirs: Vec<Node> = Vec::new();
-        let mut files: Vec<Node> = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().to_string();
-                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                let dim = name.starts_with('.') || (is_dir && HEAVY.contains(&name.as_str()));
-                let n = Node { path: e.path(), name, dir: is_dir, depth, dim };
-                if is_dir {
-                    dirs.push(n);
-                } else {
-                    files.push(n);
-                }
-            }
-        }
-        let key = |n: &Node| n.name.to_lowercase();
-        dirs.sort_by_key(key);
-        files.sort_by_key(key);
-        dirs.extend(files);
-        self.cache.insert(dir.to_path_buf(), (crate::clock::now(), dirs.clone()));
-        dirs
-    }
-
-    /// The rows, from the root down through every open folder.
+    /// Directory I/O and sorting stay off the event thread. The previous
+    /// rows remain interactive while a refresh is in flight. A root change
+    /// drops its task; no cache retains all the projects visited this session.
     pub fn rebuild(&mut self) {
-        let Some(root) = self.root.clone() else {
-            self.rows.clear();
-            return;
-        };
-        let mut out = Vec::new();
-        fn walk(t: &mut Tree, dir: &Path, depth: usize, out: &mut Vec<Node>) {
-            let kids = t.list(dir, depth);
-            for k in kids {
-                let open = k.dir && t.open.contains(&k.path);
-                let path = k.path.clone();
-                out.push(k);
-                if open && out.len() < 4000 {
-                    walk(t, &path, depth + 1, out);
+        self.pending = None;
+        let Some(root) = self.root.clone() else { self.rows.clear(); return; };
+        let open = self.open.clone();
+        self.pending = crate::work::Task::start(move |cancel| {
+            fn walk(dir: &Path, depth: usize, open: &HashSet<PathBuf>, out: &mut Vec<Node>, cancel: &std::sync::atomic::AtomicUsize) {
+                use std::sync::atomic::Ordering;
+                if depth > 32 || out.len() >= 4000 || cancel.load(Ordering::Relaxed) != 0 { return; }
+                let mut entries = Vec::new();
+                if let Ok(rd) = std::fs::read_dir(dir) {
+                    for entry in rd.flatten().take(4000) {
+                        if cancel.load(Ordering::Relaxed) != 0 { return; }
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+                        let dim = name.starts_with('.') || (is_dir && HEAVY.contains(&name.as_str()));
+                        entries.push(Node {path:entry.path(), name, dir:is_dir, depth, dim});
+                    }
+                }
+                entries.sort_by_cached_key(|n| (!n.dir, n.name.to_lowercase()));
+                for node in entries {
+                    if out.len() >= 4000 { break; }
+                    let descend = node.dir && open.contains(&node.path);
+                    let path = node.path.clone();
+                    out.push(node);
+                    if descend { walk(&path, depth+1, open, out, cancel); }
                 }
             }
-        }
-        walk(self, &root, 0, &mut out);
-        self.rows = out;
+            let mut rows = Vec::new();
+            walk(&root, 0, &open, &mut rows, cancel);
+            rows
+        });
+        self.refreshed = crate::clock::now();
     }
 
-    /// Forget the listings so the next rebuild reads the disk.
-    pub fn refresh(&mut self) {
-        self.cache.clear();
-        self.rebuild();
+    pub fn poll(&mut self) -> bool {
+        if let Some(job) = &self.pending {
+            match job.take() {
+                Ok(rows) => {
+                    let changed = rows != self.rows;
+                    self.rows = rows;
+                    self.pending = None;
+                    return changed;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.pending = None,
+                Err(_) => {}
+            }
+        }
+        if self.pending.is_none() && crate::clock::since(self.refreshed).as_millis() >= 500 { self.rebuild(); }
+        false
     }
+
+    pub fn refresh(&mut self) { self.rebuild(); }
 
     pub fn toggle(&mut self, path: &Path) {
         if !self.open.remove(path) {
@@ -146,7 +149,7 @@ impl App {
         if let Some(w) = &self.workspace {
             return Some(w.clone());
         }
-        self.focused_cwd().map(PathBuf::from).filter(|p| p.is_dir())
+        self.focused_cwd().map(PathBuf::from)
     }
 
     /// Once a frame while the page shows: follow the folder, re-read now and then.
@@ -154,6 +157,7 @@ impl App {
         if self.side_page != SidePage::Files {
             return;
         }
+        if self.tree.poll() { self.dirty = true; }
         let root = self.tree_root();
         if self.tree.root != root {
             self.tree.set_root(root);
@@ -428,14 +432,23 @@ mod tests {
         std::fs::write(d.join("a.txt"), "a").unwrap();
         std::fs::write(d.join("src").join("main.rs"), "fn main() {}").unwrap();
         let mut t = Tree::default();
+        let settle = |t: &mut Tree| {
+            let until = Instant::now() + std::time::Duration::from_secs(3);
+            while t.pending.is_some() { t.poll(); assert!(Instant::now() < until); std::thread::sleep(std::time::Duration::from_millis(1)); }
+        };
         t.set_root(Some(d.clone()));
+        settle(&mut t);
         let names: Vec<&str> = t.rows.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, vec!["node_modules", "src", "a.txt", "b.txt"]);
         assert!(t.rows[0].dim && t.rows[0].dir);
         t.toggle(&d.join("src"));
+        settle(&mut t);
         let names: Vec<&str> = t.rows.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, vec!["node_modules", "src", "main.rs", "a.txt", "b.txt"]);
         assert_eq!(t.rows[2].depth, 1);
+        t.set_root(None);
+        assert!(t.rows.is_empty());
+        assert!(t.pending.is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -201,6 +201,66 @@ impl App {
             eprintln!("shot: {step}");
         }
         match verb {
+            "privatecheck" => {
+                assert!(crate::private::enabled());
+                assert!(!self.behavior.remember && self.recorder.is_none() && self.hotkey.is_none());
+                assert!(self.recent.is_empty() && self.last_session.is_none());
+                assert_eq!(self.window_name(), "Incognito");
+                assert!(self.new_term_pane_at(false, 0, None).is_err());
+                assert!(self.remote("ls", &serde_json::Value::Null).is_err());
+                let mut p=crate::sites::prefs("private-canary.invalid");p.zoom=125;
+                crate::sites::set("private-canary.invalid", p);
+                crate::sites::remember("https://private-canary.invalid", "camera", true);
+                self.save_session(); self.save_prefs();
+                let profile=std::env::current_dir().unwrap().join("profile");
+                assert!(!crate::private::downloads_dir().unwrap().starts_with(profile.parent().unwrap()), "download destination must survive private cleanup");
+                for file in ["session.json","recent.json","downloads.json","sites.json","permissions.json","instance","phone"] {assert!(!profile.join(file).exists(),"private persistence: {file}");}
+                let mut dirs=vec![profile.clone()];
+                while let Some(dir)=dirs.pop() {
+                    for entry in std::fs::read_dir(dir).unwrap() {
+                        let entry=entry.unwrap();let kind=entry.file_type().unwrap();
+                        if kind.is_dir() {dirs.push(entry.path());}
+                        else if kind.is_file() {
+                            let bytes=std::fs::read(entry.path()).unwrap();
+                            assert!(!bytes.windows(b"private-canary".len()).any(|s| s==b"private-canary"), "private browser data was written to disk: {:?}", entry.path());
+                        }
+                    }
+                }
+                let out=std::path::PathBuf::from(std::env::var_os("NUS_SHOT_DIR").expect("isolated native check"));
+                std::fs::write(out.join("private-root.txt"),profile.parent().unwrap().display().to_string()).unwrap();
+            }
+            "assertdevtools" => {
+                let Some(Pane::Web(w))=self.tabs.get(self.active).map(|t|t.focused_ref()) else {panic!("page expected")};
+                assert_eq!(w.tab.has_devtools(), rest=="open");
+            }
+            "permissioncheck" => {
+                assert_eq!(crate::sites::remembered(rest, "camera"), None, "legacy host grant was inherited");
+                crate::sites::remember(rest, "camera", true);
+                assert_eq!(crate::sites::remembered(rest, "camera"), Some(true));
+                let mut other=url::Url::parse(rest).unwrap();
+                let port=other.port_or_known_default().unwrap();
+                other.set_port(Some(if port==65535 {65534} else {port+1})).unwrap();
+                assert_eq!(crate::sites::remembered(other.as_str(), "camera"), None);
+                if let Some(Pane::Web(w))=self.tabs.get_mut(self.active).map(|t|t.focused()) {w.site_panel=true;}
+                self.dirty=true;
+            }
+            "assertwindows" => assert_eq!(self.windows.len(), rest.parse::<usize>().unwrap(), "native window count"),
+            "keychaincheck" => {
+                use cef::ImplCommandLine;
+                let cl=cef::command_line_get_global().unwrap();
+                let mock=cl.has_switch(Some(&"use-mock-keychain".into()))!=0;
+                assert_eq!(mock, cfg!(target_os="macos") && std::env::var_os("NUS_TEST_REAL_KEYCHAIN").is_none(), "Keychain mode");
+                assert_eq!(cl.has_switch(Some(&"remote-debugging-port".into())), 0, "unexpected debugging listener");
+            }
+            "supportcheck" => {
+                use crate::application_menu::{Command, ITEMS};
+                for command in [Command::ReportBug,Command::RequestFeature,Command::NewPrivateWindow] {assert!(ITEMS.iter().any(|i|i.command==command));}
+                for kind in [crate::support::Kind::Bug,crate::support::Kind::Feature] {
+                    assert!(crate::support::issue_url(kind).starts_with("https://github.com/cbassuarez/nus/issues/new?"));
+                }
+                self.open_settings_at(14,None); self.redraw();
+                for kind in [crate::support::Kind::Bug,crate::support::Kind::Feature] {assert!(self.settings_hits.iter().any(|(_,h)|*h==crate::settings::Hit::Report(kind)),"report button missing");}
+            }
             "background" => {
                 #[cfg(target_os="macos")]
                 if let Some(mtm)=objc2::MainThreadMarker::new(){objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);}
@@ -273,6 +333,42 @@ impl App {
                 }
             }
             "board" => self.open_board(),
+            "boardfixture"=>{
+                assert!(std::env::var_os("NUS_PORTS_FIXTURE").is_some());
+                self.board.rows=(0..24).map(|i|{
+                    let mut row=crate::ports::Remembered{port:3000+i,process:if i%3==0{"node"}else{"python"}.into(),command:"npm run dev -- --host 127.0.0.1".into(),cwd:"/fixture/workspace".into(),last_seen:0}.row();
+                    row.group=if i<12{crate::ports::Group::Mine}else{crate::ports::Group::Others};row.name=Some(["nus workspace","design preview","local api"][i as usize%3].into());
+                    row.bound=if i%4==0{"0.0.0.0"}else{"127.0.0.1"}.into();row.exposed=i%4==0;
+                    row.started=Some(std::time::SystemTime::now()-Duration::from_secs(3720+i as u64*90));row
+                }).collect();self.board.polls=1;self.board.last=Some(crate::clock::now());self.board.ghosts.clear();self.dirty=true;
+            },
+            "boardpage"=>self.expand_board(),
+            "boardbounds"=>{
+                let body=self.board.viewport;assert!(body.h>0.0);
+                for (r,hit) in &self.board.hits {
+                    let bound=if matches!(hit,crate::ports::Hit::Close|crate::ports::Hit::Expand|crate::ports::Hit::Grouping){self.board.rect}else{body};
+                    assert!(r.x>=bound.x-1.0&&r.y>=bound.y-1.0&&r.right()<=bound.right()+1.0&&r.bottom()<=bound.bottom()+1.0,"ports hit escaped {hit:?}: {r:?} vs {bound:?}");
+                }
+            },
+            "boardselectionvisible"=>{let key=self.board.sel.as_ref().expect("ports selection");assert!(self.board.hits.iter().any(|(r,h)|r.h>0.0&&matches!(h,crate::ports::Hit::Row(k)if k==key)),"keyboard selection must stay visible");},
+            "boardscroll"=>{let r=self.board.viewport;let before=self.board.scroll;self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);self.wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0,-rest.parse::<f64>().unwrap()*self.scale as f64)));assert!(self.board.scroll>before,"ports wheel must scroll the page");},
+            "boarddetail"=>{self.board.expanded=self.board.rows.first().map(|r|r.key.clone());self.board.sel=self.board.expanded.clone();self.dirty=true;},
+            "pinclick"=>{
+                let r=self.side_hits.iter().rev().find_map(|(r,h)|match h{crate::app::SideHit::Pinned(act) if format!("{act:?}")==rest=>Some(*r),_=>None}).expect("visible pin control");
+                self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);
+            },
+            "pindrag"=>{
+                let (from,to)=rest.split_once(' ').unwrap();let from:usize=from.parse().unwrap();let to:usize=to.parse().unwrap();
+                let pos=|k|self.side_hits.iter().find_map(|(r,h)|(*h==crate::app::SideHit::Pinned(crate::pins::Act::Open(k))).then_some((r.x+r.w*0.4,r.y+r.h*0.5))).unwrap();
+                let (x,y)=pos(from);let (tx,ty)=pos(to);
+                self.mouse_moved(x,y);self.mouse_button(MouseButton::Left,ElementState::Pressed);assert!(self.pins.drag.is_some(),"pin drag not armed: {from} at {x},{y}");self.mouse_moved(tx,ty);assert!(self.pins.drag.is_some_and(|(_,_,moved)|moved));self.mouse_button(MouseButton::Left,ElementState::Released);
+            },
+            "pinsscroll"=>{let r=self.pins.rect;self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);self.wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0,-10000.0)));assert!(self.pins.scroll>0.0);},
+            "livefoldersassert"=>{let names=self.folders.iter().filter(|f|matches!(f.kind,crate::folders::Kind::Github|crate::folders::Kind::Ports)).map(|f|f.name.as_str()).collect::<Vec<_>>().join("|");assert_eq!(names,rest);},
+            "pinsassert"=>{let titles=self.pins.items.iter().map(|p|p.title.as_str()).collect::<Vec<_>>().join("|");assert_eq!(titles,rest);},
+            "pinsbounds"=>{
+                let sb=self.list_rect();for(r,h)in &self.side_hits{if matches!(h,crate::app::SideHit::Pinned(_)){assert!(r.x>=sb.x&&r.right()<=sb.right()&&r.y>=sb.y&&r.bottom()<=self.sidebar_geometry().foot_y,"pin control escaped {h:?}: {r:?}");}}
+            },
             "restore" => self.restore_session_pub(),
             "timeline" => self.toggle_timeline(),
             "historycheck"=>{
@@ -464,7 +560,7 @@ impl App {
             }
             "assertpane" => {
                 let kind = self.tabs.get(self.active).map(|t| match &t.left {
-                    Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",
+                    Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Editor(_) => "editor", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",
                 }).unwrap_or("missing");
                 assert_eq!(kind, rest, "focused pane at step `{step}`");
             }
@@ -493,6 +589,54 @@ impl App {
             "asserturl" => {
                 let Some(Pane::Web(web)) = self.tabs.get(self.active).map(|t| &t.left) else { panic!("expected web page") };
                 assert_eq!(web.tab.shared.borrow().url, rest);
+            }
+            "appmenu" => {
+                let command=crate::application_menu::ITEMS.iter().find(|i|format!("{:?}",i.command)==rest).expect("menu command").command;
+                let _=self.proxy.send_event(crate::UserEvent::ApplicationMenuCheck(command));
+            }
+            "memory" => eprintln!("MEMORY {} {}", rest, crate::perf::memory_snapshot()),
+            "perfreset" => crate::perf::reset(),
+            "perfstats" => eprintln!("PERF {} {}", rest, crate::perf::snapshot()),
+            "asserteditorready" => {
+                let b = self.focused_editor().and_then(|e| e.buf()).expect("editor buffer");
+                assert!(b.ready(), "file is still loading: {:?}", b.load_error);
+                if !rest.is_empty() { assert_eq!(b.text.len_bytes(), rest.parse::<usize>().unwrap()); }
+            }
+            "editorfind" => {
+                let e = self.focused_editor().expect("editor");
+                e.find = Some(crate::editor::Find {query:rest.into(),replace:String::new(),in_replace:false,with_replace:false,matches:Vec::new(),current:0,truncated:false});
+                e.refind(); self.dirty = true;
+            }
+            "assertfind" => {
+                let f = self.focused_editor().and_then(|e| e.find.as_ref()).expect("find");
+                assert_eq!(f.matches.len(), rest.parse::<usize>().unwrap());
+            }
+            "editorcursor" => {
+                let b = self.focused_editor().and_then(|e| e.buf_mut()).expect("editor");
+                b.cursor = if rest == "end" { b.len_chars() } else {rest.parse().unwrap()};
+                self.focused_editor().unwrap().reveal(); self.dirty = true;
+            }
+            "openfile" => self.run(crate::app::Action::OpenFile(rest.into())),
+            "hatchkey" => {self.in_hatch(|a|a.shot_key(rest));},
+            "asserthatchzoom" => {let i=self.hatch_tab().expect("Hatch session");let Pane::Term(t)=self.tabs[i].focused_ref() else {panic!("Hatch terminal")};assert_eq!(t.zoom,rest.parse::<u32>().unwrap());},
+            "assertchrome" => {
+                let pane=self.tabs[self.active].focused_ref();
+                assert!((pane.rect().y-self.strip_rect().bottom()).abs()<40.0*self.scale,"page zoom changed window chrome");
+                assert_eq!(self.px(10.0),(10.0*self.scale).round(),"page zoom escaped its drawing scope");
+            }
+            "assertzoom" => {
+                use cef::ImplBrowserHost;
+                let percent=match self.tabs[self.active].focused_ref() {
+                    Pane::Web(w)=>(1.2_f64.powf(w.tab.host().unwrap().zoom_level())*100.0).round() as u32,
+                    Pane::Term(t)=>t.zoom, Pane::Editor(e)=>e.zoom, _=>self.ui_zoom,
+                };
+                assert_eq!(percent,rest.parse::<u32>().unwrap());
+            }
+            "assertbrowsers" => {assert_eq!(crate::browser::live_count(),rest.parse::<usize>().unwrap(),"CEF browser lifecycle");}
+            "resourcestats" => {
+                let streams=self.recorder.as_ref().map_or(0,|r|crate::storage::files(&r.dir,true).iter().map(|e|e.bytes).sum::<u64>());
+                let rss=std::process::Command::new("ps").args(["-o","rss=","-p",&std::process::id().to_string()]).output().ok().map(|o|String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+                eprintln!("RESOURCE_STATS {rest} browsers={} replay_bytes={} tabs={} rss_kib={}",crate::browser::live_count(),streams,self.tabs.len(),rss);
             }
             "asserttabs" => assert_eq!(self.tabs.len(), rest.parse::<usize>().expect("tab count")),
             "newwindowlook" => {
@@ -1404,6 +1548,8 @@ impl App {
             "end" => named(NamedKey::End, KeyCode::End),
             "pageup" => named(NamedKey::PageUp, KeyCode::PageUp),
             "pagedown" => named(NamedKey::PageDown, KeyCode::PageDown),
+            "f10" => named(NamedKey::F10, KeyCode::F10),
+            "plus" => Some((WKey::Character("+".into()),KeyCode::Equal)),
             "f12" => named(NamedKey::F12, KeyCode::F12),
             one if one.chars().count() == 1 => {
                 let c = one.chars().next().unwrap_or('a');

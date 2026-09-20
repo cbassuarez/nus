@@ -1185,10 +1185,14 @@ Asked, answered, built:
 - **The phone's nus is a page the window serves.** SYNC · THE PHONE: this
   window on the LAN — the front page (what ran and failed while you were
   away, what is listening, hands to allow or deny, the tabs) and a line
-  to ask; a token in the address, plain http, this network only; the
-  address in `profile/phone` and on the clipboard when it turns on.
-  Everything it knows comes through the instance port's request channel
-  (`front`, `hands-answer`), nothing else. `phone.rs`.
+  to ask; a token in the address, https with a certificate made for that
+  session alone, this network only; the address in `profile/phone` and on
+  the clipboard when it turns on, with the certificate's fingerprint shown
+  beside the switch because the phone will ask about it once. Everything it
+  knows comes through the instance port's request channel, and the phone's
+  door allows only `front` and `hands-answer` — asked for anything else, it
+  refuses rather than trusting the caller to have sent the right verb.
+  `phone.rs`.
 - **The power budget stays a policy**, not a control.
 
 ASSUMED: one laptop and one phone on one network; a mouse with a touch

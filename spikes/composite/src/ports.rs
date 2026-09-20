@@ -306,6 +306,8 @@ pub struct Board {
     pub filter: Option<String>,
     pub scroll: f32,
     pub reach: f32,
+    pub viewport: Rect,
+    pub reveal: bool,
     pub hits: Vec<(Rect, Hit)>,
     pub rect: Rect,
     /// The worker.
@@ -331,7 +333,7 @@ impl Board {
     pub fn new() -> Board {
         let wants = Arc::new(Mutex::new(Wants { interval: Duration::from_secs(10), docker: true, probe: true, probe_ports: Vec::new() }));
         let (tx, rx) = channel();
-        spawn_worker(tx, wants.clone());
+        if !(std::env::var_os("NUS_SHOT").is_some() && std::env::var_os("NUS_PORTS_FIXTURE").is_some()) {spawn_worker(tx, wants.clone());}
         let (names, watched) = load_names();
         let remembered = load_remembered();
         let ghosts = remembered.iter().map(Remembered::row).collect();
@@ -346,6 +348,8 @@ impl Board {
             filter: None,
             scroll: 0.0,
             reach: 0.0,
+            viewport: Rect::new(0.0,0.0,0.0,0.0),
+            reveal: false,
             hits: Vec::new(),
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             rx,
@@ -1259,6 +1263,7 @@ impl App {
             }
             _ => return self.board.open,
         }
+        self.board.reveal=true;
         self.dirty = true;
         true
     }
@@ -1316,10 +1321,10 @@ impl App {
     }
 
     pub(crate) fn board_wheel(&mut self, x: f32, y: f32, dy: f32) -> bool {
-        if !self.board.open || !self.board.rect.contains(x, y) {
+        if !(self.board.open || self.ports_page_open()) || !self.board.rect.contains(x, y) {
             return false;
         }
-        let max = (self.board.reach - self.board.rect.h).max(0.0);
+        let max = (self.board.reach - self.board.viewport.h).max(0.0);
         self.board.scroll = (self.board.scroll - dy).clamp(0.0, max);
         self.dirty = true;
         true
@@ -1348,92 +1353,111 @@ impl App {
         self.draw_board(scene, r, true);
     }
 
+    fn draw_flap_text(&mut self, scene:&mut Scene, style:Style, r:Rect, text:&str, cw:f32, paper:nus_render::Color) {
+        let clip=scene.clip();
+        scene.layer(Some(clip.map_or(r,|c|r.intersect(&c))));
+        let chars:Vec<char>=text.chars().collect();
+        for i in 0..(r.w/cw).floor().max(0.0) as usize {
+            let cell=Rect::new(r.x+i as f32*cw,r.y,cw-self.px(2.0),r.h);
+            scene.rect(cell,crate::surface::mix(paper,style.color,0.10));
+            scene.rect(Rect::new(cell.x,cell.y,cell.w,cell.h*0.5),crate::surface::mix(paper,style.color,0.15));
+            if let Some(ch)=chars.get(i) {
+                let text=ch.to_string();let w=self.fonts.measure(style,&text);
+                self.fonts.draw(scene,style,cell.x+(cell.w-w)*0.5,cell.y+(cell.h+style.px)*0.5-self.px(3.0),&text);
+            }
+            scene.hline(cell.x,cell.y+cell.h*0.5,cell.w,self.px(0.5),paper);
+        }
+        scene.layer(clip);
+    }
+
     /// The board itself, in `r` (the overlay sheet or a page).
     pub(crate) fn draw_board(&mut self, scene: &mut Scene, r: Rect, overlay: bool) {
         let t = self.theme.clone();
-        let (ink, paper) = (t.ink, t.paper);
-        let label = self.label();
-        let strong = self.label_strong();
-        let dim = Style { color: t.dim, ..label };
-        let term_px = 13.0 * self.scale * 96.0 / 72.0;
-        let mono = Style { font: self.f.term, px: term_px, color: ink, tracking: 0.0 };
-        let mono_dim = Style { color: t.dim, ..mono };
-        let mono_strong = Style { font: self.f.strong, ..mono };
+        let outer = scene.clip();
+        let r = outer.map_or(r, |clip| r.intersect(&clip));
+        // A dark instrument panel in both appearances, using the current theme.
+        let paper = crate::surface::mix(t.paper, t.ink, if t.mode == nus_render::Mode::Paper {0.94} else {0.03});
+        let ink = if t.mode == nus_render::Mode::Paper {t.paper} else {t.ink};
+        let label = Style { color: ink, tracking:0.0, ..self.label() };
+        let strong = Style { color: ink, tracking:0.0, ..self.label_strong() };
+        let dim = Style { color: crate::surface::mix(paper, ink, 0.62), ..label };
+        let mono = Style { font: self.f.term, px: self.px(15.0), color: ink, tracking: 0.0 };
+        let mono_dim = Style { color: dim.color, ..mono };
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
         let signal = self.surface.signal;
         let (mx, my) = self.mouse;
-        let pad = self.px(22.0);
-        let hair = self.px(m::HAIRLINE);
-        let row_h = self.px(34.0);
+        let pad = self.px(18.0).min(r.w*0.04);
+        let hair = self.px(1.0);
+        let row_h = self.px(40.0);
         let head_h = self.px(30.0);
         let reduced = self.motion.reduced();
         let grouping = self.behavior.ports_grouping;
-        let cw = self.fonts.measure(mono, "M").max(1.0);
+        let cw = self.fonts.measure(mono, "M").max(1.0) + self.px(3.0);
         self.board.hits.clear();
         scene.layer(Some(r));
-
-        // Masthead: DEPARTURES-board style — the wordmark, the count, the clock.
-        let mut y = r.y + self.px(18.0);
-        let wm = Style { font: self.f.wordmark, px: self.px(30.0), color: ink, tracking: 0.0 };
-        let title_w = self.fonts.draw(scene, wm, r.x + pad, y + self.px(26.0), "ports");
-        let n_listen = self.board.rows.iter().filter(|r| matches!(r.key, Key::Port { .. })).count();
-        let n_mine = self.board.rows.iter().filter(|r| r.group == Group::Mine).count();
-        let n_exposed = self.board.rows.iter().filter(|r| r.exposed && matches!(r.key, Key::Port { .. })).count();
-        let mut sub = format!("{n_listen} LISTENING · {n_mine} MINE");
-        if n_exposed > 0 {
-            sub.push_str(&format!(" · {n_exposed} EXPOSED"));
+        scene.rect(r, paper);
+        let mut y = r.y + self.px(16.0);
+        self.fonts.draw_icon(scene,nus_render::text::icons::PORTS,self.px(20.0),r.x+pad,y,signal);
+        let title = Style {px:self.px(20.0),..strong};
+        self.fonts.draw(scene,title,r.x+pad+self.px(30.0),y+self.px(17.0),"PORTS");
+        if overlay && r.w<self.px(440.0) {y+=self.px(31.0);}
+        let mut rx = r.right()-pad;
+        let chips: Vec<(&str,Hit)> = if overlay {vec![("CLOSE",Hit::Close),("EXPAND",Hit::Expand)]} else {vec![]};
+        for (word,hit) in chips {
+            let ww=self.fonts.measure(label,word)+self.px(16.0);rx-=ww;
+            let hr=Rect::new(rx,y,ww,self.px(24.0));
+            scene.outline(hr,hair,dim.color);
+            self.fonts.draw(scene,label,rx+self.px(8.0),y+self.px(17.0),word);
+            self.board.hits.push((hr,hit));rx-=self.px(8.0);
         }
-        if let Some(at) = self.board.last {
-            sub.push_str(&format!(" · {}S AGO", crate::clock::since(at).as_secs()));
+        y+=self.px(37.0);
+        let n_listen=self.board.rows.iter().filter(|row|matches!(row.key,Key::Port{..})).count();
+        let n_exposed=self.board.rows.iter().filter(|row|row.exposed&&matches!(row.key,Key::Port{..})).count();
+        let stats=format!("LOCAL TRAFFIC  /  {n_listen:02} LISTENING  /  {n_exposed:02} EXPOSED");
+        self.fonts.draw(scene,dim,r.x+pad,y,&self.fit(dim,&stats,r.w-pad*2.0));
+        y+=self.px(14.0);
+        let word=format!("GROUP: {}  ·  G",grouping.name().to_uppercase());
+        let gw=self.fonts.measure(label,&word)+self.px(14.0);
+        let group=Rect::new(r.x+pad,y,gw.min(r.w-pad*2.0),self.px(25.0));
+        scene.rect(group,crate::surface::mix(paper,ink,0.08));
+        self.fonts.draw(scene,label,group.x+self.px(7.0),y+self.px(17.0),&self.fit(label,&word,group.w-self.px(14.0)));
+        self.board.hits.push((group,Hit::Grouping));
+        if let Some(at)=self.board.last {
+            let text=format!("UPDATED {}S AGO",crate::clock::since(at).as_secs());
+            let tw=self.fonts.measure(dim,&text);
+            if group.right()+self.px(20.0)<r.right()-pad-tw {self.fonts.draw(scene,dim,r.right()-pad-tw,y+self.px(17.0),&text);}
         }
-        self.fonts.draw(scene, dim, r.x + pad + title_w + self.px(16.0), y + self.px(24.0), &sub);
-        // Right: GROUPING · EXPAND · CLOSE.
-        let mut rx = r.right() - pad;
-        let chips: Vec<(String, Hit)> = if overlay {
-            vec![("CLOSE · ESC".into(), Hit::Close), ("EXPAND · CTRL+ENTER".into(), Hit::Expand), (grouping.name().to_uppercase() + " · G", Hit::Grouping)]
-        } else {
-            vec![(grouping.name().to_uppercase() + " · G", Hit::Grouping)]
-        };
-        for (word, hit) in chips {
-            let ww = self.fonts.measure(label, &word);
-            rx -= ww;
-            let hr = Rect::new(rx - self.px(6.0), y + self.px(8.0), ww + self.px(12.0), self.px(24.0));
-            let hot = hr.contains(mx, my);
-            self.fonts.draw(scene, Style { color: if hot { signal } else { t.dim }, ..label }, rx, y + self.px(24.0), &word);
-            self.board.hits.push((hr, hit));
-            rx -= self.px(22.0);
+        y+=self.px(35.0);
+        if let Some(f)=&self.board.filter {
+            let text=self.fit(mono,&format!("/ {f}_"),r.w-2.0*pad);
+            self.fonts.draw(scene,mono,r.x+pad,y+self.px(14.0),&text);y+=self.px(26.0);
         }
-        y += self.px(44.0);
-        // Filter line, when typing.
-        if let Some(f) = &self.board.filter {
-            let fs = format!("/ {f}_");
-            self.fonts.draw(scene, Style { color: signal, ..mono }, r.x + pad, y + self.px(14.0), &fs);
-            y += self.px(26.0);
+        scene.hline(r.x+pad,y,r.w-2.0*pad,hair,dim.color);y+=self.px(7.0);
+        let col_port=r.x+pad+self.px(16.0);
+        let col_name=col_port+cw*6.0+self.px(10.0);
+        let right=r.right()-pad-self.px(22.0);
+        let up_w=if r.w>=self.px(420.0){cw*7.0}else{0.0};
+        let owner_w=if r.w>=self.px(1000.0){cw*10.0}else{0.0};
+        let proc_w=if r.w>=self.px(700.0){cw*16.0}else{0.0};
+        let col_up=right-up_w;
+        let col_owner=col_up-owner_w;
+        let col_proc=col_owner-proc_w;
+        for (x,width,word) in [(col_port,col_name-col_port,"PORT"),(col_name,col_proc-col_name,"SERVICE"),(col_proc,proc_w,"PROCESS"),(col_owner,owner_w,"OWNER"),(col_up,up_w,"UPTIME")] {
+            if width>0.0 {self.fonts.draw(scene,dim,x,y+self.px(14.0),word);}
         }
-        scene.hline(r.x + pad, y, r.w - 2.0 * pad, self.px(m::STRUCTURE), ink);
-        y += self.px(m::STRUCTURE) + self.px(2.0);
-        // Column heads.
-        let col_port = r.x + pad + self.px(26.0);
-        let col_name = col_port + cw * 7.0;
-        let col_proc = col_name + (r.w * 0.26).max(cw * 18.0);
-        let col_owner = col_proc + cw * 16.0;
-        let col_up = r.right() - pad - cw * 9.0;
-        for (x, word) in [(col_port, "PORT"), (col_name, "NAME"), (col_proc, "PROCESS"), (col_owner, "OWNER"), (col_up, "UP")] {
-            if x + cw * 4.0 < r.right() - pad {
-                self.fonts.draw(scene, dim, x, y + self.px(14.0), word);
-            }
-        }
-        y += self.px(22.0);
-        scene.hline(r.x + pad, y, r.w - 2.0 * pad, hair, ink);
-        y += hair;
-
+        y+=self.px(25.0);
         // Rows.
         let top = y;
-        let bottom = r.bottom() - self.px(40.0);
-        scene.layer(Some(Rect::new(r.x, top, r.w, bottom - top)));
+        let bottom = (r.bottom() - self.px(40.0)).max(top);
+        let body = Rect::new(r.x,top,r.w,(bottom-top).max(0.0)).intersect(&r);
+        self.board.viewport=body;
+        self.board.scroll=self.board.scroll.clamp(0.0,(self.board.reach-body.h).max(0.0));
+        let body_hits=self.board.hits.len();
+        scene.layer(Some(body));
         let mut y = top - self.board.scroll;
         let listing = self.board.listing(grouping);
         let expanded = self.board.expanded.clone();
+        let mut selected_bounds=None;
         let sel = self.board.sel.clone();
         let confirm = self.board.confirm.clone();
         let rename = self.board.rename.clone();
@@ -1456,14 +1480,14 @@ impl App {
                     let count = format!("{n}");
                     self.fonts.draw(scene, dim, r.x + pad + self.fonts.measure(strong, g.name()) + self.px(8.0), base, &count);
                     if *g == Group::Mine {
-                        self.fonts.draw(scene, dim, r.x + pad + self.fonts.measure(strong, g.name()) + self.px(8.0) + self.fonts.measure(label, &count) + self.px(10.0), base, "· STARTED FROM YOUR SHELLS");
+                        self.fonts.draw(scene, dim, r.x + pad + self.fonts.measure(strong, g.name()) + self.px(8.0) + self.fonts.measure(label, &count) + self.px(10.0), base, &self.fit(dim,"· YOUR SHELLS",(r.w-self.px(120.0)).max(0.0)));
                     }
                     self.board.hits.push((Rect::new(r.x, y, r.w, head_h), Hit::Head(*g)));
                     y += head_h;
                 }
                 Entry::Process(p, n) => {
                     let base = y + self.px(20.0);
-                    self.fonts.draw(scene, strong, r.x + pad, base, &p.to_uppercase());
+                    self.fonts.draw(scene, strong, r.x + pad, base, &self.fit(strong,&p.to_uppercase(),r.w-pad*2.0-self.px(30.0)));
                     self.fonts.draw(scene, dim, r.x + pad + self.fonts.measure(strong, &p.to_uppercase()) + self.px(8.0), base, &n.to_string());
                     y += head_h;
                 }
@@ -1492,7 +1516,7 @@ impl App {
                             sy += self.px(8.0);
                         }
                     }
-                    scene.layer(Some(Rect::new(r.x, y, r.w, row_h)));
+                    scene.layer(Some(Rect::new(r.x, y, r.w, row_h).intersect(&body)));
                     let drop = (1.0 - flap) * row_h;
                     let base = y + self.px(22.0) + drop;
                     // Lamp.
@@ -1513,15 +1537,15 @@ impl App {
                         Key::Conn { .. } => format!("{:>5}", format!("×{}", row.conns)),
                         _ => format!("{:>5}{}", row.port, if row.proto == Proto::Udp { "u" } else { " " }),
                     };
-                    self.fonts.draw(scene, if is_sel { mono_strong } else { mono }, col_port, base, &port_s);
+                    self.draw_flap_text(scene,mono,Rect::new(col_port,y+self.px(5.0)+drop,cw*6.0,row_h-self.px(10.0)),&port_s,cw,paper);
                     let name = match &rename {
                         Some((rk, s)) if rk == k => format!("{s}_"),
                         _ => row.title(),
                     };
                     let name_w = col_proc - col_name - cw;
                     let name_fit = self.fit(mono, &name, name_w);
-                    let nc = if row.name.is_some() || row.rule.name.is_some() { signal } else { ink };
-                    self.fonts.draw(scene, Style { color: nc, ..mono }, col_name, base, &name_fit);
+                    let nc = ink;
+                    self.draw_flap_text(scene,Style {color:nc,..mono},Rect::new(col_name,y+self.px(5.0)+drop,name_w,row_h-self.px(10.0)),&name_fit.to_uppercase(),cw,paper);
                     self.board.hits.push((Rect::new(col_name, y, name_w, row_h), Hit::Name(k.clone())));
                     let proc_s = match &row.key {
                         Key::Conn { .. } => row.remotes.first().cloned().unwrap_or_default(),
@@ -1534,7 +1558,7 @@ impl App {
                             s
                         }
                     };
-                    self.fonts.draw(scene, mono_dim, col_proc, base, &self.fit(mono_dim, &proc_s, col_owner - col_proc - cw));
+                    if proc_w>0.0 {self.draw_flap_text(scene,mono_dim,Rect::new(col_proc,y+self.px(5.0)+drop,proc_w-cw,row_h-self.px(10.0)),&proc_s.to_uppercase(),cw,paper);}
                     let owner = match row.group {
                         Group::Mine => row.tab.and_then(|id| self.tabs.iter().position(|t| t.id == id)).map(|i| format!("tab {}", i + 1)).unwrap_or_else(|| "shell".into()),
                         Group::Docker => "docker".into(),
@@ -1543,18 +1567,10 @@ impl App {
                         Group::Connections => if row.tab.is_some() { "mine".into() } else { String::new() },
                         Group::Others => if row.exposed { "exposed".into() } else { String::new() },
                     };
-                    self.fonts.draw(scene, if row.group == Group::Mine { Style { color: signal, ..mono } } else { mono_dim }, col_owner, base, &self.fit(mono_dim, &owner, col_up - col_owner - cw));
+                    if owner_w>0.0 {self.fonts.draw(scene,mono_dim,col_owner,base,&self.fit(mono_dim,&owner,col_up-col_owner-cw));}
                     // A fixed slot at the right edge for the × that comes
                     // up on hover, so nothing shifts under the pointer.
-                    let kill_w = self.px(20.0);
-                    let up = row.uptime();
-                    let uw = self.fonts.measure(mono_dim, &up);
-                    self.fonts.draw(scene, mono_dim, r.right() - pad - kill_w - uw, base, &up);
-                    if let Some(tn) = &row.tunnel {
-                        let s = tn.url.clone().unwrap_or_else(|| "tunnel…".into());
-                        let sw = self.fonts.measure(mono_dim, &s);
-                        self.fonts.draw(scene, Style { color: signal, ..mono }, r.right() - pad - kill_w - uw - self.px(12.0) - sw, base, &s);
-                    }
+                    if up_w>0.0 {self.draw_flap_text(scene,mono_dim,Rect::new(col_up,y+self.px(5.0)+drop,up_w,row_h-self.px(10.0)),&row.uptime(),cw,paper);}
                     // ×: stop this process, and everything under it,
                     // without opening the row first. Only where KILL is
                     // on offer at all — docker rows and dead ones have
@@ -1578,8 +1594,8 @@ impl App {
                     if flap < 1.0 {
                         scene.hline(r.x + pad, y + row_h * 0.5, r.w - 2.0 * pad, hair, fade(ink, 1.0 - flap));
                     }
-                    scene.layer(Some(Rect::new(r.x, top, r.w, bottom - top)));
-                    scene.hline(r.x + pad, y + row_h - hair, r.w - 2.0 * pad, hair, fade(ink, 0.35));
+                    scene.layer(Some(body));
+                    scene.hline(r.x + pad, y + row_h - hair, r.w - 2.0 * pad, hair, fade(ink, 0.10));
                     self.board.hits.push((rr, Hit::Row(k.clone())));
                     y += row_h;
                     // The detail, opened in place.
@@ -1629,9 +1645,9 @@ impl App {
                         scene.rect(dr, crate::surface::mix(paper, ink, 0.03));
                         let mut ly = y + self.px(10.0);
                         let lx = col_port;
-                        let kw = cw * 12.0;
+                        let kw = (cw * 12.0).min((r.w-pad*2.0)*0.38);
                         for (k2, v) in &lines {
-                            self.fonts.draw(scene, dim, lx, ly + self.px(15.0), k2);
+                            self.fonts.draw(scene, dim, lx, ly + self.px(15.0), &self.fit(dim,k2,kw-self.px(8.0)));
                             let vv = self.fit(mono, v, r.right() - pad - lx - kw);
                             self.fonts.draw(scene, mono, lx + kw, ly + self.px(15.0), &vv);
                             ly += self.px(22.0);
@@ -1662,6 +1678,10 @@ impl App {
                             ax += self.fonts.draw(scene, Style { color: ansi(1), ..strong }, ax, ly + self.px(16.0), &q) + self.px(16.0);
                             for (word, yes) in [("YES · ENTER", true), ("NO · ESC", false)] {
                                 let ww = self.fonts.measure(label, word);
+                                if ax+ww+self.px(6.0)>r.right()-pad {
+                                    ax=lx;ly+=self.px(30.0);
+                                    scene.rect(Rect::new(r.x,ly-self.px(6.0),r.w,self.px(42.0)),crate::surface::mix(paper,ink,0.03));
+                                }
                                 let hr = Rect::new(ax - self.px(6.0), ly, ww + self.px(12.0), self.px(26.0));
                                 let hot = hr.contains(mx, my);
                                 self.fonts.draw(scene, Style { color: if hot || yes { ink } else { t.dim }, ..strong }, ax, ly + self.px(16.0), word);
@@ -1677,6 +1697,10 @@ impl App {
                                 };
                                 let word = format!("{} · {}", a.label(), a.key());
                                 let ww = self.fonts.measure(label, &word);
+                                if ax+ww+self.px(6.0)>r.right()-pad {
+                                    ax=lx;ly+=self.px(30.0);
+                                    scene.rect(Rect::new(r.x,ly-self.px(6.0),r.w,self.px(42.0)),crate::surface::mix(paper,ink,0.03));
+                                }
                                 let hr = Rect::new(ax - self.px(6.0), ly, ww + self.px(12.0), self.px(26.0));
                                 let hot = hr.contains(mx, my);
                                 let color = if a == Act::Kill && hot { ansi(1) } else if hot || on { signal } else { ink };
@@ -1688,9 +1712,10 @@ impl App {
                                 ax += ww + self.px(18.0);
                             }
                         }
-                        y += dh;
+                        y = (y+dh).max(ly+self.px(36.0));
                         scene.hline(r.x + pad, y - hair, r.w - 2.0 * pad, hair, ink);
                     }
+                    if is_sel {selected_bounds=Some((rr.y,y));}
                 }
             }
         }
@@ -1707,16 +1732,25 @@ impl App {
             self.fonts.draw(scene, Style { color: c, ..mono }, col_name, base, &self.fit(mono, &row.title(), col_proc - col_name - cw));
             self.fonts.draw(scene, Style { color: c, ..mono }, col_proc, base, "departed");
             let _ = rr;
-            scene.layer(Some(Rect::new(r.x, top, r.w, bottom - top)));
+            scene.layer(Some(body));
         }
         self.board.reach = (y + self.board.scroll - top) + self.px(8.0);
+        if std::mem::take(&mut self.board.reveal) {
+            if let Some((start,end))=selected_bounds {
+                let shift=if start<body.y {start-body.y}else if end>body.bottom(){(end-body.bottom()).min(start-body.y)}else{0.0};
+                self.board.scroll=(self.board.scroll+shift).clamp(0.0,(self.board.reach-body.h).max(0.0));
+                if shift.abs()>0.5 {self.dirty=true;}
+            }
+        }
+        for (hit,_) in &mut self.board.hits[body_hits..] {*hit=hit.intersect(&body);}
+        self.board.hits.retain(|(hit,_)|hit.w>0.0 && hit.h>0.0);
         scene.layer(Some(r));
         // Foot: the keys.
         let fy = r.bottom() - self.px(34.0);
         scene.hline(r.x + pad, fy, r.w - 2.0 * pad, hair, ink);
         let foot = if self.board.sel.is_some() { "ENTER DETAIL · O OPEN · C COPY · J JUMP · K KILL · R RUN AGAIN · T TUNNEL · W WATCH · N NAME · / FILTER" } else { "↑↓ PICK · ENTER DETAIL · / FILTER · G GROUPING" };
         self.fonts.draw(scene, dim, r.x + pad, fy + self.px(20.0), &self.fit(dim, foot, r.w - 2.0 * pad));
-        scene.layer(None);
+        scene.layer(outer);
     }
 
 }
