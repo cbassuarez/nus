@@ -30,7 +30,7 @@ impl App {
         }
         let st = self.strip_rect();
         let near = self.mouse.1 <= st.bottom() + self.px(6.0) && self.mouse.0 >= st.x && self.mouse.0 <= st.right();
-        near || self.win_menu || self.kinds_menu || self.resized_at.is_some_and(|t| t.elapsed().as_millis() < 900)
+        near || self.win_menu || self.kinds_menu || self.resized_at.is_some_and(|t| crate::clock::since(t).as_millis() < 900)
     }
 
     pub(crate) fn toggle_compact(&mut self) {
@@ -118,8 +118,21 @@ impl App {
             scene.layer(Some(cell));
             self.draw_tab_icon(scene, tab, ix, iy, isz, color);
             scene.layer(None);
-            // Waiting: a signal dot at the corner; tiled: a tiny mark.
-            if tab.waiting() {
+            // The corner: × while the pointer is on the row — closing a
+            // tab is closing what it runs, so it is one click here too.
+            // Otherwise a signal dot for waiting, or a tiny tiled mark.
+            if hovered {
+                let d = self.px(11.0);
+                let cr = Rect::new(cell.right() - d - self.px(3.0), y + self.px(3.0), d, d);
+                let reach = crate::touch::grown(cr, self.px(5.0));
+                let hot = reach.contains(mx, my);
+                if hot {
+                    // A square under it, so the mark reads as a target.
+                    scene.rect(crate::touch::grown(cr, self.px(3.0)), crate::surface::mix(self.paper(), ink, 0.14));
+                }
+                self.fonts.draw_icon(scene, icons::CLOSE, d, cr.x, cr.y, if hot { ink } else { crate::app::fade(ink, 0.6) });
+                self.side_hits.push((reach, SideHit::Close(i)));
+            } else if tab.waiting() {
                 let d = self.px(6.0);
                 scene.rect(Rect::new(cell.right() - d - self.px(4.0), y + self.px(4.0), d, d), self.surface.signal);
             } else if tiled_ids.contains(&tab.id) {

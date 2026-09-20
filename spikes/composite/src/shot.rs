@@ -20,6 +20,22 @@
 //!   ask why did that fail?     the ask panel, with the question sent
 //!   theme nord                 a stock theme by name
 //!   board | compact | atlas | settings | devtools | reader | split | sidebar
+//!   settle                     hold until the picture stops moving
+//!   window 1600 1000           the window at an exact logical size
+//!
+//! A recording — the film's footage — is frames on a fixed clock:
+//!
+//!   record shell-min 4.2       4.2 s at 60 fps → <out>/shell-min/f00000.png…
+//!   at 1.579 type git ch 10    a step at that clip time, typed at 10 cps
+//!   at 2.763 key down          a chord, through the app's own key handling
+//!   at 2.8 await-lsp           the clock stops until the server answers
+//!   at 3.0 await-paint         …or until the page paints again
+//!
+//! `at` lines follow their `record` line and are its schedule; every other
+//! verb works inside one. While a recording runs, the clock advances
+//! exactly 1/60 s per written frame however long the machine took, so a
+//! take lands on the same frames every time (clock.rs).
+//!
 //!   settingsat 2               open settings at a section (2 is STARTUP)
 //!   settingsscroll 900         scroll the open settings page to 900 logical px
 //!   hover 40 200               the pointer at logical px from the top-left
@@ -34,6 +50,9 @@
 //!   close                      the palette, ask, board and atlas, whichever is up
 //!   restore                    the last session, as the atlas would
 //!   hands allow | deny | host  answer the hands band on the active page
+//!   pip                        this tab's video in the floating window
+//!   pippoint 240 130           the pointer inside it, in its own pixels
+//!   shotpip pip-paused         the floating window's own frame, as a PNG
 //!   timeline                   toggle the timeline on the active tab
 //!   tl left | right | b | home  a key to the timeline
 //!   share                      the active tab as a replay file, opened as a tab
@@ -73,7 +92,44 @@ pub struct Shot {
     /// A capture asked for by the last step, taken after the next draw.
     pub pending: Option<(String, Option<[f32; 4]>)>,
     pub done: bool,
+    /// The recording in progress, if any.
+    rec: Option<Rec>,
+    /// Waiting for the picture to stop moving: the last frame's hash, how
+    /// many frames have matched it, and when to give up.
+    settle: Option<(u64, u8, Instant)>,
 }
+
+/// A clip being recorded: a PNG per frame on the virtual clock, with the
+/// steps that are due written against clip time, not wall time.
+struct Rec {
+    name: String,
+    dir: PathBuf,
+    /// How many frames the clip is, and which one comes next.
+    frames: u64,
+    frame: u64,
+    /// `at <seconds> <step>`, soonest last (popped off the end).
+    at: Vec<(f64, String)>,
+    /// Characters still to type, the seconds between them, and the clip
+    /// time the next one goes at.
+    typing: Option<(std::collections::VecDeque<char>, f64, f64)>,
+    /// What the clock is waiting for. While this is set, nothing moves and
+    /// no frame is written: Chromium and the language servers are not on
+    /// the clock and never will be.
+    hold: Option<Hold>,
+    began: std::time::Instant,
+}
+
+/// Why the clock is standing still.
+enum Hold {
+    /// Until the focused page paints again (its paint count passes this).
+    Paint(u64),
+    /// Until the pending language-server answer is on screen.
+    Lsp,
+}
+
+/// A hold that never comes is a bug, not a hang: after this much real
+/// time the recording carries on and says so.
+const FUSE: Duration = Duration::from_secs(10);
 
 impl Shot {
     /// From `NUS_SHOT`, if set.
@@ -104,7 +160,7 @@ impl Shot {
             .collect();
         let out = std::env::var_os("NUS_SHOT_OUT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("docs/media"));
         let face = if std::env::var("NUS_MODE").ok().as_deref() == Some("paper") { "paper" } else { "ink" };
-        Some(Shot { steps, next: 0, until: None, out, face, pending: None, done: false })
+        Some(Shot { steps, next: 0, until: None, out, face, pending: None, done: false, rec: None, settle: None })
     }
 }
 
@@ -116,7 +172,13 @@ impl App {
         if s.done || s.pending.is_some() {
             return;
         }
-        if s.until.is_some_and(|t| Instant::now() < t) {
+        if s.settle.is_some() {
+            return self.settle_tick();
+        }
+        if s.rec.is_some() {
+            return self.record_frame();
+        }
+        if s.until.is_some_and(|t| crate::clock::now() < t) {
             return;
         }
         s.until = None;
@@ -125,15 +187,32 @@ impl App {
             return;
         };
         s.next += 1;
-        let (verb, rest) = step.split_once(' ').unwrap_or((step.as_str(), ""));
+        self.shot_step(&step);
+    }
+
+    /// One step, from the script or from a recording's `at` schedule.
+    pub(crate) fn shot_step(&mut self, step: &str) {
+        let (verb, rest) = step.split_once(' ').unwrap_or((step, ""));
         let rest = rest.trim();
-        eprintln!("shot: {step}");
+        if !crate::clock::recording() {
+            eprintln!("shot: {step}");
+        }
         match verb {
+            "background" => {
+                #[cfg(target_os="macos")]
+                if let Some(mtm)=objc2::MainThreadMarker::new(){objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);}
+                #[cfg(not(target_os="macos"))]
+                self.window.set_minimized(true);
+            }
+            "input"=>{for c in rest.chars(){self.type_char(c);}},
+            "downloadquery"=>assert_eq!(self.download_ui.query,rest),
+            "downloadmatches"=>{let count=crate::downloads::list().iter().filter(|d|crate::downloads::matches(d,&self.download_ui.query)).count();assert_eq!(count,rest.parse::<usize>().unwrap());},
+            "downloadbounds"=>{let full=nus_render::Rect::new(0.0,0.0,self.target.size.0 as f32,self.target.size.1 as f32);let area=self.download_ui.rect.unwrap_or(full);for(r,hit)in &self.download_ui.hits{assert!(r.x>=area.x&&r.y>=area.y&&r.right()<=area.right()+1.0&&r.bottom()<=area.bottom()+1.0,"download hit outside surface: {hit:?} {r:?}");}},
             "dockattention" => {let _=self.proxy.send_event(crate::UserEvent::DockAttention);}
             "wait" => {
                 let ms: u64 = rest.parse().unwrap_or(500);
                 if let Some(s) = self.shot.as_mut() {
-                    s.until = Some(Instant::now() + Duration::from_millis(ms));
+                    s.until = Some(crate::clock::now() + Duration::from_millis(ms));
                 }
             }
             "url" => self.open_url(rest, false),
@@ -193,6 +272,67 @@ impl App {
             "board" => self.open_board(),
             "restore" => self.restore_session_pub(),
             "timeline" => self.toggle_timeline(),
+            "historycheck"=>{
+                let tl=self.timeline.as_ref().expect("history open");assert!(!tl.snapshot);assert!(tl.count()>=3,"commands recorded: {}",tl.count());assert!(!tl.ranges.is_empty());assert!(tl.list_area.w>0.0&&tl.detail_area.w>0.0);assert!(tl.detail_max>0.0,"history should scroll");
+                for (r,hit) in &tl.hits {assert!(r.x>=tl.area.x-1.0&&r.right()<=tl.area.right()+1.0&&r.y>=tl.area.y-1.0&&r.bottom()<=tl.area.bottom()+1.0,"history control outside pane: {hit:?} {r:?} {:?}",tl.area);}
+                assert!(tl.records.iter().any(|v|v["output"].as_str().is_some_and(|o|o.contains("history-output"))),"recorded output missing");
+            },
+            "historysearch"=>{if let Some(tl)=&mut self.timeline{tl.query=rest.into();tl.reveal=true;}self.dirty=true;},
+            "historyassertmatches"=>{let tl=self.timeline.as_ref().unwrap();assert_eq!(tl.matches().len(),rest.parse::<usize>().unwrap());},
+            "historysnapshot"=>self.timeline_action(crate::replay::HistoryHit::Snapshot),
+            "historymap"=>{
+                let tl=self.timeline.as_ref().unwrap();let map=tl.list_area;let before=tl.detail_scroll;
+                self.mouse_moved(map.x+map.w*0.5,map.y+map.h*0.1);self.mouse_button(MouseButton::Left,ElementState::Pressed);
+                self.mouse_moved(map.x+map.w*0.5,map.y+map.h*0.8);self.mouse_button(MouseButton::Left,ElementState::Released);
+                let tl=self.timeline.as_ref().unwrap();assert!(tl.map_drag.is_none());assert!(tl.detail_scroll>=0.0&&tl.detail_scroll<=tl.detail_max);assert!((tl.detail_scroll-before).abs()>1.0,"map did not move");
+            },
+            "historyexport"=>{let path=self.share_replay(self.active).unwrap();eprintln!("HISTORY_EXPORT {}",path.display());},
+            "foreground"=>{
+                #[cfg(target_os="macos")]
+                if let Some(mtm)=objc2::MainThreadMarker::new(){objc2_app_kit::NSApplication::sharedApplication(mtm).unhide(None);}
+                self.window.set_minimized(false);self.window.set_visible(true);self.window.focus_window();
+            },
+            "pickavatar"=>self.pick_avatar(),
+            "assertpicker"=>assert_eq!(self.avatar_pick.is_some(),rest=="open"),
+            "pipkeys"=>{
+                use winit::keyboard::{Key,NamedKey,PhysicalKey,KeyCode};
+                self.pip_focus(true);
+                let named=match rest {"left"=>NamedKey::ArrowLeft,"right"=>NamedKey::ArrowRight,"tab"=>NamedKey::Tab,"space"=>NamedKey::Space,_=>panic!("unknown PiP key")};
+                self.pip_key(&crate::app::KeyIn{physical_key:PhysicalKey::Code(KeyCode::ArrowLeft),logical_key:Key::Named(named),text:None,state:ElementState::Pressed,repeat:false});
+            },
+            "videostart"=>{if let Pane::Web(w)=&self.tabs[self.active].left {w.tab.eval("document.querySelector('video').pause(); document.querySelector('video').currentTime=30; __nus.report()");}},
+            "assertvideotime"=>{let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};let v=w.tab.video().expect("video");assert!((v.t-rest.parse::<f64>().unwrap()).abs()<0.2,"video time {}",v.t);},
+            "pipskip"=>{self.behavior.pip_skip_seconds=rest.parse().unwrap();self.save_prefs();},
+            "pipskipkeyboard"=>{
+                let index=self.settings_hits.iter().position(|(_,h)|matches!(h,crate::settings::Hit::Slider(crate::settings::Slider::PipSkip,_,_))).expect("skip slider visible");
+                self.settings_focus=Some(index);let before=self.behavior.pip_skip_seconds;
+                let key=crate::app::KeyIn{physical_key:winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowRight),logical_key:winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowRight),text:None,state:ElementState::Pressed,repeat:false};
+                assert!(self.settings_key(&key));assert_eq!(self.behavior.pip_skip_seconds,before+1);
+                assert_eq!(crate::prefs::Prefs::load().behavior.unwrap().pip_skip_seconds,before+1);
+            },
+            "piptransportcheck"=>{
+                self.pip_cursor_moved(100.0,100.0);self.pip_focus(true);
+                let p=self.pip.as_mut().expect("PiP");p.last_frame=crate::clock::now()-std::time::Duration::from_millis(20);
+                self.pip_frame();let p=self.pip.as_ref().unwrap();
+                for hit in [crate::pip::Hit::Back,crate::pip::Hit::Forward] {assert!(p.hits.iter().any(|(_,h)|*h==hit),"missing skip control");}
+                eprintln!("PIP_FIRST_PICTURE_MS {:?} RECT {:?} AREA {:?}",p.first_frame_ms,p.cur,p.area);assert!(p.first_frame_ms.is_some(),"no video frame presented");
+            },
+            "pipforeground"=>{self.pip.as_ref().unwrap().window.focus_window();},
+            "pipretarget"=>{let p=self.pip.as_ref().unwrap();let (id,rect,tab,right)=(p.window.id(),p.cur,p.tab,p.right);assert!(self.retarget_pip(tab,right));let p=self.pip.as_ref().unwrap();assert_eq!(id,p.window.id());assert_eq!(rect,p.cur);},
+            "uilabels"=>self.check_ui_labels(),
+            "pipcheck"=>{
+                let before=self.pip.as_ref().expect("PiP exists").cur;self.pip_wheel(winit::event::MouseScrollDelta::LineDelta(0.0,0.0));assert_eq!(self.pip.as_ref().unwrap().cur,before,"zero scroll changed PiP");
+                self.pip_pinch(0.01);let after=self.pip.as_ref().unwrap().cur;assert!(after.w>before.w&&after.w<before.w*1.02,"small gesture must be proportional");
+                self.pip_wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0,-2.0)));assert!(self.pip.as_ref().unwrap().cur.w<after.w);
+                let p=self.pip.as_ref().unwrap();let a=p.area;assert!(p.cur.x>=a.x&&p.cur.y>=a.y&&p.cur.x+p.cur.w<=a.x+a.w+1.0&&p.cur.y+p.cur.h<=a.y+a.h+1.0);
+                eprintln!("PIP_GEOMETRY {:?} AREA {:?}",p.cur,a);
+            },
+            "pipedge"=>{
+                let p=self.pip.as_ref().unwrap();let scale=p.window.scale_factor();let w=p.target.size.0 as f64;let h=p.target.size.1 as f64;let before=p.cur;
+                self.pip_cursor_moved(w-2.0*scale,h-2.0*scale);self.pip_mouse(MouseButton::Left,ElementState::Pressed);self.pip_cursor_moved(w+18.0*scale,h+8.0*scale);self.pip_mouse(MouseButton::Left,ElementState::Released);
+                let after=self.pip.as_ref().unwrap().cur;assert!(after.w>before.w);assert!((after.w/after.h-before.w/before.h).abs()<0.02);assert!(!self.pip.as_ref().unwrap().pressed);
+            },
+
             "tl" => {
                 use winit::keyboard::{Key, NamedKey};
                 let k = match rest {
@@ -242,6 +382,45 @@ impl App {
                 _ => self.open_me_card(),
             },
             "enter" => self.palette_commit(),
+            // The floating window for this tab's video, as the palette's
+            // PICTURE IN PICTURE does it.
+            "pip" => self.run(crate::app::Action::Pip),
+            // The pointer inside the floating window, in its own pixels,
+            // so the controls can be photographed with one lit.
+            "pippoint" => {
+                let mut n = rest.split_whitespace().filter_map(|v| v.parse::<f32>().ok());
+                if let (Some(x), Some(y)) = (n.next(), n.next()) {
+                    if let Some(pip) = self.pip.as_mut() {
+                        pip.pos = (x, y);
+                        pip.inside = true;
+                        pip.left_at = None;
+                    }
+                }
+            }
+            // The floating window's own frame, as a PNG beside the others.
+            "shotpip" => {
+                let name = if rest.is_empty() { "pip" } else { rest };
+                self.pip_frame();
+                let Some(out) = self.shot.as_ref().map(|s| (s.out.clone(), s.face)) else { return };
+                let clear = self.theme.paper;
+                let Some(pip) = self.pip.as_ref() else {
+                    eprintln!("shot: shotpip: no floating window");
+                    return;
+                };
+                let (w, h) = pip.target.size;
+                let rgba = self.gpu.snapshot((w, h), &self.pip.as_ref().unwrap().scene, clear);
+                let _ = std::fs::create_dir_all(&out.0);
+                let path = out.0.join(format!("{name}-{}.png", out.1));
+                match std::fs::File::create(&path).map_err(|e| e.to_string()).and_then(|f| {
+                    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+                    enc.set_color(png::ColorType::Rgba);
+                    enc.set_depth(png::BitDepth::Eight);
+                    enc.write_header().and_then(|mut wr| wr.write_image_data(&rgba)).map_err(|e| e.to_string())
+                }) {
+                    Ok(()) => eprintln!("shot: wrote {} ({w}×{h} px)", path.display()),
+                    Err(e) => eprintln!("shot: {}: {e}", path.display()),
+                }
+            }
             "other" => self.open_url_by_other(rest),
             "copyurl" => {
                 self.copy_page_url();
@@ -284,7 +463,7 @@ impl App {
                 let kind = self.tabs.get(self.active).map(|t| match &t.left {
                     Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",
                 }).unwrap_or("missing");
-                assert_eq!(kind, rest, "focused pane at script step {}", s.next);
+                assert_eq!(kind, rest, "focused pane at step `{step}`");
             }
             "asserturl" => {
                 let Some(Pane::Web(web)) = self.tabs.get(self.active).map(|t| &t.left) else { panic!("expected web page") };
@@ -469,7 +648,7 @@ impl App {
                     let Pane::Settings(page)=&mut self.tabs[self.active].left else {panic!("not settings")};
                     let next=(page.scroll+page.rect.h*0.6).min((self.settings_reach-page.rect.h+self.scale*48.0).max(0.0));
                     assert!(next>page.scroll,"setting not found: {rest}");page.scroll=next;
-                    let script=self.shot.as_mut().unwrap();script.next-=1;script.until=Some(Instant::now()+Duration::from_millis(80));
+                    let script=self.shot.as_mut().unwrap();script.next-=1;script.until=Some(crate::clock::now()+Duration::from_millis(80));
                     self.dirty=true;
                 }
             }
@@ -685,6 +864,286 @@ impl App {
                     s.pending = Some((name, crop));
                 }
             }
+            // SYNC · THE PHONE: this window served on the network, and
+            // its address, so a script can put it on a phone (or in a tab).
+            "phone" => {
+                match rest {
+                    "off" => {
+                        crate::phone::stop();
+                        self.behavior.phone = false;
+                    }
+                    _ => {
+                        self.behavior.phone = true;
+                        self.phone_on();
+                        self.behavior.phone = crate::phone::current().is_some();
+                        match crate::phone::current() {
+                            Some(p) => eprintln!("shot: phone at {}", p.url()),
+                            None => eprintln!("shot: phone did not start"),
+                        }
+                    }
+                }
+            }
+            // The phone's own page, opened here as a tab: the same page the
+            // phone gets, so a capture of it is the real thing.
+            "phonetab" => {
+                match crate::phone::current() {
+                    Some(p) => self.open_url(&p.url(), true),
+                    None => eprintln!("shot: phone is not on"),
+                }
+            }
+            // A chip on a diff's hunk: `hunk stage 0`, `hunk apply 1`.
+            // The click goes to the chip's own rectangle, so it is the
+            // chip that runs, exactly as a hand would make it.
+            "hunk" => {
+                let (what, nth) = rest.split_once(' ').unwrap_or((rest, "0"));
+                let nth: usize = nth.trim().parse().unwrap_or(0);
+                let want = match what.trim().to_lowercase().as_str() {
+                    "revert" => crate::diffs::Do::Revert,
+                    "unstage" => crate::diffs::Do::Unstage,
+                    "apply" => crate::diffs::Do::Apply,
+                    _ => crate::diffs::Do::Stage,
+                };
+                let hit = self.tabs.get(self.active).into_iter().flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref())).find_map(|p| match p {
+                    Pane::Term(t) => t.hunk_hits.iter().filter(|(_, _, _, d)| *d == want).nth(nth).map(|(r, _, _, _)| *r),
+                    _ => None,
+                });
+                match hit {
+                    Some(r) => {
+                        self.mouse_moved(r.x + r.w / 2.0, r.y + r.h / 2.0);
+                        self.mouse_button(MouseButton::Left, ElementState::Pressed);
+                        self.mouse_button(MouseButton::Left, ElementState::Released);
+                    }
+                    None => eprintln!("shot: hunk: no {} chip #{nth} on screen", want.word()),
+                }
+            }
+            // The on-screen rectangles of named elements, in logical px,
+            // read from the accessibility tree: one node per hit target, so
+            // what the film draws an overlay on is exactly what nus drew.
+            //   marks file.json band=ASK chips="ALLOW ON THIS HOST"
+            //   marks file.json all
+            "marks" => {
+                let (file, want) = rest.split_once(' ').unwrap_or((rest, "all"));
+                let tree = self.access_tree();
+                // The tree holds physical pixels; the film lays its overlays
+                // out in the window's own logical ones.
+                let sc = self.scale as f64;
+                let labelled: Vec<(String, [f64; 4])> = tree
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, n)| {
+                        let r = n.bounds()?;
+                        let label = n.label().unwrap_or_default();
+                        (!label.is_empty()).then(|| (label.to_string(), [r.x0 / sc, r.y0 / sc, (r.x1 - r.x0) / sc, (r.y1 - r.y0) / sc]))
+                    })
+                    .collect();
+                let mut out = serde_json::Map::new();
+                if want.trim() == "all" {
+                    for (label, r) in &labelled {
+                        out.insert(label.clone(), serde_json::json!(r));
+                    }
+                } else {
+                    for (key, text) in marks_wanted(want) {
+                        let hit = labelled.iter().find(|(l, _)| l.to_lowercase().contains(&text.to_lowercase()));
+                        match hit {
+                            Some((_, r)) => {
+                                out.insert(key, serde_json::json!(r));
+                            }
+                            None => eprintln!("shot: marks: nothing labelled `{text}`"),
+                        }
+                    }
+                }
+                let path = self.shot.as_ref().map(|s| s.out.join(file)).unwrap_or_else(|| PathBuf::from(file));
+                if let Some(d) = path.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                match std::fs::write(&path, serde_json::to_string_pretty(&out).unwrap_or_default()) {
+                    Ok(()) => eprintln!("shot: wrote {} ({} marks)", path.display(), out.len()),
+                    Err(e) => eprintln!("shot: {}: {e}", path.display()),
+                }
+            }
+            // The frame in planes, for the shot that explodes the window:
+            // the whole composite, the chrome with the panes cut out, and
+            // each pane's own rectangle alone. One frame, masked four ways
+            // (not four renders), so they line up to the pixel.
+            "layers" => {
+                let dir = self.shot.as_ref().map(|s| s.out.join(rest)).unwrap_or_else(|| PathBuf::from(rest));
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    eprintln!("shot: {}: {e}", dir.display());
+                    return;
+                }
+                let (w, h) = self.target.size;
+                let sc = self.scale;
+                let px = |r: nus_render::Rect| [(r.x * sc) as i64, (r.y * sc) as i64, ((r.x + r.w) * sc) as i64, ((r.y + r.h) * sc) as i64];
+                let tab = self.tabs.get(self.active);
+                let term = tab.and_then(|t| std::iter::once(&t.left).chain(t.right.as_ref()).find(|p| matches!(p, Pane::Term(_))).map(|p| p.rect()));
+                let web = tab.and_then(|t| std::iter::once(&t.left).chain(t.right.as_ref()).find_map(|p| match p {
+                    Pane::Web(w) => Some(w.page),
+                    _ => None,
+                }));
+                let header = self.strip_rect();
+                let sidebar = self.sidebar_rect();
+                let clear = self.shot_clear();
+                let rgba = self.gpu.snapshot((w, h), &self.scene, clear);
+                // Everything outside `keep` (or inside `cut`) goes clear.
+                let mask = |keep: Option<[i64; 4]>, cut: &[[i64; 4]]| -> Vec<u8> {
+                    let mut out = rgba.clone();
+                    for y in 0..h as i64 {
+                        for x in 0..w as i64 {
+                            let inside = |r: &[i64; 4]| x >= r[0] && x < r[2] && y >= r[1] && y < r[3];
+                            let drop = keep.as_ref().is_some_and(|k| !inside(k)) || cut.iter().any(inside);
+                            if drop {
+                                let i = ((y * w as i64 + x) * 4) as usize;
+                                out[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+                            }
+                        }
+                    }
+                    out
+                };
+                let panes: Vec<[i64; 4]> = term.iter().chain(web.iter()).map(|r| px(*r)).collect();
+                let mut wrote = Vec::new();
+                for (name, data) in [
+                    ("compositor.png", rgba.clone()),
+                    ("native-ui.png", mask(None, &panes)),
+                    ("terminal.png", term.map(|r| mask(Some(px(r)), &[])).unwrap_or_default()),
+                    ("chromium.png", web.map(|r| mask(Some(px(r)), &[])).unwrap_or_default()),
+                ] {
+                    if data.is_empty() {
+                        continue;
+                    }
+                    match write_png(&dir.join(name), w, h, &data) {
+                        Ok(()) => wrote.push(name),
+                        Err(e) => eprintln!("shot: {name}: {e}"),
+                    }
+                }
+                let marks = serde_json::json!({
+                    "header": px(header),
+                    "sidebar": px(sidebar),
+                    "terminal": term.map(px),
+                    "chromium": web.map(px),
+                    "scale": sc,
+                    "size": [w, h],
+                });
+                let _ = std::fs::write(dir.join("marks.json"), serde_json::to_string_pretty(&marks).unwrap_or_default());
+                eprintln!("shot: wrote {} ({})", dir.display(), wrote.join(", "));
+            }
+            // The glyph atlas as it sits on the GPU, as a grey PNG.
+            "atlas_png" => {
+                let (size, cov) = self.gpu.atlas_snapshot();
+                let rgba: Vec<u8> = cov.iter().flat_map(|c| [255, 255, 255, *c]).collect();
+                let path = self.shot.as_ref().map(|s| s.out.join(rest)).unwrap_or_else(|| PathBuf::from(rest));
+                if let Some(d) = path.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                match write_png(&path, size, size, &rgba) {
+                    Ok(()) => eprintln!("shot: wrote {} ({size}×{size})", path.display()),
+                    Err(e) => eprintln!("shot: {}: {e}", path.display()),
+                }
+            }
+            // Hold the script until the picture stops moving, so a take
+            // starts from the same still frame every time. Animations that
+            // began while the app was coming up are over by then.
+            "settle" => {
+                let ms: u64 = rest.parse().unwrap_or(6000);
+                if let Some(s) = self.shot.as_mut() {
+                    s.settle = Some((0, 0, Instant::now() + Duration::from_millis(ms)));
+                }
+            }
+            // The window at an exact logical size, so every capture of
+            // every shot is the same shape (the standard's 1600×1000).
+            "window" => {
+                let (w, h) = rest.split_once(' ').unwrap_or(("1600", "1000"));
+                let (w, h) = (w.trim().parse::<f64>().unwrap_or(1600.0), h.trim().parse::<f64>().unwrap_or(1000.0));
+                if self.window.fullscreen().is_some() {
+                    self.window.set_fullscreen(None);
+                }
+                // macOS un-zooms with an animation that restores the window's
+                // own frame, so the size is asked for again after it, as a
+                // step of its own.
+                self.window.set_maximized(false);
+                if let Some(s) = self.shot.as_mut() {
+                    s.steps.insert(s.next, format!("windowsize {w} {h}"));
+                    s.until = Some(crate::clock::now() + Duration::from_millis(500));
+                }
+            }
+            "windowsize" => {
+                let (w, h) = rest.split_once(' ').unwrap_or(("1600", "1000"));
+                let (w, h) = (w.trim().parse::<f64>().unwrap_or(1600.0), h.trim().parse::<f64>().unwrap_or(1000.0));
+                let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+                if let Some(s) = self.shot.as_mut() {
+                    s.until = Some(crate::clock::now() + Duration::from_millis(500));
+                }
+            }
+            // A recording: from here the clock is the recorder's, one frame
+            // of 1/60 s per PNG, and the `at` lines that follow are its
+            // schedule. The script carries on when the clip is finished.
+            "record" => {
+                let (name, secs) = rest.split_once(' ').unwrap_or((rest, "3"));
+                let secs: f64 = secs.trim().parse().unwrap_or(3.0);
+                let name = name.trim().to_string();
+                let (dir, at) = {
+                    let Some(s) = self.shot.as_mut() else { return };
+                    let dir = s.out.join(&name);
+                    // Take the `at` lines that follow as this clip's schedule.
+                    let mut at: Vec<(f64, String)> = Vec::new();
+                    while let Some(line) = s.steps.get(s.next) {
+                        let Some(tail) = line.strip_prefix("at ") else { break };
+                        s.next += 1;
+                        let (t, step) = tail.trim().split_once(' ').unwrap_or((tail.trim(), ""));
+                        at.push((t.parse().unwrap_or(0.0), step.trim().to_string()));
+                    }
+                    // Soonest last: the pump pops off the end.
+                    at.sort_by(|a, b| b.0.total_cmp(&a.0));
+                    (dir, at)
+                };
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    eprintln!("shot: {}: {e}", dir.display());
+                    return;
+                }
+                let frames = (secs * 60.0).round().max(1.0) as u64;
+                eprintln!("shot: recording {name}: {frames} frames ({secs:.3}s) → {}", dir.display());
+                crate::clock::start();
+                // Everything that free-runs from when the app came up — the
+                // caret's blink, a texture's drift, an art's own time — is
+                // rephased to the clip's first frame, or a take would carry
+                // whatever phase the launch happened to leave it in.
+                self.started = crate::clock::now();
+                if let Some(s) = self.shot.as_mut() {
+                    s.rec = Some(Rec { name, dir, frames, frame: 0, at, typing: None, hold: None, began: std::time::Instant::now() });
+                }
+            }
+            // Type into whatever has the focus — a shell, the editor, the
+            // palette, the prompt — a character at a time, on the clock.
+            "type" => {
+                let (text, cps) = match rest.rsplit_once(' ') {
+                    Some((t, n)) if n.parse::<f64>().is_ok() => (t, n.parse::<f64>().unwrap_or(10.0)),
+                    _ => (rest, 10.0),
+                };
+                let gap = 1.0 / cps.max(0.1);
+                let chars: std::collections::VecDeque<char> = text.chars().collect();
+                let at = self.rec_time();
+                if let Some(r) = self.shot.as_mut().and_then(|s| s.rec.as_mut()) {
+                    r.typing = Some((chars, gap, at));
+                } else {
+                    self.shot_type(text);
+                }
+            }
+            // A chord, through the app's own key handling.
+            "key" => self.shot_key(rest),
+            // The clock stops until the page paints, or the language
+            // server answers. No frame is written while it waits.
+            "await-paint" => {
+                let n = self.page_paints();
+                if let Some(r) = self.shot.as_mut().and_then(|s| s.rec.as_mut()) {
+                    r.hold = Some(Hold::Paint(n));
+                    r.began = std::time::Instant::now();
+                }
+            }
+            "await-lsp" => {
+                if let Some(r) = self.shot.as_mut().and_then(|s| s.rec.as_mut()) {
+                    r.hold = Some(Hold::Lsp);
+                    r.began = std::time::Instant::now();
+                }
+            }
             "quit" => {
                 if let Some(s) = self.shot.as_mut() {
                     s.done = true;
@@ -693,6 +1152,245 @@ impl App {
             other => eprintln!("shot: unknown step `{other}`"),
         }
         self.dirty = true;
+    }
+
+    /// The colour behind the frame, as the draw computes it.
+    fn shot_clear(&self) -> [f32; 4] {
+        let p = self.paper();
+        [p[0], p[1], p[2], 1.0]
+    }
+
+    /// Six frames the same and the picture has settled. The frames are
+    /// hashed off the GPU, not guessed at from `dirty`: an animation that
+    /// has stopped asking for frames may still have one in flight.
+    fn settle_tick(&mut self) {
+        let (last, same, deadline) = match self.shot.as_ref().and_then(|s| s.settle) {
+            Some(v) => v,
+            None => return,
+        };
+        self.dirty = true;
+        let (w, h) = self.target.size;
+        let rgba = self.gpu.snapshot((w, h), &self.scene, [0.0; 4]);
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in rgba.iter().step_by(7) {
+            hash = (hash ^ *b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+        let same = if hash == last { same + 1 } else { 0 };
+        let over = Instant::now() >= deadline;
+        if same >= 6 || over {
+            if over {
+                eprintln!("shot: settle: still moving after the wait — carrying on");
+            }
+            if let Some(s) = self.shot.as_mut() {
+                s.settle = None;
+            }
+            return;
+        }
+        if let Some(s) = self.shot.as_mut() {
+            s.settle = Some((hash, same, deadline));
+        }
+    }
+
+    /// The clip time of the frame about to be written.
+    fn rec_time(&self) -> f64 {
+        self.shot.as_ref().and_then(|s| s.rec.as_ref()).map_or(0.0, |r| r.frame as f64 / 60.0)
+    }
+
+    /// How many times the focused page has painted: `await-paint` waits on
+    /// this, because Chromium runs on its own clock.
+    fn page_paints(&self) -> u64 {
+        let tab = self.tabs.get(self.active);
+        let pane = tab.and_then(|t| if t.focus_right { t.right.as_ref() } else { Some(&t.left) });
+        match pane.or_else(|| tab.map(|t| &t.left)) {
+            Some(Pane::Web(w)) => w.tab.shared.borrow().paints,
+            _ => self.tabs.iter().filter_map(|t| match &t.left {
+                Pane::Web(w) => Some(w.tab.shared.borrow().paints),
+                _ => None,
+            }).max().unwrap_or(0),
+        }
+    }
+
+    /// Whether a language server's answer is on screen: the prompt's menu
+    /// with rows, or the editor showing a completion, hover or diagnostic.
+    fn lsp_answered(&self) -> bool {
+        self.tabs.iter().any(|t| {
+            std::iter::once(&t.left).chain(t.right.as_ref()).any(|p| match p {
+                // The prompt's menu, or a diagnostic on the line.
+                Pane::Term(tp) => tp.plsp.as_ref().is_some_and(|l| l.menu || !l.items.is_empty() || !l.diags.is_empty() || l.ghost.is_some()),
+                // The editor's hover card, or its diagnostics.
+                Pane::Editor(e) => e.hover.is_some() || e.completion.is_some() || e.buffers.get(e.active).is_some_and(|b| !b.diags.is_empty()),
+                _ => false,
+            })
+        })
+    }
+
+    /// One frame of a recording: the steps that are due, the next
+    /// character of anything being typed, then the frame itself.
+    fn record_frame(&mut self) {
+        // Held? Nothing moves — not the clock, not the count.
+        let held = self.shot.as_ref().and_then(|s| s.rec.as_ref()).and_then(|r| r.hold.as_ref().map(|h| (match h { Hold::Paint(n) => *n, Hold::Lsp => 0 }, matches!(h, Hold::Paint(_)), r.began)));
+        if let Some((mark, is_paint, began)) = held {
+            // Real time: the clock is stopped while held, so it can never fire.
+            let over = began.elapsed() >= FUSE;
+            let done = if is_paint { self.page_paints() > mark } else { self.lsp_answered() };
+            if !done && !over {
+                self.dirty = true;
+                return;
+            }
+            if over {
+                eprintln!("shot: {} never came ({}s) — carrying on", if is_paint { "the paint" } else { "the language server" }, FUSE.as_secs());
+            }
+            if let Some(r) = self.shot.as_mut().and_then(|s| s.rec.as_mut()) {
+                r.hold = None;
+            }
+        }
+        let t = self.rec_time();
+        // Steps due at or before this frame.
+        loop {
+            let due = match self.shot.as_ref().and_then(|s| s.rec.as_ref()).and_then(|r| r.at.last()) {
+                Some((at, _)) if *at <= t + 1e-9 => true,
+                _ => false,
+            };
+            if !due {
+                break;
+            }
+            let Some(step) = self.shot.as_mut().and_then(|s| s.rec.as_mut()).and_then(|r| r.at.pop()).map(|(_, st)| st) else { break };
+            eprintln!("shot: {t:7.3} {step}");
+            self.shot_step(&step);
+            // A step may have asked the clock to wait; the rest are still due.
+            if self.shot.as_ref().and_then(|s| s.rec.as_ref()).is_some_and(|r| r.hold.is_some()) {
+                self.dirty = true;
+                return;
+            }
+        }
+        // The next character of anything being typed.
+        let ch = {
+            let r = self.shot.as_mut().and_then(|s| s.rec.as_mut());
+            match r.and_then(|r| r.typing.as_mut()) {
+                Some((chars, gap, next)) if *next <= t + 1e-9 => {
+                    let c = chars.pop_front();
+                    *next = t + *gap;
+                    c
+                }
+                _ => None,
+            }
+        };
+        if let Some(c) = ch {
+            self.type_char(c);
+            if self.shot.as_ref().and_then(|s| s.rec.as_ref()).is_some_and(|r| r.typing.as_ref().is_some_and(|(q, _, _)| q.is_empty())) {
+                if let Some(r) = self.shot.as_mut().and_then(|s| s.rec.as_mut()) {
+                    r.typing = None;
+                }
+            }
+        }
+        // The frame: name it, let the draw write it, and move the clock on.
+        let finished = {
+            let Some(r) = self.shot.as_mut().and_then(|s| s.rec.as_mut()) else { return };
+            let name = format!("{}/f{:05}.png", r.name, r.frame);
+            r.frame += 1;
+            let finished = r.frame >= r.frames;
+            let n = r.frame;
+            let total = r.frames;
+            if n % 60 == 0 || finished {
+                eprintln!("shot: {}/{total} frames", n);
+            }
+            (name, finished)
+        };
+        let (name, finished) = finished;
+        if let Some(s) = self.shot.as_mut() {
+            s.pending = Some((name, None));
+        }
+        crate::clock::tick();
+        self.dirty = true;
+        if finished {
+            let (name, frames, dir) = {
+                let r = self.shot.as_ref().and_then(|s| s.rec.as_ref());
+                match r {
+                    Some(r) => (r.name.clone(), r.frames, r.dir.clone()),
+                    None => return,
+                }
+            };
+            eprintln!("shot: {name} done — {frames} frames in {}", dir.display());
+            crate::clock::stop();
+            if let Some(s) = self.shot.as_mut() {
+                s.rec = None;
+            }
+        }
+    }
+
+    /// One character, as a key press and release through the app's own
+    /// handling — so it goes wherever the focus is.
+    fn type_char(&mut self, c: char) {
+        use winit::keyboard::{Key as WKey, NativeKeyCode, PhysicalKey, SmolStr};
+        let text = SmolStr::new(c.to_string());
+        let mut k = crate::app::KeyIn {
+            physical_key: key_code(c).map_or(PhysicalKey::Unidentified(NativeKeyCode::Unidentified), PhysicalKey::Code),
+            logical_key: if c == ' ' { WKey::Named(winit::keyboard::NamedKey::Space) } else { WKey::Character(text.clone()) },
+            text: Some(text),
+            state: ElementState::Pressed,
+            repeat: false,
+        };
+        self.key_in(&k);
+        k.state = ElementState::Released;
+        self.key_in(&k);
+    }
+
+    /// `key cmd+s`, `key down`, `key enter` — the chord, through the app's
+    /// own key handling, with the modifiers held for exactly that press.
+    fn shot_key(&mut self, chord: &str) {
+        use winit::keyboard::{Key as WKey, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+        let mut mods = ModifiersState::empty();
+        let mut name = chord.trim();
+        while let Some((m, rest)) = name.split_once('+') {
+            match m.trim().to_lowercase().as_str() {
+                "cmd" | "super" | "win" => mods |= ModifiersState::SUPER,
+                "ctrl" | "control" => mods |= ModifiersState::CONTROL,
+                "shift" => mods |= ModifiersState::SHIFT,
+                "alt" | "opt" | "option" => mods |= ModifiersState::ALT,
+                other => eprintln!("shot: key: no modifier `{other}`"),
+            }
+            name = rest.trim();
+        }
+        let named = |n: NamedKey, c: KeyCode| Some((WKey::Named(n), c));
+        let parts = match name.to_lowercase().as_str() {
+            "enter" | "return" => named(NamedKey::Enter, KeyCode::Enter),
+            "tab" => named(NamedKey::Tab, KeyCode::Tab),
+            "esc" | "escape" => named(NamedKey::Escape, KeyCode::Escape),
+            "space" => named(NamedKey::Space, KeyCode::Space),
+            "backspace" => named(NamedKey::Backspace, KeyCode::Backspace),
+            "delete" => named(NamedKey::Delete, KeyCode::Delete),
+            "up" => named(NamedKey::ArrowUp, KeyCode::ArrowUp),
+            "down" => named(NamedKey::ArrowDown, KeyCode::ArrowDown),
+            "left" => named(NamedKey::ArrowLeft, KeyCode::ArrowLeft),
+            "right" => named(NamedKey::ArrowRight, KeyCode::ArrowRight),
+            "home" => named(NamedKey::Home, KeyCode::Home),
+            "end" => named(NamedKey::End, KeyCode::End),
+            "pageup" => named(NamedKey::PageUp, KeyCode::PageUp),
+            "pagedown" => named(NamedKey::PageDown, KeyCode::PageDown),
+            "f12" => named(NamedKey::F12, KeyCode::F12),
+            one if one.chars().count() == 1 => {
+                let c = one.chars().next().unwrap_or('a');
+                key_code(c).map(|code| (WKey::Character(SmolStr::new(c.to_string())), code))
+            }
+            other => {
+                eprintln!("shot: key: no key `{other}`");
+                None
+            }
+        };
+        let Some((logical, code)) = parts else { return };
+        // Typed text only when nothing is held: ⌘S is a chord, not an "s".
+        let text = match (&logical, mods.is_empty()) {
+            (WKey::Character(c), true) => Some(c.clone()),
+            (WKey::Named(NamedKey::Space), true) => Some(SmolStr::new(" ")),
+            _ => None,
+        };
+        let was = self.mods;
+        self.mods = mods;
+        let mut k = crate::app::KeyIn { physical_key: PhysicalKey::Code(code), logical_key: logical, text, state: ElementState::Pressed, repeat: false };
+        self.key_in(&k);
+        k.state = ElementState::Released;
+        self.key_in(&k);
+        self.mods = was;
     }
 
     /// Text into the shell of the active tab, or the first shell.
@@ -713,9 +1411,16 @@ impl App {
         let crop_px = crop.map(|[x, y, cw, ch]| ((x * w as f32) as u32, (y * h as f32) as u32, ((cw * w as f32) as u32).max(1), ((ch * h as f32) as u32).max(1)));
         let Some(s) = self.shot.as_ref() else { return };
         let _ = std::fs::create_dir_all(&s.out);
-        let path = s.out.join(format!("{name}-{}.png", s.face));
+        // A recording names its own frames; a still is named for its face.
+        let seq = name.ends_with(".png");
+        let path = if seq { s.out.join(&name) } else { s.out.join(format!("{name}-{}.png", s.face)) };
         match self.snapshot_png(clear, crop_px, &path) {
-            Ok((cw, ch)) => eprintln!("shot: wrote {} ({cw}×{ch} px at {}×)", path.display(), self.scale),
+            // Frames are counted, not announced: a clip is hundreds of them.
+            Ok((cw, ch)) => {
+                if !seq {
+                    eprintln!("shot: wrote {} ({cw}×{ch} px at {}×)", path.display(), self.scale);
+                }
+            }
             Err(e) => eprintln!("shot: {}: {e}", path.display()),
         }
     }
@@ -777,4 +1482,56 @@ impl App {
         }
         self.deferred = keep;
     }
+}
+
+/// The key a character sits on, for a scripted press. Only what a script
+/// types needs to be here; anything else goes as text alone.
+fn key_code(c: char) -> Option<winit::keyboard::KeyCode> {
+    use winit::keyboard::KeyCode::*;
+    Some(match c.to_ascii_lowercase() {
+        'a' => KeyA, 'b' => KeyB, 'c' => KeyC, 'd' => KeyD, 'e' => KeyE, 'f' => KeyF,
+        'g' => KeyG, 'h' => KeyH, 'i' => KeyI, 'j' => KeyJ, 'k' => KeyK, 'l' => KeyL,
+        'm' => KeyM, 'n' => KeyN, 'o' => KeyO, 'p' => KeyP, 'q' => KeyQ, 'r' => KeyR,
+        's' => KeyS, 't' => KeyT, 'u' => KeyU, 'v' => KeyV, 'w' => KeyW, 'x' => KeyX,
+        'y' => KeyY, 'z' => KeyZ,
+        '0' => Digit0, '1' => Digit1, '2' => Digit2, '3' => Digit3, '4' => Digit4,
+        '5' => Digit5, '6' => Digit6, '7' => Digit7, '8' => Digit8, '9' => Digit9,
+        ' ' => Space, '-' => Minus, '=' => Equal, '.' => Period, ',' => Comma,
+        '/' => Slash, ';' => Semicolon, '\'' => Quote, '`' => Backquote,
+        '[' => BracketLeft, ']' => BracketRight, '\\' => Backslash,
+        _ => return None,
+    })
+}
+
+/// `band=ASK chips="ALLOW ON THIS HOST"` as pairs.
+fn marks_wanted(s: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = s.trim();
+    while let Some(eq) = rest.find('=') {
+        let key = rest[..eq].trim().to_string();
+        let tail = rest[eq + 1..].trim_start();
+        let (text, next) = if let Some(t) = tail.strip_prefix('"') {
+            match t.find('"') {
+                Some(end) => (&t[..end], &t[end + 1..]),
+                None => (t, ""),
+            }
+        } else {
+            match tail.find(' ') {
+                Some(sp) => (&tail[..sp], &tail[sp..]),
+                None => (tail, ""),
+            }
+        };
+        out.push((key, text.to_string()));
+        rest = next.trim_start();
+    }
+    out
+}
+
+/// RGBA to a PNG file.
+fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().and_then(|mut wr| wr.write_image_data(rgba)).map_err(|e| e.to_string())
 }

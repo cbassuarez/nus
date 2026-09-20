@@ -183,7 +183,7 @@ impl TermPane {
 
 impl App {
     /// Keys for blocks in the focused shell. Returns true when consumed.
-    pub(crate) fn blocks_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn blocks_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key as WKey, NamedKey};
         if ev.state != winit::event::ElementState::Pressed {
             return false;
@@ -257,7 +257,7 @@ impl App {
             }
             // Ctrl+A: the block; again: everything.
             WKey::Character(c) if c.eq_ignore_ascii_case("a") && !shift => {
-                let now = Instant::now();
+                let now = crate::clock::now();
                 let twice = t.select_all_at.is_some_and(|at| now.duration_since(at).as_millis() < 600);
                 t.select_all_at = Some(now);
                 let line = t.block_sel.unwrap_or_else(|| t.term.grid().abs_row(t.term.cursor().row));
@@ -305,7 +305,7 @@ impl App {
         let mono = Style { font: p.grid.font, px: p.grid.px, color: ink, tracking: 0.0 };
         let (mx, my) = self.mouse;
         let lamps_on = self.behavior.blocks;
-        let now = self.started.elapsed().as_secs_f32();
+        let now = crate::clock::since(self.started).as_secs_f32();
         let blocks = p.blocks();
         let filter = p.block_filter.clone();
         let q = filter.as_deref().unwrap_or("").to_lowercase();
@@ -472,7 +472,7 @@ impl App {
         let since = self.tip_since.get_or_insert_with(Instant::now);
         let since = *since;
         self.tip = Some(crate::app::Tip { anchor, text: words.into(), since });
-        if since.elapsed().as_millis() < 700 {
+        if crate::clock::since(since).as_millis() < 700 {
             self.dirty = true;
         }
     }

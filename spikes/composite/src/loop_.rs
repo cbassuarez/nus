@@ -83,7 +83,7 @@ impl App {
             return false;
         }
         let id = w.tab.eval_reply(&format!("({PROBE_JS})({lx}, {ly})"));
-        self.loop_probe = Some((tab, right, id, std::time::Instant::now()));
+        self.loop_probe = Some((tab, right, id, crate::clock::now()));
         self.notice("finding the source…");
         true
     }
@@ -93,7 +93,7 @@ impl App {
         let Some((tab, right, id, since)) = self.loop_probe else { return };
         let reply = self.web_pane_ref(tab, right).and_then(|w| w.tab.take_reply(id));
         let Some(v) = reply else {
-            if since.elapsed().as_secs() > 5 {
+            if crate::clock::since(since).as_secs() > 5 {
                 self.loop_probe = None;
                 self.notice("the page did not answer");
             }

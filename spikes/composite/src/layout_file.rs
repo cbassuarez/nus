@@ -302,7 +302,7 @@ impl App {
             return;
         };
         self.layout_offered.insert(dir);
-        self.layout_offer = Some((file, std::time::Instant::now()));
+        self.layout_offer = Some((file, crate::clock::now()));
         self.dirty = true;
     }
 }

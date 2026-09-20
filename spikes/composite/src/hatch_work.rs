@@ -68,6 +68,12 @@ pub fn completion<'a>(before: &[Item], after: &'a [Item]) -> Option<&'a Item> {
         && before.iter().any(|old| old.target == item.target && matches!(old.status, Status::Running | Status::Attention | Status::NeedsInput)))
 }
 
+/// Explicit new input/attention transitions; an initial/restored snapshot stays quiet.
+pub fn needs_attention(before:&[Item],after:&[Item])->bool {
+    after.iter().any(|item| matches!(item.status,Status::Attention|Status::NeedsInput)
+        && before.iter().any(|old|old.target==item.target&&!matches!(old.status,Status::Attention|Status::NeedsInput)))
+}
+
 pub fn summary(items: &[Item]) -> String {
     let running = items.iter().filter(|i| i.status == Status::Running).count();
     let attention = items.iter().filter(|i| i.status.attention() && (i.unread || matches!(i.status, Status::NeedsInput | Status::Attention))).count();
@@ -103,6 +109,14 @@ mod tests {
         assert!(completion(&[],&[item.clone()]).is_none(),"launch must not replay notices");
         assert!(completion(&[item.clone()],&[item.clone()]).is_none(),"same completion must not repeat");
         item.unread=false;assert!(completion(&before,&[item]).is_none(),"viewed work needs no notice");
+    }
+    #[test] fn input_attention_requires_a_new_transition() {
+        let mut item=Item{target:Target{window:1,tab:2,right:false},title:String::new(),command:String::new(),space:String::new(),cwd:String::new(),status:Status::Running,exit:None,progress:None,unread:false};
+        let before=vec![item.clone()];item.status=Status::NeedsInput;
+        assert!(needs_attention(&before,&[item.clone()]));
+        assert!(!needs_attention(&[],&[item.clone()]));
+        assert!(!needs_attention(&[item.clone()],&[item.clone()]));
+        item.status=Status::Attention;assert!(needs_attention(&before,&[item]));
     }
     #[test] fn stable_targets_do_not_depend_on_sort_order() {
         let mut rows: Vec<_> = [Status::Running, Status::Failed, Status::NeedsInput].into_iter().enumerate().map(|(n,status)| Item {target:Target{window:3,tab:n as u64,right:n==2},title:String::new(),command:String::new(),space:String::new(),cwd:String::new(),status,exit:None,progress:None,unread:true}).collect();

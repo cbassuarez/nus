@@ -65,12 +65,12 @@ pub struct Trip {
 impl Trip {
     /// The offset now, on the curve.
     pub fn at(&self, easing: Easing) -> f32 {
-        let t = if self.dur <= 0.0 { 1.0 } else { (self.start.elapsed().as_secs_f32() / self.dur).min(1.0) };
+        let t = if self.dur <= 0.0 { 1.0 } else { (crate::clock::since(self.start).as_secs_f32() / self.dur).min(1.0) };
         self.from + (self.to - self.from) * easing.at(t)
     }
 
     pub fn done(&self) -> bool {
-        self.dur <= 0.0 || self.start.elapsed().as_secs_f32() >= self.dur
+        self.dur <= 0.0 || crate::clock::since(self.start).as_secs_f32() >= self.dur
     }
 }
 
@@ -91,7 +91,7 @@ pub fn scroll_shell(t: &mut TermPane, lines: f32, easing: Easing, motion: &crate
     // ~300ms for a page, on the motion register.
     let dist = (to - now_off).abs();
     let base = (70.0 + dist * 7.0).clamp(90.0, 320.0);
-    t.trip = Some(Trip { from: now_off, to, start: Instant::now(), dur: motion.dur(base).max(0.001) });
+    t.trip = Some(Trip { from: now_off, to, start: crate::clock::now(), dur: motion.dur(base).max(0.001) });
 }
 
 impl App {

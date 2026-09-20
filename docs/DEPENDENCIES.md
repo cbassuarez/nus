@@ -10,10 +10,17 @@
 - `vendor/cef-rs` — tauri-apps/cef-rs. Expect patches around OSR shared
   textures and Chrome-runtime windowless mode.
 
+## Temporary source patch
+- `vendor/wgpu-hal` — crates.io 30.0.1 plus the macOS first-frame fix from
+  [wgpu #10302](https://github.com/gfx-rs/wgpu/pull/10302). Both Cargo workspaces
+  use this path patch. See `vendor/wgpu-hal/NUS-PATCHES.md` for removal criteria.
+
 ## Depend (crates.io)
 wgpu, winit, raw-window-handle, vte, portable-pty, unicode-width, swash,
 rustybuzz, fontdb, adblock (Brave), mlua (luau), rusqlite (Arc import),
-keyring, notify-rust, windows (notifications).
+keyring, notify-rust, windows (notifications), rfd (the system's own file
+dialog: NSOpenPanel, the common item dialog, the XDG portal — no GTK),
+image (whatever picture you pick, read and squared off).
 
 ## Reference (read, don't vendor)
 - Ghostty — terminal state, Kitty keyboard/graphics, shaping.

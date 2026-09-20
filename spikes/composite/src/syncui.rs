@@ -95,7 +95,7 @@ impl App {
         let session = self.behavior.sync_session;
         let (tx, rx) = channel();
         self.sync.rx = Some(rx);
-        self.sync.running_since = Some(Instant::now());
+        self.sync.running_since = Some(crate::clock::now());
         std::thread::Builder::new()
             .name("sync".into())
             .spawn(move || {
@@ -121,9 +121,9 @@ impl App {
         // On a clock, when configured.
         let every = self.behavior.sync_every_min as u64 * 60;
         if every > 0 && self.sync_ready() && self.sync.rx.is_none() {
-            let due = self.sync.last_auto.map(|t| t.elapsed().as_secs() >= every).unwrap_or(self.started.elapsed().as_secs() >= 30);
+            let due = self.sync.last_auto.map(|t| crate::clock::since(t).as_secs() >= every).unwrap_or(crate::clock::since(self.started).as_secs() >= 30);
             if due {
-                self.sync.last_auto = Some(Instant::now());
+                self.sync.last_auto = Some(crate::clock::now());
                 self.sync_now();
             }
         }
@@ -149,7 +149,7 @@ impl App {
         if pulled || !rep.errors.is_empty() {
             self.notice(&summary);
         }
-        self.sync.last = Some((Instant::now(), rep));
+        self.sync.last = Some((crate::clock::now(), rep));
         self.dirty = true;
     }
 
@@ -185,7 +185,7 @@ impl App {
         if self.sync.rx.is_some() {
             s.push_str(" · syncing…");
         } else if let Some((at, rep)) = &self.sync.last {
-            let ago = at.elapsed().as_secs();
+            let ago = crate::clock::since(at).as_secs();
             let when = if ago < 60 { format!("{ago}s ago") } else if ago < 3600 { format!("{}m ago", ago / 60) } else { format!("{}h ago", ago / 3600) };
             if rep.errors.is_empty() {
                 s.push_str(&format!(" · last {when}: {} in, {} out", rep.pulled.len(), rep.pushed.len()));

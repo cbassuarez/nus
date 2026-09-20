@@ -47,7 +47,7 @@ impl App {
                     return;
                 }
                 self.mouse_moved(x, y);
-                self.touch.down = Some(Press { id, at: Instant::now(), start: (x, y), last: (x, y), dragging: false, hovering: false });
+                self.touch.down = Some(Press { id, at: crate::clock::now(), start: (x, y), last: (x, y), dragging: false, hovering: false });
             }
             TouchPhase::Moved => {
                 let Some(p) = self.touch.down.as_mut() else { return };
@@ -94,7 +94,7 @@ impl App {
     /// pointer stays, the tooltip comes, nothing acts on lift.
     pub(crate) fn tend_touch(&mut self) {
         let Some(p) = self.touch.down.as_mut() else { return };
-        if !p.dragging && !p.hovering && p.at.elapsed() >= HOLD {
+        if !p.dragging && !p.hovering && crate::clock::since(p.at) >= HOLD {
             p.hovering = true;
             let (x, y) = p.last;
             self.mouse_moved(x, y);

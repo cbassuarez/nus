@@ -630,6 +630,11 @@ pub mod icons {
     icon!(SPEAKER, "speaker-high");
     icon!(SPEAKER_OFF, "speaker-slash");
     icon!(PLAY, "play");
+    icon!(PAUSE, "pause");
+    icon!(PLAY_FILL, "play-fill");
+    icon!(PAUSE_FILL, "pause-fill");
+    icon!(BACK_10, "arrow-counter-clockwise");
+    icon!(FORWARD_10, "arrow-clockwise");
     icon!(CALENDAR, "calendar-blank");
     icon!(DESKTOP, "desktop");
     icon!(EYE_SLASH, "eye-slash");

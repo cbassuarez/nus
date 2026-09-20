@@ -1,0 +1,11 @@
+# 12 · news-away — the shells keep going. Beat 22, 2.2 s.
+# Staging: work left behind before this runs (a failed test, one still
+# running, a hands request waiting). `news` takes unix seconds: the
+# moment you walked away.
+hover 5 5
+home
+settle
+record news-away 2.2
+at 0.000 news 1758300000
+at 0.789 key down
+quit

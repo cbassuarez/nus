@@ -2,6 +2,7 @@
 //! See docs/SPIKES.md.
 
 mod access;
+mod clock;
 mod shell;
 mod termui;
 mod predict;
@@ -78,6 +79,7 @@ mod touch;
 mod news;
 mod diffs;
 mod phone;
+mod pick;
 mod files;
 mod procs;
 mod start;
@@ -156,9 +158,18 @@ impl Host {
         }).or(if self.apps.is_empty(){None}else{Some(0)})
     }
 
+    fn any_window_focused(&self)->bool {
+        self.apps.iter().any(|a|a.window.has_focus()
+            ||a.hatch.as_ref().is_some_and(|h|h.window.has_focus())
+            ||a.pip.as_ref().is_some_and(|p|p.window.has_focus())
+            ||a.little.as_ref().is_some_and(|l|l.window.has_focus())
+            ||a.menu_drawer.window.as_ref().is_some_and(|d|d.window.has_focus()))
+    }
+
     fn refresh_hatch_work(&mut self) {
         let owner=self.apps.iter().filter_map(|a|a.hatch.as_ref()).find(|h|h.visible&&!h.hiding).map(|h|h.window.id());
-        if self.hatch_owner==owner && self.work_at.is_some_and(|at|at.elapsed().as_millis()<200){return;}
+        if self.hatch_owner==owner && self.work_at.is_some_and(|at|crate::clock::since(at).as_millis()<200){return;}
+        let app_focused=self.any_window_focused();
         self.hatch_owner=owner;
         self.work_at=Some(std::time::Instant::now());
         let mut work:Vec<_>=self.apps.iter().flat_map(hatch_work::collect).collect();
@@ -172,7 +183,9 @@ impl Host {
             if i == 0 && a.behavior.hatch_notify {
                 if let Some(item) = hatch_work::completion(&a.hatch_state.work, &work) {
                     a.hatch_state.completion = Some((item.clone(), std::time::Instant::now()));
-                    self.dock.attention(a.motion.reduced());
+                    self.dock.attention(&a.window,a.motion.reduced(),app_focused);
+                } else if hatch_work::needs_attention(&a.hatch_state.work,&work) {
+                    self.dock.attention(&a.window,a.motion.reduced(),app_focused);
                 }
             }
             if a.hatch_state.work!=work {
@@ -230,6 +243,16 @@ impl Host {
             settings::WindowStart::Maximized => attrs = attrs.with_maximized(true),
             settings::WindowStart::Fullscreen => attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
             settings::WindowStart::Centered => {}
+        }
+        // NUS_SHOT_SIZE=1600x1000: the recorder's window, exactly, whatever
+        // the prefs remember — every clip of every shot the same shape.
+        if let Some(size) = std::env::var_os("NUS_SHOT_SIZE") {
+            let size = size.to_string_lossy().to_lowercase();
+            if let Some((w, h)) = size.split_once('x') {
+                if let (Ok(w), Ok(h)) = (w.trim().parse::<f64>(), h.trim().parse::<f64>()) {
+                    attrs = attrs.with_maximized(false).with_fullscreen(None).with_inner_size(winit::dpi::LogicalSize::new(w, h));
+                }
+            }
         }
         if let Some(i) = from {
             // Cascade from the asking window.
@@ -321,7 +344,7 @@ impl ApplicationHandler<UserEvent> for Host {
     fn user_event(&mut self, _el: &ActiveEventLoop, ev: UserEvent) {
         match ev {
             UserEvent::DockAttention => {
-                if let Some(a)=self.apps.first(){self.dock.attention(a.motion.reduced());}
+                if let Some(a)=self.apps.first(){self.dock.attention(&a.window,a.motion.reduced(),self.any_window_focused());}
             }
             UserEvent::WindowControl(id,action) => {
                 if action==0 {self.window_event(_el,id,WindowEvent::CloseRequested);}
@@ -391,14 +414,15 @@ impl ApplicationHandler<UserEvent> for Host {
                 let Some(i) = self.app_index(e.window_id) else { return };
                 let a = &mut self.apps[i];
                 let hatch=a.hatch.as_ref().is_some_and(|h|h.window.id()==e.window_id);
+                let pip=a.pip.as_ref().is_some_and(|p|p.window.id()==e.window_id);
                 let drawer=a.menu_drawer.window.as_ref().is_some_and(|d|d.window.id()==e.window_id);
                 match e.window_event {
                     accesskit_winit::WindowEvent::InitialTreeRequested => {
                         if let Some((_, ad, _)) = self.access.iter_mut().find(|(id, _, _)| *id == e.window_id) {
-                            ad.update_if_active(|| if drawer {a.menu_drawer_access_tree()} else if hatch {a.hatch_access_tree()} else {a.access_tree()});
+                            ad.update_if_active(|| if pip {a.pip_access_tree()} else if drawer {a.menu_drawer_access_tree()} else if hatch {a.hatch_access_tree()} else {a.access_tree()});
                         }
                     }
-                    accesskit_winit::WindowEvent::ActionRequested(req) => if drawer {a.menu_drawer_access_action(req)} else if hatch {a.hatch_access_action(req)} else {a.access_action(req)},
+                    accesskit_winit::WindowEvent::ActionRequested(req) => if pip {a.pip_access_action(req)} else if drawer {a.menu_drawer_access_action(req)} else if hatch {a.hatch_access_action(req)} else {a.access_action(req)},
                     accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
                 }
             }
@@ -407,7 +431,7 @@ impl ApplicationHandler<UserEvent> for Host {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(a)=self.focused.and_then(|id|self.apps.iter().find(|a|a.window.id()==id)).or_else(||self.apps.first()) {
-            self.dock.tick(a.surface.signal,a.motion.reduced());
+            self.dock.tick(a.surface.signal,a.motion.reduced(),self.any_window_focused());
             if let Some(tray)=&mut self.tray {tray.refresh_icon(a.surface.signal);}
         }
         self.refresh_hatch_work();
@@ -446,6 +470,32 @@ impl ApplicationHandler<UserEvent> for Host {
                 a.window.focus_window();
             }
         }
+        // PiP belongs to the process: replace its source, even when requested
+        // by another nus window, instead of accumulating floating windows.
+        let request=self.apps.iter_mut().enumerate().filter_map(|(i,a)|a.pip_request.take().map(|(tab,right)|(i,tab,right))).last();
+        if let Some((owner,tab,right))=request.filter(|(owner,tab,right)| !self.apps[*owner].retarget_pip(*tab,*right)) {
+            let mut existing=None;
+            for a in &mut self.apps {if let Some(p)=a.pip.take(){if existing.is_none(){existing=Some((p.window,p.cur));}}}
+            let previous=existing.as_ref().map(|(_,r)|*r);
+            let window=if let Some((window,_))=existing {Some(window)} else {
+                let mut attrs=Window::default_attributes().with_title("nus · picture in picture")
+                    .with_window_icon(icon_default()).with_decorations(false)
+                    .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+                    .with_resizable(crate::hatch_native::wayland()).with_visible(false).with_active(false)
+                    .with_inner_size(winit::dpi::LogicalSize::new(480.0,270.0));
+                if let Ok(pos)=self.apps[owner].window.outer_position(){attrs=attrs.with_position(pos);}
+                match event_loop.create_window(attrs) {
+                    Ok(window)=>{let adapter=accesskit_winit::Adapter::with_event_loop_proxy(event_loop,&window,self.proxy.clone());self.access.push((window.id(),adapter,0));Some(Arc::new(window))},
+                    Err(e)=>{tracing::warn!("PiP window: {e}");None}
+                }
+            };
+            if let Some(window)=window {
+                self.apps[owner].attach_pip(window,tab,right,previous);
+            }
+        }
+        debug_assert!(self.apps.iter().filter(|a|a.pip.is_some()).count()<=1,"one PiP per process");
+        let live_ids:std::collections::HashSet<_>=self.apps.iter().flat_map(|a|std::iter::once(a.window.id()).chain(a.pip.as_ref().map(|p|p.window.id())).chain(a.hatch.as_ref().map(|h|h.window.id())).chain(a.menu_drawer.window.as_ref().map(|d|d.window.id())).chain(a.little.as_ref().map(|l|l.window.id()))).collect();
+        self.access.retain(|(id,_,_)|live_ids.contains(id));
         for (app_i,a) in self.apps.iter_mut().enumerate() {
         if a.menu_drawer.request {
             a.menu_drawer.request=false;
@@ -518,20 +568,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 Err(e) => tracing::warn!("hatch window: {e}"),
             }
         }
-        if let Some((tab, right)) = a.pip_request.take() {
-            let attrs = Window::default_attributes()
-                .with_title("nus · pip")
-                .with_window_icon(icon_default())
-                .with_decorations(false)
-                .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
-                .with_resizable(false)
-                .with_visible(false)
-                .with_inner_size(winit::dpi::LogicalSize::new(240.0, 135.0));
-            match event_loop.create_window(attrs) {
-                Ok(w) => a.attach_pip(Arc::new(w), tab, right),
-                Err(e) => tracing::warn!("pip window: {e}"),
-            }
-        }
+
         }
     }
 
@@ -615,17 +652,22 @@ impl ApplicationHandler<UserEvent> for Host {
             return;
         }
         if a.pip.as_ref().is_some_and(|p| p.window.id() == id) {
+            if let Some((_,ad,_))=self.access.iter_mut().find(|(wid,_,_)|*wid==id){ad.process_event(&a.pip.as_ref().unwrap().window,&event);}
             match event {
                 WindowEvent::CloseRequested => a.close_pip(),
                 WindowEvent::Focused(f) => a.pip_focus(f),
                 WindowEvent::Resized(s) => a.pip_resized(s.width, s.height),
                 WindowEvent::Moved(p) => a.pip_moved(p.x, p.y),
-                WindowEvent::KeyboardInput { event, .. } => a.pip_key(&event),
+                WindowEvent::KeyboardInput { event, .. } => a.pip_key(&crate::app::KeyIn::from(&event)),
+                WindowEvent::ModifiersChanged(m)=>{if let Some(p)=&mut a.pip{p.mods=m.state();}},
                 WindowEvent::MouseInput { state, button, .. } => a.pip_mouse(button, state),
                 WindowEvent::CursorEntered { .. } => a.pip_cursor_entered(),
-                WindowEvent::CursorMoved { .. } => a.pip_cursor_moved(),
+                WindowEvent::CursorLeft { .. } => a.pip_cursor_left(),
+                WindowEvent::CursorMoved { position, .. } => a.pip_cursor_moved(position.x, position.y),
                 WindowEvent::MouseWheel { delta, .. } => a.pip_wheel(delta),
-                WindowEvent::RedrawRequested => a.pip_frame(),
+                WindowEvent::PinchGesture {delta,..} => a.pip_pinch(delta),
+                WindowEvent::ScaleFactorChanged {..} => a.pip_scale_changed(),
+                WindowEvent::RedrawRequested => {a.pip_frame();if let Some((_,ad,_))=self.access.iter_mut().find(|(wid,_,_)|*wid==id){ad.update_if_active(||a.pip_access_tree());}},
                 _ => {}
             }
             return;
@@ -674,7 +716,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 a.mouse_button(button, state);
                 a.dirty = true;
             }
-            WindowEvent::MouseWheel { delta, .. } => a.wheel(delta),
+            WindowEvent::MouseWheel { delta,phase,.. } => {a.wheel(delta);if phase==winit::event::TouchPhase::Ended{a.timeline_detent();}},
             WindowEvent::Touch(t) => a.touch(t.id, t.phase, t.location.x as f32, t.location.y as f32),
             WindowEvent::RedrawRequested => a.redraw(),
             _ => {}
@@ -729,7 +771,7 @@ fn settle_as_app(dock: &mut dock::Dock) {
             loop {
                 match child.try_wait()? {
                     Some(_) => return child.wait_with_output(),
-                    None if started.elapsed() < Duration::from_secs(5) => dock::pump_launch(),
+                    None if crate::clock::since(started) < Duration::from_secs(5) => dock::pump_launch(),
                     None => { let _ = child.kill(); let _ = child.wait(); return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "login PATH lookup timed out")); }
                 }
             }
@@ -889,8 +931,10 @@ fn main() -> ExitCode {
         a.sync_at_quit();
     }
     // Held shells: an idle prompt is let go, a running command is kept.
+    // Our own shells go, with everything under them: no strays.
     for a in host.apps.iter_mut() {
         a.release_idle_held();
+        a.reap_local_shells();
     }
     host.apps.clear();
     cef::shutdown();

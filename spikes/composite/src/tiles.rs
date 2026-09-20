@@ -198,7 +198,7 @@ impl App {
             }
         }
         self.layout();
-        self.resize_due = Some(std::time::Instant::now() + std::time::Duration::from_millis(60));
+        self.resize_due = Some(crate::clock::now() + std::time::Duration::from_millis(60));
     }
 
     /// Lay the tiled tabs out; false when there is no tiling to show.

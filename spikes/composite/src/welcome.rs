@@ -281,7 +281,7 @@ impl App {
             let hot=card.contains(self.mouse.0,self.mouse.1);
             let duration=self.motion.dur(130.0);
             let lift_px=self.px(2.0);
-            let hover=self.hovers.entry(hover_key("onboarding-card",i)).or_insert_with(|| crate::app::Hover {alpha:crate::anim::Anim::at(0.0),pulse:crate::anim::Anim::at(1.0),hot:false,since:std::time::Instant::now()});
+            let hover=self.hovers.entry(hover_key("onboarding-card",i)).or_insert_with(|| crate::app::Hover {alpha:crate::anim::Anim::at(0.0),pulse:crate::anim::Anim::at(1.0),hot:false,since:crate::clock::now()});
             if hover.hot!=hot {hover.hot=hot;hover.alpha.go(if hot {1.0} else {0.0},duration);}
             let lift=lift_px*hover.alpha.value();
             if hover.alpha.active() {self.dirty=true;}
@@ -358,12 +358,12 @@ impl App {
         }
         let taps=std::mem::take(&mut self.welcome_taps).into_iter().map(|(x,y)|((x-r.x)/sc,(y-r.y)/sc)).collect();
         let env=crate::art::Env {w:r.w/sc,h:r.h/sc,pieces,pointer,taps,face:if t.mode==nus_render::Mode::Ink {"ink".into()} else {"paper".into()},paper:t.paper,ink,signal,dim:t.dim,tint:t.tint,scale:sc,..Default::default()};
-        let (started,art)=self.welcome_art.get_or_insert_with(|| (std::time::Instant::now(),crate::art::Art::open("memphis")));
-        if modal {*started=std::time::Instant::now();}
-        let elapsed=started.elapsed().as_secs_f32();
+        let (started,art)=self.welcome_art.get_or_insert_with(|| (crate::clock::now(),crate::art::Art::open("memphis")));
+        if modal {*started=crate::clock::now();}
+        let elapsed=crate::clock::since(started).as_secs_f32();
         let cmds=art.frame_at(env,if reduced || modal {3.0} else {elapsed});
         self.draw_art_cmds_scaled(scene,r,cmds,sc);
-        if !reduced && !modal && (elapsed<3.0 || self.welcome_anim_until.is_some_and(|until|until>std::time::Instant::now())) {self.dirty=true;}
+        if !reduced && !modal && (elapsed<3.0 || self.welcome_anim_until.is_some_and(|until|until>crate::clock::now())) {self.dirty=true;}
         self.welcome_hits.iter_mut().for_each(|(hit,_)| *hit=hit.intersect(&r));
         self.welcome_hits.retain(|(hit,_)|hit.w>0.0 && hit.h>0.0);
         scene.layer(None);
@@ -382,7 +382,7 @@ impl App {
         if !visible { return false; }
         let Some((_, act)) = self.welcome_hits.iter().find(|(r, _)| r.contains(x, y)).cloned() else {
             if !self.motion.reduced() && self.welcome_shapes.iter().any(|r|r.contains(x,y)) {
-                self.welcome_taps.push((x,y));self.welcome_anim_until=Some(std::time::Instant::now()+std::time::Duration::from_millis(700));self.dirty=true;return true;
+                self.welcome_taps.push((x,y));self.welcome_anim_until=Some(crate::clock::now()+std::time::Duration::from_millis(700));self.dirty=true;return true;
             }
             return false;
         };
@@ -427,15 +427,15 @@ impl App {
             }
             Act::Reader => {
                 self.open_url("https://en.wikipedia.org/wiki/Monterey_Bay_Aquarium", true);
-                self.welcome_pending = Some((Act::Reader, std::time::Instant::now()));
+                self.welcome_pending = Some((Act::Reader, crate::clock::now()));
             }
             Act::Hints => {
                 self.run_in_shell("echo https://docs.rs/wgpu ./src/main.rs 9058fca1");
-                self.welcome_pending = Some((Act::Hints, std::time::Instant::now()));
+                self.welcome_pending = Some((Act::Hints, crate::clock::now()));
             }
             Act::Find => {
                 self.run_in_shell("git log --oneline -8");
-                self.welcome_pending = Some((Act::Find, std::time::Instant::now()));
+                self.welcome_pending = Some((Act::Find, crate::clock::now()));
             }
             Act::Demo(cmd) => self.run_in_shell(cmd),
             Act::Rules => self.apply_setting(Hit::OpenRules, 0.0),
@@ -469,14 +469,14 @@ impl App {
     /// a prompt, reader once the page has loaded.
     pub(crate) fn welcome_tick(&mut self) {
         let Some((act, since)) = self.welcome_pending.clone() else { return };
-        if since.elapsed().as_secs_f32() > 12.0 {
+        if crate::clock::since(since).as_secs_f32() > 12.0 {
             self.welcome_pending = None;
             return;
         }
         match act {
             Act::Hints | Act::Find => {
                 let ready = self.tabs.get_mut(self.active).map(|t| matches!(t.focused(), Pane::Term(p) if p.term.at_prompt() && p.running_since.is_none())).unwrap_or(false);
-                if ready && since.elapsed().as_millis() > 700 {
+                if ready && crate::clock::since(since).as_millis() > 700 {
                     self.welcome_pending = None;
                     if act == Act::Hints {
                         self.term_hints_open();
@@ -490,7 +490,7 @@ impl App {
                     (Pane::Web(w), _) | (_, Some(Pane::Web(w))) => Some(!w.tab.shared.borrow().loading && w.reader.is_none()),
                     _ => None,
                 }).unwrap_or(false);
-                if loaded && since.elapsed().as_millis() > 900 {
+                if loaded && crate::clock::since(since).as_millis() > 900 {
                     self.welcome_pending = None;
                     self.toggle_reader();
                 }

@@ -991,6 +991,8 @@ pub struct App {
     pub workspace: Option<std::path::PathBuf>,
     /// profile/avatar.png as a texture, when there is one.
     pub avatar: Option<Arc<wgpu::BindGroup>>,
+    /// A file dialog is up, waiting on a picture for the face.
+    pub avatar_pick: Option<crate::pick::Pending>,
     pub next_id: u64,
     /// Onboarding ticks (see HINTS); the panel leaves once all five are set.
     pub hints: [bool; 5],
@@ -1176,7 +1178,7 @@ impl App {
             dl_menu: false,
             download_ui: Default::default(),
             dl_anim: Anim::at(0.0),
-            last_tend: Instant::now(),
+            last_tend: crate::clock::now(),
             resized_at: None,
             hovers: std::collections::HashMap::new(),
             tip: None,
@@ -1194,7 +1196,7 @@ impl App {
             look_scroll_max: 0.0,
             look_leave: None,
             tok_sel: crate::settings::TokSel::Signal,
-            last_key: Instant::now(),
+            last_key: crate::clock::now(),
             pointer_hidden: false,
             pointer_request: None,
             blink_half: 0,
@@ -1209,7 +1211,7 @@ impl App {
             settings_reach: 0.0,
             settings_target: None,
             settings_highlight: None,
-            started: Instant::now(),
+            started: crate::clock::now(),
             sound: crate::sound::Sound::new(crate::sound::SoundPrefs::default()),
             start: None,
             me: crate::me::Me::load(),
@@ -1262,6 +1264,7 @@ impl App {
             tree: Default::default(),
             workspace: None,
             avatar: None,
+            avatar_pick: None,
             next_id: 1,
             hints: App::load_hints(),
             hint_hits: Vec::new(),
@@ -1297,7 +1300,7 @@ impl App {
             detected: None,
             dirty: true,
             resize_due: None,
-            last_begin_frame: Instant::now(),
+            last_begin_frame: crate::clock::now(),
             frames: 0,
         };
         app.ordinal = ordinal;
@@ -1656,7 +1659,7 @@ impl App {
     /// Focus mode: the panes alone in the window. Ctrl+Shift+F11 both ways.
     pub(crate) fn toggle_focus(&mut self) {
         self.focus = !self.focus;
-        self.focus_hint = if self.focus { Some(Instant::now()) } else { None };
+        self.focus_hint = if self.focus { Some(crate::clock::now()) } else { None };
         self.sidebar_hover = false;
         self.close_menus();
         self.play_event("toggle");
@@ -1667,7 +1670,7 @@ impl App {
     /// The hint that fades after entering focus mode.
     fn draw_focus_hint(&mut self, scene: &mut Scene) {
         let Some(at) = self.focus_hint else { return };
-        let age = at.elapsed().as_secs_f32();
+        let age = crate::clock::since(at).as_secs_f32();
         if age > 3.0 {
             self.focus_hint = None;
             return;
@@ -1749,7 +1752,7 @@ impl App {
         let narrow = self.width_class() == Width::Narrow;
         // Shells follow their pane a beat later (a size only if it changed).
         if self.resize_due.is_none() {
-            self.resize_due = Some(Instant::now() + std::time::Duration::from_millis(80));
+            self.resize_due = Some(crate::clock::now() + std::time::Duration::from_millis(80));
         }
         if self.layout_tiles() || self.layout_peek() {
             return;
@@ -1797,12 +1800,12 @@ impl App {
 
     pub fn resize(&mut self, w: u32, h: u32) {
         if self.target.size != (w, h) {
-            self.resized_at = Some(Instant::now());
+            self.resized_at = Some(crate::clock::now());
         }
         self.target.resize(&self.gpu.device, w, h);
         self.remember_window();
         self.layout();
-        self.resize_due = Some(Instant::now() + std::time::Duration::from_millis(80));
+        self.resize_due = Some(crate::clock::now() + std::time::Duration::from_millis(80));
     }
 
     /// Time-based housekeeping, once per loop iteration.
@@ -1833,7 +1836,7 @@ impl App {
                 self.dirty = true;
             }
         }
-        if self.layout_offer.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs() > 12) {
+        if self.layout_offer.as_ref().is_some_and(|(_, at)| crate::clock::since(at).as_secs() > 12) {
             self.layout_offer = None;
             self.dirty = true;
         }
@@ -1899,7 +1902,7 @@ impl App {
             }
         }
         self.track_session();
-        if self.window_rect_dirty.is_some_and(|t| t.elapsed().as_millis() > 500) {
+        if self.window_rect_dirty.is_some_and(|t| crate::clock::since(t).as_millis() > 500) {
             self.window_rect_dirty = None;
             if !self.window.is_maximized() {
                 self.save_prefs();
@@ -1932,9 +1935,10 @@ impl App {
         self.tend_ask();
         self.tend_scrolling();
         self.tend_bundles();
+        self.tend_avatar_pick();
         // A held NEW TAB fans the kinds out.
         if let Some((at, SideHit::NewShell)) = self.press {
-            if at.elapsed().as_millis() >= 240 && !self.kinds_menu {
+            if crate::clock::since(at).as_millis() >= 240 && !self.kinds_menu {
                 self.press = None;
                 self.open_kinds_menu();
             }
@@ -1958,8 +1962,8 @@ impl App {
                 }
             } else if self.look_menu {
                 match self.look_leave {
-                    None => self.look_leave = Some(Instant::now()),
-                    Some(t) if t.elapsed().as_millis() > 220 => {
+                    None => self.look_leave = Some(crate::clock::now()),
+                    Some(t) if crate::clock::since(t).as_millis() > 220 => {
                         self.look_menu = false;
                         self.look_anim.go(0.0, self.motion.dur(120.0));
                         self.look_leave = None;
@@ -1975,12 +1979,12 @@ impl App {
         // A blinking cursor wants a frame at each half period.
         let blinking = match self.cursor.blink {
             crate::settings::Blink::Never => false,
-            crate::settings::Blink::AfterIdle => self.last_key.elapsed().as_secs_f32() > 2.0,
+            crate::settings::Blink::AfterIdle => crate::clock::since(self.last_key).as_secs_f32() > 2.0,
             crate::settings::Blink::Always => true,
         };
         if blinking {
             let period = self.cursor.period.max(100) as u128;
-            let half = (self.started.elapsed().as_millis() / period) as u64;
+            let half = (crate::clock::since(self.started).as_millis() / period) as u64;
             if half != self.blink_half {
                 self.blink_half = half;
                 self.dirty = true;
@@ -1992,7 +1996,7 @@ impl App {
             self.dirty = true;
         }
         if let Some(t) = self.sidebar_leave {
-            if Instant::now() >= t {
+            if crate::clock::now() >= t {
                 self.sidebar_leave = None;
                 self.sidebar_hover = false;
                 self.hover_row = None;
@@ -2053,12 +2057,12 @@ impl App {
                         w.load.target = progress.max(trickle).max(0.08);
                         w.load_fade.go(1.0, 0.0);
                         if w.load_since.is_none() {
-                            w.load_since = Some(Instant::now());
+                            w.load_since = Some(crate::clock::now());
                         }
                     } else if w.load.target < 1.0 || w.load.value < 0.999 {
                         w.load.target = 1.0;
                         if let Some(t0) = w.load_since.take() {
-                            if t0.elapsed().as_secs_f32() > 1.0 {
+                            if crate::clock::since(t0).as_secs_f32() > 1.0 {
                                 ready_cue = true;
                             }
                         }
@@ -2310,7 +2314,7 @@ impl App {
         // The shell set its colours: a palette icon offers them for the look.
         p.colour_offer_hit = None;
         if let Some(at) = p.colour_offer {
-            if at.elapsed().as_secs() > 20 {
+            if crate::clock::since(at).as_secs() > 20 {
                 p.colour_offer = None;
             } else {
                 let isz = self.px(14.0);
@@ -2327,7 +2331,7 @@ impl App {
         }
         // A long command just finished: a badge that fades over four seconds.
         if let Some((exit, when)) = p.done {
-            let age = when.elapsed().as_secs_f32();
+            let age = crate::clock::since(when).as_secs_f32();
             if age < 4.0 {
                 let a = (1.0 - (age - 3.0).max(0.0)).clamp(0.0, 1.0);
                 let text = match exit { Some(0) | None => "DONE".to_string(), Some(c) => format!("FAILED · {c}") };
@@ -2344,7 +2348,7 @@ impl App {
         }
         // Progress from the shell (OSC 9;4), as the loading bar along the pane's top.
         if let Some((state, pct)) = p.progress {
-            let v = if state == 3 { (self.started.elapsed().as_secs_f32() * 0.5) % 1.0 } else { pct as f32 / 100.0 };
+            let v = if state == 3 { (crate::clock::since(self.started).as_secs_f32() * 0.5) % 1.0 } else { pct as f32 / 100.0 };
             let color = match state { 2 => self.surface.signal, 4 => crate::theme_edit::from_rgb(t.ansi[3]), _ => ink };
             let th = self.px(self.load_bar.thickness);
             scene.rect(Rect::new(r.x, r.y + hh, r.w * v, th), fade(color, 0.9));
@@ -2525,7 +2529,7 @@ impl App {
             CursorColor::Signal => Some(self.surface.signal),
             CursorColor::Tab => tab_signal.or(Some(self.surface.signal)),
         };
-        let idle = self.last_key.elapsed().as_secs_f32();
+        let idle = crate::clock::since(self.last_key).as_secs_f32();
         let blinking = match self.cursor.blink {
             Blink::Never => false,
             Blink::AfterIdle => idle > 2.0,
@@ -2533,7 +2537,7 @@ impl App {
         };
         let visible = if blinking && focused {
             let period = self.cursor.period.max(100) as f32 / 1000.0;
-            ((self.started.elapsed().as_secs_f32() / period) as u64) % 2 == 0
+            ((crate::clock::since(self.started).as_secs_f32() / period) as u64) % 2 == 0
         } else {
             true
         };
@@ -2551,7 +2555,7 @@ impl App {
             p.cur_x.go(tx, dur);
             p.cur_y.go(ty, dur);
             if self.cursor.motion == CursorMotion::Comet {
-                p.trail.push((p.cur_x.value(), p.cur_y.value(), Instant::now()));
+                p.trail.push((p.cur_x.value(), p.cur_y.value(), crate::clock::now()));
                 if p.trail.len() > 6 {
                     p.trail.remove(0);
                 }
@@ -2572,9 +2576,9 @@ impl App {
         };
         // Comet: the trail fades over 240ms.
         if self.cursor.motion == CursorMotion::Comet {
-            p.trail.retain(|(_, _, t)| t.elapsed().as_millis() < 240);
+            p.trail.retain(|(_, _, t)| crate::clock::since(t).as_millis() < 240);
             for (cx, cy, t) in &p.trail {
-                let a = 1.0 - t.elapsed().as_millis() as f32 / 240.0;
+                let a = 1.0 - crate::clock::since(t).as_millis() as f32 / 240.0;
                 scene.rect(rect_at(*cx, *cy), Theme::with_alpha(color, 0.35 * a));
             }
             if !p.trail.is_empty() {
@@ -2679,6 +2683,42 @@ impl App {
     pub(crate) fn play_event(&mut self, event: &str) {
         let over = self.rules.on_event(event);
         self.sound.event(event, over);
+    }
+
+    /// Browse for a picture for the face. The dialog is the system's;
+    /// `tend_avatar_pick` asks it for an answer once a loop.
+    pub(crate) fn pick_avatar(&mut self) {
+        if self.avatar_pick.is_some() {
+            return;
+        }
+        let dest=std::env::current_dir().unwrap_or_default().join("profile/avatar.png");
+        match crate::pick::image_file(&self.window,"Choose a picture for your profile",dest) {
+            Ok(pending)=>{self.avatar_pick=Some(pending);self.notice("choose a picture for your profile");},
+            Err(e)=>self.notice(&format!("the picture chooser could not open · {e}")),
+        }
+    }
+
+    /// Once a loop: a picture that was picked becomes the face.
+    pub(crate) fn tend_avatar_pick(&mut self) {
+        let Some(pending) = self.avatar_pick.as_mut() else { return };
+        let Some(picked) = pending.poll() else { return };
+        self.avatar_pick = None;
+        match picked {
+            Ok(false)=>{self.dirty=true;return;},
+            Ok(true) => {
+                self.load_avatar();
+                // A picture is only the face once the face says so.
+                if let Some(me) = self.me.as_mut() {
+                    me.face = crate::me::Face::Picture;
+                    me.save();
+                }
+                self.me_card.face = crate::me::Face::Picture;
+                self.play_event("page.ready");
+                self.notice("your face is set · profile/avatar.png");
+            }
+            Err(e) => self.notice(&format!("the picture could not be saved · {e}")),
+        }
+        self.dirty = true;
     }
 
     /// profile/avatar.png → a texture (any size; drawn at 22px).
@@ -2871,7 +2911,7 @@ impl App {
     /// Resize terminals to their panes once the window has settled.
     pub fn apply_term_resizes(&mut self, force: bool) {
         match self.resize_due {
-            Some(t) if force || Instant::now() >= t => self.resize_due = None,
+            Some(t) if force || crate::clock::now() >= t => self.resize_due = None,
             Some(_) => return,
             None if force => {}
             None => return,
@@ -2881,7 +2921,7 @@ impl App {
         let pad_y = self.px(16.0);
         let mut changed = false;
         for tab in &mut self.tabs {
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
                 if let Pane::Term(t) = p {
                     let r = t.rect;
                     let header = if t.show_header { header } else { 0.0 };
@@ -2891,7 +2931,7 @@ impl App {
                     if (cols, rows) != (t.term.cols(), t.term.rows()) {
                         t.term.resize(cols, rows);
                         if let Some(rec) = self.recorder.as_mut() {
-                            rec.resize(tab.id, cols, rows);
+                            rec.resize(crate::replay::stream_id(tab.id,right), cols, rows);
                         }
                         let (cw, ch) = t.grid.cell_size();
                         let _ = t.pty.resize(cols as u16, rows as u16, (cw as u16, ch as u16));
@@ -2909,7 +2949,7 @@ impl App {
         self.scale = scale;
         let term_px = self.behavior.typography.terminal_size * scale * 96.0 / 72.0;
         for tab in &mut self.tabs {
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
                 if let Pane::Term(t) = p {
                     t.grid.set_font(&self.fonts, self.f.term, term_px);
                     t.grid.set_spacing(&self.fonts,self.behavior.typography.terminal_line,self.behavior.typography.terminal_spacing*scale);
@@ -2948,12 +2988,12 @@ impl App {
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let hatch_focused = tab.hatch && !self.hatch_state.overview && self.hatch.as_ref().is_some_and(|h| h.visible && h.focused);
             let looked_at = hatch_focused || (!self.hatch_state.main_hidden && !tab.hatch && i == self.active && self.window.has_focus());
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
                 if let Pane::Term(t) = p {
                     let out = t.pty.take_output();
                     if !out.is_empty() {
                         if let Some(rec) = self.recorder.as_mut() {
-                            rec.output(tab.id, t.term.cols(), t.term.rows(), &out);
+                            rec.output(crate::replay::stream_id(tab.id,right), t.term.cols(), t.term.rows(), &out);
                         }
                         if let Ok(p) = std::env::var("NUS_DUMP") {
                             use std::io::Write;
@@ -3009,7 +3049,7 @@ impl App {
                                         t.waiting = false;
                                         t.work_completed = false;
                                         t.work_command = t.blocks().last().map(|b| crate::journal::oneline(&b.cmd)).unwrap_or_default();
-                                        t.running_since = Some(Instant::now());
+                                        t.running_since = Some(crate::clock::now());
                                         t.running_at = Some(crate::journal::now());
                                         t.done = None;
                                     }
@@ -3018,7 +3058,9 @@ impl App {
                                         // The command that just finished. Not the last B mark:
                                         // the chunk that carried this D usually carries the
                                         // next prompt's A and B too, and that B has no text yet.
-                                        let finished = t.blocks().into_iter().rev().find(|b| !b.running).map(|b| crate::journal::oneline(&b.cmd)).unwrap_or_default();
+                                        let block=t.blocks().into_iter().rev().find(|b|!b.running);
+                                        let finished=block.as_ref().map(|b|crate::journal::oneline(&b.cmd)).unwrap_or_default();
+                                        let output=block.as_ref().map(|b|t.block_output_text(b.start)).unwrap_or_default();
                                         t.work_completed = !finished.is_empty();
                                         t.work_command = finished.clone();
                                         // Remember the command for predictions.
@@ -3028,13 +3070,13 @@ impl App {
                                         }
                                         // Replay: a checkpoint at the block's end (its still on the next draw).
                                         if self.recorder.is_some() {
-                                            let ms = t.running_since.map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
-                                            checkpoints.push((i, serde_json::json!({ "cmd": finished, "exit": exit, "cwd": t.term.cwd, "ms": ms, "at": crate::journal::now() })));
+                                            let ms = t.running_since.map(|s| crate::clock::since(s).as_millis() as u64).unwrap_or(0);
+                                            checkpoints.push((i, serde_json::json!({ "cmd": finished, "output":output,"right":right,"exit": exit, "cwd": t.term.cwd, "ms": ms, "at": crate::journal::now() })));
                                         }
                                         // The journal: what ran here, when, how long, how it ended.
                                         if journal_on {
                                             if let (Some(since), Some(at)) = (t.running_since, t.running_at.take()) {
-                                                let e = crate::journal::Entry { cmd: finished.clone(), cwd: t.term.cwd.clone().unwrap_or_default(), start: at, ms: since.elapsed().as_millis() as u64, exit, tab: t.title.clone(), shell: t.profile_name.clone() };
+                                                let e = crate::journal::Entry { cmd: finished.clone(), cwd: t.term.cwd.clone().unwrap_or_default(), start: at, ms: crate::clock::since(since).as_millis() as u64, exit, tab: t.title.clone(), shell: t.profile_name.clone() };
                                                 if crate::journal::worth(&e) {
                                                     crate::journal::append(&e, journal_keep);
                                                 }
@@ -3043,8 +3085,8 @@ impl App {
                                         if let Some(since) = t.running_since.take() {
                                             // A command that took a while: say so when
                                             // the user is elsewhere, badge it either way.
-                                            if since.elapsed().as_secs_f32() > 2.0 {
-                                                t.done = Some((exit, Instant::now()));
+                                            if crate::clock::since(since).as_secs_f32() > 2.0 {
+                                                t.done = Some((exit, crate::clock::now()));
                                                 if !looked_at {
                                                     t.waiting = true;
                                                     bell = true;
@@ -3080,7 +3122,7 @@ impl App {
                                 let bg = t.term.palette.override_of(nus_vt::palette::BG);
                                 if fg.is_some() || bg.is_some() {
                                     match shell_colours {
-                                        crate::settings::ShellColours::Chip => t.colour_offer = Some(Instant::now()),
+                                        crate::settings::ShellColours::Chip => t.colour_offer = Some(crate::clock::now()),
                                         crate::settings::ShellColours::Always => apply_colours.push((fg, bg)),
                                         crate::settings::ShellColours::PaneOnly => {}
                                     }
@@ -3200,10 +3242,10 @@ impl App {
     }
 
     pub fn begin_frames(&mut self) {
-        if self.last_begin_frame.elapsed().as_millis() < 16 {
+        if crate::clock::since(self.last_begin_frame).as_millis() < 16 {
             return;
         }
-        self.last_begin_frame = Instant::now();
+        self.last_begin_frame = crate::clock::now();
         if let Some(p) = &self.pip {
             if let Some(tab) = self.tabs.get(p.tab) {
                 for pane in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
@@ -3267,9 +3309,9 @@ impl App {
             FPS.with(|f| {
                 let (n, t) = f.get();
                 let t = t.unwrap_or_else(Instant::now);
-                if t.elapsed().as_secs_f32() >= 1.0 {
+                if crate::clock::since(t).as_secs_f32() >= 1.0 {
                     eprintln!("FPS {}", n + 1);
-                    f.set((0, Some(Instant::now())));
+                    f.set((0, Some(crate::clock::now())));
                 } else {
                     f.set((n + 1, Some(t)));
                 }
@@ -3471,7 +3513,7 @@ impl App {
         // A new port: the ports icon glows signal for six seconds — no words;
         // the line itself lives in the board's foot and the hatch's.
         let toast_glow = self.board.toast.as_ref().map(|(_, at, _)| {
-            let age = at.elapsed().as_secs_f32();
+            let age = crate::clock::since(at).as_secs_f32();
             if age < 0.25 { age / 0.25 } else if age > 5.4 { ((6.0 - age) / 0.6).clamp(0.0, 1.0) } else { 1.0 }
         });
         for (icon, count, hit, lit) in cluster {
@@ -3545,7 +3587,7 @@ impl App {
             if self.surface.texture > 0.0 {
                 let g = [1.0, 1.0, 1.0, self.surface.texture];
                 let pitch = self.px(self.surface.texture_scale);
-                let tm = if self.surface.texture_motion { self.started.elapsed().as_secs_f32() % 3600.0 } else { 0.0 };
+                let tm = if self.surface.texture_motion { crate::clock::since(self.started).as_secs_f32() % 3600.0 } else { 0.0 };
                 let rects: Vec<Rect> = match self.surface.texture_on {
                     crate::surface::TextureOn::Carapace => {
                         // A thin band needs a heavier hand: the texture follows the
@@ -3906,20 +3948,20 @@ impl App {
         let dur_in = self.motion.dur(80.0);
         let dur_out = self.motion.dur(140.0);
         let pulse_dur = self.motion.dur(260.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: Instant::now() });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, if hot { dur_in } else { dur_out });
             if hot {
                 h.pulse.replay(0.0, 1.0, pulse_dur);
-                h.since = Instant::now();
+                h.since = crate::clock::now();
             }
         }
         if hot {
             let since = h.since;
             if let Some(words) = tip_for(key) {
                 self.tip = Some(Tip { anchor: hit, text: words.to_string(), since });
-                if since.elapsed().as_millis() < 700 {
+                if crate::clock::since(since).as_millis() < 700 {
                     self.dirty = true;
                 }
             }
@@ -3959,7 +4001,7 @@ impl App {
             self.tip_since = None;
             return;
         };
-        let age = tip.since.elapsed().as_secs_f32();
+        let age = crate::clock::since(tip.since).as_secs_f32();
         if age < 0.5 || self.palette.is_some() || self.board.open || self.start.is_some() {
             return;
         }
@@ -3988,7 +4030,7 @@ impl App {
     /// and the file's name — for twelve seconds. Click opens it.
     fn draw_layout_offer(&mut self, scene: &mut Scene, w: f32) {
         let Some((path, at)) = self.layout_offer.clone() else { return };
-        let age = at.elapsed().as_secs_f32();
+        let age = crate::clock::since(at).as_secs_f32();
         let a = if age < 0.25 { age / 0.25 } else if age > 11.4 { ((12.0 - age) / 0.6).clamp(0.0, 1.0) } else { 1.0 };
         let t = self.theme.clone();
         let label = self.label();
@@ -4014,7 +4056,7 @@ impl App {
     /// indeterminate a marquee that keeps the frame alive.
     pub(crate) fn progress_look(&mut self, state: u8, pct: u8) -> (f32, nus_render::Color) {
         let t = &self.theme;
-        let v = if state == 3 { (self.started.elapsed().as_secs_f32() * 0.5) % 1.0 } else { pct as f32 / 100.0 };
+        let v = if state == 3 { (crate::clock::since(self.started).as_secs_f32() * 0.5) % 1.0 } else { pct as f32 / 100.0 };
         let color = match state {
             2 => self.surface.signal,
             4 => crate::theme_edit::from_rgb(t.ansi[3]),
@@ -4341,7 +4383,7 @@ impl App {
                 if is_waiting {
                     scene.rect(dot, self.surface.signal);
                 } else {
-                    let breath = 0.35 + 0.45 * (0.5 + 0.5 * (self.started.elapsed().as_secs_f32() * 2.2).sin());
+                    let breath = 0.35 + 0.45 * (0.5 + 0.5 * (crate::clock::since(self.started).as_secs_f32() * 2.2).sin());
                     scene.rect(dot, fade(ink, breath));
                     self.dirty = true;
                 }
@@ -4462,17 +4504,17 @@ impl App {
     pub(crate) fn foot_tip(&mut self, key: u64, hit: Rect, words: String) {
         let (mx, my) = self.mouse;
         let hot = hit.contains(mx, my);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: Instant::now() });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             if hot {
-                h.since = Instant::now();
+                h.since = crate::clock::now();
             }
         }
         if hot {
             let since = h.since;
             self.tip = Some(Tip { anchor: hit, text: words, since });
-            if since.elapsed().as_millis() < 700 {
+            if crate::clock::since(since).as_millis() < 700 {
                 self.dirty = true;
             }
         }
@@ -4491,7 +4533,7 @@ impl App {
         let key = hover_key("look", 0);
         let dur_in = self.motion.dur(160.0);
         let dur_out = self.motion.dur(220.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, if hot { dur_in } else { dur_out });
@@ -4548,7 +4590,7 @@ impl App {
             SideHit::NewTab => self.open_start_page(false),
             SideHit::NewShell if !from_mouse => self.open_start_page(false),
             SideHit::NewShell => {
-                self.press = Some((Instant::now(), SideHit::NewShell));
+                self.press = Some((crate::clock::now(), SideHit::NewShell));
                 self.play_event("control.press");
             }
             SideHit::Window => {
@@ -5518,6 +5560,7 @@ impl App {
                     let _ = x;
                     scene.hline(r.x, r.y + hh - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
                 }
+                if p.replay && self.timeline.as_ref().is_some_and(|tl|!tl.snapshot){self.draw_timeline_ruler(scene,p,r);return;}
                 if let Some(proc_name) = p.confirm_close.clone() {
                     let drop = self.band_anim.value();
                     let bh = self.header_h();
@@ -5741,7 +5784,7 @@ impl App {
                         if asleep {
                             scene.push(nus_render::Instance::stroke(lr, d / 2.0, self.px(1.0), t.dim, None, 0.0));
                         } else if loading {
-                            let k = 0.55 + 0.45 * (self.started.elapsed().as_secs_f32() * 4.0).sin().abs();
+                            let k = 0.55 + 0.45 * (crate::clock::since(self.started).as_secs_f32() * 4.0).sin().abs();
                             scene.push(nus_render::Instance::rounded(lr, d / 2.0, fade(self.surface.signal, k)));
                             if let Some((mode,input))=&self.palette {
                 self.palette_sel=self.palette_sel.min(self.palette_rows(*mode,input).len().saturating_sub(1));
@@ -5778,7 +5821,7 @@ impl App {
             let speed = 28.0 * self.motion.register.max(0.2); // px/s, slower when cinematic
             let slide = over / speed;
             let period = slide * 2.0 + 2.4;
-            let t = (self.started.elapsed().as_secs_f32() + (key % 7) as f32 * 0.37) % period;
+            let t = (crate::clock::since(self.started).as_secs_f32() + (key % 7) as f32 * 0.37) % period;
             self.dirty = true;
             if t < 1.2 { 0.0 } else if t < 1.2 + slide { (t - 1.2) / slide * over } else if t < 2.4 + slide { over } else { over - (t - 2.4 - slide) / slide * over }
         } else {
@@ -5860,7 +5903,7 @@ impl App {
                     rows.push(row("⇥", "set this window as the launch tabs".into(), Action::SetLaunchTabs));
                 }
                 if hit("timeline") || hit("replay") || hit("then") {
-                    rows.push(row("↺", "timeline · this tab at any checkpoint (ctrl+shift+h)".into(), Action::Timeline));
+                    rows.push(row("↺", "session history · browse the command map (ctrl+shift+h)".into(), Action::Timeline));
                 }
                 if hit("share") || hit("replay") {
                     rows.push(row("↗", "share this tab as a replay · one html file, the real cells".into(), Action::ShareReplay));
@@ -6467,7 +6510,22 @@ impl App {
 
     // --- input -----------------------------------------------------------
 
+    /// A key as every path in nus reads it. A real key from winit becomes
+    /// one of these, and so does a recorder's scripted `key cmd+s`, so a
+    /// shot runs the same code a finger does. (winit's own `KeyEvent`
+    /// can't be built outside winit, which is why this exists.)
     pub fn key(&mut self, ev: &WKeyEvent) {
+        let k = KeyIn {
+            physical_key: ev.physical_key,
+            logical_key: ev.logical_key.clone(),
+            text: ev.text.clone(),
+            state: ev.state,
+            repeat: ev.repeat,
+        };
+        self.key_in(&k);
+    }
+
+    pub fn key_in(&mut self, ev: &KeyIn) {
         let pressed = ev.state == ElementState::Pressed;
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
@@ -6479,6 +6537,14 @@ impl App {
             return self.toggle_hatch();
         }
 
+
+        if self.timeline.is_some() && self.palette.is_none() {
+            if pressed {
+                if ctrl && shift && ev.physical_key==PhysicalKey::Code(KeyCode::KeyH){self.close_timeline();}
+                else {self.timeline_key(&ev.logical_key);}
+            }
+            return;
+        }
 
         if self.splash.is_some() {
             return;
@@ -6493,6 +6559,8 @@ impl App {
         if self.start_key(ev) {
             return;
         }
+        let downloads_page=self.tabs.get(self.active).is_some_and(|t| matches!(if t.focus_right{t.right.as_ref().unwrap_or(&t.left)}else{&t.left},Pane::Downloads(_)));
+        if pressed && (self.dl_menu || downloads_page && self.palette.is_none()) && self.download_key(ev) {return;}
         if pressed && (if cfg!(target_os="macos") {sup} else {ctrl}) && matches!(&ev.logical_key,WKey::Character(c) if c.eq_ignore_ascii_case("f")) && self.palette.is_none() && self.tabs.get(self.active).is_some_and(|t|matches!(t.left,Pane::Settings(_))) {
             self.open_palette(PaletteMode::Settings);return;
         }
@@ -6598,14 +6666,6 @@ impl App {
             PhysicalKey::Code(c) => Some(c),
             _ => None,
         };
-        if pressed && self.dl_menu {
-            match code {
-                Some(KeyCode::Escape)=>self.close_menus(),
-                Some(KeyCode::Tab)=>{let n=self.download_ui.hits.len();if n>0{let i=self.download_ui.focus.map(|i|if shift{(i+n-1)%n}else{(i+1)%n}).unwrap_or(if shift{n-1}else{0});self.download_ui.focus=Some(i);}},
-                Some(KeyCode::Enter)|Some(KeyCode::Space)=>{if let Some((_,hit))=self.download_ui.focus.and_then(|i|self.download_ui.hits.get(i)).copied(){self.download_action(hit);}},
-                _=>{}
-            } self.dirty=true;return;
-        }
         if pressed && code==Some(KeyCode::KeyJ) && (if cfg!(target_os="macos"){sup}else{ctrl}) && !shift {return self.open_downloads();}
         if pressed && code == Some(KeyCode::F11) && !ctrl && !shift {
             return self.toggle_fullscreen();
@@ -6764,7 +6824,7 @@ impl App {
 
         // Route to the focused pane.
         if pressed {
-            self.last_key = Instant::now();
+            self.last_key = crate::clock::now();
             if self.cursor.hide_while_typing && !self.pointer_hidden && matches!(self.tabs.get_mut(self.active).map(|t| t.focused()), Some(Pane::Term(_))) {
                 self.window.set_cursor_visible(false);
                 self.pointer_hidden = true;
@@ -6990,7 +7050,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let look = self.look_for(&left, None);
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: Instant::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look }
+        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look }
     }
 
     /// Ask the rules what a new tab looks like.
@@ -7362,6 +7422,7 @@ impl App {
             }
             return;
         }
+        if self.timeline.as_ref().is_some_and(|t|self.tabs[i].id!=t.tab_id){self.close_timeline();}
         self.wake_tab(i);
         let prev = self.active;
         if let Some(p) = &self.pip {
@@ -7513,6 +7574,46 @@ impl App {
         self.layout();
     }
 
+    /// At quit: every local shell in this window, and everything it
+    /// started, stopped over one reading of the process table — so the
+    /// app leaves nothing of its own behind. Held shells are not ours to
+    /// end; `release_idle_held` decides those.
+    pub(crate) fn reap_local_shells(&mut self) {
+        let tree = nus_pty::ports::process_tree();
+        let all: Vec<usize> = (0..self.tabs.len()).collect();
+        // Held shells are not ours to end here; `release_idle_held` has
+        // already let go of the idle ones and kept the working ones.
+        Self::reap_panes(&mut self.tabs, &all, &tree, false);
+    }
+
+    /// Stop the shells in `which` and everything under them: the trees
+    /// are signalled together, over one reading of `tree`, and only then
+    /// is each shell itself killed. A held shell has no tree of ours —
+    /// the holder reaps it on its side — so only the word goes out, and
+    /// only when `held` says this is an ending rather than a letting go.
+    fn reap_panes(tabs: &mut [Tab], which: &[usize], tree: &std::collections::HashMap<u32, (u32, String)>, held: bool) {
+        let mut pids: Vec<u32> = Vec::new();
+        for &i in which {
+            let Some(tab) = tabs.get(i) else { continue };
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Term(t) = p {
+                    pids.extend(t.pty.local_pid());
+                }
+            }
+        }
+        nus_pty::ports::reap_trees_in(tree, &pids);
+        for &i in which {
+            let Some(tab) = tabs.get_mut(i) else { continue };
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                if let Pane::Term(t) = p {
+                    if held || t.pty.held_id().is_none() {
+                        t.pty.kill_reaped();
+                    }
+                }
+            }
+        }
+    }
+
     /// At quit: kill held shells sitting at a prompt; leave the ones with a
     /// foreground process for the next launch to attach to.
     pub(crate) fn release_idle_held(&mut self) {
@@ -7572,6 +7673,7 @@ impl App {
     /// Close the selection (or the active tab). Unless `force`, a terminal
     /// with a foreground process asks first.
     pub(crate) fn close_tabs(&mut self, force: bool) {
+        self.close_timeline();
         let force = force || !self.behavior.close_asks;
         let mut targets: Vec<usize> = if self.selected.is_empty() {
             vec![self.active]
@@ -7604,35 +7706,53 @@ impl App {
                 return;
             }
         }
+        // One reading of the process table answers both questions: is
+        // there work to warn about, and what has to be stopped.
+        let tree = nus_pty::ports::process_tree();
         if !force {
-            for &i in &targets {
-                if let Pane::Term(t) = &mut self.tabs[i].left {
-                    if self.behavior.shell_integration && t.term.at_prompt() {
+            // Real work, not a bare prompt. A shell at its prompt with
+            // nothing under it closes without a word; anything else is
+            // named and asked about, in either half of a split.
+            let integration = self.behavior.shell_integration;
+            let mut ask: Option<(usize, bool, String)> = None;
+            'scan: for &i in &targets {
+                let Some(tab) = self.tabs.get_mut(i) else { continue };
+                for (right, pane) in [(false, Some(&mut tab.left)), (true, tab.right.as_mut())] {
+                    let Some(Pane::Term(t)) = pane else { continue };
+                    let Some(pid) = t.pty.pid() else { continue };
+                    let running = nus_pty::ports::child_name_in(&tree, pid);
+                    if integration && t.term.at_prompt() && running.is_none() {
                         continue;
                     }
-                    if let Some(p) = t.pty.foreground_process() {
-                        self.active = i;
-                        if let Pane::Term(t) = &mut self.tabs[i].left {
-                            t.confirm_close = Some(p);
-                        }
-                        self.band_anim.replay(0.0, 1.0, self.motion.dur(base::BAND));
-                        self.dirty = true;
-                        return;
+                    if let Some(name) = running {
+                        ask = Some((i, right, name));
+                        break 'scan;
                     }
                 }
+            }
+            if let Some((i, right, name)) = ask {
+                self.active = i;
+                if let Some(tab) = self.tabs.get_mut(i) {
+                    tab.focus_right = right && tab.right.is_some();
+                    let pane = if tab.focus_right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                    if let Some(Pane::Term(t)) = pane {
+                        t.confirm_close = Some(name);
+                    }
+                }
+                self.band_anim.replay(0.0, 1.0, self.motion.dur(base::BAND));
+                self.dirty = true;
+                return;
             }
         }
         self.play_event("tab.close");
+        // Closing is terminating: every shell in the targets goes, and so
+        // does everything it started. The whole stack is reaped in one
+        // pass, so a tab with work in it costs the grace period once.
+        // A held shell is the holder's: closing the tab means ending it
+        // on purpose, so it goes too.
+        Self::reap_panes(&mut self.tabs, &targets, &tree, true);
         for &i in targets.iter().rev() {
-            let mut tab = self.tabs.remove(i);
-            // A held shell is the holder's: closing means killing it on purpose.
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
-                if let Pane::Term(t) = p {
-                    if t.pty.held_id().is_some() {
-                        t.pty.kill();
-                    }
-                }
-            }
+            let tab = self.tabs.remove(i);
             self.tile_forget(tab.id);
             self.closed.push(match &tab.left {
                 Pane::Term(t) => Closed::Term(t.profile),
@@ -7672,6 +7792,7 @@ impl App {
     }
 
     pub fn focus_changed(&mut self, focused: bool) {
+        if !focused {if let Some(tl)=&mut self.timeline{tl.map_drag=None;}}
         self.window_focused = focused;
         self.news_focus(focused);
         if !focused {
@@ -7703,6 +7824,7 @@ impl App {
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
         let was = self.mouse;
         self.mouse = (x, y);
+        if self.timeline_pointer(x,y){self.dirty=true;return;}
         if self.sidebar_resize.is_some(){self.sidebar_resize_to(x,y);return;}
         if let Some(hit) = self.settings_drag {
             self.apply_setting(hit, x);
@@ -7777,7 +7899,7 @@ impl App {
                 if inside {
                     self.sidebar_leave = None;
                 } else if self.sidebar_leave.is_none() {
-                    self.sidebar_leave = Some(Instant::now() + std::time::Duration::from_millis(self.sidebar_rules.grace_ms));
+                    self.sidebar_leave = Some(crate::clock::now() + std::time::Duration::from_millis(self.sidebar_rules.grace_ms));
                 }
             }
             if !at_edge {
@@ -7839,6 +7961,7 @@ impl App {
 
     pub fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
         let (x, y) = self.mouse;
+        if self.timeline_mouse(button,state,x,y){return;}
         let pressed = state == ElementState::Pressed;
         if !pressed && button == MouseButton::Left && self.settings_drag.take().is_some() {
             self.save_prefs();
@@ -7917,7 +8040,7 @@ impl App {
         if !pressed && button == MouseButton::Left {
             if let Some((at, SideHit::NewShell)) = self.press.take() {
                 let still = self.side_hits.iter().any(|(r, h)| *h == SideHit::NewShell && r.contains(x, y));
-                if still && at.elapsed().as_millis() < 240 && !self.kinds_menu {
+                if still && crate::clock::since(at).as_millis() < 240 && !self.kinds_menu {
                     if self.header.flash {
                         self.flash_anim.replay(0.0, 1.0, self.motion.dur(120.0));
                         self.flash_anim.go(0.0, self.motion.dur(120.0));
@@ -8108,7 +8231,7 @@ impl App {
         if self.editor_mouse(button, state, x, y) {
             return;
         }
-        if pressed && button == MouseButton::Left && (self.timeline_click(x, y) || self.hunk_click(x, y) || self.lamp_click(x, y) || self.cutoff_click(x, y)) {
+        if pressed && button == MouseButton::Left && (self.hunk_click(x, y) || self.lamp_click(x, y) || self.cutoff_click(x, y)) {
             return;
         }
         if pressed && button == MouseButton::Left && self.colour_offer_click(x, y) {
@@ -8288,6 +8411,7 @@ impl App {
             MouseScrollDelta::LineDelta(_, y) => y * 40.0,
             MouseScrollDelta::PixelDelta(p) => p.y as f32,
         };
+        if self.timeline_wheel(x,y,dy_px){return;}
         if self.palette.is_some() {
             self.palette_scroll=(self.palette_scroll-dy_px).clamp(0.0,self.palette_scroll_max);
             self.palette_reveal=false;self.dirty=true;return;
@@ -8413,7 +8537,7 @@ impl App {
             let r = (p.x, p.y, s.width, s.height);
             if self.window_rect != Some(r) && s.width > 200 && s.height > 200 {
                 self.window_rect = Some(r);
-                self.window_rect_dirty = Some(Instant::now());
+                self.window_rect_dirty = Some(crate::clock::now());
             }
         }
     }
@@ -8648,7 +8772,24 @@ pub(crate) fn cef_mods(m: ModifiersState) -> u32 {
 
 /// Windows virtual-key code for a winit key (what CEF expects on Windows).
 /// Forward a winit key event to a browser: raw down, chars, or up.
-pub(crate) fn forward_key(tab: &BrowserTab, ev: &WKeyEvent, mods: ModifiersState) {
+/// The parts of a key press the app acts on: what winit gives, minus the
+/// platform's private half, so one can be made from a script.
+#[derive(Clone, Debug)]
+pub struct KeyIn {
+    pub physical_key: PhysicalKey,
+    pub logical_key: WKey,
+    pub text: Option<winit::keyboard::SmolStr>,
+    pub state: ElementState,
+    pub repeat: bool,
+}
+
+impl From<&WKeyEvent> for KeyIn {
+    fn from(ev: &WKeyEvent) -> KeyIn {
+        KeyIn { physical_key: ev.physical_key, logical_key: ev.logical_key.clone(), text: ev.text.clone(), state: ev.state, repeat: ev.repeat }
+    }
+}
+
+pub(crate) fn forward_key(tab: &BrowserTab, ev: &KeyIn, mods: ModifiersState) {
     let pressed = ev.state == ElementState::Pressed;
     let (ctrl, alt) = (mods.control_key(), mods.alt_key());
     let flags = cef_mods(mods);

@@ -266,8 +266,8 @@ fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<S
         }text
     });
     let stderr=std::thread::spawn(move||{use std::io::Read;let mut data=Vec::new();let mut errors=errors;let _=errors.by_ref().take(64*1024).read_to_end(&mut data);let _=std::io::copy(&mut errors,&mut std::io::sink());String::from_utf8_lossy(&data).to_string()});
-    let start=Instant::now();let status=loop{
-        match child.try_wait(){Ok(Some(status))=>break status,Ok(None) if start.elapsed().as_secs()<110=>std::thread::sleep(std::time::Duration::from_millis(40)),_=>{let _=child.kill();let _=child.wait();return Err("Assistant timed out. Open its terminal session or check its connection.".into());}}
+    let start=crate::clock::now();let status=loop{
+        match child.try_wait(){Ok(Some(status))=>break status,Ok(None) if crate::clock::since(start).as_secs()<110=>std::thread::sleep(std::time::Duration::from_millis(40)),_=>{let _=child.kill();let _=child.wait();return Err("Assistant timed out. Open its terminal session or check its connection.".into());}}
     };
     let text=reader.join().unwrap_or_default();let errors=stderr.join().unwrap_or_default();
     if !status.success(){let detail=crate::surface::first_line(errors.trim());return Err(if detail.is_empty(){format!("{} exited with {}",backend.name,status)}else{detail});}
@@ -410,7 +410,7 @@ impl App {
             return;
         }
         ask.turns.push(Turn { q: shown.to_string(), blocks: Vec::new(), error: None });
-        ask.gathering = Some((-1, String::new(), String::new(), String::new(), gathered, Instant::now(), Some(task.to_string())));
+        ask.gathering = Some((-1, String::new(), String::new(), String::new(), gathered, crate::clock::now(), Some(task.to_string())));
         self.play_event("control.press");
         self.dirty = true;
     }
@@ -454,8 +454,8 @@ impl App {
         };
         ask.turns.push(Turn { q: shown, blocks: Vec::new(), error: None });
         match page {
-            Some((id, title, url)) => ask.gathering = Some((id, title, url, q, gathered, Instant::now(), skill_prompt)),
-            None => ask.gathering = Some((-1, String::new(), String::new(), q, gathered, Instant::now(), skill_prompt)),
+            Some((id, title, url)) => ask.gathering = Some((id, title, url, q, gathered, crate::clock::now(), skill_prompt)),
+            None => ask.gathering = Some((-1, String::new(), String::new(), q, gathered, crate::clock::now(), skill_prompt)),
         }
         self.play_event("control.press");
         self.dirty = true;
@@ -492,7 +492,7 @@ impl App {
             let _ = tx.send(run(&b, &p, Some(stx), Some(&cwd)));
         });
         if let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) {
-            ask.pending = Some((rx, Instant::now(), backend.name.clone()));
+            ask.pending = Some((rx, crate::clock::now(), backend.name.clone()));
             ask.stream = Some(srx);
             ask.partial.clear();
         }
@@ -506,7 +506,7 @@ impl App {
         let waiting = self.ask_term().and_then(|t| t.ask.as_ref()).and_then(|a| a.gathering.as_ref().map(|g| (g.0, g.5)));
         if let Some((id, since)) = waiting {
             let text = if id >= 0 { self.take_page_text(id) } else { Some(String::new()) };
-            let timed_out = since.elapsed().as_millis() > 1500;
+            let timed_out = crate::clock::since(since).as_millis() > 1500;
             if text.is_some() || timed_out {
                 if let Some((_, title, url, q, g, _, sk)) = self.ask_term().and_then(|t| t.ask.as_mut()).and_then(|a| a.gathering.take()) {
                     let page = match text {
@@ -565,7 +565,7 @@ impl App {
                         changed = true;
                     }
                     Err(_) => {
-                        if at.elapsed().as_secs() > 90 {
+                        if crate::clock::since(at).as_secs() > 90 {
                             if let Some(turn) = ask.turns.last_mut() {
                                 turn.error = Some("no answer in 90s".into());
                             }
@@ -592,7 +592,7 @@ impl App {
     }
 
     /// Keys while the field has focus. Returns true when taken.
-    pub(crate) fn ask_key(&mut self, key: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn ask_key(&mut self, key: &crate::app::KeyIn) -> bool {
         use winit::event::ElementState;
         use winit::keyboard::{Key as WKey, NamedKey};
         if key.state != ElementState::Pressed {
@@ -681,7 +681,7 @@ impl App {
             Some(AskHit::Copy(ti, bi)) => {
                 if let Some(Block::Code { text, .. }) = ask.turns.get(ti).and_then(|t| t.blocks.get(bi)) {
                     copy = Some(text.clone());
-                    ask.copied = Some((ti, bi, Instant::now()));
+                    ask.copied = Some((ti, bi, crate::clock::now()));
                 }
             }
             Some(AskHit::Ctx(c)) => {
@@ -818,7 +818,7 @@ impl App {
         if lit {
             let iw = self.fonts.measure(ui, &ask.input);
             let cxr = (field.x + self.px(8.0) + iw.min(field.w - self.px(16.0))).round();
-            let on = (self.started.elapsed().as_secs_f32() * 2.0) as u32 % 2 == 0;
+            let on = (crate::clock::since(self.started).as_secs_f32() * 2.0) as u32 % 2 == 0;
             if on {
                 scene.rect(Rect::new(cxr, fy + self.px(6.0), self.px(1.5), field.h - self.px(12.0)), ink);
             }
@@ -895,7 +895,7 @@ impl App {
             if turn.blocks.is_empty() && turn.error.is_none() {
                 if pending && ti + 1 == n_turns {
                     // Waiting: a breathing dot.
-                    let k = 0.35 + 0.65 * (self.started.elapsed().as_secs_f32() * 3.0).sin().abs();
+                    let k = 0.35 + 0.65 * (crate::clock::since(self.started).as_secs_f32() * 3.0).sin().abs();
                     let d = self.px(7.0);
                     scene.push(nus_render::Instance::rounded(Rect::new(pr.x + pad, y + self.px(4.0), d, d), d / 2.0, crate::app::fade(self.surface.signal, k)));
                     self.fonts.draw(scene, dim, pr.x + pad + d + self.px(8.0), y + self.px(11.0), "THINKING");
@@ -961,7 +961,7 @@ impl App {
                         let cy = y + self.px(4.0);
                         let ch = self.px(18.0);
                         let mut cx = card.x;
-                        let copied = ask.copied.is_some_and(|(a, b, at)| a == ti && b == bi && at.elapsed().as_secs_f32() < 1.2);
+                        let copied = ask.copied.is_some_and(|(a, b, at)| a == ti && b == bi && crate::clock::since(at).as_secs_f32() < 1.2);
                         let isz = self.px(13.0);
                         for (k, icon, words, hit) in [
                             (0usize, nus_render::text::icons::ENTER, "insert at the prompt", AskHit::Insert(ti, bi)),

@@ -114,7 +114,7 @@ impl Remembered {
             container: None,
             name: None,
             rule: Rule::default(),
-            seen: Instant::now(),
+            seen: crate::clock::now(),
             dying: None,
             tunnel: None,
             watch: false,
@@ -491,7 +491,7 @@ fn spawn_worker(tx: Sender<Update>, wants: Arc<Mutex<Wants>>) {
         .name("ports".into())
         .spawn(move || {
             let mut known: HashMap<u32, Process> = HashMap::new();
-            let mut last_docker = Instant::now() - Duration::from_secs(60);
+            let mut last_docker = crate::clock::now() - Duration::from_secs(60);
             let mut docker: Vec<(u16, String, String)> = Vec::new();
             loop {
                 let w = wants.lock().map(|w| w.clone()).unwrap_or(Wants { interval: Duration::from_secs(10), docker: false, probe: false, probe_ports: Vec::new() });
@@ -528,8 +528,8 @@ fn spawn_worker(tx: Sender<Update>, wants: Arc<Mutex<Wants>>) {
                 }
                 // Forget pids that are gone, so a reused pid gets fresh facts.
                 known.retain(|pid, _| tree.contains_key(pid));
-                if w.docker && last_docker.elapsed() >= Duration::from_secs(15) {
-                    last_docker = Instant::now();
+                if w.docker && crate::clock::since(last_docker) >= Duration::from_secs(15) {
+                    last_docker = crate::clock::now();
                     docker = nus_pty::ports::docker_ports();
                 }
                 let snap = Snapshot {
@@ -537,7 +537,7 @@ fn spawn_worker(tx: Sender<Update>, wants: Arc<Mutex<Wants>>) {
                     tree,
                     info: known.clone(),
                     docker: if w.docker { docker.clone() } else { Vec::new() },
-                    at: Instant::now(),
+                    at: crate::clock::now(),
                 };
                 if tx.send(Update::Snapshot(snap)).is_err() {
                     return;
@@ -587,14 +587,14 @@ impl App {
         }
         // Flaps and the toast expire.
         let before = self.board.departed.len();
-        self.board.departed.retain(|d| d.at.elapsed().as_millis() < 450);
+        self.board.departed.retain(|d| crate::clock::since(d.at).as_millis() < 450);
         if self.board.departed.len() != before || (!self.board.departed.is_empty() && (self.board.open || self.ports_page_open())) {
             self.dirty = true;
         }
-        if self.board.rows.iter().any(|r| r.seen.elapsed().as_millis() < 450) && (self.board.open || self.ports_page_open()) {
+        if self.board.rows.iter().any(|r| crate::clock::since(r.seen).as_millis() < 450) && (self.board.open || self.ports_page_open()) {
             self.dirty = true;
         }
-        if self.board.toast.as_ref().is_some_and(|(_, at, _)| at.elapsed().as_secs_f32() > 6.0) {
+        if self.board.toast.as_ref().is_some_and(|(_, at, _)| crate::clock::since(at).as_secs_f32() > 6.0) {
             self.board.toast = None;
             self.dirty = true;
         }
@@ -602,7 +602,7 @@ impl App {
             self.dirty = true;
         }
         // Kills: force after three seconds if still there.
-        let due: Vec<u32> = self.board.killing.iter().filter(|(_, at)| at.elapsed().as_secs() >= 3).map(|(p, _)| *p).collect();
+        let due: Vec<u32> = self.board.killing.iter().filter(|(_, at)| crate::clock::since(at).as_secs() >= 3).map(|(p, _)| *p).collect();
         for pid in due {
             self.board.killing.remove(&pid);
             if self.board.rows.iter().any(|r| r.pid == pid) {
@@ -704,7 +704,7 @@ impl App {
                 container: None,
                 name: None,
                 rule: Rule::default(),
-                seen: Instant::now(),
+                seen: crate::clock::now(),
                 dying: None,
                 tunnel: None,
                 watch: false,
@@ -759,7 +759,7 @@ impl App {
                     container: None,
                     name: None,
                     rule: Rule::default(),
-                    seen: Instant::now(),
+                    seen: crate::clock::now(),
                     dying: None,
                     tunnel: None,
                     watch: false,
@@ -789,7 +789,7 @@ impl App {
                 container: Some((container.clone(), image.clone())),
                 name: None,
                 rule: Rule::default(),
-                seen: Instant::now(),
+                seen: crate::clock::now(),
                 dying: None,
                 tunnel: None,
                 watch: false,
@@ -835,7 +835,7 @@ impl App {
             if self.board.expanded.as_ref() == Some(&r.key) {
                 self.board.expanded = None;
             }
-            self.board.departed.push(Departed { row: r, at: Instant::now() });
+            self.board.departed.push(Departed { row: r, at: crate::clock::now() });
         }
         self.board.rows = merged;
         self.board.refresh_ghosts();
@@ -903,7 +903,7 @@ impl App {
     }
 
     fn ports_toast(&mut self, text: String, key: Key) {
-        self.board.toast = Some((text, Instant::now(), key));
+        self.board.toast = Some((text, crate::clock::now(), key));
         self.play_event("toggle");
         self.dirty = true;
     }
@@ -1108,16 +1108,16 @@ impl App {
         if !asked {
             nus_pty::ports::kill(r.pid, false);
         }
-        self.board.killing.insert(r.pid, Instant::now());
+        self.board.killing.insert(r.pid, crate::clock::now());
         if let Some(row) = self.board.row_mut(key) {
-            row.dying = Some(Instant::now());
+            row.dying = Some(crate::clock::now());
         }
         self.play_event("tab.close");
         self.dirty = true;
     }
 
     /// Keys while the board is up (overlay or page). Returns true when consumed.
-    pub(crate) fn board_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn board_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         if !self.board.open && !self.ports_page_open() {
             return false;
         }
@@ -1384,7 +1384,7 @@ impl App {
             sub.push_str(&format!(" · {n_exposed} EXPOSED"));
         }
         if let Some(at) = self.board.last {
-            sub.push_str(&format!(" · {}S AGO", at.elapsed().as_secs()));
+            sub.push_str(&format!(" · {}S AGO", crate::clock::since(at).as_secs()));
         }
         self.fonts.draw(scene, dim, r.x + pad + title_w + self.px(16.0), y + self.px(24.0), &sub);
         // Right: GROUPING · EXPAND · CLOSE.
@@ -1437,7 +1437,7 @@ impl App {
         let sel = self.board.sel.clone();
         let confirm = self.board.confirm.clone();
         let rename = self.board.rename.clone();
-        let mut departed: Vec<(Row, f32)> = self.board.departed.iter().map(|d| (d.row.clone(), d.at.elapsed().as_secs_f32())).collect();
+        let mut departed: Vec<(Row, f32)> = self.board.departed.iter().map(|d| (d.row.clone(), crate::clock::since(d.at).as_secs_f32())).collect();
         if listing.is_empty() && departed.is_empty() {
             let msg = if self.board.polls == 0 { "listening…" } else if self.board.filter.is_some() { "nothing matches" } else { "nothing listening · start a dev server and it lands here" };
             self.fonts.draw(scene, dim, r.x + pad, y + self.px(30.0), msg);
@@ -1474,7 +1474,7 @@ impl App {
                     let rr = Rect::new(r.x, y, r.w, row_h);
                     let hot = rr.contains(mx, my);
                     // Split-flap on arrival: the row's text drops in from the flap line.
-                    let age = row.seen.elapsed().as_secs_f32();
+                    let age = crate::clock::since(row.seen).as_secs_f32();
                     let flap = if reduced || age > 0.45 { 1.0 } else { ease_out(age / 0.45) };
                     if is_sel {
                         scene.rect(rr, fade(signal, 0.12));
@@ -1501,7 +1501,7 @@ impl App {
                         Lamp::Up => ansi(2),
                         Lamp::Exposed => ansi(3),
                         Lamp::Dying => {
-                            let blink = ((row.dying.map(|d| d.elapsed().as_secs_f32()).unwrap_or(0.0) * 4.0).sin() * 0.5 + 0.5) as f32;
+                            let blink = ((row.dying.map(|d| crate::clock::since(d).as_secs_f32()).unwrap_or(0.0) * 4.0).sin() * 0.5 + 0.5) as f32;
                             fade(ansi(1), 0.4 + 0.6 * blink)
                         }
                         Lamp::Gone => t.dim,
@@ -1544,13 +1544,32 @@ impl App {
                         Group::Others => if row.exposed { "exposed".into() } else { String::new() },
                     };
                     self.fonts.draw(scene, if row.group == Group::Mine { Style { color: signal, ..mono } } else { mono_dim }, col_owner, base, &self.fit(mono_dim, &owner, col_up - col_owner - cw));
+                    // A fixed slot at the right edge for the × that comes
+                    // up on hover, so nothing shifts under the pointer.
+                    let kill_w = self.px(20.0);
                     let up = row.uptime();
                     let uw = self.fonts.measure(mono_dim, &up);
-                    self.fonts.draw(scene, mono_dim, r.right() - pad - uw, base, &up);
+                    self.fonts.draw(scene, mono_dim, r.right() - pad - kill_w - uw, base, &up);
                     if let Some(tn) = &row.tunnel {
                         let s = tn.url.clone().unwrap_or_else(|| "tunnel…".into());
                         let sw = self.fonts.measure(mono_dim, &s);
-                        self.fonts.draw(scene, Style { color: signal, ..mono }, r.right() - pad - uw - self.px(12.0) - sw, base, &s);
+                        self.fonts.draw(scene, Style { color: signal, ..mono }, r.right() - pad - kill_w - uw - self.px(12.0) - sw, base, &s);
+                    }
+                    // ×: stop this process, and everything under it,
+                    // without opening the row first. Only where KILL is
+                    // on offer at all — docker rows and dead ones have
+                    // nothing to stop.
+                    let killable = !matches!(row.key, Key::Docker { .. }) && row.pid > 0 && row.lamp() != Lamp::Gone;
+                    if killable && rr.contains(mx, my) && confirm.as_ref() != Some(k) {
+                        let isz = self.px(12.0);
+                        let kr = Rect::new(r.right() - pad - isz, base - isz + self.px(1.0), isz, isz);
+                        let reach = crate::touch::grown(kr, self.px(6.0));
+                        let hot = reach.contains(mx, my);
+                        self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, kr.x, kr.y, if hot { ansi(1) } else { t.dim });
+                        if hot {
+                            self.tip_words(reach, &format!("stop {} · and everything under it", row.process));
+                        }
+                        self.board.hits.push((reach, Hit::Action(k.clone(), Act::Kill)));
                     }
                     if row.watch {
                         self.fonts.draw_icon(scene, nus_render::text::icons::BELL, self.px(12.0), r.x + pad + self.px(4.0), y + self.px(4.0), t.dim);

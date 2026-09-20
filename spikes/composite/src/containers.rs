@@ -81,12 +81,12 @@ pub fn context(name: &str) -> Option<cef::RequestContext> {
         // The profile comes up on the UI thread a few pumps later; wait for
         // it here (bounded), so the first page in the container is made
         // against a live context.
-        let t0 = std::time::Instant::now();
-        while !READY.with(|r| r.borrow().contains(name)) && t0.elapsed().as_secs_f32() < 3.0 {
+        let t0 = crate::clock::now();
+        while !READY.with(|r| r.borrow().contains(name)) && crate::clock::since(t0).as_secs_f32() < 3.0 {
             cef::do_message_loop_work();
             std::thread::sleep(std::time::Duration::from_millis(4));
         }
-        tracing::info!("container {name}: context ready in {}ms", t0.elapsed().as_millis());
+        tracing::info!("container {name}: context ready in {}ms", crate::clock::since(t0).as_millis());
         Some(ctx)
     })
 }

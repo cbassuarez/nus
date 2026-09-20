@@ -56,12 +56,12 @@ impl App {
     /// after AWAY sets the news.
     pub(crate) fn news_focus(&mut self, focused: bool) {
         if !focused {
-            self.news.unfocused_at = Some(Instant::now());
+            self.news.unfocused_at = Some(crate::clock::now());
             return;
         }
         if let Some(at) = self.news.unfocused_at.take() {
-            if at.elapsed() >= AWAY {
-                let then = crate::journal::now().saturating_sub(at.elapsed().as_secs());
+            if crate::clock::since(at) >= AWAY {
+                let then = crate::journal::now().saturating_sub(crate::clock::since(at).as_secs());
                 self.news.since = Some(self.news.since.map(|s| s.min(then)).unwrap_or(then));
                 self.news.made = None;
             }
@@ -86,7 +86,7 @@ impl App {
     /// what still runs, then hands waiting. At most six.
     pub(crate) fn news_rows(&mut self) -> Vec<PaletteRow> {
         let Some(since) = self.news.since else { return Vec::new() };
-        if self.news.made.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+        if self.news.made.is_some_and(|t| crate::clock::since(t) < Duration::from_secs(10)) {
             return self.news.rows.clone();
         }
         let mut out: Vec<PaletteRow> = Vec::new();
@@ -144,7 +144,7 @@ impl App {
             }
         }
         self.news.rows = out.clone();
-        self.news.made = Some(Instant::now());
+        self.news.made = Some(crate::clock::now());
         out
     }
 }

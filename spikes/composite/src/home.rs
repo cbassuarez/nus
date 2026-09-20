@@ -5,7 +5,11 @@
 //! it. Enter on nothing: a shell. As you type, rows come up beneath the
 //! line — the palette's rows, so tabs, recent pages and shells, layouts,
 //! history, held shells and settings are all one keystroke away; ↑/↓ pick
-//! one and Enter takes it. STARTUP · THEN · THE PROMPT puts it up first;
+//! one and Enter takes it. At the foot, the routes as marks rather than a
+//! sentence — a shell, a page, an assistant, the rows — with the one Enter
+//! would take lit; the pointer names them and a click puts their prefix on
+//! the line (PROMPT · LAYOUT · ROUTE KEYS turns them off).
+//! STARTUP · THEN · THE PROMPT puts it up first;
 //! `home` in the palette brings it back. HOME · THE PLATE puts the line
 //! under the icon, with the first places as stops on its band (plate.rs).
 //! Drawn from the tokens, like every other surface: paper, ink, one signal.
@@ -32,11 +36,53 @@ pub struct HomePane {
     /// The plate's stops (plate.rs), gathered when the pane first draws
     /// and again now and then — holders are asked over a socket.
     pub places: Option<(Instant, Vec<PaletteRow>)>,
+    /// The route keys at the foot, where they were drawn.
+    pub keys: Vec<(Rect, Key)>,
+}
+
+/// A route the prompt can take, as one mark at the foot of the page.
+/// Each is a prefix you could have typed; the one Enter would take is lit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    /// `>` — a command in a new shell. Enter on an empty line, too.
+    Shell,
+    /// `?` — a page, or a search when it is not an address.
+    Page,
+    /// `@` — a prompt for an assistant.
+    Ask,
+    /// A folder or a file the line names: it opens as a project.
+    Path,
+    /// `↓` — the rows beneath the line.
+    Rows,
+}
+
+impl Key {
+    /// The mark, and what it is called when the pointer rests on it.
+    fn look(self) -> ((&'static str, &'static str), &'static str) {
+        use nus_render::text::icons as i;
+        match self {
+            Key::Shell => (i::TERMINAL, "a shell · type > before a command"),
+            Key::Page => (i::GLOBE, "a page · type ? to search the web"),
+            Key::Ask => (i::ASSISTANT, "ask · type @claude, @codex or @ollama"),
+            Key::Path => (i::FOLDER, "a project · the line names a folder"),
+            Key::Rows => (i::CARET_DOWN, "the rows · ↓ picks one, Enter takes it"),
+        }
+    }
+
+    /// What clicking it puts on the line.
+    fn prefix(self) -> Option<&'static str> {
+        match self {
+            Key::Shell => Some("> "),
+            Key::Page => Some("? "),
+            Key::Ask => Some("@"),
+            Key::Path | Key::Rows => None,
+        }
+    }
 }
 
 impl HomePane {
     pub fn new() -> HomePane {
-        HomePane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: Instant::now(), handed: false, taps: Vec::new(), places: None }
+        HomePane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new() }
     }
 }
 
@@ -108,9 +154,9 @@ impl App {
 
     /// The pane's places, gathered on first use and refreshed every so often.
     fn home_places(&self, p: &mut HomePane) -> Vec<PaletteRow> {
-        let stale = p.places.as_ref().map(|(at, _)| at.elapsed().as_secs() >= 20).unwrap_or(true);
+        let stale = p.places.as_ref().map(|(at, _)| crate::clock::since(at).as_secs() >= 20).unwrap_or(true);
         if stale && self.behavior.home_look == HomeLook::Plate {
-            p.places = Some((Instant::now(), self.places()));
+            p.places = Some((crate::clock::now(), self.places()));
         }
         p.places.as_ref().map(|(_, v)| v.to_vec()).unwrap_or_default()
     }
@@ -270,7 +316,7 @@ impl App {
     }
 
     /// Keys on the prompt. Returns true when it took the key.
-    pub(crate) fn home_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn home_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key as K, NamedKey};
         if ev.state != winit::event::ElementState::Pressed {
             return false;
@@ -318,6 +364,30 @@ impl App {
         let i = self.active;
         let pad = self.touch_pad();
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
+        // The route keys sit over the paper, so they answer first.
+        if let Some(&(_, key)) = h.keys.iter().find(|(r, _)| r.contains(x, y)) {
+            match key {
+                // The rows: down to the first one, or back to the line.
+                Key::Rows => h.sel = if h.sel == 0 { 1 } else { 0 },
+                // The line already names a folder; take it.
+                Key::Path => {
+                    h.sel = 0;
+                    self.home_commit();
+                    return true;
+                }
+                k => {
+                    if let Some(prefix) = k.prefix() {
+                        // Swap the route, keep what was typed after it.
+                        let rest = h.input.trim_start().trim_start_matches(['>', '?', '@']).trim_start().to_string();
+                        h.input = format!("{prefix}{rest}");
+                        h.sel = 0;
+                        h.since = crate::clock::now();
+                    }
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
         let Some(&(_, k)) = h.hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) else {
             // Paper, not a row: the art may want to know.
             if h.rect.contains(x, y) {
@@ -349,11 +419,6 @@ impl App {
         // Over a dark art the words go paper, with a hair of ink beneath.
         let dark = art && self.art.as_ref().is_some_and(|a| a.dark);
         let ink = if dark { t.paper } else { ink };
-        // The wordmark, small, where the pane begins — the plate is the n itself.
-        if !plate {
-            let word = Style { font: self.f.wordmark, px: self.px(22.0), color: fade(ink, 0.7), tracking: 0.0 };
-            self.draw_lit(scene, word, r.x + self.px(28.0), r.y + self.px(42.0), "nus", dark);
-        }
         // The line: a caret in signal, the input in mono, a rule beneath.
         let px = self.px(20.0);
         let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
@@ -364,7 +429,7 @@ impl App {
         let tw = self.draw_lit(scene, mono, x0 + caret_w, y0, &shown, dark);
         // The block caret, breathing.
         if focused {
-            let on = (self.started.elapsed().as_secs_f32() * 2.0) as u32 % 2 == 0 || p.since.elapsed().as_millis() < 600;
+            let on = (crate::clock::since(self.started).as_secs_f32() * 2.0) as u32 % 2 == 0 || crate::clock::since(p.since).as_millis() < 600;
             if on {
                 scene.rect(Rect::new(x0 + caret_w + tw + self.px(2.0), y0 - px * 0.78, px * 0.5, px * 0.95), fade(ink, up));
             }
@@ -419,14 +484,89 @@ impl App {
                 y += row_h;
             }
         }
-        // One dim line at the foot, the only words on the page.
+        // The routes at the foot: marks, not a sentence. The one Enter
+        // would take is lit; LAYOUT · ROUTE KEYS turns them off.
+        p.keys.clear();
         if self.behavior.prompt.hints {
-            let foot = if sel > 0 { "Enter · selected suggestion".into() }
-                else if let Some(row) = self.prompt_action(&p.input) { format!("Enter · {}", row.text) }
-                else { "> shell   ·   ? web   ·   @claude / @codex / @ollama   ·   ↓ suggestions".into() };
-            let foot = self.fit(dim, &foot, r.w-self.px(40.0));
-            let fw = self.fonts.measure(dim, &foot);
-            self.draw_lit(scene, dim, r.x+(r.w-fw)/2.0, foot_y, &foot, dark);
+            self.draw_home_keys(scene, p, foot_y, up, ink, sel, rows.len());
+        }
+        let _ = dim;
+    }
+
+    /// Which way Enter goes, from what is on the line. `None` is an empty
+    /// line: nothing is lit, because nothing has been chosen yet.
+    fn live_key(&self, input: &str) -> Option<Key> {
+        let q = input.trim();
+        if q.is_empty() {
+            return None;
+        }
+        if q.starts_with('>') {
+            return Some(Key::Shell);
+        }
+        if q.starts_with('?') {
+            return Some(Key::Page);
+        }
+        if q.starts_with('@') {
+            return Some(Key::Ask);
+        }
+        if std::path::Path::new(q).is_dir() || std::path::Path::new(q).is_file() {
+            return Some(Key::Path);
+        }
+        Some(match self.behavior.prompt.route {
+            crate::prompt::Route::Assistant => Key::Ask,
+            crate::prompt::Route::Web => Key::Page,
+            crate::prompt::Route::Shell => Key::Shell,
+            crate::prompt::Route::Automatic => {
+                if crate::prompt::looks_like_url(q) { Key::Page } else { Key::Shell }
+            }
+        })
+    }
+
+    /// The routes, as a centred row of marks at the foot. Dim until one
+    /// applies; the live one takes the signal and a rule under it. The
+    /// pointer names a mark; a click puts its prefix on the line, so the
+    /// row teaches the typing rather than describing it.
+    fn draw_home_keys(&mut self, scene: &mut Scene, p: &mut HomePane, foot_y: f32, up: f32, ink: [f32; 4], sel: usize, rows_n: usize) {
+        let r = p.rect;
+        let live = if sel > 0 { Some(Key::Rows) } else { self.live_key(&p.input) };
+        let mut cells = vec![Key::Shell, Key::Page, Key::Ask];
+        // The path mark earns its place only when the line names one.
+        if live == Some(Key::Path) {
+            cells.push(Key::Path);
+        }
+        if rows_n > 0 {
+            cells.push(Key::Rows);
+        }
+        let isz = self.px(14.0);
+        let gap = self.px(30.0);
+        let n = cells.len() as f32;
+        let total = n * isz + (n - 1.0) * gap;
+        if total > r.w - self.px(40.0) {
+            return;
+        }
+        let mut x = r.x + ((r.w - total) / 2.0).round();
+        let y = (foot_y - isz).round();
+        let (mx, my) = self.mouse;
+        let signal = self.surface.signal;
+        let reach_pad = self.px(10.0);
+        for cell in cells {
+            let (icon, words) = cell.look();
+            let cr = Rect::new(x, y, isz, isz);
+            let reach = crate::touch::grown(cr, reach_pad);
+            let hot = reach.contains(mx, my);
+            let on = live == Some(cell);
+            let color = if on { signal } else if hot { ink } else { fade(ink, 0.34) };
+            self.fonts.draw_icon(scene, icon, isz, cr.x, cr.y, fade(color, up));
+            if on {
+                // The same rule the rows use for the one that is picked.
+                scene.rect(Rect::new(cr.x, cr.y + isz + self.px(5.0), isz, self.px(2.0)), fade(signal, up));
+            }
+            if hot {
+                self.tip_words(reach, words);
+                self.dirty = true;
+            }
+            p.keys.push((reach, cell));
+            x += isz + gap;
         }
     }
 

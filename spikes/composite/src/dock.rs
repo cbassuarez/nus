@@ -1,12 +1,11 @@
 //! One Dock tile per process, following the most recently focused window.
-//! AppKit owns the physical bounce; we own the short promo font sequence.
+//! The OS owns attention; runtime icon frames never mutate signed resources.
+#[path = "dock_attention.rs"]
+mod attention;
 #[cfg(target_os = "macos")]
-use {
-    nus_render::{
-        dock_icon::{self, Face},
-        Color,
-    },
-    std::time::Instant,
+use nus_render::{
+    dock_icon::{self, Face},
+    Color,
 };
 
 #[derive(Default)]
@@ -19,11 +18,11 @@ pub struct Dock {
     #[cfg(target_os = "macos")]
     shown: Option<Face>,
     #[cfg(target_os = "macos")]
-    sequence: Option<(Instant, bool)>, // true = attention; focus cancels it
+    cycle: attention::Cycle,
     #[cfg(target_os = "macos")]
     request: Option<isize>,
-    #[cfg(target_os = "macos")]
-    last_attention: Option<Instant>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    desktop: attention::Desktop,
     #[cfg(target_os = "macos")]
     renderer: Option<Renderer>,
     #[cfg(target_os = "macos")]
@@ -74,6 +73,8 @@ impl Dock {
         if std::mem::replace(&mut self.quitting, true) {
             return;
         }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.desktop.stop();
         #[cfg(target_os = "macos")]
         {
             self.launch = None;
@@ -93,7 +94,7 @@ impl Dock {
     }
 
     /// Called on the event-loop thread. No new icon work while idle.
-    pub fn tick(&mut self, signal: nus_render::Color, reduced: bool) {
+    pub fn tick(&mut self, signal: nus_render::Color, reduced: bool, focused: bool) {
         if self.quitting {
             return;
         }
@@ -125,14 +126,12 @@ impl Dock {
             if self.images.is_empty() {
                 return;
             }
-            if reduced || (app.isActive() && self.sequence.is_some_and(|(_, attention)| attention))
-            {
+            let face = self
+                .cycle
+                .tick(crate::clock::now(), reduced, app.isActive());
+            if !self.cycle.active() {
                 self.stop();
             }
-            let face = self
-                .sequence
-                .map(|(at, _)| dock_icon::face_at(at.elapsed().as_secs_f32()))
-                .unwrap_or(Face::Newsreader);
             if self.shown != Some(face) {
                 unsafe {
                     app.setApplicationIconImage(Some(&self.images[face as usize]));
@@ -140,18 +139,6 @@ impl Dock {
                 self.shown = Some(face);
                 tracing::debug!("dock face: {}", face.name());
                 trace("frame", Some(face), signal);
-            }
-            if face == Face::Newsreader {
-                self.sequence = None;
-            }
-            // Informational bounces are bounded even if the application stays behind.
-            if self.request.is_some()
-                && (app.isActive()
-                    || self
-                        .last_attention
-                        .is_some_and(|t| t.elapsed().as_secs_f32() > 1.5))
-            {
-                self.stop();
             }
         }
         #[cfg(target_os = "linux")]
@@ -161,13 +148,19 @@ impl Dock {
                 .get_or_insert_with(linux::Publisher::new)
                 .update(signal);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = (signal, reduced);
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.desktop.tick(signal, reduced, focused);
+        let _ = focused;
     }
 
     /// Existing completion notifications may request one informational bounce.
     /// Never steal focus or repeatedly restart for a burst of completions.
-    pub fn attention(&mut self, reduced: bool) {
+    pub fn attention(
+        &mut self,
+        window: &std::sync::Arc<winit::window::Window>,
+        reduced: bool,
+        focused: bool,
+    ) {
         if self.quitting {
             return;
         }
@@ -177,32 +170,31 @@ impl Dock {
                 return;
             };
             let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-            if reduced
-                || app.isActive()
-                || self.images.is_empty()
-                || self
-                    .last_attention
-                    .is_some_and(|at| at.elapsed().as_secs_f32() < 2.0)
+            if self.images.is_empty()
+                || !self
+                    .cycle
+                    .begin(crate::clock::now(), reduced, app.isActive())
             {
                 return;
             }
-            self.stop();
+            if let Some(request) = self.request.take() {
+                app.cancelUserAttentionRequest(request);
+            }
             self.request = Some(app.requestUserAttention(
                 objc2_app_kit::NSRequestUserAttentionType::InformationalRequest,
             ));
-            let now = Instant::now();
-            self.sequence = Some((now, true));
-            self.last_attention = Some(now);
             trace("attention", None, self.signal.unwrap_or([0.0; 4]));
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = reduced;
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.desktop.begin(window, reduced, focused);
+        let _ = (window, focused);
     }
 
     #[cfg(target_os = "macos")]
     fn stop(&mut self) {
-        self.sequence = None;
+        self.cycle.stop();
         if let Some(request) = self.request.take() {
+            trace("attention-ended", None, self.signal.unwrap_or([0.0; 4]));
             if let Some(mtm) = objc2::MainThreadMarker::new() {
                 objc2_app_kit::NSApplication::sharedApplication(mtm)
                     .cancelUserAttentionRequest(request);

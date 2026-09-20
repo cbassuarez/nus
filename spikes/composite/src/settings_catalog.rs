@@ -433,3 +433,33 @@ impl App {
         eprintln!("SETTINGS CHECK: {checked} choices bound and saved; slider ranges passed");
     }
 }
+
+impl App {
+    /// App-owned labels must never show a serialized value or an unfilled slot.
+    pub(crate) fn check_ui_labels(&self) {
+        let mut text=Vec::new();
+        for section in 0..14 {for (title,control) in self.rows_for(section) {
+            text.push(title);
+            match control {
+                Control::Info(s)|Control::Slider(_,_,s)|Control::Cue(_,_,s)=>text.push(s),
+                Control::Keys(keys,s)=>{text.extend(keys);text.push(s);},
+                Control::Choice(v)|Control::Strip(v)=>text.extend(v.into_iter().map(|(s,_,_)|s)),
+                Control::Buttons(v)=>text.extend(v.into_iter().map(|(s,_,_)|s)),
+                Control::Proof(v)=>text.extend(v.into_iter().map(|(_,s)|s)),
+                Control::Tabs(v)=>text.extend(v.into_iter().map(|(_,_,s,_)|s)),
+                Control::Cards(v)=>text.extend(v.into_iter().map(|(s,_,_,_,_,_,_)|s)),
+                Control::Tokens(v,_)=>{for(s,_,caption,_,_)in v{text.extend([s,caption]);}},
+                Control::Art(v)=>{for(_,s,caption,_,_,_)in v{text.extend([s,caption]);}},
+                Control::Pics(v)=>{for(s,caption,_,_,_)in v{text.extend([s,caption]);}},
+                Control::Actions(v)=>{for(s,caption,_,_)in v{text.extend([s,caption]);}},
+                _=>{},
+            }
+        }}
+        for query in ["","home","downloads","assistants","fonts"] {text.extend(self.prompt_rows(query).into_iter().map(|r|r.text));}
+        for label in &text {
+            assert!(!["null","undefined","[object Object]","{}","[]"].contains(&label.trim()),"uninitialized UI label: {label}");
+            for i in 0..10 {assert!(!label.contains(&format!("{{{i}}}")),"unfilled UI label: {label}");}
+        }
+        eprintln!("UI_LABELS_CHECKED {}",text.len());
+    }
+}

@@ -146,7 +146,7 @@ impl App {
         }
         if must_ask {
             if let Some(w) = self.web_pane_mut(tab, right) {
-                w.hands.ask = Some(Ask { who, what, reply, since: Instant::now() });
+                w.hands.ask = Some(Ask { who, what, reply, since: crate::clock::now() });
                 self.band_anim.replay(0.0, 1.0, self.motion.dur(crate::anim::base::BAND));
                 self.play_event("toggle");
                 self.dirty = true;
@@ -165,7 +165,7 @@ impl App {
             Answer::Deny => {
                 let _ = ask.reply.send(json!({ "ok": false, "error": "denied by the user" }));
                 if let Some(w) = self.web_pane_mut(tab, right) {
-                    w.hands.done.push(Done { who: ask.who, what: ask.what, outcome: Outcome::Denied, at: Instant::now() });
+                    w.hands.done.push(Done { who: ask.who, what: ask.what, outcome: Outcome::Denied, at: crate::clock::now() });
                 }
             }
             Answer::Allow | Answer::AllowHost => {
@@ -186,7 +186,7 @@ impl App {
         let Some(ask) = self.web_pane_mut(tab, right).and_then(|w| w.hands.ask.take()) else { return };
         let _ = ask.reply.send(json!({ "ok": false, "error": "taken over by the user" }));
         if let Some(w) = self.web_pane_mut(tab, right) {
-            w.hands.done.push(Done { who: ask.who, what: ask.what, outcome: Outcome::TakenOver, at: Instant::now() });
+            w.hands.done.push(Done { who: ask.who, what: ask.what, outcome: Outcome::TakenOver, at: crate::clock::now() });
         }
         self.dirty = true;
     }
@@ -236,8 +236,8 @@ impl App {
             }
             s.log.push(entry);
         }
-        w.hands.done.push(Done { who: who.to_string(), what: what.clone(), outcome: Outcome::Ran, at: Instant::now() });
-        w.hands.done.retain(|d| d.at.elapsed().as_secs() < 60);
+        w.hands.done.push(Done { who: who.to_string(), what: what.clone(), outcome: Outcome::Ran, at: crate::clock::now() });
+        w.hands.done.retain(|d| crate::clock::since(d.at).as_secs() < 60);
         self.dirty = true;
         json!({ "ok": true, "result": { "did": what.label() } })
     }
@@ -310,7 +310,7 @@ impl App {
             self.dirty = true;
         }
         // Recent hands: an icon chip each, newest first, fading out over a minute.
-        w.hands.done.retain(|d| d.at.elapsed().as_secs() < 60);
+        w.hands.done.retain(|d| crate::clock::since(d.at).as_secs() < 60);
         if !w.hands.done.is_empty() && w.hands.ask.is_none() {
             let isz = self.px(12.0);
             let pad = self.px(4.0);
@@ -318,7 +318,7 @@ impl App {
             let y = page.y + self.px(8.0);
             let (mx, my) = self.mouse;
             for d in w.hands.done.iter().rev().take(6) {
-                let age = d.at.elapsed().as_secs_f32();
+                let age = crate::clock::since(d.at).as_secs_f32();
                 let alpha = (1.0 - (age - 45.0).max(0.0) / 15.0).clamp(0.0, 1.0);
                 let chip = Rect::new(x - pad, y - pad, isz + pad * 2.0, isz + pad * 2.0);
                 scene.rect(chip, fade(self.paper(), 0.9 * alpha));
@@ -344,7 +344,7 @@ impl App {
                 }
                 x -= isz + pad * 2.0 + self.px(4.0);
             }
-            if w.hands.done.iter().any(|d| d.at.elapsed().as_secs() >= 44) {
+            if w.hands.done.iter().any(|d| crate::clock::since(d.at).as_secs() >= 44) {
                 self.dirty = true;
             }
         }

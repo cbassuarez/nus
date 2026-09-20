@@ -16,7 +16,7 @@ pub struct Anim {
 impl Anim {
     /// Already at `v`.
     pub fn at(v: f32) -> Anim {
-        Anim { from: v, to: v, start: Instant::now(), dur: 0.0 }
+        Anim { from: v, to: v, start: crate::clock::now(), dur: 0.0 }
     }
 
     /// Retarget from wherever the value is now. A zero duration snaps.
@@ -25,19 +25,19 @@ impl Anim {
             return;
         }
         let now = self.value();
-        *self = Anim { from: now, to, start: Instant::now(), dur };
+        *self = Anim { from: now, to, start: crate::clock::now(), dur };
     }
 
     /// Restart from `from` toward `to` (for fades that always replay).
     pub fn replay(&mut self, from: f32, to: f32, dur: f32) {
-        *self = Anim { from, to, start: Instant::now(), dur };
+        *self = Anim { from, to, start: crate::clock::now(), dur };
     }
 
     pub fn value(&self) -> f32 {
         if self.dur <= 0.0 {
             return self.to;
         }
-        let t = (self.start.elapsed().as_secs_f32() / self.dur).clamp(0.0, 1.0);
+        let t = (crate::clock::since(self.start).as_secs_f32() / self.dur).clamp(0.0, 1.0);
         let e = 1.0 - (1.0 - t).powi(3);
         self.from + (self.to - self.from) * e
     }
@@ -47,7 +47,7 @@ impl Anim {
     }
 
     pub fn active(&self) -> bool {
-        self.dur > 0.0 && self.start.elapsed().as_secs_f32() < self.dur
+        self.dur > 0.0 && crate::clock::since(self.start).as_secs_f32() < self.dur
     }
 }
 
@@ -155,7 +155,7 @@ impl Follow {
 
     /// Advance toward the target; returns true while still moving.
     pub fn step(&mut self, rate: f32) -> bool {
-        let now = Instant::now();
+        let now = crate::clock::now();
         let dt = self.last.map(|l| (now - l).as_secs_f32()).unwrap_or(1.0 / 60.0).min(0.1);
         self.last = Some(now);
         self.advance(rate, dt)

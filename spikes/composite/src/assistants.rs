@@ -98,7 +98,7 @@ impl State {
                 self.refresh(config);
             } else {
                 self.entries = entries;
-                self.checked_at = Some(Instant::now());
+                self.checked_at = Some(crate::clock::now());
             }
             true
         } else {
@@ -183,11 +183,11 @@ fn capture(path: &Path, args: &[&str]) -> Result<(bool, String), String> {
         let _ = std::io::copy(&mut reader, &mut std::io::sink());
         String::from_utf8_lossy(&bytes).to_string()
     });
-    let start = Instant::now();
+    let start = crate::clock::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok((status.success(), read.join().unwrap_or_default())),
-            Ok(None) if start.elapsed() < Duration::from_secs(8) => {
+            Ok(None) if crate::clock::since(start) < Duration::from_secs(8) => {
                 std::thread::sleep(Duration::from_millis(40))
             }
             _ => {

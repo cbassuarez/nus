@@ -92,7 +92,7 @@ impl App {
     pub(crate) fn toggle_menu_drawer(&mut self,anchor:Option<Anchor>){
         if self.menu_drawer.window.as_ref().is_some_and(|d|d.visible){self.hide_menu_drawer(true);return;}
         // Focus loss can arrive just before the status item's press event.
-        if anchor.is_some()&&self.menu_drawer.dismissed.is_some_and(|t|t.elapsed().as_millis()<180){return;}
+        if anchor.is_some()&&self.menu_drawer.dismissed.is_some_and(|t|crate::clock::since(t).as_millis()<180){return;}
         self.menu_drawer.anchor=anchor;
         self.menu_drawer.foreground=crate::hatch_native::Foreground::capture();
         if self.menu_drawer.window.is_none(){self.menu_drawer.request=true;return;}
@@ -191,7 +191,7 @@ impl App {
             WindowEvent::CloseRequested=>self.hide_menu_drawer(true),
             WindowEvent::Focused(true)=>{if let Some(d)=&mut self.menu_drawer.window{d.focused=true;}},
             // Native windows can emit an initial unfocused event before their first focus.
-            WindowEvent::Focused(false)=>{if self.menu_drawer.window.as_ref().is_some_and(|d|d.visible&&d.focused){self.menu_drawer.dismissed=Some(Instant::now());self.hide_menu_drawer(false);}},
+            WindowEvent::Focused(false)=>{if self.menu_drawer.window.as_ref().is_some_and(|d|d.visible&&d.focused){self.menu_drawer.dismissed=Some(crate::clock::now());self.hide_menu_drawer(false);}},
             WindowEvent::RedrawRequested|WindowEvent::Resized(_)|WindowEvent::ScaleFactorChanged{..}=>self.menu_drawer_frame(),
             WindowEvent::CursorMoved{position,..}=>{if let Some(d)=&mut self.menu_drawer.window{d.pos=(position.x as f32,position.y as f32);d.window.request_redraw();}},
             WindowEvent::CursorLeft{..}=>{if let Some(d)=&mut self.menu_drawer.window{d.pos=(-1.0,-1.0);d.window.request_redraw();}},

@@ -33,7 +33,7 @@ impl App {
     }
 
     /// Keys while a page's find band is up. Returns true when consumed.
-    pub(crate) fn web_mode_key(&mut self, key: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn web_mode_key(&mut self, key: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key as WKey, NamedKey};
         if key.state != ElementState::Pressed {
             return false;
@@ -224,10 +224,10 @@ impl App {
     /// archive them into "recently closed" after longer. Never the active
     /// tab, never a pinned one, never a shell.
     pub(crate) fn tend_idle_tabs(&mut self) {
-        if self.last_tend.elapsed().as_secs() < 5 {
+        if crate::clock::since(self.last_tend).as_secs() < 5 {
             return;
         }
-        self.last_tend = Instant::now();
+        self.last_tend = crate::clock::now();
         let sleep_after = self.behavior.sleep_after_min;
         let archive_after = self.behavior.archive_after_h;
         let mut archive: Vec<usize> = Vec::new();
@@ -240,7 +240,7 @@ impl App {
             if matches!(&tab.left, Pane::Web(w) if kept.contains(&w.tab.shared.borrow().url)) {
                 continue;
             }
-            let idle_min = tab.last_active.elapsed().as_secs_f32() / 60.0;
+            let idle_min = crate::clock::since(tab.last_active).as_secs_f32() / 60.0;
             if archive_after > 0 && idle_min >= archive_after as f32 * 60.0 && matches!(tab.left, Pane::Web(_)) && tab.right.is_none() {
                 archive.push(i);
                 continue;
@@ -276,7 +276,7 @@ impl App {
     /// A sleeping page wakes when it's shown.
     pub(crate) fn wake_tab(&mut self, i: usize) {
         if let Some(tab) = self.tabs.get_mut(i) {
-            tab.last_active = Instant::now();
+            tab.last_active = crate::clock::now();
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
                     if let Some(url) = w.asleep.take() {

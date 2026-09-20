@@ -1,0 +1,10 @@
+# 14 · phone-allow — no account. no server. nothing sent. Against 60-64.
+# The laptop's half. The phone is filmed beside it, on the address this
+# prints. Nothing personal on either screen, and the token never legible.
+hover 5 5
+phone on
+wait 1000
+settle
+record phone-allow 3.0
+at 1.184 await-paint
+quit

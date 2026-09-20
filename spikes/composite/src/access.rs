@@ -21,6 +21,7 @@ pub enum Target {
     Palette(usize),
     HintSkip,
     Download(crate::downloads::Hit),
+    Replay(crate::replay::HistoryHit),
     None,
 }
 
@@ -351,13 +352,30 @@ impl App {
             for d in crate::downloads::list() {
                 let id=fresh(&mut map,Target::None);let mut n=Node::new(Role::Label);n.set_label(format!("{} · {}",d.name,d.status()));nodes.push((id,n));kids.push(id);
             }
-            for (i,(r,hit)) in self.download_ui.hits.iter().enumerate() {
-                let id=fresh(&mut map,Target::Download(*hit));let mut n=Node::new(Role::Button);n.set_label(hit.label());n.set_bounds(bounds(*r));n.add_action(Action::Click);nodes.push((id,n));kids.push(id);
-                if self.dl_menu&&i==self.download_ui.focus.unwrap_or(0){focus=id;}
+            for (r,hit) in &self.download_ui.hits {
+                let id=fresh(&mut map,Target::Download(*hit));let mut n=Node::new(if *hit==crate::downloads::Hit::Search{Role::TextInput}else{Role::Button});n.set_label(self.download_label(*hit));n.set_bounds(bounds(*r));n.add_action(Action::Click);n.add_action(Action::Focus);
+                if *hit==crate::downloads::Hit::Search {n.set_value(self.download_ui.query.clone());n.add_action(Action::SetValue);}
+                nodes.push((id,n));kids.push(id);
+                if self.download_ui.focus==Some(*hit){focus=id;}
             }
             let mut group=Node::new(if self.dl_menu{Role::Dialog}else{Role::Group});group.set_label("Downloads");group.set_children(kids);
             if self.dl_menu{group.set_modal();if let Some(r)=self.download_ui.rect{group.set_bounds(bounds(r));}}
             nodes.push((NodeId(6),group));root_kids.push(NodeId(6));
+        }
+        if let Some(tl)=&self.timeline {
+            let mut kids=Vec::new();
+            for (r,hit) in &tl.hits {
+                let id=fresh(&mut map,Target::Replay(*hit));
+                let mut n=Node::new(match hit {crate::replay::HistoryHit::Search=>Role::TextInput,crate::replay::HistoryHit::Map=>Role::Slider,_=>Role::Button});
+                let label=if let crate::replay::HistoryHit::Record(i)=hit {tl.records.get(*i).map(|v|format!("{} · exit {} · {}",v["cmd"].as_str().unwrap_or(""),v["exit"],v["cwd"].as_str().unwrap_or(""))).unwrap_or_default()}else{hit.label().into()};
+                n.set_label(label);n.set_bounds(bounds(*r));n.add_action(Action::Focus);
+                if *hit==crate::replay::HistoryHit::Search {n.set_value(tl.query.clone());n.add_action(Action::SetValue);}
+                else if *hit==crate::replay::HistoryHit::Map {n.set_numeric_value(tl.detail_scroll as f64);n.set_min_numeric_value(0.0);n.set_max_numeric_value(tl.detail_max as f64);n.add_action(Action::SetValue);n.add_action(Action::Increment);n.add_action(Action::Decrement);}
+                else {n.add_action(Action::Click);}
+                if tl.focus==Some(*hit){focus=id;}nodes.push((id,n));kids.push(id);
+            }
+            if let Some(v)=tl.records.get(tl.at){let id=fresh(&mut map,Target::None);let mut n=Node::new(Role::Document);n.set_label("Recorded command output");n.set_value(v["output"].as_str().unwrap_or(""));nodes.push((id,n));kids.push(id);}
+            let mut n=Node::new(Role::Group);n.set_label("Session history and map");n.set_children(kids);nodes.push((NodeId(7),n));root_kids.push(NodeId(7));
         }
         let mut root = Node::new(Role::Window);
         root.set_label("nus");
@@ -373,6 +391,18 @@ impl App {
     /// A screen reader (or automation) activated a node.
     pub fn access_action(&mut self, req: ActionRequest) {
         let Some(&target) = self.access_map.get(&req.target_node.0) else { return };
+        if let Target::Replay(hit)=target {
+            match req.action {
+                Action::Click=>self.timeline_action(hit),
+                Action::Focus=>{if let Some(tl)=&mut self.timeline{tl.focus=Some(hit);}},
+                Action::Increment|Action::Decrement=>{self.timeline_key(&winit::keyboard::Key::Named(if req.action==Action::Increment{winit::keyboard::NamedKey::ArrowDown}else{winit::keyboard::NamedKey::ArrowUp}));},
+                Action::SetValue=>{if let Some(tl)=&mut self.timeline {match req.data {
+                    Some(accesskit::ActionData::Value(value))=>{tl.query=value.to_string();tl.filter_changed();},
+                    Some(accesskit::ActionData::NumericValue(value)) if value.is_finite()=>{tl.detail_scroll=(value as f32).clamp(0.0,tl.detail_max);tl.reveal=false;tl.follow_scroll=true;},_=>{}
+                }}},_=>{}
+            }
+            self.dirty=true;return;
+        }
         match (req.action, target) {
             (Action::Click, Target::Crumb(hit)) => self.crumb_action(hit),
             (Action::Click, Target::Row(i)) => {
@@ -403,6 +433,8 @@ impl App {
                 self.palette_commit();
             }
             (Action::Click, Target::Download(hit)) => self.download_action(hit),
+            (Action::Focus, Target::Download(hit)) => {self.download_ui.focus=Some(hit);self.dirty=true;},
+            (Action::SetValue, Target::Download(crate::downloads::Hit::Search)) => {if let Some(accesskit::ActionData::Value(value))=req.data{self.download_ui.query=value.to_string();self.download_ui.cursor=self.download_ui.query.len();self.download_ui.select_all=false;self.download_query_changed();}},
             (Action::Click, Target::HintSkip) => self.dismiss_hints(),
             _ => {}
         }

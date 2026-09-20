@@ -220,7 +220,7 @@ impl App {
             scene: Scene::new(),
             pane,
             focused: true,
-            last_frame: Instant::now(),
+            last_frame: crate::clock::now(),
             mods: Default::default(),
             keep: Rect::new(0.0, 0.0, 0.0, 0.0),
             close: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -255,11 +255,11 @@ impl App {
     /// Draw the little window: band, header (title · keep · close), page.
     pub fn little_frame(&mut self) {
         let Some(mut l) = self.little.take() else { return };
-        if l.last_frame.elapsed().as_millis() < 16 {
+        if crate::clock::since(l.last_frame).as_millis() < 16 {
             self.little = Some(l);
             return;
         }
-        l.last_frame = Instant::now();
+        l.last_frame = crate::clock::now();
         l.pane.tab.begin_frame();
         let scale = l.window.scale_factor() as f32;
         let (w, h) = (l.target.size.0 as f32, l.target.size.1 as f32);
@@ -372,7 +372,7 @@ impl App {
                 return self.keep_little();
             }
         }
-        crate::app::forward_key(&l.pane.tab, ev, l.mods);
+        crate::app::forward_key(&l.pane.tab, &ev.into(), l.mods);
     }
 
     pub fn little_mouse(&mut self, button: MouseButton, state: ElementState, pos: (f32, f32)) {

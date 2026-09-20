@@ -31,10 +31,13 @@ profile=run('transfer',base+f'download {url}/slow\nwait 800\ndownloadassert acti
 records=json.loads((profile/'downloads.json').read_text());assert len(records)==1 and records[0]['done']
 assert Path(records[0]['path']).read_bytes().startswith(b'NUS LOCAL DOWNLOAD TEST')
 run('history','downloads page\nwait 200\ndownloadassert complete\ndownloadassert document.pdf\nshot history',prefs,download_history=records)
+# Real keyboard routing, persisted history, and clear-history keeping the file.
+run('search','downloads page\nwait 200\nkey cmd+f\ninput document.pdf\nwait 100\ndownloadquery document.pdf\ndownloadmatches 1\nshot search\nkey cmd+a\ninput missing\nwait 100\ndownloadmatches 0\nshot empty-search\nkey escape\nwait 100\ndownloadmatches 1\ndownloadbounds\ndownloadclick Clear finished\nwait 200\ndownloadmatches 0\nshot cleared',prefs,download_history=records)
+assert Path(records[0]['path']).is_file(),'clearing history must preserve the file'
 # Naming and collision reservation use real concurrent Chromium downloads.
 run('automatic',base+f'downloadmode all\ndownload {url}/small\ndownload {url}/small\nwait 1800\ndownloadassert complete\ndownloadassert Quarterly Research Report.pdf\ndownloadassert Quarterly Research Report (2).pdf\ndownloadassert unique\ndownloads page\nwait 150\nshot named',prefs)
 run('selective',base+f'downloadmode selective\ndownload {url}/archive\ndownload {url}/small\nwait 1800\ndownloadassert archive.tar.gz\ndownloadassert Quarterly Research Report.pdf\ndownloads page\nwait 150\nshot selective',prefs)
-run('cancel',base+f'download {url}/slow\nwait 700\ndownloadact cancel\nwait 500\ndownloadassert cancelled\ndownloads page\nwait 150\nshot cancelled',prefs)
+run('cancel-retry',base+f'download {url}/slow\nwait 700\ndownloadact cancel\nwait 500\ndownloadassert cancelled\ndownloads page\nwait 150\nshot cancelled\ndownloadclick Retry\nwait 6500\ndownloadassert complete\ndownloadassert cancelled\ndownloadmatches 2\ndownloadbounds\nshot retry-complete',prefs)
 steps=['sidebarwidth 280','wait 300','sidebardrag 80','wait 300','sidebarcheck','shot small','footerdrag','wait 100','sidebarcheck','shot taller-footer','smallsidetype icons','wait 150','shot icons','smallsidetype preview','wait 150','shot previews','sidebardrag 320','wait 250','sidebarcheck','shot wide','downloadhover','wait 350','shot hover']
 run('sidebar',base+'\n'.join(steps),prefs)
 folder=root/'tree-fixture';folder.mkdir();(folder/'notes.md').write_text('Fixture');(folder/'images').mkdir()
@@ -45,5 +48,11 @@ run('grid',f'newshell\nurl {url}/\nwait 1600\ngridcheck\nshot split',prefs)
 for width in [960,640,480]:
     p=copy.deepcopy(prefs);p['window_rect']=[80,80,width,1100]
     run(f'narrow-{width}','sidebarwidth 80\nhover 1 200\nwait 250\nsidebarcheck\ndownloads modal\nwait 200\nshot modal',p)
+# The same Ledger renderer at desktop and narrow sizes, in both appearances.
+fixtures=[dict(records[0],key=i+10,name=name,original=name,done=done,interrupted=not done,source_url=site) for i,(name,site,done) in enumerate([
+    ('workspace-icons.zip','https://assets.nus.dev',True),('session-replay.html','https://nus.dev',False),('nus-v0.8.2-universal.dmg','https://github.com/nus',True),('Annual résumé — research notes.pdf','https://research.example',True)])]
+for width,face in [(1600,'paper'),(1200,'ink'),(480,'paper'),(480,'ink')]:
+    p=copy.deepcopy(prefs);p['window_rect']=[80,80,width,1100]
+    run(f'ledger-{width}-{face}','sidebarwidth 80\nhover 400 100\nwait 1200\ndownloads page\nwait 200\ndownloadbounds\nshot ledger-page\nkey end\nwait 150\ndownloadbounds\nshot scrolled\ndownloads modal\nwait 200\ndownloadbounds\nshot ledger-modal\nkey tab\nwait 100\nshot keyboard\nkey escape\nwait 100\nassertpane downloads',p,face=face,download_history=fixtures)
 server.shutdown()
 print('Download and sidebar checks passed.',flush=True)

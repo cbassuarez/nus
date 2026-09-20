@@ -93,6 +93,8 @@ pub struct Pty {
     inner: Inner,
     cols: u16,
     rows: u16,
+    /// `kill` already went through; `drop` has nothing left to reap.
+    reaped: bool,
 }
 
 enum Inner {
@@ -119,6 +121,7 @@ impl Pty {
             inner: Inner::Held(client),
             cols,
             rows,
+            reaped: false,
         })
     }
 
@@ -134,6 +137,7 @@ impl Pty {
             inner: Inner::Held(client),
             cols: 0,
             rows: 0,
+            reaped: false,
         };
         pty.resize(cols, rows, (0, 0))?;
         Ok(pty)
@@ -221,6 +225,7 @@ impl Pty {
             },
             cols,
             rows,
+            reaped: false,
         })
     }
 
@@ -278,21 +283,59 @@ impl Pty {
         }
     }
 
+    /// Stop the shell and everything it started. Killing the shell alone
+    /// leaves its children behind — reparented to init, still holding
+    /// their ports — so the tree is read first and signalled leaves up.
     pub fn kill(&mut self) {
+        self.kill_with(None);
+    }
+
+    /// The same, over a process table already read: closing a stack of
+    /// tabs reads it once and hands it to each shell.
+    pub fn kill_with(&mut self, tree: Option<&std::collections::HashMap<u32, (u32, String)>>) {
+        // Children first, while the shell is still their parent.
+        if let Some(pid) = self.local_pid() {
+            match tree {
+                Some(t) => ports::reap_trees_in(t, &[pid]),
+                None => ports::reap_trees(&[pid]),
+            }
+        }
+        self.kill_reaped();
+    }
+
+    /// The pid whose tree goes when this shell is closed: a local
+    /// shell's own. A held shell is the holder's, and the holder reaps
+    /// it on its side, so there is nothing here to walk.
+    pub fn local_pid(&self) -> Option<u32> {
+        match &self.inner {
+            Inner::Local { .. } => self.pid(),
+            Inner::Held(_) => None,
+        }
+    }
+
+    /// Stop the shell, its tree already reaped (`ports::reap_trees_in`).
+    /// Closing several tabs reaps them together — one reading of the
+    /// process table, one grace period — and then calls this on each.
+    pub fn kill_reaped(&mut self) {
         match &mut self.inner {
             Inner::Local { child, .. } => {
                 let _ = child.kill();
             }
             Inner::Held(c) => c.kill(),
         }
+        self.reaped = true;
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // A local shell dies with us; a held one is the holder's to keep.
-        if let Inner::Local { child, .. } = &mut self.inner {
-            let _ = child.kill();
+        // A local shell dies with us, and takes its children along; a
+        // held one is the holder's to keep.
+        if self.reaped {
+            return;
+        }
+        if matches!(self.inner, Inner::Local { .. }) {
+            self.kill_with(None);
         }
     }
 }

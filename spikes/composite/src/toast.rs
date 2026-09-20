@@ -40,7 +40,7 @@ impl App {
 
     /// A slip with an icon and a dimmer tail after the words.
     pub(crate) fn toast_with(&mut self, icon: Option<Icon>, text: impl Into<String>, tail: impl Into<String>, act: Option<Act>) {
-        self.toast = Some(Toast { icon, text: text.into(), tail: tail.into(), act, at: Instant::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0) });
+        self.toast = Some(Toast { icon, text: text.into(), tail: tail.into(), act, at: crate::clock::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0) });
         let d = self.motion.dur(crate::anim::base::PALETTE);
         self.toast_anim.replay(0.0, 1.0, d);
         self.dirty = true;
@@ -50,7 +50,7 @@ impl App {
     /// its time is up.
     pub(crate) fn draw_toast(&mut self, scene: &mut Scene) {
         let Some(t) = self.toast.as_ref() else { return };
-        let age = t.at.elapsed().as_secs_f32();
+        let age = crate::clock::since(t.at).as_secs_f32();
         if age > HOLD {
             self.toast = None;
             self.dirty = true;

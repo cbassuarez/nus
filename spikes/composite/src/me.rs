@@ -215,6 +215,8 @@ pub enum CardHit {
     Close,
     More,
     Face(u8),
+    /// Browse for a picture for the face.
+    PickPicture,
     SetupSync,
     Edit(Step),
     Folder,
@@ -535,6 +537,10 @@ impl App {
                 }
             }
             CardHit::Close => self.close_me_card(),
+            CardHit::PickPicture => {
+                self.me_card.face = Face::Picture;
+                self.pick_avatar();
+            }
             CardHit::More => {
                 self.close_me_card();
                 self.open_settings_at(crate::settings::SEC_PROFILE, None);
@@ -547,6 +553,11 @@ impl App {
                 };
                 if k != 1 {
                     self.me_card.input.clear();
+                }
+                // A picture, and there is none yet (or you picked it
+                // again): browse for one. Every platform has a dialog.
+                if k == 2 {
+                    self.pick_avatar();
                 }
             }
             CardHit::SetupSync => {
@@ -629,7 +640,7 @@ impl App {
     }
 
     /// Keys while the card is up. Returns true when consumed.
-    pub(crate) fn me_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn me_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         if !self.me_card.open {
             return false;
         }
@@ -703,17 +714,17 @@ impl App {
     fn me_tip(&mut self, key: u64, hit: Rect, words: String) {
         let (mx, my) = self.mouse;
         let hot = hit.contains(mx, my);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: Instant::now() });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             if hot {
-                h.since = Instant::now();
+                h.since = crate::clock::now();
             }
         }
         if hot {
             let since = h.since;
             self.tip = Some(Tip { anchor: hit, text: words, since });
-            if since.elapsed().as_millis() < 700 {
+            if crate::clock::since(since).as_millis() < 700 {
                 self.dirty = true;
             }
         }
@@ -1035,10 +1046,17 @@ impl App {
                         let _ = y;
                     }
                     Face::Picture => {
-                        let words = if self.avatar.is_some() { "PROFILE/AVATAR.PNG · FOUND" } else { "DROP A PNG AT PROFILE/AVATAR.PNG" };
+                        let words = if self.avatar_pick.is_some() {
+                            "CHOOSING…"
+                        } else if self.avatar.is_some() {
+                            "SQUARED OFF AND KEPT AS PROFILE/AVATAR.PNG"
+                        } else {
+                            "PICK ONE FROM ANYWHERE ON THIS MACHINE"
+                        };
                         self.fonts.draw(scene, dim, bx, y + self.px(14.0), words);
-                        let fw = self.fonts.measure(strong, "OPEN THE FOLDER") + self.px(24.0);
-                        self.me_button(scene, r.right() - pad - fw, y + self.px(18.0), "OPEN THE FOLDER", false, CardHit::Folder);
+                        let word = if self.avatar.is_some() { "CHOOSE ANOTHER" } else { "CHOOSE A PICTURE" };
+                        let fw = self.fonts.measure(strong, word) + self.px(24.0);
+                        self.me_button(scene, r.right() - pad - fw, y + self.px(18.0), word, false, CardHit::PickPicture);
                     }
                     Face::Initial => {
                         for l in crate::reader::wrap(&self.fonts, dim, "THE FIRST LETTER OF YOUR NAME, IN THE SPACE'S SIGNAL", bw) {

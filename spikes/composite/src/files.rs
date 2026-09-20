@@ -77,7 +77,7 @@ impl Tree {
     /// One folder's entries: folders first, then files, each by name.
     fn list(&mut self, dir: &Path, depth: usize) -> Vec<Node> {
         if let Some((at, v)) = self.cache.get(dir) {
-            if at.elapsed().as_secs() < 3 {
+            if crate::clock::since(at).as_secs() < 3 {
                 return v.clone();
             }
         }
@@ -100,7 +100,7 @@ impl Tree {
         dirs.sort_by_key(key);
         files.sort_by_key(key);
         dirs.extend(files);
-        self.cache.insert(dir.to_path_buf(), (Instant::now(), dirs.clone()));
+        self.cache.insert(dir.to_path_buf(), (crate::clock::now(), dirs.clone()));
         dirs
     }
 
@@ -372,8 +372,8 @@ impl App {
             self.tree.toggle(&n.path);
             self.play_event("toggle");
         } else {
-            let again = self.tree.last_click.as_ref().is_some_and(|(at, p)| *p == n.path && at.elapsed().as_millis() < 450);
-            self.tree.last_click = Some((Instant::now(), n.path.clone()));
+            let again = self.tree.last_click.as_ref().is_some_and(|(at, p)| *p == n.path && crate::clock::since(at).as_millis() < 450);
+            self.tree.last_click = Some((crate::clock::now(), n.path.clone()));
             self.open_from_tree(&n.path, again);
         }
         self.dirty = true;
@@ -393,17 +393,17 @@ impl App {
     fn side_tip(&mut self, key: u64, hit: Rect, words: String) {
         let (mx, my) = self.mouse;
         let hot = hit.contains(mx, my);
-        let h = self.hovers.entry(key).or_insert_with(|| crate::app::Hover { alpha: crate::anim::Anim::at(0.0), pulse: crate::anim::Anim::at(1.0), hot: false, since: Instant::now() });
+        let h = self.hovers.entry(key).or_insert_with(|| crate::app::Hover { alpha: crate::anim::Anim::at(0.0), pulse: crate::anim::Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             if hot {
-                h.since = Instant::now();
+                h.since = crate::clock::now();
             }
         }
         if hot {
             let since = h.since;
             self.tip = Some(crate::app::Tip { anchor: hit, text: words, since });
-            if since.elapsed().as_millis() < 700 {
+            if crate::clock::since(since).as_millis() < 700 {
                 self.dirty = true;
             }
         }

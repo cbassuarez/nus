@@ -178,7 +178,7 @@ pub struct Favicon {
 pub struct Created(pub std::time::Instant);
 impl Default for Created {
     fn default() -> Self {
-        Created(std::time::Instant::now())
+        Created(crate::clock::now())
     }
 }
 impl Created {
@@ -241,47 +241,7 @@ pub type SharedRef = StdRc<RefCell<Shared>>;
 
 /// Injected into every document: tracks the largest playing <video>, reports
 /// it through the `nusVideo` binding, and exposes transport on `__nus`.
-pub const VIDEO_JS: &str = r#"(() => {
-  if (window.__nus) return;
-  const st = { best: null };
-  function pick() {
-    let best = null, area = 0;
-    for (const v of document.querySelectorAll('video')) {
-      const r = v.getBoundingClientRect();
-      const a = r.width * r.height;
-      if (a > area && v.readyState > 0 && r.width > 80) { area = a; best = v; }
-    }
-    return best;
-  }
-  function report() {
-    const v = pick(); st.best = v;
-    let p = null;
-    if (v) {
-      const r = v.getBoundingClientRect();
-      p = { x: r.left, y: r.top, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight,
-            paused: v.paused, ended: v.ended, muted: v.muted, t: v.currentTime, dur: v.duration || 0 };
-    }
-    const media = [], seen = {};
-    for (const m of document.querySelectorAll('video,audio')) {
-      const src = m.currentSrc || m.src || '';
-      if (!src || seen[src]) continue;
-      seen[src] = 1;
-      media.push({ k: m.tagName.toLowerCase(), src, w: m.videoWidth || 0, h: m.videoHeight || 0, blob: /^(blob:|mediasource:)/.test(src) });
-    }
-    if (window.nusVideo) window.nusVideo(JSON.stringify({ v: p, media }));
-  }
-  const V = () => st.best;
-  window.__nus = {
-    report,
-    seek(d) { const v = V(); if (v) v.currentTime = Math.max(0, Math.min(v.duration || 1e9, v.currentTime + d)); },
-    toggle() { const v = V(); if (v) { if (v.paused) v.play(); else v.pause(); } },
-    vol(d) { const v = V(); if (v) v.volume = Math.max(0, Math.min(1, v.volume + d)); },
-    mute() { const v = V(); if (v) v.muted = !v.muted; },
-    step(f) { const v = V(); if (v) { v.pause(); v.currentTime += f / 30; } },
-    reveal() { const v = V(); if (v) v.scrollIntoView({ block: 'center', inline: 'center' }); },
-  };
-  setInterval(report, 100);
-})();"#;
+pub const VIDEO_JS: &str = include_str!("../assets/video.js");
 
 #[derive(Clone)]
 pub struct AppHandler;
@@ -847,6 +807,7 @@ wrap_find_handler! {
 wrap_download_handler! {
     pub struct DownloadBuilder {
         display: Display,
+        container: String,
     }
 
     impl DownloadHandler {
@@ -868,7 +829,7 @@ wrap_download_handler! {
                 let path=crate::downloads::available_path(&dir,&name,&rows);
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                 let key=(now.as_micros() as u64).max(rows.iter().map(|d|d.key).max().unwrap_or(0)+1);
-                rows.push(Download{key,id:item.id(),name:path.file_name().unwrap().to_string_lossy().into(),original:crate::downloads::safe_name(&original),path:path.to_string_lossy().into(),url:CefString::from(&item.url()).to_string(),title,total:item.total_bytes(),started:now.as_secs(),live:true,..Default::default()});
+                rows.push(Download{key,id:item.id(),name:path.file_name().unwrap().to_string_lossy().into(),original:crate::downloads::safe_name(&original),path:path.to_string_lossy().into(),url:CefString::from(&item.url()).to_string(),container:self.container.clone(),source_url:_browser.and_then(|b|b.main_frame()).map(|f|CefString::from(&f.url()).to_string()).unwrap_or_default(),title,total:item.total_bytes(),started:now.as_secs(),live:true,..Default::default()});
                 crate::downloads::save(&rows);path
             };
             crate::downloads::changed();
@@ -1119,7 +1080,7 @@ impl BrowserTab {
             }),
             LifeBuilder::new(Display { shared: shared.clone() }),
             FindBuilder::new(Display { shared: shared.clone() }),
-            DownloadBuilder::new(Display { shared: shared.clone() }),
+            DownloadBuilder::new(Display { shared: shared.clone() },container.to_string()),
             PermissionBuilder::new(Display { shared: shared.clone() }),
             RequestBuilder::new(Display { shared: shared.clone() }),
             MenuBuilder::new(Display { shared: shared.clone() }),
@@ -1127,7 +1088,7 @@ impl BrowserTab {
         // The container's context: the global one for PERSONAL, else its own
         // cookie jar and cache under profile/containers.
         let mut context = crate::containers::context(container);
-        let t0 = std::time::Instant::now();
+        let t0 = crate::clock::now();
         let browser = browser_host_create_browser_sync(
             Some(&window_info),
             Some(&mut client),
@@ -1136,7 +1097,7 @@ impl BrowserTab {
             None,
             context.as_mut(),
         )?;
-        tracing::info!("create_browser_sync {url} took {}ms", t0.elapsed().as_millis());
+        tracing::info!("create_browser_sync {url} took {}ms", crate::clock::since(t0).as_millis());
         let mut observer = ObserverBuilder::new(Observer { shared: shared.clone() });
         let registration = browser.host().and_then(|h| h.add_dev_tools_message_observer(Some(&mut observer)));
         let tab = BrowserTab { browser, shared, _observer: registration };
@@ -1210,6 +1171,11 @@ impl BrowserTab {
     /// Run JS in the page (fire and forget).
     pub fn eval(&self, expr: &str) {
         self.devtools("Runtime.evaluate", serde_json::json!({ "expression": expr, "userGesture": true }));
+    }
+
+    pub fn prepare_pip(&self) {
+        self.eval("window.__nus && __nus.reveal()");
+        if let Some(h)=self.host() {h.invalidate(cef::PaintElementType::VIEW);h.send_external_begin_frame();}
     }
 
     pub fn video(&self) -> Option<Video> {

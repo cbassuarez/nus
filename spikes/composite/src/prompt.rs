@@ -341,12 +341,12 @@ impl App {
                 .collect::<Vec<_>>()
         );
         if let Some((at, previous, rows)) = self.prompt_cache.borrow().as_ref() {
-            if previous == &key && at.elapsed() < std::time::Duration::from_millis(500) {
+            if previous == &key && crate::clock::since(at) < std::time::Duration::from_millis(500) {
                 return rows.clone();
             }
         }
         let rows = self.build_prompt_rows(input);
-        *self.prompt_cache.borrow_mut() = Some((std::time::Instant::now(), key, rows.clone()));
+        *self.prompt_cache.borrow_mut() = Some((crate::clock::now(), key, rows.clone()));
         rows
     }
     fn build_prompt_rows(&self, input: &str) -> Vec<PaletteRow> {

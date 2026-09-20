@@ -138,7 +138,7 @@ impl App {
     }
 
     pub(crate) fn show_hatch(&mut self) {
-        self.hatch_state.summoned = Some(Instant::now());
+        self.hatch_state.summoned = Some(crate::clock::now());
         if !self.hatch_state.overview && self.ensure_hatch_tab().is_none() {
             return;
         }
@@ -203,7 +203,7 @@ impl App {
             focused: false,
             mods: Default::default(),
             pos: (0.0, 0.0),
-            last_frame: Instant::now(),
+            last_frame: crate::clock::now(),
             slide: crate::anim::Anim::at(0.0),
             hiding: false,
             mon: (0, 0, 1920, 1080, scale),
@@ -332,7 +332,7 @@ impl App {
             crate::app::place_pane(&mut tab.left, content, header, pad_x, pad_y, scale, false);
         }
         if self.resize_due.is_none() {
-            self.resize_due = Some(Instant::now());
+            self.resize_due = Some(crate::clock::now());
         }
     }
 
@@ -434,7 +434,7 @@ impl App {
     pub fn hatch_key(&mut self, ev: &KeyEvent) {
         let mods = self.hatch.as_ref().map(|h| h.mods).unwrap_or_default();
         let pressed = ev.state == ElementState::Pressed;
-        if pressed && self.behavior.hatch_hotkey.matches(ev, mods) {
+        if pressed && self.behavior.hatch_hotkey.matches(&ev.into(), mods) {
             // A successfully registered OS shortcut is delivered only by the OS.
             if self.hotkey.as_ref().is_none_or(|k| !k.status.is_empty()) { self.toggle_hatch(); }
             return;
@@ -486,7 +486,7 @@ impl App {
     pub(crate) fn toggle_pin(&mut self) {
         if let Some(h) = self.hatch.as_mut() {
             h.pinned = !h.pinned;
-            h.notice = Some((if h.pinned { "pinned · stays up when you look away".into() } else { "unpinned".into() }, Instant::now()));
+            h.notice = Some((if h.pinned { "pinned · stays up when you look away".into() } else { "unpinned".into() }, crate::clock::now()));
         }
         self.play_event("toggle");
         self.dirty = true;
@@ -595,9 +595,9 @@ impl App {
 
     pub fn hatch_frame(&mut self) {
         let Some(h) = self.hatch.as_ref() else { return };
-        if !h.visible || h.last_frame.elapsed().as_millis() < 16 { return; }
+        if !h.visible || crate::clock::since(h.last_frame).as_millis() < 16 { return; }
         let mut h = self.hatch.take().unwrap();
-        h.last_frame = Instant::now();
+        h.last_frame = crate::clock::now();
         self.draw_hatch(&mut h);
         self.hatch = Some(h);
     }

@@ -329,7 +329,7 @@ impl App {
                     }
                 }
                 // Click count.
-                let now = Instant::now();
+                let now = crate::clock::now();
                 let count = match t.clicks {
                     Some(c) if now.duration_since(c.at).as_millis() < 400 && c.pos == (line, col) => c.count + 1,
                     _ => 1,
@@ -651,7 +651,7 @@ impl App {
     /// The resize overlay: cols × rows while the window is being resized.
     pub(crate) fn draw_resize_overlay(&mut self, scene: &mut Scene) {
         let Some(at) = self.resized_at else { return };
-        let age = at.elapsed().as_secs_f32();
+        let age = crate::clock::since(at).as_secs_f32();
         if age > 0.9 {
             self.resized_at = None;
             return;
@@ -710,7 +710,7 @@ impl App {
     }
 
     /// Keys while search or hints is up. Returns true when consumed.
-    pub(crate) fn term_mode_key(&mut self, key: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn term_mode_key(&mut self, key: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key as WKey, NamedKey};
         if key.state != ElementState::Pressed {
             return false;

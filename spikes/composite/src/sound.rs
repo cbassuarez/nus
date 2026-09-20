@@ -430,7 +430,7 @@ pub struct Sound {
 
 impl Sound {
     pub fn new(prefs: SoundPrefs) -> Sound {
-        Sound { player: Player::open(), prefs, last_hover: Instant::now() }
+        Sound { player: Player::open(), prefs, last_hover: crate::clock::now() }
     }
 
     /// Play the cue for an event, after the rules have had their say.
@@ -441,10 +441,10 @@ impl Sound {
             return;
         }
         if event == "hover" {
-            if self.last_hover.elapsed().as_millis() < 150 {
+            if crate::clock::since(self.last_hover).as_millis() < 150 {
                 return;
             }
-            self.last_hover = Instant::now();
+            self.last_hover = crate::clock::now();
         }
         let cue = match over {
             Some(o) => o,

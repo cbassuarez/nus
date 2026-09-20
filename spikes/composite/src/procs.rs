@@ -43,7 +43,7 @@ pub fn start() -> Shared {
             let mut last: Option<(std::collections::HashMap<u32, u64>, u64, u64, std::time::Instant)> = None;
             loop {
                 let (procs, cpu_times, ctx, sys, threads, handles) = sample();
-                let now = std::time::Instant::now();
+                let now = crate::clock::now();
                 let mut out_procs = procs;
                 let (mut ctx_per_s, mut sys_per_s) = (0.0, 0.0);
                 if let Some((prev, pctx, psys, pat)) = &last {

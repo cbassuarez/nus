@@ -216,7 +216,7 @@ impl App {
     }
 
     pub(crate) fn hatch_badge_frame(&mut self) {
-        if self.hatch_state.completion.as_ref().is_some_and(|(_,at)|at.elapsed().as_secs()>=6) || !self.behavior.hatch_notify {self.hatch_state.completion=None;}
+        if self.hatch_state.completion.as_ref().is_some_and(|(_,at)|crate::clock::since(at).as_secs()>=6) || !self.behavior.hatch_notify {self.hatch_state.completion=None;}
         let notice=self.hatch_state.completion.is_some();
         let summary=self.hatch_state.completion.as_ref().map(|(item,_)|format!("{} · {}",item.title,item.status.label().to_lowercase())).unwrap_or_else(||crate::hatch_work::summary(&self.hatch_state.work));
         let open=self.hatch_state.island_open.is_some();

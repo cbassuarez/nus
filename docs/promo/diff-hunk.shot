@@ -1,0 +1,13 @@
+# 13 · diff-hunk — watch the agent work. Beat 48, 2.6 s.
+# Staging: a repo with one file changed in two places, shell integration
+# on (the chips only exist on a block), and git without a pager.
+hover 5 5
+newshell
+wait 2000
+shell git --no-pager diff
+wait 1200
+settle
+record diff-hunk 2.6
+at 0.789 hunk stage 0
+at 1.184 await-paint
+quit

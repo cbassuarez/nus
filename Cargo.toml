@@ -46,3 +46,7 @@ notify-rust = "4"
 lto = "thin"
 codegen-units = 1
 debug = 1
+
+# Backport the macOS first-drawable fix until wgpu ships PR #10302.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }

@@ -84,7 +84,7 @@ impl App {
             t.split_w = Some(w);
         }
         self.layout();
-        self.resize_due = Some(std::time::Instant::now() + std::time::Duration::from_millis(60));
+        self.resize_due = Some(crate::clock::now() + std::time::Duration::from_millis(60));
     }
 
     pub(crate) fn swap_panes(&mut self) {

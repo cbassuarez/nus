@@ -20,7 +20,7 @@ pub enum Chord {
 }
 
 impl Chord {
-    pub fn matches(self, event: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersState) -> bool {
+    pub fn matches(self, event: &crate::app::KeyIn, mods: winit::keyboard::ModifiersState) -> bool {
         use winit::keyboard::{KeyCode, PhysicalKey};
         let key = match event.physical_key { PhysicalKey::Code(key) => key, _ => return false };
         let ctrl = mods.control_key(); let shift = mods.shift_key(); let sup = mods.super_key();

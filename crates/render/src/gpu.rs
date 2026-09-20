@@ -97,7 +97,8 @@ impl Gpu {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // COPY_SRC so the app can photograph its own glyph atlas.
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -348,6 +349,12 @@ impl Gpu {
                 target.configure(&self.device);
                 f
             }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                // A native resize/show can invalidate the drawable before a
+                // resize callback arrives. Reconfigure and retry next frame.
+                target.configure(&self.device);
+                return false;
+            }
             _ => return false,
         };
         let view = frame
@@ -364,6 +371,42 @@ impl Gpu {
 
     /// The scene into an offscreen texture, read back as RGBA8 rows: the
     /// app photographing itself, from its own texture rather than the OS.
+    /// The glyph atlas as it sits on the GPU: one byte of coverage per
+    /// pixel, `ATLAS_SIZE` square. Every letter the app has drawn so far.
+    pub fn atlas_snapshot(&mut self) -> (u32, Vec<u8>) {
+        let size = ATLAS_SIZE;
+        let row = (size + 255) / 256 * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("atlas readback"),
+            size: (row * size) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("atlas") });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &self.atlas, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(size) } },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(enc.finish()));
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = rx.recv();
+        let data = slice.get_mapped_range().expect("atlas readback mapped");
+        let mut out = Vec::with_capacity((size * size) as usize);
+        for y in 0..size {
+            let start = (y * row) as usize;
+            out.extend_from_slice(&data[start..start + size as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+        (size, out)
+    }
+
     pub fn snapshot(&mut self, size: (u32, u32), scene: &Scene, clear: [f32; 4]) -> Vec<u8> {
         self.upload_instances(scene);
         let (w, h) = size;

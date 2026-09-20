@@ -64,7 +64,7 @@ pub fn face_at(seconds: f32) -> Face {
 }
 
 /// Keep cycling while launch is pending. Readiness, not a fixed launch delay,
-/// chooses the final Newsreader frame; attention animations remain one-shot.
+/// chooses the final Newsreader frame. Also used by bounded attention loops.
 pub fn launch_face_at(seconds: f32) -> Face {
     Face::ALL[(seconds.max(0.0) / STEP_SECONDS) as usize % Face::ALL.len()]
 }

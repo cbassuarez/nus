@@ -50,7 +50,7 @@ impl State {
                 return;
             }
             self.show(
-                dock_icon::launch_face_at(at.elapsed().as_secs_f32()),
+                dock_icon::launch_face_at(crate::clock::since(at).as_secs_f32()),
                 "launch-frame",
             );
         }
@@ -85,7 +85,7 @@ impl Launch {
         }
         {
             let mut state = self.state.borrow_mut();
-            state.started = Some(Instant::now());
+            state.started = Some(crate::clock::now());
             state.tick();
         }
         let mut context = TimerContext {

@@ -74,7 +74,7 @@ pub fn start() -> Live {
         }
         std::thread::sleep(Duration::from_secs(120));
     });
-    Live { rx, ports_at: Instant::now() - Duration::from_secs(60), rules_at: Instant::now() - Duration::from_secs(60) }
+    Live { rx, ports_at: crate::clock::now() - Duration::from_secs(60), rules_at: crate::clock::now() - Duration::from_secs(60) }
 }
 
 fn gh(args: &[&str]) -> Result<String, String> {
@@ -182,8 +182,8 @@ impl App {
                 }
             }
         }
-        if self.live.ports_at.elapsed().as_secs() >= 10 {
-            self.live.ports_at = Instant::now();
+        if crate::clock::since(self.live.ports_at).as_secs() >= 10 {
+            self.live.ports_at = crate::clock::now();
             let ports: Vec<Item> = nus_pty::listening_ports()
                 .into_iter()
                 .filter(|p| p.port >= 1024 && !crate::app::SYSTEM_PROCS.contains(&p.process.to_lowercase().as_str()))
@@ -197,8 +197,8 @@ impl App {
                 }
             }
         }
-        if self.live.rules_at.elapsed().as_secs() >= 60 {
-            self.live.rules_at = Instant::now();
+        if crate::clock::since(self.live.rules_at).as_secs() >= 60 {
+            self.live.rules_at = crate::clock::now();
             let before: Vec<(String, Vec<Item>)> = self.folders.iter().filter(|f| f.kind == Kind::Rules).map(|f| (f.name.clone(), f.items.clone())).collect();
             self.refresh_rules_folders();
             let after: Vec<(String, Vec<Item>)> = self.folders.iter().filter(|f| f.kind == Kind::Rules).map(|f| (f.name.clone(), f.items.clone())).collect();

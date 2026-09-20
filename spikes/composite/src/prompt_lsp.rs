@@ -86,14 +86,14 @@ impl App {
         };
         if text != l.sent && !l.dirty {
             l.dirty = true;
-            l.changed_at = Instant::now();
+            l.changed_at = crate::clock::now();
             // Stale answers go the moment the line moves.
             l.ghost = None;
             l.items.clear();
             l.menu = false;
             self.dirty = true;
         }
-        if l.dirty && l.changed_at.elapsed().as_millis() >= 120 && text != l.sent {
+        if l.dirty && crate::clock::since(l.changed_at).as_millis() >= 120 && text != l.sent {
             let Some(s) = self.lsp.map.get(&l.key) else { return };
             if !s.client.is_ready() {
                 return;
@@ -145,7 +145,7 @@ impl App {
             uri,
             opened: false,
             sent: String::new(),
-            changed_at: Instant::now(),
+            changed_at: crate::clock::now(),
             dirty: false,
             diags: Vec::new(),
             items: Vec::new(),
@@ -215,7 +215,7 @@ impl App {
 
     /// Keys while a completion menu is up, or Tab on a ghost. Returns true
     /// when consumed.
-    pub(crate) fn prompt_lsp_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn prompt_lsp_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         if ev.state != ElementState::Pressed || self.behavior.prompt_lsp == PromptLsp::Off {
             return false;
         }

@@ -42,15 +42,16 @@ const css = (r, g, b, a) =>
   `rgba(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)},${a})`;
 
 function parseCast(text) {
-  const lines = text.split('\n').filter((l) => l.trim());
-  const header = JSON.parse(lines[0]);
-  const enc = new TextEncoder();
-  const events = [];
-  for (let i = 1; i < lines.length; i++) {
-    const e = JSON.parse(lines[i]);
-    if (e[1] === 'o') events.push([e[0], enc.encode(e[2])]);
+  const lines=text.split('\n').filter(l=>l.trim());
+  const dimension=n=>Math.max(1,Math.min(1000,Number.isFinite(+n)?+n:80));
+  const header=JSON.parse(lines[0]||'{}');const enc=new TextEncoder(),events=[];let duration=0;
+  for(let i=1;i<lines.length;i++) {
+    let e;try{e=JSON.parse(lines[i]);}catch{continue;}
+    if(!Number.isFinite(e[0])||e[0]<0)continue;duration=Math.max(duration,e[0]);
+    if(e[1]==='o')events.push([e[0],enc.encode(e[2]),'o']);
+    if(e[1]==='r'&&typeof e[2]==='string') {const size=e[2].split('x').map(Number);if(size.length===2&&size.every(Number.isFinite))events.push([e[0],size.map(dimension),'r']);}
   }
-  return { cols: header.width, rows: header.height, events };
+  return {cols:dimension(header.width||80),rows:dimension(header.height||24),events,duration};
 }
 
 /** The glyph atlas the renderer packs into, mirrored into a canvas. */
@@ -151,7 +152,7 @@ class HeroTerminal {
     this.shell.set_px(probe);
     const cw = this.shell.cell_w / probe;
     const ch = this.shell.cell_h / probe;
-    const px = Math.max(6, Math.min(availW / (this.cast.cols * cw), availH / (this.cast.rows * ch)));
+    const px = Math.max(6, Math.min(availW / (this.shell.cols * cw), availH / (this.shell.rows * ch)));
     this.shell.set_px(px);
     this.px = px;
 
@@ -204,11 +205,14 @@ class HeroTerminal {
       if (!this.playing) return;
       const dt = Math.min(0.25, (now - this.last) / 1000);
       this.last = now;
-      this.advanceTo(this.clock + dt);
+      let next=this.clock+dt*(this.speed||1);
+      const upcoming=this.cast.events[this.cursor]?.[0];
+      if(this.skipIdle&&upcoming-next>2)next=upcoming;
+      this.advanceTo(next);
       if (this.clock >= this.duration) {
         this.pause(true);
         this.setStatus('end');
-        this.loop = setTimeout(() => {
+        if(this.loopEnabled) this.loop = setTimeout(() => {
           if (!this.autoPaused && !this.userPaused) { this.seek(0); this.play(); }
         }, 2600);
         return;
@@ -226,9 +230,12 @@ class HeroTerminal {
   }
 
   seek(t) {
+    t=Math.max(0,Math.min(this.duration,Number.isFinite(t)?t:0));
     if (t < this.clock) {
       if (this.loop) { clearTimeout(this.loop); this.loop = null; }
+      this.shell.free();
       this.shell = new Shell(this.cast.cols, this.cast.rows, 2000, this.px || 20);
+      this.atlas = new Atlas(this.shell.atlas_size);this.painted=false;
       this.applyTheme();
       this.cursor = 0;
       this.clock = 0;
@@ -241,7 +248,8 @@ class HeroTerminal {
     const ev = this.cast.events;
     let fed = false;
     while (this.cursor < ev.length && ev[this.cursor][0] <= t) {
-      this.shell.feed(ev[this.cursor][1]);
+      if(ev[this.cursor][2]==='r') {this.shell.resize(...ev[this.cursor][1]);this.layout();}
+      else this.shell.feed(ev[this.cursor][1]);
       this.cursor++;
       fed = true;
     }
@@ -250,6 +258,7 @@ class HeroTerminal {
       this.scrub.value = String(this.clock);
     }
     if (fed || !this.painted) this.paint();
+    this.setStatus();
   }
 
   /* --- paint: consume the renderer's draw list --------------------------- */
@@ -362,8 +371,8 @@ export async function mountHeroTerminal(root, opts) {
   });
 
   term.cast = parseCast(castText);
-  term.duration = term.cast.events.length
-    ? term.cast.events[term.cast.events.length - 1][0] : 0;
+  term.duration = term.cast.duration;
+  term.loopEnabled=opts.loop!==false;term.speed=1;term.skipIdle=false;
 
   term.shell = new Shell(term.cast.cols, term.cast.rows, 2000, 20);
   term.atlas = new Atlas(term.shell.atlas_size);
@@ -380,7 +389,9 @@ export async function mountHeroTerminal(root, opts) {
 
   root.dataset.ready = 'true';
 
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (opts.autoplay===false) {
+    term.userPaused=true;term.seek(0);term.setStatus();
+  } else if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     term.userPaused = true;
     term.seek(term.duration);
     term.setStatus();

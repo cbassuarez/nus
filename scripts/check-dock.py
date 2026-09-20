@@ -41,6 +41,24 @@ for path in (root/'theme-cycle/dock').glob('*.tiff'):
     data=path.read_bytes()
     assert data[:4] in (b'II*\0',b'MM\0*') and len(data)>1000,path
 prefs=json.loads((profile/'settings.json').read_text())
+# Request attention while our own app is hidden. It must cycle more than once,
+# coalesce a second request, stop promptly on focus, and restore the final face.
+os.environ['NUS_DOCK_TRACE']=str(root/'attention-loop/dock')
+run('attention-loop','wait 1100\nbackground\nwait 200\ndockattention\nwait 500\ndockattention\nwait 1600',prefs)
+attention=events('attention-loop')
+begin=next(i for i,row in enumerate(attention) if row['event']=='attention')
+frames=[row['face'] for row in attention[begin:] if row['event']=='frame']
+assert frames[:12]==expected*2,frames
+assert frames[-1]=='Newsreader',frames
+assert sum(row['event']=='attention' for row in attention)==1,attention
+assert sum(row['event']=='attention-ended' for row in attention)==1,attention
+os.environ['NUS_DOCK_TRACE']=str(root/'attention-focus/dock')
+run('attention-focus','wait 1100\nbackground\nwait 200\ndockattention\nwait 300\nforeground\nwait 650',prefs)
+focus=events('attention-focus')
+start=next(row['ms'] for row in focus if row['event']=='attention')
+end=next(row['ms'] for row in focus if row['event']=='attention-ended')
+assert end-start<850,(start,end)
+assert [row['face'] for row in focus if row['event']=='frame'][-1]=='Newsreader',focus
 prefs['motion']['reduce']=True
 os.environ['NUS_DOCK_TRACE']=str(root/'reduced/dock')
 run('reduced','wait 900\ntheme nord\nwait 1100\ndockattention\nwait 800',prefs)
@@ -74,7 +92,7 @@ with (directory/'run.log').open('w') as log:
             child.terminate()
             child.wait(timeout=10)
 quit_icons=[]
-for name in ['theme-cycle','reduced','notice','native-quit']:
+for name in ['theme-cycle','attention-loop','attention-focus','reduced','notice','native-quit']:
     row=events(name)[-1]
     assert row['event']=='quit-default' and row['face']=='Newsreader',row
     quit_icons.append(str(root/name/'dock'/f"{row['ms']}-5.tiff"))

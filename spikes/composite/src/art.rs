@@ -481,13 +481,13 @@ impl Art {
             name,
             mtime: path.as_ref().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok()),
             path,
-            checked: Instant::now(),
+            checked: crate::clock::now(),
             lua: mlua::Lua::new(),
             state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, dark: false })),
             dark: false,
             status: None,
-            started: Instant::now(),
-            last: Instant::now(),
+            started: crate::clock::now(),
+            last: crate::clock::now(),
             reloads: 0,
         };
         art.load(&src);
@@ -507,10 +507,10 @@ impl Art {
 
     /// The file changed: load it again, keeping the clock.
     pub fn tend(&mut self) {
-        if self.checked.elapsed().as_millis() < 700 {
+        if crate::clock::since(self.checked).as_millis() < 700 {
             return;
         }
-        self.checked = Instant::now();
+        self.checked = crate::clock::now();
         let Some(p) = self.path.clone() else { return };
         let m = std::fs::metadata(&p).ok().and_then(|m| m.modified().ok());
         if m != self.mtime {
@@ -527,13 +527,13 @@ impl Art {
 
     /// One frame: the script's `draw(c)`, then what it drew.
     pub fn frame(&mut self, env: Env) -> Vec<Cmd> {
-        let time = self.started.elapsed().as_secs_f32();
+        let time = crate::clock::since(self.started).as_secs_f32();
         self.frame_at(env, time)
     }
 
     /// Sample existing artwork at a fixed time for previews and reduced motion.
     pub fn frame_at(&mut self, env: Env, time: f32) -> Vec<Cmd> {
-        let now = Instant::now();
+        let now = crate::clock::now();
         let dt = now.duration_since(self.last).as_secs_f32().clamp(1.0 / 240.0, 0.05);
         self.last = now;
         {
@@ -614,7 +614,7 @@ impl App {
                 }
                 Cmd::Sky(rr, az, alt, cover, wind, seed) => {
                     let rr = Rect::new(rr.x * sc + ox, rr.y * sc + oy, rr.w * sc, rr.h * sc);
-                    scene.sky(rr, az, alt, cover, wind, self.started.elapsed().as_secs_f32(), seed);
+                    scene.sky(rr, az, alt, cover, wind, crate::clock::since(self.started).as_secs_f32(), seed);
                 }
                 Cmd::Text(x, y, text, px, c, font, align, tracked) => {
                     let size = self.px(px) * sc;
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn a_script_draws() {
-        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: Instant::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, dark: false })), status: None, dark: false, started: Instant::now(), last: Instant::now(), reloads: 0 };
+        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: crate::clock::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, dark: false })), status: None, dark: false, started: crate::clock::now(), last: crate::clock::now(), reloads: 0 };
         art.load("function draw(c) c:rect(1, 2, 3, 4, c.ink) c:circle(5, 5, 2, '#c8102e', 0.5) c:text(0, 10, 'hi', 11, c.dim, 1, { caps = true }) c:blob({ {0,0}, {10,0}, {10,10}, {0,10} }, c.signal) end");
         let cmds = art.frame(Env { w: 100.0, h: 100.0, ..Default::default() });
         assert!(cmds.len() >= 4, "{}", cmds.len());

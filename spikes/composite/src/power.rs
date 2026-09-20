@@ -15,12 +15,12 @@ pub fn on_battery() -> bool {
     static LAST: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
     let mut g = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, v)) = *g {
-        if at.elapsed() < Duration::from_secs(5) {
+        if crate::clock::since(at) < Duration::from_secs(5) {
             return v;
         }
     }
     let v = probe_battery();
-    *g = Some((Instant::now(), v));
+    *g = Some((crate::clock::now(), v));
     v
 }
 

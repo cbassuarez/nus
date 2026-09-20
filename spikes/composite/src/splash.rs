@@ -32,7 +32,7 @@ const SIZE: u32 = 256;
 
 impl Splash {
     pub fn new() -> Splash {
-        Splash { started: Instant::now(), begun: false, tex: None, fade: Anim::at(1.0), leaving: false }
+        Splash { started: crate::clock::now(), begun: false, tex: None, fade: Anim::at(1.0), leaving: false }
     }
 }
 
@@ -67,9 +67,9 @@ impl App {
         let Some(sp) = self.splash.as_mut() else { return };
         if !sp.begun {
             sp.begun = true;
-            sp.started = Instant::now();
+            sp.started = crate::clock::now();
         }
-        let elapsed = sp.started.elapsed().as_secs_f32();
+        let elapsed = crate::clock::since(sp.started).as_secs_f32();
         let k = self.plate_k();
         let draw_secs = if self.motion.reduced() || self.behavior.splash != crate::settings::SplashMode::Draw { 0.0 } else { DRAW * k };
         if self.behavior.splash == crate::settings::SplashMode::None {

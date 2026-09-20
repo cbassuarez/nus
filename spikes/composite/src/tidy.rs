@@ -132,7 +132,7 @@ impl App {
         self.tidy.groups = self.propose_groups();
         self.tidy.open = true;
         self.tidy.scroll = 0.0;
-        self.tidy.last_run = Some(Instant::now());
+        self.tidy.last_run = Some(crate::clock::now());
         let d = self.motion.dur(crate::anim::base::PALETTE);
         self.tidy.rise.replay(0.0, 1.0, d);
         self.rules.on_tidy(&self.tidy.groups);
@@ -152,11 +152,11 @@ impl App {
             TidyEvery::Hourly => 3600,
             TidyEvery::Daily => 86400,
         };
-        let due = self.tidy.last_run.map(|t| t.elapsed().as_secs() >= every).unwrap_or(self.started.elapsed().as_secs() >= 120);
+        let due = self.tidy.last_run.map(|t| crate::clock::since(t).as_secs() >= every).unwrap_or(crate::clock::since(self.started).as_secs() >= 120);
         if !due || self.tidy.open || self.palette.is_some() || self.board.open || !self.window.has_focus() {
             return;
         }
-        self.tidy.last_run = Some(Instant::now());
+        self.tidy.last_run = Some(crate::clock::now());
         if !self.propose_groups().is_empty() {
             self.open_tidy();
         }
@@ -247,7 +247,7 @@ impl App {
         self.mru = vec![self.active];
     }
 
-    pub(crate) fn tidy_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn tidy_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key as WKey, NamedKey};
         if !self.tidy.open {
             return false;

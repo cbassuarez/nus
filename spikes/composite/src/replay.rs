@@ -6,15 +6,10 @@
 //! page beside as a still (`blobs/<tab>-<n>.png`, the pane's own pixels).
 //! TERMINAL · REPLAY: KEEP 7 DAYS · 1 DAY · OFF; old sessions are pruned.
 //!
-//! The timeline (Ctrl+Shift+H): the tab shows a moment instead of now —
-//! the shell by replaying its cast into a scratch `Term` up to that
-//! checkpoint (our core, so the picture is exact), the page as its still,
-//! greyed *then*. ←/→ walk the checkpoints, B cycles after · before · diff
-//! for the page (changed pixels in signal), Esc returns to now.
-//!
-//! Share (`nus share`, the palette): the tab's cast, its stills and the
-//! site's wasm renderer bundled into one HTML file that replays anywhere,
-//! with the real cells; open it, gist it, push it.
+//! Ctrl+Shift+H opens a read-only history document with a session map.
+//! Commands are detents in that map; the document and overview share line
+//! positions. Search, copy, and keyboard navigation stay inside the history.
+//! A terminal snapshot, page comparison, and portable playback are optional.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -22,12 +17,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 use serde_json::{json, Value};
 
-use crate::app::{fade, App, Pane, TermPane};
-use nus_render::theme::metric as m;
+use crate::app::{App, Pane};
+#[path="replay_history.rs"] mod history;
+pub(crate) use history::HistoryHit;
 
 const WASM_JS: &str = include_str!("../assets/replay/nus_vt_wasm.js");
 const WASM: &[u8] = include_bytes!("../assets/replay/nus_vt_wasm_bg.wasm");
@@ -49,6 +44,7 @@ struct Cast {
     path: PathBuf,
     file: std::io::BufWriter<std::fs::File>,
     marks: usize,
+    utf8: Vec<u8>,
 }
 
 fn now_secs() -> u64 {
@@ -73,11 +69,11 @@ impl Recorder {
         while root.join(stamp.to_string()).exists() { stamp += 1; }
         let dir = root.join(stamp.to_string());
         std::fs::create_dir_all(dir.join("blobs")).ok()?;
-        Some(Recorder { dir, t0: Instant::now(), casts: HashMap::new(), stills: 0 })
+        Some(Recorder { dir, t0: crate::clock::now(), casts: HashMap::new(), stills: 0 })
     }
 
     fn t(&self) -> f64 {
-        self.t0.elapsed().as_secs_f64()
+        crate::clock::since(self.t0).as_secs_f64()
     }
 
     fn cast(&mut self, tab: u64, cols: usize, rows: usize) -> Option<&mut Cast> {
@@ -86,7 +82,7 @@ impl Recorder {
             let mut file = std::io::BufWriter::new(std::fs::File::create(&path).ok()?);
             let header = json!({ "version": 2, "width": cols, "height": rows, "timestamp": now_secs(), "env": { "TERM": "xterm-256color", "SHELL": "nus" } });
             let _ = writeln!(file, "{header}");
-            self.casts.insert(tab, Cast { path, file, marks: 0 });
+            self.casts.insert(tab, Cast { path, file, marks: 0, utf8: Vec::new() });
         }
         self.casts.get_mut(&tab)
     }
@@ -95,8 +91,8 @@ impl Recorder {
     pub fn output(&mut self, tab: u64, cols: usize, rows: usize, bytes: &[u8]) {
         let t = self.t();
         if let Some(c) = self.cast(tab, cols, rows) {
-            let ev = json!([t, "o", String::from_utf8_lossy(bytes)]);
-            let _ = writeln!(c.file, "{ev}");
+            let text=decode_chunk(&mut c.utf8,bytes);
+            if !text.is_empty(){let ev=json!([t,"o",text]);let _=writeln!(c.file,"{ev}");}
         }
     }
 
@@ -141,6 +137,7 @@ impl Recorder {
 pub struct Pending {
     pub tab_index: usize,
     pub tab_id: u64,
+    pub right: bool,
     pub payload: Value,
     /// The page pane beside: right side?
     pub page: Option<bool>,
@@ -156,8 +153,8 @@ enum Ev {
 fn parse_cast(text: &str) -> (usize, usize, Vec<Ev>) {
     let mut lines = text.lines();
     let header: Value = lines.next().and_then(|l| serde_json::from_str(l).ok()).unwrap_or(Value::Null);
-    let cols = header.get("width").and_then(Value::as_u64).unwrap_or(80) as usize;
-    let rows = header.get("height").and_then(Value::as_u64).unwrap_or(24) as usize;
+    let cols = dimension(header.get("width").and_then(Value::as_u64).unwrap_or(80));
+    let rows = dimension(header.get("height").and_then(Value::as_u64).unwrap_or(24));
     let mut evs = Vec::new();
     for l in lines {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
@@ -169,7 +166,7 @@ fn parse_cast(text: &str) -> (usize, usize, Vec<Ev>) {
             "r" => {
                 let mut it = data.split('x').filter_map(|n| n.parse::<usize>().ok());
                 if let (Some(c), Some(r)) = (it.next(), it.next()) {
-                    evs.push(Ev::Resize(t, c, r));
+                    evs.push(Ev::Resize(t, dimension(c as u64), dimension(r as u64)));
                 }
             }
             "m" => evs.push(Ev::Mark(t, serde_json::from_str(data).unwrap_or(Value::Null))),
@@ -179,9 +176,45 @@ fn parse_cast(text: &str) -> (usize, usize, Vec<Ev>) {
     (cols, rows, evs)
 }
 
+
+/// Separate pane streams; old left-pane cast names remain valid.
+pub(crate) fn stream_id(tab:u64,right:bool)->u64 {tab | if right {1<<63}else{0}}
+fn dimension(n:u64)->usize {n.clamp(1,1000)as usize}
+fn decode_chunk(pending:&mut Vec<u8>,bytes:&[u8])->String {
+    pending.extend_from_slice(bytes);let mut out=String::new();let mut used=0;
+    while used<pending.len() {
+        match std::str::from_utf8(&pending[used..]) {
+            Ok(s)=>{out.push_str(s);used=pending.len();},
+            Err(e)=>{let end=used+e.valid_up_to();out.push_str(std::str::from_utf8(&pending[used..end]).unwrap());used=end;
+                if let Some(n)=e.error_len(){out.push('\u{fffd}');used+=n;}else{break;}}
+        }
+    }
+    pending.drain(..used);out
+}
+fn records(cols:usize,rows:usize,events:&[Ev])->Vec<Value> {
+    let mut term=nus_vt::Term::new(cols,rows,4000);let mut result=Vec::new();let mut last=0.0;
+    for ev in events {
+        match ev {
+            Ev::Out(_,bytes)=>term.advance(bytes),Ev::Resize(_,c,r)=>term.resize(*c,*r),
+            Ev::Mark(t,payload)=>{
+                let mut v=if payload.is_object(){payload.clone()}else{json!({})};
+                v["t"]=json!(t);let ms=v["ms"].as_f64().unwrap_or(0.0);
+                v["start"]=json!((t-ms/1000.0).max(last).min(*t));last=*t;
+                if v.get("output").is_none(){
+                    let output=term.marks.iter().rev().find(|m|m.kind==nus_vt::MarkKind::OutputStart).map(|m|term.output_text(m)).unwrap_or_else(||term.grid().text());
+                    v["output"]=json!(output);v["output_source"]=json!("reconstructed");
+                }
+                result.push(v);
+            }
+        }
+        let _=term.take_responses();let _=term.take_events();
+    }
+    if result.is_empty() && !events.is_empty(){result.push(json!({"cmd":"Session output","output":term.grid().text(),"t":0,"start":0}));}
+    result
+}
+
 /// The timeline over one tab.
 pub struct Timeline {
-    pub tab_index: usize,
     pub tab_id: u64,
     cols: usize,
     rows: usize,
@@ -191,7 +224,21 @@ pub struct Timeline {
     pub at: usize,
     pub term: nus_vt::Term,
     pub mode: Compare,
-    pub hits: Vec<(Rect, usize)>,
+    pub hits: Vec<(Rect, HistoryHit)>,
+    pub right: bool,
+    pub records: Vec<Value>,
+    pub query: String,
+    pub snapshot: bool,
+    pub focus: Option<HistoryHit>,
+    pub area: Rect,
+    pub list_area: Rect,
+    pub detail_area: Rect,
+    pub detail_scroll: f32,
+    pub detail_max: f32,
+    pub reveal: bool,
+    pub ranges: Vec<(usize,f32,f32)>,
+    pub map_drag: Option<f32>,
+    pub follow_scroll: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,18 +261,12 @@ impl Timeline {
         })
     }
 
-    pub fn time(&self, i: usize) -> f64 {
-        self.marks.get(i).map(|&k| match &self.events[k] {
-            Ev::Out(t, _) | Ev::Resize(t, ..) | Ev::Mark(t, _) => *t,
-        }).unwrap_or(0.0)
-    }
-
     /// Replay the cast into a fresh term up to the checkpoint at `at`.
     fn rebuild(&mut self, palette_from: &nus_render::theme::Theme) {
         let mut term = nus_vt::Term::new(self.cols, self.rows, 4000);
         palette_from.apply(&mut term.palette);
         let end = self.marks.get(self.at).copied().unwrap_or(self.events.len());
-        for ev in &self.events[..=end.min(self.events.len().saturating_sub(1))] {
+        for ev in self.events.iter().take(end.saturating_add(1)) {
             match ev {
                 Ev::Out(_, bytes) => term.advance(bytes),
                 Ev::Resize(_, c, r) => term.resize(*c, *r),
@@ -289,7 +330,8 @@ impl App {
         } else {
             None
         };
-        self.checkpoints.push(Pending { tab_index, tab_id: tab.id, payload, page });
+        let right=payload.get("right").and_then(Value::as_bool).unwrap_or(false);
+        self.checkpoints.push(Pending { tab_index, tab_id: tab.id, right, payload, page });
         self.dirty = true;
     }
 
@@ -299,7 +341,8 @@ impl App {
             return;
         }
         for mut p in std::mem::take(&mut self.checkpoints) {
-            let (cols, rows) = self.tabs.get(p.tab_index).and_then(|t| match &t.left {
+            let Some(index)=self.tabs.iter().position(|t|t.id==p.tab_id) else {continue;};p.tab_index=index;
+            let (cols, rows) = self.tabs.get(p.tab_index).and_then(|t|if p.right {t.right.as_ref()}else{Some(&t.left)}).and_then(|pane| match pane {
                 Pane::Term(tp) => Some((tp.term.cols(), tp.term.rows())),
                 _ => None,
             }).unwrap_or((80, 24));
@@ -323,7 +366,7 @@ impl App {
                 }
             }
             if let Some(rec) = self.recorder.as_mut() {
-                rec.mark(p.tab_id, cols, rows, &p.payload);
+                rec.mark(stream_id(p.tab_id,p.right), cols, rows, &p.payload);
             }
         }
     }
@@ -337,10 +380,11 @@ impl App {
         let i = self.active;
         let Some(tab) = self.tabs.get(i) else { return };
         let id = tab.id;
+        let right=tab.focus_right && matches!(tab.right,Some(Pane::Term(_)));
         if let Some(rec) = self.recorder.as_mut() {
             rec.flush();
         }
-        let Some(path) = self.recorder.as_ref().and_then(|r| r.cast_path(id)) else {
+        let Some(path) = self.recorder.as_ref().and_then(|r| r.cast_path(stream_id(id,right))) else {
             self.notice("nothing recorded for this tab yet");
             return;
         };
@@ -352,7 +396,8 @@ impl App {
             return;
         }
         let at = marks.len() - 1;
-        let mut tl = Timeline { tab_index: i, tab_id: id, cols, rows, events, marks, at, term: nus_vt::Term::new(cols, rows, 10), mode: Compare::After, hits: Vec::new() };
+        let records=records(cols,rows,&events);
+        let mut tl = Timeline { tab_id: id, cols, rows, events, marks, at, term: nus_vt::Term::new(cols, rows, 10), mode: Compare::After, hits: Vec::new(),right,records,query:String::new(),snapshot:false,focus:Some(HistoryHit::Search),area:Rect::new(0.0,0.0,0.0,0.0),list_area:Rect::new(0.0,0.0,0.0,0.0),detail_area:Rect::new(0.0,0.0,0.0,0.0),detail_scroll:0.0,detail_max:0.0,reveal:true,ranges:Vec::new(),map_drag:None,follow_scroll:false };
         tl.rebuild(&self.theme);
         self.timeline = Some(tl);
         self.timeline_apply();
@@ -362,7 +407,7 @@ impl App {
 
     pub(crate) fn close_timeline(&mut self) {
         let Some(tl) = self.timeline.take() else { return };
-        if let Some(tab) = self.tabs.get_mut(tl.tab_index) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t|t.id==tl.tab_id) {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 match p {
                     Pane::Term(t) => {
@@ -381,7 +426,8 @@ impl App {
     /// Set the panes to show the checkpoint at `at`: the scratch term and the still.
     fn timeline_apply(&mut self) {
         let Some(tl) = self.timeline.as_ref() else { return };
-        let (idx, at, mode) = (tl.tab_index, tl.at, tl.mode);
+        let Some(idx)=self.tabs.iter().position(|t|t.id==tl.tab_id) else {self.close_timeline();return;};
+        let (at, mode, right) = (tl.at, tl.mode,tl.right);
         let dir = self.recorder.as_ref().map(|r| r.dir.clone()).unwrap_or_default();
         let png_of = |p: Option<&Value>| p.and_then(|v| v.pointer("/page/png")).and_then(Value::as_str).map(|s| dir.join(s));
         let after = png_of(tl.payload(at));
@@ -412,10 +458,10 @@ impl App {
         };
         let bind = still.map(|(rgba, w, h)| self.bind_rgba(&rgba, w, h));
         if let Some(tab) = self.tabs.get_mut(idx) {
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            for (pane_right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
                 match p {
                     Pane::Term(t) => {
-                        t.replay = true;
+                        t.replay = pane_right==right;
                         t.view_key = None;
                     }
                     Pane::Web(w) => w.still = bind.clone(),
@@ -425,128 +471,27 @@ impl App {
         }
     }
 
-    /// Keys while the timeline is up. Returns true when it took the key.
-    pub(crate) fn timeline_key(&mut self, key: &winit::keyboard::Key) -> bool {
-        use winit::keyboard::{Key as K, NamedKey};
-        let Some(tl) = self.timeline.as_mut() else { return false };
-        match key {
-            K::Named(NamedKey::Escape) => {
-                self.close_timeline();
-                return true;
-            }
-            K::Named(NamedKey::ArrowLeft) => tl.at = tl.at.saturating_sub(1),
-            K::Named(NamedKey::ArrowRight) => tl.at = (tl.at + 1).min(tl.count().saturating_sub(1)),
-            K::Named(NamedKey::Home) => tl.at = 0,
-            K::Named(NamedKey::End) => tl.at = tl.count().saturating_sub(1),
-            K::Character(c) if c.eq_ignore_ascii_case("b") => {
-                tl.mode = match tl.mode {
-                    Compare::After => Compare::Before,
-                    Compare::Before => Compare::Diff,
-                    Compare::Diff => Compare::After,
-                };
-            }
-            _ => return true,
-        }
-        let theme = self.theme.clone();
-        if let Some(tl) = self.timeline.as_mut() {
-            tl.rebuild(&theme);
-        }
-        self.timeline_apply();
-        self.play_event("toggle");
-        self.dirty = true;
-        true
-    }
-
-    /// A click on the ruler's ticks.
-    pub(crate) fn timeline_click(&mut self, x: f32, y: f32) -> bool {
-        let Some(tl) = self.timeline.as_mut() else { return false };
-        let Some(&(_, i)) = tl.hits.iter().find(|(r, _)| r.contains(x, y)) else { return false };
-        tl.at = i;
-        let theme = self.theme.clone();
-        if let Some(tl) = self.timeline.as_mut() {
-            tl.rebuild(&theme);
-        }
-        self.timeline_apply();
-        self.dirty = true;
-        true
-    }
-
-    /// The ruler along the bottom of the shell pane: a tick per checkpoint,
-    /// the current one in signal, the words in the tooltip.
-    pub(crate) fn draw_timeline_ruler(&mut self, scene: &mut Scene, p: &TermPane, r: Rect) {
-        let Some(tl) = self.timeline.as_ref() else { return };
-        if !p.replay {
-            return;
-        }
-        let t = self.theme.clone();
-        let ink = t.ink;
-        let n = tl.count();
-        let at = tl.at;
-        let mode = tl.mode;
-        let payloads: Vec<(f64, String, Option<i64>)> = (0..n)
-            .map(|i| {
-                let v = tl.payload(i);
-                (tl.time(i), v.and_then(|v| v.get("cmd")).and_then(Value::as_str).unwrap_or("").to_string(), v.and_then(|v| v.get("exit")).and_then(Value::as_i64))
-            })
-            .collect();
-        let h = self.px(22.0);
-        let bar = Rect::new(r.x, r.bottom() - h, r.w, h);
-        scene.rect(bar, fade(self.paper(), 0.94));
-        scene.hline(bar.x, bar.y, bar.w, self.px(m::HAIRLINE), fade(ink, 0.35));
-        let label = Style { color: t.dim, ..self.label() };
-        let isz = self.px(12.0);
-        let mut x = bar.x + self.px(10.0);
-        self.fonts.draw_icon(scene, nus_render::text::icons::HISTORY, isz, x, bar.y + (bar.h - isz) / 2.0, self.surface.signal);
-        x += isz + self.px(10.0);
-        let words = match mode {
-            Compare::After => "then",
-            Compare::Before => "before",
-            Compare::Diff => "diff",
-        };
-        x += self.fonts.draw(scene, label, x, bar.y + bar.h / 2.0 + self.px(4.0), words) + self.px(14.0);
-        let span = (bar.right() - self.px(12.0) - x).max(self.px(40.0));
-        let step = if n > 1 { span / (n - 1) as f32 } else { 0.0 };
-        let (mx, my) = self.mouse;
-        let mut hits = Vec::new();
-        scene.hline(x, bar.y + bar.h / 2.0, span, self.px(m::HAIRLINE), fade(ink, 0.4));
-        for (i, (time, cmd, exit)) in payloads.iter().enumerate() {
-            let tx = x + step * i as f32;
-            let d = if i == at { self.px(8.0) } else { self.px(5.0) };
-            let tick = Rect::new(tx - d / 2.0, bar.y + (bar.h - d) / 2.0, d, d);
-            let color = if i == at { self.surface.signal } else { match exit { Some(0) => fade(ink, 0.6), Some(_) => fade(self.surface.signal, 0.5), None => fade(ink, 0.3) } };
-            scene.rect(tick, color);
-            let hit = Rect::new(tx - self.px(8.0), bar.y, self.px(16.0), bar.h);
-            if hit.contains(mx, my) {
-                self.tip_words(hit, &format!("{} · {:.0}s in · {}", if cmd.is_empty() { "start" } else { cmd.as_str() }, time, match exit { Some(0) => "ok".to_string(), Some(c) => format!("exit {c}"), None => String::new() }));
-            }
-            hits.push((hit, i));
-        }
-        if let Some(tl) = self.timeline.as_mut() {
-            tl.hits = hits;
-        }
-    }
-
     /// Share: one HTML file that replays the tab's cast with the real
     /// renderer, its stills beside. Returns the path.
     pub(crate) fn share_replay(&mut self, tab_index: usize) -> Result<PathBuf, String> {
         let Some(tab) = self.tabs.get(tab_index) else { return Err("no such tab".into()) };
         let id = tab.id;
         let title = tab.title();
+        let right=tab.focus_right && matches!(tab.right,Some(Pane::Term(_)));
         let Some(rec) = self.recorder.as_mut() else { return Err("replay is off".into()) };
         rec.flush();
-        let cast_path = rec.cast_path(id).ok_or("nothing recorded for this tab")?;
+        let cast_path = rec.cast_path(stream_id(id,right)).ok_or("nothing recorded for this tab")?;
         let session = rec.dir.clone();
         let cast = std::fs::read_to_string(&cast_path).map_err(|e| e.to_string())?;
-        let (_, _, events) = parse_cast(&cast);
+        let (cols, rows, events) = parse_cast(&cast);
         // The stills, inlined as data URLs.
-        let mut stills = Vec::new();
-        for ev in &events {
-            if let Ev::Mark(t, v) = ev {
-                let cmd = v.get("cmd").and_then(Value::as_str).unwrap_or("").to_string();
-                let png = v.pointer("/page/png").and_then(Value::as_str).and_then(|rel| std::fs::read(session.join(rel)).ok()).map(|b| crate::replay::b64(&b));
-                let url = v.pointer("/page/url").and_then(Value::as_str).unwrap_or("").to_string();
-                stills.push(json!({ "t": t, "cmd": cmd, "exit": v.get("exit"), "url": url, "png": png }));
-            }
+        let mut stills=records(cols,rows,&events);
+        for record in &mut stills {
+            let png=record.pointer("/page/png").and_then(Value::as_str).and_then(|rel| {
+                let path=session.join(rel);let canonical=path.canonicalize().ok()?;
+                if !canonical.starts_with(session.canonicalize().ok()?){return None;}std::fs::read(canonical).ok()
+            }).map(|b|b64(&b));
+            record["png"]=json!(png);
         }
         let out_dir = std::env::current_dir().unwrap_or_default().join("profile").join("shares");
         std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
@@ -578,7 +523,7 @@ fn hex(c: nus_render::Color) -> String {
 /// The player, bundled: the wasm glue and the site's terminal.js with their
 /// module syntax removed, the wasm and the cast inline, so it runs from a
 /// file:// page and travels as one file.
-fn share_html(title: &str, cast: &str, stills: &[Value], theme: &nus_render::theme::Theme, signal: nus_render::Color) -> String {
+fn share_html(title: &str, cast: &str, stills: &[Value], _theme: &nus_render::theme::Theme, signal: nus_render::Color) -> String {
     let glue = WASM_JS
         .replace("export class Shell", "class Shell")
         .replace("export function source_rev", "function source_rev")
@@ -588,83 +533,49 @@ fn share_html(title: &str, cast: &str, stills: &[Value], theme: &nus_render::the
         .replace("export async function mountHeroTerminal", "async function mountHeroTerminal")
         .replace("export function", "function")
         .replace("export class", "class");
-    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    let stills_html: String = stills
-        .iter()
-        .map(|s| {
-            let cmd = esc(s.get("cmd").and_then(Value::as_str).unwrap_or(""));
-            let t = s.get("t").and_then(Value::as_f64).unwrap_or(0.0);
-            let png = s.get("png").and_then(Value::as_str);
-            let url = esc(s.get("url").and_then(Value::as_str).unwrap_or(""));
-            let img = png.map(|p| format!("<img src=\"data:image/png;base64,{p}\" alt=\"the page beside\">")).unwrap_or_default();
-            format!("<figure data-t=\"{t}\"><figcaption><code>$ {cmd}</code> <span>{t:.0}s · {url}</span></figcaption>{img}</figure>")
-        })
-        .collect();
-    format!(
-        r##"<!doctype html><html><head><meta charset="utf-8"><title>{title} · a replay from nus</title>
-<style>
-:root {{ --paper:{paper}; --ink:{ink}; --dim:{dim}; --signal:{sig}; }}
-html,body {{ margin:0; background:var(--paper); color:var(--ink); font-family:"IBM Plex Mono","Cascadia Mono",Consolas,monospace; font-size:13px; }}
-.band {{ position:fixed; left:0; top:0; right:0; height:6px; background:var(--signal); }}
-main {{ display:grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap:24px; padding:34px; }}
-h1 {{ font-family:"Newsreader","Times New Roman",serif; font-style:italic; font-weight:400; font-size:28px; margin:0 0 12px; grid-column:1/-1; }}
-.term {{ border:1px solid var(--ink); background:#141414; position:relative; }}
-.term canvas {{ display:block; width:100%; }}
-.bar {{ display:flex; gap:12px; align-items:center; padding:8px 10px; border-top:1px solid var(--ink); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }}
-.bar input {{ flex:1; }}
-.bar button {{ font:inherit; background:none; border:1px solid var(--ink); color:var(--ink); padding:2px 8px; cursor:pointer; }}
-aside figure {{ margin:0 0 18px; }}
-aside img {{ width:100%; border:1px solid var(--ink); display:block; }}
-aside figcaption {{ font-size:12px; margin-bottom:6px; }}
-aside figcaption span {{ color:var(--dim); margin-left:8px; }}
-aside figure.now img {{ outline:2px solid var(--signal); }}
-.foot {{ grid-column:1/-1; border-top:1px solid var(--ink); padding-top:8px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }}
-</style></head><body>
-<div class="band"></div>
-<main>
-<h1>{title}</h1>
-<section class="term" data-hero-term>
-  <div data-term-stage><canvas></canvas></div>
-  <div class="bar"><button data-term-play>pause</button><input type="range" data-term-scrub min="0" max="1000" value="0"><span data-term-status></span><span data-term-size></span></div>
-</section>
-<aside>{stills}</aside>
-<div class="foot">a replay from nus · the cells are the app's own renderer, in wasm · the stills are the page beside, at each command</div>
-</main>
-<script type="module">
-{glue}
-{player}
-const CAST = {cast_json};
-const WASM_B64 = "{wasm}";
-const bytes = Uint8Array.from(atob(WASM_B64), c => c.charCodeAt(0));
-const root = document.querySelector('[data-hero-term]');
-mountHeroTerminal(root, {{ wasm: bytes, castText: CAST }}).then((term) => {{
-  // Light the still of the command the replay is inside.
-  const figs = [...document.querySelectorAll('aside figure')];
-  setInterval(() => {{
-    const t = term.t ?? term.time ?? 0;
-    let cur = null;
-    for (const f of figs) if (parseFloat(f.dataset.t) <= t) cur = f;
-    figs.forEach(f => f.classList.toggle('now', f === cur));
-  }}, 250);
-}}).catch((e) => {{ document.querySelector('[data-term-status]').textContent = 'replay failed: ' + e; }});
-</script>
-</body></html>"##,
-        title = esc(title),
-        paper = hex(theme.paper),
-        ink = hex(theme.ink),
-        dim = hex(theme.dim),
-        sig = hex(signal),
-        stills = stills_html,
-        glue = glue,
-        player = player,
-        cast_json = serde_json::to_string(cast).unwrap_or_default(),
-        wasm = b64(WASM),
-    )
+    let esc=|s:&str|s.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;");
+    // Base64 data cannot terminate a script element, even when recorded output
+    // contains HTML, Unicode separators, or a literal closing script tag.
+    include_str!("../assets/replay/history.html")
+        .replace("@@GLUE@@",&glue).replace("@@PLAYER@@",&player)
+        .replace("@@CAST@@",&b64(cast.as_bytes()))
+        .replace("@@RECORDS@@",&b64(serde_json::to_string(stills).unwrap_or_default().as_bytes()))
+        .replace("@@WASM@@",&b64(WASM)).replace("@@SIGNAL@@",&hex(signal))
+        .replace("@@TITLE@@",&esc(title))
+
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_split_across_every_byte_is_lossless() {
+        let source="hello 🌙 café \u{1b}[31m赤\u{1b}[0m";
+        let mut pending=Vec::new();let mut out=String::new();
+        for byte in source.as_bytes(){out.push_str(&decode_chunk(&mut pending,&[*byte]));}
+        assert_eq!(out,source);assert!(pending.is_empty());
+        assert_eq!(decode_chunk(&mut pending,&[0xff,b'x']),"�x");
+    }
+    #[test]
+    fn independent_pane_streams_and_bounded_sizes() {
+        assert_eq!(stream_id(42,false),42);assert_ne!(stream_id(42,true),stream_id(42,false));
+        let(c,r,events)=parse_cast("{\"width\":0,\"height\":999999999}\n[1,\"r\",\"0x9999999\"]");
+        assert_eq!((c,r),(1,1000));assert!(matches!(events[0],Ev::Resize(_,1,1000)));
+    }
+    #[test]
+    fn historical_output_is_searchable_and_scripts_stay_data() {
+        let payload=json!({"cmd":"printf '<script>'","output":"</script><script>window.pwned=true</script> café","exit":1,"cwd":"/tmp/project","ms":250});
+        let events=vec![Ev::Out(0.0,b"hello".to_vec()),Ev::Mark(1.0,payload.clone())];
+        let entries=records(80,24,&events);assert_eq!(entries[0]["output"],payload["output"]);assert_eq!(entries[0]["start"],0.75);
+        let html=share_html("</title><script>alert(1)</script>","</script>",&entries,&nus_render::theme::Theme::paper(),[0.8,0.1,0.2,1.0]);
+        assert!(!html.contains("<script>alert(1)"));assert!(!html.contains("<script>window.pwned"));assert!(!html.contains("@@"));assert!(html.contains("session-map"));assert!(html.contains("autoplay:false,loop:false"));
+        if let Some(path)=std::env::var_os("NUS_REPLAY_FIXTURE") {
+            let mut cast=String::from("{\"version\":2,\"width\":80,\"height\":24}\n");let mut ev=Vec::new();
+            for i in 0..18 {let output=(0..(i*3+4)).map(|n|format!("  test {:03}  {}",n,if i==6&&n==8{"FAILED: expected 200, received 503"}else{"passed"})).collect::<Vec<_>>().join("\n");let p=json!({"cmd":format!("cargo test --package workspace-{}",i),"output":output,"cwd":"~/work/nus","exit":if i==6{1}else{0},"ms":(i+1)*123});let start=i as f64*3.0;let bytes=format!("$ cargo test --package workspace-{i}\r\n{}\r\n",output.replace('\n',"\r\n"));cast.push_str(&format!("{}\n{}\n",json!([start,"o",bytes]),json!([start+2.0,"m",p.to_string()])));ev.push(Ev::Out(start,bytes.into_bytes()));ev.push(Ev::Mark(start+2.0,p));}
+            let html=share_html("nus workspace · verification fixture",&cast,&records(80,24,&ev),&nus_render::theme::Theme::paper(),[0.8,0.1,0.2,1.0]);std::fs::write(path,html).unwrap();
+        }
+    }
 
     #[test]
     fn cast_parses_marks() {

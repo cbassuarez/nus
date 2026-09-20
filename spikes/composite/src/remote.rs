@@ -75,7 +75,7 @@ impl App {
                 // `remote` left the description of what to wait for.
                 let what = self.take_deferred_what(&v);
                 match what {
-                    Some(what) => self.deferred.push(Deferred { reply: req.reply, what, since: std::time::Instant::now() }),
+                    Some(what) => self.deferred.push(Deferred { reply: req.reply, what, since: crate::clock::now() }),
                     None => {
                         let _ = req.reply.send(json!({ "ok": false, "error": "nothing to wait for" }));
                     }
@@ -148,7 +148,7 @@ impl App {
                             };
                             let _ = d.reply.send(json!({ "ok": true, "result": result }));
                         }
-                        None if d.since.elapsed().as_secs() > 10 => {
+                        None if crate::clock::since(d.since).as_secs() > 10 => {
                             let _ = d.reply.send(json!({ "ok": false, "error": "the page did not answer" }));
                         }
                         None => still.push(d),

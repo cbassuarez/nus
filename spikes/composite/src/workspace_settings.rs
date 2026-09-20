@@ -109,7 +109,7 @@ pub fn label(h: Hit) -> String {
             "Wide prompt",
             "Compact suggestions",
             "Prompt near top",
-            "Show route hints",
+            "Show route keys at the foot of Home",
         ][k as usize]
             .into(),
         Hit::Pin => "Add a saved prompt shortcut".into(),
@@ -278,7 +278,8 @@ impl App {
    ("HOME PREVIEW".into(),Control::PromptProof),
    ("ENTER WITH NO SUGGESTION SELECTED".into(),strip(Route::ALL.into_iter().map(|r|(r.name(),Hit::Route(r),c.route==r)).collect())),
    info("Explicit routes always work: > command, ? web search, @claude prompt, @codex prompt, @ollama prompt. Assistant prompts open a review before sending. Home always opens this surface."),
-   ("LAYOUT".into(),strip(vec![("Wide",Hit::Layout(0),c.wide),("Compact",Hit::Layout(1),c.compact),("Near top",Hit::Layout(2),c.top),("Route hints",Hit::Layout(3),c.hints)])),
+   ("LAYOUT".into(),strip(vec![("Wide",Hit::Layout(0),c.wide),("Compact",Hit::Layout(1),c.compact),("Near top",Hit::Layout(2),c.top),("Route keys",Hit::Layout(3),c.hints)])),
+   info("Route keys are the marks at the foot of Home: a shell, a page, an assistant, the rows. The one Enter would take is lit, the pointer names each, and a click puts its prefix on the line. Turn them off for a bare line."),
    (format!("HOME · {} RESULTS",c.home_limit),buttons(vec![("Fewer",Hit::Limit(true,-1)),("More",Hit::Limit(true,1))])),
    (format!("SEARCH · {} RESULTS",c.search_limit),buttons(vec![("Fewer",Hit::Limit(false,-1)),("More",Hit::Limit(false,1))])),
    ("SOURCES · IN DISPLAY ORDER".into(),Control::Caption),info("Home controls the suggestions before you type. Search controls matching suggestions as you type. Empty sources take no space. Reorder with Up and Down; the limit applies per source.")];
@@ -323,7 +324,7 @@ impl App {
                         Hit::Check,
                     )]),
                 ));
-                rows.push(info(if self.assistants.pending.is_some(){"Checking CLI versions and authentication or service availability. No model prompt is sent.".into()}else{self.assistants.checked_at.map(|at|format!("Last checked {} seconds ago. This checks account presence and service access; a model response is verified when you start work.",at.elapsed().as_secs())).unwrap_or("Check connections to verify installed commands, sign-in and Ollama models. Your existing CLI accounts stay with their providers.".into())}));
+                rows.push(info(if self.assistants.pending.is_some(){"Checking CLI versions and authentication or service availability. No model prompt is sent.".into()}else{self.assistants.checked_at.map(|at|format!("Last checked {} seconds ago. This checks account presence and service access; a model response is verified when you start work.",crate::clock::since(at).as_secs())).unwrap_or("Check connections to verify installed commands, sign-in and Ollama models. Your existing CLI accounts stay with their providers.".into())}));
                 for i in 0..3 {
                     let e = &self.assistants.entries[i];
                     let config = &self.behavior.assistants.providers[i];

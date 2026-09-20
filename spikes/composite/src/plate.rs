@@ -192,7 +192,7 @@ impl App {
         let size = (rect.w.round() as u32).clamp(64, 1024);
         let k = self.plate_k();
         let reduced = self.motion.reduced();
-        let t = p.since.elapsed().as_secs_f32();
+        let t = crate::clock::since(p.since).as_secs_f32();
         let draw_secs = if reduced || p.handed { 0.0 } else { DRAW * k };
         let progress = if draw_secs <= 0.0 { 1.0 } else { swoosh((t / draw_secs).clamp(0.0, 1.0)) };
         let up = if reduced { 1.0 } else { ((t - draw_secs) / (SETTLE * k)).clamp(0.0, 1.0) };

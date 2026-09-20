@@ -391,6 +391,7 @@ pub enum Outside {
 
 /// Tab and terminal behaviour the settings page edits.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Behavior {
     pub links: Links,
     pub prompt_url: PromptUrl,
@@ -537,6 +538,18 @@ pub struct Behavior {
     /// The loop: Alt+Shift+click on a localhost page opens the editor at the element's source.
     #[serde(default = "default_true")]
     pub click_to_source: bool,
+    /// PICTURE IN PICTURE · THE BAND: the signal stripe along the top of
+    /// the floating window — what says it is ours and where you take
+    /// hold of it. On.
+    #[serde(default = "default_true")]
+    pub pip_band: bool,
+    /// PICTURE IN PICTURE · PROGRESS RULE: a hairline of played time
+    /// along the foot, there whether or not the controls are. Off: the
+    /// controls carry the scrubber, and a resting window stays a picture.
+    #[serde(default)]
+    pub pip_progress: bool,
+    #[serde(default = "default_pip_skip")]
+    pub pip_skip_seconds: u16,
     /// Replay: casts and checkpoints under profile/replay, kept this long.
     #[serde(default)]
     pub replay: ReplayKeep,
@@ -795,6 +808,9 @@ impl Default for Behavior {
             hands: HandsMode::Ask,
             replay: ReplayKeep::Days7,
             click_to_source: true,
+            pip_band: true,
+            pip_progress: false,
+            pip_skip_seconds: default_pip_skip(),
             link_click: LinkClick::Ask,
             home_url: default_home_url(),
             home_look: HomeLook::Line,
@@ -870,6 +886,7 @@ impl Default for Behavior {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Slider {
+    PipSkip,
     Tint,
     Texture,
     Opacity,
@@ -928,6 +945,8 @@ pub enum Hit {
     StartOnLaunch(bool),
     StartupSound(bool),
     ReloadAvatar,
+    /// Browse for a picture for the face, on any platform.
+    PickAvatar,
     OpenProfileDir,
     Preset(usize),
     SavePreset,
@@ -983,6 +1002,8 @@ pub enum Hit {
     Hands(HandsMode),
     Replay(ReplayKeep),
     ClickToSource(bool),
+    PipBand(bool),
+    PipProgress(bool),
     LinkClick(LinkClick),
     Remember(bool),
     SetLaunchTabs,
@@ -1271,6 +1292,7 @@ impl App {
             Slider::Angle => self.surface.angle / 360.0,
             Slider::Drift => self.surface.drift / 0.5,
             Slider::Breath => self.surface.breath,
+            Slider::PipSkip => (self.behavior.pip_skip_seconds.clamp(1,120)-1) as f32 / 119.0,
             Slider::Volume => self.sound.prefs.volume,
             Slider::SplashHold => (self.behavior.splash_hold - 0.4) / 2.2,
             Slider::Saturation => (self.theme_edit.saturation - 0.5) / 1.0,
@@ -1301,6 +1323,7 @@ impl App {
             Slider::Angle => self.surface.angle = (v * 360.0 / 15.0).round() * 15.0 % 360.0,
             Slider::Drift => self.surface.drift = (v * 0.5 * 100.0).round() / 100.0,
             Slider::Breath => self.surface.breath = (v * 20.0).round() / 20.0,
+            Slider::PipSkip => self.behavior.pip_skip_seconds = (1.0 + v * 119.0).round() as u16,
             Slider::Volume => {
                 self.sound.prefs.volume = (v * 20.0).round() / 20.0;
                 self.sound.cue("tick");
@@ -1337,11 +1360,17 @@ impl App {
     }
 
     /// A click inside the settings pane. Returns true when it was handled.
-    pub(crate) fn settings_key(&mut self, ev:&winit::event::KeyEvent)->bool {
+    pub(crate) fn settings_key(&mut self, ev:&crate::app::KeyIn)->bool {
         use winit::keyboard::{Key,NamedKey};
         if ev.state!=winit::event::ElementState::Pressed || !self.tabs.get(self.active).is_some_and(|t|matches!(t.left,Pane::Settings(_))) {return false;}
         if self.settings_hits.is_empty(){return false;}
         match &ev.logical_key {
+            Key::Named(NamedKey::ArrowLeft)|Key::Named(NamedKey::ArrowRight) if self.settings_focus.is_some()=>{
+                let Some((_,Hit::Slider(kind,_,_)))=self.settings_hits.get(self.settings_focus.unwrap()).copied() else{return false;};
+                let step=if kind==Slider::PipSkip {1.0/119.0}else{0.01};
+                let delta=if ev.logical_key==Key::Named(NamedKey::ArrowLeft){-step}else{step};
+                self.set_slider(kind,self.slider_value(kind)+delta);self.save_prefs();
+            },
             Key::Named(NamedKey::Tab)=>{let n=self.settings_hits.len();self.settings_focus=Some(match self.settings_focus{Some(i) if self.mods.shift_key()=>(i+n-1)%n,Some(i)=>(i+1)%n,None=>0});},
             Key::Named(NamedKey::Enter)|Key::Named(NamedKey::Space) if self.settings_focus.is_some()=>{let i=self.settings_focus.take().unwrap();if let Some((r,h))=self.settings_hits.get(i).copied(){self.apply_setting(h,r.x+r.w*0.5);self.save_prefs();}},
             Key::Named(NamedKey::PageDown)|Key::Named(NamedKey::PageUp)=>{let down=matches!(ev.logical_key,Key::Named(NamedKey::PageDown));if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|&mut t.left){p.scroll=(p.scroll+if down{p.rect.h*0.7}else{-p.rect.h*0.7}).clamp(0.0,(self.settings_reach-p.rect.h+self.scale*80.0).max(0.0));}self.settings_focus=None;},
@@ -1362,7 +1391,7 @@ impl App {
         let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) else { return true };
         match hit {
             Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) => {}
-            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::ReloadAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {
+            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {
                 self.play_event("control.press")
             }
             _ => self.play_event("toggle"),
@@ -1477,6 +1506,8 @@ impl App {
             Hit::PortsRemember(b) => if b { "ports remember".into() } else { "ports forget".into() },
             Hit::KeepAlive(k) => if k == KeepAlive::On { "shells are held".into() } else { "shells die with the app".into() },
             Hit::ClickToSource(b) => if b { "click to source on".into() } else { "click to source off".into() },
+            Hit::PipBand(b) => if b { "picture in picture band on".into() } else { "picture in picture band off".into() },
+            Hit::PipProgress(b) => if b { "picture in picture progress rule on".into() } else { "picture in picture progress rule off".into() },
             Hit::Remember(b) => if b { "tabs and windows remembered".into() } else { "nothing remembered between launches".into() },
             Hit::SetLaunchTabs => "this window is the launch tabs".into(),
             Hit::ClearLaunchTabs => "launch tabs cleared".into(),
@@ -1589,6 +1620,7 @@ impl App {
             Hit::TexOn(o) => format!("texture on {:?}", o).to_lowercase(),
             Hit::TexMotion(b) => if b { "texture animated".into() } else { "texture still".into() },
             Hit::ReloadAvatar => "reload avatar".into(),
+            Hit::PickAvatar => "choose a picture for your profile".into(),
             Hit::OpenProfileDir => "open the profile folder".into(),
             Hit::StartOnLaunch(b) => if b { "atlas also at launch".into() } else { "atlas from the planet".into() },
             Hit::StartupSound(b) => if b { "startup sound on".into() } else { "startup sound off".into() },
@@ -1893,6 +1925,8 @@ impl App {
                 }
             },
             Hit::ClickToSource(b) => self.behavior.click_to_source = b,
+            Hit::PipBand(b) => self.behavior.pip_band = b,
+            Hit::PipProgress(b) => self.behavior.pip_progress = b,
             Hit::LinkClick(l) => self.behavior.link_click = l,
             Hit::Remember(b) => {
                 self.behavior.remember = b;
@@ -2173,6 +2207,7 @@ impl App {
             Hit::TexOn(o) => self.surface.texture_on = o,
             Hit::TexMotion(b) => self.surface.texture_motion = b,
             Hit::ReloadAvatar => self.load_avatar(),
+            Hit::PickAvatar => self.pick_avatar(),
             Hit::OpenProfileDir => {
                 let dir = std::env::current_dir().unwrap_or_default().join("profile");
                 let cmd = if cfg!(target_os = "windows") {
@@ -2246,7 +2281,7 @@ impl App {
         let (mx, my) = self.mouse;
         let hot = r.contains(mx, my);
         let dur = self.motion.dur(120.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
@@ -2292,7 +2327,7 @@ impl App {
         let (mx, my) = self.mouse;
         let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my);
         let dur = self.motion.dur(140.0);
-        let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
+        let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
@@ -2530,7 +2565,7 @@ impl App {
         let (mx, my) = self.mouse;
         let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my);
         let dur = self.motion.dur(140.0);
-        let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
+        let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
@@ -2601,7 +2636,7 @@ impl App {
         let (mx, my) = self.mouse;
         let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(6.0)).contains(mx, my);
         let dur = self.motion.dur(140.0);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: std::time::Instant::now() });
+        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
             h.hot = hot;
             h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
@@ -2688,7 +2723,7 @@ impl App {
         if let Some(kind) = self.surface.texture_kind.shader_kind() {
             if self.surface.texture > 0.0 && self.surface.texture_on == TextureOn::Carapace {
                 let gc = [1.0, 1.0, 1.0, (self.surface.texture * 3.0).min(1.0)];
-                let tm = if self.surface.texture_motion { self.started.elapsed().as_secs_f32() % 3600.0 } else { 0.0 };
+                let tm = if self.surface.texture_motion { crate::clock::since(self.started).as_secs_f32() % 3600.0 } else { 0.0 };
                 let pitch = self.px(self.surface.texture_scale);
                 if self.surface.shell == Shell::Band {
                     scene.layer(Some(within(Rect::new(win.x, win.y, win.w, sw))));
@@ -3523,6 +3558,7 @@ impl App {
                         ("NEVER ASK".into(), Hit::CloseAsks(false), !self.behavior.close_asks),
                     ]),
                 ),
+                ("".into(), Info("Closing a tab, a shell or a stack ends what it was running, and everything that started under it — a dev server takes its node with it, whichever you choose here. ASK WHEN BUSY names the command first; a shell sitting at its prompt closes without a word either way.".into())),
                 ("STACKS".into(), Info("Related tabs can be grouped one level deep. Closing a stack asks before closing its children.".into())),
                 ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
                 ("COLOURS".into(), Info("Choose tab colours in Look, or customize them in Rules.".into())),
@@ -3706,9 +3742,9 @@ impl App {
                 }
                 v.push((
                     "AVATAR".into(),
-                    Buttons(vec![("RELOAD".into(), icons::RELOAD, Hit::ReloadAvatar), ("OPEN PROFILE FOLDER".into(), icons::FOLDER, Hit::OpenProfileDir)]),
+                    Buttons(vec![("CHOOSE A PICTURE".into(), icons::IMAGE, Hit::PickAvatar), ("RELOAD".into(), icons::RELOAD, Hit::ReloadAvatar), ("OPEN PROFILE FOLDER".into(), icons::FOLDER, Hit::OpenProfileDir)]),
                 ));
-                v.push(("".into(), Info(if self.avatar.is_some() { "profile/avatar.png · shown in the sidebar".into() } else { "drop a PNG at profile/avatar.png, then reload".into() })));
+                v.push(("".into(), Info(if self.avatar.is_some() { "profile/avatar.png · shown in the sidebar".into() } else { "choose a picture from anywhere on this machine · it is squared off and kept as profile/avatar.png".into() })));
                 v.push(("SCROLLBACK".into(), Info("10 000 lines · restored with the session".into())));
                 v.push(("ATTENTION".into(), Info("BEL and OSC 133 mark a tab WAITING while it is not active".into())));
                 v.push(("ENV".into(), Info("TERM=xterm-256color · COLORTERM=truecolor · TERM_PROGRAM=nus".into())));
@@ -3725,6 +3761,20 @@ impl App {
                     Choice(vec![("ON".into(), Hit::Block(true), self.behavior.block_content), ("OFF".into(), Hit::Block(false), !self.behavior.block_content)]),
                 ),
                 ("".into(), Info(format!("{} hosts refused · ads, trackers, analytics · add yours to profile/blocklist.txt", crate::browser::blocklist_len()))),
+                ("PICTURE IN PICTURE".into(), Control::Caption),
+                ("SKIP INTERVAL".into(), Slider(self::Slider::PipSkip, self.slider_value(self::Slider::PipSkip), format!("{} seconds", self.behavior.pip_skip_seconds.clamp(1,120)))),
+                ("".into(), Info("Left / Right and the skip buttons use this interval, including when the page hides its own controls.".into())),
+                ("".into(), Info("a video floats out into a small window of its own when you leave its tab; any other pane can be sent out by hand. Hover it for the controls; they fade when the pointer leaves.".into())),
+                (
+                    "THE BAND".into(),
+                    Choice(vec![("ON".into(), Hit::PipBand(true), self.behavior.pip_band), ("OFF".into(), Hit::PipBand(false), !self.behavior.pip_band)]),
+                ),
+                ("".into(), Info("the signal stripe along the top of the floating window: it says the window is ours, and it is where you take hold to move it".into())),
+                (
+                    "PROGRESS RULE".into(),
+                    Choice(vec![("ON".into(), Hit::PipProgress(true), self.behavior.pip_progress), ("OFF".into(), Hit::PipProgress(false), !self.behavior.pip_progress)]),
+                ),
+                ("".into(), Info("a hairline of played time along the foot, there whether or not the controls are · off by default: the controls carry the scrubber, and a window at rest stays a picture".into())),
                 (
                     "SCROLL".into(),
                     Choice(vec![("SMOOTH".into(), Hit::PageSmooth(true), self.behavior.page_smooth_scroll), ("INSTANT".into(), Hit::PageSmooth(false), !self.behavior.page_smooth_scroll)]),
@@ -3942,9 +3992,9 @@ impl App {
                 }
                 v.extend(vec![
                     ("NAME".into(), Choice(vec![(name.caps(), Hit::MeEdit(0), true)])),
-                    ("PROFILE PICTURE".into(), Buttons(vec![("CHANGE PICTURE".into(), icons::USER, Hit::MeEdit(1))])),
-                    ("".into(), Info(format!("Current picture: {face}. Choose an initial, emoji or image in the profile editor."))),
-                    ("".into(), Info("the face is the avatar in the footer; a picture is profile/avatar.png, any size, drawn at 22px".into())),
+                    ("PROFILE PICTURE".into(), Buttons(vec![("CHOOSE A PICTURE".into(), icons::IMAGE, Hit::PickAvatar), ("INITIAL OR EMOJI".into(), icons::USER, Hit::MeEdit(1))])),
+                    ("".into(), Info(format!("Current picture: {face}. Choose a picture from anywhere on this machine, or pick an initial or emoji in the profile editor."))),
+                    ("".into(), Info("the face is the avatar in the footer; a picture is squared off from the middle and kept as profile/avatar.png, drawn at 22px".into())),
                     ("DEVICE".into(), Choice(vec![(device.caps(), Hit::MeEdit(2), true)])),
                     ("".into(), Info("The device name identifies changes made by this machine when you sync.".into())),
                     ("SINCE".into(), Info(format!("{since} · {days}"))),
@@ -4279,10 +4329,10 @@ impl App {
             if self.settings_target == Some((p.section,self.look_tab,row_index)) {
                 p.scroll=(y+scroll-top-self.px(16.0)).max(0.0);
                 self.settings_target=None;
-                self.settings_highlight=Some((p.section,self.look_tab,row_index,std::time::Instant::now()));
+                self.settings_highlight=Some((p.section,self.look_tab,row_index,crate::clock::now()));
                 self.dirty=true;
             }
-            if self.settings_highlight.is_some_and(|(s,t,i,at)|s==p.section && t==self.look_tab && i==row_index && at.elapsed().as_secs_f32()<3.0) {
+            if self.settings_highlight.is_some_and(|(s,t,i,at)|s==p.section && t==self.look_tab && i==row_index && crate::clock::since(at).as_secs_f32()<3.0) {
                 scene.rect(Rect::new(cx-self.px(8.0),y,maxw+self.px(16.0),rh),fade(self.surface.signal,0.1));
                 scene.vline(cx-self.px(8.0),y,rh,self.px(3.0),self.surface.signal);
                 self.dirty=true;
@@ -4736,3 +4786,18 @@ mod catalog;
 
 #[path = "settings_search.rs"]
 mod search;
+
+fn default_pip_skip() -> u16 { 10 }
+
+#[cfg(test)]
+mod pip_preferences_tests {
+    use super::*;
+    #[test]
+    fn partial_behavior_keeps_explicit_values_and_initializes_missing_fields() {
+        let value:Behavior=serde_json::from_value(serde_json::json!({"pip_skip_seconds":17,"hatch_background":false})).unwrap();
+        assert_eq!(value.pip_skip_seconds,17);assert!(!value.hatch_background);assert_eq!(value.links,Behavior::default().links);
+        let empty:Behavior=serde_json::from_str("{}").unwrap();assert_eq!(empty.pip_skip_seconds,10);
+        assert!(serde_json::from_str::<Behavior>(r#"{"pip_skip_seconds":{}}"#).is_err());
+        assert!(serde_json::from_str::<Behavior>(r#"{"pip_skip_seconds":[]}"#).is_err());
+    }
+}

@@ -75,7 +75,7 @@ impl Buffer {
             scroll: 0,
             undo: Vec::new(),
             redo: Vec::new(),
-            last_edit: Instant::now(),
+            last_edit: crate::clock::now(),
             diags: Vec::new(),
             spans: None,
             in_lsp: false,
@@ -96,7 +96,7 @@ impl Buffer {
             scroll: 0,
             undo: Vec::new(),
             redo: Vec::new(),
-            last_edit: Instant::now(),
+            last_edit: crate::clock::now(),
             diags: Vec::new(),
             spans: None,
             in_lsp: false,
@@ -168,7 +168,7 @@ impl Buffer {
     /// Before a change: remember, and drop the redo stack. Typing runs
     /// within 400ms merge into one step.
     fn remember(&mut self, merge: bool) {
-        let now = Instant::now();
+        let now = crate::clock::now();
         if merge && !self.undo.is_empty() && now.duration_since(self.last_edit).as_millis() < 400 {
             self.last_edit = now;
             return;
@@ -810,13 +810,13 @@ impl App {
     /// A short line in the editor's status row.
     pub(crate) fn notice(&mut self, s: &str) {
         if let Some(e) = self.focused_editor() {
-            e.notice = Some((s.to_string(), Instant::now()));
+            e.notice = Some((s.to_string(), crate::clock::now()));
         }
         self.dirty = true;
     }
 
     /// Keys for the focused editor. Returns true when consumed.
-    pub(crate) fn editor_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn editor_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         let pressed = ev.state == ElementState::Pressed;
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
@@ -1398,7 +1398,7 @@ impl App {
                         b.cursor = c;
                     } else {
                         // Double click: the word. Triple: the line.
-                        let now = Instant::now();
+                        let now = crate::clock::now();
                         let count = match self.click_at {
                             Some((at, (px, py), n))
                                 if now.duration_since(at).as_millis() < 400
@@ -1475,7 +1475,7 @@ impl App {
                     .map(|((px, py), _)| (px - x).abs() > 2.0 || (py - y).abs() > 2.0)
                     .unwrap_or(true);
                 if moved {
-                    e.rest = Some(((x, y), Instant::now()));
+                    e.rest = Some(((x, y), crate::clock::now()));
                     e.hover_sent_at = None;
                     if e.hover.is_some() {
                         e.hover = None;
@@ -1502,7 +1502,7 @@ impl App {
             {
                 let Pane::Editor(e) = p else { continue };
                 if let Some(((x, y), at)) = e.rest {
-                    if at.elapsed().as_millis() > 450 && e.hover.is_none() {
+                    if crate::clock::since(at).as_millis() > 450 && e.hover.is_none() {
                         if let Some((line, col)) = e.cell_at(x, y) {
                             if col != usize::MAX {
                                 let c = e.buf().map(|b| b.at(line, col));
@@ -1518,13 +1518,13 @@ impl App {
                 }
                 if e.notice
                     .as_ref()
-                    .is_some_and(|(_, at)| at.elapsed().as_secs() > 4)
+                    .is_some_and(|(_, at)| crate::clock::since(at).as_secs() > 4)
                 {
                     e.notice = None;
                     expired = true;
                 }
                 if let Some(b) = e.buf_mut() {
-                    if b.save_pending.is_some_and(|at| at.elapsed().as_secs() >= 3) {
+                    if b.save_pending.is_some_and(|at| crate::clock::since(at).as_secs() >= 3) {
                         b.save_pending = None;
                         expired = true;
                     }

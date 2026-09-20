@@ -790,26 +790,45 @@ with the assistant's name in the row icon's tooltip — *claude · waiting for
 you*. Stateful icons with tooltips, not captions: that is the rule for every
 row, chip and status in this pass.
 
-**Replay.** Every shell's bytes go to a cast (asciinema v2, one per tab,
-resizes as `r` events) under `profile/replay/<session>/`, and every block's
-end is a **checkpoint** — an `m` marker carrying the command, its exit, the
-folder, and the page beside as a still (`blobs/<tab>-<n>.png`, the pane's
-own pixels, taken on the next draw). TERMINAL · REPLAY: KEEP 7 DAYS
-(default) · 1 DAY · OFF; sessions older than that go at launch. **The
-timeline**: Ctrl+Shift+H (or the palette) and the tab shows a moment
-instead of now — the shell by replaying its cast into a scratch `Term` up
-to that checkpoint (our core, so the picture is exact, lamps and colours
-included), the page as its still under a wash of paper. A ruler along the
-pane's foot: a tick per checkpoint, the current one in signal, the command
-and its exit in the tooltip; ←/→, Home/End and a click on a tick move,
-Esc returns to now. **Before / after**: B cycles the page's still through
-after · before · diff — changed pixels in signal, the rest dimmed —
-behaviour, not code. **Share**: `nus share` (the palette too) writes one
-HTML file under `profile/shares/` — the cast, the stills, and the site's
-wasm renderer, all inline, so it plays from `file://` and travels as a
-single file — and opens it as a tab. Not yet: MHTML and the editor's
-buffers in a checkpoint, the DOM diff as a list, pixels skipped on an
-unchanged page.
+**Replay.** Ctrl+Shift+H opens a continuous, searchable history document
+with a scrollable session map at the right, following Visual Studio's map
+scrollbar direction. The map uses the same output lines as the document:
+command boundaries are detents, failed commands have stronger ticks, and the
+viewport shows exactly which portion is visible. Drag the viewport to browse;
+click elsewhere in the map or use the arrows to step between commands. Wheel
+and trackpad movement is continuous, with a small snap near command boundaries
+at gesture end. Home/End select the first/last matching command. Search covers
+commands, folders, status and output. Copy command/output never executes it.
+Escape clears a search or exits the snapshot before returning to the live
+shell; the live process continues while history owns keyboard input.
+
+Every shell pane records its own asciinema v2 stream under
+`profile/replay/<session>/`, including resize events and UTF-8 split across PTY
+reads. Command-end markers include command, output, exit status, folder and
+duration. Existing left-pane casts keep their names; old markers reconstruct
+output from the recording. The terminal snapshot is optional; B retains the
+page still's before/after/diff view. `nus share` and Playback / export create
+one self-contained HTML file with the searchable document and session map,
+copy controls, transcript/cast downloads, and optional paused playback with
+speed and idle skipping. Recording retention remains 7 days, 1 day, or off.
+
+**Picture in picture.** At most one PiP belongs to the nus process, including
+across main windows; another source replaces the existing one. Video ownership
+uses stable tab IDs. Controls offer play/pause, ten-second seek for seekable
+video, mute, return, close, and smaller/larger sizes. Tab and Shift+Tab reach
+controls; arrows, Space, M and +/- also work, with AccessKit actions for screen
+readers. Live streams omit seeking. Hover reveals controls without taking
+focus. Drag any edge or corner to resize with the aspect ratio preserved;
+scroll and pinch amounts scale proportionally, without corner snapping or a
+competing resize animation. The renderer checks the actual drawable size.
+
+PiP uses a floating window. macOS uses NSFloatingWindowLevel, stays visible on
+deactivation, joins Spaces as a fullscreen auxiliary, and reads NSScreen's
+visibleFrame for Dock/menu-bar exclusion. Windows reads the monitor work area;
+X11 intersects the current desktop's EWMH work area with the monitor. Wayland
+placement and stacking remain compositor controlled, with native move/resize
+requests. Native validation on Windows, Linux, mixed-scale monitors and physical
+trackpad gestures is still required; macOS checks cover the local display.
 
 **The loop.** On a localhost page, Alt+Shift+click an element → the editor
 pane at its source: framework markers first (React `_debugSource`, Svelte
@@ -1321,10 +1340,12 @@ launch is pending. Embedded clipped frames install before shell discovery,
 CEF and window creation; native launch completion or the first rendered
 window settles on Newsreader, whichever is observed first.
 Launch does not request an additional attention bounce. macOS controls the
-physical bounce timing. Informational attention runs the sequence once in
-about half a second and cancels when nus becomes active. Reduce Motion keeps
-the final mark throughout. Completion bounces follow the existing optional
-Completion notices setting. Quit cancels any remaining icon animation and
+physical bounce timing; AppKit exposes no per-bounce timing callback. An
+informational attention request loops the lettering three times (about 1.8
+seconds), then cancels the request and settles on Newsreader. Focus and Reduce
+Motion stop it immediately. Bursts coalesce; there is no repeated request or
+focus stealing. Completion and new explicit input/attention signals follow the
+existing optional Completion notices setting. Restored snapshots stay quiet. Quit cancels any remaining icon animation and
 restores AppKit's packaged default before window and browser teardown, through
 both the native Quit callback and normal app cleanup. Native
 checks compare that restored image and the post-exit system icon against the
@@ -1339,7 +1360,12 @@ limited to surfaces the app controls. Runtime Finder custom-icon metadata is
 deliberately avoided because it fails strict code-signature verification.
 Linux keeps the themed X11 window icon and publishes a matching per-user
 desktop-entry icon for Wayland launchers; launcher refresh timing belongs to
-the desktop environment. There is no Linux or Windows font-bounce animation.
+the desktop environment. Windows flashes the taskbar and X11 raises urgency;
+both use the same bounded font loop through runtime window icons. Wayland uses
+the compositor attention request where supported, with the static desktop icon:
+winit 0.30 cannot set a Wayland window icon. No animation writes to application
+resources or rewrites desktop entries per frame. Windows/Linux behavior still
+needs native desktop validation; compile checks do not establish launcher behavior.
 
 Status evidence comes from existing OSC 133 shell marks, exit codes, progress,
 and explicit attention signals. A bell during work means Needs attention;
@@ -1384,12 +1410,21 @@ duration or these functional tests.
 ## Downloads and resizable chrome (2026-09-19)
 
 The footer Downloads icon shows active status; hovering reveals filenames and
-progress without leaving the page. Clicking opens a modal with pause, resume,
-cancel, source and reveal actions. All downloads opens a dedicated tab; Cmd+J
+progress without leaving the page. Clicking opens the Ledger modal: quiet
+monospaced rows, thin separators, a signal-colored progress line only for active
+transfers, and compact pause/resume, cancel, retry, open, source and reveal
+controls. All downloads opens a dedicated tab using the same renderer, spacing,
+typography and actions; Cmd+J
 on macOS or Ctrl+J elsewhere and the command palette open that page directly.
 Completed, cancelled and interrupted transfers remain in local downloads.json.
 Clear finished removes history entries and leaves downloaded files in place.
 Transfers interrupted by quitting are labelled honestly on the next launch.
+The full page searches filenames, original names, sites, types and statuses.
+Cmd/Ctrl+F focuses search; Tab walks controls; Page Up/Down and Home/End browse
+history. Escape clears search or dismisses the modal. Search supports Unicode,
+clipboard and keyboard editing, and exposes its value to accessibility. Narrow
+rows move controls below the details. Retry retains the original browser container and its cookie jar; the source
+action returns to the recorded originating page in that container when available.
 
 Browser settings → File naming defaults to Off, preserving supplied filenames.
 All downloads uses the originating page's title with the original extension.
@@ -1412,7 +1447,8 @@ and full-height click targets. Initial shell rendering happens before the main
 window becomes visible.
 
 Run scripts/check-downloads-sidebar.py for local CEF transfers, naming and
-collision handling, pause/resume/cancel, history, sidebar drags and screenshots,
+collision handling, pause/resume/cancel/retry, search, history clearing without
+file deletion, Ledger in wide/narrow Paper/Ink, sidebar drags and screenshots,
 plus terminal/browser pane-boundary checks. It uses temporary profiles and saves
 all test downloads there, leaving the user's Downloads folder untouched.
 
@@ -1509,3 +1545,64 @@ mixed sections, hidden names, real PTY selection, a real local Chromium
 transfer, and pause/resume. Unit checks cover config normalization, status
 classification, privacy, display bounds, and Linux ARGB icon transport. Native
 Windows/Linux tray hosts and mixed-scale monitor behavior need platform QA.
+
+## Closing is terminating (2026-09-19)
+
+Closing a tab, a shell, a split or a whole stack ends what it was running.
+Not just the shell: **the whole process tree under it**. Killing the shell
+alone is not enough — the pty closing sends SIGHUP to the *foreground*
+process group, so a command still in front dies with it, but anything
+backgrounded, daemonised or deaf to SIGHUP survives, reparented to init and
+still holding its port. nus leaves none of those behind.
+
+- `nus_pty::ports` reads the process table once, walks it leaves-first, and
+  signals: SIGTERM / `taskkill` first, a 120 ms breath only when there were
+  children, then outright. `Pty::kill` does this, and `Drop` stands in for it
+  when a pane is simply dropped, so no path can orphan a shell.
+- Closing a stack reaps in one pass: one reading of the table, one grace
+  period, however many tabs.
+- A **held** shell is the holder's. Closing its tab ends it on purpose; the
+  holder runs the same reap its side. Detach (`D` on the close band) and quit
+  still let a working held shell go on living — that is what holding is for.
+- At quit: `release_idle_held` lets idle held shells go and keeps the working
+  ones; every local shell is then reaped.
+
+**Asking first** is SETTINGS · TERMINAL · CLOSING (ASK WHEN BUSY, the default; NEVER ASK), and it asks about real work
+only: a shell sitting at its prompt with nothing under it closes without a
+word; a shell running something names it and asks, in either half of a split.
+Off, closing is silent — but it still terminates. There is no setting that
+leaves strays.
+
+**The ×.** Every closable thing carries one on hover: sidebar rows (expanded
+and the 48px compact column) and the ports board's rows, where it stops that
+process and everything under it. The board's kill keeps its own three-way
+`ports.kill_confirm` (always / never / system only).
+
+## Route keys, and discoverability as a quality bar (2026-09-19)
+
+The foot of Home is four marks, not a sentence: a shell, a page, an
+assistant, the rows. The one Enter would take is lit in the signal with a
+rule under it; a fifth mark appears when the line names a folder. The pointer
+names each one, and a click puts its prefix on the line — so the row teaches
+the typing instead of describing it. `prompt.hints` (SETTINGS · PROMPT ·
+LAYOUT · ROUTE KEYS) turns it off for a bare line.
+
+Discoverability — what is bundled, what commands exist, what a route does —
+is held to a **premium quality bar, not a paywall**. nus is free, forever;
+nothing here is ever gated behind a purchase. The bar is: show it as a mark
+before a sentence, show it where the thing is used, and let acting on it be
+one click.
+
+## The face is a file you pick (2026-09-19)
+
+A profile picture is browsed for, on every platform — NSOpenPanel, the common
+item dialog, the desktop portal — from the profile card and from SETTINGS ·
+PROFILE. Whatever you pick (PNG, JPEG, WebP, GIF, BMP, TIFF, ICO) is squared
+off from the middle at 256px and written as `profile/avatar.png`; the file you
+picked stays where it is. Dropping a PNG in the folder by hand still works.
+
+The panel goes up from the main thread — macOS allows no other, and `rfd`
+panics under winit's pump-events loop if asked from one — and is modal while
+it is up, like every other app's open dialog. nus does not park a thread on
+it: the answer is asked for a frame at a time from `tick`, so there is no
+join and no ordering between the panel closing and the next frame.

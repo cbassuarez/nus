@@ -397,8 +397,130 @@ pub fn process_info(pids: &[u32]) -> HashMap<u32, Process> {
 }
 
 /// Ask a process to stop: Ctrl+C-ish first (`taskkill` / SIGTERM), then
-/// `force` kills outright.
+/// `force` kills outright. The whole tree goes, not just the named
+/// process — a dev server is a shell with a node under it, and killing
+/// the shell alone leaves the node holding the port.
 pub fn kill(pid: u32, force: bool) -> bool {
+    kill_tree(pid, force)
+}
+
+/// Every process under `pid`, deepest first, from a tree already read.
+/// Deepest first so a signal reaches the leaves before the parent that
+/// would otherwise outlive them as orphans.
+pub fn descendants_in(tree: &HashMap<u32, (u32, String)>, pid: u32) -> Vec<u32> {
+    // Never turn a reserved/root pid into a request for the entire system tree.
+    if pid <= 1 { return Vec::new(); }
+    let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&child, &(parent, _)) in tree {
+        if child != parent {
+            kids.entry(parent).or_default().push(child);
+        }
+    }
+    // Breadth first from the root; reversing it puts the leaves in front.
+    let mut order = Vec::new();
+    let mut queue = vec![pid];
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    seen.insert(pid);
+    while let Some(p) = queue.pop() {
+        for &c in kids.get(&p).into_iter().flatten() {
+            if seen.insert(c) {
+                order.push(c);
+                queue.push(c);
+            }
+        }
+    }
+    order.reverse();
+    order
+}
+
+/// Every process under `pid`, deepest first.
+pub fn descendants(pid: u32) -> Vec<u32> {
+    descendants_in(&process_tree(), pid)
+}
+
+/// What a shell is running: the name of its own first child, by pid, from
+/// a tree already read. `None` is a shell with nothing under it — a bare
+/// prompt, nothing to lose by closing.
+pub fn child_name_in(tree: &HashMap<u32, (u32, String)>, pid: u32) -> Option<String> {
+    let mut kids: Vec<(u32, &str)> = tree
+        .iter()
+        .filter(|(&child, &(parent, _))| parent == pid && child != pid)
+        .map(|(&child, (_, name))| (child, name.as_str()))
+        // conhost is ConPTY's own helper, not anyone's work.
+        .filter(|(_, name)| !name.is_empty() && !name.eq_ignore_ascii_case("conhost"))
+        .collect();
+    kids.sort_unstable();
+    kids.first().map(|(_, name)| name.to_string())
+}
+
+/// `pid` and everything under it. The tree is read before the first
+/// signal goes out, so a child that gets reparented to init on the way
+/// down is still on the list.
+pub fn kill_tree(pid: u32, force: bool) -> bool {
+    kill_trees_in(&process_tree(), &[pid], force)
+}
+
+/// Several trees from one reading of the process table — closing a stack
+/// of tabs is one `ps`, not one per tab.
+pub fn kill_trees(pids: &[u32], force: bool) -> bool {
+    if pids.is_empty() {
+        return true;
+    }
+    kill_trees_in(&process_tree(), pids, force)
+}
+
+/// Close these trees for good: a word first (SIGTERM / `taskkill`), a
+/// breath for anything that cleans up after itself, then the rest go
+/// outright. Only waits when the shells had children — an idle prompt
+/// closes at once.
+pub fn reap_trees_in(tree: &HashMap<u32, (u32, String)>, pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
+    let had_children = pids.iter().any(|&p| !descendants_in(tree, p).is_empty());
+    kill_trees_in(tree, pids, false);
+    if had_children {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
+    kill_trees_in(tree, pids, true);
+}
+
+/// The same, reading the table itself.
+pub fn reap_trees(pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
+    reap_trees_in(&process_tree(), pids);
+}
+
+/// The signalling itself, over a tree already read.
+pub fn kill_trees_in(tree: &HashMap<u32, (u32, String)>, pids: &[u32], force: bool) -> bool {
+    let mut targets: Vec<u32> = Vec::new();
+    for &pid in pids {
+        for d in descendants_in(tree, pid) {
+            if !targets.contains(&d) {
+                targets.push(d);
+            }
+        }
+    }
+    // The roots last: their children first, so nothing is orphaned.
+    for &pid in pids {
+        if !targets.contains(&pid) {
+            targets.push(pid);
+        }
+    }
+    let mut any = false;
+    for pid in targets {
+        any |= kill_one(pid, force);
+    }
+    any
+}
+
+/// One process, and on Windows whatever Windows counts as its tree.
+pub fn kill_one(pid: u32, force: bool) -> bool {
+    if pid <= 1 {
+        return false;
+    }
     #[cfg(windows)]
     {
         let mut args = vec!["/PID".to_string(), pid.to_string(), "/T".to_string()];
@@ -560,6 +682,58 @@ pub struct Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// pid → (ppid, name), the shape `process_tree` returns.
+    fn tree(rows: &[(u32, u32, &str)]) -> HashMap<u32, (u32, String)> {
+        rows.iter().map(|&(pid, ppid, n)| (pid, (ppid, n.to_string()))).collect()
+    }
+
+    #[test]
+    fn descendants_come_back_deepest_first() {
+        // 10 → 20 → 30, and 10 → 21. The leaves have to be signalled
+        // before their parents, or they are orphaned on the way down.
+        let t = tree(&[(1, 0, "init"), (10, 1, "sh"), (20, 10, "npm"), (21, 10, "tail"), (30, 20, "node")]);
+        let d = descendants_in(&t, 10);
+        assert_eq!(d.len(), 3, "{d:?}");
+        let at = |pid: u32| d.iter().position(|&p| p == pid).unwrap();
+        assert!(at(30) < at(20), "the node has to go before the npm that holds it: {d:?}");
+        assert!(d.contains(&21));
+        assert!(!d.contains(&10), "the root is not its own descendant");
+    }
+
+    #[test]
+    fn a_cycle_does_not_hang() {
+        let t = tree(&[(10, 11, "a"), (11, 10, "b")]);
+        assert_eq!(descendants_in(&t, 10), vec![11]);
+    }
+
+    #[test]
+    fn a_shell_at_its_prompt_is_running_nothing() {
+        let t = tree(&[(1, 0, "init"), (10, 1, "zsh")]);
+        assert_eq!(child_name_in(&t, 10), None);
+    }
+
+    #[test]
+    fn a_shell_running_something_names_it() {
+        // Lowest pid wins, so the same shell always reads the same way.
+        let t = tree(&[(10, 1, "zsh"), (33, 10, "vim"), (22, 10, "npm"), (44, 22, "node")]);
+        assert_eq!(child_name_in(&t, 10).as_deref(), Some("npm"));
+    }
+
+    #[test]
+    fn conpty_s_own_helper_is_not_your_work() {
+        let t = tree(&[(10, 1, "pwsh"), (11, 10, "conhost")]);
+        assert_eq!(child_name_in(&t, 10), None);
+    }
+
+    #[test]
+    fn nothing_signals_init() {
+        assert!(!kill_one(1, true));
+        assert!(!kill_one(0, false));
+        let t=tree(&[(1,0,"init"),(10,1,"sh"),(20,10,"node")]);
+        assert!(descendants_in(&t,0).is_empty());
+        assert!(descendants_in(&t,1).is_empty());
+    }
 
     #[test]
     fn netstat_lines() {

@@ -182,7 +182,7 @@ impl Smear {
 
     /// Advance the springs; returns whether anything still moves.
     pub fn animate(&mut self, s: &Settings, shape: Shape, cell_percentage: f32, dims: (f32, f32), immediate: bool) -> bool {
-        let now = std::time::Instant::now();
+        let now = crate::clock::now();
         let dt = self.last.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(1.0 / 60.0);
         self.last = Some(now);
         if self.shape != Some((shape, cell_percentage)) {

@@ -313,7 +313,7 @@ impl App {
 
     pub fn open_start(&mut self) {
         self.palette = None;
-        self.start = Some(Start { input: String::new(), sel: 0, opened: Instant::now(), rise: Anim::at(0.0), rows: Vec::new() });
+        self.start = Some(Start { input: String::new(), sel: 0, opened: crate::clock::now(), rise: Anim::at(0.0), rows: Vec::new() });
         if let Some(s) = self.start.as_mut() {
             s.rise.replay(0.0, 1.0, self.motion.dur(base::PALETTE) * 2.5);
         }
@@ -575,7 +575,7 @@ impl App {
         save_recent(&self.recent);
     }
 
-    pub fn start_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub fn start_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         let Some(s) = self.start.as_mut() else { return false };
         if ev.state != ElementState::Pressed {
             return true;

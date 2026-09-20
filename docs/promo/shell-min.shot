@@ -1,0 +1,15 @@
+# 1 · shell-min — the prompt has a language server. Beat 8, 4.2 s.
+# Staging: a shell in ~/dev/acme-web, git log -3 above the prompt,
+# bash-language-server installed, TERMINAL · PROMPT LSP set to MENU.
+hover 5 5
+newshell
+wait 2000
+shell git log --oneline -3
+wait 1200
+settle
+record shell-min 4.2
+at 1.579 type git ch 10
+at 2.200 await-lsp
+at 2.763 key down
+at 2.900 key tab
+quit

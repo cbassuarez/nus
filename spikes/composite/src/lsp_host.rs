@@ -310,7 +310,7 @@ impl App {
                     },
                 );
                 if let Some(b) = self.focused_editor().and_then(|e| e.buf_mut()) {
-                    b.save_pending = Some(Instant::now());
+                    b.save_pending = Some(crate::clock::now());
                 }
             }
             None => self.editor_write(),

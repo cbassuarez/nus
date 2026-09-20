@@ -156,7 +156,7 @@ impl App {
     }
 
     /// Esc closes it; ↑ ↓ and Enter walk it.
-    pub(crate) fn page_menu_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
+    pub(crate) fn page_menu_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key as K, NamedKey};
         if self.page_menu.is_none() || ev.state != winit::event::ElementState::Pressed {
             return false;
