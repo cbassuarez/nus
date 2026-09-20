@@ -60,8 +60,11 @@ def main():
             shutil.copy2(ROOT/'target/release/nus-hold.exe', stage/'nus-hold.exe')
             shutil.copy2(ROOT/'target/release/nus.exe', stage/'bin/nus.exe')
             # The MSVC runtime is required on clean machines, not only runners.
-            redist = Path(os.environ['VCToolsRedistDir'])/'x64/Microsoft.VC143.CRT'
-            for dll in redist.glob('*.dll'): shutil.copy2(dll, stage/dll.name)
+            # The CRT folder is named for the toolset (VC143, VC145...), so find
+            # the one that actually carries vcruntime140.dll.
+            redists = [d for d in (Path(os.environ['VCToolsRedistDir'])/'x64').glob('Microsoft.VC*.CRT') if (d/'vcruntime140.dll').exists()]
+            if not redists: raise RuntimeError('MSVC runtime missing under VCToolsRedistDir')
+            for dll in sorted(redists)[-1].glob('*.dll'): shutil.copy2(dll, stage/dll.name)
             if not (stage/'vcruntime140.dll').exists(): raise RuntimeError('MSVC runtime missing')
             subprocess.run(['pwsh','-NoProfile','-File',str(ROOT/'scripts/sign-windows-release.ps1'),str(stage),'stable' if stable else 'preview'], check=True)
             signing = 'authenticode' if os.environ.get('WINDOWS_CERTIFICATE') else 'unsigned'
