@@ -86,7 +86,8 @@ An empty issue tracker is not evidence that the app is defect-free. Report
 reproducible problems with the version, OS, expected result, actual result, and
 redacted evidence. Use private vulnerability reporting for security findings.
 
-`main` is the integration branch. The existing `theming` branch has been merged;
-it is retained as history and is not a separate supported product. Work for this
-audit is on `seb/feat-review-readiness`. No branch protection was configured at
-audit time; a green workflow is evidence of checks, not enforced peer review.
+`main` is the integration branch. Completed feature branches are deleted after
+merging; their commits remain in the merged PR history. This audit was prepared
+on `seb/feat-review-readiness` in [PR #2](https://github.com/cbassuarez/nus/pull/2).
+No branch protection was configured at audit time; a green workflow is evidence
+of checks, not enforced peer review.
