@@ -6,8 +6,9 @@ account, and has no server behind it. That shapes everything below.
 ## Reporting something
 
 Use **[private vulnerability reporting](https://github.com/cbassuarez/nus/security/advisories/new)**
-on this repository. It is the only channel; please do not open a public issue
-for a vulnerability, and please do not post a working exploit in one.
+on this repository, or email [contact@cbassuarez.com](mailto:contact@cbassuarez.com).
+Please do not open a public issue for a vulnerability or post a working exploit
+in one.
 
 Tell me what an attacker can do, not only what looks wrong: the version or
 commit, the OS, the steps, and what the attacker has to control to get there
