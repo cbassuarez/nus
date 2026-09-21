@@ -1,7 +1,7 @@
 # Security
 
-nus is one person's terminal and browser. It runs on your machine, holds no
-account, and has no server behind it. That shapes everything below.
+nus is @cbassuarez personal browser and terminal project. It runs on your machine, holds no
+account, and has no server behind it. Please read this file before proposing any security fixes.
 
 ## Reporting something
 
@@ -13,20 +13,17 @@ in one.
 Tell me what an attacker can do, not only what looks wrong: the version or
 commit, the OS, the steps, and what the attacker has to control to get there
 (a page you visit, a file you open, a device on your network, another program
-on the same machine). I read reports as I can — this is one person's project,
-not a funded programme, and I would rather say that plainly than promise a
-response time I cannot keep.
+on the same machine). I read reports as I can; this is my own personal project and not a funded program. 
 
-Fixes land on `main` and in the next build. There are no backported branches:
-**the supported version is the current one.**
+Fixes land on `bugfix` and in the next build. There are no backported branches:
+**the supported version is the current one.**, for now. I am still working on creating a robust longterm support plan, so until then, support is ad-hoc. Long term multi-version support ships with stable builds, but as of right now, there are only preview bundles to download, so we're staying ad-doc until then.
 
 ## What nus is
 
 nus is a user agent. It fetches what you ask for, runs what you tell it to
-run, and keeps what you ask it to keep. It is not an intermediary: nothing you
+run, and keeps what you ask it to keep. It is not an intermediary, and it is not centralized; nothing you
 do passes through me, there is no account to suspend and no content to
-moderate, and nothing is logged anywhere I can read. If you break the law with
-a browser, that is between you and the law — the same as it is with `curl`.
+moderate, and nothing is logged anywhere I can read.
 
 What I am responsible for is that nus does what it says, that the dangerous
 parts are visible and off until you turn them on, and that a page you visit
