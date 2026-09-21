@@ -882,7 +882,7 @@ index 7a632c58d44ebeb15f4a4e13112e8e018821a945..f1bfaf75ba5aab770a9e055a4da93ca1
 +                else if self.status=="Loading reading library…"{self.status.clear();}
 +                changed
 +            },
-+            Err(e)=>{self.status=format!("Could not read the library; previous view retained: {e}");true;},
++            Err(e)=>{self.status=format!("Could not read the library; previous view retained: {e}");true},
          }
 -        self.loaded=true;
 -    }

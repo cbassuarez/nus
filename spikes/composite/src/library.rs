@@ -101,7 +101,7 @@ impl Library {
                 else if self.status=="Loading reading library…"{self.status.clear();}
                 changed
             },
-            Err(e)=>{self.status=format!("Could not read the library; previous view retained: {e}");true;},
+            Err(e)=>{self.status=format!("Could not read the library; previous view retained: {e}");true},
         }
     }
     fn ensure(&mut self) { if !self.loaded { self.reload(); } }

@@ -163,7 +163,8 @@ impl App {
                                                     B::Pre(t) => format!("```\n{t}\n```"),
                                                     B::Item(t) => format!("- {t}"),
                                                     B::Quote(t) => format!("> {t}"),
-                                                    B::Image(src, alt) => format!("![{alt}]({src})"),
+                                                    B::Image(alt, src) => format!("![{alt}]({src})"),
+                                                    B::Link(text, url) => format!("[{text}]({url})"),
                                                 })
                                                 .collect();
                                             json!({ "title": a.title, "byline": a.byline, "when": a.when, "text": text.join("\n\n") })
