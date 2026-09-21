@@ -1,6 +1,6 @@
 # Security
 
-nus is @cbassuarez personal browser and terminal project. It runs on your machine, holds no
+nus is [@cbassuarez](https://www.github.com/cbassuarez)'s personal browser and terminal project. It runs on your machine, holds no
 account, and has no server behind it. Please read this file before proposing any security fixes.
 
 ## Reporting something
