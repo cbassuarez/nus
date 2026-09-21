@@ -353,7 +353,7 @@ mod tests {
             let px = render(size, [0.8, 0.05, 0.1, 1.0], face);
             let b = Band::in_frame(size as f32);
             let mut whites = 0;
-            for (i, p) in px.chunks_exact(4).enumerate() {
+            for (i, p) in px.as_chunks::<4>().0.iter().enumerate() {
                 if p[0] > 250 && p[1] > 250 && p[2] > 250 && p[3] > 240 {
                     whites += 1;
                     assert!(
@@ -376,9 +376,15 @@ mod tests {
             [0.1, 0.6, 0.9, 1.0],
         ] {
             let px = render(64, signal, Face::Newsreader);
-            assert!(px.chunks_exact(4).any(|p| p == [255, 255, 255, 255]));
+            assert!(px
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p == &[255, 255, 255, 255]));
             assert!(
-                px.chunks_exact(4)
+                px.as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|p| p[3] > 100 && p[0] < 20 && p[1] < 20 && p[2] < 20),
                 "contrast edge"
             );

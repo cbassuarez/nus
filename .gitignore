@@ -16,3 +16,7 @@
 /dist
 __pycache__/
 *.pyc
+
+# Local editor recovery files
+*.swp
+*.swo

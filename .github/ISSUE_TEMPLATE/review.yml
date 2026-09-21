@@ -1,0 +1,31 @@
+name: Review feedback
+description: Ask a technical question or record a finding from evaluating nus.
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For reproducible defects, use Bug report. For security findings, use the private security reporting link instead. This feedback is public; remove credentials, private URLs, and personal data.
+  - type: input
+    id: revision
+    attributes:
+      label: Version, commit, or document reviewed
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding or question
+      description: Explain what you observed and what needs clarification. Link relevant code or documentation where possible.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and scope
+      description: Include the platform and checks performed. Distinguish observations from assumptions; redact sensitive details.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Suggested next step
+      description: Optional. Describe the evidence or change that would resolve the question.

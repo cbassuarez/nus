@@ -1,6 +1,6 @@
 name: Feature request
 description: Describe something you would like to do in nus.
-labels: [feature]
+labels: [enhancement]
 body:
   - type: markdown
     attributes:
