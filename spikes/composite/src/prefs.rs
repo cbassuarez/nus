@@ -107,6 +107,23 @@ pub fn apply_start_switches() {
 }
 
 impl App {
+    pub(crate) fn import_settings(&mut self, source: &std::path::Path) -> std::io::Result<()> {
+        let bytes = std::fs::read(source)?;
+        let mut prefs: Prefs = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        migrate(&mut prefs);
+        // Commit before changing live state. The ordinary save merges only
+        // changed fields, so applying first would reset its comparison baseline.
+        crate::store::write_json(&path(), &prefs)?;
+        self.apply_prefs(prefs);
+        self.rebuild_theme();
+        self.pointer_request = Some(self.cursor.pointer);
+        self.hatch_settings_changed();
+        self.save_prefs();
+        self.layout();
+        self.dirty = true;
+        Ok(())
+    }
+
     pub(crate) fn apply_prefs(&mut self, p: Prefs) {
         crate::downloads::init();
         if !crate::private::enabled() { if let Some(pins)=p.pinned_tabs {self.apply_pins(pins);} }

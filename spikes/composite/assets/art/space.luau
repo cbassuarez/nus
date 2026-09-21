@@ -3,16 +3,20 @@
 
 -- Space: looking straight up. Zenith at the centre, the horizon a hairline
 -- circle, north at the top, east on the left as it is when you lie back.
--- The brightest northern stars from a small catalogue by magnitude, the red
+-- Bright northern and southern stars from a small catalogue by magnitude, the red
 -- giants tinted, the classic figures in hairlines, the names in small
--- caps, a few hundred faint ones for texture. Sidereal time from the clock
+-- caps, a deterministic synthetic faint field for texture. Sidereal time from the clock
 -- and the place, so the Dipper is where it is; SPEED turns the sky faster
 -- than the hour does (1 = real).
 
 local SPEED = 1
 local TAU = math.pi * 2
 local D = math.pi / 180
-local function rnd(a, b) return a + math.random() * (b - a) end
+local rng = 72341
+local function rnd(a, b)
+  rng = (rng * 48271) % 2147483647
+  return a + rng / 2147483647 * (b - a)
+end
 local function clamp(v, a, b) return if v < a then a elseif v > b then b else v end
 
 -- name, RA (hours), Dec (degrees), magnitude, warm (a red giant)
@@ -36,6 +40,83 @@ local CAT = {
   {"Betelgeuse", 5.92, 7.41, 0.5, true}, {"Rigel", 5.24, -8.20, 0.13}, {"Bellatrix", 5.42, 6.35, 1.6}, {"Saiph", 5.80, -9.67, 2.1}, {"Alnitak", 5.68, -1.94, 1.8}, {"Alnilam", 5.60, -1.20, 1.7}, {"Mintaka", 5.53, -0.30, 2.2},
   {"Sirius", 6.75, -16.72, -1.46}, {"Procyon", 7.66, 5.22, 0.34}, {"Spica", 13.42, -11.16, 1.0}, {"Rasalhague", 17.58, 12.56, 2.1},
   {"Markab", 23.08, 15.21, 2.5}, {"Scheat", 23.06, 28.08, 2.4}, {"Algenib", 0.22, 15.18, 2.8}, {"Alpheratz", 0.14, 29.09, 2.1}, {"Mirach", 1.16, 35.62, 2.1, true}, {"Almach", 2.06, 42.33, 2.1},
+  -- Southern additions: IAU archived J2000 catalogue (2021), V <= 3.5.
+  {"Imai", 12.252421, -58.748927, 2.75},
+  {"Paikauhale", 16.598042, -28.216017, 2.82},
+  {"Toliman", 14.659740, -60.837528, 1.35},
+  {"Azmidi", 7.821571, -24.859786, 3.45},
+  {"Heze", 13.578220, -0.595820, 3.38},
+  {"Kraz", 12.573121, -23.396759, 2.65},
+  {"Acamar", 2.971021, -40.304672, 2.88},
+  {"Achernar", 1.628568, -57.236753, 0.45},
+  {"Acrab", 16.090620, -19.805453, 2.56},
+  {"Acrux", 12.443304, -63.099093, 1.33},
+  {"Adhara", 6.977097, -28.972086, 1.50},
+  {"Albaldah", 19.162731, -21.023615, 2.88},
+  {"Aldhanab", 21.898813, -37.364855, 3.00},
+  {"Algorab", 12.497738, -16.515431, 2.94},
+  {"Alnair", 22.137218, -46.960974, 1.73},
+  {"Alnasl", 18.096802, -30.424100, 2.98},
+  {"Alniyat", 16.353143, -25.592792, 2.90},
+  {"Alphard", 9.459790, -8.658602, 1.99, true},
+  {"Alsephina", 8.745063, -54.708819, 1.99},
+  {"Aludra", 7.401584, -29.303106, 2.45},
+  {"Ankaa", 0.438063, -42.306084, 2.40},
+  {"Antares", 16.490128, -26.432003, 1.06, true},
+  {"Arneb", 5.545504, -17.822289, 2.58},
+  {"Ascella", 19.043536, -29.880063, 2.60},
+  {"Aspidiske", 9.284835, -59.275232, 2.21},
+  {"Atria", 16.811082, -69.027712, 1.91},
+  {"Avior", 8.375232, -59.509484, 1.86, true},
+  {"Brachium", 15.067838, -25.281961, 3.25},
+  {"Canopus", 6.399197, -52.695661, -0.62},
+  {"Cursa", 5.130829, -5.086446, 2.78},
+  {"Dabih", 20.350187, -14.781405, 3.05},
+  {"Deneb Algedi", 21.784012, -16.127287, 2.85},
+  {"Diphda", 0.726492, -17.986606, 2.04},
+  {"Dschubba", 16.005557, -22.621710, 2.29},
+  {"Fang", 15.980865, -26.114108, 2.89},
+  {"Fomalhaut", 22.960846, -29.622237, 1.17},
+  {"Furud", 6.338553, -30.063367, 3.02},
+  {"Fuyue", 17.830967, -37.043305, 3.19},
+  {"Gacrux", 12.519433, -57.113213, 1.59, true},
+  {"Hadar", 14.063724, -60.373035, 0.61},
+  {"Hatysa", 5.590551, -5.909901, 2.80},
+  {"Kaus Australis", 18.402866, -34.384616, 1.79},
+  {"Kaus Borealis", 18.466178, -25.421701, 2.82},
+  {"Kaus Media", 18.349901, -29.828104, 2.72},
+  {"Lesath", 17.512732, -37.295813, 2.70},
+  {"Markeb", 9.368560, -55.010667, 2.47},
+  {"Menkent", 14.111374, -36.369958, 2.06},
+  {"Miaplacidus", 9.219994, -69.717208, 1.67},
+  {"Mimosa", 12.795351, -59.688764, 1.25},
+  {"Mirzam", 6.378329, -17.955919, 1.98},
+  {"Naos", 8.059735, -40.003148, 2.21},
+  {"Nihal", 5.470756, -20.759441, 2.81},
+  {"Nunki", 18.921091, -26.296724, 2.05},
+  {"Peacock", 20.427460, -56.735090, 1.94},
+  {"Phact", 5.660817, -34.074110, 2.65},
+  {"Porrima", 12.694345, -1.449373, 2.74},
+  {"Rigil Kentaurus", 14.660138, -60.833975, -0.01},
+  {"Sabik", 17.172969, -15.724907, 2.43},
+  {"Sadalmelik", 22.096399, -0.319849, 2.95},
+  {"Sadalsuud", 21.525981, -5.571176, 2.90},
+  {"Sargas", 17.621981, -42.997824, 1.86},
+  {"Shaula", 17.560144, -37.103824, 1.62},
+  {"Skat", 22.910837, -15.820827, 3.27},
+  {"Suhail", 9.133266, -43.432589, 2.23},
+  {"Tiaki", 22.711125, -46.884576, 2.12},
+  {"Tureis", 8.125736, -24.304324, 2.83},
+  {"Unurgunite", 7.028652, -27.934830, 3.49},
+  {"Wazn", 5.849331, -35.768310, 3.12},
+  {"Wezen", 7.139857, -26.393200, 1.83},
+  {"Xamidimura", 16.864509, -38.047380, 3.00},
+  {"Yed Posterior", 16.305358, -4.692510, 3.23},
+  {"Yed Prior", 16.239094, -3.694323, 2.73},
+  {"Zaurak", 3.967157, -13.508516, 2.97},
+  {"Zubenelgenubi", 14.847976, -16.041777, 2.75},
+  {"Zubeneschamali", 15.283448, -9.382914, 2.61},
+  {"Larawag", 16.836059, -34.293232, 2.29},
 }
 local byName = {}
 for i, s in CAT do byName[s[1]] = i end
@@ -46,6 +127,9 @@ local function chain(names)
 end
 local function join(a, b) for _, x in b do a[#a + 1] = x end return a end
 local FIG = {
+  { name = "Crux", lines = join(chain({"Acrux", "Gacrux"}), chain({"Mimosa", "Imai"})), at = "Gacrux" },
+  { name = "Centaurus", lines = chain({"Rigil Kentaurus", "Hadar", "Menkent"}), at = "Hadar" },
+  { name = "Scorpius", lines = chain({"Dschubba", "Antares", "Larawag", "Sargas", "Shaula", "Lesath"}), at = "Antares" },
   { name = "Ursa Major", lines = chain({"Alkaid", "Mizar", "Alioth", "Megrez", "Phecda", "Merak", "Dubhe", "Megrez"}), at = "Megrez" },
   { name = "Ursa Minor", lines = chain({"Polaris", "Yildun", "ε UMi", "ζ UMi", "Kochab", "Pherkad", "η UMi", "ζ UMi"}), at = "ζ UMi" },
   { name = "Cassiopeia", lines = chain({"Caph", "Schedar", "γ Cas", "Ruchbah", "Segin"}), at = "γ Cas" },
@@ -69,7 +153,7 @@ local FIG = {
 
 -- The faint field, fixed on the sky.
 local faint = {}
-for i = 1, 420 do faint[i] = { rnd(0, 24), math.asin(rnd(math.sin(-35 * D), 1)) / D, rnd(4.6, 6.0), rnd(0, TAU) } end
+for i = 1, 420 do faint[i] = { rnd(0, 24), math.asin(rnd(-1, 1)) / D, rnd(4.6, 6.0), rnd(0, TAU) } end
 local streaks = {}
 local started = nil
 local lastFrame = nil
@@ -90,10 +174,12 @@ function draw(c)
   if not animated then streaks = {} end
   local W, H = c.w, c.h
   local cx, cy = W / 2, H / 2
-  local K = (H / 2 - 4) / 90
-  local paper = c.face == "paper"
-  local star = if paper then "#141413" else "#f4f1ea"
-  local warm = if paper then "#c8102e" else "#e8604a"
+  local K = math.max(1, math.min(W, H) / 2 - 28) / 90
+  c:backdrop("dark")
+  c:rect(0, 0, W, H, "#080d19")
+  local paper = false
+  local star = "#e4edff"
+  local warm = "#ffd1a6"
   local place = c:place()
   -- Without a place, show an illustrated northern star chart. These are
   -- drawing coordinates, never stored or exposed as the user's location.
@@ -157,7 +243,7 @@ function draw(c)
   ring(R, 0.1, false)
   ring(60 * K, 0.1, true)
   ring(30 * K, 0.1, true)
-  local dim = c.dim
+  local dim = "#8294b6"
   for _, m in { { cx, cy - R - 8, "N" }, { cx, cy + R + 16, "S" }, { cx - R - 12, cy + 4, "E" }, { cx + R + 12, cy + 4, "W" } } do
     local a = 0.9 * clear(m[1], m[2])
     if a > 0.01 then c:text(m[1], m[2], m[3], 10, dim, a, { align = "center" }) end
@@ -193,8 +279,12 @@ function draw(c)
       local mag = s[4]
       local rad = clamp(3.9 - mag * 0.72, 0.8, 4.2)
       local horizon = clamp((p[3] + 1) / 6, 0, 1)
-      local tw = 0.86 + 0.14 * math.sin(c.t * (0.9 + (i % 5) * 0.2) + i)
-      local alpha = clamp(0.95 - mag * 0.13, 0.3, 0.95) * tw * horizon
+      local air = 1 / math.max(0.06, math.sin(math.max(0, p[3]) * D))
+      local scintillation = 0.015 + 0.07 * clamp((air - 1) / 8, 0, 1)
+      local tw = 0.96 + scintillation * math.sin(c.t * (2.1 + (i % 5) * 0.4) + i)
+      -- Extinction and logarithmic magnitude compressed for a display.
+      horizon *= math.exp(-0.10 * (air - 1))
+      local alpha = clamp((10 ^ (-0.4 * mag)) ^ 0.32, 0.08, 0.98) * tw * horizon
       local lit = #typed > 0 and string.sub(string.lower(s[1]), 1, #typed) == typed
       if lit then alpha = 1 end
       alpha *= clear(p[1], p[2])
@@ -217,46 +307,52 @@ function draw(c)
     local p = pos[byName[fig.at]]
     if p and p[3] >= 6 and not inLine(p[1], p[2], 20) then
       local lit = #typed > 0 and string.sub(string.lower(fig.name), 1, #typed) == typed
-      c:text(p[1], p[2] + 16, string.upper(fig.name), 9, c.ink, if lit then 0.9 else 0.36, { align = "center", caps = true })
+      c:text(p[1], p[2] + 16, string.upper(fig.name), 9, star, if lit then 0.9 else 0.36, { align = "center", caps = true })
     end
   end
   -- The nearest bright star names itself under the pointer.
   if nearest and nd < 60 * 60 then
     local s, p = CAT[nearest], pos[nearest]
-    c:text(p[1] + 9, p[2] - 9, string.format("%s · %.1f", s[1], s[4]), 10, c.ink, 0.85)
+    c:text(p[1] + 9, p[2] - 9, string.format("%s · %.1f", s[1], s[4]), 10, star, 0.85)
   end
-  -- Meteors: a tap makes one; one on its own every so often.
-  if animated then
-    for _, tp in c:taps() do streaks[#streaks + 1] = { x = tp.x, y = tp.y, a = rnd(0, TAU), t = c.t } end
-  end
-  if animated and math.random() < 0.0015 then
-    local ang, rr = rnd(0, TAU), rnd(0.3, 0.8) * R
-    streaks[#streaks + 1] = { x = cx + math.cos(ang) * rr, y = cy + math.sin(ang) * rr, a = rnd(0, TAU), t = c.t }
-  end
-  for i = #streaks, 1, -1 do
-    local st = streaks[i]
-    local age = c.t - st.t
-    if age > 1 then
-      table.remove(streaks, i)
-    else
-      local d, len = age * 560, 80
-      local hx, hy = st.x + math.cos(st.a) * d, st.y + math.sin(st.a) * d
-      local col = if paper then "#c8102e" else "#f4f1ea"
-      for k = 0, 5 do
-        local t0, t1 = k / 6, (k + 1) / 6
-        c:line(hx - math.cos(st.a) * len * (1 - t0), hy - math.sin(st.a) * len * (1 - t0), hx - math.cos(st.a) * len * (1 - t1), hy - math.sin(st.a) * len * (1 - t1), 1.2, col, 0.85 * clamp(1 - age, 0, 1) * t1)
+  -- Pointer input explores labels, never restarts or invents celestial events.
+  -- The Moon uses the same dated ephemeris as the atmospheric sky.
+  if place then
+    local ephemeris = c:celestial(now, lat, lon)
+    local moon = ephemeris.moon
+    local mx, my, altitude = at(moon.ra, moon.dec)
+    if altitude > 0 and clear(mx, my) > 0.1 then
+      local radius = 7
+      local light = 2 * ephemeris.illumination - 1
+      local side = if ephemeris.waxing then 1 else -1
+      c:circle(mx, my, radius + 4, "#d0ddff", 0.06 * ephemeris.illumination)
+      c:circle(mx, my, radius, "#182239", 0.9)
+      -- Orthographic illuminated sphere: a curved terminator, not a mask wipe.
+      for iy = -7, 7 do
+        local yy = iy / radius
+        local edge = math.sqrt(math.max(0, 1 - yy * yy))
+        for ix = -7, 7 do
+          local xx = ix / radius
+          if math.abs(xx) <= edge then
+            local zz = math.sqrt(math.max(0, 1 - xx * xx - yy * yy))
+            if xx * side * math.sqrt(math.max(0, 1 - light * light)) + zz * light > 0 then
+              c:rect(mx + ix, my + iy, 1, 1, "#ececf1", clear(mx, my))
+            end
+          end
+        end
       end
+      c:text(mx + 14, my + 4, string.format("Moon · %d%%", math.floor(ephemeris.illumination * 100 + 0.5)), 10, star, 0.7 * clear(mx, my))
     end
   end
   -- The chart's card: where and when.
   if not place then
-    c:text(32, H - 86, "Illustrated northern sky", 10, c.ink, 0.45, { caps = true })
+    c:text(32, H - 86, "Illustrated northern sky", 10, star, 0.45, { caps = true })
     return
   end
   local lh = math.floor(LST)
   local lm = math.floor((LST - lh) * 60)
   local ns = if lat >= 0 then "N" else "S"
   local ew = if lon >= 0 then "E" else "W"
-  c:text(32, H - 62, string.format("%.1f° %s · %.1f° %s", math.abs(lat), ns, math.abs(lon), ew), 10, c.ink, 0.45, { caps = true })
-  c:text(32, H - 46, string.format("LST %dh %02dm%s", lh, lm, if SPEED ~= 1 then string.format(" · %d×", SPEED) else ""), 10, c.ink, 0.45, { caps = true })
+  c:text(32, H - 62, string.format("%.1f° %s · %.1f° %s", math.abs(lat), ns, math.abs(lon), ew), 10, star, 0.45, { caps = true })
+  c:text(32, H - 46, string.format("LST %dh %02dm%s", lh, lm, if SPEED ~= 1 then string.format(" · %d×", SPEED) else ""), 10, star, 0.45, { caps = true })
 end

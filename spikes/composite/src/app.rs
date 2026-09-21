@@ -59,6 +59,9 @@ pub enum PaletteMode {
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Action {
+    Library,
+    SaveReading,
+    RefreshReading,
     Application(crate::application_menu::Command),
     Preference(crate::assistants::Field, String),
     AssistantDraft(u8, String),
@@ -400,7 +403,7 @@ pub struct HintsPane {
 
 pub const HINTS: [(&str, &str); 5] = [
     ("K", "the palette · tabs, ports, ask, settings"),
-    ("T", "new tab · the start page selected in Startup"),
+    ("T", "new tab · the start page selected in Start/New Tab"),
     ("ENTER", "at a prompt that is a URL · opens it beside"),
     ("EDGE", "hover the left edge · tabs slide in, pin with Ctrl+Shift+S"),
     ("`", "back to the last tab · Ctrl+PgUp/PgDn walk them"),
@@ -762,6 +765,7 @@ impl Tab {
 }
 
 pub struct App {
+    pub library: crate::library::Library,
     pub window: Arc<Window>,
     pub gpu: Gpu,
     pub target: nus_render::Target,
@@ -1052,6 +1056,7 @@ pub struct App {
     pub welcome_shapes: Vec<Rect>,
     pub welcome_taps: Vec<(f32,f32)>,
     pub welcome_anim_until: Option<Instant>,
+    pub previous_install: Option<std::path::PathBuf>,
     pub welcome_pending: Option<(crate::welcome::Act, Instant)>,
     pub welcome_reach: f32,
     /// Closing a stack's parent asks first: the parent's index.
@@ -1273,6 +1278,7 @@ impl App {
             me_card: crate::me::MeCard::default(),
             pending_name: String::new(),
             splash: Some(crate::splash::Splash::new()),
+            library: crate::library::Library::default(),
             plate: None,
             toast: None,
             toast_anim: Anim::at(0.0),
@@ -1327,6 +1333,7 @@ impl App {
             welcome_icon_tex: None,
             welcome_art: None,
             welcome_shapes: Vec::new(), welcome_taps: Vec::new(), welcome_anim_until: None,
+            previous_install: crate::install::previous(),
             welcome_pending: None,
             welcome_reach: 0.0,
             confirm_stack: None,
@@ -1363,6 +1370,7 @@ impl App {
         app.behavior = prefs.behavior.clone().unwrap_or_default();
         // A second window: one shell, no splash, no session restore, no name.
         let onboarded = App::onboarded();
+        if let Some(sp)=app.splash.as_mut() {sp.arrival=!secondary && !onboarded && !std::path::Path::new("profile/arrival-seen").is_file();}
         // Do not start a held shell just to replace it with a page. Those
         // hidden shells survive the app and used to accumulate on every launch.
         let needs_shell = if secondary {
@@ -1377,8 +1385,10 @@ impl App {
             app.tabs.push(welcome);
             app.then_done = true;
             app.start_shown = true;
-            // The welcome page is an introduction, not a prerequisite for
-            // the user's startup choice. Keep tour progress independently.
+            // Opening Welcome does not complete onboarding. Resume it until
+            // the user chooses Get started; exercises remain optional.
+            let _ = std::fs::create_dir_all("profile");
+            let _ = std::fs::write("profile/onboarding-pending", b"1");
             app.save_hints();
         } else {
             let pane = if needs_shell {
@@ -1388,10 +1398,7 @@ impl App {
             app.tabs.push(first);
         }
         app.apply_prefs(prefs);
-        // Profile setup belongs to onboarding, over the single welcome tab.
-        if !secondary && !onboarded && app.me.is_none() {
-            app.open_me_card();
-        }
+        // Welcome offers the existing profile card; the first reveal is unobscured.
         // The hatch's global hotkey: the first window registers it; a
         // second Space shares it (main routes the event to the focused one).
         if !secondary && !crate::private::enabled() {
@@ -1955,6 +1962,7 @@ impl App {
         }
         self.apply_boosts();
         self.poll_reader();
+        self.poll_library();
         self.sync_favicons();
         // Once the splash has gone: the "then" step, then Atlas if asked.
         if !self.start_shown && self.splash.is_none() {
@@ -2257,8 +2265,8 @@ impl App {
         }
     }
 
-    fn reader_fonts(&self) -> crate::reader::ReaderFonts {
-        crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+    pub(crate) fn reader_fonts(&self) -> crate::reader::ReaderFonts {
+        crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.term, mono_strong: self.f.term }
     }
 
     /// A 32×32 pointer: an ink arrow with a paper edge, or a signal dot.
@@ -5586,6 +5594,7 @@ impl App {
         if std::env::var_os("NUS_ONBOARD").is_some() {
             return false;
         }
+        if std::path::Path::new("profile/onboarding-pending").exists() { return false; }
         let s = std::fs::read_to_string(App::onboarded_marker()).unwrap_or_default();
         let marker = s.trim();
         marker == "skip" || (marker.len() == 5 && marker.bytes().all(|b| b == b'0' || b == b'1'))
@@ -5622,6 +5631,8 @@ impl App {
 
     /// Remove the panel (skip, or done). The marker is written either way.
     pub(crate) fn dismiss_hints(&mut self) {
+        crate::install::complete();
+        self.previous_install = None;
         if !self.hints.iter().all(|&h| h) {
             let _ = std::fs::write(App::onboarded_marker(), b"skip");
         }
@@ -6113,6 +6124,9 @@ impl App {
                 }
             }
             PaletteMode::Go => {
+                if hit("reading library reading list saved articles") {rows.push(row("", "Reading library".into(), Action::Library));}
+                if hit("save to reading library offline article") {rows.push(row("", "Save to reading library".into(), Action::SaveReading));}
+                if hit("refresh saved reading copy from the open original") {rows.push(row("", "Refresh saved reading copy from the open original".into(), Action::RefreshReading));}
                 if hit("incognito private new window") {
                     rows.push(row("◌", "New incognito window".into(), Action::NewPrivateWindow));
                 }
@@ -6592,6 +6606,9 @@ impl App {
             Action::JournalPage => self.open_journal_page(),
             Action::Timeline => self.toggle_timeline(),
             Action::Home => self.open_home(),
+            Action::Library => self.open_library(),
+            Action::SaveReading => self.save_reading(),
+            Action::RefreshReading => self.refresh_reading(),
             Action::PromptShell(cmd) => self.open_prompt_shell(&cmd),
             Action::PromptPin(value) => {if !value.is_empty() && !self.behavior.prompt.saved.contains(&value) {self.behavior.prompt.saved.push(value);self.save_prefs();}},
             Action::Preference(field,value) => self.set_preference(field,&value),
@@ -6638,7 +6655,7 @@ impl App {
                 self.behavior.then = crate::settings::Then::Layout;
                 self.behavior.then_layout = "launch".into();
                 self.save_prefs();
-                self.notice("layout saved · Startup opens it at launch and in new tabs");
+                self.notice("layout saved · Start/New Tab opens it at launch and in new tabs");
             }
             Action::ShareReplay => match self.share_replay(self.active) {
                 Ok(p) => {
@@ -6814,7 +6831,12 @@ impl App {
 
 
         if let Some(step) = crate::zoom::shortcut(ev, self.mods) {
-            if pressed { self.zoom_focused(step); }
+            if pressed {
+                if self.palette.is_none() && self.start.is_none() && !self.me_card.open
+                    && self.splash.is_none() && self.timeline.is_none() && !self.dl_menu
+                    && self.library_zoom_key(ev) { return; }
+                self.zoom_focused(step);
+            }
             return;
         }
         if pressed && ev.physical_key == PhysicalKey::Code(KeyCode::F10) { self.open_palette(PaletteMode::Application); return; }
@@ -6828,6 +6850,9 @@ impl App {
         }
 
         if self.splash.is_some() {
+            if ev.state==winit::event::ElementState::Pressed && matches!(ev.logical_key,winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) {
+                self.finish_arrival();self.splash=None;self.dirty=true;
+            }
             return;
         }
         if self.page_menu_key(ev) {
@@ -6845,6 +6870,7 @@ impl App {
         if pressed && (if cfg!(target_os="macos") {sup} else {ctrl}) && matches!(&ev.logical_key,WKey::Character(c) if c.eq_ignore_ascii_case("f")) && self.palette.is_none() && self.tabs.get(self.active).is_some_and(|t|matches!(t.left,Pane::Settings(_))) {
             self.open_palette(PaletteMode::Settings);return;
         }
+        if self.palette.is_none() && !self.dl_menu && self.library_key(ev) { return; }
         if self.palette.is_none() && !app && self.settings_key(ev) { return; }
         // Find and hints take the keys while they're up.
         if self.web_mode_key(ev) {
@@ -6988,6 +7014,13 @@ impl App {
         // app chord — ⌘R, Ctrl+Shift+R — is a reload, as everywhere.
         if pressed && code == Some(KeyCode::KeyR) && alt && !shift && (if cfg!(target_os = "macos") { sup } else { ctrl }) {
             return self.toggle_reader();
+        }
+        // Palette-only mode explicitly makes Ctrl+T and Ctrl+K aliases on
+        // Windows/Linux as well as the existing app chords.
+        if !cfg!(target_os = "macos") && pressed && ctrl && !alt && !sup
+            && self.behavior.then == crate::settings::Then::Palette
+            && matches!(code, Some(KeyCode::KeyT) | Some(KeyCode::KeyK)) {
+            return self.open_palette(PaletteMode::Go);
         }
         if pressed && app {
             // The shell's copy and paste chords, on the prompt: its line.
@@ -8125,10 +8158,11 @@ impl App {
     }
 
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
-        self.pin_drag_move(y);
+        self.pin_drag_move(x, y);
         let was = self.mouse;
         self.mouse = (x, y);
         if self.timeline_pointer(x,y){self.dirty=true;return;}
+        if self.palette.is_none() && !self.me_card.open && self.start.is_none() && self.library_pointer(x,y) { return; }
         if self.sidebar_resize.is_some(){self.sidebar_resize_to(x,y);return;}
         if let Some(hit) = self.settings_drag {
             self.apply_setting(hit, x);
@@ -8384,7 +8418,7 @@ impl App {
             let g = self.sidebar_geometry();
             let pad = self.touch_pad();
             if let Some(&(_, hit)) = self.side_hits.iter().rev().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) {
-                if let SideHit::Pinned(crate::pins::Act::Open(k))=hit {self.pins.drag=Some((k,y,false));}
+                if let SideHit::Pinned(crate::pins::Act::Open(k))=hit {self.pins.drag=Some((k,(x,y),false));}
                 else {self.side_action(hit, true);}
                 self.dirty = true;
                 return;
@@ -8476,6 +8510,7 @@ impl App {
                 }
             }
         }
+        if self.library_mouse(button, state, x, y) { return; }
         // Panes: focus, and forward to the browser.
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let mut hit_right = None;
@@ -8776,6 +8811,11 @@ impl App {
         if self.board_wheel(x, y, dy_px) {
             return;
         }
+        let dx_px = match delta {
+            MouseScrollDelta::LineDelta(x, _) => x * self.wheel_step(),
+            MouseScrollDelta::PixelDelta(p) => p.x as f32,
+        };
+        if self.library_wheel(x, y, dx_px, dy_px) { return; }
         let wheel_lines = self.behavior.wheel_lines as f32;
         let easing = self.behavior.scroll_easing;
         let shift = self.mods.shift_key();

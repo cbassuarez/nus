@@ -5,13 +5,18 @@ use nus_render::{text::icons, Rect, Scene, Style};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Display { #[default] Icon, Preview }
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
+    Library,
     Welcome,
     Downloads,
     Ports,
     Settings,
     Prompt,
+    Shell { profile: String },
     Page { url: String, container: String },
     File { path: String },
 }
@@ -25,6 +30,7 @@ impl Pin {
     pub fn defaults() -> Vec<Self> {
         [
             ("welcome", "Welcome", Target::Welcome),
+            ("reading", "Reading library", Target::Library),
             ("downloads", "Downloads", Target::Downloads),
             ("ports", "Ports", Target::Ports),
         ]
@@ -39,10 +45,11 @@ impl Pin {
     fn icon(&self) -> (&'static str, &'static str) {
         match self.target {
             Target::Welcome => icons::HOME,
+            Target::Library => icons::BOOK,
             Target::Downloads => icons::DOWNLOAD,
             Target::Ports => icons::PORTS,
             Target::Settings => icons::SETTINGS,
-            Target::Prompt => icons::TERMINAL,
+            Target::Prompt | Target::Shell { .. } => icons::TERMINAL,
             Target::Page { .. } => icons::GLOBE,
             Target::File { .. } => icons::CODE,
         }
@@ -84,7 +91,7 @@ pub struct Pins {
     pub editing: bool,
     pub scroll: f32,
     pub rect: Rect,
-    pub drag: Option<(usize, f32, bool)>,
+    pub drag: Option<(usize, (f32, f32), bool)>,
 }
 impl Default for Pins {
     fn default() -> Self {
@@ -113,7 +120,7 @@ fn target(tab: &Tab) -> Option<Target> {
         Pane::Downloads(_) => Target::Downloads,
         Pane::Ports(_) => Target::Ports,
         Pane::Settings(_) => Target::Settings,
-        Pane::Home(_) => Target::Prompt,
+        Pane::Home(h) => if h.library {Target::Library}else{Target::Prompt},
         Pane::Web(w) => Target::Page {
             url: w
                 .asleep
@@ -121,7 +128,8 @@ fn target(tab: &Tab) -> Option<Target> {
                 .unwrap_or_else(|| w.tab.shared.borrow().url.clone()),
             container: w.container.clone(),
         },
-        // Editor files and shells retain their existing session pin behavior.
+        Pane::Term(t) => Target::Shell { profile: t.profile_name.clone() },
+        // Other panes retain their existing session pin behavior.
         _ => return None,
     })
 }
@@ -168,7 +176,7 @@ impl App {
             return;
         };
         let title = tab.title();
-        let k = if let Some(k) = self.pins.items.iter().position(|p| p.target == target) {
+        let k = if let Some(k) = self.pins.items.iter().position(|p| !matches!(target, Target::Shell { .. }) && p.target == target) {
             k
         } else {
             self.pins.items.push(Pin {
@@ -210,7 +218,7 @@ impl App {
             if let Some(tab) = self
                 .tabs
                 .iter_mut()
-                .find(|t| !self.pins.owns(t.id) && target(t).as_ref() == Some(&pin.target))
+                .find(|t| !self.pins.owns(t.id) && (!matches!(pin.target, Target::Shell { .. }) || t.pinned) && target(t).as_ref() == Some(&pin.target))
             {
                 tab.pinned = true;
                 self.pins.live.insert(pin.id.clone(), tab.id);
@@ -330,12 +338,13 @@ impl App {
                 if let Some(i) = self
                     .tabs
                     .iter()
-                    .position(|t| target(t).as_ref() == Some(&pin.target))
+                    .position(|t| !matches!(pin.target, Target::Shell { .. }) && target(t).as_ref() == Some(&pin.target))
                 {
                     self.activate(i);
                 } else {
                     match &pin.target {
                         Target::Welcome => self.open_welcome(),
+                        Target::Library => self.open_library(),
                         Target::Downloads => self.open_downloads(),
                         Target::Ports => {
                             let tab = self.make_tab(
@@ -349,6 +358,10 @@ impl App {
                         }
                         Target::Settings => self.open_settings(),
                         Target::Prompt => self.open_home(),
+                        Target::Shell { profile } => {
+                            let index = self.profiles.iter().position(|p| &p.name == profile).unwrap_or(self.behavior.default_profile);
+                            self.new_tab(index);
+                        }
                         Target::Page { url, container } => {
                             let container = if self.containers.iter().any(|c| &c.name == container)
                             {
@@ -376,8 +389,22 @@ impl App {
         self.layout();
         self.dirty = true;
     }
+    fn pin_columns(&self) -> usize {
+        if self.pins.editing || self.sidebar_icons() { 1 }
+        else if self.sidebar_rules.pin_display == Display::Preview { 2 }
+        else { ((self.list_rect().w / self.px(70.0)).floor() as usize).clamp(2, 5) }
+    }
+    fn pin_stride(&self) -> f32 {
+        self.px(if self.pins.editing { 36.0 } else if self.sidebar_icons() { 44.0 } else { 80.0 })
+    }
     fn pin_rows(&self) -> usize {
-        self.pins.items.len() + if self.pins.editing { 2 } else { 0 }
+        self.pins.items.len().div_ceil(self.pin_columns()) + if self.pins.editing { 2 } else { 0 }
+    }
+    fn pin_drop_index(&self, y: f32) -> usize {
+        let columns = self.pin_columns();
+        let row = ((y - self.pins.rect.y + self.pins.scroll) / self.pin_stride()).floor().max(0.0) as usize;
+        let col = (((self.mouse.0 - self.pins.rect.x).max(0.0) / self.pins.rect.w.max(1.0)) * columns as f32).floor() as usize;
+        (row * columns + col.min(columns - 1)).min(self.pins.items.len().saturating_sub(1))
     }
     pub(crate) fn pins_height(&self) -> f32 {
         if crate::private::enabled() {
@@ -385,11 +412,11 @@ impl App {
         }
         let available =
             (self.list_rect().h - self.side_header_h() - self.sidebar_footer_h()).max(0.0);
-        (self.px(32.0 + self.pin_rows() as f32 * 36.0) + self.px(8.0)).min(available * 0.48)
+        (self.px(32.0) + self.pin_rows() as f32 * self.pin_stride() + self.px(8.0)).min(available * 0.48)
     }
-    pub(crate) fn pin_drag_move(&mut self, y: f32) {
+    pub(crate) fn pin_drag_move(&mut self, x: f32, y: f32) {
         if let Some((_, start, moved)) = &mut self.pins.drag {
-            if (y - *start).abs() > self.scale * 5.0 {
+            if (x - start.0).hypot(y - start.1) > self.scale * 5.0 {
                 *moved = true;
             }
             if *moved {
@@ -402,10 +429,7 @@ impl App {
             return false;
         };
         if moved && from < self.pins.items.len() {
-            let to = ((y - self.pins.rect.y + self.pins.scroll) / self.px(36.0))
-                .floor()
-                .max(0.0) as usize;
-            let to = to.min(self.pins.items.len() - 1);
+            let to = self.pin_drop_index(y);
             let pin = self.pins.items.remove(from);
             self.pins.items.insert(to, pin);
             self.save_prefs();
@@ -419,7 +443,7 @@ impl App {
         if !self.pins.rect.contains(x, y) {
             return false;
         }
-        let max = (self.px(self.pin_rows() as f32 * 36.0) - self.pins.rect.h).max(0.0);
+        let max = ((self.pin_rows() as f32 * self.pin_stride()) - self.pins.rect.h).max(0.0);
         self.pins.scroll = (self.pins.scroll - dy).clamp(0.0, max);
         self.dirty = true;
         true
@@ -501,14 +525,16 @@ impl App {
         self.pins.scroll = self
             .pins
             .scroll
-            .min((self.px(self.pin_rows() as f32 * 36.0) - body.h).max(0.0));
+            .min(((self.pin_rows() as f32 * self.pin_stride()) - body.h).max(0.0));
         scene.layer(Some(body));
         for (k, pin) in self.pins.items.clone().iter().enumerate() {
+            let columns = self.pin_columns();
+            let gap = self.px(6.0);
+            let width = (sb.w - gap * (columns + 1) as f32) / columns as f32;
             let rr = Rect::new(
-                sb.x + self.px(6.0),
-                body.y + k as f32 * self.px(36.0) - self.pins.scroll,
-                sb.w - self.px(12.0),
-                self.px(32.0),
+                sb.x + gap + (k % columns) as f32 * (width + gap),
+                body.y + (k / columns) as f32 * self.pin_stride() - self.pins.scroll,
+                width, self.pin_stride() - gap,
             );
             let hit = rr.intersect(&body);
             if hit.h <= 0.0 {
@@ -521,33 +547,53 @@ impl App {
                 .and_then(|id| self.tabs.iter().position(|t| &t.id == id));
             let active = live == Some(self.active);
             let hot = hit.contains(self.mouse.0, self.mouse.1);
-            if active || hot {
+            {
                 scene.push(nus_render::Instance::rounded(
                     rr,
-                    self.px(5.0),
-                    crate::app::fade(self.theme.tint, if active { 1.0 } else { 0.5 }),
+                    self.px(self.surface.shell_radius).min(rr.h * 0.5),
+                    crate::app::fade(self.theme.tint, if active { 1.0 } else if hot { 0.7 } else { 0.35 }),
                 ));
             }
             let color = if active { self.surface.signal } else { ink };
-            let ix = if compact {
+            let tiles = !self.pins.editing;
+            let ix = if compact || tiles {
                 rr.x + (rr.w - size) * 0.5
             } else {
                 rr.x + self.px(9.0)
             };
-            let iy = rr.y + self.px(8.0);
+            let iy = rr.y + self.px(if compact { 11.0 } else if tiles { 16.0 } else { 8.0 });
             let favicon = live.and_then(|i| match &self.tabs[i].left {
                 Pane::Web(w) => w.favicon.as_ref().map(|(_, tex)| tex.clone()),
                 _ => None,
             });
-            if let Some(tex) = favicon {
-                scene.texture(Rect::new(ix, iy, size, size), tex, None);
+            // Reuse the browser's existing composited texture, as compact tab
+            // previews do. Pinning alone never opens or wakes a web page.
+            let preview = if tiles && !compact && self.sidebar_rules.pin_display == Display::Preview {
+                live.and_then(|i| match &self.tabs[i].left {
+                    Pane::Web(w) => w.tab.shared.borrow().bind.clone().or_else(|| w.still.clone()),
+                    _ => None,
+                })
+            } else { None };
+            if let Some(bind) = preview {
+                // Inset beyond the themed corners; use the existing texture path.
+                let inset = self.px(self.surface.shell_radius).max(self.px(4.0)).min(rr.w * 0.2);
+                let picture = Rect::new(rr.x + inset, rr.y + self.px(5.0), rr.w - inset * 2.0, rr.h - self.px(28.0));
+                scene.texture(picture, bind, Some(body));
+                scene.layer(Some(body));
+            } else if let Some(tex) = favicon {
+                scene.texture(Rect::new(ix, iy, size, size), tex, Some(body));
+                scene.layer(Some(body));
             } else {
                 self.fonts.draw_icon(scene, pin.icon(), size, ix, iy, color);
             }
             self.side_hits.push((hit, SideHit::Pinned(Act::Open(k))));
-            if compact {
-                self.tip_words(hit, &pin.title);
-            } else {
+            self.tip_words(hit, &pin.title);
+            if tiles && !compact {
+                let style = self.label();
+                let text = self.fit(style, &pin.title, rr.w - self.px(8.0));
+                let x = rr.x + (rr.w - self.fonts.measure(style, &text)) * 0.5;
+                self.fonts.draw(scene, Style { color, ..style }, x, rr.bottom() - self.px(8.0), &text);
+            } else if !compact {
                 let controls = if self.pins.editing {
                     self.px(76.0)
                 } else if hot && live.is_some() {
@@ -574,7 +620,7 @@ impl App {
                     (Act::Down(k), "↓", "Move pin down"),
                     (Act::Up(k), "↑", "Move pin up"),
                 ]
-            } else if hot && live.is_some() && !compact {
+            } else if hot && live.is_some() && !compact && !tiles {
                 vec![(Act::Close(k), "×", "Close page; keep its pin")]
             } else {
                 vec![]
@@ -660,10 +706,8 @@ impl App {
             }
         }
         if self.pins.drag.is_some_and(|(_, _, moved)| moved) {
-            let row = ((self.mouse.1 - body.y + self.pins.scroll) / self.px(36.0))
-                .floor()
-                .max(0.0);
-            let y = body.y + row * self.px(36.0) - self.pins.scroll;
+            let row = self.pin_drop_index(self.mouse.1) / self.pin_columns();
+            let y = body.y + row as f32 * self.pin_stride() - self.pins.scroll;
             scene.hline(
                 body.x + self.px(8.0),
                 y,
@@ -691,7 +735,7 @@ mod tests {
         let empty: Vec<Pin> = serde_json::from_str("[]").unwrap();
         assert!(empty.is_empty());
         let mut pins = Pin::defaults();
-        pins.swap(0, 2);
+        pins.swap(0, 3);
         pins.remove(1);
         assert_eq!(
             serde_json::from_str::<Vec<Pin>>(&serde_json::to_string(&pins).unwrap()).unwrap(),

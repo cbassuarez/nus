@@ -97,7 +97,7 @@ pub enum Cmd {
     /// x, y (baseline), text, px, colour, font (0 mono · 1 serif · 2 strong), align (0 left · 1 centre · 2 right), tracked
     Text(f32, f32, String, f32, Color, u8, u8, bool),
     /// A sky over the rect: (az -1..1, sin alt, cover, wind, seed).
-    Sky(Rect, f32, f32, f32, f32, [f32; 2]),
+    Sky(Rect, f32, f32, f32, f32, [f32; 2], [f32;4]),
 }
 
 /// What the canvas knows this frame.
@@ -393,7 +393,7 @@ impl mlua::UserData for Canvas {
             let g = |k: &str, d: f32| o.get::<f32>(k).unwrap_or(d);
             let r = Rect::new(g("x", 0.0), g("y", 0.0), g("w", w), g("h", h));
             let seed = o.get::<mlua::Table>("seed").ok().map(|t| [t.get::<f32>(1).unwrap_or(0.0), t.get::<f32>(2).unwrap_or(0.0)]).unwrap_or([3.7, 1.3]);
-            s.cmds.push(Cmd::Sky(r, g("az", 0.0).clamp(-1.0, 1.0), g("alt", 0.5).clamp(-1.0, 1.0), g("cover", 0.4).clamp(0.0, 1.0), g("wind", 1.0), seed));
+            s.cmds.push(Cmd::Sky(r, g("az", 0.0).clamp(-1.0, 1.0), g("alt", 0.5).clamp(-1.0, 1.0), g("cover", 0.4).clamp(0.0, 1.0), g("wind", 1.0), seed, [g("moon_az",0.0),g("moon_alt",-1.0),g("moon_light",0.0),g("moon_waxing",1.0)]));
             Ok(())
         });
         // Explicit artwork brightness wins over the application theme.
@@ -401,6 +401,13 @@ impl mlua::UserData for Canvas {
         m.add_method("backdrop", |_, c, which: String| {
             c.0.borrow_mut().backdrop = match which.as_str() { "dark" => Backdrop::Dark, "light" => Backdrop::Light, _ => Backdrop::Theme };
             Ok(())
+        });
+        m.add_method("celestial", |lua, _, (ms,lat,lon):(f64,f64,f64)| {
+            let sky=crate::celestial::sky(ms,lat,lon);let t=lua.create_table()?;
+            for (name,b) in [("sun",sky.sun),("moon",sky.moon)] {
+                let v=lua.create_table()?;v.set("ra",b.ra)?;v.set("dec",b.dec)?;v.set("alt",b.alt)?;v.set("az",b.az)?;t.set(name,v)?;
+            }
+            t.set("illumination",sky.illumination)?;t.set("waxing",sky.waxing)?;Ok(t)
         });
         // The clock, in unix milliseconds; NUS_CLOCK pins it (for photographs of a night sky at noon).
         m.add_method("now", |_, _, ()| {
@@ -629,10 +636,10 @@ impl App {
                     let b = at(x2, y2);
                     scene.push(Instance::quad([[a[0] + nx, a[1] + ny], [b[0] + nx, b[1] + ny], [b[0] - nx, b[1] - ny], [a[0] - nx, a[1] - ny]], c));
                 }
-                Cmd::Sky(rr, az, alt, cover, wind, seed) => {
+                Cmd::Sky(rr, az, alt, cover, wind, seed, moon) => {
                     let rr = Rect::new(rr.x * sc + ox, rr.y * sc + oy, rr.w * sc, rr.h * sc);
                     let time = if self.motion.reduced() { 8.0 } else { crate::clock::since(self.started).as_secs_f32() };
-                    scene.sky(rr, az, alt, cover, wind, time, seed);
+                    scene.sky(rr, az, alt, cover, wind, time, seed, moon);
                 }
                 Cmd::Text(x, y, text, px, c, font, align, tracked) => {
                     let size = self.px(px) * sc;
@@ -768,6 +775,18 @@ mod tests {
             }
             assert!(total > 0, "{key} drew nothing");
         }
+    }
+
+    #[test]
+    fn sky_taps_do_not_change_cloud_position_parameters() {
+        let mut art = Art::open("sky");
+        let env = Env { w: 800.0, h: 600.0, ..Default::default() };
+        let params = |commands: Vec<Cmd>| commands.into_iter().find_map(|c| match c {
+            Cmd::Sky(_, _, _, _, wind, seed, _) => Some((wind, seed)), _ => None,
+        }).unwrap();
+        let before = params(art.frame_at(env.clone(), 100.0));
+        let after = params(art.frame_at(Env { taps: vec![(300.0, 200.0)], ..env }, 100.0));
+        assert_eq!(before, after, "tapping must not jump the cloud field");
     }
 
     #[test]

@@ -553,11 +553,13 @@ impl App {
                     "last" => Then::LastPage,
                     "layout" => { self.behavior.then_layout = value.into(); Then::Layout }
                     "prompt" => Then::Prompt,
+                    "palette" => Then::Palette,
                     _ => panic!("unknown start page: {kind}"),
                 };
                 self.apply_setting(Hit::Then(page), 0.0);
                 self.save_prefs();
             }
+            "assertpalette" => assert_eq!(self.palette.is_some(), rest == "open"),
             "assertpane" => {
                 let kind = self.tabs.get(self.active).map(|t| match &t.left {
                     Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Editor(_) => "editor", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",
@@ -830,11 +832,13 @@ impl App {
                 self.mouse_button(MouseButton::Left,ElementState::Released);
                 assert!((self.slider_value(kind)-v).abs()<0.02,"slider did not follow drag");
             }
-            "settingclick" => {
+            "settingclick" | "settinghover" => {
                 let (rect,_) = self.settings_hits.iter().find(|(_,hit)|format!("{hit:?}")==rest).copied().unwrap_or_else(||panic!("setting not visible: {rest}"));
                 self.mouse_moved(rect.x+rect.w/2.0,rect.y+rect.h/2.0);
-                self.mouse_button(MouseButton::Left,ElementState::Pressed);
-                self.mouse_button(MouseButton::Left,ElementState::Released);
+                if verb == "settingclick" {
+                    self.mouse_button(MouseButton::Left,ElementState::Pressed);
+                    self.mouse_button(MouseButton::Left,ElementState::Released);
+                }
             }
             "assertchoice" => {
                 let Pane::Settings(p)=&self.tabs[self.active].left else {panic!("not settings")};
@@ -1001,6 +1005,28 @@ impl App {
                 self.dirty = true;
             }
             "devtools" => self.toggle_devtools(),
+            "library" => self.open_library(),
+            "savereading" => self.save_reading(),
+            "readingscroll" => self.library_scroll(-rest.parse::<f32>().unwrap()*self.scale),
+            "readingopen" => {
+                let e=self.library_rows(rest).first().cloned().expect("matching saved reading");self.read_saved(&e.id);
+            },
+            "readingassert" => {
+                let (count,words)=rest.split_once(' ').unwrap();
+                assert_eq!(self.library.entries.len(),count.parse::<usize>().unwrap());
+                assert!(self.library.entries.values().map(|e|e.words).sum::<usize>()>=words.parse::<usize>().unwrap());
+            },
+            "readingprogress" => {
+                let p=self.library.entries.values().map(|e|e.progress).fold(0.0,f32::max);
+                assert!(p>=rest.parse::<f32>().unwrap(),"reading progress {p}");
+            },
+            "readingback" => {
+                if let Some(crate::app::Pane::Home(h))=self.tabs.get_mut(self.active).map(|t|&mut t.left){h.reading=None;}self.library.flush(true);self.dirty=true;
+            },
+            "arrival" => {
+                let mut sp=crate::splash::Splash::new();sp.arrival=true;sp.begun=true;
+                sp.started=crate::clock::now()-std::time::Duration::from_secs_f32(rest.parse().unwrap());self.splash=Some(sp);self.dirty=true;
+            },
             "reader" => self.toggle_reader(),
             "split" => self.divide(),
             "sidebar" => self.run(crate::app::Action::ToggleSidebar),

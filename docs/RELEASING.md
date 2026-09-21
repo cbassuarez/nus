@@ -60,8 +60,15 @@ successful loader check is not a complete desktop acceptance test.
 
 Mac ZIPs contain `nus.app`; Windows ZIPs include the redistributable runtime,
 all CEF resources and `bin/nus.exe`; Linux tarballs include `./nus`, the desktop
-binary, CEF, locales and `bin/nus`. Windows/Linux packages keep user profiles in
-the platform's user-data directory, never alongside an installed executable.
+binary, CEF, locales and `bin/nus`. Packaged apps keep profiles under
+`nus/installs/<channel>/<installation>/profile` in the platform's user-data
+directory (Application Support on macOS), never inside an installed executable.
+Development and release channels are separate. Replacing or redownloading an
+installation creates a fresh profile and offers previous settings in Welcome;
+regular launches retain the installation's profile. Moving a macOS app on the
+same volume retains its identity. Legacy `nus/profile` data is offered for
+explicit settings import and is not overwritten. Browsing data is not imported.
+Source checkouts continue to use their local `profile` directory.
 Linux packages target glibc 2.35+ and need the desktop libraries listed in their
 README. They preserve Chromium's sandbox; they do not silently add `--no-sandbox`.
 

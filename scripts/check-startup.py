@@ -113,6 +113,7 @@ for mode, kind, count in [("Prompt", "home", 1), ("HomePage", "web", 1), ("Layou
 
 fresh = run("tour-once", "assertpane welcome\nasserttabs 1\ncloseprofile", base, marker=None)
 assert (fresh / "onboarded").read_text() == "00000"
+run("tour-once", "assertpane welcome\nasserttabs 1\ncloseprofile\nwelcomedismiss", marker=None)
 run("tour-once", "assertpane home\nasserttabs 1\nassertnoshells", marker=None)
 
 # Select the actual art cards, then reopen the existing Home tab and relaunch

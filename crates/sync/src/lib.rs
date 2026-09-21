@@ -49,7 +49,7 @@ pub const ALWAYS: &[&str] = &[
     "blocklist.txt",
     "avatar.png",
 ];
-pub const DIRS: &[&str] = &["layouts", "themes", "surfaces"];
+pub const DIRS: &[&str] = &["layouts", "themes", "surfaces", "library"];
 pub const SESSION: &str = "session.json";
 /// Files that only grow — an assistant's memory, written from wherever
 /// it worked — merge as the union of their lines instead of one side
@@ -686,6 +686,26 @@ mod tests {
 - z
 "
         );
+    }
+
+    #[test]
+    fn reading_text_and_position_follow_the_encrypted_carrier() {
+        let base=std::env::temp_dir().join(format!("nus-reading-sync-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let a=base.join("a");let b=base.join("b");
+        std::fs::create_dir_all(a.join("library")).unwrap();std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("library/item.json"),br#"{"progress":0.0,"title":"A private article"}"#).unwrap();
+        std::fs::write(a.join("library/item.article"),b"Private offline article text").unwrap();
+        let carrier=Folder{root:base.join("carrier")};let key=new_key();
+        assert!(exchange(&a,"a",&key,false,&[&carrier]).errors.is_empty());
+        let report=exchange(&b,"b",&key,false,&[&carrier]);assert!(report.errors.is_empty());
+        assert_eq!(std::fs::read(b.join("library/item.article")).unwrap(),b"Private offline article text");
+        let progress=br#"{"progress":0.65,"title":"A private article"}"#;
+        let path=b.join("library/item.json");std::fs::write(&path,progress).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::now()+std::time::Duration::from_secs(3)).unwrap();
+        assert!(exchange(&b,"b",&key,false,&[&carrier]).errors.is_empty());
+        assert!(exchange(&a,"a",&key,false,&[&carrier]).errors.is_empty());
+        assert_eq!(std::fs::read(a.join("library/item.json")).unwrap(),progress);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

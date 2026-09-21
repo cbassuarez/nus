@@ -1199,14 +1199,16 @@ ASSUMED: one laptop and one phone on one network; a mouse with a touch
 screen imagined, not held; git on PATH; the shell's own colours for a
 diff's + and −; an answer that fits one screen of the phone.
 
-## Startup settings (revised 2026-09-19)
+## Start/New Tab settings (revised 2026-09-20)
 
-Startup and New tab share four destinations: **Prompt palette**, **Home page**,
-**Custom layout**, and **The last page**. Cmd+T on macOS (Ctrl+Shift+T elsewhere),
+Start/New Tab offers **Palette only**, **Home · Prompt**, **Website**,
+**Custom layout**, and **The last page**. Palette only opens the existing Go
+palette without adding a tab: Cmd+T and Cmd+K share it on macOS; Ctrl+T and
+Ctrl+K also share it on Windows/Linux in this configuration. Cmd+T on macOS (Ctrl+Shift+T elsewhere),
 the header button, and the sidebar button all use this selection. A custom
 layout adds its saved tabs and panes without replacing existing work. A missing
 layout or absent recent page falls back to the prompt. The home address and
-saved layout are editable from Startup. Terminal/browser preference controls
+saved layout are editable from Start/New Tab. Terminal/browser preference controls
 palette ordering and external links without changing the selected start page.
 
 **Home background** has a **Minimal** preview row (Prompt only, Logo & prompt),
@@ -1247,14 +1249,30 @@ size cannot undo another window's settings. Open windows adopt shared changes.
 Manual light/dark appearance and the selected preset name survive relaunch.
 
 First launch opens exactly one welcome tab, with profile setup over it. Its
-links open the existing profile editor, prompt, theme studio, Startup, Settings
+links open the existing profile editor, prompt, theme studio, Start/New Tab, Settings
 and keyboard guide. A page-based launch never creates a temporary held shell.
 Existing saved launch choices are preserved. Onboarding uses the existing
 `assets/art/memphis.luau` composition and renderer, profile face, theme card,
 startup previews and Phosphor icons. Memphis entry settles after three seconds;
 pointer interaction and entry respect Reduce Motion, including the macOS setting.
-The welcome introduction appears once. Optional tour progress remains saved,
-but unfinished exercises do not replace the selected start page on relaunch.
+The welcome introduction resumes until Get started is chosen. Optional tour
+exercises are not required. Packaged installations use separate profile folders
+per installation and build channel. A redownload offers Welcome back with the
+existing Welcome cards: import previous settings or use defaults. Importing
+settings does not migrate browsing data; the previous profile stays intact.
+Regular launches after Get started use the chosen start page.
+
+Pinned tabs use themed tiles with the selected corner radius. Sidebar settings
+offer favicon/icon or live web preview. Previews reuse open browser textures;
+pinning a closed page does not load it. The existing edit controls, reordering,
+scrolling and compact sidebar remain available. Shells use icons. The bundled
+shelf is labeled Starter references and links to the Rust standard library and
+MDN Web Docs; Welcome explains its contents and how to edit it.
+
+Settings card hover identities belong to controls, not scrolling coordinates.
+Sky ignores background taps so they cannot move the cloud field abruptly.
+Run `python3 scripts/check-opening.py dist/nus.app` for the install-state,
+palette, pinned-tile and Settings interaction checks.
 Remembering a session does not reopen its tabs automatically; a selected custom
 layout opens only its own saved tabs.
 

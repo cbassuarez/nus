@@ -8,6 +8,7 @@ mod termui;
 mod predict;
 mod webui;
 mod welcome;
+mod install;
 mod themes;
 mod macos;
 mod dock;
@@ -77,6 +78,8 @@ mod little;
 mod pip;
 mod prefs;
 mod reader;
+mod library;
+mod celestial;
 mod settings;
 mod sound;
 mod shot;
@@ -458,10 +461,10 @@ impl ApplicationHandler<UserEvent> for Host {
                 match e.window_event {
                     accesskit_winit::WindowEvent::InitialTreeRequested => {
                         if let Some((_, ad, _)) = self.access.iter_mut().find(|(id, _, _)| *id == e.window_id) {
-                            ad.update_if_active(|| if pip {a.pip_access_tree()} else if drawer {a.menu_drawer_access_tree()} else if hatch {a.hatch_access_tree()} else {a.access_tree()});
+                            ad.update_if_active(|| if pip {a.pip_access_tree()} else if drawer {a.menu_drawer_access_tree()} else if hatch {a.hatch_access_tree()} else {a.library_access_tree()});
                         }
                     }
-                    accesskit_winit::WindowEvent::ActionRequested(req) => if pip {a.pip_access_action(req)} else if drawer {a.menu_drawer_access_action(req)} else if hatch {a.hatch_access_action(req)} else {a.access_action(req)},
+                    accesskit_winit::WindowEvent::ActionRequested(req) => if pip {a.pip_access_action(req)} else if drawer {a.menu_drawer_access_action(req)} else if hatch {a.hatch_access_action(req)} else {a.library_access_action(req)},
                     accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
                 }
             }
@@ -778,7 +781,8 @@ fn chromium_version() -> String {
 /// Launched as a macOS app (from Finder, the Dock, `open`), a process gets `/`
 /// for a working directory and launchd's bare PATH. nus keeps its profile
 /// relative to the working directory, so a bundle moves to
-/// ~/Library/Application Support/nus first; and it takes PATH from the login
+/// its installation under ~/Library/Application Support/nus/installs first;
+/// and it takes PATH from the login
 /// shell, as a terminal launched from a terminal would have it, so language
 /// servers and tools installed with Homebrew are found.
 #[cfg(target_os = "macos")]
@@ -792,9 +796,11 @@ fn settle_as_app(dock: &mut dock::Dock) {
         std::fs::create_dir_all(&dir).expect("create screenshot profile directory");
         std::env::set_current_dir(&dir).expect("use screenshot profile directory");
     } else if let Some(home) = std::env::var_os("HOME") {
-        let dir = std::path::Path::new(&home).join("Library/Application Support/nus");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::env::set_current_dir(&dir);
+        let base = std::path::Path::new(&home).join("Library/Application Support/nus");
+        let exe = std::env::current_exe().expect("locate installed app");
+        let bundle = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).expect("app bundle");
+        let dir = install::bundle_root(&base, bundle).expect("create isolated installation profile");
+        std::env::set_current_dir(&dir).expect("use installation profile");
     }
     dock.begin_launch(prefs::Prefs::load().motion.unwrap_or_default().reduced());
     // What Chromium is told on its command line comes from the prefs, and
@@ -985,7 +991,7 @@ fn main() -> ExitCode {
             if let Some((_, ad, frame)) = host.access.iter_mut().find(|(id, _, _)| *id == a.window.id()) {
                 if a.frames != *frame {
                     *frame = a.frames;
-                    ad.update_if_active(|| a.access_tree());
+                    ad.update_if_active(|| a.library_access_tree());
                 }
             }
         }

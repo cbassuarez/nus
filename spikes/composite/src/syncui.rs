@@ -78,6 +78,7 @@ impl App {
 
     /// Run one exchange on a worker; the report comes back through tick.
     pub(crate) fn sync_now(&mut self) {
+        self.library.flush(true);
         if self.sync.rx.is_some() {
             return;
         }
@@ -144,6 +145,7 @@ impl App {
             self.apply_prefs(crate::prefs::Prefs::load());
             self.rules.reload();
             self.load_folders();
+            self.library.reload();
             self.layout();
         }
         if pulled || !rep.errors.is_empty() {

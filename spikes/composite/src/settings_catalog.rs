@@ -69,6 +69,8 @@ fn description(hit: Hit) -> Option<String> {
         Hit::HdrRailHover(true) => "Reveal windows near the edge.", Hit::HdrRailHover(false) => "Keep the window rail visible.",
         Hit::HdrFlash(true) => "Briefly highlight pressed controls.", Hit::HdrFlash(false) => "No flash when controls are pressed.",
         Hit::Compact(true) => "Narrow sidebar with icons only.", Hit::Compact(false) => "Show tab icons and their titles.",
+        Hit::PinDisplay(crate::pins::Display::Icon) => "Use a favicon, or an icon for shells and built-in pages.",
+        Hit::PinDisplay(crate::pins::Display::Preview) => "Show the open web page inside its pinned tile.",
         Hit::SmallTabs(crate::sidebar::SmallTabs::Icons) => "Use an icon for each tab type.",
         Hit::SmallTabs(crate::sidebar::SmallTabs::Favicons) => "Use each website's own icon.",
         Hit::SmallTabs(crate::sidebar::SmallTabs::Preview) => "Show a miniature page preview.",
@@ -299,6 +301,10 @@ impl App {
                 let st=Style{px:self.px(10.0),..self.label()};let text=self.fit(st,chord.label(),r.w-self.px(10.0));
                 self.fonts.draw(scene,st,r.x+self.px(5.0),r.y+r.h*0.57,&text);
             }
+            Hit::PinDisplay(mode) => self.draw_setting_picture(scene, r, Hit::SmallTabs(match mode {
+                crate::pins::Display::Icon => crate::sidebar::SmallTabs::Favicons,
+                crate::pins::Display::Preview => crate::sidebar::SmallTabs::Preview,
+            })),
             Hit::SmallTabs(mode) => {
                 window(scene,r);let column=Rect::new(r.x,r.y+r.h*0.18,r.w*0.27,r.h*0.82);scene.rect(column,fade(sig,0.14));scene.vline(column.right(),column.y,column.h,line,ink);
                 for i in 0..3 {let y=column.y+self.px(5.0)+i as f32*column.h*0.28;let size=(column.w-self.px(10.0)).min(self.px(14.0));let x=column.x+(column.w-size)*0.5;

@@ -24,6 +24,11 @@ use crate::settings::HomeLook;
 use nus_render::theme::metric as m;
 
 pub struct HomePane {
+    pub library: bool,
+    pub library_ui: crate::library::Ui,
+    pub reading: Option<crate::library::Reading>,
+    pub library_scroll: f32,
+    pub library_reach: f32,
     pub rect: Rect,
     pub input: String,
     pub sel: usize,
@@ -82,7 +87,7 @@ impl Key {
 
 impl HomePane {
     pub fn new() -> HomePane {
-        HomePane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new() }
+        HomePane { library_ui: Default::default(), library: false, reading: None, library_scroll: 0.0, library_reach: 0.0, rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new() }
     }
 }
 
@@ -176,6 +181,10 @@ impl App {
     pub(crate) fn open_start_page(&mut self, launch: bool) {
         use crate::settings::Then;
         match self.behavior.then {
+            Then::Palette => {
+                self.open_palette(PaletteMode::Go);
+                return;
+            }
             Then::Restore if launch => {
                 self.restore_session_pub();
                 self.drop_birth = self.tabs.len() > 1;
@@ -201,7 +210,7 @@ impl App {
                         return;
                     }
                 }
-                self.notice("No startup layout could be opened. Choose a saved layout in Startup.");
+                self.notice("No startup layout could be opened. Choose a saved layout in Start/New Tab.");
             }
             Then::HomePage | Then::LastPage => {
                 let url = if self.behavior.then == Then::HomePage {
@@ -239,7 +248,7 @@ impl App {
 
     /// A tab whose pane is the prompt, in front.
     pub(crate) fn open_home(&mut self) {
-        if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Home(_))) {
+        if let Some(i) = self.tabs.iter().position(|t| matches!(&t.left, Pane::Home(h) if !h.library)) {
             self.activate(i);
             return;
         }
@@ -253,6 +262,7 @@ impl App {
     /// Enter: the line becomes a page or a shell in this very tab; a
     /// picked row runs and the prompt gives way to what it opened.
     fn home_commit(&mut self) {
+        if self.tabs.get(self.active).is_some_and(|t|matches!(&t.left,Pane::Home(h) if h.library)) {self.library_commit();return;}
         let i = self.active;
         let Some(Pane::Home(h)) = self.tabs.get(i).map(|t| &t.left) else { return };
         let input = h.input.trim().to_string();
@@ -328,6 +338,7 @@ impl App {
 
     /// Keys on the prompt. Returns true when it took the key.
     pub(crate) fn home_key(&mut self, ev: &crate::app::KeyIn) -> bool {
+        if self.library_key(ev) {return true;}
         use winit::keyboard::{Key as K, NamedKey};
         if ev.state != winit::event::ElementState::Pressed {
             return false;
@@ -375,6 +386,7 @@ impl App {
 
     /// A click on a row.
     pub(crate) fn home_click(&mut self, x: f32, y: f32) -> bool {
+        if self.library_click(x,y){return true;}
         let i = self.active;
         let pad = self.touch_pad();
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
@@ -417,6 +429,7 @@ impl App {
 
     /// The prompt, drawn: the line alone, or under the plate.
     pub(crate) fn draw_home(&mut self, scene: &mut Scene, p: &mut HomePane, focused: bool) {
+        if p.library {self.draw_library(scene,p);return;}
         let t = self.theme.clone();
         let r = p.rect;
         let ink = t.ink;

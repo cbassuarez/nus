@@ -74,6 +74,7 @@ pub struct SidebarRules {
     pub compact: bool,
     #[serde(default="crate::sidebar::default_width")] pub width:f32,
     #[serde(default="crate::sidebar::default_footer")] pub footer_row:f32,
+    #[serde(default)] pub pin_display: crate::pins::Display,
     #[serde(default)] pub small_tabs:crate::sidebar::SmallTabs,
     #[serde(default)] pub live_github: bool,
     #[serde(default)] pub live_ports: bool,
@@ -81,7 +82,7 @@ pub struct SidebarRules {
 
 impl Default for SidebarRules {
     fn default() -> Self {
-        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 300, compact: false, width:248.0, footer_row:32.0, small_tabs:Default::default(), live_github:false, live_ports:false }
+        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 300, compact: false, width:248.0, footer_row:32.0, small_tabs:Default::default(), pin_display:Default::default(), live_github:false, live_ports:false }
     }
 }
 
@@ -529,9 +530,9 @@ chains = {
 -- { title, url, detail } or a function returning one (polled each minute;
 -- os_hour is there for time-of-day lists). GITHUB and PORTS are built in.
 folders = {
-  reading = {
-    { title = "Rust std", url = "https://doc.rust-lang.org/std/", detail = "docs" },
-    { title = "MDN", url = "https://developer.mozilla.org/", detail = "web" },
+  ["Starter references"] = {
+    { title = "Rust standard library", url = "https://doc.rust-lang.org/std/", detail = "Rust project · API reference" },
+    { title = "MDN Web Docs", url = "https://developer.mozilla.org/", detail = "MDN · web platform reference" },
   },
 }
 

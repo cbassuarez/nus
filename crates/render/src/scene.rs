@@ -384,6 +384,7 @@ impl Scene {
         wind: f32,
         t: f32,
         seed: [f32; 2],
+        moon: [f32;4],
     ) {
         self.push(Instance {
             pos: [r.x, r.y],
@@ -391,9 +392,9 @@ impl Scene {
             uv: [az, alt, 0.0, 0.0],
             color: [cover, wind, seed[0], seed[1]],
             kind: 14,
-            color2: 0,
+            color2: (((moon[0].clamp(-1.0,1.0)+1.0)*0.5*65535.0).round() as u32) | ((((moon[1].clamp(-1.0,1.0)+1.0)*0.5*65535.0).round() as u32)<<16),
             phase: t,
-            extra: 0,
+            extra: ((moon[2].clamp(0.0,1.0)*65535.0).round() as u32) | ((u32::from(moon[3]>0.0))<<16),
         });
     }
 

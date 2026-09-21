@@ -36,6 +36,7 @@ pub enum Act {
     Rename,
     RenameTab,
     Close,
+    ImportSettings,
     /// Terminal first, or browser first.
     Lead(crate::settings::Lead),
     /// The profile card.
@@ -123,8 +124,8 @@ impl App {
         let mut start = vec![
             me_row,
             match lead {
-                crate::settings::Lead::Terminal => row("", "Terminal first", "An empty prompt starts a shell. New tabs use the destination chosen in Startup.", Some(("BROWSER FIRST", Act::Lead(crate::settings::Lead::Browser)))),
-                crate::settings::Lead::Browser => row("", "Browser first", "An empty prompt opens the atlas. New tabs use the destination chosen in Startup.", Some(("TERMINAL FIRST", Act::Lead(crate::settings::Lead::Terminal)))),
+                crate::settings::Lead::Terminal => row("", "Terminal first", "An empty prompt starts a shell. New tabs use the destination chosen in Start/New Tab.", Some(("BROWSER FIRST", Act::Lead(crate::settings::Lead::Browser)))),
+                crate::settings::Lead::Browser => row("", "Browser first", "An empty prompt opens the atlas. New tabs use the destination chosen in Start/New Tab.", Some(("TERMINAL FIRST", Act::Lead(crate::settings::Lead::Terminal)))),
             },
             row("", "The look", format!("{} · {} · {} carapace · the chip in the footer hot-swaps on hover", self.preset_name.to_lowercase(), if ink { "ink" } else { "paper" }, self.surface.shell.name()), Some(("OPEN THE STUDIO", Act::Studio))),
             row("", "Default browser", if default_browser { "nus is your default browser · links from other apps open in the little window".to_string() } else { "not yet · links from other apps would open here in a little window".to_string() }, if default_browser { None } else { Some(("MAKE DEFAULT", Act::DefaultBrowser)) }),
@@ -135,6 +136,10 @@ impl App {
             let on = self.behavior.shell_integration && !matches!(kind, crate::shell::Kind::Other);
             start.push(row("", if on { "Shell integration" } else { "Shell integration · off" }, format!("{} · {}", p.name, crate::shell::describe(kind)), Some(("TERMINAL SETTINGS", Act::Settings(SEC_TERMINAL)))));
         }
+        if self.previous_install.is_some() {
+            start.insert(0, row("", "Previous installation", "This installation uses defaults. Import appearance, start-page and sidebar settings, or Get started to keep defaults. Browsing data stays in the previous installation.", Some(("IMPORT SETTINGS", Act::ImportSettings))));
+        }
+        start.push(row("", "Starter references", "The bundled shelf links to the Rust standard library and MDN Web Docs: programming references, opened only when you choose them. Edit or remove the shelf in Rules.", Some(("RULES", Act::Settings(RULES)))));
         let shell = vec![
             row("ENTER", "A URL at the prompt", "type a URL at a fresh prompt and Enter opens it beside; Ctrl+Enter runs it in the shell", Some(("TRY", Act::Demo("https://docs.rs/wgpu")))),
             row(k("↑ / ↓"), "Jump between prompts", "each command is a block: a hairline where it starts, an × code when it failed, DONE when a long one finishes", Some(("TRY", Act::Demo("git log --oneline -3")))),
@@ -148,7 +153,7 @@ impl App {
             row("", "Images", "Kitty and iTerm2 image protocols draw right in the shell (icat, timg, chafa)", None),
         ];
         let pages = vec![
-            row(k("T"), "New tab", "opens the start page selected in Startup; hold or right-click NEW TAB to choose a shell or page", Some(("TRY", Act::NewTab))),
+            row(k("T"), "New tab", "opens the start page selected in Start/New Tab; hold or right-click NEW TAB to choose a shell or page", Some(("TRY", Act::NewTab))),
             row(k("K"), "The palette", "tabs, ports, history, commands to run again, settings, ask an assistant", Some(("TRY", Act::Palette(PaletteMode::Go)))),
             row(k("L"), "Address", "history ranked by visits and recency; a search when it isn't a URL", Some(("TRY", Act::Palette(PaletteMode::Url)))),
             row(k("D"), "Split", "a page beside the shell, or two of anything", Some(("TRY", Act::Split))),
@@ -186,7 +191,7 @@ impl App {
         let look = vec![
             row("", "The studio", "a live proof of the window, presets as cards, tokens as tiles, a real picker", Some(("OPEN", Act::Settings(SEC_LOOK)))),
             row("", "Sound", "seventeen cues on fourteen events, synthesised in the app", Some(("OPEN", Act::Settings(SEC_SOUND)))),
-            row("", "Startup", "how the window comes up, the splash, what follows, the atlas", Some(("OPEN", Act::Settings(SEC_STARTUP)))),
+            row("", "Start/New Tab", "how the window comes up, the splash, what follows, the atlas", Some(("OPEN", Act::Settings(SEC_STARTUP)))),
             row("", "Cursor", "shape, blink, colour, glide or comet, the pointer over the chrome", Some(("OPEN", Act::Settings(SEC_LOOK)))),
             row("F11", "Fullscreen", "the sidebar follows the rule you set for it", None),
         ];
@@ -249,11 +254,11 @@ impl App {
         self.welcome_hits.push((close, Act::Close));
         y += title.px + self.px(20.0);
         let headline = Style { font: self.f.serif, px: self.px(if narrow {24.0} else {32.0}), color: ink, tracking: 0.0 };
-        for line in crate::reader::wrap(&self.fonts,headline,"Make yourself at home.",if narrow {width} else {width*0.69}) {
+        for line in crate::reader::wrap(&self.fonts,headline,if self.previous_install.is_some() { "Welcome back." } else { "Make yourself at home." },if narrow {width} else {width*0.69}) {
             self.fonts.draw(scene,headline,x,y+headline.px,&line);y+=headline.px+self.px(3.0);
         }
         y += self.px(18.0);
-        for text in crate::reader::wrap(&self.fonts, ui, "Your profile, your look, your workspace. Choose where to begin.", if narrow {width} else {width * 0.66}) {
+        for text in crate::reader::wrap(&self.fonts, ui, if self.previous_install.is_some() { "This is a new installation. Start with defaults, or import your previous settings below." } else { "Your profile, your look, your workspace. Choose where to begin." }, if narrow {width} else {width * 0.66}) {
             self.fonts.draw(scene, dim, x, y, &text); y += self.px(21.0);
         }
         // Place the existing vector pieces in page whitespace, not one box.
@@ -293,14 +298,19 @@ impl App {
         self.welcome_hits.push((edit,Act::EditPins));y+=self.px(58.0);
         self.fonts.draw(scene,strong,x,y,"YOUR STARTING POINTS");
         y += self.px(18.0);
-        let cards = [
+        let returning = self.previous_install.is_some();
+        let cards = if returning { vec![
+            ("IMPORT SETTINGS", "Use settings from your previous installation.", Act::ImportSettings),
+            ("USE DEFAULTS", "Continue with this installation’s defaults.", Act::Close),
+            ("START/NEW TAB", "Review new tabs and windows.", Act::Settings(2)),
+        ] } else { vec![
             ("YOUR PROFILE", "Name, picture and device.", Act::Me),
             ("PROMPT PALETTE", "Open a page or run a command.", Act::Prompt),
             ("THEMES", "Try the themes already in nus.", Act::Studio),
-            ("STARTUP", "Choose new tabs and windows.", Act::Settings(2)),
+            ("START/NEW TAB", "Choose new tabs and windows.", Act::Settings(2)),
             ("SETTINGS", "Make your workspace work for you.", Act::Settings(3)),
             ("SHORTCUTS", "Learn the everyday keys.", Act::Settings(11)),
-        ];
+        ] };
         let columns = if width >= self.px(560.0) {3} else if width >= self.px(350.0) {2} else {1};
         let gap = self.px(16.0);
         let cw=(width-gap*(columns-1) as f32)/columns as f32;
@@ -322,7 +332,7 @@ impl App {
             let picture=Rect::new(b.x+self.px(14.0),b.y+self.px(14.0),b.w-self.px(28.0),self.px(52.0));
             // The profile face, prompt thumbnail, preset card and Phosphor
             // icons are the same objects used by their destination pages.
-            match i {
+            match if returning { if i == 0 { 4 } else { 3 } } else { i } {
                 0 => {
                     let face=self.me.as_ref().map(|me|me.face.clone()).unwrap_or(crate::me::Face::Initial);
                     let name=self.me_name();
@@ -334,7 +344,7 @@ impl App {
                     if let Some(theme)=crate::themes::all().into_iter().find(|theme|theme.name==self.preset_name).or_else(||crate::themes::all().into_iter().next()) {
                         let ramp=theme.surface.ramp(ink);
                         let outer=scene.clip();scene.layer(Some(picture.intersect(&r)));
-                        self.draw_card(scene,picture,"",&ramp,theme.surface.signal,theme.surface.angle,false,Some((theme.paper.paper,theme.paper.ink,theme.ink.paper,theme.ink.ink)));
+                        self.draw_card(scene,picture,"",&ramp,theme.surface.signal,theme.surface.angle,false,Some((theme.paper.paper,theme.paper.ink,theme.ink.paper,theme.ink.ink)),hover_key("welcome-theme-preview",0));
                         scene.layer(outer);
                     }
                 }
@@ -425,6 +435,18 @@ impl App {
         use crate::settings::Hit;
         self.play_event("control.press");
         match act {
+            Act::ImportSettings => {
+                if let Some(previous) = self.previous_install.clone() {
+                    if let Err(error) = self.import_settings(&previous.join("settings.json")) {
+                        self.notice(&format!("Could not import previous settings: {error}"));
+                        return;
+                    }
+                    let _ = std::fs::remove_file("profile/previous-install");
+                    self.previous_install = None;
+                    self.notice("Previous settings imported. Browsing data remains in the previous installation.");
+                    self.layout();
+                }
+            }
             Act::Palette(m) => self.open_palette(m),
             Act::NewTab => self.open_start_page(false),
             Act::Prompt => self.open_home(),

@@ -149,6 +149,26 @@ fn sky_at(y: f32, alt: f32) -> vec3<f32> {
     c = mix(c, vec3(1.0, 0.55, 0.28), dusk * pow(1.0 - clamp(y, 0.0, 1.0), 2.5) * 0.85);
     return c;
 }
+// A bounded single-scattering approximation: wavelength-dependent Rayleigh
+// extinction, Rayleigh phase and forward Mie scattering. Twilight remains an
+// artistic approximation, not a claim to Bruneton multiple-scattering accuracy.
+fn atmospheric_day(view: vec3<f32>, sun: vec3<f32>, sun_height: f32) -> vec3<f32> {
+    let mu = clamp(dot(view, sun), -1.0, 1.0);
+    let rayleigh = vec3(0.0464, 0.108, 0.2648); // sea-level beta * 8 km scale height
+    let haze = vec3(0.025);
+    let view_mass = 1.0 / max(0.045, view.y + 0.025);
+    let sun_mass = 1.0 / max(0.025, sun_height + 0.025);
+    let sunlight = exp(-(rayleigh + haze) * sun_mass);
+    let extinction = exp(-(rayleigh + haze) * view_mass);
+    let ray_phase = 0.75 * (1.0 + mu * mu);
+    let g = 0.76;
+    let mie_phase = (1.0 - g*g) / pow(max(0.02, 1.0 + g*g - 2.0*g*mu), 1.5);
+    let scatter = (rayleigh * ray_phase + haze * mie_phase) / (rayleigh + haze);
+    let direct = (vec3(1.0) - extinction) * scatter * sunlight;
+    let ambient = (vec3(1.0) - exp(-rayleigh * view_mass)) * vec3(0.19, 0.28, 0.42);
+    return pow(vec3(1.0) - exp(-(direct * 1.6 + ambient)), vec3(1.0/2.2));
+}
+
 fn sky(in: VsOut) -> vec4<f32> {
     let uv = vec2(in.local.x / in.size.x, 1.0 - in.local.y / in.size.y);
     let ar = in.size.x / in.size.y;
@@ -160,20 +180,35 @@ fn sky(in: VsOut) -> vec4<f32> {
     let t = in.phase;
     // The horizon a little under the pane: a sky looked up at.
     let y = uv.y * 0.9 + 0.08;
-    var col = sky_at(y, alt);
+    let sp = vec2(0.5 + az * 0.55, alt * 0.9 + 0.02);
+    let view = normalize(vec3((uv.x - 0.5) * ar * 1.6, y * 1.6, 1.0));
+    let sun_dir = normalize(vec3((sp.x - 0.5) * ar * 1.6, max(0.0,alt) * 1.6, 1.0));
+    var col = mix(sky_at(y, alt), atmospheric_day(view,sun_dir,alt), smoothstep(-0.015,0.12,alt));
     let day = smoothstep(-0.12, 0.25, alt);
     // The sun: a disc and a glow where it is.
-    let sp = vec2(0.5 + az * 0.55, alt * 0.9 + 0.02);
     let dist = length((uv - sp) * vec2(ar, 1.0));
     let sun_col = mix(vec3(1.0, 0.75, 0.45), vec3(1.0, 0.98, 0.92), smoothstep(0.0, 0.35, alt));
     col = col + sun_col * (0.9 * exp(-dist * 28.0) + 0.35 * exp(-dist * 6.0)) * step(-0.12, alt);
     col = col + sun_col * smoothstep(0.018, 0.012, dist) * step(-0.05, alt);
-    // A moon at night, and stars.
-    let mp = vec2(0.5 - az * 0.5, clamp(-alt, 0.0, 1.0) * 0.8 + 0.1);
-    let md = length((uv - mp) * vec2(ar, 1.0));
-    col = col + vec3(0.9, 0.92, 1.0) * (smoothstep(0.014, 0.010, md) * 0.9 + 0.18 * exp(-md * 18.0)) * (1.0 - day);
+    // A dated lunar position and phase, visible by day too; no fictional
+    // full Moon opposite every Sun. 16-bit positions avoid quantized drift.
+    let moon = unpack2x16unorm(in.raw2) * 2.0 - vec2(1.0);
+    let moon_light = f32(in.extra & 65535u) / 65535.0;
+    let mp = vec2(0.5 + moon.x * 0.55, moon.y * 0.9 + 0.02);
+    let moon_uv = (uv - mp) * vec2(ar,1.0) / 0.010;
+    let md = length(moon_uv);
+    let z = sqrt(max(0.0,1.0-dot(moon_uv,moon_uv)));
+    let toward_sun = normalize((sp-mp)*vec2(ar,1.0)+vec2(0.00001));
+    let phase_z = 2.0*moon_light-1.0;
+    let normal_light = dot(moon_uv,toward_sun)*sqrt(max(0.0,1.0-phase_z*phase_z))+z*phase_z;
+    let lunar = smoothstep(-0.025,0.035,normal_light) * (1.0-smoothstep(0.94,1.03,md));
+    let lunar_visible = smoothstep(-0.015,0.01,moon.y);
+    col = mix(col,vec3(0.87,0.89,0.92),lunar*lunar_visible*(0.9-0.45*day));
+    col += vec3(0.08,0.09,0.12)*exp(-md*0.2)*moon_light*lunar_visible*(1.0-day);
     let cell = floor(uv * in.size * 0.5);
-    let st = step(0.997, hash(cell)) * (1.0 - day) * (0.5 + 0.5 * sin(t * 1.3 + hash(cell) * 40.0));
+    // Atmospheric scintillation strengthens toward the horizon; positions stay fixed.
+    let twinkle = 0.88 + (0.025 + 0.08*(1.0-y))*sin(t*2.3+hash(cell)*40.0);
+    let st = step(0.997, hash(cell)) * (1.0-day) * twinkle * smoothstep(0.0,0.2,y);
     col = col + vec3(st);
     // Clouds: flatter and denser toward the horizon; the field warps itself.
     let z = 1.0 / (y * 1.25 + 0.22);
@@ -204,7 +239,7 @@ fn sky(in: VsOut) -> vec4<f32> {
     cc = cc + light * rim * 0.3 * day;
     col = mix(col, cc, min(1.0, dens * 1.05));
     // A hair of grain so the gradient never bands.
-    col = col + (hash(uv * in.size + t) - 0.5) * 0.012;
+    col = col + (hash(uv * in.size) - 0.5) * 0.012;
     return vec4(col, 1.0);
 }
 

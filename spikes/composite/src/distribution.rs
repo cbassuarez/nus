@@ -14,7 +14,8 @@ pub fn settle() -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")));
-        base.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "user data directory unavailable"))?.join("nus")
+        let base = base.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "user data directory unavailable"))?.join("nus");
+        crate::install::package_root(&base, &exe)?
     };
     std::fs::create_dir_all(&root)?;
     std::env::set_current_dir(root)?;

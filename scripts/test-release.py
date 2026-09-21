@@ -25,12 +25,14 @@ class ReleaseTests(unittest.TestCase):
             record={'name':archive.name,'target':target,'version':self.tag,'channel':'preview','sha256':release.package.digest(archive),'size':archive.stat().st_size,'signing':'unsigned'}
             (self.root/f'{target}.json').write_text(json.dumps(record))
 
-    def run_release(self, existing=False):
+    def run_release(self, existing=False, targets=None):
         calls=[]
         def run(args,**kw):
             calls.append(args)
             return subprocess.CompletedProcess(args,0 if existing or args[2]!='view' else 1, '{"isDraft":false}' if existing else '')
-        with patch.object(sys,'argv',['publish','--tag',self.tag,'--revision','a'*40,'--directory',str(self.root)]),patch.object(release.subprocess,'run',run):
+        args=['publish','--tag',self.tag,'--revision','a'*40,'--directory',str(self.root)]
+        if targets is not None: args.extend(['--targets',targets])
+        with patch.object(sys,'argv',args),patch.object(release.subprocess,'run',run):
             release.main()
         return calls
 
@@ -59,5 +61,20 @@ class ReleaseTests(unittest.TestCase):
         for p in self.root.glob('*.json'):
             v=json.loads(p.read_text());v['version']=self.tag;v['channel']='stable';p.write_text(json.dumps(v))
         with self.assertRaisesRegex(ValueError,'not signed'): self.run_release()
+
+    def test_scoped_preview_publishes_only_declared_platform(self):
+        calls=self.run_release(targets='linux-x86_64')
+        manifest=json.loads((self.root/'release.json').read_text())
+        self.assertEqual([e['target'] for e in manifest['assets']],['linux-x86_64'])
+        self.assertIn('Not included in this preview:',(self.root/'notes.md').read_text())
+        self.assertEqual(len([a for a in calls[-2] if a.endswith('.zip')]),1)
+
+    def test_stable_cannot_omit_platforms(self):
+        self.tag='v0.0.1'
+        with self.assertRaisesRegex(ValueError,'every platform'): self.run_release(targets='linux-x86_64')
+
+    def test_unknown_targets_cannot_publish(self):
+        for targets in ['', 'linux-arm99', 'linux-x86_64,anything']:
+            with self.assertRaisesRegex(ValueError,'Unknown'): self.run_release(targets=targets)
 
 if __name__=='__main__': unittest.main()

@@ -639,6 +639,14 @@ impl App {
         true
     }
 
+    /// Shared Atlas frame: the arrival uses this same card, not another modal.
+    pub(crate) fn draw_atlas_frame(&self, scene: &mut Scene, r: Rect, alpha: f32) {
+        let ink=crate::app::fade(self.theme.ink,alpha);
+        scene.rect(Rect::new(r.x+self.px(8.0),r.y+self.px(8.0),r.w,r.h),ink);
+        scene.rect(r,crate::app::fade(self.theme.paper,alpha));
+        scene.outline(r,self.px(m::FLOATING),ink);
+    }
+
     /// Draw the modal: masthead with the orbiting band, the typed line,
     /// the rows, and a foot with the keys.
     pub fn draw_start(&mut self, scene: &mut Scene) {
@@ -666,9 +674,7 @@ impl App {
         let bx = ((w - pw) / 2.0).round();
         let by = ((h - bh) * 0.38).round() + (1.0 - rise) * self.px(14.0);
         let r = Rect::new(bx, by, pw, bh);
-        scene.rect(Rect::new(r.x + self.px(8.0), r.y + self.px(8.0), r.w, r.h), ink);
-        scene.rect(r, t.paper);
-        scene.outline(r, self.px(m::FLOATING), ink);
+        self.draw_atlas_frame(scene,r,1.0);
 
         // Header: the planet, the word, and what last time held.
         let isz = self.px(18.0);
@@ -743,7 +749,7 @@ impl App {
         }
         let note = match self.behavior.atlas {
             crate::settings::AtlasMode::Planet => "THE PLANET BRINGS IT BACK",
-            crate::settings::AtlasMode::AtLaunch => "AT LAUNCH · OFF IN STARTUP",
+            crate::settings::AtlasMode::AtLaunch => "AT LAUNCH · OFF IN START/NEW TAB",
             crate::settings::AtlasMode::Persistent => "PICK ONE TO CONTINUE",
         };
         let nw = self.fonts.measure(dim, note);

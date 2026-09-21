@@ -341,6 +341,8 @@ pub enum Then {
     Prompt,
     /// One page, `home_url`, as the whole window.
     HomePage,
+    /// The command palette, without creating a tab.
+    Palette,
 }
 
 /// What a new window comes up as. A window is a surface of its own — its
@@ -1068,6 +1070,7 @@ pub enum Hit {
     TokSet(Color),
     ShellInt(bool),
     Welcome,
+    PinDisplay(crate::pins::Display),
     Block(bool),
     StatusStyle(Status),
     SleepAfter(u32),
@@ -1248,7 +1251,7 @@ pub enum TokSel {
 pub const SECTIONS: [(&str, (&str, &str)); 18] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
-    ("STARTUP", icons::ROCKET),
+    ("START/NEW TAB", icons::ROCKET),
     ("SIDEBAR", icons::SIDEBAR),
     ("TABS", icons::SQUARES),
     ("TERMINAL", icons::TERMINAL),
@@ -1598,6 +1601,7 @@ impl App {
             Hit::TokSet(c) => format!("set to {}", surface::hex(c)),
             Hit::ShellInt(b) => if b { "shell integration auto".into() } else { "shell integration off".into() },
             Hit::Welcome => "open the welcome page".into(),
+            Hit::PinDisplay(mode) => format!("pinned tiles {mode:?}"),
             Hit::Report(crate::support::Kind::Bug) => "Report a bug · opens a GitHub draft with version and OS".into(),
             Hit::Report(crate::support::Kind::Feature) => "Request a feature · opens a GitHub draft with version and OS".into(),
             Hit::Block(b) => if b { "content blocking on".into() } else { "content blocking off".into() },
@@ -1715,7 +1719,7 @@ impl App {
             Hit::UiFont(f)|Hit::TermFont(f) => f.name().into(),
             Hit::UiWeight(w)|Hit::TermWeight(w) => w.name().into(),
             Hit::Then(t) => format!("start page: {}", match t {
-                Then::Prompt => "prompt palette", Then::HomePage => "home page", Then::Layout => "custom layout",
+                Then::Palette => "command palette", Then::Prompt => "home prompt", Then::HomePage => "home page", Then::Layout => "custom layout",
                 Then::LastPage => "the last page", Then::Restore => "saved session", Then::Shell => "shell",
             }),
             Hit::StartupLayout(i) => format!("startup layout {}", crate::layout_file::saved().get(i).map(|(n, _)| n.as_str()).unwrap_or("missing")),
@@ -2016,6 +2020,7 @@ impl App {
             Hit::TokSet(c) => self.set_tok(c),
             Hit::ShellInt(b) => self.behavior.shell_integration = b,
             Hit::Welcome => self.open_welcome(),
+            Hit::PinDisplay(mode) => self.sidebar_rules.pin_display = mode,
             Hit::Report(kind) => self.run(crate::app::Action::Report(kind)),
             Hit::Block(b) => {
                 self.behavior.block_content = b;
@@ -2408,7 +2413,7 @@ impl App {
         let t = self.theme.clone();
         let ink = t.ink;
         let (mx, my) = self.mouse;
-        let hot = r.contains(mx, my);
+        let hot = r.contains(mx, my) && scene.clip().is_none_or(|clip| clip.contains(mx, my));
         let dur = self.motion.dur(120.0);
         let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
@@ -2449,12 +2454,12 @@ impl App {
     /// and a plain line saying what you get. The same neobrutal card as
     /// the theme chips — outline, hard shadow, the signal under the one
     /// that's on.
-    fn draw_pic_card(&mut self, scene: &mut Scene, r: Rect, name: &str, caption: &str, pic: Pic, on: bool) {
+    fn draw_pic_card(&mut self, scene: &mut Scene, r: Rect, name: &str, caption: &str, pic: Pic, on: bool, hit: Hit) {
         let t = self.theme.clone();
         let ink = t.ink;
-        let hk = hover_key("piccard", r.y as usize * 4096 + r.x as usize);
+        let hk = hover_key(&format!("piccard:{hit:?}"), 0);
         let (mx, my) = self.mouse;
-        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my);
+        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my) && scene.clip().is_none_or(|clip| clip.contains(mx, my));
         let dur = self.motion.dur(140.0);
         let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
@@ -2687,12 +2692,12 @@ impl App {
         }
     }
 
-    fn draw_art_card(&mut self, scene: &mut Scene, r: Rect, key: &str, name: &str, says: &str, on: bool, builtin: bool) {
+    fn draw_art_card(&mut self, scene: &mut Scene, r: Rect, key: &str, name: &str, says: &str, on: bool, builtin: bool, hit: Hit) {
         let t = self.theme.clone();
         let ink = t.ink;
-        let hk = hover_key("artcard", r.y as usize * 4096 + r.x as usize);
+        let hk = hover_key(&format!("artcard:{hit:?}"), 0);
         let (mx, my) = self.mouse;
-        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my);
+        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(50.0)).contains(mx, my) && scene.clip().is_none_or(|clip| clip.contains(mx, my));
         let dur = self.motion.dur(140.0);
         let h = self.hovers.entry(hk).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
@@ -2760,12 +2765,11 @@ impl App {
         }
     }
 
-    pub(crate) fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool, faces: Option<(Color, Color, Color, Color)>) {
+    pub(crate) fn draw_card(&mut self, scene: &mut Scene, r: Rect, name: &str, ramp: &[Color], signal: Color, angle: f32, on: bool, faces: Option<(Color, Color, Color, Color)>, key: u64) {
         let t = self.theme.clone();
         let ink = t.ink;
-        let key = hover_key("card", r.y as usize * 4096 + r.x as usize);
         let (mx, my) = self.mouse;
-        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(6.0)).contains(mx, my);
+        let hot = Rect::new(r.x, r.y, r.w + self.px(6.0), r.h + self.px(6.0)).contains(mx, my) && scene.clip().is_none_or(|clip| clip.contains(mx, my));
         let dur = self.motion.dur(140.0);
         let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
         if hot != h.hot {
@@ -2949,7 +2953,7 @@ impl App {
     fn rows_for_at(&self, section: usize, look_tab: usize) -> Vec<(String,Control)> {
         let rows = self.visual_settings(section, self.rows_for_raw(section, look_tab));
         match section {
-            2 => captioned(rows, &[("TERMINAL OR BROWSER", "LAUNCH"), ("START PAGE", "STARTUP & NEW TABS"), (key("N", false).as_str(), "NEW WINDOW BEHAVIOR"), ("SAVE CURRENT LAYOUT", "SAVED WORK"), ("LINKS FROM OTHER APPS", "FROM OUTSIDE")]),
+            2 => captioned(rows, &[("TERMINAL OR BROWSER", "LAUNCH"), ("START PAGE", "START & NEW TABS"), (key("N", false).as_str(), "NEW WINDOW BEHAVIOR"), ("SAVE CURRENT LAYOUT", "SAVED WORK"), ("LINKS FROM OTHER APPS", "FROM OUTSIDE")]),
             5 => rows,
             6 => captioned(rows, &[("LOADING BAR", "LOADING"), ("DEFAULT BROWSER", "THE SYSTEM"), ("SEARCH", "AS SHIPPED")]),
             12 => captioned(rows, &[("THE PHONE", "ANOTHER DEVICE")]),
@@ -3426,6 +3430,7 @@ impl App {
                     (
                         "START PAGE".into(),
                         Pics(vec![
+                            ("PALETTE ONLY".into(), "open the command palette · no extra tab".into(), Pic::StartPrompt, Hit::Then(Then::Palette), b.then == Then::Palette),
                             ("HOME · PROMPT".into(), "one line: type a URL, a command or a folder".into(), Pic::StartPrompt, Hit::Then(Then::Prompt), b.then == Then::Prompt),
                             ("WEBSITE".into(), format!("open {home_host}"), Pic::StartHome, Hit::Then(Then::HomePage), b.then == Then::HomePage),
                             (
@@ -3514,7 +3519,7 @@ impl App {
                             ("NOTHING".into(), Hit::Remember(false), !b.remember),
                         ]),
                     ),
-                    ("".into(), Info("Saved sessions are available in the atlas (the planet button). Startup still opens the start page selected above.".into())),
+                    ("".into(), Info("Saved sessions are available in the atlas (the planet button). Start/New Tab still opens the start page selected above.".into())),
                     (
                         "SESSION PICKER".into(),
                         Choice(vec![
@@ -3571,7 +3576,7 @@ impl App {
                         ("AS THE NEXT ROW".into(), Hit::HdrNextRow(!self.header.next_row), self.header.next_row),
                     ]),
                 ),
-                ("".into(), Info("Show either or both New tab buttons. Clicking opens the start page chosen in Startup. Hold or right-click to choose a tab type.".into())),
+                ("".into(), Info("Show either or both New tab buttons. Clicking opens the start page chosen in Start/New Tab. Hold or right-click to choose a tab type.".into())),
                 (
                     "KINDS CARET".into(),
                     Choice(vec![("ON".into(), Hit::HdrCaret(true), self.header.kinds_caret), ("OFF".into(), Hit::HdrCaret(false), !self.header.kinds_caret)]),
@@ -3636,6 +3641,11 @@ impl App {
                         (format!("HOVER · {} PINS", key("S", true)), Hit::Pin(false), !self.sidebar),
                     ]),
                 ),
+                ("PINNED TILES".into(), Choice(vec![
+                    ("FAVICON / ICON".into(), Hit::PinDisplay(crate::pins::Display::Icon), self.sidebar_rules.pin_display == crate::pins::Display::Icon),
+                    ("LIVE WEB PREVIEW".into(), Hit::PinDisplay(crate::pins::Display::Preview), self.sidebar_rules.pin_display == crate::pins::Display::Preview),
+                ])),
+                ("".into(), Info("Pinned tiles use your theme and corner radius. Web previews use the open page; closed pages and shells show an icon.".into())),
                 ("ROWS".into(), Info("Compact rows show a preview when you hover over them.".into())),
             ],
             4 => vec![
@@ -3959,7 +3969,7 @@ impl App {
                     Info(self.register_note.clone()),
                 ),
                 ("SEARCH".into(), Info(format!("Words that are not an address search {} · PROMPT · SEARCH ENGINE chooses.", self.behavior.prompt.engine.name()))),
-                ("NEW TAB".into(), Info("Uses the start page selected in Startup: prompt palette, home page, saved layout or last page.".into())),
+                ("NEW TAB".into(), Info("Uses the start page selected in Start/New Tab: prompt palette, home page, saved layout or last page.".into())),
                 ("COOKIES".into(), Info("Website storage is managed by Chromium. Use the site settings beside the address for site-specific controls.".into())),
                 ("DOWNLOADS".into(), Buttons(vec![("OPEN DOWNLOADS".into(),icons::DOWNLOAD,Hit::Downloads)])),
                 ("FILE NAMING".into(), Choice(vec![
@@ -4217,8 +4227,8 @@ impl App {
                 let chord = |k: &str, shift: bool| -> Vec<String> { let mut v = mod_(shift); v.push(k.to_string()); v };
                 vec![
                     ("".into(), Info("These shortcuts control nus. Other keys are passed to the active page or terminal.".into())),
-                    ("NEW TAB".into(), Keys(chord("T", !mac), "the start page selected in Startup".into())),
-                    ("NEW WINDOW".into(), Keys(chord("N", false), "the new window behavior selected in Startup".into())),
+                    ("NEW TAB".into(), Keys(chord("T", !mac), "the start page selected in Start/New Tab".into())),
+                    ("NEW WINDOW".into(), Keys(chord("N", false), "the new window behavior selected in Start/New Tab".into())),
                     ("GO".into(), Keys(chord("K", true), "the palette: commands, tabs, places".into())),
                     ("URL".into(), Keys(chord("L", true), "a page, by address".into())),
                     ("CLOSE".into(), Keys(chord("W", true), "the tab; the stack folds first".into())),
@@ -4253,7 +4263,7 @@ impl App {
             0 => format!("{} · {} · {}", self.preset_name.to_lowercase(), if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.surface.shell.name()),
             1 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
             2 => format!("start page: {}", match self.behavior.then {
-                Then::Prompt => "prompt palette", Then::HomePage => "home page", Then::Layout => "custom layout",
+                Then::Palette => "command palette", Then::Prompt => "home prompt", Then::HomePage => "home page", Then::Layout => "custom layout",
                 Then::LastPage => "the last page", Then::Restore => "saved session", Then::Shell => "shell",
             }),
             3 => format!("{:?} · {:?}", self.sidebar_rules.side, self.sidebar_rules.fullscreen).to_lowercase(),
@@ -4519,7 +4529,7 @@ impl App {
                         let card = Rect::new(cx + (i % per_row) as f32 * (card_w + gap), y + cap_h + (i / per_row) as f32 * (card_h + self.px(50.0) + gap), card_w, card_h);
                         let target = Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(50.0));
                         if target.bottom() > content.y && target.y < content.bottom() {
-                            self.draw_pic_card(scene, card, &name, &caption, pic, on);
+                            self.draw_pic_card(scene, card, &name, &caption, pic, on, hit);
                             self.settings_hits.push((target, hit));
                         }
                     }
@@ -4579,7 +4589,7 @@ impl App {
                             cy += card_h + self.px(8.0) + gap;
                         }
                         let card = Rect::new(x, cy, card_w, card_h);
-                        self.draw_card(scene, card, &name, &ramp, signal, angle, on, faces);
+                        self.draw_card(scene, card, &name, &ramp, signal, angle, on, faces, hover_key(&format!("card:{hit:?}"), row_index));
                         self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(6.0)), hit));
                         x += card_w + gap;
                         n += 1;
@@ -4596,7 +4606,7 @@ impl App {
                         }
                         let card = Rect::new(x, cy, card_w, card_h);
                         if card.bottom() + self.px(50.0) > content.y && card.y < content.bottom() {
-                            self.draw_art_card(scene, card, &key, &name, &says, on, builtin);
+                            self.draw_art_card(scene, card, &key, &name, &says, on, builtin, hit);
                             self.settings_hits.push((Rect::new(card.x, card.y, card.w + self.px(6.0), card.h + self.px(50.0)), hit));
                         }
                         x += card_w + gap;
@@ -4616,7 +4626,7 @@ impl App {
                             ty += row_h;
                         }
                         let tile = Rect::new(x, ty, tw, th);
-                        let hk = hover_key("tok", (ty as usize) * 4096 + x as usize);
+                        let hk = hover_key(&format!("tok:{hit:?}"), row_index * 256 + n);
                         self.draw_tile(scene, tile, color, on, hk);
                         if color.is_none() {
                             // An empty tile says what it does: add, remove, or none.

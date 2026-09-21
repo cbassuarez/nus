@@ -3,43 +3,17 @@
 //! no site scripts, our measure, our rules. Ctrl+Alt+R (⌘⌥R) toggles it over
 //! a browser pane; the page keeps living underneath.
 
+#[path = "library_reader.rs"]
+pub(crate) mod interaction;
+
 use crate::app::Caps;
 use nus_render::text::{FontId, Style};
 use nus_render::{Rect, Scene};
 
-/// Runs in the page; returns JSON {title, byline, blocks:[{t,x,l,src}]}.
-/// Picks the element with the most paragraph text, then walks it.
-pub const EXTRACT_JS: &str = r##"(function(){
-  function txt(e){return (e.innerText||e.textContent||'').replace(/\s+/g,' ').trim();}
-  var cands=[].slice.call(document.querySelectorAll('article,main,[role=main],#content,#main,.post,.article,.entry-content,body'));
-  var best=document.body,score=0;
-  cands.forEach(function(c){var ps=c.querySelectorAll('p');var n=0;for(var i=0;i<ps.length;i++){n+=txt(ps[i]).length;}
-    var s=n*(c.tagName==='BODY'?0.5:1);if(s>score){score=s;best=c;}});
-  var blocks=[];var seen=0;
-  function walk(e){
-    if(!e||e.nodeType!==1)return;
-    var tag=e.tagName;
-    if(/^(SCRIPT|STYLE|NAV|ASIDE|FOOTER|HEADER|FORM|BUTTON|SVG|NOSCRIPT|IFRAME)$/.test(tag))return;
-    var cs=getComputedStyle(e);if(cs.display==='none'||cs.visibility==='hidden')return;
-    if(/^H[1-6]$/.test(tag)){var t=txt(e);if(t)blocks.push({t:'h',l:+tag[1],x:t});return;}
-    if(tag==='P'){var t=txt(e);if(t.length>1){blocks.push({t:'p',x:t});seen+=t.length;}return;}
-    if(tag==='PRE'){var t=(e.innerText||'').replace(/\s+$/,'');if(t)blocks.push({t:'pre',x:t});return;}
-    if(tag==='LI'){var t=txt(e);if(t)blocks.push({t:'li',x:t});return;}
-    if(tag==='BLOCKQUOTE'){var t=txt(e);if(t)blocks.push({t:'q',x:t});return;}
-    if(tag==='IMG'){if((e.naturalWidth||e.width)>120)blocks.push({t:'img',x:e.alt||'',src:e.currentSrc||e.src||''});return;}
-    if(tag==='FIGCAPTION'){var t=txt(e);if(t)blocks.push({t:'cap',x:t});return;}
-    for(var i=0;i<e.children.length;i++)walk(e.children[i]);
-  }
-  walk(best);
-  var m=function(n){var q=document.querySelector('meta[property="'+n+'"],meta[name="'+n+'"]');return q?q.content:'';};
-  var h1=document.querySelector('h1');
-  var title=(h1?txt(h1):'')||m('og:title')||document.title;
-  var byline=m('author')||m('article:author')||'';
-  var when=m('article:published_time')||m('date')||'';
-  return JSON.stringify({title:title,byline:byline,when:when,blocks:blocks.slice(0,600)});
-})()"##;
+/// Shared, bounded read-only extraction for live pages and saved copies.
+pub const EXTRACT_JS: &str = include_str!("../assets/library/article.js");
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Block {
     Heading(u8, String),
     Para(String),
@@ -48,9 +22,10 @@ pub enum Block {
     Quote(String),
     Image(String, String),
     Caption(String),
+    Link(String, String),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Article {
     pub title: String,
     pub byline: String,
@@ -60,21 +35,24 @@ pub struct Article {
 
 impl Article {
     pub fn parse(json: &str) -> Option<Article> {
+        if json.len()>crate::library::store::MAX_TEXT {return None;}
         let v: serde_json::Value = serde_json::from_str(json).ok()?;
+        if v.get("blocks").and_then(|b|b.as_array()).is_none_or(|b|b.len()>crate::library::store::MAX_BLOCKS){return None;}
         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
         let mut blocks = Vec::new();
         for b in v.get("blocks").and_then(|b| b.as_array()).into_iter().flatten() {
-            let x = b.get("x").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let t = b.get("t").and_then(|t| t.as_str()).unwrap_or("");
+            let x = b.get("x").and_then(|x| x.as_str())?.to_string();
+            let t = b.get("t").and_then(|t| t.as_str())?;
             blocks.push(match t {
-                "h" => Block::Heading(b.get("l").and_then(|l| l.as_u64()).unwrap_or(2) as u8, x),
+                "h" => Block::Heading(b.get("l").and_then(|l| l.as_u64()).unwrap_or(2).clamp(1, 6) as u8, x),
                 "p" => Block::Para(x),
                 "pre" => Block::Pre(x),
                 "li" => Block::Item(x),
                 "q" => Block::Quote(x),
                 "img" => Block::Image(x, b.get("src").and_then(|s| s.as_str()).unwrap_or("").to_string()),
                 "cap" => Block::Caption(x),
-                _ => continue,
+                "link" => Block::Link(x, b.get("src").and_then(|s|s.as_str()).unwrap_or("").into()),
+                _ => return None,
             });
         }
         Some(Article { title: s("title"), byline: s("byline"), when: s("when"), blocks })
@@ -85,7 +63,7 @@ impl Article {
         self.blocks
             .iter()
             .map(|b| match b {
-                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Item(x) | Block::Quote(x) | Block::Caption(x) => x.split_whitespace().count(),
+                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Item(x) | Block::Quote(x) | Block::Caption(x) | Block::Link(x, _) => x.split_whitespace().count(),
                 Block::Image(..) => 0,
             })
             .sum()
@@ -95,7 +73,7 @@ impl Article {
         let mut out = String::new();
         for b in &self.blocks {
             match b {
-                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Quote(x) | Block::Caption(x) => {
+                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Quote(x) | Block::Caption(x) | Block::Link(x, _) => {
                     out.push_str(x);
                     out.push_str("\n\n");
                 }
@@ -134,6 +112,9 @@ pub enum Kind {
     Quote,
     Caption,
     Rule,
+    Link,
+    Image,
+    CodeAction,
 }
 
 /// The reader over one page.
@@ -144,11 +125,12 @@ pub struct Reader {
     pub lines: Vec<Line>,
     pub laid_for: (f32, f32),
     pub height: f32,
+    pub saved: interaction::Extras,
 }
 
 impl Reader {
     pub fn new(article: Article) -> Reader {
-        Reader { article, scroll: 0.0, lines: Vec::new(), laid_for: (0.0, 0.0), height: 0.0 }
+        Reader { article, scroll: 0.0, lines: Vec::new(), laid_for: (0.0, 0.0), height: 0.0, saved: Default::default() }
     }
 }
 
@@ -195,14 +177,48 @@ pub fn wrap(fonts: &nus_render::FontSystem, style: Style, text: &str, width: f32
     lines
 }
 
+/// Shared by initial layout, reflow and the saved reader. Never negative on
+/// narrow panes; unlike a fixed 48px gutter it leaves usable reading space.
+pub fn column_width(width: f32, scale: f32) -> f32 {
+    (measure::COLUMN * scale).min((width - 2.0 * (measure::GUTTER * scale).min(width * 0.08)).max(1.0))
+}
+
+/// Break overlong URLs/CJK runs inside the article only. The generic `wrap`
+/// used by existing settings/welcome chrome is deliberately left unchanged.
+fn wrap_article(fonts: &nus_render::FontSystem, style: Style, text: &str, width: f32) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in wrap(fonts, style, text, width) {
+        let mut rest = line.as_str();
+        while !rest.is_empty() {
+            // Bound each font-metric probe; repeatedly measuring the whole
+            // remaining unbroken token would make an adversarial long URL slow.
+            let ends: Vec<_> = rest.char_indices().map(|(i,c)| i + c.len_utf8()).take(256).collect();
+            if ends.last().copied()==Some(rest.len()) && fonts.measure(style,rest)<=width {
+                out.push(rest.to_string());break;
+            }
+            let (mut low, mut high) = (0usize, ends.len());
+            while low < high {
+                let mid = (low + high + 1) / 2;
+                if fonts.measure(style, &rest[..ends[mid-1]]) <= width { low = mid; } else { high = mid-1; }
+            }
+            let end = ends[low.max(1)-1];
+            out.push(rest[..end].to_string()); rest = &rest[end..];
+        }
+    }
+    out
+}
+
 impl Reader {
     /// Typeset the article into lines for `width` (physical px) at `scale`.
     pub fn layout(&mut self, fonts: &nus_render::FontSystem, f: &ReaderFonts, width: f32, scale: f32, ink: nus_render::Color) {
-        if self.laid_for == (width, scale) {
+        let font_key=[f.serif,f.serif_italic,f.mono,f.mono_strong];
+        if self.laid_for == (width, scale) && self.saved.font_key==Some(font_key) {
             return;
         }
         self.laid_for = (width, scale);
         self.lines.clear();
+        self.saved.reset_layout();
+        self.saved.font_key=Some(font_key);
         let px = |v: f32| v * scale;
         let st = |font: FontId, size: f32| Style { font, px: px(size), color: ink, tracking: 0.0 };
         let body = st(f.serif, measure::BODY);
@@ -210,7 +226,7 @@ impl Reader {
         let mut y = px(8.0);
         let mut push = |kind: Kind, style: Style, text: &str, dx: f32, w: f32, leading: f32, y: &mut f32, lines: &mut Vec<Line>| {
             let size = style.px;
-            for l in wrap(fonts, style, text, w - dx) {
+            for l in wrap_article(fonts, style, text, (w - dx).max(1.0)) {
                 *y += leading.max(size * 1.15);
                 lines.push(Line { kind, text: l, dx, y: *y });
             }
@@ -234,7 +250,8 @@ impl Reader {
         y += px(10.0);
         self.lines.push(Line { kind: Kind::Rule, text: String::new(), dx: 0.0, y });
         y += px(18.0);
-        for b in &a.blocks {
+        for (block_index,b) in a.blocks.iter().enumerate() {
+            let first=self.lines.len();
             match b {
                 Block::Heading(l, x) => {
                     y += px(12.0);
@@ -249,9 +266,16 @@ impl Reader {
                 Block::Pre(x) => {
                     let mono = st(f.mono, measure::MONO);
                     y += px(6.0);
+                    if self.saved.offline {
+                        y+=px(24.0);
+                        self.saved.code.insert(self.lines.len(),x.clone());
+                        self.lines.push(Line{kind:Kind::CodeAction,text:"COPY CODE / TABLE".into(),dx:0.0,y});
+                    }
                     for raw in x.lines() {
                         y += px(measure::MONO * 1.6);
-                        self.lines.push(Line { kind: Kind::Mono, text: raw.replace('\t', "    "), dx: px(16.0), y });
+                        let text=raw.replace('\t',"    ");
+                        self.saved.horizontal_max=self.saved.horizontal_max.max((fonts.measure(mono,&text)+px(32.0)-width).max(0.0));
+                        self.lines.push(Line { kind: Kind::Mono, text, dx: px(16.0), y });
                     }
                     y += px(14.0);
                     let _ = mono;
@@ -264,16 +288,32 @@ impl Reader {
                     push(Kind::Quote, st(f.serif_italic, measure::BODY), x, px(24.0), width, lead, &mut y, &mut self.lines);
                     y += px(12.0);
                 }
-                Block::Image(alt, _) => {
-                    let text = if alt.is_empty() { "image".to_string() } else { format!("image · {alt}") };
+                Block::Image(alt, id) => {
+                    if let Some(pic)=self.saved.pictures.get(id) {
+                        let image_w=width.min(pic.width as f32*scale);
+                        let image_h=image_w*pic.height as f32/pic.width.max(1) as f32;
+                        self.saved.image_heights.insert(self.lines.len(),image_h);
+                        self.lines.push(Line{kind:Kind::Image,text:id.clone(),dx:(width-image_w)/2.0,y});
+                        y+=image_h+px(12.0);
+                    }
+                    let noun=if self.saved.offline && !self.saved.pictures.contains_key(id){"image unavailable offline"}else{"image"};
+                    let text = if alt.is_empty() { noun.to_string() } else { format!("{noun} · {alt}") };
                     push(Kind::Caption, st(f.mono, measure::CAPTION), &text.caps(), 0.0, width, px(measure::CAPTION * 1.6), &mut y, &mut self.lines);
                     y += px(10.0);
+                }
+                Block::Link(x,url) => {
+                    let before=self.lines.len();
+                    let label=format!("{x} · {url}");
+                    push(Kind::Link,st(f.serif,measure::BODY),&label,0.0,width,lead,&mut y,&mut self.lines);
+                    for i in before..self.lines.len(){self.saved.links.insert(i,url.clone());}
+                    y+=px(10.0);
                 }
                 Block::Caption(x) => {
                     push(Kind::Caption, st(f.mono, measure::CAPTION), x, 0.0, width, px(measure::CAPTION * 1.6), &mut y, &mut self.lines);
                     y += px(10.0);
                 }
             }
+            self.saved.blocks.push((first,self.lines.len(),block_index));
         }
         self.height = y + px(60.0);
     }
@@ -281,20 +321,32 @@ impl Reader {
     /// Draw into `r`; the column is centred and never wider than the measure.
     pub fn draw(&mut self, scene: &mut Scene, fonts: &mut nus_render::FontSystem, f: &ReaderFonts, r: Rect, scale: f32, ink: nus_render::Color, dim: nus_render::Color, paper: nus_render::Color, signal: nus_render::Color) {
         let px = |v: f32| v * scale;
-        let col_w = px(measure::COLUMN).min(r.w - 2.0 * px(measure::GUTTER));
+        let col_w = column_width(r.w, scale);
         let x0 = (r.x + (r.w - col_w) / 2.0).round();
         self.layout(fonts, f, col_w, scale, ink);
         let max_scroll = (self.height - r.h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         scene.rect(r, paper);
         scene.layer(Some(r));
+        self.saved.viewport=Some(r); self.saved.scale=scale;
+        self.saved.hits.clear(); self.saved.drawn.clear();
+        self.saved.horizontal=self.saved.horizontal.clamp(0.0,self.saved.horizontal_max);
         let top = r.y + px(28.0) - self.scroll;
-        for line in &self.lines {
+        for (index,line) in self.lines.iter().enumerate() {
             let y = top + line.y;
+            if line.kind==Kind::Image {
+                if let (Some(pic),Some(&height))=(self.saved.pictures.get(&line.text),self.saved.image_heights.get(&index)) {
+                    if y+height>=r.y && y<=r.bottom() {scene.texture(Rect::new(x0+line.dx,y,col_w-2.0*line.dx,height),pic.texture.clone(),Some(r));}
+                }
+                continue;
+            }
             if y < r.y - px(60.0) || y > r.bottom() + px(10.0) {
                 continue;
             }
             let (font, size, color) = match line.kind {
+                Kind::Image => continue,
+                Kind::Link => (f.serif, measure::BODY, signal),
+                Kind::CodeAction => (f.mono_strong, measure::CAPTION, ink),
                 Kind::Title => (f.serif, measure::TITLE, ink),
                 Kind::Byline => (f.serif_italic, measure::BODY, dim),
                 Kind::H(2) => (f.serif, measure::H2, ink),
@@ -315,7 +367,33 @@ impl Reader {
                 scene.rect(Rect::new(x0 + px(4.0), y - px(measure::BODY), px(2.0), px(measure::BODY * measure::LEADING)), ink);
             }
             let st = Style { font, px: px(size), color, tracking: 0.0 };
-            fonts.draw(scene, st, x0 + line.dx, y, &line.text);
+            let x=x0+line.dx-if line.kind==Kind::Mono {self.saved.horizontal}else{0.0};
+            let text_w=fonts.measure(st,&line.text);
+            let hit=Rect::new(x,y-st.px*1.05,text_w.max(px(6.0)),st.px*1.45).intersect(&r);
+            if self.saved.found==Some(index) {scene.rect(Rect::new(x,y-st.px*1.05,text_w,st.px*1.45),[signal[0],signal[1],signal[2],0.16]);}
+            if let Some((a,b))=self.saved.selection {
+                let(a,b)=if a<=b{(a,b)}else{(b,a)};
+                if index>=a.line && index<=b.line {
+                    let from=if index==a.line{a.byte}else{0};let to=if index==b.line{b.byte}else{line.text.len()};
+                    if let (Some(prefix),Some(selected))=(line.text.get(..from),line.text.get(from..to)) {
+                        let dx=fonts.measure(st,prefix);let w=fonts.measure(st,selected);
+                        scene.rect(Rect::new(x+dx,y-st.px*1.05,w,st.px*1.45),[signal[0],signal[1],signal[2],0.24]);
+                    }
+                }
+            }
+            fonts.draw(scene, st, x, y, &line.text);
+            if hit.w>0.0 && hit.h>0.0 {
+                if line.kind==Kind::CodeAction {
+                    scene.hline(x,y+px(3.0),text_w,px(1.0),ink);
+                    self.saved.hits.push((hit,interaction::Hit::Code(index)));
+                } else {
+                    self.saved.drawn.push((index,Rect::new(x,y-st.px*1.05,text_w,st.px*1.45),st));
+                    if let Some(url)=self.saved.links.get(&index).filter(|_|self.saved.offline) {
+                        scene.hline(x,y+px(3.0),text_w,px(1.0),signal);
+                        self.saved.hits.push((hit,interaction::Hit::Link(url.clone())));
+                    }
+                }
+            }
         }
         scene.layer(None);
         // A hairline scroll track on the right, ink for the visible part.

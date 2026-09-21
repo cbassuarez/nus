@@ -1,0 +1,2787 @@
+diff --git a/spikes/composite/src/access.rs b/spikes/composite/src/access.rs
+--- a/spikes/composite/src/access.rs
++++ b/spikes/composite/src/access.rs
+@@ -63,3 +63,4 @@
+     pub fn access_tree(&mut self) -> TreeUpdate {
++        if self.reading.open { return self.reading_access_tree(); }
+         let mut nodes: Vec<(NodeId, Node)> = Vec::new();
+         let mut map: HashMap<u64, Target> = HashMap::new();
+@@ -406,2 +407,3 @@
+     pub fn access_action(&mut self, req: ActionRequest) {
++        if self.reading.open { self.reading_access_action(req); return; }
+         let Some(&target) = self.access_map.get(&req.target_node.0) else { return };
+diff --git a/spikes/composite/src/app.rs b/spikes/composite/src/app.rs
+--- a/spikes/composite/src/app.rs
++++ b/spikes/composite/src/app.rs
+@@ -60,3 +60,5 @@
+ #[derive(Clone, PartialEq, Debug)]
+ pub enum Action {
++    ReadingList,
++    SaveReading,
+     Application(crate::application_menu::Command),
+@@ -773,2 +775,3 @@
+ pub struct App {
++    pub reading: crate::reading_ui::State,
+     pub window: Arc<Window>,
+@@ -1340,3 +1343,4 @@
+             palette: None,
+             palette_sel: 0,
++            reading: Default::default(),
+             profiles: nus_pty::Profile::discover(),
+@@ -1870,3 +1874,4 @@
+     /// Time-based housekeeping, once per loop iteration.
+     pub fn tick(&mut self) {
++        self.reading_tick();
+         if self.assistants.poll() { self.dirty = true; }
+@@ -2260,3 +2265,3 @@
+-    fn reader_fonts(&self) -> crate::reader::ReaderFonts {
++    pub(crate) fn reader_fonts(&self) -> crate::reader::ReaderFonts {
+         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.ui, mono_strong: self.f.strong }
+     }
+@@ -4028,3 +4033,4 @@
+         self.draw_page_menu(&mut scene);
+         self.draw_splash(&mut scene);
++        self.draw_reading(&mut scene);
+         self.scene = scene;
+@@ -6230,2 +6236,10 @@
++                if !crate::private::enabled() {
++                    for (label, action) in [
++                        ("reading list · saved articles and pages", Action::ReadingList),
++                        ("save to reading list · the focused page", Action::SaveReading),
++                    ] {
++                        if hit(label) { rows.push(row("·", label.into(), action)); }
++                    }
++                }
+                 let actions: [(String, Action); 21] = [
+                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
+@@ -6594,3 +6608,5 @@
+             Action::JournalPage => self.open_journal_page(),
+             Action::Timeline => self.toggle_timeline(),
++            Action::ReadingList => self.open_reading(),
++            Action::SaveReading => self.save_reading(),
+             Action::Home => self.open_home(),
+diff --git a/spikes/composite/src/browser.rs b/spikes/composite/src/browser.rs
+--- a/spikes/composite/src/browser.rs
++++ b/spikes/composite/src/browser.rs
+@@ -16,4 +16,9 @@
+     pub title: String,
+     pub url: String,
+     pub loading: bool,
++    /// Reading captures bind to this navigation, including same-URL reloads.
++    pub navigation_epoch: u64,
++    /// Only native-requested captures receive a larger, separately bounded reply.
++    pub reading_requests: std::collections::HashSet<i32>,
++    pub reading_results: std::collections::HashMap<i32, serde_json::Value>,
+     /// 0..1 from on_loading_progress_change.
+@@ -555,3 +560,4 @@
+                 s.url = u;
++                s.navigation_epoch = s.navigation_epoch.wrapping_add(1);
+             }
+             // A new page is on its way: draw it as soon as it paints, even
+@@ -599,2 +605,5 @@
++            if progress < 1.0 && !s.loading {
++                s.navigation_epoch = s.navigation_epoch.wrapping_add(1);
++            }
+             s.loading = progress < 1.0;
+             s.progress = progress;
+@@ -645,2 +654,15 @@
+         fn on_dev_tools_method_result(&self, _browser: Option<&mut Browser>, message_id: ::std::os::raw::c_int, success: ::std::os::raw::c_int, result: Option<&[u8]>) {
++            let reading = self.o.shared.borrow().reading_requests.contains(&message_id);
++            if reading {
++                // The ordinary inspection limit stays 1 MiB. Captures are native
++                // user actions, one per browser, and are never logged as previews.
++                let error = |text: &str| serde_json::json!({"exceptionDetails":{"text":text}});
++                let value = match result {
++                    Some(bytes) if success != 0 && bytes.len() <= crate::reading::MAX_CAPTURE * 2 + 65536 =>
++                        serde_json::from_slice(bytes).unwrap_or_else(|_| error("Invalid reading-capture reply")),
++                    _ => error("Capture failed or exceeded its transport budget; the link remains saved"),
++                };
++                self.o.shared.borrow_mut().reading_results.insert(message_id, value);
++                return;
++            }
+             tracing::debug!("cdp result id={message_id} ok={success} {}", result.map(|r| String::from_utf8_lossy(r).chars().take(160).collect::<String>()).unwrap_or_default());
+@@ -682,3 +704,7 @@
+             let method = method.to_string();
++            if method == "Runtime.executionContextsCleared" {
++                let mut s = self.o.shared.borrow_mut();
++                s.navigation_epoch = s.navigation_epoch.wrapping_add(1);
++            }
+             let Some(params) = params else { return };
+             // Inspectors retain a bounded diagnostic sample, not arbitrarily
+@@ -1369,2 +1395,29 @@
++    /// A separately bounded reading capture. Register its id BEFORE dispatch:
++    /// even a synchronous CEF callback cannot mistake it for an inspector reply.
++    pub fn eval_reading_reply(&self, expr: &str) -> std::result::Result<i32, String> {
++        if crate::private::enabled() { return Err("Captures are disabled in incognito".into()); }
++        let host = self.host().ok_or("The source browser closed")?;
++        let id = {
++            let mut s = self.shared.borrow_mut();
++            if !s.reading_requests.is_empty() { return Err("This page is already being captured".into()); }
++            s.next_msg = s.next_msg.checked_add(1).ok_or("Browser message counter exhausted")?;
++            let id = s.next_msg;
++            s.reading_requests.insert(id);
++            id
++        };
++        let message = serde_json::json!({"id":id,"method":"Runtime.evaluate","params":{
++            "expression":expr,"returnByValue":true,"timeout":5000,"silent":true
++        }}).to_string();
++        host.send_dev_tools_message(Some(message.as_bytes()));
++        Ok(id)
++    }
++
++    pub fn take_reading_reply(&self, id: i32) -> Option<serde_json::Value> {
++        let mut s = self.shared.borrow_mut();
++        let value = s.reading_results.remove(&id)?;
++        s.reading_requests.remove(&id);
++        Some(value)
++    }
++
+     /// Take the reply for `id`, if it has arrived.
+     pub fn take_reply(&self, id: i32) -> Option<serde_json::Value> {
+diff --git a/spikes/composite/src/main.rs b/spikes/composite/src/main.rs
+--- a/spikes/composite/src/main.rs
++++ b/spikes/composite/src/main.rs
+@@ -78,3 +78,6 @@
+ mod prefs;
+ mod reader;
++mod reading;
++mod reading_reader;
++mod reading_ui;
+ mod settings;
+@@ -719,3 +722,4 @@
++        if a.reading_event(&event) { return; }
+         match event {
+             WindowEvent::CloseRequested => {
+                 // Keep the owning App/PTYs alive; closing a window is not Quit.
+diff --git a/spikes/composite/src/page_menu.rs b/spikes/composite/src/page_menu.rs
+--- a/spikes/composite/src/page_menu.rs
++++ b/spikes/composite/src/page_menu.rs
+@@ -67,2 +67,10 @@
+-                        items: req.items,
++                        items: {
++                            let mut items = req.items;
++                            if !crate::private::enabled() {
++                                items.push((0, String::new(), false));
++                                items.push((crate::reading_ui::SAVE_MENU_ID, "Save to Reading List".into(), true));
++                                items.push((crate::reading_ui::LIST_MENU_ID, "Open Reading List".into(), true));
++                            }
++                            items
++                        },
+                         source: Source::Page(req.callback),
+@@ -139,3 +147,9 @@
+     fn page_menu_pick(&mut self, id: i32) {
+         let Some(m) = self.page_menu.take() else { return };
++        if id == crate::reading_ui::SAVE_MENU_ID || id == crate::reading_ui::LIST_MENU_ID {
++            if let Source::Page(cb) = m.source { cb.cancel(); }
++            if id == crate::reading_ui::SAVE_MENU_ID { self.save_reading_tab(m.tab, m.right); }
++            else { self.open_reading(); }
++            return;
++        }
+         match m.source {
+diff --git a/spikes/composite/src/power.rs b/spikes/composite/src/power.rs
+--- a/spikes/composite/src/power.rs
++++ b/spikes/composite/src/power.rs
+@@ -88,2 +88,3 @@
+     pub(crate) fn art_budget(&self) -> Budget {
++        if self.reading.open { return Budget::Still; }
+         if !self.window_focused && self.shot.is_none() {
+diff --git a/spikes/composite/src/shot.rs b/spikes/composite/src/shot.rs
+--- a/spikes/composite/src/shot.rs
++++ b/spikes/composite/src/shot.rs
+@@ -415,1 +415,2 @@
++            "reading"=>self.reading_check(rest),
+             "uilabels"=>self.check_ui_labels(),
+diff --git a/spikes/composite/src/reader.rs b/spikes/composite/src/reader.rs
+--- a/spikes/composite/src/reader.rs
++++ b/spikes/composite/src/reader.rs
+@@ -7,37 +7,8 @@
+ use nus_render::text::{FontId, Style};
+ use nus_render::{Rect, Scene};
+ 
+-/// Runs in the page; returns JSON {title, byline, blocks:[{t,x,l,src}]}.
+-/// Picks the element with the most paragraph text, then walks it.
+-pub const EXTRACT_JS: &str = r##"(function(){
+-  function txt(e){return (e.innerText||e.textContent||'').replace(/\s+/g,' ').trim();}
+-  var cands=[].slice.call(document.querySelectorAll('article,main,[role=main],#content,#main,.post,.article,.entry-content,body'));
+-  var best=document.body,score=0;
+-  cands.forEach(function(c){var ps=c.querySelectorAll('p');var n=0;for(var i=0;i<ps.length;i++){n+=txt(ps[i]).length;}
+-    var s=n*(c.tagName==='BODY'?0.5:1);if(s>score){score=s;best=c;}});
+-  var blocks=[];var seen=0;
+-  function walk(e){
+-    if(!e||e.nodeType!==1)return;
+-    var tag=e.tagName;
+-    if(/^(SCRIPT|STYLE|NAV|ASIDE|FOOTER|HEADER|FORM|BUTTON|SVG|NOSCRIPT|IFRAME)$/.test(tag))return;
+-    var cs=getComputedStyle(e);if(cs.display==='none'||cs.visibility==='hidden')return;
+-    if(/^H[1-6]$/.test(tag)){var t=txt(e);if(t)blocks.push({t:'h',l:+tag[1],x:t});return;}
+-    if(tag==='P'){var t=txt(e);if(t.length>1){blocks.push({t:'p',x:t});seen+=t.length;}return;}
+-    if(tag==='PRE'){var t=(e.innerText||'').replace(/\s+$/,'');if(t)blocks.push({t:'pre',x:t});return;}
+-    if(tag==='LI'){var t=txt(e);if(t)blocks.push({t:'li',x:t});return;}
+-    if(tag==='BLOCKQUOTE'){var t=txt(e);if(t)blocks.push({t:'q',x:t});return;}
+-    if(tag==='IMG'){if((e.naturalWidth||e.width)>120)blocks.push({t:'img',x:e.alt||'',src:e.currentSrc||e.src||''});return;}
+-    if(tag==='FIGCAPTION'){var t=txt(e);if(t)blocks.push({t:'cap',x:t});return;}
+-    for(var i=0;i<e.children.length;i++)walk(e.children[i]);
+-  }
+-  walk(best);
+-  var m=function(n){var q=document.querySelector('meta[property="'+n+'"],meta[name="'+n+'"]');return q?q.content:'';};
+-  var h1=document.querySelector('h1');
+-  var title=(h1?txt(h1):'')||m('og:title')||document.title;
+-  var byline=m('author')||m('article:author')||'';
+-  var when=m('article:published_time')||m('date')||'';
+-  return JSON.stringify({title:title,byline:byline,when:when,blocks:blocks.slice(0,600)});
+-})()"##;
++/// Shared, bounded read-only extraction for live pages and saved copies.
++pub const EXTRACT_JS: &str = include_str!("../assets/reading/article.js");
+ 
+ #[derive(Clone, Debug)]
+ pub enum Block {
+@@ -48,6 +19,7 @@
+     Quote(String),
+     Image(String, String),
+     Caption(String),
++    Link(String, String),
+ }
+ 
+ #[derive(Clone, Debug, Default)]
+@@ -60,7 +32,9 @@
+ 
+ impl Article {
+     pub fn parse(json: &str) -> Option<Article> {
++        if json.len()>crate::reading::MAX_CAPTURE {return None;}
+         let v: serde_json::Value = serde_json::from_str(json).ok()?;
++        if v.get("blocks").and_then(|b|b.as_array()).is_none_or(|b|b.len()>crate::reading::MAX_BLOCKS){return None;}
+         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+         let mut blocks = Vec::new();
+         for b in v.get("blocks").and_then(|b| b.as_array()).into_iter().flatten() {
+@@ -74,6 +48,7 @@
+                 "q" => Block::Quote(x),
+                 "img" => Block::Image(x, b.get("src").and_then(|s| s.as_str()).unwrap_or("").to_string()),
+                 "cap" => Block::Caption(x),
++                "link" => Block::Link(x, b.get("src").and_then(|s|s.as_str()).unwrap_or("").into()),
+                 _ => continue,
+             });
+         }
+@@ -85,7 +60,7 @@
+         self.blocks
+             .iter()
+             .map(|b| match b {
+-                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Item(x) | Block::Quote(x) | Block::Caption(x) => x.split_whitespace().count(),
++                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Item(x) | Block::Quote(x) | Block::Caption(x) | Block::Link(x, _) => x.split_whitespace().count(),
+                 Block::Image(..) => 0,
+             })
+             .sum()
+@@ -95,7 +70,7 @@
+         let mut out = String::new();
+         for b in &self.blocks {
+             match b {
+-                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Quote(x) | Block::Caption(x) => {
++                Block::Heading(_, x) | Block::Para(x) | Block::Pre(x) | Block::Quote(x) | Block::Caption(x) | Block::Link(x, _) => {
+                     out.push_str(x);
+                     out.push_str("\n\n");
+                 }
+@@ -134,6 +109,9 @@
+     Quote,
+     Caption,
+     Rule,
++    Link,
++    Image,
++    CodeAction,
+ }
+ 
+ /// The reader over one page.
+@@ -144,11 +122,12 @@
+     pub lines: Vec<Line>,
+     pub laid_for: (f32, f32),
+     pub height: f32,
++    pub saved: crate::reading_reader::Extras,
+ }
+ 
+ impl Reader {
+     pub fn new(article: Article) -> Reader {
+-        Reader { article, scroll: 0.0, lines: Vec::new(), laid_for: (0.0, 0.0), height: 0.0 }
++        Reader { article, scroll: 0.0, lines: Vec::new(), laid_for: (0.0, 0.0), height: 0.0, saved: Default::default() }
+     }
+ }
+ 
+@@ -198,11 +177,14 @@
+ impl Reader {
+     /// Typeset the article into lines for `width` (physical px) at `scale`.
+     pub fn layout(&mut self, fonts: &nus_render::FontSystem, f: &ReaderFonts, width: f32, scale: f32, ink: nus_render::Color) {
+-        if self.laid_for == (width, scale) {
++        let font_key=[f.serif,f.serif_italic,f.mono,f.mono_strong];
++        if self.laid_for == (width, scale) && self.saved.font_key==Some(font_key) {
+             return;
+         }
+         self.laid_for = (width, scale);
+         self.lines.clear();
++        self.saved.reset_layout();
++        self.saved.font_key=Some(font_key);
+         let px = |v: f32| v * scale;
+         let st = |font: FontId, size: f32| Style { font, px: px(size), color: ink, tracking: 0.0 };
+         let body = st(f.serif, measure::BODY);
+@@ -234,7 +216,8 @@
+         y += px(10.0);
+         self.lines.push(Line { kind: Kind::Rule, text: String::new(), dx: 0.0, y });
+         y += px(18.0);
+-        for b in &a.blocks {
++        for (block_index,b) in a.blocks.iter().enumerate() {
++            let first=self.lines.len();
+             match b {
+                 Block::Heading(l, x) => {
+                     y += px(12.0);
+@@ -249,9 +232,16 @@
+                 Block::Pre(x) => {
+                     let mono = st(f.mono, measure::MONO);
+                     y += px(6.0);
++                    if self.saved.offline {
++                        y+=px(24.0);
++                        self.saved.code.insert(self.lines.len(),x.clone());
++                        self.lines.push(Line{kind:Kind::CodeAction,text:"COPY CODE / TABLE".into(),dx:0.0,y});
++                    }
+                     for raw in x.lines() {
+                         y += px(measure::MONO * 1.6);
+-                        self.lines.push(Line { kind: Kind::Mono, text: raw.replace('\t', "    "), dx: px(16.0), y });
++                        let text=raw.replace('\t',"    ");
++                        self.saved.horizontal_max=self.saved.horizontal_max.max((fonts.measure(mono,&text)+px(32.0)-width).max(0.0));
++                        self.lines.push(Line { kind: Kind::Mono, text, dx: px(16.0), y });
+                     }
+                     y += px(14.0);
+                     let _ = mono;
+@@ -264,16 +254,32 @@
+                     push(Kind::Quote, st(f.serif_italic, measure::BODY), x, px(24.0), width, lead, &mut y, &mut self.lines);
+                     y += px(12.0);
+                 }
+-                Block::Image(alt, _) => {
+-                    let text = if alt.is_empty() { "image".to_string() } else { format!("image · {alt}") };
++                Block::Image(alt, id) => {
++                    if let Some(pic)=self.saved.pictures.get(id) {
++                        let image_w=width.min(pic.width as f32*scale);
++                        let image_h=image_w*pic.height as f32/pic.width.max(1) as f32;
++                        self.saved.image_heights.insert(self.lines.len(),image_h);
++                        self.lines.push(Line{kind:Kind::Image,text:id.clone(),dx:(width-image_w)/2.0,y});
++                        y+=image_h+px(12.0);
++                    }
++                    let noun=if self.saved.offline && !self.saved.pictures.contains_key(id){"image unavailable offline"}else{"image"};
++                    let text = if alt.is_empty() { noun.to_string() } else { format!("{noun} · {alt}") };
+                     push(Kind::Caption, st(f.mono, measure::CAPTION), &text.caps(), 0.0, width, px(measure::CAPTION * 1.6), &mut y, &mut self.lines);
+                     y += px(10.0);
++                }
++                Block::Link(x,url) => {
++                    let before=self.lines.len();
++                    let label=format!("{x} · {url}");
++                    push(Kind::Link,st(f.serif,measure::BODY),&label,0.0,width,lead,&mut y,&mut self.lines);
++                    for i in before..self.lines.len(){self.saved.links.insert(i,url.clone());}
++                    y+=px(10.0);
+                 }
+                 Block::Caption(x) => {
+                     push(Kind::Caption, st(f.mono, measure::CAPTION), x, 0.0, width, px(measure::CAPTION * 1.6), &mut y, &mut self.lines);
+                     y += px(10.0);
+                 }
+             }
++            self.saved.blocks.push((first,self.lines.len(),block_index));
+         }
+         self.height = y + px(60.0);
+     }
+@@ -281,20 +287,32 @@
+     /// Draw into `r`; the column is centred and never wider than the measure.
+     pub fn draw(&mut self, scene: &mut Scene, fonts: &mut nus_render::FontSystem, f: &ReaderFonts, r: Rect, scale: f32, ink: nus_render::Color, dim: nus_render::Color, paper: nus_render::Color, signal: nus_render::Color) {
+         let px = |v: f32| v * scale;
+-        let col_w = px(measure::COLUMN).min(r.w - 2.0 * px(measure::GUTTER));
++        let col_w = px(measure::COLUMN).min((r.w - 2.0 * px(measure::GUTTER).min(r.w*0.08)).max(1.0));
+         let x0 = (r.x + (r.w - col_w) / 2.0).round();
+         self.layout(fonts, f, col_w, scale, ink);
+         let max_scroll = (self.height - r.h).max(0.0);
+         self.scroll = self.scroll.clamp(0.0, max_scroll);
+         scene.rect(r, paper);
+         scene.layer(Some(r));
++        self.saved.viewport=Some(r); self.saved.scale=scale;
++        self.saved.hits.clear(); self.saved.drawn.clear();
++        self.saved.horizontal=self.saved.horizontal.clamp(0.0,self.saved.horizontal_max);
+         let top = r.y + px(28.0) - self.scroll;
+-        for line in &self.lines {
++        for (index,line) in self.lines.iter().enumerate() {
+             let y = top + line.y;
++            if line.kind==Kind::Image {
++                if let (Some(pic),Some(&height))=(self.saved.pictures.get(&line.text),self.saved.image_heights.get(&index)) {
++                    if y+height>=r.y && y<=r.bottom() {scene.texture(Rect::new(x0+line.dx,y,col_w-2.0*line.dx,height),pic.texture.clone(),Some(r));}
++                }
++                continue;
++            }
+             if y < r.y - px(60.0) || y > r.bottom() + px(10.0) {
+                 continue;
+             }
+             let (font, size, color) = match line.kind {
++                Kind::Image => continue,
++                Kind::Link => (f.serif, measure::BODY, signal),
++                Kind::CodeAction => (f.mono_strong, measure::CAPTION, ink),
+                 Kind::Title => (f.serif, measure::TITLE, ink),
+                 Kind::Byline => (f.serif_italic, measure::BODY, dim),
+                 Kind::H(2) => (f.serif, measure::H2, ink),
+@@ -315,7 +333,33 @@
+                 scene.rect(Rect::new(x0 + px(4.0), y - px(measure::BODY), px(2.0), px(measure::BODY * measure::LEADING)), ink);
+             }
+             let st = Style { font, px: px(size), color, tracking: 0.0 };
+-            fonts.draw(scene, st, x0 + line.dx, y, &line.text);
++            let x=x0+line.dx-if line.kind==Kind::Mono {self.saved.horizontal}else{0.0};
++            let text_w=fonts.measure(st,&line.text);
++            let hit=Rect::new(x,y-st.px*1.05,text_w.max(px(6.0)),st.px*1.45).intersect(&r);
++            if self.saved.found==Some(index) {scene.rect(Rect::new(x,y-st.px*1.05,text_w,st.px*1.45),[signal[0],signal[1],signal[2],0.16]);}
++            if let Some((a,b))=self.saved.selection {
++                let(a,b)=if a<=b{(a,b)}else{(b,a)};
++                if index>=a.line && index<=b.line {
++                    let from=if index==a.line{a.byte}else{0};let to=if index==b.line{b.byte}else{line.text.len()};
++                    if let (Some(prefix),Some(selected))=(line.text.get(..from),line.text.get(from..to)) {
++                        let dx=fonts.measure(st,prefix);let w=fonts.measure(st,selected);
++                        scene.rect(Rect::new(x+dx,y-st.px*1.05,w,st.px*1.45),[signal[0],signal[1],signal[2],0.24]);
++                    }
++                }
++            }
++            fonts.draw(scene, st, x, y, &line.text);
++            if hit.w>0.0 && hit.h>0.0 {
++                if line.kind==Kind::CodeAction {
++                    scene.hline(x,y+px(3.0),text_w,px(1.0),ink);
++                    self.saved.hits.push((hit,crate::reading_reader::Hit::Code(index)));
++                } else {
++                    self.saved.drawn.push((index,Rect::new(x,y-st.px*1.05,text_w,st.px*1.45),st));
++                    if let Some(url)=self.saved.links.get(&index) {
++                        scene.hline(x,y+px(3.0),text_w,px(1.0),signal);
++                        self.saved.hits.push((hit,crate::reading_reader::Hit::Link(url.clone())));
++                    }
++                }
++            }
+         }
+         scene.layer(None);
+         // A hairline scroll track on the right, ink for the visible part.
+diff --git a/docs/READING.md b/docs/READING.md
+new file mode 100644
+--- /dev/null
++++ b/docs/READING.md
+@@ -0,0 +1,136 @@
++# Reading List finishing pass
++
++Baseline: `009843a98bc64de22c50e0480e1187ee643726a9`.
++
++## Use
++
++Run **reading list** or **save to reading list** from the command palette, or
++use the new entries in a web page's context menu. The Reading List is a native
++full-window surface over the existing workspace. Escape returns to the list,
++then to the workspace. No new default keyboard binding is taken.
++
++A successful save first commits the page's address and browser container. Only
++then does capture start. "Link saved; no offline copy" is different from a
++saved article, and missing images are labeled. Saving again does not remove or
++refresh the item. Refresh is explicit and requires the original to be open in
++its saved container. Nothing is fetched automatically in the background.
++
++The native saved reader has search, mouse selection, UTF-8-safe keyboard
++selection, copy, code/table copy, horizontal scrolling for long preformatted
++blocks, text size controls, original-link navigation and saved paragraph
++anchors. Read state and archive state are independent. Opening an article does
++not mark it finished. The default To read filter places in-progress entries
++first. Search is over saved titles, URLs and container names, not full text.
++
++Snapshots reuse the existing Newsreader renderer; opening one creates no
++browser. A saved image is a PNG re-encoded from a loaded origin-clean image in
++the source page. Cross-origin tainted, unloaded, oversized or unsupported
++images retain alternative text with an incomplete-image indication. Capture
++neither fetches extra images nor bypasses browser origin restrictions.
++
++## Persistence and boundaries
++
++The lazy, process-shared worker serializes operations under `profile/reading`.
++The existing single-instance mechanism is still responsible for process-level
++profile ownership; this is not a new cross-process database lock.
++
++Each record is in `entries/<random-id>.json`. Immutable objects are in
++`objects/<sha256>.json`. Temp files are synchronized before replacement;
++Unix directory metadata is synchronized after replacement. An object is
++published before its entry reference. A failed refresh keeps the last valid
++snapshot. Hashes are checked before opening a saved copy. Changed external
++records are not silently overwritten. Unknown, malformed or oversized records
++are preserved with a warning instead of becoming an empty library.
++
++Capture tickets bind an entry generation to a stable browser instance,
++container, URL and navigation epoch. Deletion invalidates late captures. The
++capture transport has its own bounded allowance; normal inspector replies
++retain their existing 1 MiB limit. Reading payloads are not logged as previews.
++
++Only HTTP(S) addresses without embedded credentials are accepted. Query strings,
++fragments and container identity remain significant. The native snapshot format
++contains validated text blocks, explicit links and bounded PNGs, not executable
++HTML. No page-provided path is used as a filesystem path.
++
++Removed records are tombstoned; Undo is offered in the same session. **Remove
++is not secure erase.** Recovery records and superseded immutable objects are
++retained. There is no garbage collector or storage-quota management UI yet.
++Local filesystem permissions, not encryption, protect this saved content.
++The existing sync allowlist excludes the new reading directory. Incognito
++cannot initialize or save a Reading List. No accounts, telemetry, summaries,
++assistants, cloud services or new production dependencies are introduced.
++
++## Deliberate limits versus the broader design
++
++This is a first implementation, not a claim that the entire design is finished:
++
++* The Reading List is a native full-window surface, not a persistent Pane/tab.
++  Its entries and reading progress survive relaunch; the open surface does not
++  participate in session-pane restoration, pins, or saved layouts.
++* The existing extractor was strengthened, not replaced with Mozilla Readability.
++  It is a bounded read-only DOM traversal. It does not provide Readability's
++  extraction quality or an immutable cloned-document extraction pipeline.
++* Links are actionable references after the article rather than preserved inline
++  rich text. Emphasis is flattened. Tables preserve cells in horizontally
++  scrollable preformatted text; merged-cell fallback is explicitly disclosed.
++* Images are captured only when already decoded and origin-clean. This is not
++  full-web-page archival. Interactive embeds and mathematics have visible
++  fallbacks. Source addresses are retained for explicit original-page access.
++* The live reader receives the shared extraction/layout improvements, but the
++  new selection/find/clipboard controls are integrated into saved reading.
++  Full live-reader interaction parity remains separate work.
++* Multilingual text retention is tested; complex-script rendering, full Unicode
++  line breaking, screen-reader text-range selection and platform-specific IME
++  interaction have not been certified.
++* Reading font size is a per-window surface preference, not a persisted setting.
++* Welcome and sky/star artwork were not redesigned. The only related production
++  change suppresses hidden Home art animation under the Reading List. Welcome
++  labels, art seeds, and the broader visual/power acceptance pass remain open.
++
++## Checks
++
++Independent storage/model checks compile the actual production module without
++CEF or wgpu:
++
++```sh
++cargo test --manifest-path scripts/reading-check/Cargo.toml
++```
++
++This small test workspace resolves its own lockfile on first run. Review and
++retain that lockfile for repeatable CI; the production lockfile is unchanged.
++
++Actual extraction/capture sources in browser fixtures:
++
++```sh
++python3 scripts/reading-check/test_capture.py --chromium /path/to/chromium
++```
++
++Requires Python `playwright` and `Pillow`. It serves local fixtures only. On a
++managed host that prohibits loopback navigation, `--offline-dom` tests the
++real DOM/canvas code with inline images and explicitly skips the independent
++HTTP-origin test; it does not disable origin protections.
++
++Native build and integration checks (must run on the target platform):
++
++```sh
++cargo test --manifest-path spikes/composite/Cargo.toml --locked
++# Build the native macOS bundle through the existing project build procedure.
++python3 scripts/check-reading.py dist/nus.app
++python3 scripts/check-startup.py dist/nus.app
++```
++
++The native script uses temporary profiles, real capture/renderer actions, a
++loopback fixture page, saved images and exact code, then closes the source
++browser and relaunches with the fixture server stopped. It exercises semantic
++resume, find, archive/unarchive, confirmed removal/undo, basic accessibility
++structure and control containment. It records screenshots for human review.
++Fixed driver waits are generous but are not performance benchmarks. A timeout
++is a failure, not proof that the feature works on slower hardware.
++
++Before release, build and test macOS, Windows and Linux; run VoiceOver/NVDA,
++keyboard-only and manual pointer selection checks; review narrow/wide and
++light/dark screenshots; measure large-list/frame and shutdown behavior. Native
++build, Rust unit tests, GPU rendering, native end-to-end, visual acceptance,
++performance and platform accessibility were **not executed** in the patch's
++creation environment. See the accompanying validation report for executed
++checks and patch-application verification limits.
+diff --git a/scripts/check-reading.py b/scripts/check-reading.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/check-reading.py
+@@ -0,0 +1,138 @@
++#!/usr/bin/env python3
++"""Native reading regression driver, for a BUILT macOS nus.app.
++
++Uses the application's real command, capture, renderer, and screenshot paths.
++No installed profile is read or modified. Network fixtures stay on loopback.
++Not a substitute for VoiceOver/manual interaction or other-platform builds.
++Usage: python3 scripts/check-reading.py dist/nus.app
++"""
++from __future__ import annotations
++import argparse
++import json
++import os
++import subprocess
++import tempfile
++import threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from pathlib import Path
++
++CODE = 'function example() {\n\treturn "exact spacing";  \n}\n'
++
++def main():
++    ap=argparse.ArgumentParser();ap.add_argument('bundle',type=Path);args=ap.parse_args()
++    exe=args.bundle.resolve()/'Contents/MacOS/nus'
++    if not exe.is_file():raise SystemExit(f'Built macOS executable not found: {exe}')
++    root=Path(tempfile.mkdtemp(prefix='nus-reading-check-'))
++    profile=root/'profile';profile.mkdir()
++    (profile/'onboarded').write_text('skip')
++    (profile/'settings.json').write_text(json.dumps({'behavior':{'then':'Prompt','splash':'None','atlas':'Planet','remember':False},'motion':{'reduce':True}}))
++    # Native fixture image is a supplied, valid 160x80 PNG, not an HTTP dependency.
++    png_path=Path(__file__).parent/'reading-check/figure.png.hex'
++    image=bytes.fromhex(png_path.read_text())
++    paragraphs=''.join(f'<h2>Passage {i}</h2><p>Paragraph {i}. This is a saved reading regression article. It contains enough text to exercise reflow, paragraph anchors and scrolling without using an external website.</p>' for i in range(35))
++    article=('<!doctype html><meta charset="utf-8"><title>Reading acceptance</title><article><h1>Reading acceptance</h1>'+paragraphs+'<pre>'+CODE+'</pre><img src="/figure.png" alt="Saved figure"><table><tr><th>Name</th><th>Value</th></tr><tr><td>Alpha</td><td>42</td></tr></table></article>').encode()
++    requests=[]
++    class Handler(BaseHTTPRequestHandler):
++        def do_GET(self):
++            requests.append(self.path);body,mime=(image,'image/png') if self.path=='/figure.png' else (article,'text/html; charset=utf-8')
++            self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
++        def log_message(self,*_):pass
++    server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True
++    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
++    url=f'http://127.0.0.1:{server.server_port}/article?q=1#section'
++    def run(name,steps):
++        script=root/f'{name}.shot';script.write_text('wait 2500\n'+steps+'\n')
++        out=root/name;out.mkdir(exist_ok=True)
++        env=dict(os.environ,NUS_SHOT_DIR=str(root),NUS_SHOT=str(script),NUS_SHOT_OUT=str(out),NUS_MODE='paper')
++        env.pop('NUS_SHOT2',None)
++        log=root/f'{name}.log'
++        with log.open('w') as f:
++            result=subprocess.run([str(exe)],cwd=root,env=env,stdout=f,stderr=subprocess.STDOUT,timeout=90)
++        text=log.read_text()
++        if result.returncode or 'panicked' in text or 'READING_CHECK_COMPLETE' not in text:
++            raise RuntimeError(f'{name} failed or incomplete; inspect {log}\n{text[-3500:]}')
++        print('PASS',name,flush=True)
++    try:
++        run('capture',f'''tab {url}
++wait 3500
++reading save
++wait 12000
++reading open
++wait 1500
++reading assert-count 1
++reading assert-idle
++reading assert-offline
++reading assert-bounds
++reading assert-access
++shot reading-list
++reading select 0
++reading open-selected
++wait 1500
++reading assert-reader
++reading assert-images 1
++reading assert-code {json.dumps(CODE)}
++reading assert-contains Alpha
++reading scroll 800
++wait 1500
++reading flush
++wait 1500
++shot saved-reading
++reading close-source
++wait 1500
++reading open
++wait 1500
++reading select 0
++reading open-selected
++wait 1500
++reading assert-browsers 0
++reading assert-position
++reading assert-contains Reading acceptance
++reading complete''')
++    finally:
++        server.shutdown();server.server_close();thread.join()
++    count=len(requests)
++    # There is now NO fixture server. No original page should reopen automatically.
++    run('offline-relaunch','''reading open
++wait 1500
++reading assert-count 1
++reading select 0
++reading open-selected
++wait 1500
++reading assert-reader
++reading assert-browsers 0
++reading assert-images 1
++reading assert-position
++reading find Paragraph 20
++reading assert-find
++reading assert-access
++reading assert-bounds
++shot offline-resume
++reading back
++wait 400
++reading click remove-selected
++wait 300
++reading click cancel
++wait 300
++reading assert-count 1
++reading click archive-selected
++wait 1500
++reading click filter:3
++wait 400
++reading assert-matches 1
++reading click archive-selected
++wait 1500
++reading click filter:1
++wait 400
++reading assert-matches 1
++reading click remove-selected
++wait 300
++reading click confirm
++wait 1500
++reading assert-count 0
++reading click undo
++wait 1500
++reading assert-count 1
++reading complete''')
++    assert len(requests)==count
++    print(f'Evidence: {root}\nReview the screenshots; a scripted pass is not visual acceptance.')
++if __name__=='__main__':main()
+diff --git a/scripts/reading-check/Cargo.toml b/scripts/reading-check/Cargo.toml
+new file mode 100644
+--- /dev/null
++++ b/scripts/reading-check/Cargo.toml
+@@ -0,0 +1,20 @@
++[package]
++name = "nus-reading-check"
++version = "0.0.1"
++edition = "2021"
++publish = false
++
++# Compile and exercise the SAME production storage module without CEF/wgpu.
++[workspace]
++
++[lib]
++path = "../../spikes/composite/src/reading.rs"
++
++[dependencies]
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
++url = "2.5"
++getrandom = "0.4"
++ring = "0.17.14"
++tempfile = "3"
++image = { version = "0.25", default-features = false, features = ["png"] }
+diff --git a/scripts/reading-check/figure.png.hex b/scripts/reading-check/figure.png.hex
+new file mode 100644
+--- /dev/null
++++ b/scripts/reading-check/figure.png.hex
+@@ -0,0 +1,1 @@
++89504e470d0a1a0a0000000d49484452000000a0000000500802000000113fe963000000d749444154789cedd1410900210000c1f3aaf8b781fd6b9942846526c1c28eb9f647d7ff3a80bb0c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338cee03883e30c8e3338ee00f618012e4e13883a0000000049454e44ae426082
+diff --git a/scripts/reading-check/test_capture.py b/scripts/reading-check/test_capture.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/reading-check/test_capture.py
+@@ -0,0 +1,177 @@
++#!/usr/bin/env python3
++"""Run the ACTUAL injected extraction/capture sources in a local Chromium.
++
++Uses no Internet pages, never reads a real nus profile, and starts only temporary
++loopback fixture servers. Requires Python playwright and Pillow plus Chromium.
++No native Rust/CEF/GPU pass is implied by these browser-fixture results.
++"""
++from __future__ import annotations
++import argparse
++import base64
++import io
++import json
++import random
++import threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from pathlib import Path
++from urllib.parse import urlparse
++from PIL import Image
++from playwright.sync_api import sync_playwright, Error as BrowserError
++
++ROOT = Path(__file__).resolve().parents[2]
++ART = ROOT / 'spikes/composite/assets/reading'
++ARTICLE = (ART / 'article.js').read_text()
++CAPTURE = (ART / 'capture.js').read_text()
++TOKEN = 'a' * 32
++CODE = 'function example() {\n\treturn "exact spacing";  \n}\n'
++PROSE = ('This article exists to test saved reading without depending on a live external website. '
++         'The original document, code, links and figures must survive extraction without hidden content. ')
++
++def png(width=160, height=80, noise=False):
++    if noise:
++        rng = random.Random(187)
++        image = Image.frombytes('RGB', (width, height), rng.randbytes(width * height * 3))
++    else:
++        image = Image.new('RGB', (width, height), (35, 46, 61))
++    out = io.BytesIO(); image.save(out, 'PNG'); return out.getvalue()
++
++class Fixtures:
++    def __init__(self):
++        self.requests = []
++        self.html = ''
++        self.images = {'/figure.png': png(), '/large.png': png(600,350,True)}
++        owner = self
++        class Handler(BaseHTTPRequestHandler):
++            def do_GET(self):
++                path = urlparse(self.path).path
++                owner.requests.append(self.path)
++                if path in owner.images:
++                    body, mime, status = owner.images[path], 'image/png', 200
++                elif path == '/missing.png':
++                    body, mime, status = b'missing', 'text/plain', 404
++                else:
++                    body, mime, status = owner.html.encode(), 'text/html; charset=utf-8', 200
++                self.send_response(status); self.send_header('Content-Type', mime)
++                self.send_header('Content-Length', str(len(body))); self.end_headers()
++                self.wfile.write(body)
++            def log_message(self, *_): pass
++        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
++        self.server.daemon_threads = True
++        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
++        self.thread.start()
++        self.url = f'http://127.0.0.1:{self.server.server_port}'
++    def close(self): self.server.shutdown(); self.server.server_close(); self.thread.join()
++
++def main():
++    ap=argparse.ArgumentParser(); ap.add_argument('--chromium',default='/usr/bin/chromium')
++    ap.add_argument('--report',type=Path); ap.add_argument('--offline-dom',action='store_true',help='Use set_content/data images when managed browser policy prohibits loopback navigation; real cross-origin test is skipped.'); args=ap.parse_args()
++    local, foreign = Fixtures(), Fixtures()
++    tests=[]
++    try:
++        with sync_playwright() as pw:
++            browser=pw.chromium.launch(executable_path=args.chromium, headless=True,
++                                      args=['--no-sandbox','--disable-background-networking'])
++            context=browser.new_context()
++            context.route('**/*',lambda route: route.continue_() if urlparse(route.request.url).hostname=='127.0.0.1' else route.abort())
++            page=context.new_page()
++            network_requests=[]
++            page.on('request', lambda request: network_requests.append(request.url))
++            def load(body):
++                local.html='<!doctype html><meta charset="utf-8"><title>Fixture</title>'+body
++                if args.offline_dom:
++                    body = body.replace('src="/figure.png"','src="data:image/png;base64,'+base64.b64encode(local.images['/figure.png']).decode()+'"')
++                    body = body.replace('src="/large.png"','src="data:image/png;base64,'+base64.b64encode(local.images['/large.png']).decode()+'"')
++                    page.set_content('<!doctype html><meta charset="utf-8"><base href="'+local.url+'/"><title>Fixture</title>'+body,wait_until='load')
++                else:
++                    page.goto(local.url+'/article?q=1#section',wait_until='networkidle')
++            def extract(): return json.loads(page.evaluate(ARTICLE))
++            def capture(): return json.loads(page.evaluate(f'({CAPTURE})({json.dumps(TOKEN)},({ARTICLE}))'))
++            def case(name,fn):
++                fn(); tests.append({'name':name,'status':'PASS'}); print('PASS',name,flush=True)
++            def basic():
++                load(f'<article><h1>Saved reading fixture</h1><p>{PROSE}</p><pre>{CODE.replace("&","&amp;").replace("<","&lt;")}</pre></article>')
++                a=extract(); assert a['title']=='Saved reading fixture'
++                assert next(b['x'] for b in a['blocks'] if b['t']=='pre')==CODE
++            case('preserves title and exact code whitespace',basic)
++            def hidden():
++                load(f'<article><h1>Visible</h1><p>{PROSE}<span hidden>SECRET_HIDDEN</span><span style="display:none">SECRET_CSS</span><span aria-hidden="true">SECRET_ARIA</span><input value="SECRET_INPUT"></p><div hidden><p>SECRET_PARENT {PROSE}</p></div></article>')
++                assert 'SECRET_' not in json.dumps(extract())
++            case('excludes hidden descendants and input fields',hidden)
++            def references():
++                load(f'<article><p>{PROSE}<a href="/docs?q=7#usage">Documentation</a><a href="javascript:alert(1)">Unsafe script</a><a href="https://u:p@example.com/">Credentials</a><a href="data:text/plain,secret">Inline</a></p></article>')
++                links=[b for b in extract()['blocks'] if b['t']=='link']
++                assert len(links)==1 and links[0]['src']==local.url+'/docs?q=7#usage'
++            case('keeps query and fragment; rejects unsafe link schemes and credentials',references)
++            def images():
++                load(f'<article><p>{PROSE}</p><img src="/figure.png" alt="Diagram"><img src="{foreign.url}/figure.png" alt="Foreign"><img src="/missing.png" width="160" alt="Missing"></article>')
++                result=capture(); assert result['token']==TOKEN and result['url']==local.url+'/article?q=1#section'
++                assert len(result['media'])==1 and result['missing_images']==2
++                m=result['media'][0]; img=Image.open(io.BytesIO(bytes.fromhex(m['png'])))
++                assert img.size==(160,80) and m['width']==160 and m['height']==80
++                assert [b['src'] for b in result['document']['blocks'] if b['t']=='img']==['image-0','','']
++            if args.offline_dom:
++                tests.append({'name':'captures origin-clean images; identifies tainted and missing images','status':'SKIP','reason':'Managed loopback navigation unavailable; offline DOM mode cannot establish independent HTTP origins.'})
++                def inline_images():
++                    load(f'<article><p>{PROSE}</p><img src="/figure.png" alt="Diagram"></article>')
++                    result=capture(); assert result['url']=='about:blank' and result['token']==TOKEN
++                    assert len(result['media'])==1 and result['missing_images']==0
++                    image=Image.open(io.BytesIO(bytes.fromhex(result['media'][0]['png'])))
++                    assert image.size==(160,80)
++                case('captures a loaded origin-clean inline PNG',inline_images)
++            else:
++                case('captures origin-clean images; identifies tainted and missing images',images)
++            def large():
++                load(f'<article><p>{PROSE}</p><img src="/large.png" alt="Large transport fixture"></article>')
++                result=capture(); assert len(json.dumps(result))>1024*1024
++                assert len(result['media'])==1 and result['missing_images']==0
++            case('produces a valid capture larger than the ordinary 1 MiB inspector limit',large)
++            def dedupe():
++                load(f'<article><p>{PROSE}</p><img src="/figure.png"><img src="/figure.png"></article>')
++                c=capture(); assert len(c['media'])==1
++                assert [b['src'] for b in c['document']['blocks'] if b['t']=='img']==['image-0','image-0']
++            case('deduplicates repeated image payloads',dedupe)
++            def nonmutating():
++                load(f'<article><p>{PROSE}</p><img src="/figure.png"></article>')
++                before=page.content(); n=len(network_requests)
++                page.evaluate('window.__mutations=0; new MutationObserver(r=>window.__mutations+=r.length).observe(document,{childList:true,subtree:true,attributes:true,characterData:true});')
++                capture(); page.wait_for_timeout(100)
++                assert page.content()==before and page.evaluate('window.__mutations')==0
++                assert len(network_requests)==n
++            case('does not mutate the live DOM or initiate network requests',nonmutating)
++            def table():
++                load(f'<article><p>{PROSE}</p><table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>42</td></tr><tr><td colspan="2">Merged content</td></tr></table></article>')
++                blocks=extract()['blocks']; text='\n'.join(b['x'] for b in blocks)
++                assert all(s in text for s in ['Name','Value','42','Merged content','merged cells'])
++                assert any(b['t']=='pre' and ' | ' in b['x'] for b in blocks)
++            case('preserves table cells and discloses merged-cell layout fallback',table)
++            def multilingual():
++                phrase='Caracas: acción y lectura. 日本語の文章。 العربية تبقى مقروءة.'
++                load(f'<article><p>{PROSE}{phrase}</p></article>')
++                assert phrase in extract()['blocks'][0]['x']
++            case('retains accented, CJK and RTL text in the captured document',multilingual)
++            def nested():
++                load(f'<article><p>{PROSE}</p><ul><li>Parent<ul><li>Child</li></ul></li></ul></article>')
++                items=[b['x'] for b in extract()['blocks'] if b['t']=='li']; assert items==['Parent','Child']
++            case('does not duplicate nested list text',nested)
++            def rejects(body):
++                load(body)
++                try: extract()
++                except BrowserError: return
++                raise AssertionError('Expected an explicit extraction failure, not a partial article')
++            case('rejects non-article pages',lambda:rejects('<main><p>Hello</p></main>'))
++            case('rejects sign-in surfaces',lambda:rejects(f'<main><p>{PROSE}</p><form><input type="password"></form></main>'))
++            case('rejects block overflow instead of truncating',lambda:rejects('<article>'+('<p>'+PROSE+'</p>')*4097+'</article>'))
++            case('rejects node overflow',lambda:rejects('<article><p>'+PROSE+'</p>'+('<b>x</b>'*20001)+'</article>'))
++            case('rejects text overflow',lambda:rejects('<article><p>'+('a '*(1024*1024+2))+'</p></article>'))
++            case('rejects link overflow',lambda:rejects('<article><p>'+PROSE+''.join(f'<a href="/x{i}">link {i}</a>' for i in range(257))+'</p></article>'))
++            def fallback():
++                load(f'<article><p>{PROSE}</p><video></video><math><mi>x</mi></math></article>')
++                assert any('not captured' in b['x'] for b in extract()['blocks'])
++            case('labels unsupported media rather than silently dropping it',fallback)
++            browser.close()
++    finally: local.close(); foreign.close()
++    report={'suite':'real Chromium extraction/capture fixtures','mode':'offline DOM' if args.offline_dom else 'loopback HTTP','tests':tests,'passed':sum(t['status']=='PASS' for t in tests),'skipped':sum(t['status']=='SKIP' for t in tests),
++            'native_rust_build':'NOT RUN by this script','native_ui':'NOT RUN by this script'}
++    if args.report: args.report.parent.mkdir(parents=True,exist_ok=True); args.report.write_text(json.dumps(report,indent=2)+'\n')
++    print(f"{report['passed']} browser-fixture tests passed; {report['skipped']} skipped.")
++if __name__=='__main__': main()
+diff --git a/spikes/composite/assets/reading/article.js b/spikes/composite/assets/reading/article.js
+new file mode 100644
+--- /dev/null
++++ b/spikes/composite/assets/reading/article.js
+@@ -0,0 +1,159 @@
++/* Shared live/saved article extraction. This reader emits data, never HTML.
++ * No DOM writes, script execution, fetches, hidden tabs, or page navigation.
++ * Limits fail explicitly rather than returning a silently truncated article.
++ */
++(function () {
++  'use strict';
++  const LIMIT = { nodes: 20000, blocks: 4096, text: 2 * 1024 * 1024, links: 256 };
++  const clean = s => String(s || '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
++  const notices = new Set();
++  let visited = 0, bytes = 0;
++  const all = document.getElementsByTagName('*');
++  if (all.length > LIMIT.nodes) throw new Error('Page is too large for a bounded reading capture');
++  const visible = e => {
++    if (e.hidden || e.getAttribute('aria-hidden') === 'true') return false;
++    const s = getComputedStyle(e);
++    return s.display !== 'none' && s.visibility !== 'hidden' && s.visibility !== 'collapse';
++  };
++  const forbidden = /^(SCRIPT|STYLE|NAV|ASIDE|FOOTER|HEADER|FORM|BUTTON|NOSCRIPT|TEMPLATE|INPUT|SELECT|TEXTAREA)$/;
++  // textContent on a visible paragraph can include hidden descendants. Walk
++  // inline content without including forms, hidden answers, scripts or notices.
++  const rawText = (node, depth = 0) => {
++    if (depth > 96) throw new Error('Article inline structure exceeds the reading budget');
++    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
++    if (node.nodeType !== Node.ELEMENT_NODE || forbidden.test(node.tagName) || !visible(node)) return '';
++    if (node.tagName === 'BR') return '\n';
++    return Array.from(node.childNodes, n => rawText(n, depth + 1)).join('');
++  };
++  const text = e => clean(rawText(e)).replace(/\s+/g, ' ').trim();
++  const visibleIn = (e, stop) => {
++    for (let p = e; p && p !== stop; p = p.parentElement) if (!visible(p) || forbidden.test(p.tagName)) return false;
++    return true;
++  };
++
++  const metadata = name => {
++    const m = document.querySelector('meta[property="' + name + '"],meta[name="' + name + '"]');
++    return clean(m ? m.content : '');
++  };
++  let best = document.body, score = 0;
++  for (const c of document.querySelectorAll('article,main,[role="main"],#content,#main,.post,.article,.entry-content,body')) {
++    if (!visible(c)) continue;
++    let n = 0;
++    for (const p of c.querySelectorAll('p,pre')) {
++      if (visibleIn(p, c) && !p.closest('nav,aside,footer,form,header')) n += text(p).length;
++    }
++    n *= c.tagName === 'BODY' ? 0.45 : 1;
++    if (n > score) { best = c; score = n; }
++  }
++  if (!best || score < 80) throw new Error('No substantial article was found; only the link can be saved');
++  if (document.querySelector('input[type="password"]') && !best.matches('article,.post,.article,.entry-content') && !best.querySelector('article,.post,.article,.entry-content')) {
++    throw new Error('Sign-in form detected; only the link can be saved');
++  }
++  const h1 = best.querySelector('h1') || document.querySelector('h1');
++  const title = clean((h1 && text(h1)) || metadata('og:title') || document.title);
++  const byline = metadata('author') || metadata('article:author');
++  const when = metadata('article:published_time') || metadata('date');
++  if ([title, byline, when].some(x => new TextEncoder().encode(x).length > 8192)) {
++    throw new Error('Article metadata is too large');
++  }
++  const blocks = [], links = new Map();
++  function push(b) {
++    bytes += new TextEncoder().encode(b.x || '').length;
++    if (bytes > LIMIT.text || blocks.length >= LIMIT.blocks) throw new Error('Article exceeds the reading budget; no truncated copy was returned');
++    blocks.push(b);
++  }
++  function address(raw) {
++    try {
++      const u = new URL(raw, document.baseURI);
++      return /^https?:$/.test(u.protocol) && !u.username && !u.password && u.href.length <= 8192 ? u.href : null;
++    } catch (_) { return null; }
++  }
++  function references(e) {
++    for (const a of e.querySelectorAll('a[href]')) {
++      if (!visibleIn(a, best)) continue;
++      const url = address(a.getAttribute('href'));
++      const label = text(a);
++      if (!url || !label || links.has(url)) continue;
++      if (links.size >= LIMIT.links) throw new Error('Article has too many links for this capture');
++      links.set(url, label);
++    }
++  }
++  function image(e) {
++    const src = e.currentSrc || e.src || '';
++    if (src && (e.naturalWidth || e.width) >= 80) {
++      push({ t: 'img', x: clean(e.alt || ''), src });
++    }
++  }
++  function walk(e, depth) {
++    if (++visited > LIMIT.nodes || depth > 96) throw new Error('Article structure exceeds the reading budget');
++    if (e.nodeType !== Node.ELEMENT_NODE || forbidden.test(e.tagName) || !visible(e)) return;
++    const tag = e.tagName;
++    if (/^H[1-6]$/.test(tag)) {
++      const x = text(e);
++      if (x && !(tag === 'H1' && x === title)) push({ t: 'h', l: Number(tag[1]), x });
++      return;
++    }
++    if (tag === 'PRE') {
++      const x = clean(rawText(e)); // Preserve tabs, leading space AND final newline.
++      if (x.trim()) push({ t: 'pre', x });
++      references(e); return;
++    }
++    if (tag === 'TABLE') {
++      const rows = Array.from(e.rows || []);
++      if (rows.length > 200 || rows.some(r => r.cells.length > 32)) throw new Error('Table exceeds the reading budget');
++      const matrix = rows.filter(r => visibleIn(r, e)).map(r => Array.from(r.cells, c => text(c)));
++      if (rows.some(r => Array.from(r.cells).some(c => c.colSpan > 1 || c.rowSpan > 1))) {
++        notices.add('A table uses merged cells. Its text is preserved; open the original for exact table layout.');
++      }
++      const widths = [];
++      for (const row of matrix) row.forEach((c, i) => { widths[i] = Math.min(48, Math.max(widths[i] || 0, Array.from(c).length)); });
++      const rendered = matrix.map(r => r.map((c, i) => c + ' '.repeat(Math.max(0, widths[i] - Array.from(c).length))).join(' | ')).join('\n');
++      if (rendered.trim()) push({ t: 'pre', x: rendered });
++      references(e); return;
++    }
++    if (tag === 'IMG') { image(e); return; }
++    if (/^(VIDEO|AUDIO|IFRAME|CANVAS|SVG|MATH|OBJECT|EMBED)$/.test(tag)) {
++      notices.add('Interactive media or mathematics is not captured. Open the original to use it.'); return;
++    }
++    if (tag === 'P' || tag === 'FIGCAPTION' || tag === 'BLOCKQUOTE') {
++      const x = text(e);
++      if (x) push({ t: tag === 'FIGCAPTION' ? 'cap' : tag === 'BLOCKQUOTE' ? 'q' : 'p', x });
++      references(e);
++      for (const img of e.querySelectorAll('img')) if (visibleIn(img, e)) image(img);
++      if (e.querySelector('math,video,audio,iframe,canvas,svg,object,embed')) {
++        notices.add('Interactive media or mathematics is not captured. Open the original to use it.');
++      }
++      return;
++    }
++    if (tag === 'LI') {
++      const own = Array.from(e.childNodes).filter(n => n.nodeType !== Node.ELEMENT_NODE || !/^(UL|OL)$/.test(n.tagName));
++      const x = clean(own.map(n => rawText(n)).join('')).replace(/\s+/g, ' ').trim();
++      if (x) push({ t: 'li', x });
++      references(e);
++      for (const img of e.querySelectorAll(':scope > img,:scope > p img')) if (visibleIn(img, e)) image(img);
++      for (const c of e.children) if (/^(UL|OL)$/.test(c.tagName)) walk(c, depth + 1);
++      return;
++    }
++    // Preserve prose that is not wrapped in a <p>, without duplicating children.
++    let loose = '';
++    const flush = () => { const x = clean(loose).replace(/\s+/g, ' ').trim(); if (x) push({ t: 'p', x }); loose = ''; };
++    for (const c of e.childNodes) {
++      if (c.nodeType === Node.TEXT_NODE) loose += c.nodeValue || '';
++      else if (c.nodeType === Node.ELEMENT_NODE) {
++        if (/^(SPAN|B|STRONG|I|EM|CODE|A|SMALL|SUP|SUB|ABBR|TIME)$/.test(c.tagName) && visible(c)) { loose += rawText(c); references(c); if (c.matches('a[href]')) { const u = address(c.getAttribute('href')); if (u && text(c)) { if (!links.has(u) && links.size >= LIMIT.links) throw new Error('Article has too many links for this capture'); links.set(u, text(c)); } } }
++        else { flush(); walk(c, depth + 1); }
++      }
++    }
++    flush();
++  }
++  walk(best, 0);
++  if (!blocks.some(b => /^(p|pre|q|li)$/.test(b.t) && b.x.trim())) throw new Error('No readable article content');
++  // Link destinations are native, keyboard-reachable references. No extracted
++  // HTML is mounted. Inline rich-text layout is deliberately not impersonated.
++  if (links.size) {
++    push({ t: 'h', l: 2, x: 'Links in this article' });
++    for (const [src, label] of links) push({ t: 'link', x: label, src });
++  }
++  for (const n of notices) push({ t: 'cap', x: n });
++  return JSON.stringify({ title, byline, when, blocks });
++})()
+diff --git a/spikes/composite/assets/reading/capture.js b/spikes/composite/assets/reading/capture.js
+new file mode 100644
+--- /dev/null
++++ b/spikes/composite/assets/reading/capture.js
+@@ -0,0 +1,52 @@
++/* Called with the shared extractor's JSON and a native-generated capture token.
++ * It reads only images already decoded by this page. Canvas tainting enforces
++ * the origin boundary. No fetch fallback, credentials copied, or network I/O.
++ */
++(function (token, articleJSON) {
++  'use strict';
++  const article = JSON.parse(articleJSON);
++  const media = [], notices = new Set();
++  let missing = 0, total = 0, pixels = 0;
++  const saved = new Map();
++  const byURL = new Map();
++  for (const img of document.images) {
++    const src = img.currentSrc || img.src;
++    if (src && img.complete && img.naturalWidth && !byURL.has(src)) byURL.set(src, img);
++  }
++  for (const block of article.blocks) {
++    if (block.t !== 'img') continue;
++    const original = block.src;
++    block.src = ''; // No external URL survives as an offline image source.
++    if (saved.has(original)) { block.src = saved.get(original); continue; }
++    const img = byURL.get(original);
++    let canvas;
++    try {
++      if (!img || media.length >= 24) throw new Error('unavailable');
++      const w = img.naturalWidth, h = img.naturalHeight;
++      if (w > 4096 || h > 4096 || w * h > 4194304 || pixels + w * h > 8388608) throw new Error('oversized');
++      canvas = document.createElement('canvas');
++      canvas.width = w; canvas.height = h;
++      const ctx = canvas.getContext('2d');
++      if (!ctx) throw new Error('canvas unavailable');
++      ctx.drawImage(img, 0, 0);
++      const url = canvas.toDataURL('image/png');
++      const comma = url.indexOf(',');
++      if (!url.startsWith('data:image/png;base64,') || comma < 0 || url.length > 1400000) throw new Error('oversized');
++      const bytes = atob(url.slice(comma + 1));
++      if (bytes.length > 1048576 || total + bytes.length > 4194304) throw new Error('budget');
++      const hex = new Array(bytes.length);
++      for (let i = 0; i < bytes.length; i++) hex[i] = bytes.charCodeAt(i).toString(16).padStart(2, '0');
++      const id = 'image-' + media.length;
++      media.push({ id, width: w, height: h, png: hex.join('') });
++      total += bytes.length; pixels += w * h;
++      saved.set(original, id);
++      block.src = id;
++    } catch (_) {
++      missing++;
++      notices.add('Some images could not be saved without another network request or crossing an origin boundary. Their alternative text is retained.');
++    } finally {
++      if (canvas) canvas.width = canvas.height = 0;
++    }
++  }
++  return JSON.stringify({ schema: 1, token, url: location.href, document: article, media, missing_images: missing, notices: Array.from(notices) });
++})
+diff --git a/spikes/composite/src/reading.rs b/spikes/composite/src/reading.rs
+new file mode 100644
+--- /dev/null
++++ b/spikes/composite/src/reading.rs
+@@ -0,0 +1,661 @@
++//! Reading List: one profile-scoped writer, immutable snapshots, explicit intent.
++//!
++//! No network APIs and no GUI dependencies live here. A saved URL is committed
++//! before capture starts; failure to capture never destroys an existing copy.
++//! UI code submits operations to Service; it must not rewrite stale entry lists.
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, HashMap};
++use std::fs::{self, File};
++use std::io::{Read, Write};
++use std::path::{Path, PathBuf};
++use std::sync::{mpsc, Mutex, OnceLock};
++use std::time::{Duration, SystemTime, UNIX_EPOCH};
++
++pub const SCHEMA: u32 = 1;
++pub const MAX_CAPTURE: usize = 12 * 1024 * 1024;
++pub const MAX_TEXT: usize = 2 * 1024 * 1024;
++pub const MAX_BLOCKS: usize = 4096;
++pub const MAX_MEDIA: usize = 24;
++pub const MAX_PNG: usize = 1024 * 1024;
++pub const MAX_MEDIA_TOTAL: usize = 4 * 1024 * 1024;
++pub const MAX_PIXELS_TOTAL: u64 = 8_388_608;
++pub const MAX_ENTRIES: usize = 20_000;
++const MAX_RECORD: usize = 32 * 1024;
++
++pub type Result<T> = std::result::Result<T, String>;
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++pub enum ReadState {
++    #[default]
++    Unread,
++    InProgress,
++    Finished,
++}
++
++#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
++pub struct Position {
++    /// A passage, not a physical scroll coordinate. Matching crosses line wraps.
++    pub quote: String,
++    pub before: String,
++    pub after: String,
++    pub fraction: f32,
++    pub snapshot: String,
++    #[serde(default)]
++    pub block: Option<u32>,
++    #[serde(default)]
++    pub offset: u32,
++    #[serde(default)]
++    pub block_hash: String,
++}
++
++#[derive(Clone, Debug, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Entry {
++    pub schema: u32,
++    pub id: String,
++    pub revision: u64,
++    pub url: String,
++    pub container: String,
++    pub title: String,
++    pub saved_at: u64,
++    pub updated_at: u64,
++    pub read: ReadState,
++    pub archived: bool,
++    pub snapshot: Option<String>,
++    pub position: Option<Position>,
++    pub capture_error: Option<String>,
++    pub deleted: bool,
++    #[serde(default)]
++    pub word_count: Option<usize>,
++    #[serde(default)]
++    pub missing_images: Option<usize>,
++}
++
++impl Entry {
++    pub fn status(&self) -> &'static str {
++        if self.snapshot.is_none() { "Link saved; no offline copy" } else if self.missing_images.is_some_and(|n|n>0) { "Offline article; images incomplete" } else { "Offline article" }
++    }
++    pub fn host(&self) -> String {
++        url::Url::parse(&self.url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default()
++    }
++}
++
++#[derive(Clone, Debug, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Media {
++    /// An opaque identifier generated by the extractor, never a filesystem path.
++    pub id: String,
++    pub width: u32,
++    pub height: u32,
++    /// Hex-encoded PNG re-encoded from an already decoded, origin-clean image.
++    pub png: String,
++}
++
++#[derive(Clone, Debug, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Capture {
++    pub schema: u32,
++    pub token: String,
++    pub url: String,
++    pub document: serde_json::Value,
++    pub media: Vec<Media>,
++    pub missing_images: usize,
++    pub notices: Vec<String>,
++}
++
++#[derive(Clone, Debug, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Snapshot {
++    pub schema: u32,
++    pub url: String,
++    pub captured_at: u64,
++    pub document: serde_json::Value,
++    pub media: Vec<Media>,
++    pub missing_images: usize,
++    pub notices: Vec<String>,
++}
++
++#[derive(Clone, Debug)]
++pub struct Ticket {
++    pub id: String,
++    pub generation: String,
++    pub url: String,
++}
++
++#[derive(Clone, Debug, Default)]
++pub struct Listing {
++    pub revision: u64,
++    pub entries: Vec<Entry>,
++    /// A damaged record is preserved on disk and reported, never rewritten empty.
++    pub warnings: Vec<String>,
++    pub busy: Vec<String>,
++}
++
++#[derive(Clone, Debug)]
++pub enum Change {
++    Read(ReadState),
++    Archive(bool),
++    Position(Position),
++    Delete,
++    Restore,
++}
++
++#[derive(Debug)]
++pub enum Command {
++    List,
++    ListSince(u64),
++    Save { url: String, title: String, container: String, refresh: bool },
++    Commit { ticket: Ticket, capture: String },
++    Fail { ticket: Ticket, reason: String },
++    Change { id: String, change: Change },
++    Open { id: String },
++    Barrier,
++}
++
++#[derive(Clone, Debug)]
++pub enum Reply {
++    List(Listing),
++    Unchanged,
++    Saved { entry: Entry, ticket: Option<Ticket>, existed: bool },
++    Committed(Entry),
++    Changed(Entry),
++    Opened { entry: Entry, snapshot: Snapshot, images: Vec<DecodedImage> },
++    Stale,
++    Barrier,
++}
++
++fn now() -> u64 {
++    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
++}
++fn error(e: impl std::fmt::Display) -> String { e.to_string() }
++fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() }
++pub fn digest(bytes: &[u8]) -> String { hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()) }
++fn random_id() -> Result<String> {
++    let mut b = [0u8; 16];
++    getrandom::fill(&mut b).map_err(error)?;
++    Ok(hex(&b))
++}
++fn identifier(s: &str, n: usize) -> bool { s.len() == n && s.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) }
++fn text_ok(s: &str, max: usize) -> bool {
++    s.len() <= max && !s.chars().any(|c| c == '\0' || (c.is_control() && c != '\n' && c != '\t' && c != '\r'))
++}
++/// Conservative identity: URL parsing normalizes host/default port only. Query
++/// parameters, fragments, scheme and container all remain significant.
++pub fn page_url(raw: &str) -> Result<String> {
++    if raw.len() > 8192 { return Err("Address is too long".into()); }
++    let u = url::Url::parse(raw).map_err(|_| "Invalid page address".to_string())?;
++    if !matches!(u.scheme(), "https" | "http") || !u.has_host() || !u.username().is_empty() || u.password().is_some() {
++        return Err("Reading List accepts HTTP(S) pages without embedded credentials".into());
++    }
++    Ok(u.to_string())
++}
++
++pub fn decode_hex(s: &str) -> Result<Vec<u8>> {
++    if s.len() > MAX_PNG * 2 || s.len() % 2 != 0 { return Err("Invalid or oversized image".into()); }
++    fn digit(b: u8) -> Option<u8> { match b { b'0'..=b'9' => Some(b-b'0'), b'a'..=b'f' => Some(b-b'a'+10), _ => None } }
++    s.as_bytes().chunks_exact(2).map(|p| Ok(digit(p[0]).ok_or("Invalid image encoding")? * 16 + digit(p[1]).ok_or("Invalid image encoding")?)).collect()
++}
++
++#[derive(Clone, Debug)]
++pub struct DecodedImage { pub id: String, pub width: u32, pub height: u32, pub rgba: Vec<u8> }
++
++fn validate_media(media: &[Media]) -> Result<()> {
++    if media.len() > MAX_MEDIA { return Err("Too many saved images".into()); }
++    let mut total = 0usize;
++    let mut pixels = 0u64;
++    let mut ids = std::collections::HashSet::new();
++    for m in media {
++        if m.id.len() <= 6 || m.id.len() > 32 || !m.id.starts_with("image-") || !m.id[6..].bytes().all(|b|b.is_ascii_digit()) || !ids.insert(&m.id) {
++            return Err("Invalid image identity".into());
++        }
++        if m.width == 0 || m.height == 0 || m.width > 4096 || m.height > 4096 || u64::from(m.width)*u64::from(m.height)>4_194_304 {
++            return Err("Image dimensions exceed the reading budget".into());
++        }
++        pixels += u64::from(m.width) * u64::from(m.height);
++        if pixels > MAX_PIXELS_TOTAL { return Err("Images exceed the total decoded-pixel budget".into()); }
++        let b = decode_hex(&m.png)?;
++        total = total.checked_add(b.len()).ok_or("Image size overflow")?;
++        if total > MAX_MEDIA_TOTAL || b.len() < 33 || &b[..8] != b"\x89PNG\r\n\x1a\n" || &b[12..16] != b"IHDR" {
++            return Err("Invalid or oversized PNG payload".into());
++        }
++        let w = u32::from_be_bytes(b[16..20].try_into().map_err(error)?);
++        let h = u32::from_be_bytes(b[20..24].try_into().map_err(error)?);
++        if (w,h)!=(m.width,m.height) { return Err("Image dimensions do not match their manifest".into()); }
++    }
++    Ok(())
++}
++
++/// Decode only the explicitly supported PNG representation, with per-image and
++/// aggregate limits. These calls run on the storage worker, never while painting.
++fn decode_images(media: &[Media]) -> Result<Vec<DecodedImage>> {
++    validate_media(media)?;
++    let mut out=Vec::new();
++    for m in media {
++        let bytes=decode_hex(&m.png)?;
++        let mut reader=image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
++        let mut limits=image::Limits::default();
++        limits.max_image_width=Some(4096);
++        limits.max_image_height=Some(4096);
++        limits.max_alloc=Some(64 * 1024 * 1024);
++        reader.limits(limits);
++        let decoded=reader.decode().map_err(|_|"A saved image could not be decoded".to_string())?;
++        if (decoded.width(),decoded.height())!=(m.width,m.height) {return Err("Decoded image dimensions differ from the manifest".into());}
++        out.push(DecodedImage{id:m.id.clone(),width:m.width,height:m.height,rgba:decoded.into_rgba8().into_raw()});
++    }
++    Ok(out)
++}
++
++fn validate_references(document:&serde_json::Value, media:&[Media], missing:usize)->Result<()> {
++    let ids:std::collections::HashSet<_>=media.iter().map(|m|m.id.as_str()).collect();
++    let mut absent=0usize;
++    let mut used=std::collections::HashSet::new();
++    for b in document["blocks"].as_array().ok_or("Missing article blocks")? {
++        if b["t"]!="img" {continue;}
++        let id=b["src"].as_str().unwrap_or("");
++        if id.is_empty() {absent+=1;} else if ids.contains(id) {used.insert(id);} else {return Err("Saved image reference is missing its payload".into());}
++    }
++    if absent!=missing || used.len()!=ids.len() {return Err("Image completeness does not match the saved article".into());}
++    Ok(())
++}
++
++pub fn validate_document(v: &serde_json::Value) -> Result<()> {
++    let o=v.as_object().ok_or("Article is not an object")?;
++    for name in ["title","byline","when"] {
++        let s=o.get(name).and_then(|v|v.as_str()).ok_or("Missing article metadata")?;
++        if !text_ok(s, 8192) { return Err("Invalid article metadata".into()); }
++    }
++    let blocks=o.get("blocks").and_then(|v|v.as_array()).ok_or("Missing article blocks")?;
++    if blocks.is_empty() || blocks.len()>MAX_BLOCKS { return Err("Empty or oversized article".into()); }
++    let mut size=0usize;
++    let mut prose=0usize;
++    for b in blocks {
++        let t=b.get("t").and_then(|v|v.as_str()).ok_or("Missing block type")?;
++        if !matches!(t,"h"|"p"|"pre"|"li"|"q"|"img"|"cap"|"link") { return Err("Unsupported article block".into()); }
++        let x=b.get("x").and_then(|v|v.as_str()).ok_or("Missing block text")?;
++        if !text_ok(x, MAX_TEXT) {return Err("Invalid block text".into());}
++        size=size.checked_add(x.len()).ok_or("Article size overflow")?;
++        if size>MAX_TEXT {return Err("Article exceeds the text budget; no truncated copy was saved".into());}
++        if matches!(t,"p"|"li"|"q"|"pre") {prose+=x.trim().chars().count();}
++        if t=="h" && !b.get("l").and_then(|v|v.as_u64()).is_some_and(|l|(1..=6).contains(&l)) {return Err("Invalid heading level".into());}
++        if t=="img" {
++            let id=b.get("src").and_then(|v|v.as_str()).unwrap_or("");
++            if !id.is_empty() && (id.len()<=6 || id.len()>32 || !id.starts_with("image-") || !id[6..].bytes().all(|b|b.is_ascii_digit())) {return Err("Invalid image reference".into());}
++        }
++        if t=="link" {page_url(b.get("src").and_then(|v|v.as_str()).ok_or("Missing link address")?)?;}
++    }
++    if prose<80 {return Err("Not enough article text; the link is still saved".into());}
++    Ok(())
++}
++
++fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>> {
++    let meta=fs::symlink_metadata(path).map_err(error)?;
++    if !meta.is_file() || meta.file_type().is_symlink() || meta.len()>limit as u64 {return Err("Invalid or oversized reading file".into());}
++    let mut b=Vec::new();
++    File::open(path).map_err(error)?.take(limit as u64+1).read_to_end(&mut b).map_err(error)?;
++    if b.len()>limit {return Err("Reading file exceeds its size limit".into());}
++    Ok(b)
++}
++
++/// New bytes are synchronized before publication. On Unix, the containing
++/// directory is synchronized as well. This does not promise survival of a
++/// failed disk/controller; immutable objects keep old snapshots recoverable.
++fn durable_write(path: &Path, bytes: &[u8]) -> Result<()> {
++    let parent=path.parent().ok_or("Missing reading directory")?;
++    let mut f=tempfile::NamedTempFile::new_in(parent).map_err(error)?;
++    f.write_all(bytes).map_err(error)?;
++    f.as_file().sync_all().map_err(error)?;
++    f.persist(path).map_err(error)?;
++    #[cfg(unix)]
++    File::open(parent).and_then(|d| d.sync_all()).map_err(error)?;
++    Ok(())
++}
++
++/// Store methods are used only by the writer thread (or isolated unit tests).
++pub struct Store {
++    root: PathBuf,
++    entries: BTreeMap<String, Entry>,
++    tickets: HashMap<String,String>,
++    warnings: Vec<String>,
++    revision: u64,
++    fingerprints: HashMap<String,String>,
++    #[cfg(test)]
++    fail_before_object: bool,
++    #[cfg(test)]
++    fail_before_entry: bool,
++}
++impl Store {
++    pub fn open(root: PathBuf) -> Result<Self> {
++        for dir in [&root, &root.join("entries"), &root.join("objects")] {
++            fs::create_dir_all(dir).map_err(error)?;
++            let meta=fs::symlink_metadata(dir).map_err(error)?;
++            if meta.file_type().is_symlink() || !meta.is_dir() {return Err("Reading storage must be real directories".into());}
++            #[cfg(unix)] {
++                use std::os::unix::fs::PermissionsExt;
++                fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(error)?;
++            }
++        }
++        let mut s=Self{root,entries:BTreeMap::new(),tickets:HashMap::new(),warnings:vec![],revision:1,fingerprints:HashMap::new(),
++            #[cfg(test)] fail_before_object:false, #[cfg(test)] fail_before_entry:false};
++        for (scanned,item) in fs::read_dir(s.root.join("entries")).map_err(error)?.enumerate() {
++            if scanned>MAX_ENTRIES+1024 {return Err("Too many reading records; no files were changed".into());}
++            let item=item.map_err(error)?;
++            let p=item.path();
++            if p.extension().and_then(|e|e.to_str())!=Some("json") {continue;}
++            if s.entries.len()>=MAX_ENTRIES {return Err("Reading List entry limit reached; no files were changed".into());}
++            let read: Result<(Entry,String)> = (|| {
++                let bytes=read_limited(&p,MAX_RECORD)?;
++                let e: Entry=serde_json::from_slice(&bytes).map_err(error)?;
++                Self::validate_entry(&e)?;
++                if p.file_stem().and_then(|s|s.to_str())!=Some(e.id.as_str()) {return Err("Entry identity does not match its filename".into());}
++                Ok((e,digest(&bytes)))
++            })();
++            match read {
++                Ok((e,fingerprint))=>{s.fingerprints.insert(e.id.clone(),fingerprint);s.entries.insert(e.id.clone(),e);},
++                Err(_)=>s.warnings.push(format!("{} could not be read. It was preserved unchanged.",p.file_name().unwrap_or_default().to_string_lossy())),
++            }
++        }
++        Ok(s)
++    }
++    fn validate_entry(e:&Entry)->Result<()> {
++        if e.schema!=SCHEMA || !identifier(&e.id,32) || (e.revision==0 || e.revision==u64::MAX) {return Err("Unknown or invalid reading entry schema".into());}
++        page_url(&e.url)?;
++        if e.word_count.is_some_and(|n|n>MAX_TEXT) || e.missing_images.is_some_and(|n|n>MAX_BLOCKS){return Err("Invalid article summary".into());}
++        if !text_ok(&e.title,8192) || !text_ok(&e.container,512) {return Err("Invalid saved page metadata".into());}
++        if e.snapshot.as_ref().is_some_and(|s|!identifier(s,64)) {return Err("Invalid snapshot reference".into());}
++        if let Some(p)=&e.position { validate_position(p)?; }
++        if e.capture_error.as_ref().is_some_and(|s|!text_ok(s,2048)) {return Err("Invalid capture status".into());}
++        Ok(())
++    }
++    fn publish(&mut self,e:Entry)->Result<Entry> {
++        Self::validate_entry(&e)?;
++        let data=serde_json::to_vec(&e).map_err(error)?;
++        if data.len()>MAX_RECORD {return Err("Reading entry is too large".into());}
++        let path=self.root.join("entries").join(format!("{}.json",e.id));
++        // Detect out-of-band edits rather than overwriting a newer/different file.
++        if let Some(expected)=self.fingerprints.get(&e.id) {
++            let bytes=read_limited(&path,MAX_RECORD).map_err(|_|"Reading entry was changed or removed outside this process; restart to reload it".to_string())?;
++            if digest(&bytes)!=*expected{return Err("Reading entry changed outside this process; its file was left untouched. Restart to reload it.".into());}
++        } else if path.exists(){return Err("Reading entry filename already exists; nothing was overwritten".into());}
++        #[cfg(test)]
++        if self.fail_before_entry{return Err("injected: before entry publication".into());}
++        // Re-read after an error following rename, so an uncertain durability
++        // result cannot leave memory older than the file just published.
++        if let Err(err)=durable_write(&path,&data) {
++            if let Ok(bytes)=read_limited(&path,MAX_RECORD) {
++                if let Ok(on_disk)=serde_json::from_slice::<Entry>(&bytes) {
++                    if Self::validate_entry(&on_disk).is_ok() { self.fingerprints.insert(on_disk.id.clone(),digest(&bytes));self.entries.insert(on_disk.id.clone(),on_disk);self.revision+=1; }
++                }
++            }
++            return Err(err);
++        }
++        self.fingerprints.insert(e.id.clone(),digest(&data));self.entries.insert(e.id.clone(),e.clone());self.revision+=1;Ok(e)
++    }
++    pub fn listing(&self)->Listing {
++        let mut entries:Vec<_>=self.entries.values().filter(|e|!e.deleted).cloned().collect();
++        entries.sort_by(|a,b|b.saved_at.cmp(&a.saved_at).then_with(||a.id.cmp(&b.id)));
++        Listing{revision:self.revision,entries,warnings:self.warnings.clone(),busy:self.tickets.keys().cloned().collect()}
++    }
++    pub fn execute(&mut self,c:Command)->Result<Reply> {
++        match c {
++            Command::List=>Ok(Reply::List(self.listing())),
++            Command::ListSince(revision)=>if revision==self.revision {Ok(Reply::Unchanged)} else {Ok(Reply::List(self.listing()))},
++            Command::Save{url,title,container,refresh}=>self.save(url,title,container,refresh),
++            Command::Commit{ticket,capture}=>self.commit(ticket,&capture),
++            Command::Fail{ticket,reason}=>self.fail(ticket,&reason),
++            Command::Change{id,change}=>self.change(&id,change),
++            Command::Open{id}=>self.open_entry(&id),
++            Command::Barrier=>Ok(Reply::Barrier),
++        }
++    }
++    fn save(&mut self,url:String,title:String,container:String,refresh:bool)->Result<Reply> {
++        let url=page_url(&url)?;
++        if !text_ok(&title,8192)||!text_ok(&container,512) {return Err("Invalid saved page metadata".into());}
++        let found=self.entries.values().find(|e|!e.deleted && e.url==url && e.container==container).cloned();
++        let existed=found.is_some();
++        let mut e=match found {
++            Some(e)=>e,
++            None=>{
++                if self.entries.len()>=MAX_ENTRIES {return Err("Reading List entry limit reached".into());}
++                Entry{schema:SCHEMA,id:random_id()?,revision:1,url:url.clone(),container,title:if title.trim().is_empty(){url.clone()}else{title},saved_at:now(),updated_at:now(),read:ReadState::Unread,archived:false,snapshot:None,position:None,capture_error:None,deleted:false,word_count:None,missing_images:None}
++            }
++        };
++        if existed && !refresh {return Ok(Reply::Saved{entry:e,ticket:None,existed:true});}
++        if self.tickets.contains_key(&e.id) {return Err("A copy of this page is already being saved".into());}
++        if self.tickets.len()>=4{return Err("Four reading captures are already active in this profile".into());}
++        let generation=random_id()?;
++        e.capture_error=None;
++        if existed {e.revision+=1;e.updated_at=now();}
++        let e=self.publish(e)?;
++        let ticket=Ticket{id:e.id.clone(),generation:generation.clone(),url:e.url.clone()};
++        self.tickets.insert(e.id.clone(),generation);self.revision+=1;
++        Ok(Reply::Saved{entry:e,ticket:Some(ticket),existed})
++    }
++    fn valid_ticket(&self,t:&Ticket)->bool {
++        self.tickets.get(&t.id)==Some(&t.generation) && self.entries.get(&t.id).is_some_and(|e|!e.deleted && e.url==t.url)
++    }
++    fn commit(&mut self,t:Ticket,json:&str)->Result<Reply> {
++        if !self.valid_ticket(&t) {return Ok(Reply::Stale);}
++        let build: Result<Snapshot> = (|| {
++            if json.len()>MAX_CAPTURE {return Err("Capture exceeds the reading budget".into());}
++            let c:Capture=serde_json::from_str(json).map_err(|_|"Page returned an invalid capture".to_string())?;
++            if c.schema!=SCHEMA || c.token!=t.generation || page_url(&c.url)?!=t.url {return Err("The page changed while saving; the link is still saved".into());}
++            validate_document(&c.document)?;validate_media(&c.media)?;
++            validate_references(&c.document, &c.media, c.missing_images)?;
++            // Full PNG validation happens off the UI thread, before publication.
++            let _ = decode_images(&c.media)?;
++            if c.notices.len()>32 || c.notices.iter().any(|s|!text_ok(s,512)) || c.missing_images>MAX_BLOCKS {return Err("Invalid capture metadata".into());}
++            Ok(Snapshot{schema:SCHEMA,url:t.url.clone(),captured_at:now(),document:c.document,media:c.media,missing_images:c.missing_images,notices:c.notices})
++        })();
++        let snapshot=match build {Ok(s)=>s,Err(e)=>{return self.fail(t,&e);}};
++        let bytes=serde_json::to_vec(&snapshot).map_err(error)?;
++        if bytes.len()>MAX_CAPTURE {return self.fail(t,"Saved copy exceeds the reading budget");}
++        let hash=digest(&bytes);
++        let object=self.root.join("objects").join(format!("{hash}.json"));
++        // Immutable object first, record reference last. An interrupted save can
++        // leave an orphan, never a record referring to an unfinished object.
++        #[cfg(test)]
++        if self.fail_before_object{return self.fail(t,"injected: before object publication");}
++        if let Err(e)=durable_write(&object,&bytes) {return self.fail(t,&format!("Could not save article content: {e}"));}
++        let mut e=self.entries.get(&t.id).cloned().ok_or("Reading entry was removed")?;
++        e.snapshot=Some(hash);e.revision+=1;e.updated_at=now();e.capture_error=None;
++        e.missing_images=Some(snapshot.missing_images);
++        e.word_count=Some(snapshot.document["blocks"].as_array().into_iter().flatten().filter(|b|matches!(b["t"].as_str(),Some("p"|"li"|"q"|"pre"))).filter_map(|b|b["x"].as_str()).map(|x|x.split_whitespace().count()).sum());
++        if let Some(title)=snapshot.document.get("title").and_then(|v|v.as_str()).filter(|s|!s.trim().is_empty()) {e.title=title.into();}
++        // Keep the old anchor: quote matching deliberately crosses refreshed copies.
++        let result=self.publish(e);
++        self.tickets.remove(&t.id);self.revision+=1;
++        result.map(Reply::Committed)
++    }
++    fn fail(&mut self,t:Ticket,reason:&str)->Result<Reply> {
++        if !self.valid_ticket(&t) {return Ok(Reply::Stale);}
++        let mut e=self.entries.get(&t.id).cloned().ok_or("Reading entry was removed")?;
++        e.capture_error=Some(reason.chars().filter(|c|!c.is_control()).take(400).collect());
++        e.revision+=1;e.updated_at=now();
++        let result=self.publish(e);
++        self.tickets.remove(&t.id);self.revision+=1;
++        result.map(Reply::Changed)
++    }
++    fn change(&mut self,id:&str,change:Change)->Result<Reply> {
++        let mut e=self.entries.get(id).cloned().ok_or("Reading entry no longer exists")?;
++        if e.deleted && !matches!(change,Change::Restore) {return Ok(Reply::Stale);}
++        match change {
++            Change::Read(s)=>e.read=s,
++            Change::Archive(a)=>e.archived=a,
++            Change::Position(p)=>{
++                validate_position(&p)?;
++                // An old window must not attach its progress to a refreshed copy.
++                if e.snapshot.as_deref()!=Some(p.snapshot.as_str()) {return Ok(Reply::Stale);}
++                e.position=Some(p);
++                if e.read==ReadState::Unread {e.read=ReadState::InProgress;}
++            },
++            Change::Delete=>{e.deleted=true;},
++            Change::Restore=>e.deleted=false,
++        }
++        e.revision+=1;e.updated_at=now();
++        let e=self.publish(e)?;
++        if e.deleted {self.tickets.remove(id);self.revision+=1;}
++        Ok(Reply::Changed(e))
++    }
++    fn open_entry(&self,id:&str)->Result<Reply> {
++        let e=self.entries.get(id).filter(|e|!e.deleted).cloned().ok_or("Reading entry no longer exists")?;
++        let hash=e.snapshot.as_ref().ok_or("This entry has only a saved link, not an offline copy")?;
++        let bytes=read_limited(&self.root.join("objects").join(format!("{hash}.json")),MAX_CAPTURE)?;
++        if digest(&bytes)!=*hash {return Err("Saved copy failed its integrity check. The entry and original link were preserved.".into());}
++        let s:Snapshot=serde_json::from_slice(&bytes).map_err(error)?;
++        if s.schema!=SCHEMA || s.url!=e.url {return Err("Saved copy does not match this entry".into());}
++        validate_document(&s.document)?;validate_media(&s.media)?;
++        validate_references(&s.document, &s.media, s.missing_images)?;
++        if s.notices.len()>32 || s.notices.iter().any(|n|!text_ok(n,512)) {return Err("Invalid saved-copy notices".into());}
++        let images=decode_images(&s.media)?;
++        Ok(Reply::Opened{entry:e,snapshot:s,images})
++    }
++}
++fn validate_position(p:&Position)->Result<()> {
++    if p.block.is_some_and(|b|b as usize>=MAX_BLOCKS) || p.offset as usize>MAX_TEXT || (!p.block_hash.is_empty()&&!identifier(&p.block_hash,64)){return Err("Invalid reading anchor".into());}
++    if !identifier(&p.snapshot,64)||!p.fraction.is_finite()||!(0.0..=1.0).contains(&p.fraction)||!text_ok(&p.quote,1024)||!text_ok(&p.before,256)||!text_ok(&p.after,256) {return Err("Invalid reading position".into());}
++    Ok(())
++}
++
++/// An ordered mailbox is shared by every window in this process/profile. A
++/// disconnected client does not cancel an already accepted durable operation.
++#[derive(Clone)]
++pub struct Service { tx: mpsc::SyncSender<(Command,mpsc::Sender<Result<Reply>>)>, }
++impl Service {
++    pub fn at(root:PathBuf)->Self {
++        let (tx,rx)=mpsc::sync_channel::<(Command,mpsc::Sender<Result<Reply>>)>(64);
++        std::thread::spawn(move || {
++            let mut store:Option<Store>=None;
++            for (command,reply) in rx {
++                if store.is_none() {
++                    match Store::open(root.clone()) {
++                        Ok(s)=>store=Some(s),
++                        Err(e)=>{let _=reply.send(Err(format!("Reading storage is unavailable: {e}")));continue;}
++                    }
++                }
++                let result=store.as_mut().unwrap().execute(command);
++                let _=reply.send(result);
++            }
++        });
++        Self{tx}
++    }
++    /// Return the command on backpressure so final capture results can retry
++    /// without losing their ticket or retaining an unbounded series of copies.
++    pub fn submit_recover(&self,command:Command)->std::result::Result<mpsc::Receiver<Result<Reply>>,(Command,String)> {
++        let (tx,rx)=mpsc::channel();
++        match self.tx.try_send((command,tx)) {
++            Ok(())=>Ok(rx),
++            Err(mpsc::TrySendError::Full((command,_)))=>Err((command,"Reading List is busy; try again".into())),
++            Err(mpsc::TrySendError::Disconnected((command,_)))=>Err((command,"Reading List worker stopped".into())),
++        }
++    }
++    pub fn submit(&self,command:Command)->Result<mpsc::Receiver<Result<Reply>>> {
++        self.submit_recover(command).map_err(|(_,error)|error)
++    }
++    pub fn flush(&self)->Result<()> {
++        match self.submit(Command::Barrier)?.recv_timeout(Duration::from_secs(5)) {
++            Ok(Ok(Reply::Barrier))=>Ok(()),
++            Ok(Err(e))=>Err(e),
++            _=>Err("Reading changes have not finished saving".into()),
++        }
++    }
++}
++/// Profile choice is made by the caller after private-mode gating. This function
++/// never discovers a profile, changes working directories, or enables syncing.
++pub fn service(root:PathBuf)->Result<Service> {
++    static SERVICES:OnceLock<Mutex<HashMap<PathBuf,Service>>>=OnceLock::new();
++    let mut services=SERVICES.get_or_init(||Mutex::new(HashMap::new())).lock().map_err(|_|"Reading service lock failed".to_string())?;
++    Ok(services.entry(root.clone()).or_insert_with(||Service::at(root)).clone())
++}
++
++/// Locate a quotation across new line wrapping, returning its UTF-8 byte offset.
++/// Ambiguous quotes are not silently resolved to an arbitrary repeated passage.
++pub fn locate_quote(text:&str,p:&Position)->Option<usize> {
++    if p.quote.is_empty() { return None; }
++    let mut hits=text.match_indices(&p.quote).filter(|(i,_)| {
++        (p.before.is_empty()||text[..*i].ends_with(&p.before)) && (p.after.is_empty()||text[*i+p.quote.len()..].starts_with(&p.after))
++    });
++    let first=hits.next()?.0;
++    if hits.next().is_some(){None}else{Some(first)}
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn store()->(tempfile::TempDir,Store) {let d=tempfile::tempdir().unwrap();let s=Store::open(d.path().join("reading")).unwrap();(d,s)}
++    fn save(s:&mut Store,url:&str,jar:&str)->(Entry,Ticket) {
++        match s.execute(Command::Save{url:url.into(),title:"An article".into(),container:jar.into(),refresh:false}).unwrap() {Reply::Saved{entry,ticket:Some(t),..}=>(entry,t),_=>panic!("expected capture ticket")}
++    }
++    fn capture(t:&Ticket)->String {
++        serde_json::to_string(&Capture{schema:SCHEMA,token:t.generation.clone(),url:t.url.clone(),document:serde_json::json!({"title":"Article","byline":"","when":"","blocks":[{"t":"p","x":"This is a useful article with enough words to be a meaningful test fixture. It has a second sentence, and another."}]}),media:vec![],missing_images:0,notices:vec![]}).unwrap()
++    }
++    #[test] fn preserves_query_fragment_and_container_identity() {
++        let (_d,mut s)=store();save(&mut s,"https://EXAMPLE.com:443/a?q=1#one","a");save(&mut s,"https://example.com/a?q=2#one","a");save(&mut s,"https://example.com/a?q=1#two","a");save(&mut s,"https://example.com/a?q=1#one","b");assert_eq!(s.listing().entries.len(),4);
++    }
++    #[test] fn rejects_unsafe_addresses() {for u in ["file:///tmp/x","data:text/plain,x","javascript:alert(1)","https://me:secret@example.com/","https://me@example.com/"]{assert!(page_url(u).is_err(),"{u}");}}
++    #[test] fn duplicate_save_is_not_delete_or_refresh() {
++        let (_d,mut s)=store();let (e,_)=save(&mut s,"https://example.com/a","jar");
++        let r=s.execute(Command::Save{url:e.url.clone(),title:"other".into(),container:e.container.clone(),refresh:false}).unwrap();
++        assert!(matches!(r,Reply::Saved{ticket:None,existed:true,..}));assert_eq!(s.listing().entries.len(),1);
++    }
++    #[test] fn failed_capture_keeps_link() {let (_d,mut s)=store();let (e,t)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Fail{ticket:t,reason:"offline".into()}).unwrap();let e=&s.entries[&e.id];assert!(e.snapshot.is_none());assert_eq!(e.capture_error.as_deref(),Some("offline"));}
++    #[test] fn save_relaunch_and_open_without_network() {
++        let (d,mut s)=store();let (e,t)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap();drop(s);
++        let mut s=Store::open(d.path().join("reading")).unwrap();assert!(matches!(s.execute(Command::Open{id:e.id}).unwrap(),Reply::Opened{..}));
++    }
++    #[test] fn delete_invalidates_late_capture() {let (_d,mut s)=store();let (e,t)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Change{id:e.id,change:Change::Delete}).unwrap();assert!(matches!(s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap(),Reply::Stale));assert!(s.listing().entries.is_empty());}
++    #[test] fn restore_does_not_resurrect_capture_ticket() {let (_d,mut s)=store();let (e,t)=save(&mut s,"https://example.com/a","jar");for c in [Change::Delete,Change::Restore]{s.execute(Command::Change{id:e.id.clone(),change:c}).unwrap();}assert!(matches!(s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap(),Reply::Stale));}
++    #[test] fn failed_refresh_preserves_previous_snapshot() {
++        let (_d,mut s)=store();let (e,t)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap();let old=s.entries[&e.id].snapshot.clone();
++        let t=match s.execute(Command::Save{url:e.url,container:e.container,title:e.title,refresh:true}).unwrap(){Reply::Saved{ticket:Some(t),..}=>t,_=>panic!()};
++        s.execute(Command::Commit{ticket:t,capture:"not json".into()}).unwrap();assert_eq!(s.entries[&e.id].snapshot,old);assert!(s.entries[&e.id].capture_error.is_some());
++    }
++    #[test] fn corrupt_record_does_not_erase_other_entries() {
++        let (d,mut s)=store();let (e,_)=save(&mut s,"https://example.com/a","jar");let bad=d.path().join("reading/entries/broken.json");fs::write(&bad,b"not json").unwrap();drop(s);
++        let s=Store::open(d.path().join("reading")).unwrap();assert!(s.entries.contains_key(&e.id));assert_eq!(s.warnings.len(),1);assert_eq!(fs::read(bad).unwrap(),b"not json");
++    }
++    #[test] fn read_and_archive_are_independent() {let (_d,mut s)=store();let(e,_)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Change{id:e.id.clone(),change:Change::Archive(true)}).unwrap();assert_eq!(s.entries[&e.id].read,ReadState::Unread);s.execute(Command::Change{id:e.id.clone(),change:Change::Read(ReadState::Finished)}).unwrap();assert!(s.entries[&e.id].archived);}
++    #[test] fn stale_position_does_not_mark_unread_article_read() {let(_d,mut s)=store();let(e,_)=save(&mut s,"https://example.com/a","jar");let p=Position{snapshot:"a".repeat(64),fraction:0.4,..Default::default()};assert!(matches!(s.execute(Command::Change{id:e.id.clone(),change:Change::Position(p)}).unwrap(),Reply::Stale));assert_eq!(s.entries[&e.id].read,ReadState::Unread);}
++    #[test] fn hash_failure_preserves_entry() {let(d,mut s)=store();let(e,t)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap();let hash=s.entries[&e.id].snapshot.clone().unwrap();fs::write(d.path().join(format!("reading/objects/{hash}.json")),b"tampered").unwrap();assert!(s.execute(Command::Open{id:e.id.clone()}).is_err());assert!(s.entries.contains_key(&e.id));}
++    #[test] fn rejects_oversized_blocks_without_truncation() {let blocks=vec![serde_json::json!({"t":"p","x":"x"});MAX_BLOCKS+1];let v=serde_json::json!({"title":"","byline":"","when":"","blocks":blocks});assert!(validate_document(&v).is_err());}
++    #[test] fn quote_resolution_is_unique_and_contextual() {let mut p=Position{quote:"passage".into(),..Default::default()};assert_eq!(locate_quote("a passage",&p),Some(2));assert_eq!(locate_quote("passage passage",&p),None);p.before="second ".into();assert_eq!(locate_quote("first passage; second passage",&p),Some(22));}
++    #[test] fn mailbox_serializes_windows_without_lost_updates() {let d=tempfile::tempdir().unwrap();let a=Service::at(d.path().join("reading"));let b=a.clone();let x=a.submit(Command::Save{url:"https://example.com/a".into(),title:"A".into(),container:"jar".into(),refresh:false}).unwrap();let y=b.submit(Command::Save{url:"https://example.com/b".into(),title:"B".into(),container:"jar".into(),refresh:false}).unwrap();assert!(x.recv().unwrap().is_ok());assert!(y.recv().unwrap().is_ok());a.flush().unwrap();match b.submit(Command::List).unwrap().recv().unwrap().unwrap(){Reply::List(l)=>assert_eq!(l.entries.len(),2),_=>panic!()}}
++    #[test] fn rejects_nonfinite_progress() {let p=Position{snapshot:"a".repeat(64),fraction:f32::NAN,..Default::default()};assert!(validate_position(&p).is_err());}
++    #[test] fn identity_does_not_traverse_storage() {assert!(!identifier("../../etc/passwd",32));assert!(!identifier(&"A".repeat(64),64));assert!(identifier(&"a".repeat(64),64));}
++    #[test] fn hex_decoder_is_strict_and_bounded(){assert_eq!(decode_hex("00aaff").unwrap(),vec![0,170,255]);for x in ["0","GG","AA"]{assert!(decode_hex(x).is_err());}}
++    #[test] fn out_of_band_edits_are_not_overwritten() {
++        let(d,mut s)=store();let(e,_)=save(&mut s,"https://example.com/a","jar");
++        let path=d.path().join(format!("reading/entries/{}.json",e.id));let bytes=fs::read(&path).unwrap();
++        let mut changed:Entry=serde_json::from_slice(&bytes).unwrap();changed.title="Changed outside nus".into();
++        let changed=serde_json::to_vec(&changed).unwrap();fs::write(&path,&changed).unwrap();
++        assert!(s.execute(Command::Change{id:e.id,change:Change::Archive(true)}).is_err());
++        assert_eq!(fs::read(&path).unwrap(),changed);
++    }
++    #[test] fn failed_object_publication_keeps_previous_copy() {
++        let(_d,mut s)=store();let(e,t)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap();
++        let before=s.entries[&e.id].snapshot.clone();
++        let t=match s.execute(Command::Save{url:e.url,title:e.title,container:e.container,refresh:true}).unwrap(){Reply::Saved{ticket:Some(t),..}=>t,_=>panic!()};
++        s.fail_before_object=true;s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap();
++        assert_eq!(s.entries[&e.id].snapshot,before);assert!(s.entries[&e.id].capture_error.is_some());
++    }
++    #[test] fn failed_reference_publication_leaves_old_reference_valid() {
++        let(d,mut s)=store();let(e,t)=save(&mut s,"https://example.com/a","jar");s.execute(Command::Commit{capture:capture(&t),ticket:t}).unwrap();
++        let before=s.entries[&e.id].snapshot.clone();
++        let t=match s.execute(Command::Save{url:e.url,title:e.title,container:e.container,refresh:true}).unwrap(){Reply::Saved{ticket:Some(t),..}=>t,_=>panic!()};
++        s.fail_before_entry=true;assert!(s.execute(Command::Commit{capture:capture(&t),ticket:t}).is_err());drop(s);
++        let mut s=Store::open(d.path().join("reading")).unwrap();assert_eq!(s.entries[&e.id].snapshot,before);
++        assert!(matches!(s.execute(Command::Open{id:e.id}).unwrap(),Reply::Opened{..}));
++    }
++    #[test] fn missing_media_is_not_called_complete() {
++        let v=serde_json::json!({"blocks":[{"t":"img","x":"alt","src":""}]});
++        assert!(validate_references(&v,&[],0).is_err());assert!(validate_references(&v,&[],1).is_ok());
++    }
++    #[test] fn malformed_image_identity_is_rejected() {
++        let media=Media{id:"image-".into(),width:1,height:1,png:"00".into()};assert!(validate_media(&[media]).is_err());
++    }
++    #[test] fn unchanged_lists_do_not_copy_all_records() {
++        let(_d,mut s)=store();let revision=s.listing().revision;
++        assert!(matches!(s.execute(Command::ListSince(revision)).unwrap(),Reply::Unchanged));
++        save(&mut s,"https://example.com/a","jar");assert!(matches!(s.execute(Command::ListSince(revision)).unwrap(),Reply::List(_)));
++    }
++
++}
+diff --git a/spikes/composite/src/reading_reader.rs b/spikes/composite/src/reading_reader.rs
+new file mode 100644
+--- /dev/null
++++ b/spikes/composite/src/reading_reader.rs
+@@ -0,0 +1,178 @@
++//! Saved-reading interaction state layered on the existing Newsreader renderer.
++//! It owns no browser, does no disk I/O, and never resolves a remote image URL.
++use std::collections::HashMap;
++use std::sync::Arc;
++use nus_render::text::{FontId, Style};
++use nus_render::{FontSystem, Rect};
++use crate::reader::{Block, Kind, Reader};
++use crate::reading::{self, Position};
++
++pub struct Picture { pub width:u32, pub height:u32, pub texture:Arc<wgpu::BindGroup> }
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
++pub struct Point { pub line:usize, pub byte:usize }
++#[derive(Clone, Debug)]
++pub enum Hit { Link(String), Code(usize) }
++#[derive(Default)]
++pub struct Extras {
++    pub offline:bool,
++    pub pictures:HashMap<String,Picture>,
++    pub image_heights:HashMap<usize,f32>,
++    pub links:HashMap<usize,String>,
++    pub code:HashMap<usize,String>,
++    /// (first line, exclusive last line, article block index).
++    pub blocks:Vec<(usize,usize,usize)>,
++    pub hits:Vec<(Rect,Hit)>,
++    pub drawn:Vec<(usize,Rect,Style)>,
++    pub selection:Option<(Point,Point)>,
++    pub dragging:bool,
++    pub viewport:Option<Rect>,
++    pub scale:f32,
++    pub font_key:Option<[FontId;4]>,
++    /// Horizontal navigation is confined to preformatted blocks.
++    pub horizontal:f32,
++    pub horizontal_max:f32,
++    pub find:Option<String>,
++    pub found:Option<usize>,
++}
++impl Extras {
++    pub fn reset_layout(&mut self) {
++        self.image_heights.clear(); self.links.clear(); self.code.clear();
++        self.blocks.clear(); self.hits.clear(); self.drawn.clear();
++        self.selection=None; self.dragging=false; self.horizontal_max=0.0;
++    }
++}
++fn block_text(b:&Block)->String {
++    match b {
++        Block::Heading(_,s)|Block::Para(s)|Block::Pre(s)|Block::Item(s)|Block::Quote(s)|Block::Caption(s)|Block::Link(s,_)=>s.clone(),
++        Block::Image(s,_)=>s.clone(),
++    }
++}
++fn normalized(s:&str)->String {s.split_whitespace().collect::<Vec<_>>().join(" ")}
++fn char_tail(s:&str,n:usize)->String {s.chars().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()}
++fn char_head(s:&str,n:usize)->String {s.chars().take(n).collect()}
++
++impl Reader {
++    pub fn reading_position(&self,snapshot:&str)->Option<Position> {
++        let r=self.saved.viewport?;
++        if self.lines.is_empty() {return None;}
++        let target=(self.scroll-28.0*self.saved.scale).max(0.0);
++        let line=self.lines.iter().enumerate().find(|(i,l)|l.y>=target && self.saved.blocks.iter().any(|(a,b,_)|i>=a&&i<b))?.0;
++        let &(first,_,block)=self.saved.blocks.iter().find(|(a,b,_)|line>=*a&&line<*b)?;
++        let text=normalized(&block_text(self.article.blocks.get(block)?));
++        if text.is_empty() {return None;}
++        let prefix=self.lines[first..line].iter().filter(|l|!matches!(l.kind,Kind::Image|Kind::CodeAction)).map(|l|normalized(&l.text)).filter(|s|!s.is_empty()).collect::<Vec<_>>().join(" ");
++        let mut offset=if prefix.is_empty(){0}else{prefix.len()+1};
++        offset=offset.min(text.len());
++        while offset>0 && !text.is_char_boundary(offset) {offset-=1;}
++        let quote=char_head(&text[offset..],96);
++        if quote.is_empty() {return None;}
++        let end=offset+quote.len();
++        Some(Position{quote,before:char_tail(&text[..offset],32),after:char_head(&text[end..],32),
++            fraction:(self.scroll/(self.height-r.h).max(1.0)).clamp(0.0,1.0),snapshot:snapshot.into(),
++            block:Some(block as u32),offset:offset as u32,block_hash:reading::digest(text.as_bytes())})
++    }
++    /// Returns false only when an approximate scroll-fraction fallback was used.
++    pub fn restore_reading_position(&mut self,p:&Position,snapshot:&str)->bool {
++        let Some(r)=self.saved.viewport else {return false};
++        let mut located=None;
++        if let Some(i)=p.block.filter(|_|p.snapshot==snapshot).map(|b|b as usize) {
++            if let Some(b)=self.article.blocks.get(i) {
++                let t=normalized(&block_text(b));
++                if reading::digest(t.as_bytes())==p.block_hash && (p.offset as usize)<=t.len() && t.is_char_boundary(p.offset as usize) {
++                    located=Some((i,p.offset as usize));
++                }
++            }
++        }
++        if located.is_none() && !p.quote.is_empty() {
++            let hits:Vec<_>=self.article.blocks.iter().enumerate().filter_map(|(i,b)|reading::locate_quote(&normalized(&block_text(b)),p).map(|at|(i,at))).collect();
++            if hits.len()==1 {located=Some(hits[0]);}
++        }
++        if let Some((block,offset))=located {
++            if let Some(&(a,b,_))=self.saved.blocks.iter().find(|(_,_,i)|*i==block) {
++                let mut consumed=0usize;
++                for i in a..b {
++                    let l=&self.lines[i];
++                    if matches!(l.kind,Kind::Image|Kind::CodeAction) {continue;}
++                    let n=normalized(&l.text).len();
++                    if consumed+n>=offset {
++                        self.scroll=l.y.clamp(0.0,(self.height-r.h).max(0.0));
++                        return true;
++                    }
++                    consumed+=n+1;
++                }
++            }
++        }
++        self.scroll=p.fraction.clamp(0.0,1.0)*(self.height-r.h).max(0.0);
++        false
++    }
++    pub fn reading_point(&self,fonts:&FontSystem,x:f32,y:f32)->Option<Point> {
++        let (i,r,style)=self.saved.drawn.iter().min_by(|a,b| {
++            let distance=|r:&Rect|if y<r.y {r.y-y}else if y>r.bottom(){y-r.bottom()}else{0.0};
++            distance(&a.1).total_cmp(&distance(&b.1))
++        })?;
++        let text=&self.lines[*i].text;
++        let mut boundaries:Vec<_>=text.char_indices().map(|(i,_)|i).collect();boundaries.push(text.len());
++        let goal=(x-r.x).max(0.0);
++        let (mut lo,mut hi)=(0usize,boundaries.len()-1);
++        while lo<hi {
++            let mid=(lo+hi+1)/2;
++            if fonts.measure(*style,&text[..boundaries[mid]])<=goal {lo=mid;}else{hi=mid-1;}
++        }
++        Some(Point{line:*i,byte:boundaries[lo]})
++    }
++    pub fn reading_selected_text(&self)->String {
++        let Some((a,b))=self.saved.selection else {return String::new()};
++        let (a,b)=if a<=b{(a,b)}else{(b,a)};
++        let mut out=String::new();
++        for i in a.line..=b.line.min(self.lines.len().saturating_sub(1)) {
++            let Some(line)=self.lines.get(i) else {continue};
++            if matches!(line.kind,Kind::Image|Kind::CodeAction|Kind::Rule){continue;}
++            let start=if i==a.line{a.byte}else{0};let end=if i==b.line{b.byte}else{line.text.len()};
++            if let Some(part)=line.text.get(start..end) {
++                if !out.is_empty() {
++                    let same=self.saved.blocks.iter().any(|(s,e,_)|i>*s && i<*e);
++                    out.push(if same && line.kind!=Kind::Mono {' '}else{'\n'});
++                }
++                out.push_str(part);
++            }
++        }
++        out
++    }
++    pub fn reading_select_all(&mut self) {
++        if let Some(last)=self.lines.last() {
++            self.saved.selection=Some((Point::default(),Point{line:self.lines.len()-1,byte:last.text.len()}));
++        }
++    }
++    pub fn reading_find(&mut self,forward:bool) {
++        let Some(q)=self.saved.find.as_ref().filter(|q|!q.is_empty()) else {self.saved.found=None;return;};
++        let q=q.to_lowercase();
++        let mut text=String::new();let mut starts=Vec::new();
++        for (i,line) in self.lines.iter().enumerate(){
++            if matches!(line.kind,Kind::Image|Kind::CodeAction|Kind::Rule){continue;}
++            if !text.is_empty(){text.push(' ');}
++            starts.push((text.len(),i));text.push_str(&normalized(&line.text).to_lowercase());
++        }
++        let mut hits:Vec<usize>=text.match_indices(&q).filter_map(|(offset,_)|starts.iter().rev().find(|(start,_)|*start<=offset).map(|(_,i)|*i)).collect();
++        hits.dedup();
++        let next=if forward {hits.iter().copied().find(|&i|self.saved.found.is_none_or(|old|i>old)).or_else(||hits.first().copied())}
++                 else {hits.iter().rev().copied().find(|&i|self.saved.found.is_none_or(|old|i<old)).or_else(||hits.last().copied())};
++        self.saved.found=next;
++        if let Some(i)=next {
++            let h=self.saved.viewport.map(|r|r.h).unwrap_or(0.0);
++            self.scroll=(self.lines[i].y-48.0*self.saved.scale).clamp(0.0,(self.height-h).max(0.0));
++        }
++    }
++    /// Keyboard selection uses UTF-8 boundaries; it never slices through a scalar.
++    pub fn reading_move_caret(&mut self,right:bool,extend:bool) {
++        if self.lines.is_empty(){return;}
++        let (anchor,mut end)=self.saved.selection.unwrap_or((Point::default(),Point::default()));
++        end.line=end.line.min(self.lines.len()-1);
++        let line=&self.lines[end.line].text;
++        if right {
++            if end.byte<line.len() {end.byte=line.char_indices().map(|(i,_)|i).find(|i|*i>end.byte).unwrap_or(line.len());}
++            else if end.line+1<self.lines.len(){end.line+=1;end.byte=0;}
++        } else if end.byte>0 {end.byte=line.char_indices().map(|(i,_)|i).take_while(|i|*i<end.byte).last().unwrap_or(0);}
++        else if end.line>0{end.line-=1;end.byte=self.lines[end.line].text.len();}
++        self.saved.selection=Some((if extend{anchor}else{end},end));
++    }
++}
+diff --git a/spikes/composite/src/reading_ui.rs b/spikes/composite/src/reading_ui.rs
+new file mode 100644
+--- /dev/null
++++ b/spikes/composite/src/reading_ui.rs
+@@ -0,0 +1,762 @@
++//! Reading List's native full-window surface. The underlying workspace is left
++//! intact. Esc returns to it; saved articles never create a hidden CEF browser.
++use std::cell::RefCell;
++use std::collections::HashMap;
++use std::rc::{Rc,Weak};
++use std::sync::mpsc::{Receiver,TryRecvError};
++use std::time::{Duration,Instant};
++use nus_render::{Rect,Scene,Style};
++use winit::event::{ElementState,MouseButton,MouseScrollDelta,WindowEvent};
++use winit::keyboard::{Key,NamedKey};
++use crate::app::{App,Pane};
++use crate::reading::{self,Change,Command,Entry,Listing,Position,ReadState,Reply,Service,Snapshot,Ticket};
++use crate::reading_reader::{Hit as ReaderHit,Picture};
++
++pub const SAVE_MENU_ID:i32=-47001;
++pub const LIST_MENU_ID:i32=-47002;
++const CAPTURE_JS:&str=include_str!("../assets/reading/capture.js");
++
++#[derive(Clone,Debug,PartialEq,Eq)]
++pub enum Act {
++    Close, Back, Search, Find, Next(bool), Filter(u8), Save,
++    Open(String), Original(String), Read(String,bool), Archive(String,bool),
++    Remove(String), Confirm(String), Cancel, Undo(String), Refresh(String),
++    Copy, Smaller, Larger, Link(String), Code(usize),
++}
++#[derive(Clone)]
++pub struct Control {pub key:String,pub rect:Rect,pub label:String,pub act:Act,pub selected:bool}
++#[derive(Clone)]
++struct Source {
++    tab:u64,right:bool,shared:Weak<RefCell<crate::browser::Shared>>,
++    epoch:u64,url:String,title:String,container:String,
++}
++struct CaptureJob {source:Source,ticket:Ticket,request:i32,since:Instant}
++enum Purpose {List,Save(Source),Open(u64),Update,Position(String,Position),Remove(String),Restore}
++struct Pending {rx:Receiver<reading::Result<Reply>>,purpose:Purpose}
++struct View {
++    entry:Entry,reader:crate::reader::Reader,resume:Option<Position>,
++    position_dirty:Option<Instant>,last_position:Option<Position>,note:String,
++}
++#[derive(Default)]
++struct FilterCache {revision:u64,query:String,filter:u8,indices:Vec<usize>}
++
++pub struct State {
++    pub open:bool,
++    service:Option<Service>,pending:Vec<Pending>,captures:Vec<CaptureJob>,finalizers:Vec<Command>,
++    pub listing:Listing,pub query:String,pub filter:u8,pub selected:Option<String>,
++    scroll:f32,max_scroll:f32,list_rect:Option<Rect>,row_height:f32,
++    view:Option<View>,pub controls:Vec<Control>,focus:Option<String>,
++    pub status:String,confirm:Option<String>,undo:Option<String>,
++    last_poll:Option<Instant>,open_generation:u64,reading_scale:f32,
++    press:Option<(f32,f32)>,touch:Option<(u64,f32,f32,bool)>,
++    access_ids:HashMap<String,u64>,next_access_id:u64,
++    filter_cache:RefCell<FilterCache>,
++}
++impl Default for State {
++    fn default()->Self {
++        Self{open:false,service:None,pending:vec![],captures:vec![],finalizers:vec![],listing:Default::default(),
++            query:String::new(),filter:0,selected:None,scroll:0.0,max_scroll:0.0,list_rect:None,row_height:80.0,
++            view:None,controls:vec![],focus:None,status:String::new(),confirm:None,undo:None,last_poll:None,
++            open_generation:0,reading_scale:1.0,press:None,touch:None,access_ids:HashMap::new(),next_access_id:1u64<<48,filter_cache:Default::default()}
++    }
++}
++impl State {
++    fn request(&mut self,command:Command,purpose:Purpose)->reading::Result<()> {
++        let finalizer=matches!(&command,Command::Commit{..}|Command::Fail{..});
++        if !finalizer&&self.pending.len()>=32 {return Err("Reading List is busy; try again".into());}
++        let service=self.service.as_ref().ok_or("Reading List is not open")?;
++        match service.submit_recover(command) {
++            Ok(rx)=>self.pending.push(Pending{rx,purpose}),
++            Err((command,_)) if finalizer=>self.finalizers.push(command),
++            Err((_,error))=>return Err(error),
++        }
++        Ok(())
++    }
++    fn retry_finalizers(&mut self) {
++        let Some(service)=&self.service else{return;};
++        for command in std::mem::take(&mut self.finalizers) {
++            match service.submit_recover(command) {
++                Ok(rx)=>self.pending.push(Pending{rx,purpose:Purpose::Update}),
++                Err((command,error))=>{self.status=error;self.finalizers.push(command);},
++            }
++        }
++    }
++    pub fn entries(&self)->Vec<&Entry> {
++        let mut cache=self.filter_cache.borrow_mut();
++        if cache.revision!=self.listing.revision||cache.query!=self.query||cache.filter!=self.filter {
++            let words:Vec<_>=self.query.split_whitespace().map(str::to_lowercase).collect();
++            let mut indices:Vec<_>=self.listing.entries.iter().enumerate().filter(|(_,e)|match self.filter {
++                0=>!e.archived&&e.read!=ReadState::Finished,1=>!e.archived,2=>!e.archived&&e.read==ReadState::Finished,_=>e.archived,
++            }).filter(|(_,e)| {
++                let hay=format!("{} {} {}",e.title,e.url,e.container).to_lowercase();
++                words.iter().all(|w|hay.contains(w))
++            }).map(|(i,_)|i).collect();
++            if self.filter==0 {indices.sort_by_key(|i|if self.listing.entries[*i].read==ReadState::InProgress{0}else{1});}
++            *cache=FilterCache{revision:self.listing.revision,query:self.query.clone(),filter:self.filter,indices};
++        }
++        cache.indices.iter().filter_map(|i|self.listing.entries.get(*i)).collect()
++    }
++    fn entry(&self,id:&str)->Option<Entry> {self.listing.entries.iter().find(|e|e.id==id).cloned().or_else(||self.view.as_ref().filter(|v|v.entry.id==id).map(|v|v.entry.clone()))}
++    fn poll_list(&mut self) {
++        if self.pending.iter().any(|p|matches!(p.purpose,Purpose::List)){return;}
++        self.last_poll=Some(Instant::now());
++        if let Err(e)=self.request(Command::ListSince(self.listing.revision),Purpose::List){self.status=e;}
++    }
++    fn flush_position(&mut self) {
++        let Some(v)=self.view.as_mut().filter(|v|v.position_dirty.is_some()) else {return;};
++        if self.pending.iter().any(|p|matches!(&p.purpose,Purpose::Position(id,_) if id==&v.entry.id)){return;}
++        let Some(hash)=v.entry.snapshot.as_ref() else {return;};
++        let Some(p)=v.reader.reading_position(hash) else {return;};
++        if v.last_position.as_ref()==Some(&p){v.position_dirty=None;return;}
++        let id=v.entry.id.clone();
++        match self.service.as_ref().and_then(|s|s.submit(Command::Change{id:id.clone(),change:Change::Position(p.clone())}).ok()) {
++            Some(rx)=>{v.position_dirty=None;self.pending.push(Pending{rx,purpose:Purpose::Position(id,p)});}
++            None=>self.status="Reading position has not been saved; retry before quitting".into(),
++        }
++    }
++    fn mark_moved(&mut self){if let Some(v)=&mut self.view{v.position_dirty=Some(Instant::now());}}
++    fn node_id(&mut self,key:&str)->u64 {
++        if let Some(id)=self.access_ids.get(key){return *id;}
++        let id=self.next_access_id;self.next_access_id+=1;self.access_ids.insert(key.into(),id);id
++    }
++}
++impl Drop for State {
++    fn drop(&mut self) {
++        self.flush_position();
++        self.retry_finalizers();
++        if let Some(service)=&self.service {
++            // Complete accepted record operations before this window disappears.
++            // Failed/closed windows must not strand another window's capture badge.
++            if let Err(e)=service.flush(){tracing::warn!("Reading List shutdown: {e}");}
++            for p in &self.pending {
++                if let Ok(Ok(Reply::Saved{ticket:Some(t),..}))=p.rx.try_recv(){let _=service.submit(Command::Fail{ticket:t,reason:"The source window closed before capture".into()});}
++            }
++            if !self.finalizers.is_empty(){tracing::warn!("Reading List closed with {} capture results still queued; saved links and previous snapshots remain intact",self.finalizers.len());}
++            for job in &self.captures {
++                if let Some(shared)=job.source.shared.upgrade(){let mut s=shared.borrow_mut();s.reading_requests.remove(&job.request);s.reading_results.remove(&job.request);}
++                let _=service.submit(Command::Fail{ticket:job.ticket.clone(),reason:"The source window closed before capture completed".into()});
++            }
++            if let Err(e)=service.flush(){tracing::warn!("Reading List shutdown: {e}");}
++        }
++    }
++}
++
++impl App {
++    fn reading_init(&mut self)->bool {
++        if crate::private::enabled(){self.notice("Reading List is unavailable in an incognito window");return false;}
++        if self.reading.service.is_none(){
++            let root=match std::env::current_dir(){Ok(cwd)=>cwd.join("profile/reading"),Err(_)=>{self.notice("The profile directory is unavailable; nothing was saved");return false;}};
++            match reading::service(root){Ok(s)=>self.reading.service=Some(s),Err(e)=>{self.notice(&e);return false;}}
++        }
++        true
++    }
++    pub(crate) fn open_reading(&mut self) {
++        if !self.reading_init(){return;}
++        self.close_page_menu();self.palette=None;self.start=None;
++        self.reading.open=true;self.reading.confirm=None;self.reading.controls.clear();
++        self.reading.focus=Some(if self.reading.view.is_some(){"article"}else{"search"}.into());
++        self.reading.poll_list();self.dirty=true;
++    }
++    pub(crate) fn close_reading(&mut self) {
++        self.reading.flush_position();self.reading.open=false;self.reading.open_generation+=1;
++        self.reading.controls.clear();self.reading.press=None;self.reading.touch=None;
++        if let Some(v)=&mut self.reading.view{v.reader.saved.dragging=false;}
++        self.dirty=true;
++    }
++    fn reading_source(&self,tab:u64,right:bool)->Option<Source> {
++        let t=self.tabs.iter().find(|t|t.id==tab)?;
++        let p=if right{t.right.as_ref()?}else{&t.left};
++        let Pane::Web(w)=p else {return None;};
++        if w.asleep.is_some(){return None;}
++        let s=w.tab.shared.borrow();
++        Some(Source{tab,right,shared:Rc::downgrade(&w.tab.shared),epoch:s.navigation_epoch,
++            url:reading::page_url(&s.url).ok()?,title:s.title.clone(),container:w.container.clone()})
++    }
++    fn reading_source_tab(&self,source:&Source)->Option<&crate::browser::BrowserTab> {
++        let t=self.tabs.iter().find(|t|t.id==source.tab)?;
++        let p=if source.right{t.right.as_ref()?}else{&t.left};
++        let Pane::Web(w)=p else {return None;};
++        let original=source.shared.upgrade()?;
++        let s=w.tab.shared.borrow();
++        if !Rc::ptr_eq(&original,&w.tab.shared)||s.navigation_epoch!=source.epoch||s.loading||w.asleep.is_some()||w.container!=source.container||reading::page_url(&s.url).ok().as_deref()!=Some(source.url.as_str()){return None;}
++        Some(&w.tab)
++    }
++    pub(crate) fn save_reading(&mut self) {
++        let source=self.tabs.get(self.active).and_then(|t|self.reading_source(t.id,t.focus_right));
++        match source{Some(s)=>self.reading_save_source(s,false),None=>self.notice("Focus a loaded HTTP(S) page to save it to Reading List")}
++    }
++    pub(crate) fn save_reading_tab(&mut self,tab:u64,right:bool) {
++        match self.reading_source(tab,right){Some(s)=>self.reading_save_source(s,false),None=>self.notice("This page cannot be saved to Reading List")}
++    }
++    fn reading_save_source(&mut self,source:Source,refresh:bool) {
++        if !self.reading_init(){return;}
++        if self.reading.captures.len()+self.reading.finalizers.len()+self.reading.pending.iter().filter(|p|matches!(p.purpose,Purpose::Save(_))).count()>=2 {
++            self.notice("Two reading captures are already in progress");return;
++        }
++        let command=Command::Save{url:source.url.clone(),title:source.title.clone(),container:source.container.clone(),refresh};
++        if let Err(e)=self.reading.request(command,Purpose::Save(source)){self.notice(&e);}
++        self.dirty=true;
++    }
++    fn reading_begin_capture(&mut self,source:Source,ticket:Ticket) {
++        let token=serde_json::to_string(&ticket.generation).unwrap_or_default();
++        let expr=format!("({CAPTURE_JS})({token},({}))",crate::reader::EXTRACT_JS);
++        let request=self.reading_source_tab(&source).ok_or_else(||"The source page changed or closed before capture".to_string()).and_then(|tab|tab.eval_reading_reply(&expr));
++        match request {
++            Ok(request)=>self.reading.captures.push(CaptureJob{source,ticket,request,since:Instant::now()}),
++            Err(reason)=>{if let Err(e)=self.reading.request(Command::Fail{ticket,reason},Purpose::Update){self.notice(&e);}}
++        }
++    }
++    fn reading_message(&mut self,message:impl Into<String>){let message=message.into();self.reading.status=message.clone();if !self.reading.open{self.notice(&message);}self.dirty=true;}
++    pub(crate) fn reading_tick(&mut self) {
++        if self.reading.service.is_none(){return;}
++        self.reading.retry_finalizers();
++        for job in std::mem::take(&mut self.reading.captures) {
++            let reply=self.reading_source_tab(&job.source).and_then(|tab|tab.take_reading_reply(job.request));
++            if let Some(value)=reply {
++                let capture=value.pointer("/result/value").and_then(|v|v.as_str());
++                let command=match capture {
++                    Some(json)=>Command::Commit{ticket:job.ticket,capture:json.into()},
++                    None=>Command::Fail{ticket:job.ticket,reason:value.pointer("/exceptionDetails/exception/description").or_else(||value.pointer("/exceptionDetails/text")).and_then(|v|v.as_str()).unwrap_or("No readable article was returned; the link remains saved").into()},
++                };
++                if let Err(e)=self.reading.request(command,Purpose::Update){self.reading_message(e);}
++            } else if self.reading_source_tab(&job.source).is_none()||job.since.elapsed()>Duration::from_secs(8) {
++                if let Some(shared)=job.source.shared.upgrade(){let mut s=shared.borrow_mut();s.reading_requests.remove(&job.request);s.reading_results.remove(&job.request);}
++                let command=Command::Fail{ticket:job.ticket,reason:"Capture timed out, or its source page changed or closed. The link and any previous copy remain saved.".into()};
++                if let Err(e)=self.reading.request(command,Purpose::Update){self.reading_message(e);}
++            } else {self.reading.captures.push(job);}
++        }
++        for pending in std::mem::take(&mut self.reading.pending) {
++            let result=match pending.rx.try_recv(){Ok(r)=>r,Err(TryRecvError::Empty)=>{self.reading.pending.push(pending);continue;},Err(TryRecvError::Disconnected)=>Err("Reading worker stopped before replying".into())};
++            match result {
++                Err(e)=>{
++                    if let Purpose::Position(id,_)=&pending.purpose{if let Some(v)=self.reading.view.as_mut().filter(|v|&v.entry.id==id){v.last_position=None;v.position_dirty=Some(Instant::now());}}
++                    self.reading_message(e);
++                },
++                Ok(Reply::Unchanged|Reply::Barrier|Reply::Stale)=>{},
++                Ok(Reply::List(list))=>{
++                    self.reading.listing=list;
++                    let first=self.reading.entries().first().map(|e|e.id.clone());
++                    if self.reading.selected.as_ref().is_none_or(|id|!self.reading.listing.entries.iter().any(|e|&e.id==id)){self.reading.selected=first;}
++                    if let Some(view)=&mut self.reading.view {
++                        if let Some(e)=self.reading.listing.entries.iter().find(|e|e.id==view.entry.id) {
++                            // Do not silently replace an article currently being read.
++                            if e.snapshot==view.entry.snapshot{view.entry=e.clone();}
++                            else{view.note="A newer saved copy exists. Return to the list and open it to switch copies.".into();}
++                        } else {self.reading.view=None;self.reading.status="This item was removed in another window".into();}
++                    }
++                    if !self.reading.listing.warnings.is_empty(){self.reading.status=self.reading.listing.warnings.join(" ");}
++                    self.dirty=true;
++                },
++                Ok(Reply::Saved{entry,ticket,existed})=>{
++                    self.reading.selected=Some(entry.id.clone());
++                    if let (Some(ticket),Purpose::Save(source))=(ticket,pending.purpose){
++                        self.reading_message(if existed{"Link saved; refreshing the saved copy…"}else{"Saved to Reading List; capturing the article…"});
++                        self.reading_begin_capture(source,ticket);
++                    } else if existed {self.reading_message("Already saved. Reading List keeps the existing copy; Refresh is explicit.");}
++                    self.reading.last_poll=None;
++                },
++                Ok(Reply::Committed(entry))=>{
++                    self.reading_message("Article copy saved. Open Reading List to read it offline; unavailable images are identified in the copy.");
++                    self.reading.last_poll=None;
++                    if let Some(v)=self.reading.view.as_mut().filter(|v|v.entry.id==entry.id){v.note="A newer saved copy is available. Reopen it from the list to switch copies.".into();}
++                },
++                Ok(Reply::Changed(entry))=>{
++                    match pending.purpose {
++                        Purpose::Remove(id)=>{self.reading.undo=Some(id);self.reading.confirm=None;self.reading_message("Removed from Reading List. Undo is available; this is not a secure erase.");if self.reading.view.as_ref().is_some_and(|v|v.entry.id==entry.id){self.reading.view=None;}},
++                        Purpose::Position(id,p)=>{if let Some(v)=self.reading.view.as_mut().filter(|v|v.entry.id==id){v.last_position=Some(p);}},
++                        Purpose::Restore=>{self.reading.undo=None;self.reading_message("Restored to Reading List");},
++                        _=>{if let Some(reason)=&entry.capture_error{self.reading_message(format!("Link saved. {reason}"));}}
++                    }
++                    if let Some(v)=self.reading.view.as_mut().filter(|v|v.entry.id==entry.id&&v.entry.snapshot==entry.snapshot){v.entry=entry;}
++                    self.reading.last_poll=None;self.dirty=true;
++                },
++                Ok(Reply::Opened{entry,snapshot,images})=>{
++                    if matches!(pending.purpose,Purpose::Open(g) if g==self.reading.open_generation)&&self.reading.open {
++                        self.reading_install(entry,snapshot,images);
++                    }
++                }
++            }
++        }
++        if self.reading.open && self.reading.last_poll.is_none_or(|t|t.elapsed()>Duration::from_millis(750)){self.reading.poll_list();}
++        if self.reading.view.as_ref().and_then(|v|v.position_dirty).is_some_and(|t|t.elapsed()>Duration::from_millis(600)){self.reading.flush_position();}
++    }
++    fn reading_install(&mut self,entry:Entry,snapshot:Snapshot,images:Vec<reading::DecodedImage>) {
++        let Some(article)=crate::reader::Article::parse(&snapshot.document.to_string()) else {self.reading_message("The saved article could not be displayed; its files were preserved");return;};
++        self.reading.flush_position();
++        self.reading.access_ids.retain(|k,_|!k.starts_with("article:")&&!k.starts_with("control:code:")&&!k.starts_with("control:link:"));
++        let mut reader=crate::reader::Reader::new(article);reader.saved.offline=true;
++        for image in images {
++            let texture=self.device.create_texture(&wgpu::TextureDescriptor{
++                label:Some("Reading List saved image"),size:wgpu::Extent3d{width:image.width,height:image.height,depth_or_array_layers:1},
++                mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Bgra8Unorm,
++                usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[],
++            });
++            let bgra:Vec<_>=image.rgba.chunks_exact(4).flat_map(|p|[p[2],p[1],p[0],p[3]]).collect();
++            self.gpu.queue.write_texture(wgpu::TexelCopyTextureInfo{texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},&bgra,
++                wgpu::TexelCopyBufferLayout{offset:0,bytes_per_row:Some(image.width*4),rows_per_image:Some(image.height)},
++                wgpu::Extent3d{width:image.width,height:image.height,depth_or_array_layers:1});
++            reader.saved.pictures.insert(image.id,Picture{width:image.width,height:image.height,texture:(self.bind_texture)(&texture)});
++        }
++        let note=if snapshot.missing_images==0{"Saved article and captured images are available offline.".into()}else{format!("Saved article is available offline; {} image(s) were not captured. Alternative text is retained.",snapshot.missing_images)};
++        let note=std::iter::once(note).chain(snapshot.notices).collect::<Vec<_>>().join(" ");
++        self.reading.status=note.clone();self.reading.focus=Some("article".into());
++        self.reading.view=Some(View{resume:entry.position.clone(),last_position:entry.position.clone(),entry,reader,position_dirty:None,note});self.dirty=true;
++    }
++    pub(crate) fn reading_action(&mut self,act:Act) {
++        use Act::*;
++        match act {
++            Close=>self.close_reading(),
++            Back=>{self.reading.flush_position();self.reading.view=None;self.reading.open_generation+=1;self.reading.focus=Some("search".into());self.reading.confirm=None;},
++            Search=>self.reading.focus=Some("search".into()),
++            Find=>{if let Some(v)=&mut self.reading.view{v.reader.saved.find.get_or_insert_with(String::new);self.reading.focus=Some("find".into());}},
++            Next(forward)=>{if let Some(v)=&mut self.reading.view{v.reader.reading_find(forward);self.reading.mark_moved();}},
++            Filter(f)=>{self.reading.filter=f.min(3);self.reading.scroll=0.0;self.reading.selected=self.reading.entries().first().map(|e|e.id.clone());self.reading.focus=None;},
++            Save=>self.save_reading(),
++            Open(id)=>{
++                self.reading.selected=Some(id.clone());
++                if self.reading.entry(&id).is_some_and(|e|e.snapshot.is_some()){
++                    self.reading.flush_position();self.reading.open_generation+=1;let generation=self.reading.open_generation;
++                    self.reading.pending.retain(|p|!matches!(p.purpose,Purpose::Open(_)));
++                    if let Err(e)=self.reading.request(Command::Open{id},Purpose::Open(generation)){self.reading_message(e);}
++                }else{self.reading_message("This entry has only a saved link. Use Open original to visit the website.");}
++            },
++            Original(id)=>{if let Some(e)=self.reading.entry(&id){self.reading_open_url(&e.url,&e.container);}},
++            Link(url)=>{if let Some(jar)=self.reading.view.as_ref().map(|v|v.entry.container.clone()){self.reading_open_url(&url,&jar);}},
++            Read(id,finished)=>{
++                self.reading.flush_position();
++                if let Err(e)=self.reading.request(Command::Change{id,change:Change::Read(if finished{ReadState::Finished}else{ReadState::Unread})},Purpose::Update){self.reading_message(e);}
++            },
++            Archive(id,archived)=>{if let Err(e)=self.reading.request(Command::Change{id,change:Change::Archive(archived)},Purpose::Update){self.reading_message(e);}},
++            Remove(id)=>{self.reading.confirm=Some(id);self.reading.controls.clear();self.reading.focus=Some("cancel".into());},
++            Confirm(id)=>{self.reading.flush_position();if let Err(e)=self.reading.request(Command::Change{id:id.clone(),change:Change::Delete},Purpose::Remove(id)){self.reading_message(e);}},
++            Cancel=>self.reading.confirm=None,
++            Undo(id)=>{if let Err(e)=self.reading.request(Command::Change{id,change:Change::Restore},Purpose::Restore){self.reading_message(e);}},
++            Refresh(id)=>{
++                if let Some(e)=self.reading.entry(&id){
++                    let source=self.tabs.iter().flat_map(|t|[(t.id,false),(t.id,true)]).filter_map(|(id,right)|self.reading_source(id,right)).find(|s|s.url==e.url&&s.container==e.container);
++                    if let Some(s)=source{self.reading_save_source(s,true);}else{self.reading_message("Open the original in its saved container, let it load, then Refresh. Reading List does not fetch pages in the background.");}
++                }
++            },
++            Copy=>{if let Some(text)=self.reading.view.as_ref().map(|v|v.reader.article.plain()){self.reading_copy(text);}},
++            Code(index)=>{if let Some(text)=self.reading.view.as_ref().and_then(|v|v.reader.saved.code.get(&index)).cloned(){self.reading_copy(text);}},
++            Smaller=>self.reading.reading_scale=(self.reading.reading_scale-0.1).max(0.8),
++            Larger=>self.reading.reading_scale=(self.reading.reading_scale+0.1).min(1.8),
++        }
++        self.dirty=true;
++    }
++    fn reading_open_url(&mut self,url:&str,container:&str) {
++        let Ok(url)=reading::page_url(url) else{self.reading_message("This link is not a supported HTTP(S) address");return;};
++        if !self.containers.iter().any(|c|c.name==container){self.reading_message("The original browser container no longer exists. No page was opened in a different identity.");return;}
++        if let Some(web)=self.new_web_pane_in(&url,container){
++            self.close_reading();let tab=self.make_tab(Pane::Web(web),None);self.tabs.push(tab);self.activate(self.tabs.len()-1);self.layout();
++        }else{self.reading_message("The original page could not be opened");}
++    }
++    fn reading_copy(&mut self,text:String) {
++        match arboard::Clipboard::new().and_then(|mut c|c.set_text(text)){Ok(())=>self.reading_message("Copied"),Err(_)=>self.reading_message("The clipboard is unavailable; nothing was copied")}
++    }
++    fn reading_select_delta(&mut self,delta:i32) {
++        let ids:Vec<_>=self.reading.entries().into_iter().map(|e|e.id.clone()).collect();if ids.is_empty(){return;}
++        let old=self.reading.selected.as_ref().and_then(|id|ids.iter().position(|i|i==id)).unwrap_or(0);
++        let next=(old as i64+i64::from(delta)).clamp(0,ids.len() as i64-1) as usize;
++        self.reading.selected=Some(ids[next].clone());self.reading.focus=Some(format!("entry:{}",ids[next]));
++        if let Some(r)=self.reading.list_rect{let y=next as f32*self.reading.row_height;if y<self.reading.scroll{self.reading.scroll=y;}else if y+self.reading.row_height>self.reading.scroll+r.h{self.reading.scroll=y+self.reading.row_height-r.h;}}
++    }
++    /// Main-window event routing only. Auxiliary windows retain their own handlers.
++    pub(crate) fn reading_event(&mut self,event:&WindowEvent)->bool {
++        if !self.reading.open{return false;}
++        match event {
++            WindowEvent::KeyboardInput{event,..}=>{
++                if event.state!=ElementState::Pressed{return true;}
++                let primary=if cfg!(target_os="macos"){self.mods.super_key()}else{self.mods.control_key()};
++                let key=&event.logical_key;
++                if let Some(id)=self.reading.confirm.clone(){
++                    match key {
++                        Key::Named(NamedKey::Escape)=>self.reading_action(Act::Cancel),
++                        Key::Named(NamedKey::Tab)=>{self.reading.focus=Some(if self.reading.focus.as_deref()==Some("cancel"){"confirm"}else{"cancel"}.into());},
++                        Key::Named(NamedKey::Enter)=>self.reading_action(if self.reading.focus.as_deref()==Some("confirm"){Act::Confirm(id)}else{Act::Cancel}),
++                        _=>{},
++                    }
++                    self.dirty=true;return true;
++                }
++                if primary {
++                    if let Key::Character(c)=key {
++                        match c.to_lowercase().as_str(){
++                            "w"=>{self.close_reading();return true;},
++                            "f"=>{self.reading_action(if self.reading.view.is_some(){Act::Find}else{Act::Search});return true;},
++                            "a" if self.reading.view.is_some()&&self.reading.focus.as_deref()==Some("article")=>{self.reading.view.as_mut().unwrap().reader.reading_select_all();self.dirty=true;return true;},
++                            "c" if self.reading.view.is_some()&&self.reading.focus.as_deref()==Some("article")=>{let text=self.reading.view.as_ref().unwrap().reader.reading_selected_text();if !text.is_empty(){self.reading_copy(text);}return true;},
++                            "q"=>return false,
++                            // A deliberate app navigation shortcut dismisses the surface
++                            // and proceeds through the existing application dispatcher.
++                            "t"|"n"|"k"|"l"=>{self.close_reading();return false;},
++                            _=>{},
++                        }
++                    }
++                }
++                match key {
++                    Key::Named(NamedKey::Escape)=>{
++                        if self.reading.confirm.take().is_some(){}
++                        else if self.reading.view.as_mut().is_some_and(|v|v.reader.saved.find.take().is_some()){self.reading.focus=Some("article".into());}
++                        else if self.reading.view.is_some(){self.reading_action(Act::Back);}else{self.close_reading();}
++                    },
++                    Key::Named(NamedKey::Tab)=>{
++                        let mut seen=std::collections::HashSet::new();
++                        let mut keys:Vec<_>=self.reading.controls.iter().map(|c|c.key.clone()).filter(|key|seen.insert(key.clone())).collect();
++                        if self.reading.view.is_some(){keys.push("article".into());}
++                        if !keys.is_empty(){let old=self.reading.focus.as_ref().and_then(|f|keys.iter().position(|k|k==f));let next=if self.mods.shift_key(){old.map(|i|(i+keys.len()-1)%keys.len()).unwrap_or(keys.len()-1)}else{old.map(|i|(i+1)%keys.len()).unwrap_or(0)};self.reading.focus=Some(keys[next].clone());}
++                    },
++                    Key::Named(NamedKey::Enter)=>{
++                        if self.reading.focus.as_deref()==Some("find"){self.reading_action(Act::Next(!self.mods.shift_key()));}
++                        else if let Some(act)=self.reading.controls.iter().find(|c|Some(c.key.as_str())==self.reading.focus.as_deref()).map(|c|c.act.clone()).filter(|a|!matches!(a,Act::Search|Act::Find)){self.reading_action(act);}
++                        else if self.reading.view.is_none(){if let Some(id)=self.reading.selected.clone(){self.reading_action(Act::Open(id));}}
++                    },
++                    Key::Named(NamedKey::ArrowDown|NamedKey::ArrowUp) if self.reading.view.is_none()=>self.reading_select_delta(if *key==Key::Named(NamedKey::ArrowDown){1}else{-1}),
++                    Key::Named(NamedKey::ArrowRight|NamedKey::ArrowLeft) if self.reading.view.is_some()&&self.reading.focus.as_deref()==Some("article")=>{let right=*key==Key::Named(NamedKey::ArrowRight);self.reading.view.as_mut().unwrap().reader.reading_move_caret(right,self.mods.shift_key());},
++                    Key::Named(NamedKey::ArrowDown|NamedKey::ArrowUp|NamedKey::PageDown|NamedKey::PageUp|NamedKey::Home|NamedKey::End|NamedKey::Space) if self.reading.focus.as_deref()!=Some("search")&&self.reading.focus.as_deref()!=Some("find")=>{
++                        let mut moved=false;
++                        if let Some(v)=&mut self.reading.view{
++                            let height=v.reader.saved.viewport.map(|r|r.h).unwrap_or(500.0);let max=(v.reader.height-height).max(0.0);
++                            let step=match key{Key::Named(NamedKey::Home)=>-max,Key::Named(NamedKey::End)=>max,Key::Named(NamedKey::ArrowUp)=>-40.0,Key::Named(NamedKey::ArrowDown)=>40.0,Key::Named(NamedKey::PageUp)=>-height*0.85,_=>if self.mods.shift_key(){-height*0.85}else{height*0.85}};
++                            v.reader.scroll=(v.reader.scroll+step).clamp(0.0,max);moved=true;
++                        }if moved{self.reading.mark_moved();}
++                    },
++                    _=>{
++                        let input=crate::app::KeyIn::from(event);
++                        if self.reading.focus.as_deref()==Some("find"){
++                            if let Some(q)=self.reading.view.as_mut().and_then(|v|v.reader.saved.find.as_mut()){if crate::field::edit(q,&input,self.mods,512).changed(){if let Some(v)=&mut self.reading.view{v.reader.saved.found=None;}}}
++                        }else if self.reading.view.is_none()&&self.reading.confirm.is_none(){
++                            if crate::field::edit(&mut self.reading.query,&input,self.mods,512).changed(){self.reading.scroll=0.0;self.reading.selected=self.reading.entries().first().map(|e|e.id.clone());self.reading.focus=Some("search".into());}
++                        }
++                    }
++                }
++                self.dirty=true;true
++            },
++            WindowEvent::CursorMoved{position,..}=>{
++                self.mouse=(position.x as f32,position.y as f32);
++                if let Some(v)=&mut self.reading.view{
++                    if v.reader.saved.dragging{if let Some(p)=v.reader.reading_point(&self.fonts,self.mouse.0,self.mouse.1){if let Some((_,end))=&mut v.reader.saved.selection{*end=p;}}}
++                }
++                self.dirty=true;true
++            },
++            WindowEvent::MouseInput{button:MouseButton::Left,state,..}=>{
++                let (x,y)=self.mouse;
++                if *state==ElementState::Pressed{
++                    self.reading.press=Some((x,y));
++                    if let Some(v)=&mut self.reading.view{
++                        if v.reader.saved.viewport.is_some_and(|r|r.contains(x,y)){
++                            self.reading.focus=Some("article".into());
++                            if let Some(p)=v.reader.reading_point(&self.fonts,x,y){v.reader.saved.selection=Some((p,p));v.reader.saved.dragging=true;}
++                        }
++                    }
++                }else{
++                    let click=self.reading.press.take().is_some_and(|(a,b)|(x-a).abs()<5.0&&(y-b).abs()<5.0);
++                    if let Some(v)=&mut self.reading.view{v.reader.saved.dragging=false;}
++                    if click {self.reading_click(x,y);}
++                }
++                self.dirty=true;true
++            },
++            WindowEvent::MouseInput{..}=>true,
++            WindowEvent::MouseWheel{delta,..}=>{
++                let(dx,dy)=match delta{MouseScrollDelta::LineDelta(x,y)=>(*x*32.0*self.scale,*y*32.0*self.scale),MouseScrollDelta::PixelDelta(p)=>(p.x as f32,p.y as f32)};
++                self.reading_scroll(dx,dy);true
++            },
++            WindowEvent::Touch(t)=>{
++                use winit::event::TouchPhase;
++                let(x,y)=(t.location.x as f32,t.location.y as f32);
++                match t.phase{
++                    TouchPhase::Started=>{self.reading.touch=Some((t.id,x,y,false));},
++                    TouchPhase::Moved=>{if let Some((id,old_x,old_y,moved))=self.reading.touch{if id==t.id{let changed=moved||(y-old_y).abs()>5.0||(x-old_x).abs()>5.0;self.reading_scroll(0.0,y-old_y);self.reading.touch=Some((id,x,y,changed));}}},
++                    TouchPhase::Ended=>{if let Some((id,_,_,moved))=self.reading.touch.take(){if id==t.id&&!moved{self.reading_click(x,y);}}},
++                    TouchPhase::Cancelled=>self.reading.touch=None,
++                }true
++            },
++            WindowEvent::Focused(false)=>{if let Some(v)=&mut self.reading.view{v.reader.saved.dragging=false;}self.reading.flush_position();false},
++            WindowEvent::CloseRequested=>{self.reading.flush_position();false},
++            // Modifier state, resize, native window controls and redraw remain owned by App.
++            _=>false,
++        }
++    }
++    fn reading_click(&mut self,x:f32,y:f32) {
++        if let Some(c)=self.reading.controls.iter().find(|c|c.rect.contains(x,y)).cloned(){self.reading.focus=Some(c.key);self.reading_action(c.act);}
++        else if self.reading.confirm.is_none(){
++            if let Some(hit)=self.reading.view.as_ref().and_then(|v|v.reader.saved.hits.iter().find(|(r,_)|r.contains(x,y)).map(|(_,h)|h.clone())){
++                self.reading_action(match hit{ReaderHit::Link(u)=>Act::Link(u),ReaderHit::Code(i)=>Act::Code(i)});
++            }
++        }
++        self.dirty=true;
++    }
++    fn reading_scroll(&mut self,dx:f32,dy:f32) {
++        if self.reading.confirm.is_some(){return;}
++        if let Some(v)=&mut self.reading.view{
++            if self.mods.shift_key()||dx.abs()>dy.abs(){let amount=if self.mods.shift_key()&&dx==0.0{dy}else{dx};v.reader.saved.horizontal=(v.reader.saved.horizontal-amount).clamp(0.0,v.reader.saved.horizontal_max);}
++            else{let h=v.reader.saved.viewport.map(|r|r.h).unwrap_or(0.0);v.reader.scroll=(v.reader.scroll-dy).clamp(0.0,(v.reader.height-h).max(0.0));self.reading.mark_moved();}
++        }else{self.reading.scroll=(self.reading.scroll-dy).clamp(0.0,self.reading.max_scroll);}
++        self.dirty=true;
++    }
++    fn reading_button(&mut self,scene:&mut Scene,s:&mut State,key:impl Into<String>,label:&str,act:Act,r:Rect,selected:bool) {
++        if r.w<=0.0||r.h<=0.0{return;}
++        let key=key.into();let t=self.theme.clone();let hot=r.contains(self.mouse.0,self.mouse.1);
++        let style=Style{color:if selected{t.paper}else{t.ink},..self.label_strong()};
++        if selected{scene.rect(r,t.ink);}else if hot{scene.rect(r,t.tint);}
++        scene.outline(r,self.px(1.0),if selected{t.ink}else{t.dim});
++        if s.focus.as_deref()==Some(key.as_str()){scene.outline(Rect::new(r.x-self.px(2.0),r.y-self.px(2.0),r.w+self.px(4.0),r.h+self.px(4.0)),self.px(2.0),self.surface.signal);}
++        let text=self.fit(style,label,(r.w-self.px(20.0)).max(0.0));
++        self.fonts.draw(scene,style,r.x+self.px(10.0),r.y+r.h*0.65,&text);
++        s.controls.push(Control{key,rect:r,label:label.into(),act,selected});
++    }
++    fn reading_toolbar(&mut self,scene:&mut Scene,s:&mut State,items:Vec<(String,String,Act,bool)>,x:f32,y:&mut f32,width:f32) {
++        let mut left=x;let row=self.px(34.0);let gap=self.px(8.0);
++        for(key,label,act,selected)in items{
++            let w=(self.fonts.measure(self.label_strong(),&label)+self.px(22.0)).min(width);
++            if left>x && left+w>x+width{left=x;*y+=row+gap;}
++            self.reading_button(scene,s,key,&label,act,Rect::new(left,*y,w,row),selected);left+=w+gap;
++        }
++        *y+=row+self.px(14.0);
++    }
++    fn reading_field(&mut self,scene:&mut Scene,s:&mut State,key:&str,label:&str,value:&str,act:Act,r:Rect) {
++        let t=self.theme.clone();scene.rect(r,t.paper);scene.outline(r,self.px(if s.focus.as_deref()==Some(key){2.0}else{1.0}),if s.focus.as_deref()==Some(key){self.surface.signal}else{t.dim});
++        let style=Style{font:self.f.ui,px:self.px(15.0),color:if value.is_empty(){t.dim}else{t.ink},tracking:0.0};
++        let text=self.fit(style,if value.is_empty(){label}else{value},(r.w-self.px(22.0)).max(0.0));
++        self.fonts.draw(scene,style,r.x+self.px(11.0),r.y+r.h*0.66,&text);
++        s.controls.push(Control{key:key.into(),rect:r,label:label.into(),act,selected:false});
++    }
++    pub(crate) fn draw_reading(&mut self,scene:&mut Scene) {
++        if !self.reading.open{return;}
++        let mut s=std::mem::take(&mut self.reading);s.controls.clear();
++        let t=self.theme.clone();let scale=self.scale;
++        let window=Rect::new(0.0,0.0,self.target.size.0 as f32,self.target.size.1 as f32);
++        let pad=self.px(24.0).min(window.w*0.05);let x=pad;let width=(window.w-2.0*pad).max(1.0);
++        scene.layer(Some(window));scene.rect(window,t.paper);scene.rect(Rect::new(0.0,0.0,window.w,self.px(5.0)),self.surface.signal);
++        let title=Style{font:self.f.serif,px:self.px(32.0),color:t.ink,tracking:0.0};
++        self.fonts.draw(scene,title,x,self.px(53.0),if s.view.is_some(){"Saved reading"}else{"Reading List"});
++        let close_w=self.px(82.0);self.reading_button(scene,&mut s,"close","Close",Act::Close,Rect::new(window.w-pad-close_w,self.px(24.0),close_w,self.px(34.0)),false);
++        let mut y=self.px(77.0);
++        if let Some(v)=&s.view {
++            let e=v.entry.clone();
++            self.reading_toolbar(scene,&mut s,vec![
++                ("back".into(),"Reading List".into(),Act::Back,false),
++                ("original".into(),"Open original".into(),Act::Original(e.id.clone()),false),
++                ("read".into(),if e.read==ReadState::Finished{"Mark unread"}else{"Mark finished"}.into(),Act::Read(e.id.clone(),e.read!=ReadState::Finished),false),
++                ("copy".into(),"Copy article".into(),Act::Copy,false),
++                ("find-button".into(),"Find".into(),Act::Find,false),
++                ("smaller".into(),"A −".into(),Act::Smaller,false),
++                ("larger".into(),"A +".into(),Act::Larger,false),
++                ("refresh".into(),"Refresh copy".into(),Act::Refresh(e.id),false),
++            ],x,&mut y,width);
++            if let Some(q)=s.view.as_ref().and_then(|v|v.reader.saved.find.clone()){
++                self.reading_field(scene,&mut s,"find","Find in saved article",&q,Act::Find,Rect::new(x,y,width,self.px(38.0)));y+=self.px(46.0);
++                self.reading_toolbar(scene,&mut s,vec![("previous-match".into(),"Previous".into(),Act::Next(false),false),("next-match".into(),"Next".into(),Act::Next(true),false)],x,&mut y,width);
++            }
++        }else{
++            let filter=s.filter;
++            self.reading_toolbar(scene,&mut s,vec![
++                ("filter:0".into(),"To read".into(),Act::Filter(0),filter==0),
++                ("filter:1".into(),"Saved".into(),Act::Filter(1),filter==1),
++                ("filter:2".into(),"Finished".into(),Act::Filter(2),filter==2),
++                ("filter:3".into(),"Archived".into(),Act::Filter(3),filter==3),
++                ("save-current".into(),"Save current page".into(),Act::Save,false),
++            ],x,&mut y,width);
++            let query=s.query.clone();self.reading_field(scene,&mut s,"search","Search saved pages",&query,Act::Search,Rect::new(x,y,width,self.px(40.0)));y+=self.px(52.0);
++            if let Some(e)=s.selected.as_ref().and_then(|id|s.entry(id)){
++                let mut actions=vec![("open-selected".into(),"Open saved copy".into(),Act::Open(e.id.clone()),false),("original-selected".into(),"Open original".into(),Act::Original(e.id.clone()),false),
++                    ("read-selected".into(),if e.read==ReadState::Finished{"Mark unread"}else{"Mark finished"}.into(),Act::Read(e.id.clone(),e.read!=ReadState::Finished),false),
++                    ("archive-selected".into(),if e.archived{"Unarchive"}else{"Archive"}.into(),Act::Archive(e.id.clone(),!e.archived),false),
++                    ("remove-selected".into(),"Remove".into(),Act::Remove(e.id.clone()),false),
++                    ("refresh-selected".into(),"Refresh copy".into(),Act::Refresh(e.id),false)];
++                if e.snapshot.is_none(){actions.remove(0);}
++                self.reading_toolbar(scene,&mut s,actions,x,&mut y,width);
++            }
++            if let Some(id)=s.undo.clone(){self.reading_toolbar(scene,&mut s,vec![("undo".into(),"Undo removal".into(),Act::Undo(id),false)],x,&mut y,width);}
++        }
++        let footer=self.px(76.0);let body=Rect::new(x,y,width,(window.h-y-footer).max(1.0));
++        scene.hline(x,y-self.px(4.0),width,self.px(1.0),t.dim);
++        if let Some(v)=&mut s.view{
++            let reader_scale=scale*s.reading_scale;
++            let col=(crate::reader::measure::COLUMN*reader_scale).min((body.w-2.0*(crate::reader::measure::GUTTER*reader_scale).min(body.w*0.08)).max(1.0));
++            let f=self.reader_fonts();let fonts=[f.serif,f.serif_italic,f.mono,f.mono_strong];
++            let reflow=v.reader.laid_for!=(col,reader_scale)||v.reader.saved.font_key!=Some(fonts);
++            let current=if reflow{v.entry.snapshot.as_ref().and_then(|h|v.reader.reading_position(h))}else{None};
++            v.reader.saved.viewport=Some(body);v.reader.saved.scale=reader_scale;
++            v.reader.layout(&self.fonts,&f,col,reader_scale,t.ink);
++            if let Some(position)=v.resume.take().or(current){if !v.reader.restore_reading_position(&position,v.entry.snapshot.as_deref().unwrap_or("")){s.status="The saved passage could not be matched uniquely; an approximate position is shown.".into();}}
++            v.reader.draw(scene,&mut self.fonts,&f,body,reader_scale,t.ink,t.dim,t.paper,self.surface.signal);
++            for (r,hit) in &v.reader.saved.hits{
++                let (key,label,act)=match hit{ReaderHit::Link(url)=>(format!("link:{}:{url}",v.entry.id),format!("Open {url}"),Act::Link(url.clone())),ReaderHit::Code(i)=>(format!("code:{}:{i}",v.entry.id),"Copy this code or table without changing whitespace".into(),Act::Code(*i))};
++                // One control per wrapped link segment, all with a stable identity
++                // for that logical destination. AccessKit deduplicates it below.
++                if s.focus.as_deref()==Some(key.as_str()){scene.outline(*r,self.px(2.0),self.surface.signal);}
++                if !s.controls.iter().any(|c|c.key==key){s.controls.push(Control{key,rect:*r,label,act,selected:false});}
++            }
++            if v.reader.saved.horizontal_max>0.0 {
++                let style=Style{color:t.dim,..self.label()};self.fonts.draw(scene,style,x,body.bottom()-self.px(6.0),"Shift + wheel moves across long code and tables");
++            }
++        }else{
++            s.list_rect=Some(body);s.row_height=self.px(96.0);
++            let entry_count=s.entries().len();
++            s.max_scroll=(entry_count as f32*s.row_height-body.h).max(0.0);s.scroll=s.scroll.clamp(0.0,s.max_scroll);
++            scene.layer(Some(body));
++            if entry_count==0{
++                let heading=Style{font:self.f.serif,px:self.px(25.0),color:t.ink,tracking:0.0};
++                let text=if s.listing.entries.is_empty(){"A place to return to."}else{"No saved pages match this view."};
++                self.fonts.draw(scene,heading,x+self.px(12.0),body.y+self.px(45.0),text);
++                let style=Style{font:self.f.ui,px:self.px(15.0),color:t.dim,tracking:0.0};
++                let note=if s.listing.entries.is_empty(){"Save a page from its menu or the command palette. The link is kept first; offline availability is shown separately."}else{"Change the filter or search. Your other saved pages have not been removed."};
++                for(i,line)in crate::reader::wrap(&self.fonts,style,note,(width-self.px(30.0)).max(1.0)).iter().enumerate(){self.fonts.draw(scene,style,x+self.px(12.0),body.y+self.px(80.0)+i as f32*self.px(24.0),line);}
++            }
++            let start=(s.scroll/s.row_height).floor() as usize;let end=((s.scroll+body.h)/s.row_height).ceil() as usize;
++            let visible:Vec<_>=s.entries().into_iter().enumerate().take(end.min(entry_count)).skip(start).map(|(i,e)|(i,e.clone())).collect();
++            for(i,e)in &visible{
++                let y=body.y+*i as f32*s.row_height-s.scroll;let row=Rect::new(x,y,width,s.row_height);let clip=row.intersect(&body);
++                let selected=s.selected.as_deref()==Some(e.id.as_str());
++                if selected{scene.rect(row,t.tint);scene.rect(Rect::new(x,y,self.px(3.0),s.row_height),self.surface.signal);}
++                if s.focus.as_deref()==Some(format!("entry:{}",e.id).as_str()){scene.outline(row,self.px(2.0),self.surface.signal);}
++                let style=Style{font:self.f.serif,px:self.px(21.0),color:t.ink,tracking:0.0};let title=self.fit(style,&e.title,(width-self.px(28.0)).max(1.0));
++                self.fonts.draw(scene,style,x+self.px(14.0),y+self.px(30.0),&title);
++                let meta=Style{font:self.f.ui,px:self.px(13.0),color:t.dim,tracking:0.0};
++                let read=match e.read{ReadState::Unread=>"Saved",ReadState::InProgress=>"Continue reading",ReadState::Finished=>"Finished"};
++                let status=if s.listing.busy.contains(&e.id){"Capturing article…"}else{e.status()};
++                let text=format!("{} · {} · {}",e.host(),read,status);let text=self.fit(meta,&text,(width-self.px(28.0)).max(1.0));
++                self.fonts.draw(scene,meta,x+self.px(14.0),y+self.px(56.0),&text);
++                let summary=if let Some(words)=e.word_count.filter(|n|*n>=100){format!("{} · approximately {} min",e.container,words.div_ceil(220))}else{e.container.clone()};
++                let detail=e.capture_error.as_deref().unwrap_or(&summary);let detail=self.fit(meta,detail,(width-self.px(28.0)).max(1.0));self.fonts.draw(scene,meta,x+self.px(14.0),y+self.px(77.0),&detail);
++                scene.hline(x,y+s.row_height-self.px(1.0),width,self.px(1.0),t.dim);
++                if clip.w>0.0&&clip.h>0.0{s.controls.push(Control{key:format!("entry:{}",e.id),rect:clip,label:format!("{}; {}; {}",e.title,read,status),act:Act::Open(e.id.clone()),selected});}
++            }
++            if s.max_scroll>0.0{let h=(body.h*body.h/(s.max_scroll+body.h)).max(self.px(20.0)).min(body.h);let y=body.y+(body.h-h)*s.scroll/s.max_scroll;scene.rect(Rect::new(body.right()-self.px(4.0),y,self.px(3.0),h),t.dim);}
++        }
++        scene.layer(Some(window));
++        let status=Style{font:self.f.ui,px:self.px(12.0),color:t.dim,tracking:0.0};
++        let note=if s.status.is_empty(){"Your reading stays in this profile. No account, automatic fetch, or reading-list sync."}else{&s.status};
++        for(i,line)in crate::reader::wrap(&self.fonts,status,note,width).into_iter().take(3).enumerate(){self.fonts.draw(scene,status,x,window.h-footer+self.px(19.0)+i as f32*self.px(17.0),&line);}
++        if let Some(id)=s.confirm.clone(){
++            s.controls.clear();scene.rect(window,[t.paper[0],t.paper[1],t.paper[2],0.92]);
++            let w=self.px(480.0).min(width);let dialog=Rect::new((window.w-w)/2.0,(window.h-self.px(220.0))/2.0,w,self.px(220.0));
++            scene.rect(dialog,t.paper);scene.outline(dialog,self.px(2.0),t.ink);
++            let style=Style{font:self.f.serif,px:self.px(24.0),color:t.ink,tracking:0.0};self.fonts.draw(scene,style,dialog.x+self.px(18.0),dialog.y+self.px(38.0),"Remove this saved page?");
++            let info="The item leaves Reading List. Undo is available in this session. Local recovery records are retained; this is not a secure erase.";
++            for(i,line)in crate::reader::wrap(&self.fonts,status,info,w-self.px(36.0)).into_iter().enumerate(){self.fonts.draw(scene,status,dialog.x+self.px(18.0),dialog.y+self.px(68.0)+i as f32*self.px(20.0),&line);}
++            let mut y=dialog.bottom()-self.px(50.0);self.reading_toolbar(scene,&mut s,vec![("cancel".into(),"Keep it".into(),Act::Cancel,false),("confirm".into(),"Remove".into(),Act::Confirm(id),false)],dialog.x+self.px(18.0),&mut y,w-self.px(36.0));
++        }
++        scene.layer(None);self.reading=s;
++    }
++    pub(crate) fn reading_access_tree(&mut self)->accesskit::TreeUpdate {
++        use accesskit::{Action,Node,NodeId,Role,TreeId,TreeInfo,TreeUpdate};
++        let mut nodes=Vec::new();let mut children=Vec::new();let mut focus=NodeId(2);
++        let mut seen=std::collections::HashSet::new();
++        for control in self.reading.controls.clone(){
++            if !seen.insert(control.key.clone()){continue;}
++            let access_key=format!("control:{}:{:?}",control.key,control.act);
++            let id=NodeId(self.reading.node_id(&access_key));
++            let field=control.key=="search"||control.key=="find";
++            let mut node=Node::new(if field{Role::TextInput}else if control.key.starts_with("entry:"){Role::ListBoxOption}else{Role::Button});
++            node.set_label(control.label);let r=control.rect;node.set_bounds(accesskit::Rect{x0:r.x as f64,y0:r.y as f64,x1:r.right() as f64,y1:r.bottom() as f64});
++            node.add_action(Action::Click);node.add_action(Action::Focus);
++            if field{node.add_action(Action::SetValue);node.set_value(if control.key=="search"{self.reading.query.clone()}else{self.reading.view.as_ref().and_then(|v|v.reader.saved.find.clone()).unwrap_or_default()});}
++            else if control.key.starts_with("entry:")||control.key.starts_with("filter:"){node.set_selected(control.selected);}
++            if self.reading.focus.as_deref()==Some(control.key.as_str()){focus=id;}
++            nodes.push((id,node));children.push(id);
++        }
++        if self.reading.confirm.is_none(){
++            if let Some(v)=&self.reading.view{
++                let entry_id=v.entry.id.clone();
++                let blocks=v.reader.article.blocks.clone();let title=v.entry.title.clone();
++                let mut article_children=Vec::new();
++                for(i,block)in blocks.into_iter().enumerate(){
++                    use crate::reader::Block;
++                    let (label,role)=match block{Block::Heading(_,s)=>(s,Role::Heading),Block::Image(alt,_)=>(format!("Image: {alt}"),Role::Image),Block::Link(text,url)=>(format!("{text}: {url}"),Role::Label),Block::Para(s)|Block::Pre(s)|Block::Item(s)|Block::Quote(s)|Block::Caption(s)=>(s,Role::Label)};
++                    let id=NodeId(self.reading.node_id(&format!("article:{entry_id}:{i}")));let mut n=Node::new(role);n.set_label(label);nodes.push((id,n));article_children.push(id);
++                }
++                let id=NodeId(3);let mut n=Node::new(Role::Document);n.set_label(title);n.set_children(article_children);n.add_action(Action::Focus);nodes.push((id,n));children.push(id);
++                if self.reading.focus.as_deref()==Some("article"){focus=id;}
++            }
++        }
++        let mut dialog=Node::new(Role::Dialog);dialog.set_label(if self.reading.confirm.is_some(){"Confirm removal"}else{"Reading List"});dialog.set_modal();dialog.set_children(children);nodes.push((NodeId(2),dialog));
++        let mut root=Node::new(Role::Window);root.set_label("nus — Reading List");root.set_children(vec![NodeId(2)]);nodes.push((NodeId(1),root));
++        let mut info=TreeInfo::new(NodeId(1));info.toolkit_name=Some("nus".into());TreeUpdate{nodes,tree:Some(info),tree_id:TreeId::ROOT,focus}
++    }
++    pub(crate) fn reading_access_action(&mut self,request:accesskit::ActionRequest) {
++        use accesskit::{Action,ActionData};
++        if request.target_node.0==3&&request.action==Action::Focus{self.reading.focus=Some("article".into());self.dirty=true;return;}
++        let key=self.reading.access_ids.iter().find(|(_,id)|**id==request.target_node.0).map(|(key,_)|key.clone());
++        let Some(control)=key.and_then(|key|self.reading.controls.iter().find(|c|format!("control:{}:{:?}",c.key,c.act)==key).cloned()) else{return;};
++        match request.action{
++            Action::Click=>self.reading_action(control.act),
++            Action::Focus=>self.reading.focus=Some(control.key),
++            Action::SetValue=>if let Some(ActionData::Value(value))=request.data{
++                let value:String=value.chars().take(512).collect();
++                if control.key=="search"{self.reading.query=value;self.reading.scroll=0.0;self.reading.selected=self.reading.entries().first().map(|e|e.id.clone());}
++                else if control.key=="find"{if let Some(v)=&mut self.reading.view{v.reader.saved.find=Some(value);v.reader.saved.found=None;}}
++            },_=>{}
++        }self.dirty=true;
++    }
++}
++
++impl App {
++    /// Semantic steps for the existing native screenshot driver. These commands
++    /// inspect the real feature, never seed an already-complete reading record.
++    /// They are unavailable unless the explicit, isolated NUS_SHOT harness is on.
++    pub(crate) fn reading_check(&mut self, step:&str) {
++        assert!(std::env::var_os("NUS_SHOT").is_some(),"Reading checks require NUS_SHOT");
++        let (verb,rest)=step.split_once(' ').unwrap_or((step,""));
++        match verb {
++            "open"=>self.run(crate::app::Action::ReadingList),
++            "save"=>self.run(crate::app::Action::SaveReading),
++            "close"=>self.reading_action(Act::Close),
++            "back"=>self.reading_action(Act::Back),
++            "click"=>{
++                let control=self.reading.controls.iter().find(|c|c.key==rest).cloned().unwrap_or_else(||panic!("Reading control not visible: {rest}"));
++                self.reading_click(control.rect.x+control.rect.w*0.5,control.rect.y+control.rect.h*0.5);
++            },
++            "select"=>{
++                let index:usize=rest.parse().expect("reading select index");
++                let id=self.reading.entries().get(index).expect("reading entry").id.clone();
++                self.reading.selected=Some(id);
++            },
++            "open-selected"=>{
++                let id=self.reading.selected.clone().expect("selected reading entry");
++                self.reading_action(Act::Open(id));
++            },
++            "scroll"=>self.reading_scroll(0.0,-rest.parse::<f32>().expect("reading scroll amount")*self.scale),
++            "flush"=>self.reading.flush_position(),
++            "find"=>{
++                self.reading_action(Act::Find);
++                *self.reading.view.as_mut().unwrap().reader.saved.find.as_mut().unwrap()=rest.into();
++                self.reading_action(Act::Next(true));
++            },
++            "complete"=>eprintln!("READING_CHECK_COMPLETE"),
++            "assert-count"=>assert_eq!(self.reading.listing.entries.len(),rest.parse::<usize>().unwrap()),
++            "assert-matches"=>assert_eq!(self.reading.entries().len(),rest.parse::<usize>().unwrap()),
++            "assert-idle"=>{assert!(self.reading.captures.is_empty()&&self.reading.finalizers.is_empty());assert!(self.reading.listing.busy.is_empty(),"capture still busy");},
++            "assert-offline"=>assert!(self.reading.listing.entries.iter().all(|e|e.snapshot.is_some()),"not all entries have saved copies"),
++            "assert-reader"=>assert!(self.reading.view.is_some(),"saved reader did not open"),
++            "assert-images"=>assert_eq!(self.reading.view.as_ref().unwrap().reader.saved.pictures.len(),rest.parse::<usize>().unwrap()),
++            "assert-contains"=>assert!(self.reading.view.as_ref().unwrap().reader.article.plain().contains(rest),"missing article text: {rest}"),
++            "assert-find"=>assert!(self.reading.view.as_ref().unwrap().reader.saved.found.is_some(),"saved article find did not locate the text"),
++            "assert-position"=>assert!(self.reading.view.as_ref().unwrap().reader.scroll>0.0,"reading position was not restored"),
++            "assert-code"=>{
++                let expected:String=serde_json::from_str(rest).expect("JSON code string");
++                assert!(self.reading.view.as_ref().unwrap().reader.saved.code.values().any(|s|s==&expected),"exact code content changed");
++            },
++            "assert-browsers"=>assert_eq!(crate::browser::live_count(),rest.parse::<usize>().unwrap(),"saved reader unexpectedly needs a live CEF browser"),
++            "assert-bounds"=>{
++                let(w,h)=(self.target.size.0 as f32,self.target.size.1 as f32);
++                for c in &self.reading.controls {assert!(c.rect.x>=0.0&&c.rect.y>=0.0&&c.rect.right()<=w+1.0&&c.rect.bottom()<=h+1.0,"control escaped the window: {} {:?}",c.key,c.rect);}
++            },
++            "assert-access"=>{
++                let tree=self.reading_access_tree();
++                assert!(tree.nodes.len()>2,"missing reading accessibility tree");
++                let mut ids=std::collections::HashSet::new();
++                assert!(tree.nodes.iter().all(|(id,_)|ids.insert(id.0)),"duplicate accessibility node identity");
++            },
++            "close-source"=>{
++                self.reading_action(Act::Close);
++                let tab=&self.tabs[self.active];
++                let pane=if tab.focus_right {tab.right.as_ref().unwrap_or(&tab.left)}else{&tab.left};
++                assert!(matches!(pane,Pane::Web(_)),"source page is not focused");
++                self.run(crate::app::Action::CloseTab);
++            },
++            _=>panic!("Unknown reading check: {step}"),
++        }
++        self.dirty=true;
++    }
++}

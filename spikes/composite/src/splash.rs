@@ -14,6 +14,7 @@ use crate::anim::Anim;
 use crate::app::App;
 
 pub struct Splash {
+    pub arrival: bool,
     /// When the first frame was drawn: the clock starts there, not at
     /// App::new (the window comes up a good while after).
     pub started: Instant,
@@ -32,7 +33,7 @@ const SIZE: u32 = 256;
 
 impl Splash {
     pub fn new() -> Splash {
-        Splash { started: crate::clock::now(), begun: false, tex: None, fade: Anim::at(1.0), leaving: false }
+        Splash { arrival: false, started: crate::clock::now(), begun: false, tex: None, fade: Anim::at(1.0), leaving: false }
     }
 }
 
@@ -70,6 +71,7 @@ impl App {
             sp.started = crate::clock::now();
         }
         let elapsed = crate::clock::since(sp.started).as_secs_f32();
+        if self.splash.as_ref().is_some_and(|sp|sp.arrival) {self.draw_arrival(scene,elapsed);return;}
         let k = self.plate_k();
         let draw_secs = if self.motion.reduced() || self.behavior.splash != crate::settings::SplashMode::Draw { 0.0 } else { DRAW * k };
         if self.behavior.splash == crate::settings::SplashMode::None {
@@ -128,5 +130,68 @@ impl App {
         }
         // Keep drawing while it is up.
         self.dirty = true;
+    }
+}
+
+
+impl App {
+    pub(crate) fn finish_arrival(&mut self) {
+        if self.splash.as_ref().is_some_and(|s|s.arrival) {
+            let _=crate::store::write_atomic(std::path::Path::new("profile/arrival-seen"),b"1");
+        }
+    }
+
+    /// A special first-open Atlas: one mark, one acceleration, then your workspace.
+    /// No new window, assets, timers or sound. Work is bounded to 96 instanced stars.
+    fn draw_arrival(&mut self, scene:&mut nus_render::Scene, elapsed:f32) {
+        use nus_render::{Instance,text::Style};
+        use crate::app::fade;
+        let reduced=self.motion.reduced();
+        let duration=if reduced {0.55}else{2.35};
+        if elapsed>=duration || self.behavior.splash==crate::settings::SplashMode::None {
+            self.finish_arrival();self.splash=None;self.dirty=true;return;
+        }
+        let (w,h)=(self.target.size.0 as f32,self.target.size.1 as f32);
+        let ease=|v:f32|crate::plate::swoosh(v.clamp(0.0,1.0));
+        let leave=if reduced{ease((elapsed-0.25)/0.3)}else{ease((elapsed-1.75)/0.6)};
+        let alpha=1.0-leave;
+        let scale=self.scale;let px=|v:f32|v*scale;
+        scene.layer(None);
+        scene.rect(Rect::new(0.0,0.0,w,h),fade(self.paper(),alpha));
+        let cw=px(560.0).min(w-px(32.0)).max(1.0);
+        let ch=px(300.0).min(h-px(40.0)).max(1.0);
+        let r=Rect::new((w-cw)/2.0,(h-ch)*0.38,cw,ch);
+        self.draw_atlas_frame(scene,r,alpha);
+        let inside=Rect::new(r.x+px(3.0),r.y+px(3.0),r.w-px(6.0),r.h-px(6.0));
+        scene.layer(Some(inside));
+        let center=[r.x+r.w/2.0,r.y+r.h*0.43];
+        let warp=if reduced{0.0}else{((elapsed-0.48)/0.8).clamp(0.0,1.0)};
+        let settle=1.0-ease((elapsed-1.15)/0.55);
+        for i in 0..96 {
+            let f=i as f32;
+            let angle=f*2.3999632;
+            let depth=((f*0.618034).fract()*0.88+0.12-warp*0.7).rem_euclid(1.0).max(0.08);
+            let radius=(0.065/depth)*cw;
+            let tail=(radius-px(2.0)-warp*settle*px(70.0)/depth).max(px(28.0));
+            let (dx,dy)=(angle.cos(),angle.sin());
+            let half=px(0.55);let a=[center[0]+dx*tail,center[1]+dy*tail];let b=[center[0]+dx*radius,center[1]+dy*radius];
+            let color=fade(self.theme.ink,alpha*(0.12+0.28*settle)*(1.0-depth));
+            scene.push(Instance::quad([[a[0]-dy*half,a[1]+dx*half],[b[0]-dy*half,b[1]+dx*half],[b[0]+dy*half,b[1]-dx*half],[a[0]+dy*half,a[1]-dx*half]],color));
+        }
+        let grow=if reduced{1.0}else{ease((elapsed-0.3)/0.7)};
+        let word=Style{font:self.f.wordmark,px:px(58.0+18.0*grow),color:fade(self.theme.ink,alpha),tracking:0.0};
+        let nw=self.fonts.measure(word,"n");let full=self.fonts.measure(word,"nus");
+        let x=center[0]-(nw+(full-nw)*grow)/2.0;
+        // A paper bed keeps the mark legible while streaks pass behind it.
+        scene.rect(Rect::new(x-px(12.0),center[1]-word.px*0.8,full+px(24.0),word.px*1.1),fade(self.paper(),alpha));
+        self.fonts.draw(scene,word,x,center[1]+word.px*0.22,"n");
+        self.fonts.draw(scene,Style{color:fade(word.color,grow),..word},x+nw,center[1]+word.px*0.22,"us");
+        let label=Style{color:fade(self.theme.dim,alpha*grow),..self.label()};
+        let caption=if self.previous_install.is_some(){"Welcome back."}else{"Make yourself at home."};
+        let width=self.fonts.measure(label,caption);
+        self.fonts.draw(scene,label,center[0]-width/2.0,r.y+r.h-px(53.0),caption);
+        let hint=Style{color:fade(self.theme.dim,alpha*0.65),..self.label()};
+        self.fonts.draw(scene,hint,r.x+px(20.0),r.bottom()-px(18.0),"ESC · CONTINUE");
+        scene.layer(None);self.dirty=true;
     }
 }

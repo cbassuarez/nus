@@ -130,4 +130,4 @@ touch "$app"
 
 echo "✓ $app ($(du -sh "$app" | cut -f1))"
 echo "  open it:   open \"$app\""
-echo "  or drag it to /Applications. Profile: ~/Library/Application Support/nus/profile"
+echo "  or drag it to /Applications. Profiles: ~/Library/Application Support/nus/installs/<channel>/<install>/profile"
