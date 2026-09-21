@@ -10,11 +10,14 @@
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./docs/media/window-ink.png">
-  <source media="(prefers-color-scheme: light)" srcset="./docs/media/window-paper.png">
-  <img width="100%" alt="nus with a shell and browser page open in one workspace" src="./docs/media/window-paper.png">
-</picture>
+<p align="center">
+  <a href="https://github.com/cbassuarez/nus/releases"><img alt="Latest preview" src="https://img.shields.io/github/v/release/cbassuarez/nus?include_prereleases&amp;label=preview&amp;color=303030"></a>
+  <a href="https://github.com/cbassuarez/nus/actions/workflows/ci.yml"><img alt="Build checks" src="https://github.com/cbassuarez/nus/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-303030"></a>
+  <a href="docs/REVIEWING.md"><img alt="Unsigned preview distribution" src="https://img.shields.io/badge/preview%20signing-unsigned-a04b00"></a>
+</p>
+
+<img width="100%" alt="nus with a shell and browser page open in one workspace" src="./docs/media/readme-window.png">
 
 <p align="center"><sub>A shell and the page it started, in one workspace.</sub></p>
 
@@ -44,28 +47,25 @@ A terminal, browser, editor, local processes and an optional assistant usually l
   </tr>
   <tr>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/window-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/window-paper.png">
-        <img width="100%" alt="a shell and page together in nus" src="./docs/media/window-paper.png">
-      </picture>
+      <img width="100%" alt="a shell and page together in nus" src="./docs/media/readme-shell-page.png">
     </td>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/hero-page-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/hero-page-paper.png">
-        <img width="100%" alt="a browser page as a peer pane in nus" src="./docs/media/hero-page-paper.png">
-      </picture>
+      <img width="100%" alt="a browser page as a peer pane in nus" src="./docs/media/readme-page.png">
     </td>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ports-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ports-paper.png">
-        <img width="100%" alt="the nus ports board showing process ownership" src="./docs/media/ports-paper.png">
-      </picture>
+      <img width="100%" alt="the nus ports board showing process ownership" src="./docs/media/readme-ports.png">
     </td>
   </tr>
 </table>
+
+```mermaid
+flowchart LR
+    spaces[Spaces] --> tabs[tabs]
+    tabs --> splits[splits]
+    splits --> shell[shell]
+    splits --> page[browser page]
+    splits --> editor[editor pane]
+```
 
 ---
 
@@ -119,18 +119,10 @@ A terminal, browser, editor, local processes and an optional assistant usually l
   </tr>
   <tr>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ports-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ports-paper.png">
-        <img width="100%" alt="nus ports board" src="./docs/media/ports-paper.png">
-      </picture>
+      <img width="100%" alt="nus ports board" src="./docs/media/readme-ports.png">
     </td>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ask-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ask-paper.png">
-        <img width="100%" alt="nus assistant surface" src="./docs/media/ask-paper.png">
-      </picture>
+      <img width="100%" alt="nus assistant surface" src="./docs/media/readme-ask.png">
     </td>
   </tr>
   <tr>
@@ -139,18 +131,10 @@ A terminal, browser, editor, local processes and an optional assistant usually l
   </tr>
   <tr>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/palette-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/palette-paper.png">
-        <img width="100%" alt="nus command palette" src="./docs/media/palette-paper.png">
-      </picture>
+      <img width="100%" alt="nus command palette" src="./docs/media/readme-palette.png">
     </td>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/devtools-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/devtools-paper.png">
-        <img width="100%" alt="Chromium DevTools inside nus" src="./docs/media/devtools-paper.png">
-      </picture>
+      <img width="100%" alt="Chromium DevTools inside nus" src="./docs/media/readme-devtools.png">
     </td>
   </tr>
 </table>
