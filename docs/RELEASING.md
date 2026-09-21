@@ -22,7 +22,10 @@ runtime, and check that the packaged executable can start its loader.
   the complete three-platform matrix. Published previews remain immutable.
 
 The publication job verifies every archive's size and SHA-256, creates a draft,
-uploads all three packages, `SHA256SUMS.txt` and `release.json`, then publishes.
+uploads the selected packages, `SHA256SUMS.txt` and `release.json`, then publishes.
+Tag-triggered runs select all three platforms; only manual previews can select
+a subset. Publication rejects inconsistent version/channel metadata and stable
+packages without the required signature for their own platform.
 It then sends a `release-published` dispatch to the nus.dev repository, which
 refreshes the download page's fallback snapshot; this needs a
 `SITE_DISPATCH_TOKEN` secret with write access to nus.dev, and without it the
@@ -31,6 +34,27 @@ Releases live on every load.
 A failed upload remains a draft. The downloads site reads only published releases
 and only exposes assets matching this package contract. Missing channels and
 failed API requests never become invented download links.
+
+## Preparing a candidate
+
+For `v0.0.1-preview.7`, both Cargo package versions remain `0.0.1`; the preview
+number belongs to the release tag. Keep the [candidate review notes](releases/v0.0.1-preview.7.md)
+with the same commit as the changes. Push that commit, then create and push its
+version tag only after local checks have passed. Pushing the tag starts the
+three-platform build **and authorizes automatic publication** if every job passes.
+A branch push alone does not publish a release.
+
+Watch the Release workflow for that exact tag through its publish job. A local
+Mac bundle or a successful build-only run does not prove that the public release
+exists. Before sharing the candidate, verify the published revision, platform
+assets, archive checksums and signing labels in `release.json`. If a platform
+fails, fix and rerun the unpublished candidate or explicitly choose a manual
+scoped preview; never describe a partial result as a complete matrix. Once
+published, use a new preview number for any change.
+
+The publication script generates installation/signing notes automatically.
+The candidate review document supplies the change summary and review boundaries;
+it is not itself evidence of a successful workflow or signing operation.
 
 ## Signing configuration
 

@@ -13,7 +13,7 @@ use crate::reader::interaction::{Hit as TextHit, Picture};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Hit {
-    Search, Filter(u8), Row(String), Back, Original, Finished, Archive,
+    Search, Filter(u8), Row(String), Back, More, Original, Finished, Archive,
     Refresh, Remove, ConfirmRemove, CancelRemove, Undo, Find, Copy,
     Smaller, Larger, Link(String), Code(usize),
 }
@@ -126,6 +126,28 @@ impl Library {
 }
 impl Drop for Library { fn drop(&mut self) { self.flush(true); } }
 fn container(name: &str) -> Option<String> { (name != crate::containers::PERSONAL).then(|| name.to_string()) }
+fn reading_action_available(source: &str, available: bool, hit: &Hit) -> bool {
+    let web=url::Url::parse(source).is_ok_and(|u|matches!(u.scheme(),"http"|"https") && u.username().is_empty() && u.password().is_none());
+    match hit {
+        Hit::Original=>web || source.starts_with("file:"),
+        Hit::Refresh=>web,
+        Hit::Find|Hit::Copy|Hit::Smaller|Hit::Larger=>available,
+        _=>true,
+    }
+}
+fn capture_failure_message(reason: &str) -> &'static str {
+    if reason.contains("changed") || reason.contains("closed") || reason.contains("reloaded") {
+        "The page changed before it could be saved. Keep the original open and try again."
+    } else if reason.contains("in time") {
+        "The page took too long to respond. Let it finish loading, then try again."
+    } else if reason.contains("no readable article") {
+        "This page could not be saved as an article. You can still open the saved link."
+    } else if reason.contains("budget") || reason.contains("limit") || reason.contains("Too many") {
+        "This page is too large to save for offline reading. You can still open the saved link."
+    } else {
+        "An offline copy could not be saved. Open the original and try again."
+    }
+}
 fn hex_png(hex: &str) -> Result<(u32, u32, Vec<u8>), String> {
     if hex.len() > 131072 || hex.len() % 2 != 0 { return Err("Image exceeds the saved-image budget".into()); }
     let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| hex.get(i..i+2).and_then(|s| u8::from_str_radix(s, 16).ok()).ok_or("Invalid image encoding".to_string())).collect::<Result<_,_>>()?;
@@ -176,7 +198,7 @@ impl App {
     fn save_reading_mode(&mut self, refresh: bool) {
         if crate::private::enabled() { self.library_message("Reading is not saved from an incognito window."); return; }
         self.library.ensure();
-        if self.library.pending.len() >= 4 { self.library_message("Four captures are already in progress. Try again after one finishes."); return; }
+        if self.library.pending.len() >= 4 { self.library_message("Four pages are already being saved. Try again after one finishes."); return; }
         // Refresh from a saved copy only uses an already-open matching source.
         // It never opens the network behind the user's back.
         let reading = self.library_home().and_then(|h| h.reading.as_ref()).map(|r| r.id.clone());
@@ -213,13 +235,13 @@ impl App {
         };
         let tab_id = t.id;
         let saved = self.library.store.save_link(&source, &title, context.clone(), crate::journal::now());
-        let (e, created) = match saved { Ok(v) => v, Err(e) => { self.library_message(format!("Could not save reading: {e}")); return; } };
+        let (e, created) = match saved { Ok(v) => v, Err(e) => { tracing::info!("reading link save failed: {e}"); self.library_message("Could not add this item to your library. Please try again."); return; } };
         self.library.remember(e.clone());
-        if !created && !refresh { self.library_message("Saved in the library. Any existing copy, reading position, and archive state were kept. Refresh is a separate action."); return; }
-        let e = match self.library.store.start_capture(&e.id) { Ok(e) => e, Err(e) => { self.library_message(format!("Link saved; capture did not start: {e}")); return; } };
+        if !created && !refresh { self.library_message("Already in your library."); return; }
+        let e = match self.library.store.start_capture(&e.id) { Ok(e) => e, Err(e) => { tracing::info!("reading capture start failed: {e}"); self.library_message("Your link is saved. Keep the original open, then choose Refresh saved copy in the command palette to retry."); return; } };
         let ticket = e.capture.clone().unwrap();
         self.library.remember(e.clone());
-        if let Some(article) = direct { self.library_finish(&e.id, &ticket, article, "Text file snapshot. No network content was fetched."); return; }
+        if let Some(article) = direct { self.library_finish(&e.id, &ticket, article, "Text file"); return; }
         let Some(Pane::Web(w)) = self.tabs.get(i).and_then(|t| if right { t.right.as_ref() } else { Some(&t.left) }) else { return; };
         let expr = format!("({})({},({}))", include_str!("../assets/library/capture.js"), serde_json::to_string(&ticket).unwrap(), crate::reader::EXTRACT_JS);
         let request = w.tab.eval_reply(&expr);
@@ -232,13 +254,15 @@ impl App {
         let result = serde_json::to_vec(&article).map_err(std::io::Error::other).and_then(|bytes| self.library.store.commit(key,ticket,&bytes,&article.title,article.words(),note));
         match result {
             Ok(e) => { self.library.remember(e); self.library_message("Saved copy is available offline. Missing images, if any, are identified in the article."); },
-            Err(e) => { self.library_message(format!("Copy was not committed; any previous copy remains intact: {e}")); },
+            Err(e) => { tracing::info!("reading save failed: {e}"); self.library_message("Could not save the offline copy. Your link and any previous copy are safe. Try again."); },
         }
     }
     fn library_fail(&mut self, p: &Pending, reason: &str) {
         if let Some(shared) = p.shared.upgrade() { shared.borrow_mut().replies.retain(|(id,_)| *id != p.request); }
-        if let Ok(e) = self.library.store.capture_failed(&p.entry,&p.ticket,reason) { self.library.remember(e); }
-        self.library_message(format!("Capture stopped: {reason}. The link and any previous copy were retained."));
+        tracing::info!("reading capture stopped: {reason}");
+        let message=capture_failure_message(reason);
+        if let Ok(e) = self.library.store.capture_failed(&p.entry,&p.ticket,message) { self.library.remember(e); }
+        self.library_message(format!("{message} Your link and any previous copy are safe."));
     }
     pub(crate) fn poll_library(&mut self) {
         if crate::private::enabled() { return; }
@@ -291,7 +315,7 @@ impl App {
         let q = if archived {q.strip_prefix("archive").unwrap().trim()} else {q.as_str()};
         let words: Vec<_> = q.split_whitespace().collect();
         let mut rows: Vec<_> = self.library.entries.values().filter(|e| !e.deleted && match if archived {3} else {filter} {
-            0 => !e.archived && !e.finished, 1 => !e.archived, 2 => !e.archived && e.finished, _ => e.archived,
+            0 => !e.archived && !e.finished, 1 => true, 2 => !e.archived && e.finished, _ => e.archived,
         }).filter(|e| { let text = format!("{} {}",e.title,e.source).to_lowercase(); words.iter().all(|w|text.contains(w)) }).cloned().collect();
         rows.sort_by(|a,b| {
             let ongoing = |e:&Entry| filter == 0 && e.progress > 0.0 && !e.finished;
@@ -306,7 +330,7 @@ impl App {
         let loaded = self.library.store.article(&e).and_then(|(bytes,hash)| serde_json::from_slice::<Article>(&bytes).map(|a|(a,hash)).map_err(std::io::Error::other));
         let (article,version,available,note) = match loaded {
             Ok((a,h)) => (a,h,true,if e.note.is_empty(){"Saved copy · available offline".into()}else{format!("Saved copy · {}",e.note)}),
-            Err(err) => (Article{title:e.title.clone(),..Default::default()},String::new(),false,format!("No readable saved copy: {err}. Open original is an explicit action; nothing was fetched.")),
+            Err(err) => (Article{title:e.title.clone(),..Default::default()},String::new(),false,{tracing::info!("reading copy unavailable: {err}");if e.source.starts_with("note:"){"Saved text is unavailable.".into()}else{"Saved text is unavailable. Open the original from Reading options.".into()}}),
         };
         let mut reader = Reader::new(article); reader.saved.offline = true;
         let image_note = self.library_pictures(&mut reader);
@@ -379,11 +403,17 @@ impl App {
         self.library.flush(true);
         let id=self.library_home().and_then(|h|h.reading.as_ref()).map(|r|r.id.clone());
         let e=id.as_ref().and_then(|id|self.library.entries.get(id)).cloned();
+        if matches!(hit,Hit::Original|Hit::Refresh|Hit::Find|Hit::Copy|Hit::Smaller|Hit::Larger) {
+            if let Some(reading)=self.library_home().and_then(|h|h.reading.as_ref()) {
+                if !reading_action_available(e.as_ref().map(|e|e.source.as_str()).unwrap_or(""),reading.available,&hit){return;}
+            }
+        }
         match hit {
             Hit::Row(id)=>self.read_saved(&id),
             Hit::Search=>{if let Some(h)=self.library_home_mut(){h.library_ui.focus=Some(Hit::Search);}},
             Hit::Filter(filter)=>{if let Some(h)=self.library_home_mut(){h.library_ui.filter=filter;h.library_ui.selected=None;h.library_scroll=0.0;h.sel=0;h.library_ui.focus=Some(Hit::Filter(filter));}},
             Hit::Back=>{if let Some(h)=self.library_home_mut(){h.reading=None;h.library_ui.confirm=false;h.library_ui.focus=Some(Hit::Search);}},
+            Hit::More=>{self.open_palette(crate::app::PaletteMode::Go);if let Some((_,q))=self.palette.as_mut(){*q="reading: ".into();}},
             Hit::Original=>if let Some(e)=e{self.open_reading_source(&e);},
             Hit::Refresh=>self.refresh_reading(),
             Hit::Finished|Hit::Archive=>if let Some(e)=e{
@@ -395,7 +425,7 @@ impl App {
             Hit::ConfirmRemove=>if let Some(e)=e{
                 if !self.library_home().is_some_and(|h|h.library_ui.confirm){return;}
                 match self.library.store.remove(&e.id){
-                    Ok(e)=>{self.library.dirty.remove(&e.id);self.library.undo=Some((e.id.clone(),e.revision));self.library.remember(e);self.library_action(Hit::Back);self.library_message("Removed from the list. Undo is available. This is not a secure erase.");},
+                    Ok(e)=>{self.library.dirty.remove(&e.id);self.library.undo=Some((e.id.clone(),e.revision));self.library.remember(e);self.library_action(Hit::Back);self.library_message("Removed from your library. Undo is available.");},
                     Err(err)=>self.library_message(format!("Removal failed: {err}")),
                 }
             },
@@ -593,19 +623,27 @@ impl App {
         match hit {
             Hit::Search=>"Search title or source".into(),Hit::Filter(0)=>"Unfinished".into(),Hit::Filter(1)=>"All saved".into(),Hit::Filter(2)=>"Finished".into(),Hit::Filter(_)=>"Archived".into(),
             Hit::Row(id)=>self.library.entries.get(id).map(|e|format!("Open saved {}",e.title)).unwrap_or_else(||"Open saved article".into()),
-            Hit::Back=>"Library".into(),Hit::Original=>"Open original".into(),Hit::Finished=>if e.is_some_and(|e|e.finished){"Mark unfinished"}else{"Mark finished"}.into(),
+            Hit::Back=>"Library".into(),Hit::More=>"Reading options".into(),Hit::Original=>"Open original".into(),Hit::Finished=>if e.is_some_and(|e|e.finished){"Mark unfinished"}else{"Mark finished"}.into(),
             Hit::Archive=>if e.is_some_and(|e|e.archived){"Unarchive"}else{"Archive"}.into(),Hit::Refresh=>"Refresh saved copy".into(),Hit::Remove=>"Remove…".into(),Hit::ConfirmRemove=>"Confirm removal".into(),Hit::CancelRemove=>"Keep article".into(),Hit::Undo=>"Undo removal".into(),Hit::Find=>"Find in article".into(),Hit::Copy=>"Copy selection".into(),Hit::Smaller=>"A−".into(),Hit::Larger=>"A+".into(),Hit::Link(u)=>format!("Open link: {u}"),Hit::Code(_)=>"Copy code or table".into(),
         }
     }
+    pub(crate) fn reading_actions(&self)->Vec<(String,Hit)> {
+        let Some(reading)=self.library_home().and_then(|h|h.reading.as_ref()) else{return vec![];};
+        let source=self.library.entries.get(&reading.id).map(|e|e.source.as_str()).unwrap_or("");
+        [Hit::Original,Hit::Finished,Hit::Archive,Hit::Find,Hit::Copy,Hit::Smaller,Hit::Larger,Hit::Refresh,Hit::Remove].into_iter()
+            .filter(|hit|reading_action_available(source,reading.available,hit))
+            .map(|hit|(self.library_label(&hit),hit)).collect()
+    }
     fn library_controls(&mut self,scene:&mut Scene,h:&mut HomePane,controls:&[(Hit,String)],top:f32)->f32 {
-        let r=h.rect;let scale=self.scale;let px=|v:f32|v*scale;let gap=px(8.0);let left=r.x+px(16.0);let right=r.right()-px(16.0);let mut x=left;let mut y=top;
+        let r=h.rect;let scale=self.scale;let px=|v:f32|v*scale;let gap=px(8.0);let span=px(760.0).min((r.w-px(40.0)).max(1.0));let left=if h.reading.is_some(){r.x+px(16.0)}else{r.x+(r.w-span)/2.0};let right=if h.reading.is_some(){r.right()-px(16.0)}else{left+span};let mut x=left;let mut y=top;
         let label=self.label();let ink=self.theme.ink;let dim=self.theme.dim;
         for (hit,text) in controls {
             let width=(self.fonts.measure(label,text)+px(20.0)).min((right-left).max(1.0));
             if x>left && x+width>right{y+=px(44.0);x=left;}
             let cell=Rect::new(x,y,width,px(40.0));
             let focused=h.library_ui.focus.as_ref()==Some(hit);let selected=matches!(hit,Hit::Filter(f) if *f==h.library_ui.filter);
-            if selected||cell.contains(self.mouse.0,self.mouse.1){scene.rect(cell,self.theme.tint);}
+            if cell.contains(self.mouse.0,self.mouse.1){scene.rect(cell,self.theme.tint);}
+            if selected{scene.hline(cell.x+px(8.0),cell.bottom()-px(3.0),(cell.w-px(16.0)).max(0.0),px(2.0),self.surface.signal);}
             if focused{scene.outline(cell,px(1.5),self.surface.signal);}
             let text=self.fit(label,text,(width-px(12.0)).max(1.0));
             self.fonts.draw(scene,Style{color:if selected||focused{ink}else{dim},..label},x+px(8.0),y+px(26.0),&text);
@@ -622,19 +660,23 @@ impl App {
         let current=h.reading.as_ref().and_then(|rd|self.library.entries.get(&rd.id)).cloned();
         let mut y=r.y+px(12.0);
         if h.reading.is_some() {
-            let mut controls=if h.library_ui.confirm{vec![(Hit::CancelRemove,"Keep article".into()),(Hit::ConfirmRemove,"Confirm removal".into())]}else{
-                vec![(Hit::Back,"← Library".into()),(Hit::Original,"Open original".into()),
-                    (Hit::Finished,if current.as_ref().is_some_and(|e|e.finished){"Mark unfinished"}else{"Mark finished"}.into()),
-                    (Hit::Archive,if current.as_ref().is_some_and(|e|e.archived){"Unarchive"}else{"Archive"}.into()),
-                    (Hit::Refresh,"Refresh saved copy".into()),(Hit::Remove,"Remove…".into())]
+            let controls=if h.library_ui.confirm {
+                vec![(Hit::CancelRemove,"Keep article".into()),(Hit::ConfirmRemove,"Remove".into())]
+            } else {
+                let mut controls=vec![(Hit::Back,"← Library".into())];
+                if h.reading.as_ref().is_some_and(|reading|reading.available){controls.push((Hit::Find,"Find".into()));}
+                controls.push((Hit::More,"•••".into()));controls
             };
-            if !h.library_ui.confirm && h.reading.as_ref().is_some_and(|r|r.available){controls.extend([(Hit::Find,"Find".into()),(Hit::Copy,"Copy selection".into()),(Hit::Smaller,"A−".into()),(Hit::Larger,"A+".into())]);}
             y=self.library_controls(scene,h,&controls,y);
             let reading=h.reading.as_mut().unwrap();
             let newer=reading.available && current.as_ref().is_some_and(|e|e.snapshot.as_ref().is_some_and(|hash|hash!=&reading.version));
-            let note=if h.library_ui.confirm{"Remove this item from the list? Its stored copies are retained for Undo; this is not secure deletion."}else if newer{"A newer saved copy is available. Return to Library and reopen this item to read it."}else{&reading.note};
-            for line in crate::reader::wrap(&self.fonts,label,note,(r.w-px(40.0)).max(1.0)){self.fonts.draw(scene,Style{color:dim,..label},r.x+px(20.0),y+px(14.0),&line);y+=px(19.0);}
-            if !self.library.status.is_empty(){let text=self.fit(label,&self.library.status,(r.w-px(40.0)).max(1.0));self.fonts.draw(scene,Style{color:dim,..label},r.x+px(20.0),y+px(14.0),&text);y+=px(23.0);}
+            // A compact source line belongs to the article; implementation details
+            // and every secondary action do not belong above its first paragraph.
+            let note=if h.library_ui.confirm {"Remove this article from your library? You can undo this.".to_string()}
+                else if newer {"A newer copy is ready. Reopen this article to read it.".into()}
+                else if !reading.available {reading.note.clone()}
+                else {String::new()};
+            if !note.is_empty(){for line in crate::reader::wrap(&self.fonts,label,&note,(r.w-px(40.0)).max(1.0)){self.fonts.draw(scene,Style{color:dim,..label},r.x+px(20.0),y+px(14.0),&line);y+=px(19.0);}}
             if let Some(q)=reading.reader.saved.find.as_ref(){
                 let search=Rect::new(r.x+px(16.0),y,(r.w-px(32.0)).max(1.0),px(40.0));
                 scene.outline(search,px(1.0),self.surface.signal);
@@ -643,7 +685,7 @@ impl App {
                 h.library_ui.hits.push((search.intersect(&r),Hit::Find));y+=px(48.0);
             }
             let body_top=(y+px(6.0)).min(r.bottom());
-            let body=Rect::new(r.x,body_top,r.w,(r.bottom()-body_top).max(0.0));
+            let body=Rect::new(r.x,body_top,r.w,(r.bottom()-body_top-px(32.0)).max(0.0));
             if reading.available && body.h>0.0 {
                 let f=self.reader_fonts();let rs=scale*h.library_ui.size;
                 let width=crate::reader::column_width(body.w,rs);
@@ -660,17 +702,24 @@ impl App {
                 let title=self.fit(self.ui_strong(),&reading.reader.article.title,(body.w-px(40.0)).max(1.0));
                 self.fonts.draw(scene,self.ui_strong(),body.x+px(20.0),body.y+px(34.0),&title);
             }
+            let max=(reading.reader.height-body.h).max(1.0);
+            let progress=(reading.reader.scroll/max).clamp(0.0,1.0);
+            scene.hline(r.x,body.y-px(2.0),r.w*progress,px(2.0),self.surface.signal);
+            let source=current.as_ref().map(|e|url::Url::parse(&e.source).ok().and_then(|u|u.host_str().map(str::to_owned)).unwrap_or_else(||"Saved text".into())).unwrap_or_default();
+            let status=if !self.library.status.is_empty(){self.library.status.clone()}else if reading.note.contains("unavailable offline"){reading.note.clone()}else if reading.available{format!("{} · {} min left · available offline",source,((reading.reader.article.words() as f32*(1.0-progress))/220.0).ceil() as usize)}else{source};
+            let footer=self.fit(label,&status,(r.w-px(40.0)).max(1.0));
+            self.fonts.draw(scene,Style{color:dim,..label},r.x+px(20.0),r.bottom()-px(12.0),&footer);
             h.library_ui.hits.retain(|(r,_)|r.w>0.0&&r.h>0.0);
             scene.layer(outer);return;
         }
         let width=px(760.0).min((r.w-px(40.0)).max(1.0));let x=r.x+(r.w-width)/2.0;
-        let title=self.fit(Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},"Your reading library",width);
+        let title=self.fit(Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},"Reading library",width);
         self.fonts.draw(scene,Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},x,y+px(40.0),&title);y+=px(66.0);
-        for line in crate::reader::wrap(&self.fonts,label,"Save something worth returning to. Saved copies open here without visiting the original.",width){self.fonts.draw(scene,Style{color:dim,..label},x,y,&line);y+=px(20.0);}
+        for line in crate::reader::wrap(&self.fonts,label,"A place for what you want to return to.",width){self.fonts.draw(scene,Style{color:dim,..label},x,y,&line);y+=px(20.0);}
         let controls=[(Hit::Filter(0),"Unfinished".into()),(Hit::Filter(1),"All saved".into()),(Hit::Filter(2),"Finished".into()),(Hit::Filter(3),"Archived".into())];
         y=self.library_controls(scene,h,&controls,y+px(8.0));
         let search=Rect::new(x,y,width,px(44.0));
-        scene.outline(search,px(1.0),if h.library_ui.focus==Some(Hit::Search){self.surface.signal}else{dim});
+        scene.hline(search.x,search.bottom()-px(3.0),search.w,px(1.0),if h.library_ui.focus==Some(Hit::Search){self.surface.signal}else{dim});
         let text=self.fit(label,if h.input.is_empty(){"Search title or source"}else{&h.input},(width-px(20.0)).max(1.0));
         self.fonts.draw(scene,Style{color:if h.input.is_empty(){dim}else{ink},..label},x+px(10.0),y+px(28.0),&text);
         h.library_ui.hits.push((search.intersect(&r),Hit::Search));y+=px(56.0);
@@ -693,7 +742,8 @@ impl App {
             let title=self.fit(self.ui_strong(),&e.title,(width-px(20.0)).max(1.0));
             self.fonts.draw(scene,self.ui_strong(),x+px(10.0),row.y+px(27.0),&title);
             let state=if e.words==0 && e.snapshot.is_none(){"Link only".into()}else{format!("~{} min · {} · saved text",e.words.div_ceil(220),if e.finished{"finished"}else if e.progress>0.0{"continue reading"}else{"unread"})};
-            let text=self.fit(label,&format!("{state} · {}",e.source),(width-px(20.0)).max(1.0));
+            let source=url::Url::parse(&e.source).ok().and_then(|u|u.host_str().map(str::to_owned)).unwrap_or_else(||if e.source.starts_with("file:"){Path::new(e.source.trim_start_matches("file:")).file_name().unwrap_or_default().to_string_lossy().to_string()}else{"Note".into()});
+            let text=self.fit(label,&format!("{state} · {source}"),(width-px(20.0)).max(1.0));
             self.fonts.draw(scene,Style{color:dim,..label},x+px(10.0),row.y+px(53.0),&text);
             scene.hline(x,row.bottom()-px(1.0),width,px(1.0),self.theme.tint);
             let clipped=row.intersect(&area).intersect(&r);
@@ -727,4 +777,32 @@ fn capture_article(v:&serde_json::Value)->Result<(Article,String),String> {
     let note=if missing>0{format!("{missing} image(s) unavailable offline. No additional image requests were made.")}else{"Text and eligible loaded images saved without additional requests.".into()};
     // Serialization/size is checked again by Store immediately before commit.
     Ok((article,note))
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    #[test]
+    fn reading_options_only_offer_supported_source_actions() {
+        assert!(!reading_action_available("note:abc",true,&Hit::Original));
+        assert!(!reading_action_available("note:abc",true,&Hit::Refresh));
+        assert!(reading_action_available("file:/tmp/article.txt",true,&Hit::Original));
+        assert!(!reading_action_available("file:/tmp/article.txt",true,&Hit::Refresh));
+        assert!(reading_action_available("https://example.test/article",false,&Hit::Refresh));
+        for hit in [Hit::Find,Hit::Copy,Hit::Smaller,Hit::Larger] {
+            assert!(!reading_action_available("https://example.test/article",false,&hit));
+            assert!(reading_action_available("https://example.test/article",true,&hit));
+        }
+    }
+
+    #[test]
+    fn capture_failures_explain_recovery_without_protocol_details() {
+        assert!(capture_failure_message("document was reloaded during capture").contains("Keep the original open"));
+        assert!(capture_failure_message("page did not return a bounded article in time").contains("finish loading"));
+        for detail in ["capture identity did not match","missing document identity","Saved images exceed their budget"] {
+            let message=capture_failure_message(detail);
+            assert!(!message.contains("identity") && !message.contains("budget") && !message.contains("bounded"));
+        }
+    }
 }

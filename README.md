@@ -18,8 +18,10 @@ That means:
 - **I read bug reports and small fixes.** A crash with a reproduction, a
   platform build fix, a typo, a wrong doc: very much welcome. I’ll try to stamp out bugs as quickly as they come in. See
   [CONTRIBUTING.md](CONTRIBUTING.md) before opening anything, and email contact@cbassuarez.com for secured/responsible disclosure of vulnerabilities. There are limited funds available (I am one person, funding this by themselves, though I am awaiting extra funding to establish an actual program).
-- **Pre-alpha, no releases, no support.** It builds; it is not packaged. Until
-  there are releases, expect breakage and expect no answer on a schedule.
+- **Pre-alpha previews, no support schedule.** Native preview packages are built
+  by the [release workflow](docs/RELEASING.md). Expect breakage, keep backups of
+  your profile, and check each release's platform and signing status. See the
+  [preview 7 review notes](docs/releases/v0.0.1-preview.7.md) for this candidate.
 
 ## What it does
 

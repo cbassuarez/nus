@@ -102,6 +102,9 @@ jobs:
           cargo build --locked --release -p nus-cli
           cargo test --locked --release --manifest-path spikes/composite/Cargo.toml --bin composite
           cargo build --locked --release --manifest-path spikes/composite/Cargo.toml --bins
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            cargo build --locked --release -p nus-render --example icon
+          fi
       - name: Package and sign
         env:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}

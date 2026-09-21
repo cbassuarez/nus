@@ -62,6 +62,7 @@ pub enum Action {
     Library,
     SaveReading,
     RefreshReading,
+    ReadingControl(crate::library::Hit),
     Application(crate::application_menu::Command),
     Preference(crate::assistants::Field, String),
     AssistantDraft(u8, String),
@@ -6113,6 +6114,11 @@ impl App {
     pub(crate) fn palette_rows_raw(&self, mode: PaletteMode, input: &str) -> Vec<PaletteRow> {
         if crate::private::enabled() && mode != PaletteMode::Application { return self.private_rows(input); }
         let q = input.trim().to_lowercase();
+        if mode==PaletteMode::Go {
+            if let Some(query)=q.strip_prefix("reading:") {
+                return self.reading_actions().into_iter().filter(|(label,_)|label.to_lowercase().contains(query.trim())).map(|(text,hit)|PaletteRow{num:String::new(),text,action:Action::ReadingControl(hit)}).collect();
+            }
+        }
         let hit = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
         let mut rows = Vec::new();
         let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
@@ -6609,6 +6615,7 @@ impl App {
             Action::Library => self.open_library(),
             Action::SaveReading => self.save_reading(),
             Action::RefreshReading => self.refresh_reading(),
+            Action::ReadingControl(hit) => self.library_action(hit),
             Action::PromptShell(cmd) => self.open_prompt_shell(&cmd),
             Action::PromptPin(value) => {if !value.is_empty() && !self.behavior.prompt.saved.contains(&value) {self.behavior.prompt.saved.push(value);self.save_prefs();}},
             Action::Preference(field,value) => self.set_preference(field,&value),

@@ -3,8 +3,7 @@
 This change extends the existing `library.rs` / `HomePane::library` implementation.
 It does not install the earlier `reading.rs` overlay, replace the Home pane,
 remove `mod celestial`, or change startup, artwork, theme, terminal or browser
-architecture. The existing Library and SaveReading actions are retained. The
-only additional application action is RefreshReading.
+architecture. The existing Library and SaveReading actions are retained. RefreshReading and ReadingControl reuse the existing palette and reader.
 
 ## Use
 
@@ -14,7 +13,7 @@ not change the active tab. A repeated save preserves the existing copy, title,
 reading position and archive state; refresh is deliberate. Source pages/files
 remain open. New saves from incognito are refused.
 
-The library has Unfinished, All saved, Finished and Archived views. Search is by
+The library has Unfinished, All saved, Finished and Archived views. The saved reader uses a compact Library / Find / reading-options header; secondary actions open in the existing command palette. Search is by
 title and exact source text. Up/Down select an item; Enter opens its saved copy.
 Tab walks visible controls. Escape clears the list's search, or returns from a
 saved article to the list. The older `archive ...` search prefix still works.
@@ -65,10 +64,7 @@ patch does not change the production Cargo manifests or lockfile.
 Full-library scans run on a read-only worker; an older scan is not published over
 a local mutation. Small metadata writes, snapshot opening and bounded image
 upload still run synchronously. The active library periodically refreshes other
-windows' changes. This is not a new profile-sync protocol: a client or sync tool
-that ignores the writer lock may still conflict. New object-directory sync,
-older-application downgrade behavior and multi-device conflict resolution are
-not certified here. Back up the active library directory before the first run.
+windows' changes. Built-in sync holds the same writer lock during reading-library exchange and defers a busy library. External sync tools that ignore the lock may still conflict. Immutable object files and reading records are included in encrypted sync; temporary files, writer locks and conflict backups are excluded. Two-device exchange tests cover saved text and position. Older-application downgrade behavior and simultaneous multi-device edits remain separate compatibility boundaries. Back up the active library directory before the first run.
 Reversing the source patch does not reverse profile changes; old builds do not
 understand new snapshot references/Link blocks.
 
@@ -121,7 +117,7 @@ writer conflicts, interrupted commits, corruption, navigation capture generation
 delete/undo races and positions. Reader source-span tests live in the native app.
 
 ```sh
-cargo test --manifest-path scripts/library-check/Cargo.toml
+cargo test --manifest-path scripts/library-check/Cargo.toml --locked
 cargo test --manifest-path spikes/composite/Cargo.toml --locked
 ```
 
@@ -136,6 +132,11 @@ python3 scripts/library-check/test_capture.py --chromium /path/to/chromium \
 The default suite uses two temporary loopback HTTP origins. `--offline-dom`
 exists only for managed environments that prohibit loopback browsing: it skips,
 not simulates, the independent-origin case. It does not bypass browser policy.
+The HTTP fixture loader creates a fresh document for each case, including when
+the fixture URL has the same fragment. Failed cases remain in the JSON report
+and make the process exit unsuccessfully; later cases still run. Browser
+dependencies can be installed in a temporary Python virtual environment without
+changing the project's runtime or a user's browser profile.
 
 Build the native application with the project's existing bundle procedure, then
 run the existing startup/settings checks. Before release, exercise this sequence

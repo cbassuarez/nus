@@ -34,7 +34,13 @@ if [[ "${NUS_BUNDLE_SKIP_BUILD:-0}" != 1 ]]; then
   echo "· building ($profile)"
   (cd "$root/spikes/composite" && cargo build $([[ $profile == release ]] && echo --release) --locked --bins -q)
   (cd "$root" && cargo build $([[ $profile == release ]] && echo --release) --locked -p nus-cli -p nus-hold -q)
+  (cd "$root" && cargo build --release --locked -q -p nus-render --example icon)
 fi
+# Catch an incomplete build before replacing an existing bundle. Packaging
+# consumes these binaries and never starts another compiler implicitly.
+for executable in "$bin/composite" "$bin/composite_helper" "$root/target/$profile/nus-hold" "$root/target/$profile/nus" "$root/target/release/examples/icon"; do
+  [[ -x "$executable" ]] || { echo "missing build output: $executable" >&2; exit 1; }
+done
 
 echo "· laying out $app"
 rm -rf "$app"
@@ -94,7 +100,7 @@ done
 
 echo "· icon (the white n)"
 icons=$(mktemp -d)
-(cd "$root" && cargo run --release --locked -q -p nus-render --example icon -- "$icons/png" >/dev/null)
+"$root/target/release/examples/icon" "$icons/png" >/dev/null
 set_=$icons/$name.iconset
 mkdir -p "$set_"
 for s in 16 32 128 256 512; do

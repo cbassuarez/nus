@@ -844,6 +844,11 @@ impl App {
                 let Pane::Settings(p)=&self.tabs[self.active].left else {panic!("not settings")};
                 assert!(self.setting_states(p.section).iter().any(|(hit,on)|format!("{hit:?}")==rest && *on),"choice is not selected: {rest}");
             }
+            "welcomebounds" => {
+                for (i,(a,act)) in self.welcome_hits.iter().enumerate() {for (b,other) in self.welcome_hits.iter().skip(i+1) {
+                    let overlap=a.intersect(b);assert!(overlap.w<1.0 || overlap.h<1.0,"overlapping Welcome controls: {act:?} / {other:?}");
+                }}
+            },
             "welcomeclick" => {
                 let (rect,_) = self.welcome_hits.iter().find(|(_,act)|format!("{act:?}")==rest).cloned().unwrap_or_else(||panic!("welcome action not visible: {rest}"));
                 self.mouse_moved(rect.x+rect.w/2.0,rect.y+rect.h/2.0);
@@ -879,7 +884,7 @@ impl App {
                 let art = self.art.as_ref().expect("Home artwork rendered");
                 assert_eq!(art.key, rest);
                 assert!(art.status.is_none(), "artwork failed: {:?}", art.status);
-                assert_eq!(art.backdrop != crate::art::Backdrop::Theme, rest == "sky");
+                assert_eq!(art.backdrop != crate::art::Backdrop::Theme, matches!(rest,"sky"|"space"));
                 let saved = crate::prefs::Prefs::load().behavior.expect("saved background choice");
                 assert_eq!(saved.home_art, rest);
                 assert_eq!(saved.home_look, crate::settings::HomeLook::Art);
@@ -1005,6 +1010,17 @@ impl App {
                 self.dirty = true;
             }
             "devtools" => self.toggle_devtools(),
+            "libraryclick" => {
+                let Some(Pane::Home(h))=self.tabs.get(self.active).map(|t|t.focused_ref()) else{panic!("library expected")};
+                let r=h.library_ui.hits.iter().find(|(_,hit)|format!("{hit:?}")==rest).map(|(r,_)|*r).expect("visible library control");
+                self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);
+            },
+            "readingbounds" => {
+                let Some(Pane::Home(h))=self.tabs.get(self.active).map(|t|t.focused_ref()) else{panic!("library expected")};
+                assert!(h.library);
+                for (r,hit) in &h.library_ui.hits {assert!(r.x>=h.rect.x-1.0 && r.y>=h.rect.y-1.0 && r.right()<=h.rect.right()+1.0 && r.bottom()<=h.rect.bottom()+1.0,"library control outside pane: {hit:?}");}
+                if let Some(reading)=&h.reading {let viewport=reading.reader.saved.viewport.expect("reader viewport");assert!(viewport.h>h.rect.h*0.6,"reader chrome consumed the page");}
+            },
             "library" => self.open_library(),
             "savereading" => self.save_reading(),
             "readingscroll" => self.library_scroll(-rest.parse::<f32>().unwrap()*self.scale),

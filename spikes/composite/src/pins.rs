@@ -42,7 +42,7 @@ impl Pin {
         })
         .collect()
     }
-    fn icon(&self) -> (&'static str, &'static str) {
+    pub(crate) fn icon(&self) -> (&'static str, &'static str) {
         match self.target {
             Target::Welcome => icons::HOME,
             Target::Library => icons::BOOK,

@@ -16,8 +16,8 @@
 //!
 //! **The merge.** Last writer wins, per file, by the writer's clock; the
 //! losing version is kept beside the winner as `<file>.<device>.lost` so
-//! nothing is ever silently gone. Google-Docs-level: no locks, no
-//! prompts, the newest edit stands.
+//! nothing is ever silently gone. No cross-device locks or prompts; the newest
+//! edit stands. Library exchange shares the local writer's OS lock.
 //!
 //! **What syncs.** The profile's own files: settings, me, rules, layouts, folders,
 //! ports names, memory, site rules — and the session (open tabs) when
@@ -55,6 +55,58 @@ pub const SESSION: &str = "session.json";
 /// it worked — merge as the union of their lines instead of one side
 /// losing: theirs in their order, then whatever of ours they lacked.
 pub const UNION: &[&str] = &["memory.md"];
+
+fn library_path(rel: &str) -> bool {
+    rel == "library" || rel.starts_with("library/") || rel.starts_with("library\\")
+}
+
+fn library_payload(rel: &str) -> bool {
+    let (name, length) = if let Some(name) = rel.strip_prefix("library/objects/").and_then(|s| s.strip_suffix(".article")) {
+        (name, 64)
+    } else if let Some(name) = rel.strip_prefix("library/").and_then(|s| s.strip_suffix(".json").or_else(|| s.strip_suffix(".article"))) {
+        (name, 32)
+    } else { return false; };
+    name.len() == length && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn lock_library(profile: &Path) -> std::io::Result<std::fs::File> {
+    let root = profile.join("library");
+    std::fs::create_dir_all(&root)?;
+    let path = root.join(".writer.lock");
+    for part in [&root, &path] {
+        if std::fs::symlink_metadata(part).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::other("Library paths must not traverse symbolic links"));
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    let file = options.open(path)?;
+    file.try_lock().map_err(|e| std::io::Error::other(e.to_string()))?;
+    // Keep the inode: unlinking a lock permits two independent writers.
+    Ok(file)
+}
+
+fn replace_library(path: &Path, bytes: &[u8], written: u64) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path.parent().ok_or_else(|| std::io::Error::other("Missing library directory"))?;
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let temporary = parent.join(format!(".sync-{name}"));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+        file.write_all(bytes)?;
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(written))?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)?;
+        #[cfg(unix)] std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(temporary); }
+    result
+}
 
 /// The union of two line-files: `theirs` in order, then the lines of
 /// `ours` they don't have, in ours' order. Blank lines are kept as they
@@ -224,11 +276,21 @@ pub fn files_to_sync(profile: &Path, session: bool) -> Vec<String> {
         .map(|f| f.to_string())
         .collect();
     for d in DIRS {
-        if let Ok(rd) = std::fs::read_dir(profile.join(d)) {
-            for e in rd.flatten() {
-                if e.path().is_file() {
-                    v.push(format!("{d}/{}", e.file_name().to_string_lossy()));
+        if *d == "library" {
+            // Metadata and legacy snapshots live beside immutable objects. Locks,
+            // temp files and conflict backups are local process state, never payload.
+            for directory in ["library", "library/objects"] {
+                if let Ok(rd) = std::fs::read_dir(profile.join(directory)) {
+                    for e in rd.flatten() {
+                        let name=e.file_name();let name=name.to_string_lossy();
+                        let valid=library_payload(&format!("{directory}/{name}"));
+                        if valid && e.file_type().is_ok_and(|t|t.is_file()) {v.push(format!("{directory}/{name}"));}
+                    }
                 }
+            }
+        } else if let Ok(rd) = std::fs::read_dir(profile.join(d)) {
+            for e in rd.flatten() {
+                if e.path().is_file() {v.push(format!("{d}/{}",e.file_name().to_string_lossy()));}
             }
         }
     }
@@ -241,12 +303,17 @@ pub fn files_to_sync(profile: &Path, session: bool) -> Vec<String> {
 
 /// This device's manifest of the profile as it is on disk.
 pub fn local_manifest(profile: &Path, device: &str, session: bool) -> Manifest {
+    local_manifest_with_library(profile, device, session, true)
+}
+
+fn local_manifest_with_library(profile: &Path, device: &str, session: bool, library: bool) -> Manifest {
     let mut m = Manifest {
         device: device.into(),
         at: now(),
         files: BTreeMap::new(),
     };
     for rel in files_to_sync(profile, session) {
+        if !library && library_path(&rel) { continue; }
         let p = profile.join(&rel);
         let Ok(bytes) = std::fs::read(&p) else {
             continue;
@@ -517,7 +584,14 @@ pub fn exchange(
             rep.errors.push(format!("{}: {e}", c.name()));
         }
     }
-    let mut local = local_manifest(profile, device, session);
+    // Carrier preparation may involve a slow git fetch. Acquire only afterwards;
+    // hold through manifest publication so readers never publish a mixed library.
+    let library_guard = match lock_library(profile) {
+        Ok(lock) => Some(lock),
+        Err(e) => { rep.errors.push(format!("Reading library deferred: {e}")); None },
+    };
+    let library = library_guard.is_some();
+    let mut local = local_manifest_with_library(profile, device, session, library);
     // The newest version of every file anyone has.
     let mut best: BTreeMap<String, (u64, String, usize)> = BTreeMap::new(); // rel → (written, device, carrier index)
     for (ci, c) in carriers.iter().enumerate() {
@@ -526,6 +600,7 @@ pub fn exchange(
                 continue;
             }
             for (rel, e) in &m.files {
+                if library_path(rel) && (!library || !library_payload(rel)) { continue; }
                 let newer = best
                     .get(rel)
                     .map(|(w, _, _)| e.written > *w)
@@ -571,15 +646,23 @@ pub fn exchange(
         };
         if dest.is_file() && !union {
             let lost = profile.join(format!("{rel}.{device}.lost"));
-            if std::fs::rename(&dest, &lost).is_ok() {
+            let backup = if library_path(rel) {
+                std::fs::copy(&dest, &lost).map(|_| ())
+            } else { std::fs::rename(&dest, &lost) };
+            if backup.is_ok() {
                 rep.kept.push(rel.clone());
+            } else if library_path(rel) {
+                rep.errors.push(format!("{rel}: could not preserve the existing reading copy"));
+                continue;
             }
         }
-        match std::fs::write(&dest, &plain) {
+        let write = if library_path(rel) { replace_library(&dest, &plain, *written) }
+            else { std::fs::write(&dest, &plain) };
+        match write {
             Ok(()) => {
                 // Keep the writer's clock, so the next round agrees; a
                 // union is newer than both, so it pushes.
-                if !union {
+                if !union && !library_path(rel) {
                     let t = UNIX_EPOCH + std::time::Duration::from_secs(*written);
                     if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
                         let _ = f.set_modified(t);
@@ -591,7 +674,7 @@ pub fn exchange(
         }
     }
     // Push: everything of ours that's newer than (or unknown to) the carriers.
-    local = local_manifest(profile, device, session);
+    local = local_manifest_with_library(profile, device, session, library);
     for c in carriers {
         let theirs: BTreeMap<String, Entry> = c
             .manifests(key)
@@ -616,7 +699,13 @@ pub fn exchange(
                 Err(err) => rep.errors.push(format!("{}: {rel}: {err}", c.name())),
             }
         }
-        if let Err(err) = c.write_manifest(key, &local) {
+        // Busy means leave this carrier's previous library advertisement intact,
+        // not a deletion or a newly advertised in-progress local record.
+        let mut published = local.clone();
+        if !library {
+            published.files.extend(theirs.into_iter().filter(|(rel, _)| library_payload(rel)));
+        }
+        if let Err(err) = c.write_manifest(key, &published) {
             rep.errors.push(format!("{}: manifest: {err}", c.name()));
         }
         if let Err(err) = c.after() {
@@ -693,18 +782,90 @@ mod tests {
         let base=std::env::temp_dir().join(format!("nus-reading-sync-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         let a=base.join("a");let b=base.join("b");
         std::fs::create_dir_all(a.join("library")).unwrap();std::fs::create_dir_all(&b).unwrap();
-        std::fs::write(a.join("library/item.json"),br#"{"progress":0.0,"title":"A private article"}"#).unwrap();
-        std::fs::write(a.join("library/item.article"),b"Private offline article text").unwrap();
+        std::fs::write(a.join("library/0123456789abcdef0123456789abcdef.json"),br#"{"progress":0.0,"title":"A private article"}"#).unwrap();
+        std::fs::write(a.join("library/0123456789abcdef0123456789abcdef.article"),b"Private offline article text").unwrap();
         let carrier=Folder{root:base.join("carrier")};let key=new_key();
         assert!(exchange(&a,"a",&key,false,&[&carrier]).errors.is_empty());
         let report=exchange(&b,"b",&key,false,&[&carrier]);assert!(report.errors.is_empty());
-        assert_eq!(std::fs::read(b.join("library/item.article")).unwrap(),b"Private offline article text");
+        assert_eq!(std::fs::read(b.join("library/0123456789abcdef0123456789abcdef.article")).unwrap(),b"Private offline article text");
         let progress=br#"{"progress":0.65,"title":"A private article"}"#;
-        let path=b.join("library/item.json");std::fs::write(&path,progress).unwrap();
+        let path=b.join("library/0123456789abcdef0123456789abcdef.json");std::fs::write(&path,progress).unwrap();
         std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::now()+std::time::Duration::from_secs(3)).unwrap();
         assert!(exchange(&b,"b",&key,false,&[&carrier]).errors.is_empty());
         assert!(exchange(&a,"a",&key,false,&[&carrier]).errors.is_empty());
-        assert_eq!(std::fs::read(a.join("library/item.json")).unwrap(),progress);
+        assert_eq!(std::fs::read(a.join("library/0123456789abcdef0123456789abcdef.json")).unwrap(),progress);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn reading_objects_sync_without_writer_locks_or_temporary_files() {
+        let base=std::env::temp_dir().join(format!("nus-reading-objects-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let a=base.join("a");let b=base.join("b");
+        std::fs::create_dir_all(a.join("library/objects")).unwrap();std::fs::create_dir_all(&b).unwrap();
+        let keyname="0123456789abcdef0123456789abcdef";
+        let object="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let metadata=format!("library/{keyname}.json");let snapshot=format!("library/objects/{object}.article");
+        std::fs::write(a.join(&metadata),format!(r#"{{"snapshot":"{object}","progress":0.6}}"#)).unwrap();
+        std::fs::write(a.join(&snapshot),b"Offline article").unwrap();
+        for local in ["library/.writer.lock","library/.tmp123","library/objects/.tmp456","library/objects/not-a-hash.article"] {std::fs::write(a.join(local),b"local only").unwrap();}
+        assert_eq!(files_to_sync(&a,false),vec![metadata.clone(),snapshot.clone()]);
+        let folder=Folder{root:base.join("carrier")};let key=new_key();
+        assert!(exchange(&a,"first",&key,false,&[&folder]).errors.is_empty());
+        assert!(exchange(&b,"second",&key,false,&[&folder]).errors.is_empty());
+        assert_eq!(std::fs::read(b.join(snapshot)).unwrap(),b"Offline article");
+        assert_eq!(std::fs::read(a.join(&metadata)).unwrap(),std::fs::read(b.join(metadata)).unwrap());
+        assert!(b.join("library/.writer.lock").exists());
+        assert!(!files_to_sync(&b,false).iter().any(|p|p.ends_with(".writer.lock")));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn busy_reading_writer_defers_pull_and_push_without_losing_advertised_files() {
+        let base=std::env::temp_dir().join(format!("nus-reading-busy-{}-{}",std::process::id(),now()));
+        let a=base.join("a"); let b=base.join("b");
+        std::fs::create_dir_all(a.join("library")).unwrap(); std::fs::create_dir_all(b.join("library")).unwrap();
+        let rel="library/0123456789abcdef0123456789abcdef.json";
+        std::fs::write(a.join(rel),b"original").unwrap();
+        let folder=Folder{root:base.join("carrier")}; let key=new_key();
+        assert!(exchange(&a,"a",&key,false,&[&folder]).errors.is_empty());
+        assert!(exchange(&b,"b",&key,false,&[&folder]).errors.is_empty());
+        std::fs::write(a.join(rel),b"remote edit").unwrap();
+        std::fs::File::options().write(true).open(a.join(rel)).unwrap().set_modified(SystemTime::now()+std::time::Duration::from_secs(3)).unwrap();
+        assert!(exchange(&a,"a",&key,false,&[&folder]).errors.is_empty());
+        let guard=lock_library(&b).unwrap();
+        std::fs::write(b.join(rel),b"local edit in progress").unwrap();
+        std::fs::write(b.join("settings.json"),b"other settings").unwrap();
+        let report=exchange(&b,"b",&key,false,&[&folder]);
+        assert_eq!(report.errors.len(),1);
+        assert_eq!(std::fs::read(b.join(rel)).unwrap(),b"local edit in progress");
+        assert!(report.pushed.contains(&"settings.json".to_string()));
+        assert_eq!(folder.read(&key,"b",rel).unwrap(),b"original");
+        assert!(folder.manifests(&key).iter().find(|m|m.device=="b").unwrap().files.contains_key(rel));
+        drop(guard);
+        assert!(exchange(&b,"b",&key,false,&[&folder]).errors.is_empty());
+        assert_eq!(std::fs::read(b.join(rel)).unwrap(),b"remote edit");
+        assert_eq!(std::fs::read(b.join(format!("{rel}.b.lost"))).unwrap(),b"local edit in progress");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn old_manifests_cannot_replace_library_lock_or_temporary_state() {
+        let base=std::env::temp_dir().join(format!("nus-reading-old-manifest-{}-{}",std::process::id(),now()));
+        let profile=base.join("profile");std::fs::create_dir_all(&profile).unwrap();
+        let folder=Folder{root:base.join("carrier")};let key=new_key();
+        let mut manifest=Manifest{device:"old".into(),at:now(),files:BTreeMap::new()};
+        for rel in ["library/.writer.lock","library/.tmp123","library/objects/.tmp456","library/0123456789abcdef0123456789abcdef.json.old.lost"] {
+            folder.write(&key,"old",rel,b"old process state").unwrap();
+            manifest.files.insert(rel.into(),Entry{hash:blake3::hash(b"old process state").to_hex().to_string(),written:now()+10,size:17});
+        }
+        folder.write_manifest(&key,&manifest).unwrap();
+        let guard=lock_library(&profile).unwrap();drop(guard);
+        #[cfg(unix)] let inode={use std::os::unix::fs::MetadataExt;std::fs::metadata(profile.join("library/.writer.lock")).unwrap().ino()};
+        let report=exchange(&profile,"new",&key,false,&[&folder]);
+        assert!(report.errors.is_empty());assert!(report.pulled.is_empty());
+        assert_eq!(std::fs::read(profile.join("library/.writer.lock")).unwrap(),b"");
+        #[cfg(unix)] {use std::os::unix::fs::MetadataExt;assert_eq!(inode,std::fs::metadata(profile.join("library/.writer.lock")).unwrap().ino());}
+        assert!(files_to_sync(&profile,false).is_empty());
         std::fs::remove_dir_all(base).unwrap();
     }
 

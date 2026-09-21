@@ -197,10 +197,10 @@ fn sky(in: VsOut) -> vec4<f32> {
     let mp = vec2(0.5 + moon.x * 0.55, moon.y * 0.9 + 0.02);
     let moon_uv = (uv - mp) * vec2(ar,1.0) / 0.010;
     let md = length(moon_uv);
-    let z = sqrt(max(0.0,1.0-dot(moon_uv,moon_uv)));
+    let moon_z = sqrt(max(0.0,1.0-dot(moon_uv,moon_uv)));
     let toward_sun = normalize((sp-mp)*vec2(ar,1.0)+vec2(0.00001));
     let phase_z = 2.0*moon_light-1.0;
-    let normal_light = dot(moon_uv,toward_sun)*sqrt(max(0.0,1.0-phase_z*phase_z))+z*phase_z;
+    let normal_light = dot(moon_uv,toward_sun)*sqrt(max(0.0,1.0-phase_z*phase_z))+moon_z*phase_z;
     let lunar = smoothstep(-0.025,0.035,normal_light) * (1.0-smoothstep(0.94,1.03,md));
     let lunar_visible = smoothstep(-0.015,0.01,moon.y);
     col = mix(col,vec3(0.87,0.89,0.92),lunar*lunar_visible*(0.9-0.45*day));

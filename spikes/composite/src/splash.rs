@@ -134,6 +134,31 @@ impl App {
 }
 
 
+/// Camera distance is integrated acceleration, not an expanding radial drawing.
+/// Each star keeps a fixed world x/y while the camera moves through its z plane.
+fn arrival_distance(seconds: f32) -> f32 {
+    let t = seconds.max(0.0);
+    0.035 * t + 1.1 * (t - 0.4).max(0.0).powi(3)
+}
+
+fn arrival_star(index: u32, seconds: f32) -> ([f32; 2], [f32; 2], f32) {
+    let random = |salt: u32| {
+        let mut n = index.wrapping_mul(747796405).wrapping_add(salt);
+        n = (n ^ (n >> 16)).wrapping_mul(2246822519);
+        n = (n ^ (n >> 13)).wrapping_mul(3266489917);
+        (n ^ (n >> 16)) as f32 / u32::MAX as f32
+    };
+    let world = [(random(17) - 0.5) * 5.2, (random(79) - 0.5) * 3.2];
+    let distance = arrival_distance(seconds);
+    let depth = (random(131) * 4.0 - distance).rem_euclid(4.0) + 0.12;
+    // Project both ends of a short camera exposure: near stars naturally streak
+    // faster and longer than distant ones. Recycled stars enter at the far plane.
+    let previous_depth = (depth + distance - arrival_distance(seconds - 0.035)).min(4.12);
+    let head = [world[0] / depth, world[1] / depth];
+    let tail = [world[0] / previous_depth, world[1] / previous_depth];
+    (tail, head, depth)
+}
+
 impl App {
     pub(crate) fn finish_arrival(&mut self) {
         if self.splash.as_ref().is_some_and(|s|s.arrival) {
@@ -142,18 +167,18 @@ impl App {
     }
 
     /// A special first-open Atlas: one mark, one acceleration, then your workspace.
-    /// No new window, assets, timers or sound. Work is bounded to 96 instanced stars.
+    /// No new window, assets, timers or sound. Work is bounded to 192 projected stars; reduced motion uses a still mark.
     fn draw_arrival(&mut self, scene:&mut nus_render::Scene, elapsed:f32) {
         use nus_render::{Instance,text::Style};
         use crate::app::fade;
         let reduced=self.motion.reduced();
-        let duration=if reduced {0.55}else{2.35};
+        let duration=if reduced {0.55}else{3.1};
         if elapsed>=duration || self.behavior.splash==crate::settings::SplashMode::None {
             self.finish_arrival();self.splash=None;self.dirty=true;return;
         }
         let (w,h)=(self.target.size.0 as f32,self.target.size.1 as f32);
         let ease=|v:f32|crate::plate::swoosh(v.clamp(0.0,1.0));
-        let leave=if reduced{ease((elapsed-0.25)/0.3)}else{ease((elapsed-1.75)/0.6)};
+        let leave=if reduced{ease((elapsed-0.25)/0.3)}else{ease((elapsed-2.5)/0.6)};
         let alpha=1.0-leave;
         let scale=self.scale;let px=|v:f32|v*scale;
         scene.layer(None);
@@ -165,18 +190,30 @@ impl App {
         let inside=Rect::new(r.x+px(3.0),r.y+px(3.0),r.w-px(6.0),r.h-px(6.0));
         scene.layer(Some(inside));
         let center=[r.x+r.w/2.0,r.y+r.h*0.43];
-        let warp=if reduced{0.0}else{((elapsed-0.48)/0.8).clamp(0.0,1.0)};
-        let settle=1.0-ease((elapsed-1.15)/0.55);
-        for i in 0..96 {
-            let f=i as f32;
-            let angle=f*2.3999632;
-            let depth=((f*0.618034).fract()*0.88+0.12-warp*0.7).rem_euclid(1.0).max(0.08);
-            let radius=(0.065/depth)*cw;
-            let tail=(radius-px(2.0)-warp*settle*px(70.0)/depth).max(px(28.0));
-            let (dx,dy)=(angle.cos(),angle.sin());
-            let half=px(0.55);let a=[center[0]+dx*tail,center[1]+dy*tail];let b=[center[0]+dx*radius,center[1]+dy*radius];
-            let color=fade(self.theme.ink,alpha*(0.12+0.28*settle)*(1.0-depth));
-            scene.push(Instance::quad([[a[0]-dy*half,a[1]+dx*half],[b[0]-dy*half,b[1]+dx*half],[b[0]+dy*half,b[1]-dx*half],[a[0]+dy*half,a[1]-dx*half]],color));
+        if !reduced {
+            let focal=cw*0.65;
+            let appear=ease(elapsed/0.22);
+            for i in 0..192 {
+                let (tail,head,depth)=arrival_star(i,elapsed);
+                let a=[center[0]+tail[0]*focal,center[1]+tail[1]*focal];
+                let b=[center[0]+head[0]*focal,center[1]+head[1]*focal];
+                let dx=b[0]-a[0];let dy=b[1]-a[1];let length=dx.hypot(dy);
+                let far_fade=((4.12-depth)/0.35).clamp(0.0,1.0);
+                let brightness=(0.25+0.65*(1.0-depth/4.12))*appear*far_fade*alpha;
+                let color=fade(self.theme.ink,brightness);
+                let radius=px((0.6+0.3/depth).min(1.65));
+                if length>radius {
+                    let nx=-dy/length;let ny=dx/length;
+                    // Taper from a distant point toward the approaching head.
+                    scene.push(Instance::quad([
+                        [a[0]-nx*radius*0.18,a[1]-ny*radius*0.18],
+                        [b[0]-nx*radius,b[1]-ny*radius],
+                        [b[0]+nx*radius,b[1]+ny*radius],
+                        [a[0]+nx*radius*0.18,a[1]+ny*radius*0.18],
+                    ],color));
+                }
+                scene.push(Instance::rounded(Rect::new(b[0]-radius,b[1]-radius,radius*2.0,radius*2.0),radius,color));
+            }
         }
         let grow=if reduced{1.0}else{ease((elapsed-0.3)/0.7)};
         let word=Style{font:self.f.wordmark,px:px(58.0+18.0*grow),color:fade(self.theme.ink,alpha),tracking:0.0};
@@ -193,5 +230,25 @@ impl App {
         let hint=Style{color:fade(self.theme.dim,alpha*0.65),..self.label()};
         self.fonts.draw(scene,hint,r.x+px(20.0),r.bottom()-px(18.0),"ESC · CONTINUE");
         scene.layer(None);self.dirty=true;
+    }
+}
+
+#[cfg(test)]
+mod arrival_tests {
+    use super::*;
+    #[test]
+    fn points_become_perspective_streaks_as_camera_accelerates() {
+        let extent = |t| {
+            (0..192).map(|i| {let (a,b,_)=arrival_star(i,t);(b[0]-a[0]).hypot(b[1]-a[1])}).sum::<f32>()
+        };
+        assert!(extent(1.8)>extent(0.2)*20.0);
+        for i in 0..192 {for tick in 0..310 {
+            let (a,b,z)=arrival_star(i,tick as f32/100.0);
+            assert!(a.into_iter().chain(b).all(f32::is_finite));
+            assert!((0.12..=4.12).contains(&z));
+            // Both projections lie on one perspective ray, with the head nearer.
+            assert!((a[0]*b[1]-a[1]*b[0]).abs()<0.0001);
+            assert!(b[0].hypot(b[1])+0.00001>=a[0].hypot(a[1]));
+        }}
     }
 }

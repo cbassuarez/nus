@@ -434,6 +434,11 @@ impl App {
     }
     pub(crate) fn prompt_rows(&self, input: &str) -> Vec<PaletteRow> {
         if crate::private::enabled() { return self.private_rows(input); }
+        // Reading options are commands, regardless of prompt route/source settings.
+        // Never offer the typed command namespace as a shell command or search.
+        if input.trim().to_lowercase().starts_with("reading:") {
+            return self.palette_rows_raw(PaletteMode::Go,input);
+        }
         // Home can animate at display refresh rate. Do not rescan project folders,
         // saved layouts and command history on each painted frame. Tab identity
         // and order belong in the key because session actions contain indices.

@@ -241,14 +241,14 @@ impl App {
         scene.layer(Some(r));
         let pad = self.px(36.0).min(r.w * 0.06);
         let width = (r.w - pad * 2.0).min(self.px(900.0));
-        let x = r.x + pad;
+        let x = r.x + (r.w-width)*0.5;
         let mut y = r.y + self.px(30.0) - scroll;
         let narrow = width < self.px(540.0);
         let title = Style { font: self.f.wordmark, px: self.px(if narrow { 38.0 } else { 52.0 }), color: ink, tracking: 0.0 };
         self.fonts.draw(scene, title, x, y + title.px, "nus");
         let close_text="GET STARTED";
         let close_w=(self.fonts.measure(label,close_text)+self.px(20.0)).min(width*0.6);
-        let close = Rect::new(x + width - close_w, y, close_w, self.px(28.0));
+        let close = Rect::new(x + width - close_w, y+self.px(20.0), close_w, self.px(28.0));
         scene.outline(close, self.px(1.0), ink);
         self.fonts.draw(scene, label, close.x+self.px(10.0), close.y+self.px(19.0), close_text);
         self.welcome_hits.push((close, Act::Close));
@@ -265,8 +265,8 @@ impl App {
         if !narrow {
             pieces.push(piece(3.0,x+width*0.48,r.y+self.px(54.0)-scroll,0.32));
             pieces.push(piece(5.0,x+width*0.8,r.y+self.px(115.0)-scroll,0.38));
-            pieces.push(piece(4.0,x+width*0.91,r.y+self.px(210.0)-scroll,0.30));
-            pieces.push(piece(1.0,x+width*0.75,r.y+self.px(187.0)-scroll,0.24));
+            pieces.push(piece(4.0,x+width*0.91,r.y+self.px(175.0)-scroll,0.30));
+            pieces.push(piece(1.0,x+width*0.75,r.y+self.px(160.0)-scroll,0.24));
         } else {
             y+=self.px(22.0);
             pieces.push(piece(3.0,x+width*0.3,y,0.25));
@@ -274,28 +274,7 @@ impl App {
             y+=self.px(36.0);
         }
         y += self.px(24.0);
-        if !narrow {y=y.max(r.y+self.px(278.0)-scroll);}
-        self.fonts.draw(scene,strong,x,y,"YOUR PINNED TABS");y+=self.px(24.0);
-        for line in crate::reader::wrap(&self.fonts,ui,"Keep your everyday pages in the sidebar. They open when you click; closing a page keeps its pin.",width) {self.fonts.draw(scene,dim,x,y,&line);y+=self.px(21.0);}
-        y+=self.px(12.0);
-        let pin_cols=if width>=self.px(560.0){3}else{1};
-        let pin_w=(width-self.px(12.0)*(pin_cols-1) as f32)/pin_cols as f32;
-        for (i,pin) in crate::pins::Pin::defaults().into_iter().enumerate() {
-            let chosen=self.pins.items.iter().any(|p|p.target==pin.target);
-            let cell=Rect::new(x+(i%pin_cols) as f32*(pin_w+self.px(12.0)),y+(i/pin_cols) as f32*self.px(64.0),pin_w,self.px(52.0));
-            scene.rect(cell,if chosen{t.tint}else{t.paper});scene.outline(cell,self.px(1.0),if chosen{signal}else{t.dim});
-            let icon=match i {0=>nus_render::text::icons::HOME,1=>nus_render::text::icons::DOWNLOAD,_=>nus_render::text::icons::PORTS};
-            self.fonts.draw_icon(scene,icon,self.px(19.0),cell.x+self.px(12.0),cell.y+self.px(17.0),ink);
-            self.fonts.draw(scene,strong,cell.x+self.px(40.0),cell.y+self.px(31.0),&self.fit(strong,&pin.title,cell.w-self.px(74.0)));
-            let check=Rect::new(cell.right()-self.px(27.0),cell.y+self.px(18.0),self.px(15.0),self.px(15.0));
-            scene.outline(check,self.px(1.0),if chosen{signal}else{ink});
-            if chosen {self.fonts.draw_icon(scene,nus_render::text::icons::CHECK,self.px(14.0),check.x,check.y,signal);}
-            self.welcome_hits.push((cell,Act::Pins(crate::pins::Act::ToggleDefault(i))));
-        }
-        y+=3usize.div_ceil(pin_cols) as f32*self.px(64.0);
-        let edit=Rect::new(x,y,self.px(204.0).min(width),self.px(30.0));
-        self.fonts.draw(scene,Style{color:signal,..strong},x+self.px(8.0),y+self.px(20.0),"EDIT IN SIDEBAR →");
-        self.welcome_hits.push((edit,Act::EditPins));y+=self.px(58.0);
+        if !narrow {y=y.max(r.y+self.px(228.0)-scroll);}
         self.fonts.draw(scene,strong,x,y,"YOUR STARTING POINTS");
         y += self.px(18.0);
         let returning = self.previous_install.is_some();
@@ -360,6 +339,33 @@ impl App {
             self.welcome_hits.push((card,act));
         }
         y += card_count.div_ceil(columns) as f32*(ch+gap)+self.px(22.0);
+        self.fonts.draw(scene,strong,x,y,"YOUR PINNED TABS");
+        let edit_w=self.px(160.0).min(width);
+        let edit=Rect::new(if narrow{x}else{x+width-edit_w},if narrow{y+self.px(8.0)}else{y-self.px(21.0)},edit_w,self.px(30.0));
+        self.fonts.draw(scene,Style{color:signal,..label},edit.x+self.px(8.0),edit.y+self.px(20.0),"EDIT IN SIDEBAR →");
+        self.welcome_hits.push((edit,Act::EditPins));
+        y+=self.px(if narrow{58.0}else{28.0});
+        for line in crate::reader::wrap(&self.fonts,ui,"Keep your everyday pages in the sidebar. They open when you click; closing a page keeps its pin.",width) {self.fonts.draw(scene,dim,x,y,&line);y+=self.px(21.0);}
+        y+=self.px(12.0);
+        let defaults=crate::pins::Pin::defaults();
+        let pin_count=defaults.len();
+        let pin_cols=if width>=self.px(820.0){4}else if width>=self.px(460.0){2}else{1};
+        let pin_w=(width-self.px(12.0)*(pin_cols-1) as f32)/pin_cols as f32;
+        for (i,pin) in defaults.into_iter().enumerate() {
+            let chosen=self.pins.items.iter().any(|p|p.target==pin.target);
+            let cell=Rect::new(x+(i%pin_cols) as f32*(pin_w+self.px(12.0)),y+(i/pin_cols) as f32*self.px(64.0),pin_w,self.px(52.0));
+            let radius=self.px(self.surface.shell_radius).min(cell.h*0.5);
+            scene.push(nus_render::Instance::rounded(cell,radius,if chosen{t.tint}else{t.paper}));scene.push(nus_render::Instance::stroke(cell,radius,self.px(1.0),if chosen{signal}else{t.dim},None,0.0));
+            let icon=pin.icon();
+            self.fonts.draw_icon(scene,icon,self.px(19.0),cell.x+self.px(12.0),cell.y+self.px(17.0),ink);
+            self.fonts.draw(scene,strong,cell.x+self.px(40.0),cell.y+self.px(31.0),&self.fit(strong,&pin.title,cell.w-self.px(74.0)));
+            let check=Rect::new(cell.right()-self.px(27.0),cell.y+self.px(18.0),self.px(15.0),self.px(15.0));
+            scene.outline(check,self.px(1.0),if chosen{signal}else{ink});
+            if chosen {self.fonts.draw_icon(scene,nus_render::text::icons::CHECK,self.px(14.0),check.x,check.y,signal);}
+            self.welcome_hits.push((cell,Act::Pins(crate::pins::Act::ToggleDefault(i))));
+        }
+        y+=pin_count.div_ceil(pin_cols) as f32*self.px(64.0)+self.px(24.0);
+
         pieces.push(piece(6.0,x+width*0.28,y+self.px(8.0),0.34));
         pieces.push(piece(9.0,x+width*0.85,y+self.px(8.0),0.44));
         y+=self.px(48.0);

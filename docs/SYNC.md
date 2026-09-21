@@ -51,13 +51,21 @@ exist — only a count and some sizes.
 **Last writer wins, the loser kept.** Per file, by the writer's clock. A
 file newer on another device replaces ours and ours is kept beside it as
 `<file>.<device>.lost`; a file we changed since is pushed. Same hash, no
-work. No locks, no prompts, no three-way merge: Google-Docs-level — the
-newest edit stands, and nothing is ever silently gone.
+work. This is file-level conflict resolution, not a collaborative document
+merge. Reading-library exchange takes the same local writer lock as the reader
+and defers a busy library. That coordinates cooperating nus processes on one
+device; it does not serialize independent devices or external sync software.
 
 **What travels.** The profile's own files: `settings.json`, `me.json` (your
 name, face and first day), `rules.luau`, `folders.json`, `ports.json`,
 `memory.md`, `sites.json`, `containers.json`, `blocklist.txt`,
-`avatar.png`, and every file in `layouts/`, `themes/` and `surfaces/`. Not
+`avatar.png`, and every file in `layouts/`, `themes/` and `surfaces/`. Saved
+reading records and their immutable article objects also travel; temporary
+files, writer locks and conflict backups are excluded. Local article snapshots
+remain ordinary readable files in the profile: encryption protects the carrier,
+not the local library. Removal is not secure erasure of retained snapshots or
+carrier history. See [reading-library compatibility](READING_LIBRARY_REPAIR.md).
+Not
 the device's name (`profile/sync/device`), which is what tells the two
 apart. The session (open tabs, `session.json`) only when SETTINGS ·
 SYNC · WHAT TRAVELS · THE SESSION TOO is on — off by default, because a

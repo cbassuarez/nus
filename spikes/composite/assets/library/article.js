@@ -37,7 +37,7 @@
   };
   let best = document.body, score = 0;
   for (const c of document.querySelectorAll('article,main,[role="main"],#content,#main,.post,.article,.entry-content,body')) {
-    if (!visible(c)) continue;
+    if (!visibleIn(c, null)) continue;
     let n = 0;
     for (const p of c.querySelectorAll('p,pre')) {
       if (visibleIn(p, c) && !p.closest('nav,aside,footer,form,header')) n += text(p).length;
@@ -49,7 +49,8 @@
   if (document.querySelector('input[type="password"]') && !best.matches('article,.post,.article,.entry-content') && !best.querySelector('article,.post,.article,.entry-content')) {
     throw new Error('Sign-in form detected; only the link can be saved');
   }
-  const h1 = best.querySelector('h1') || document.querySelector('h1');
+  const firstVisibleHeading = root => Array.from(root.querySelectorAll('h1')).find(h => visibleIn(h, null));
+  const h1 = firstVisibleHeading(best) || firstVisibleHeading(document);
   const title = clean((h1 && text(h1)) || metadata('og:title') || document.title);
   const byline = metadata('author') || metadata('article:author');
   const when = metadata('article:published_time') || metadata('date');
@@ -82,7 +83,11 @@
     const raw = e.currentSrc || e.src || '';
     // Large data URLs are a reference to an already-loaded image, not article text.
     const src = raw.length > 8192 ? 'nus-loaded-image:' + Array.prototype.indexOf.call(document.images,e) : raw;
-    if (src && (e.naturalWidth || e.width) >= 80) {
+    // Broken/lazy figures can report only the browser's tiny fallback icon.
+    // Preserve their authored size/alt so the saved copy explains what's missing.
+    const width = Math.max(e.naturalWidth || 0, e.width || 0, Number(e.getAttribute('width')) || 0);
+    const missingFigure = !e.naturalWidth && clean(e.alt || '').trim().length > 0;
+    if (src && (width >= 80 || missingFigure)) {
       push({ t: 'img', x: clean(e.alt || ''), src });
     }
   }
