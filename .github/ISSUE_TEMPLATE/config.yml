@@ -3,3 +3,9 @@ contact_links:
   - name: How rules work
     url: https://github.com/cbassuarez/nus/blob/main/docs/PRODUCT.md
     about: Most "I wish it did X" is a rule in rules.luau — the product doc says which.
+  - name: Report a security vulnerability privately
+    url: https://github.com/cbassuarez/nus/security/advisories/new
+    about: Send security reports privately; do not include exploits or credentials in public issues.
+  - name: Review and build guide
+    url: https://github.com/cbassuarez/nus/blob/main/docs/REVIEWING.md
+    about: Source map, build checks, release verification, and known limitations.
