@@ -399,8 +399,10 @@ impl Profile {
                 // wsl.exe prints UTF-16LE.
                 let u16s: Vec<u16> = o
                     .stdout
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
                     .collect();
                 for line in String::from_utf16_lossy(&u16s).lines() {
                     let d = line.trim().trim_matches('\0');
