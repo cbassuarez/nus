@@ -1,8 +1,10 @@
 param([Parameter(Mandatory=$true)][string]$Directory, [string]$Channel='preview')
 $ErrorActionPreference='Stop'
-if (-not $env:WINDOWS_CERTIFICATE) {
-  if ($Channel -eq 'stable') { throw 'Stable Windows releases require an Authenticode certificate.' }
-  Write-Host 'Preview is unsigned.'
+# Certificate and password together, or not at all: a preview stays unsigned
+# and says so; a stable refuses.
+if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+  if ($Channel -eq 'stable') { throw 'Stable Windows releases require an Authenticode certificate and its password.' }
+  Write-Host 'Preview is unsigned (certificate or password not set).'
   exit 0
 }
 $pfx=Join-Path $env:RUNNER_TEMP 'nus-signing.pfx'

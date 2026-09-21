@@ -54,7 +54,7 @@ jobs:
           if m[1] != root or app != root: raise SystemExit('Tag, app and workspace versions must match')
           selected=os.environ['RELEASE_PLATFORMS']
           if '-preview.' not in tag and selected!='all': raise SystemExit('Stable requires every platform')
-          targets=[('macos-15','macos-arm64'),('macos-15-intel','macos-x86_64'),('windows-2022','windows-x86_64'),('ubuntu-22.04','linux-x86_64')]
+          targets=[('macos-15','macos-arm64'),('windows-2025','windows-x86_64'),('ubuntu-22.04','linux-x86_64')]
           targets=[(runner,target) for runner,target in targets if selected=='all' or target.startswith(selected)]
           if not targets: raise SystemExit('No selected platforms')
           with open(os.environ['GITHUB_OUTPUT'],'a') as out:
@@ -153,3 +153,16 @@ jobs:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
           RELEASE_TARGETS: ${{ needs.version.outputs.targets }}
         run: python3 scripts/publish-release.py --tag "$RELEASE_TAG" --revision "$GITHUB_SHA" --targets "$RELEASE_TARGETS"
+      - name: Tell the site
+        # nus.dev refreshes its download snapshot on this event. The token needs
+        # `repo` (classic) or Contents: write on nus.dev; without it the site's
+        # six-hourly schedule picks the release up instead.
+        env:
+          SITE_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if [ -z "$SITE_TOKEN" ]; then echo "SITE_DISPATCH_TOKEN not set; the site will catch up on its schedule"; exit 0; fi
+          curl -sS -X POST \
+            -H "Authorization: Bearer $SITE_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/cbassuarez/nus.dev/dispatches \
+            -d "{\"event_type\":\"release-published\",\"client_payload\":{\"tag\":\"$RELEASE_TAG\"}}"

@@ -43,7 +43,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('--prerelease',calls[1])
         self.assertIn('--latest=false',calls[-1])
         manifest=json.loads((self.root/'release.json').read_text())
-        self.assertEqual(len(manifest['assets']),4)
+        self.assertEqual(len(manifest['assets']),3)
 
     def test_missing_matrix_member_cannot_publish(self):
         (self.root/'linux-x86_64.json').unlink()

@@ -1,7 +1,7 @@
 # Releasing nus
 
-The Release workflow builds four native packages: Apple Silicon and Intel Macs,
-Windows x86-64, and Linux x86-64. Native runners fetch the CEF version pinned by
+The Release workflow builds three native packages: Apple Silicon Macs,
+Windows x86-64, and Linux x86-64. Intel Macs are not a target. Native runners fetch the CEF version pinned by
 the submodule, test both workspaces, build the app and CLI, package the complete
 runtime, and check that the packaged executable can start its loader.
 
@@ -19,10 +19,15 @@ runtime, and check that the packaged executable can start its loader.
 - A manual preview can select Linux, Windows or macOS independently. All selected
   jobs must pass; its notes explicitly list omitted platforms. This lets Linux
   previews ship while Apple's account or signing is pending. Stable still requires
-  the complete four-platform matrix. Published previews remain immutable.
+  the complete three-platform matrix. Published previews remain immutable.
 
 The publication job verifies every archive's size and SHA-256, creates a draft,
-uploads all four packages, `SHA256SUMS.txt` and `release.json`, then publishes.
+uploads all three packages, `SHA256SUMS.txt` and `release.json`, then publishes.
+It then sends a `release-published` dispatch to the nus.dev repository, which
+refreshes the download page's fallback snapshot; this needs a
+`SITE_DISPATCH_TOKEN` secret with write access to nus.dev, and without it the
+site refreshes on its own schedule instead. The page itself reads GitHub
+Releases live on every load.
 A failed upload remains a draft. The downloads site reads only published releases
 and only exposes assets matching this package contract. Missing channels and
 failed API requests never become invented download links.
@@ -51,8 +56,11 @@ Windows uses `WINDOWS_CERTIFICATE` (base64 PFX) and
 SHA-256, timestamps them and verifies Authenticode before packaging. An Apple
 certificate cannot sign Windows applications.
 
-Preview packaging can be unsigned/ad-hoc when signing is not configured. Its
-metadata and the website must identify that accurately. Native install, media,
+Preview packaging is unsigned/ad-hoc unless the *complete* signing set for the
+platform is configured — all six Apple secrets, or both Windows secrets. A
+partial set (a certificate without notarization keys, say) signs nothing and
+says so in the log; a stable release refuses in that case. The package record
+and the website identify the outcome accurately. Native install, media,
 focus, accessibility and clean-machine tests remain release review gates; a
 successful loader check is not a complete desktop acceptance test.
 
