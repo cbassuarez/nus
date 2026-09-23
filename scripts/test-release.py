@@ -121,6 +121,7 @@ class ReleaseTests(unittest.TestCase):
         self.tag='v0.0.1-preview.invalid'
         with self.assertRaisesRegex(ValueError,'Expected'): self.run_release()
 
+    @unittest.skipIf(sys.platform == 'win32', 'Linux executable permission bits require a POSIX filesystem')
     def test_linux_package_contains_runtime_cli_and_executable_launcher(self):
         # Exercise staging, permissions, archive and manifest together without
         # depending on this test host's CEF distribution or native binaries.
