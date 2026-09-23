@@ -13,3 +13,10 @@ bitflags.workspace = true
 unicode-width.workspace = true
 tracing.workspace = true
 png = "0.17"
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "terminal"
+harness = false

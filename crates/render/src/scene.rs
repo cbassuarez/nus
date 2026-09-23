@@ -63,6 +63,15 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// Encoded sRGB radiance may exceed 1.0. The HDR pipeline converts to
+    /// extended linear light; an SDR target clips only the small highlight.
+    pub fn loading_light(r: Rect, progress: f32, scale: f32, color: Color) -> Instance {
+        let mut instance = Self::rect(r, color);
+        instance.kind = 18;
+        instance.uv = [progress.clamp(0.0, 1.0), scale.max(0.1), 0.0, 0.0];
+        instance
+    }
+
     pub fn rect(r: Rect, color: Color) -> Instance {
         Instance {
             pos: [r.x, r.y],
@@ -288,11 +297,13 @@ pub fn pack(c: Color) -> u32 {
     q(c[0]) | (q(c[1]) << 8) | (q(c[2]) << 16) | (q(c[3]) << 24)
 }
 
+#[derive(Clone)]
 pub enum Bind {
     Atlas,
     External(Arc<wgpu::BindGroup>),
 }
 
+#[derive(Clone)]
 pub struct Layer {
     pub range: Range<usize>,
     pub clip: Option<Rect>,
@@ -301,7 +312,7 @@ pub struct Layer {
 
 /// Build with `push`/`text` inside `layer(...)` groups; instances within a
 /// layer draw in push order, layers draw in creation order.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Scene {
     /// Round the complete window, including child surfaces and chrome.
     pub corner_radius: f32,
@@ -452,6 +463,62 @@ impl Scene {
         });
     }
 
+    /// Art-directed liquid displacement of an RGBA material study. Zero
+    /// motion samples the original artwork exactly (including reduced motion).
+    pub fn liquid_texture(
+        &mut self,
+        rect: Rect,
+        bind: Arc<wgpu::BindGroup>,
+        alpha: f32,
+        seconds: f32,
+        motion: f32,
+    ) {
+        let clip = self.clip();
+        self.close();
+        let start = self.instances.len();
+        let mut i = Instance::textured(rect, alpha);
+        i.kind = 15;
+        i.phase = seconds;
+        i.color[0] = motion.clamp(0.0, 1.0);
+        self.instances.push(i);
+        self.layers.push(Layer {
+            range: start..start + 1,
+            clip,
+            bind: Bind::External(bind),
+        });
+    }
+
+    /// Procedural twinkling stars and ordered-dither pointer trails. Trail
+    /// positions are normalized to this rect; the third value is age in seconds.
+    pub fn mercury_field(
+        &mut self,
+        rect: Rect,
+        seconds: f32,
+        alpha: f32,
+        pixel: f32,
+        trail: &[[f32; 3]],
+    ) {
+        let mut i = Instance::rect(rect, [0.17, 0.18, 0.20, alpha]);
+        i.kind = 17;
+        i.phase = seconds;
+        i.uv[0] = pixel.max(1.0);
+        i.extra = self.points.len() as u32;
+        i.color2 = trail.len().min(28) as u32;
+        for p in trail.iter().take(28) {
+            self.points.push([p[0], p[1]]);
+            self.points.push([p[2], 0.0]);
+        }
+        self.push(i);
+    }
+
+    /// A feathered elliptical light or contact shadow, fading to zero at its
+    /// bounds. Unlike a rounded rectangle this has no straight edge segments.
+    pub fn soft_ellipse(&mut self, rect: Rect, color: Color) {
+        let mut i = Instance::rect(rect, color);
+        i.kind = 16;
+        self.push(i);
+    }
+
     /// Draw a sub-rectangle (`uv` = u0, v0, u1, v1) of an external texture.
     pub fn texture_uv(
         &mut self,
@@ -516,6 +583,15 @@ impl Scene {
 
     pub fn layers(&self) -> &[Layer] {
         &self.layers
+    }
+
+    /// Restrict the existing composition, retaining every nested clip. New
+    /// layers added afterward are unaffected (for a reveal's drawing head).
+    pub fn clip_existing(&mut self, clip: Rect) {
+        self.close();
+        for layer in &mut self.layers {
+            layer.clip = Some(layer.clip.map_or(clip, |old| old.intersect(&clip)));
+        }
     }
 
     /// Finish the frame (closes the open layer). Call before rendering.

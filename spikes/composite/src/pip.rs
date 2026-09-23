@@ -52,6 +52,8 @@ pub struct Pip {
     pub right: bool,
     pub focused: bool,
     pub cur: LRect,
+    /// Authoritative stream ratio; native pixel rounding must not change it.
+    pub aspect: f64,
     pub last_frame: Instant,
     pub opening: Option<Instant>,
     pub first_frame_ms: Option<f64>,
@@ -132,6 +134,7 @@ impl Pip {
             right,
             focused: false,
             cur: start,
+            aspect: start.w / start.h,
             last_frame: crate::clock::now() - Duration::from_millis(17),
             opening: Some(Instant::now()),
             first_frame_ms: None,
@@ -195,6 +198,7 @@ impl Pip {
     }
 
     fn apply_rect(&mut self, rect: LRect) {
+        let rect=geometry::fit(LRect{h:rect.w/self.aspect,..rect},self.area,16.0);
         let old=self.cur;
         self.cur=rect;
         if (old.x-rect.x).abs()>=0.25 || (old.y-rect.y).abs()>=0.25 {
@@ -204,6 +208,21 @@ impl Pip {
             let _=self.window.request_inner_size(LogicalSize::new(rect.w,rect.h));
         }
         self.window.request_redraw();
+    }
+
+    fn constrain_native_size(&mut self, w: u32, h: u32) {
+        if self.pressed || w==0 || h==0 {return;}
+        let scale=self.window.scale_factor();
+        let (width,height)=(w as f64/scale,h as f64/scale);
+        // Both dimensions round independently to physical pixels. Keep
+        // exact logical geometry without chasing subpixel differences.
+        if (w as f64-h as f64*self.aspect).abs()>(1.0+self.aspect)*0.5+0.01 {
+            let corrected=geometry::native_resize(self.cur,width,height,self.aspect,self.area);
+            self.cur.w=width;self.cur.h=height;
+            self.apply_rect(corrected);
+        } else if (self.cur.w*scale-w as f64).abs()>1.0 || (self.cur.h*scale-h as f64).abs()>1.0 {
+            self.cur.w=width;self.cur.h=width/self.aspect;
+        }
     }
 
     fn edge_at(&self,x:f32,y:f32)->(i8,i8) {
@@ -217,6 +236,30 @@ impl Pip {
 
 impl App {
     /// Ask the host to create a PiP window for `tab`'s web pane.
+    pub(crate) fn tend_pip_focus(&mut self) {
+        let minimized=self.window.is_minimized().unwrap_or(false);
+        if self.pip_was_minimized && !minimized && self.behavior.pip_policy.restore_window {self.close_pip();}
+        if !self.pip_was_minimized && minimized && self.behavior.pip_policy.leave_app {
+            self.pip_away_pending=Some(crate::clock::now());
+        }
+        self.pip_was_minimized=minimized;
+        let Some(since)=self.pip_away_pending else{return;};
+        let elapsed=crate::clock::since(since).as_secs_f32();
+        // Focus moves through native child windows too. Let it settle, and let
+        // a late media report arrive after Alt-Tab before giving up.
+        if elapsed<0.18{return;}
+        let child_focused=self.pip.as_ref().is_some_and(|p|p.window.has_focus())
+            ||self.hatch.as_ref().is_some_and(|p|p.window.has_focus())
+            ||self.little.as_ref().is_some_and(|p|p.window.has_focus())
+            ||self.menu_drawer.window.as_ref().is_some_and(|p|p.window.has_focus());
+        if !self.behavior.pip_policy.leave_app || self.window_focused && !minimized || child_focused || self.pip.is_some() {
+            self.pip_away_pending=None;return;
+        }
+        if let Some(right)=self.playing_video(self.active) {
+            self.request_pip(self.active,right);self.pip_away_pending=None;
+        } else if elapsed>3.0 {self.pip_away_pending=None;}
+    }
+
     pub fn request_pip(&mut self, tab: usize, right: bool) {
         if self.pip_request.is_some() || self.web_tab(tab,right).is_none() {
             return;
@@ -246,11 +289,11 @@ impl App {
         if self.web_tab(tab,right).is_none() {window.set_visible(false);return;}
         native::configure(&window);
         let area=native::work_area(&self.window);
-        let aspect = self.pane_video(tab, right).map(|v| v.w / v.h.max(1.0)).unwrap_or(16.0 / 9.0) as f64;
+        let aspect = self.pane_video(tab, right).and_then(|v| geometry::stream_aspect(v.video_width,v.video_height)).unwrap_or(16.0 / 9.0);
         let w = 480.0;
-        let h = (w / aspect).round();
+        let h = w / aspect;
         let start=previous.unwrap_or(LRect{x:area.x+area.w-w-MARGIN,y:area.y+area.h-h-MARGIN,w,h});
-        let to=geometry::fit(start,area,16.0);
+        let to=geometry::with_aspect(start,aspect,area);
         window.set_outer_position(LogicalPosition::new(to.x,to.y));
         let _=window.request_inner_size(LogicalSize::new(to.w,to.h));
         let Ok(target)=self.gpu.target(window.clone()) else {window.set_visible(false);return;};
@@ -264,6 +307,8 @@ impl App {
     }
 
     pub fn close_pip(&mut self) {
+        self.pip_away_pending = None;
+        self.pip_request = None;
         self.pip = None;
     }
 
@@ -301,6 +346,8 @@ impl App {
         // Native resize callbacks can be coalesced (or omitted during a
         // programmatic change). Render against the actual drawable size.
         let size=pip.window.inner_size();
+        pip.constrain_native_size(size.width,size.height);
+        let size=pip.window.inner_size();
         if size.width>0 && size.height>0 && (size.width,size.height)!=pip.target.size {pip.target.resize(&self.gpu.device,size.width,size.height);}
         if crate::clock::since(pip.area_checked)>Duration::from_millis(350) {
             pip.area_checked=crate::clock::now();
@@ -320,6 +367,16 @@ impl App {
         let (bind, video) = (shared.bind.clone(), shared.video.clone());
         drop(shared);
         let pip = self.pip.as_mut().unwrap();
+        if let Some(aspect)=video.as_ref().and_then(|v|geometry::stream_aspect(v.video_width,v.video_height)) {
+            if (aspect-pip.aspect).abs()>f64::EPSILON*aspect {
+                pip.aspect=aspect;
+                // A resize begun for the old source must not restore its ratio.
+                pip.gesture=None;pip.pressed=false;pip.dragging=false;
+                pip.apply_rect(geometry::with_aspect(pip.cur,aspect,pip.area));
+                let size=pip.window.inner_size();
+                if size.width>0 && size.height>0 {pip.target.resize(&self.gpu.device,size.width,size.height);}
+            }
+        }
         let theme = self.theme.clone();
         let scale = pip.window.scale_factor() as f32;
         let (w, h) = (pip.target.size.0 as f32, pip.target.size.1 as f32);
@@ -329,16 +386,22 @@ impl App {
         scene.clear();
         scene.layer(None);
         let band = if self.behavior.pip_band { (4.0 * scale).round() } else { 0.0 };
-        let picture = Rect::new(0.0, band, w, h - band);
+        // Decorations overlay the stream; subtracting the band would squeeze it.
+        let picture = Rect::new(0.0, 0.0, w, h);
         let picture_ready=bind.is_some() && video.is_some();
         if let (Some(bind), Some(v)) = (bind, video.clone()) {
-            let uv = [
-                (v.x / v.vw).clamp(0.0, 1.0),
-                (v.y / v.vh).clamp(0.0, 1.0),
-                ((v.x + v.w) / v.vw).clamp(0.0, 1.0),
-                ((v.y + v.h) / v.vh).clamp(0.0, 1.0),
-            ];
-            scene.texture_uv(picture, uv, bind, None);
+            scene.rect(picture,[0.0,0.0,0.0,1.0]);
+            // Missing page pixels (object-fit:cover or an offscreen edge)
+            // remain blank in their original position, never stretched.
+            if v.w>0.0 && v.h>0.0 && v.vw>0.0 && v.vh>0.0 {
+                let x=v.x.max(0.0);let y=v.y.max(0.0);
+                let cw=(v.x+v.w).min(v.vw)-x;let ch=(v.y+v.h).min(v.vh)-y;
+                if cw>0.0 && ch>0.0 {
+                    let [dx,dy,dw,dh]=v.picture;
+                    let dest=Rect::new((dx+(x-v.x)/v.w*dw)*w,(dy+(y-v.y)/v.h*dh)*h,cw/v.w*dw*w,ch/v.h*dh*h);
+                    scene.texture_uv(dest,[x/v.vw,y/v.vh,(x+cw)/v.vw,(y+ch)/v.vh],bind,None);
+                }
+            }
             scene.layer(None);
             // The progress rule: played time along the foot, there
             // whether or not the controls are. Off by default.
@@ -517,7 +580,7 @@ impl App {
         if let Some(p) = self.pip.as_mut() {
             if w==0 || h==0 {return;}
             p.target.resize(&self.gpu.device, w, h);
-            if !p.pressed {let scale=p.window.scale_factor();p.cur.w=w as f64/scale;p.cur.h=h as f64/scale;}
+            p.constrain_native_size(w,h);
         }
     }
 
@@ -723,15 +786,14 @@ impl App {
             let scale=p.window.scale_factor();let size=p.window.inner_size();
             let pos=p.window.outer_position().ok();
             let rect=LRect{x:pos.map(|v|v.x as f64/scale).unwrap_or(p.cur.x),y:pos.map(|v|v.y as f64/scale).unwrap_or(p.cur.y),w:size.width as f64/scale,h:size.height as f64/scale};
-            p.area=native::work_area(&p.window);p.cur=rect;p.apply_rect(geometry::fit(rect,p.area,16.0));
+            p.area=native::work_area(&p.window);p.cur=rect;p.apply_rect(geometry::with_aspect(rect,p.aspect,p.area));
             p.target.resize(&self.gpu.device,size.width.max(1),size.height.max(1));
         }
     }
 
     pub fn pip_place(&mut self, previous:LRect) {
         if let Some(p)=self.pip.as_mut() {
-            let aspect=p.cur.w/p.cur.h.max(1.0);
-            let rect=LRect{h:previous.w/aspect,..previous};
+            let rect=LRect{h:previous.w/p.aspect,..previous};
             p.apply_rect(geometry::fit(rect,p.area,16.0));
         }
     }

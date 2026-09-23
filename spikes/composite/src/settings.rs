@@ -395,6 +395,8 @@ pub enum Outside {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Behavior {
+    #[serde(default = "default_true")]
+    pub update_checks: bool,
     pub links: Links,
     pub prompt_url: PromptUrl,
     /// Closing a tab with a foreground process asks first.
@@ -545,6 +547,10 @@ pub struct Behavior {
     /// hold of it. On.
     #[serde(default = "default_true")]
     pub pip_band: bool,
+    #[serde(default)]
+    pub pip_policy: crate::pip_policy::Policy,
+    #[serde(default)]
+    pub viewers: crate::file_viewer::Preferences,
     /// PICTURE IN PICTURE · PROGRESS RULE: a hairline of played time
     /// along the foot, there whether or not the controls are. Off: the
     /// controls carry the scrubber, and a resting window stays a picture.
@@ -756,7 +762,7 @@ pub enum Osc52 {
 /// How a page says it's live, loading, local or asleep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Status {
-    /// A small lamp: signal while loading, ink when live, hazard when local, hollow asleep.
+    /// A small lamp: signal while loading, ink when live, Plot corners when local, hollow asleep.
     #[default]
     Lamp,
     /// The lamp and the word.
@@ -864,6 +870,7 @@ fn default_outside() -> Outside {
 impl Default for Behavior {
     fn default() -> Self {
         Behavior {
+            update_checks: true,
             links: Links::Stack,
             prompt_url: PromptUrl::Split,
             close_asks: true,
@@ -893,6 +900,8 @@ impl Default for Behavior {
             replay: ReplayKeep::Days7,
             click_to_source: true,
             pip_band: true,
+            pip_policy: Default::default(),
+            viewers: Default::default(),
             pip_progress: false,
             pip_skip_seconds: default_pip_skip(),
             link_click: LinkClick::Ask,
@@ -1007,6 +1016,14 @@ pub enum Slider {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
+    Mercury,
+    CopySupportDetails,
+    RecoverPrevious,
+    UpdateCheck,
+    UpdateInstall,
+    UpdateConfirm,
+    UpdateCancel,
+    UpdateChecks(bool),
     Report(crate::support::Kind),
     Workspace(workspace::Hit),
     Section(usize),
@@ -1097,6 +1114,8 @@ pub enum Hit {
     Replay(ReplayKeep),
     ClickToSource(bool),
     PipBand(bool),
+    PipPolicy(crate::pip_policy::Event, bool),
+    Viewer(crate::file_viewer::Setting),
     PipProgress(bool),
     LinkClick(LinkClick),
     Remember(bool),
@@ -1225,15 +1244,16 @@ pub enum Hit {
 
 /// The sections, grouped by what they're about: how nus looks, how it
 /// feels, what you work in, and the machine.
-pub const GROUPS: [(&str, std::ops::Range<usize>); 7] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("SYSTEM", 9..12), ("DESKTOP", 17..18), ("YOU", 12..15), ("PERSONALIZE", 15..17)];
+pub const GROUPS: [(&str, std::ops::Range<usize>); 8] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("COMMANDS",19..20), ("SYSTEM", 9..12), ("DESKTOP", 17..19), ("YOU", 12..15), ("PERSONALIZE", 15..17)];
 
 /// The look studio's tabs.
-pub const LOOK_TABS: [&str; 5] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CURSOR"];
+pub const LOOK_TABS: [&str; 6] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CURSOR", "APP ICON"];
 pub const LOOK_PRESETS: usize = 0;
 pub const LOOK_SURFACE: usize = 1;
 pub const LOOK_TOKENS: usize = 2;
 pub const LOOK_TYPE: usize = 3;
 pub const LOOK_CURSOR: usize = 4;
+pub const LOOK_APP_ICON: usize = 5;
 
 /// Which token the picker is editing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1248,7 +1268,7 @@ pub enum TokSel {
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 18] = [
+pub const SECTIONS: [(&str, (&str, &str)); 20] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("START/NEW TAB", icons::ROCKET),
@@ -1267,8 +1287,12 @@ pub const SECTIONS: [(&str, (&str, &str)); 18] = [
     ("FONTS", icons::CODE),
     ("PROMPT", icons::SEARCH),
     ("MENU & TRAY", icons::SQUARES),
+    ("FILE VIEWERS", icons::BOOK),
+    ("SAVED COMMANDS", icons::COMMAND),
 ];
+pub const SEC_SAVED: usize = 19;
 
+pub const SEC_VIEWERS: usize = 18;
 pub const SEC_MENU: usize = 17;
 pub const SEC_FONTS: usize = 15;
 pub const SEC_PROMPT: usize = 16;
@@ -1308,6 +1332,8 @@ fn key(k: &str, shift: bool) -> String {
 
 /// One row's control.
 enum Control {
+    SavedCommand(usize),
+    Mercury,
     FontProof,
     PromptProof,
     /// The live proof of the current look: a miniature window.
@@ -1603,6 +1629,14 @@ impl App {
             Hit::Welcome => "open the welcome page".into(),
             Hit::PinDisplay(mode) => format!("pinned tiles {mode:?}"),
             Hit::Report(crate::support::Kind::Bug) => "Report a bug · opens a GitHub draft with version and OS".into(),
+            Hit::Mercury => if crate::mercury::earned() { "Replay Mercury" } else { "Claim Mercury" }.into(),
+            Hit::CopySupportDetails=>"Copy the support details shown below".into(),
+            Hit::RecoverPrevious=>"Review recovery to the previous version".into(),
+            Hit::UpdateCheck=>"Check GitHub Releases for an update".into(),
+            Hit::UpdateInstall=>"Review update and restart warning".into(),
+            Hit::UpdateConfirm=>"Download, verify, install and restart nus".into(),
+            Hit::UpdateCancel=>"Cancel update".into(),
+            Hit::UpdateChecks(on)=>format!("Automatic update checks {}",if on{"on"}else{"off"}),
             Hit::Report(crate::support::Kind::Feature) => "Request a feature · opens a GitHub draft with version and OS".into(),
             Hit::Block(b) => if b { "content blocking on".into() } else { "content blocking off".into() },
             Hit::StatusStyle(s) => format!("page status {:?}", s).to_lowercase(),
@@ -1627,6 +1661,8 @@ impl App {
             Hit::PortsRemember(b) => if b { "ports remember".into() } else { "ports forget".into() },
             Hit::KeepAlive(k) => if k == KeepAlive::On { "shells are held".into() } else { "shells die with the app".into() },
             Hit::ClickToSource(b) => if b { "click to source on".into() } else { "click to source off".into() },
+            Hit::Viewer(v) => v.label(),
+            Hit::PipPolicy(e,b) => format!("picture in picture {} {}",e.label(),if b {"on"} else {"off"}),
             Hit::PipBand(b) => if b { "picture in picture band on".into() } else { "picture in picture band off".into() },
             Hit::PipProgress(b) => if b { "picture in picture progress rule on".into() } else { "picture in picture progress rule off".into() },
             Hit::Remember(b) => if b { "tabs and windows remembered".into() } else { "nothing remembered between launches".into() },
@@ -1656,6 +1692,7 @@ impl App {
             Hit::SyncKey => "key copied".into(),
             Hit::SyncEdit(_) => "sync".into(),
             Hit::MeWalk(0) => "how the profile lives".into(),
+            Hit::MeWalk(2) => "import from another application".into(),
             Hit::MeWalk(_) => "a forge".into(),
             Hit::ForgeForget => "forget the forge".into(),
             Hit::PortsGrouping(g) => g.name().into(),
@@ -2022,6 +2059,19 @@ impl App {
             Hit::Welcome => self.open_welcome(),
             Hit::PinDisplay(mode) => self.sidebar_rules.pin_display = mode,
             Hit::Report(kind) => self.run(crate::app::Action::Report(kind)),
+            Hit::Mercury => self.claim_mercury(),
+            Hit::CopySupportDetails => {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(crate::support::details())) {
+                    Ok(()) => self.notice("Support details copied. Review them before sharing."),
+                    Err(_) => self.notice("Could not access the clipboard."),
+                }
+            }
+            Hit::RecoverPrevious => self.recover_previous_version(),
+            Hit::UpdateCheck=>crate::updates::check(),
+            Hit::UpdateInstall=>crate::updates::confirm(true),
+            Hit::UpdateCancel=>crate::updates::confirm(false),
+            Hit::UpdateChecks(on)=>self.behavior.update_checks=on,
+            Hit::UpdateConfirm=>self.install_update(),
             Hit::Block(b) => {
                 self.behavior.block_content = b;
                 crate::browser::BLOCKING.store(b, std::sync::atomic::Ordering::Relaxed);
@@ -2060,6 +2110,8 @@ impl App {
             },
             Hit::ClickToSource(b) => self.behavior.click_to_source = b,
             Hit::PipBand(b) => self.behavior.pip_band = b,
+            Hit::PipPolicy(e,b) => self.behavior.pip_policy.set(e,b),
+            Hit::Viewer(v) => {self.behavior.viewers.set(v);self.sync_viewer_preferences(true);},
             Hit::PipProgress(b) => self.behavior.pip_progress = b,
             Hit::LinkClick(l) => self.behavior.link_click = l,
             Hit::Remember(b) => {
@@ -2126,14 +2178,14 @@ impl App {
             Hit::SyncNow => self.sync_now(),
             Hit::SyncKey => self.run(crate::app::Action::SyncKey),
             Hit::SyncEdit(k) => self.open_palette(match k { 0 => crate::app::PaletteMode::SyncFolder, 1 => crate::app::PaletteMode::SyncGit, _ => crate::app::PaletteMode::SyncJoin }),
-            Hit::MeWalk(k) => self.open_me_card_at(if k == 0 { crate::me::Step::Sync } else { crate::me::Step::Forge }),
+            Hit::MeWalk(k) => self.open_me_card_at(match k {0=>crate::me::Step::Sync,2=>crate::me::Step::Import,_=>crate::me::Step::Forge}),
             Hit::ForgeForget => {
                 crate::forge::forget();
                 self.behavior.sync_git.clear();
                 self.notice("the forge is forgotten · the repo is still yours to delete");
             }
             Hit::ForgetMemory => {
-                let _ = std::fs::write(std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), "");
+                let _ = crate::protected_state::write(&std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), b"");
             }
             Hit::PortsGrouping(g) => self.behavior.ports_grouping = g,
             Hit::PortsOpen(o) => self.behavior.ports_open = o,
@@ -2966,6 +3018,7 @@ impl App {
         let hex = surface::hex;
         let ink = self.theme.mode == nus_render::Mode::Ink;
         match section {
+            SEC_VIEWERS => self.viewer_settings(),
             SEC_MENU=>{
                 use crate::menu_drawer::{SignalStyle,Density};
                 let c=&self.behavior.menu_drawer;
@@ -2989,7 +3042,11 @@ impl App {
             0 => {
                 let tab = look_tab.min(LOOK_TABS.len() - 1);
                 let strip: Vec<(String, Hit, bool)> = LOOK_TABS.iter().enumerate().map(|(k, n)| (n.to_string(), Hit::LookTab(k), k == tab)).collect();
-                let mut v: Vec<(String, Control)> = vec![("".into(), Studio), ("".into(), Strip(strip))];
+                let mut v: Vec<(String, Control)> = if tab == LOOK_APP_ICON {
+                    vec![("".into(), Strip(strip))]
+                } else {
+                    vec![("".into(), Studio), ("".into(), Strip(strip))]
+                };
                 let rest: Vec<(String, Control)> = match tab {
                     LOOK_PRESETS => {
                         let themes = crate::themes::all();
@@ -3253,6 +3310,10 @@ impl App {
                 ]);
                 v
             }
+                    LOOK_APP_ICON => vec![
+                        ("APP ICON".into(), Info("Your icon in the Dock and app switcher.".into())),
+                        ("MERCURY".into(), Mercury),
+                    ],
                     LOOK_TYPE => vec![
                 (
                     "THEME".into(),
@@ -3904,6 +3965,13 @@ impl App {
                 ),
                 ("".into(), Info(format!("{} hosts refused · ads, trackers, analytics · add yours to profile/blocklist.txt", crate::browser::blocklist_len()))),
                 ("PICTURE IN PICTURE".into(), Control::Caption),
+                (crate::pip_policy::Event::LeaveApp.label().to_uppercase(), Choice(vec![("ON".into(), Hit::PipPolicy(crate::pip_policy::Event::LeaveApp,true), self.behavior.pip_policy.get(crate::pip_policy::Event::LeaveApp)), ("OFF".into(), Hit::PipPolicy(crate::pip_policy::Event::LeaveApp,false), !self.behavior.pip_policy.get(crate::pip_policy::Event::LeaveApp))])),
+                (crate::pip_policy::Event::LeaveTab.label().to_uppercase(), Choice(vec![("ON".into(), Hit::PipPolicy(crate::pip_policy::Event::LeaveTab,true), self.behavior.pip_policy.get(crate::pip_policy::Event::LeaveTab)), ("OFF".into(), Hit::PipPolicy(crate::pip_policy::Event::LeaveTab,false), !self.behavior.pip_policy.get(crate::pip_policy::Event::LeaveTab))])),
+                (crate::pip_policy::Event::FocusApp.label().to_uppercase(), Choice(vec![("ON".into(), Hit::PipPolicy(crate::pip_policy::Event::FocusApp,true), self.behavior.pip_policy.get(crate::pip_policy::Event::FocusApp)), ("OFF".into(), Hit::PipPolicy(crate::pip_policy::Event::FocusApp,false), !self.behavior.pip_policy.get(crate::pip_policy::Event::FocusApp))])),
+                (crate::pip_policy::Event::ClickApp.label().to_uppercase(), Choice(vec![("ON".into(), Hit::PipPolicy(crate::pip_policy::Event::ClickApp,true), self.behavior.pip_policy.get(crate::pip_policy::Event::ClickApp)), ("OFF".into(), Hit::PipPolicy(crate::pip_policy::Event::ClickApp,false), !self.behavior.pip_policy.get(crate::pip_policy::Event::ClickApp))])),
+                (crate::pip_policy::Event::RestoreWindow.label().to_uppercase(), Choice(vec![("ON".into(), Hit::PipPolicy(crate::pip_policy::Event::RestoreWindow,true), self.behavior.pip_policy.get(crate::pip_policy::Event::RestoreWindow)), ("OFF".into(), Hit::PipPolicy(crate::pip_policy::Event::RestoreWindow,false), !self.behavior.pip_policy.get(crate::pip_policy::Event::RestoreWindow))])),
+                (crate::pip_policy::Event::FocusTab.label().to_uppercase(), Choice(vec![("ON".into(), Hit::PipPolicy(crate::pip_policy::Event::FocusTab,true), self.behavior.pip_policy.get(crate::pip_policy::Event::FocusTab)), ("OFF".into(), Hit::PipPolicy(crate::pip_policy::Event::FocusTab,false), !self.behavior.pip_policy.get(crate::pip_policy::Event::FocusTab))])),
+                ("".into(), Info("Return controls close PiP only when enabled. Alt-Tab and clicking another app both count as leaving the app; focusing PiP itself keeps it open.".into())),
                 ("SKIP INTERVAL".into(), Slider(self::Slider::PipSkip, self.slider_value(self::Slider::PipSkip), format!("{} seconds", self.behavior.pip_skip_seconds.clamp(1,120)))),
                 ("".into(), Info("Left / Right and the skip buttons use this interval, including when the page hides its own controls.".into())),
                 ("".into(), Info("a video floats out into a small window of its own when you leave its tab; any other pane can be sent out by hand. Hover it for the controls; they fade when the pointer leaves.".into())),
@@ -3939,7 +4007,7 @@ impl App {
                         ("NONE".into(), Hit::StatusStyle(Status::None), self.behavior.status == Status::None),
                     ]),
                 ),
-                ("".into(), Info("the lamp at the end of the tools row: signal while loading, ink when live, hazard stripes when local, hollow while asleep".into())),
+                ("".into(), Info("the lamp at the end of the tools row: signal while loading, ink when live, Plot corners for local addresses, hollow while asleep".into())),
                 (
                     "BAR COLOUR".into(),
                     Choice(vec![
@@ -4093,6 +4161,7 @@ impl App {
             SEC_ASSISTANTS => self.assistants_settings(),
             SEC_FONTS => self.fonts_settings(),
             SEC_PROMPT => self.prompt_settings(),
+            SEC_SAVED => self.saved_settings(),
             10 => {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
@@ -4156,6 +4225,7 @@ impl App {
                     ("DEVICE".into(), Choice(vec![(device.caps(), Hit::MeEdit(2), true)])),
                     ("".into(), Info("The device name identifies changes made by this machine when you sync.".into())),
                     ("SINCE".into(), Info(format!("{since} · {days}"))),
+                    ("IMPORT FROM".into(), Buttons(vec![("BROWSERS, TERMINALS & EDITORS".into(), icons::DOWNLOAD, Hit::MeWalk(2))])),
                     ("SYNC".into(), Info(self.sync_status())),
                     ("".into(), Buttons(vec![("HOW IT LIVES".into(), icons::BROADCAST, Hit::MeWalk(0)), ("SYNC SETTINGS".into(), icons::SLIDERS, Hit::Section(SEC_SYNC))])),
                     ("PRIVATE".into(), Info("Profile data is stored in a folder on this device. Sync is optional. Opening the folder lets you inspect or back up your files.".into())),
@@ -4247,13 +4317,29 @@ impl App {
                     ("WELCOME".into(), Buttons(vec![("THE TOUR · F1".into(), icons::BOOK, Hit::Welcome)])),
                 ]
             }
-            _ => vec![
-                ("HELP".into(), Buttons(vec![("REPORT A BUG".into(), icons::BUG, Hit::Report(crate::support::Kind::Bug)), ("REQUEST A FEATURE".into(), icons::CHAT, Hit::Report(crate::support::Kind::Feature))])),
-                ("PRIVACY".into(), Info("GitHub opens an editable draft with your app version and OS. URLs, file paths, logs and other personal details are not attached. Review anything you add before posting publicly.".into())),
-                ("CHANNEL".into(), Info("Install a newer build to update nus. Automatic updates are not available in this build.".into())),
-                ("TELEMETRY".into(), Info("none".into())),
-                ("VERSION".into(), Info(crate::support::version())),
-            ],
+            _ => {
+                let status=crate::updates::status();
+                let mut rows=vec![("UPDATES".into(),Info(status.message.clone()))];
+                if status.available && !status.busy && !status.confirming {rows.push(("".into(),Buttons(vec![("UPDATE".into(),icons::DOWNLOAD,Hit::UpdateInstall)])));}
+                if status.confirming {rows.push(("RESTART REQUIRED".into(),Info(crate::updates::INTERRUPTION_WARNING.into())));rows.push(("".into(),Buttons(vec![("DOWNLOAD & RESTART".into(),icons::RELOAD,Hit::UpdateConfirm),("CANCEL".into(),icons::CLOSE,Hit::UpdateCancel)])));}
+                if let Some(recovery) = crate::update_install::recovery() {
+                    rows.push(("RECOVERY".into(),Info(format!("Return to {} and its saved profile. This version's profile and application will be kept separately. Project files will not be reverted. Running processes may be interrupted.", recovery.previous_version))));
+                    if !status.busy { rows.push(("".into(),Buttons(vec![("RETURN TO PREVIOUS VERSION…".into(),icons::RELOAD,Hit::RecoverPrevious)]))); }
+                }
+                rows.extend(vec![
+                    ("PROFILE COMPATIBILITY".into(),Info(crate::compatibility::summary())),
+                    ("SUPPORT DETAILS".into(),Info(crate::support::details())),
+                    ("".into(),Buttons(vec![("COPY SUPPORT DETAILS".into(),icons::COPY,Hit::CopySupportDetails)])),
+                    ("CHECK AUTOMATICALLY".into(),Choice(vec![("ON".into(),Hit::UpdateChecks(true),self.behavior.update_checks),("OFF".into(),Hit::UpdateChecks(false),!self.behavior.update_checks)])),
+                    ("".into(),Buttons(vec![("CHECK FOR UPDATES".into(),icons::RELOAD,Hit::UpdateCheck)])),
+                    ("UPDATE PRIVACY".into(),Info("Checks contact GitHub Releases without a profile ID, account, file paths or usage events. GitHub receives normal connection metadata such as your IP address. Downloads and installation require your click.".into())),
+                    ("LOCAL STATE".into(),Info(crate::protected_state::status())),
+                    ("TELEMETRY".into(),Info("none".into())),
+                    ("VERSION".into(),Info(crate::support::version())),
+                    ("HELP".into(),Buttons(vec![("REPORT A BUG".into(),icons::BUG,Hit::Report(crate::support::Kind::Bug)),("REQUEST A FEATURE".into(),icons::CHAT,Hit::Report(crate::support::Kind::Feature))])),
+                    ("REPORT PRIVACY".into(),Info("GitHub opens an editable draft with your app version and OS. URLs, file paths, logs and other personal details are not attached. Review anything you add before posting publicly.".into())),
+                ]);rows
+            },
         }
     }
 
@@ -4279,6 +4365,7 @@ impl App {
             13 => match &self.me { Some(me) => format!("{} · {}", me.name.to_lowercase(), me.day_word()), None => "not set up · local, no account".into() },
             SEC_FONTS => "interface · terminal · editor".into(),
             SEC_PROMPT => "presets · sources · layout".into(),
+            SEC_SAVED => format!("{} saved · visibility · behavior", self.behavior.prompt.saved.len()),
             _ => "github releases".into(),
         }
     }
@@ -4436,8 +4523,8 @@ impl App {
         for (row_index, (k, control)) in rows.into_iter().enumerate() {
             // Full-width controls: caption above, the control across the column.
             let stacked = tiles && matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..));
-            let full = stacked || matches!(control, Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_))
-                || matches!(control, Control::Info(_));
+            let full = stacked || matches!(control, Control::Mercury | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_))
+                || matches!(control, Control::Info(_) | Control::SavedCommand(_));
             let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
             let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
             let card_w = self.px(if report_actions {220.0} else {168.0}).min((maxw - self.px(6.0)).max(self.px(60.0)));
@@ -4446,6 +4533,8 @@ impl App {
             let per_row = ((maxw + gap) / (card_w + gap)).floor().max(1.0) as usize;
             let text_w = if full { maxw } else { maxw - label_w };
             let rh = match &control {
+                Control::SavedCommand(i) => self.saved_card_height(*i,maxw),
+                Control::Mercury => self.mercury_settings_height(maxw) + cap_h + self.px(18.0),
                 Control::FontProof | Control::PromptProof => self.px(226.0) + cap_h,
                 Control::Pics(cards) => cap_h + cards.len().div_ceil(per_row) as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0),
                 Control::Actions(items) => cap_h + items.len().div_ceil(per_row) as f32 * (self.px(94.0) + gap) + self.px(10.0),
@@ -4522,6 +4611,10 @@ impl App {
             // In the studio, unlabelled rows run the full column.
             let vx = if full || (p.section == SEC_LOOK && k.is_empty()) { cx } else { cx + label_w };
             match control {
+                Control::SavedCommand(i) => {
+                    self.draw_saved_card(scene,Rect::new(cx,y,maxw,rh),i);
+                }
+                Control::Mercury => self.draw_mercury_settings(scene, Rect::new(cx, y+cap_h, maxw, self.mercury_settings_height(maxw))),
                 Control::FontProof | Control::PromptProof => {self.draw_type_proof(scene,Rect::new(cx,y+cap_h,maxw,self.px(206.0)),matches!(control,Control::PromptProof));}
                 Control::Caption => {}
                 Control::Pics(cards) => {
@@ -4971,5 +5064,30 @@ mod pip_preferences_tests {
         let empty:Behavior=serde_json::from_str("{}").unwrap();assert_eq!(empty.pip_skip_seconds,10);
         assert!(serde_json::from_str::<Behavior>(r#"{"pip_skip_seconds":{}}"#).is_err());
         assert!(serde_json::from_str::<Behavior>(r#"{"pip_skip_seconds":[]}"#).is_err());
+    }
+}
+
+impl App {
+    fn viewer_settings(&self)->Vec<(String,Control)> {
+        use crate::file_viewer::{Setting as S,Kind,Theme,Font};
+        use Control::*;
+        let p=&self.behavior.viewers;
+        let toggle=|on:bool,yes:S,no:S|Choice(vec![("ON".into(),Hit::Viewer(yes),on),("OFF".into(),Hit::Viewer(no),!on)]);
+        let mut rows=vec![("FILE VIEWERS".into(),toggle(p.enabled,S::Enabled(true),S::Enabled(false))),
+            ("".into(),Info("Open supported local files as documents from Files or a file URL. Turn a format off to use its source. Right-click a document to Edit source. Changes apply to open viewers.".into()))];
+        for k in Kind::ALL {let on=match k{Kind::Markdown=>p.markdown,Kind::Json=>p.json,Kind::Csv=>p.csv,Kind::Text=>p.text};rows.push((k.label().to_uppercase(),toggle(on,S::Format(k,true),S::Format(k,false))));}
+        rows.extend([
+            ("THEME".into(),Choice([(Theme::Follow,"FOLLOW APP"),(Theme::Paper,"PAPER"),(Theme::Ink,"INK")].into_iter().map(|(v,n)|(n.into(),Hit::Viewer(S::Theme(v)),p.theme==v)).collect())),
+            ("BODY FONT".into(),Choice([(Font::Serif,"SERIF"),(Font::Sans,"SANS"),(Font::Mono,"MONO")].into_iter().map(|(v,n)|(n.into(),Hit::Viewer(S::Font(v)),p.font==v)).collect())),
+            ("TEXT SIZE".into(),Choice([14,16,18,20,24,28].into_iter().map(|v|(format!("{v}"),Hit::Viewer(S::Size(v)),p.text_size==v)).collect())),
+            ("PAGE WIDTH".into(),Choice([640,860,1100,1400].into_iter().map(|v|(format!("{v}"),Hit::Viewer(S::Width(v)),p.width==v)).collect())),
+            ("LINE HEIGHT".into(),Choice([140,170,200].into_iter().map(|v|(format!("{v}%"),Hit::Viewer(S::LineHeight(v)),p.line_height==v)).collect())),
+            ("WRAP TEXT & CODE".into(),toggle(p.wrap,S::Wrap(true),S::Wrap(false))),
+            ("CONTENTS".into(),toggle(p.contents,S::Contents(true),S::Contents(false))),
+            ("LOCAL IMAGES".into(),toggle(p.local_images,S::LocalImages(true),S::LocalImages(false))),
+            ("REMOTE IMAGES".into(),toggle(p.remote_images,S::RemoteImages(true),S::RemoteImages(false))),
+            ("".into(),Info("Relative images resolve beside the document, including ../ paths. Remote images contact the linked server when enabled. Embedded HTML is shown as text; document scripts are never run.".into())),
+            ("CSV HEADER ROW".into(),toggle(p.csv_header,S::CsvHeader(true),S::CsvHeader(false))),
+        ]);rows
     }
 }

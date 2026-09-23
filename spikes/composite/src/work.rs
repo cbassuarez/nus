@@ -49,6 +49,7 @@ impl<T: Send + 'static> Task<T> {
                 let value = f(&flag);
                 if flag.load(Ordering::Relaxed) == 0 {
                     let _ = tx.send(value);
+                    crate::browser_runtime::wake();
                 }
             }))
             .ok()?;

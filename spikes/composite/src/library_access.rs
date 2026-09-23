@@ -22,7 +22,7 @@ impl App {
         if !self.library_access_visible(){return tree;}
         let h=self.library_home().unwrap();
         let hits=h.library_ui.hits.clone();let focus=h.library_ui.focus.clone();let area=h.rect;
-        let query=h.input.clone();let filter=h.library_ui.filter;let confirming=h.library_ui.confirm;let selected=h.library_ui.selected.clone();
+        let draft=h.library_ui.draft.clone();let query=h.input.clone();let filter=h.library_ui.filter;let confirming=h.library_ui.confirm;let selected=h.library_ui.selected.clone();
         let reading=h.reading.as_ref().map(|r|(r.id.clone(),r.reader.article.clone(),r.reader.saved.find.clone()));
         let group=self.library_node_id("reading-library".into());
         let mut children=Vec::new();let mut rows=Vec::new();
@@ -30,13 +30,14 @@ impl App {
             // A wrapped reference may occupy several lines: one semantic node.
             let key=format!("control:{hit:?}");let id=self.library_node_id(key);
             if children.contains(&id){continue;}
-            let role=match &hit {Hit::Search=>Role::TextInput,Hit::Find if reading.as_ref().is_some_and(|(_,_,q)|q.is_some())=>Role::TextInput,Hit::Row(_)=>Role::ListBoxOption,_=>Role::Button};
+            let role=match &hit {Hit::Search|Hit::Field(_)=>Role::TextInput,Hit::Find if reading.as_ref().is_some_and(|(_,_,q)|q.is_some())=>Role::TextInput,Hit::Row(_)=>Role::ListBoxOption,_=>Role::Button};
             let mut n=Node::new(role);n.set_label(self.library_label(&hit));n.set_bounds(rect(bounds));n.add_action(Action::Click);n.add_action(Action::Focus);
             if role==Role::TextInput {
                 n.add_action(Action::SetValue);
-                n.set_value(if hit==Hit::Search{query.clone()}else{reading.as_ref().and_then(|(_,_,q)|q.clone()).unwrap_or_default()});
+                n.set_value(match hit {Hit::Search=>query.clone(),Hit::Field(i)=>draft.as_ref().map(|d|match i{0=>d.title.clone(),1=>d.source.clone(),_=>d.notes.clone()}).unwrap_or_default(),_=>reading.as_ref().and_then(|(_,_,q)|q.clone()).unwrap_or_default()});
+                if hit==Hit::Field(2){n.set_role(Role::MultilineTextInput);}
             }
-            if let Hit::Row(key)=&hit{n.set_selected(selected.as_ref()==Some(key));}
+            if let Hit::Row(key)=&hit{n.set_selected(selected.as_ref()==Some(key));n.add_action(Action::ShowContextMenu);}
             if let Hit::Filter(value)=&hit{n.set_toggled(if *value==filter{accesskit::Toggled::True}else{accesskit::Toggled::False});}
             if focus.as_ref()==Some(&hit){tree.focus=id;}
             self.library.access_map.insert(id.0,hit);
@@ -58,7 +59,7 @@ impl App {
             }
             doc.set_children(blocks);tree.nodes.push((doc_id,doc));children.push(doc_id);
         }
-        let mut node=Node::new(if confirming{Role::Dialog}else{Role::Group});if confirming{node.set_modal();}node.set_label("Reading library");node.set_bounds(rect(area));node.set_children(children);
+        let mut node=Node::new(if confirming{Role::Dialog}else{Role::Group});if confirming{node.set_modal();}node.set_label("Reading list");node.set_bounds(rect(area));node.set_children(children);
         tree.nodes.push((group,node));
         if let Some((_,root))=tree.nodes.iter_mut().find(|(id,_)|id.0==1){let mut kids=root.children().to_vec();kids.push(group);root.set_children(kids);}
         tree
@@ -67,11 +68,16 @@ impl App {
         if !self.library_access_visible(){self.access_action(req);return;}
         let Some(hit)=self.library.access_map.get(&req.target_node.0).cloned() else{self.access_action(req);return;};
         match req.action {
+            Action::ShowContextMenu=>if let Hit::Row(id)=hit {
+                let at=self.library_context_anchor(&id);
+                self.library_context_menu(&id,at);
+            },
             Action::Click=>self.library_action(hit),
             Action::Focus=>if let Some(h)=self.library_home_mut(){if let Hit::Row(id)=&hit{h.library_ui.selected=Some(id.clone());h.library_ui.reveal=true;}h.library_ui.focus=Some(hit);},
             Action::SetValue=>if let Some(accesskit::ActionData::Value(value))=req.data{
-                let text:String=value.chars().take(2000).collect();
+                let text:String=value.chars().take(if hit==Hit::Field(2){6000}else{2000}).collect();
                 if let Some(h)=self.library_home_mut(){match hit{
+                    Hit::Field(i)=>if let Some(d)=h.library_ui.draft.as_mut(){*match i{0=>&mut d.title,1=>&mut d.source,_=>&mut d.notes}=text;d.error.clear();},
                     Hit::Search=>{h.input=text;h.library_ui.selected=None;h.library_scroll=0.0;h.sel=0;},
                     Hit::Find=>if let Some(r)=h.reading.as_mut(){r.reader.saved.find=Some(text);r.reader.saved.found=None;r.reader.reading_find(true);},
                     _=>{},

@@ -32,6 +32,9 @@ pub const RING: usize = 4 * 1024 * 1024;
 /// What `<dir>/<id>.json` says about a holder.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Info {
+    /// Zero denotes the pre-handshake holder; one is the first negotiated wire.
+    #[serde(default)]
+    pub protocol: u32,
     pub id: String,
     pub port: u16,
     pub token: String,
@@ -50,15 +53,15 @@ impl Info {
 
     pub fn write(&self, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(dir)?;
-        std::fs::write(
-            Self::path(dir, &self.id),
-            serde_json::to_string_pretty(self)?,
-        )?;
+        nus_vault::write(&Self::path(dir, &self.id), &serde_json::to_vec(self)?)?;
         Ok(())
     }
 
     pub fn read(dir: &Path, id: &str) -> Option<Info> {
-        let text = std::fs::read_to_string(Self::path(dir, id)).ok()?;
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return None;
+        }
+        let text = nus_vault::read_text(&Self::path(dir, id)).ok()?;
         serde_json::from_str(&text).ok()
     }
 
@@ -70,7 +73,7 @@ impl Info {
         let mut v: Vec<Info> = rd
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter_map(|e| nus_vault::read_text(&e.path()).ok())
             .filter_map(|t| serde_json::from_str(&t).ok())
             .collect();
         v.sort_by_key(|i| i.started);
@@ -89,14 +92,13 @@ impl Info {
                     return false;
                 }
                 let mut tag = [0u8; 1];
-                let ok = s.read_exact(&mut tag).is_ok() && tag[0] == b'i';
-                if !ok {
+                // A live, slow or incompatible endpoint is not proof of a stale record.
+                s.read_exact(&mut tag).is_ok() && tag[0] == b'i'
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::ConnectionRefused {
                     let _ = std::fs::remove_file(Self::path(dir, &self.id));
                 }
-                ok
-            }
-            Err(_) => {
-                let _ = std::fs::remove_file(Self::path(dir, &self.id));
                 false
             }
         }
@@ -145,33 +147,8 @@ pub fn parse_frames(buf: &mut Vec<u8>) -> Vec<(u8, Vec<u8>)> {
     out
 }
 
-/// The last `cap` bytes of everything pushed: what a client gets on attach.
-pub struct Ring {
-    buf: Vec<u8>,
-    cap: usize,
-}
-
-impl Ring {
-    pub fn new(cap: usize) -> Ring {
-        Ring {
-            buf: Vec::with_capacity(cap.min(1 << 16)),
-            cap,
-        }
-    }
-    pub fn push(&mut self, bytes: &[u8]) {
-        if bytes.len() >= self.cap {
-            self.buf.clear();
-            self.buf.extend_from_slice(&bytes[bytes.len() - self.cap..]);
-        } else {
-            let cut = (self.buf.len() + bytes.len()).saturating_sub(self.cap);
-            self.buf.drain(..cut);
-            self.buf.extend_from_slice(bytes);
-        }
-    }
-    pub fn bytes(&self) -> &[u8] {
-        &self.buf
-    }
-}
+// Kept at the same public path for holders and existing benchmarks.
+pub use crate::ring::Ring;
 
 /// The app's end of a holder: the pty's bytes both ways over the socket.
 pub struct Client {
@@ -185,15 +162,39 @@ impl Client {
     /// Connect and attach: the greeting, then the ring, then live output —
     /// all on the same channel, in order.
     pub fn attach(info: Info, on_output: impl Fn() + Send + 'static) -> Result<Client> {
+        if info.protocol != 0 && info.protocol != nus_compat::HOLD_PROTOCOL {
+            return Err(anyhow!("HOLD_PROTOCOL_MISMATCH: this shell needs a compatible nus version; it was left running"));
+        }
         let mut stream =
             TcpStream::connect(("127.0.0.1", info.port)).context("connect to the holder")?;
         stream.set_nodelay(true).ok();
         // The token proves we read the file; the holder checks it before serving.
-        send(&mut stream, b't', info.token.as_bytes())?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
+        if info.protocol == 0 {
+            send(&mut stream, b't', info.token.as_bytes())?;
+        } else {
+            let hello =
+                serde_json::json!({"token":info.token,"protocol":nus_compat::HOLD_PROTOCOL});
+            send(&mut stream, b'a', &serde_json::to_vec(&hello)?)?;
+        }
         let Some((b'i', greeting)) = recv(&mut stream)? else {
             return Err(anyhow!("no greeting from the holder"));
         };
-        let info: Info = serde_json::from_slice(&greeting).context("holder greeting")?;
+        let greeting: Info = serde_json::from_slice(&greeting).context("holder greeting")?;
+        if greeting.id != info.id
+            || greeting.port != info.port
+            || greeting.token != info.token
+            || greeting.holder != info.holder
+            || greeting.started != info.started
+            || greeting.protocol != info.protocol
+        {
+            return Err(anyhow!(
+                "Holder identity or protocol changed; shell left running"
+            ));
+        }
+        let info = greeting;
+        stream.set_read_timeout(None)?;
         let exited = Arc::new(Mutex::new(None));
         let (tx, rx) = mpsc::sync_channel(32);
         let mut reader = stream.try_clone().context("clone the socket")?;
@@ -318,6 +319,9 @@ pub fn spawn_held(
 ) -> Result<Client> {
     let exe = holder_exe().ok_or_else(|| anyhow!("no nus-hold binary"))?;
     std::fs::create_dir_all(dir)?;
+    // Resolve credentials in the already-authorized app before spawning a
+    // helper. A denied/locked keychain therefore cannot leave a child behind.
+    let key = nus_vault::key_for_child(&nus_vault::profile_for(&dir.join("state.json")))?;
     let id = format!(
         "{:x}-{:x}",
         std::process::id(),
@@ -337,14 +341,15 @@ pub fn spawn_held(
         .arg(rows.to_string())
         .arg("--program")
         .arg(&profile.program);
+    cmd.arg("--vault-key-stdin");
     if let Some(cwd) = &profile.cwd {
         cmd.arg("--cwd").arg(cwd);
     }
     for (k, v) in &profile.env {
-        cmd.arg("--env").arg(format!("{k}={v}"));
+        cmd.env(k, v);
     }
     cmd.arg("--").args(&profile.args);
-    cmd.stdin(std::process::Stdio::null())
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
@@ -355,17 +360,33 @@ pub fn spawn_held(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
-    let _child = cmd
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("start {}", exe.display()))?;
+    if let Err(e) = key.write_to(child.stdin.take().expect("piped holder stdin")) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e.into());
+    }
     // The holder writes its file once it listens; give it a moment.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let info = loop {
         if let Some(i) = Info::read(dir, &id) {
             break i;
         }
+        if let Some(status) = child.try_wait()? {
+            return Err(anyhow!(
+                "the holder exited before attaching ({status}); check OS keychain access"
+            ));
+        }
         if std::time::Instant::now() > deadline {
-            return Err(anyhow!("the holder did not start"));
+            // A blocked credential prompt must not leave an unattached holder
+            // (and possibly its shell) behind after the caller reports failure.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!(
+                "the holder could not attach within five seconds; check OS keychain access"
+            ));
         }
         thread::sleep(std::time::Duration::from_millis(20));
     };
@@ -414,7 +435,7 @@ mod tests {
         ring.push(&vec![b'x'; 1024 * 1024]);
         assert_eq!(ring.bytes(), b"xxxxxxxx");
         assert!(
-            ring.buf.capacity() <= 16,
+            ring.allocated_capacity() <= 16,
             "oversized writes must not inflate the retained allocation"
         );
         let mut empty = Ring::new(0);

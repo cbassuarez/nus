@@ -29,6 +29,13 @@ pub enum Hit {
     Layout(u8),
     Pin,
     Unpin(usize),
+    SavedLibrary,
+    SavedOption(u8),
+    SavedEdit(usize, bool),
+    SavedUse(usize, bool),
+    SavedMove(usize, i8),
+    SavedCopy(usize),
+    SavedRun(bool),
     Home,
     Pairing(u8),
     EditorFont(Family),
@@ -118,6 +125,13 @@ pub fn label(h: Hit) -> String {
             .into(),
         Hit::Pin => "Add a saved prompt shortcut".into(),
         Hit::Unpin(i) => format!("Remove saved shortcut {}", i + 1),
+        Hit::SavedLibrary => "Manage saved commands".into(),
+        Hit::SavedOption(k) => ["Show saved command previews", "Show collection entry", "Run saved shell commands on activation"][k as usize].into(),
+        Hit::SavedEdit(i, name) => format!("{} saved command {}", if name {"Rename"} else {"Edit"}, i+1),
+        Hit::SavedUse(i, run) => format!("{} saved command {}", if run {"Run"} else {"Open or insert"}, i+1),
+        Hit::SavedMove(i, d) => format!("Move saved command {} {}", i+1, if d<0 {"up"} else {"down"}),
+        Hit::SavedCopy(i) => format!("Copy saved command {}",i+1),
+        Hit::SavedRun(run) => if run {"Run saved shell commands on activation"}else{"Insert saved shell commands for review"}.into(),
         Hit::Home => "Open Home prompt".into(),
         Hit::Pairing(i) => format!(
             "Font pairing · {}",
@@ -175,9 +189,13 @@ impl App {
             Hit::PromptPreset(p) => {
                 // Shortcuts and the engine are yours, not the preset's.
                 let saved = std::mem::take(&mut self.behavior.prompt.saved);
+                let names = std::mem::take(&mut self.behavior.prompt.saved_names);
+                let options = (self.behavior.prompt.saved_preview,self.behavior.prompt.saved_library,self.behavior.prompt.saved_run);
                 let (engine, search_url) = (self.behavior.prompt.engine, std::mem::take(&mut self.behavior.prompt.search_url));
                 self.behavior.prompt = crate::prompt::Config::preset(p);
                 self.behavior.prompt.saved = saved;
+                self.behavior.prompt.saved_names = names;
+                (self.behavior.prompt.saved_preview,self.behavior.prompt.saved_library,self.behavior.prompt.saved_run)=options;
                 self.behavior.prompt.engine = engine;
                 self.behavior.prompt.search_url = search_url;
             }
@@ -252,9 +270,28 @@ impl App {
                 *v = !*v;
             }
             Hit::Pin => self.open_palette(crate::app::PaletteMode::PromptPin),
+            Hit::SavedLibrary => self.open_settings_at(super::SEC_SAVED, None),
+            Hit::SavedOption(k) => {
+                let c=&mut self.behavior.prompt;
+                let value=match k {0=>&mut c.saved_preview,1=>&mut c.saved_library,_=>&mut c.saved_run};
+                *value=!*value;
+            }
+            Hit::SavedEdit(i,name) => {
+                let c=&self.behavior.prompt;
+                if let Some(value)=c.saved.get(i) {
+                    let input=if name {c.saved_names.get(value).cloned().unwrap_or_default()}else{value.clone()};
+                    let mode=if name {crate::app::PaletteMode::SavedName(i)}else{crate::app::PaletteMode::SavedEdit(i)};
+                    self.open_palette(mode); self.palette=Some((mode,input));
+                }
+            }
+            Hit::SavedUse(i,run) => self.saved_use(i,run),
+            Hit::SavedCopy(i) => {if let Some(value)=self.behavior.prompt.saved.get(i){if let Ok(mut cb)=arboard::Clipboard::new(){let _=cb.set_text(value.clone());}}},
+            Hit::SavedRun(run) => self.behavior.prompt.saved_run=run,
+            Hit::SavedMove(i,delta) => {let v=&mut self.behavior.prompt.saved;let j=i as isize+delta as isize;if i<v.len() && j>=0 && (j as usize)<v.len(){v.swap(i,j as usize);}},
             Hit::Unpin(i) => {
                 if i < self.behavior.prompt.saved.len() {
-                    self.behavior.prompt.saved.remove(i);
+                    let value=self.behavior.prompt.saved.remove(i);
+                    self.behavior.prompt.saved_names.remove(&value);
                 }
             }
             Hit::Home => self.open_home(),
@@ -325,16 +362,32 @@ impl App {
                 ]),
             ));
         }
-        rows.push((
-            "SAVED SHORTCUTS".into(),
-            buttons(vec![("Add shortcut", Hit::Pin)]),
-        ));
-        rows.push(info("Save a route such as > cargo test, ? release notes, @codex review the changes, or a website address. Nothing runs when a shortcut is saved."));
-        for (i, s) in c.saved.iter().enumerate() {
-            rows.push(info(s));
-            rows.push((String::new(), buttons(vec![("Remove", Hit::Unpin(i))])));
-        }
+        rows.extend(self.saved_options());
+        rows.push(("YOUR COLLECTION".into(), buttons(vec![("Manage saved commands",Hit::SavedLibrary),("Add command",Hit::Pin)])));
         rows.push((String::new(), buttons(vec![("Open Home", Hit::Home)])));
+        rows
+    }
+    fn saved_options(&self) -> Vec<(String,Control)> {
+        let c=&self.behavior.prompt;
+        vec![("SAVED COMMANDS · PRESENTATION".into(),strip(vec![("Command previews",Hit::SavedOption(0),c.saved_preview),("Collection entry",Hit::SavedOption(1),c.saved_library)])),
+            ("ACTIVATE A SAVED SHELL COMMAND".into(),strip(vec![("Insert for review",Hit::SavedRun(false),!c.saved_run),("Run immediately",Hit::SavedRun(true),c.saved_run)])),
+            info("Saved items keep their bookmark mark and action label. Insert opens a terminal with the command ready to edit; Run executes it. URLs open normally and assistant prompts still open a review.")]
+    }
+    pub(super) fn saved_settings(&self) -> Vec<(String,Control)> {
+        let c=&self.behavior.prompt;
+        let source=c.ordered().into_iter().find(|s|s.source==Source::Saved).unwrap();
+        let mut rows=vec![info("Your reusable commands, links and assistant prompts. Name them, keep the command visible, and choose where they appear."),
+            ("COLLECTION".into(),buttons(vec![("Add command",Hit::Pin),("Open Home",Hit::Home)])),
+            (format!("VISIBILITY · {} SUGGESTIONS",source.count),strip(vec![("Before typing",Hit::Source(Source::Saved,0),source.home),("While searching",Hit::Source(Source::Saved,1),source.search),("Fewer",Hit::Count(Source::Saved,-1),false),("More",Hit::Count(Source::Saved,1),false)]))];
+        let mut options=rows.split_off(2);
+        options.extend(self.saved_options());
+        rows.push((format!("YOUR COMMANDS · {}",c.saved.len()),Control::Caption));
+        if c.saved.is_empty(){rows.push(info("Save your first command. Try > cargo test, a project folder, a website, or @codex review the changes. Saving never executes it."));}
+        for (i,_) in c.saved.iter().enumerate(){
+            rows.push((String::new(),Control::SavedCommand(i)));
+        }
+        rows.push(("PALETTE OPTIONS".into(),Control::Caption));
+        rows.extend(options);
         rows
     }
     pub(super) fn assistants_settings(&self) -> Vec<(String, Control)> {

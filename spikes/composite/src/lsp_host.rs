@@ -59,6 +59,7 @@ fn pses_launch() -> Option<(PathBuf, Vec<String>)> {
 impl App {
     /// The server key for a file, starting it if need be.
     fn lsp_key_for(&mut self, path: &Path) -> Option<String> {
+        if crate::protected_state::is_private_path(path){return None;}
         let server = nus_lsp::registry::server_for(path)?;
         let root = nus_lsp::registry::root_for(server, path);
         self.lsp_key_for_server(server, &root, false)
@@ -328,7 +329,7 @@ impl App {
             if !b.ready() { return; }
             let Some(path) = b.path.clone() else { return };
             let text = b.text.to_string();
-            match std::fs::write(&path, text.as_bytes()) {
+            match if crate::protected_state::is_private_path(&path){crate::protected_state::write(&path,text.as_bytes())}else{std::fs::write(&path,text.as_bytes())} {
                 Ok(()) => {
                     b.dirty = false;
                     b.save_pending = None;

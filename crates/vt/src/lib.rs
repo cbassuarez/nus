@@ -8,6 +8,7 @@ pub mod input;
 pub mod palette;
 pub mod sixel;
 pub mod term;
+mod utf8;
 
 pub use cell::{Cell, Color, Flags};
 pub use grid::{Grid, Row};

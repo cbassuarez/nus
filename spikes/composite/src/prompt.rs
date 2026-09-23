@@ -30,7 +30,7 @@ impl Source {
     ];
     pub fn name(self) -> &'static str {
         match self {
-            Self::Saved => "Saved shortcuts",
+            Self::Saved => "Saved commands",
             Self::Projects => "Projects",
             Self::Sessions => "Open sessions",
             Self::Shell => "Shell & command history",
@@ -173,6 +173,10 @@ pub struct Config {
     pub top: bool,
     pub hints: bool,
     pub saved: Vec<String>,
+    pub saved_names: std::collections::BTreeMap<String, String>,
+    pub saved_preview: bool,
+    pub saved_library: bool,
+    pub saved_run: bool,
     /// SEARCH ENGINE: where `?` and the search row go.
     pub engine: SearchEngine,
     /// The custom engine's template, `%s` for the words.
@@ -228,6 +232,10 @@ impl Config {
             top: false,
             hints: true,
             saved: Vec::new(),
+            saved_names: Default::default(),
+            saved_preview: true,
+            saved_library: true,
+            saved_run: false,
             engine: SearchEngine::default(),
             search_url: String::new(),
         }
@@ -325,6 +333,9 @@ impl App {
         let q = input.trim();
         if q.is_empty() {
             return None;
+        }
+        if matches!(q.to_lowercase().as_str(), "saved commands" | "saved shortcuts" | "commands") {
+            return Some(row("Saved commands · open your collection".into(), Action::SettingsAt(crate::settings::SEC_SAVED, None)));
         }
         if q.eq_ignore_ascii_case("home") {
             return Some(row("Home · prompt and background".into(), Action::Home));
@@ -489,6 +500,11 @@ impl App {
             self.palette_rows_raw(PaletteMode::Go, q)
         };
         if !empty {
+            if config.ordered().iter().any(|s|s.source==Source::Saved&&s.search) {
+                if let Some((i,value))=config.saved.iter().enumerate().find(|(_,value)|config.saved_names.get(*value).unwrap_or(value).eq_ignore_ascii_case(q)) {
+                    out.push(PaletteRow{num:"saved".into(),text:config.saved_names.get(value).unwrap_or(value).clone(),action:Action::SavedUse(i,config.saved_run)});
+                }
+            }
             let exact = raw.iter().find(|r| {
                 r.text
                     .split(" · ")
@@ -517,12 +533,13 @@ impl App {
             let mut items = Vec::new();
             match source.source {
                 Source::Saved => {
-                    for saved in &config.saved {
-                        if empty || saved.to_lowercase().contains(&q.to_lowercase()) {
-                            if let Some(mut r) = self.prompt_action(saved) {
-                                r.text = format!("Saved · {}", r.text);
-                                items.push(r);
-                            }
+                    if config.saved_library && (empty || "saved commands".contains(&q.to_lowercase())) {
+                        items.push(PaletteRow { num: "saved-library".into(), text: "Saved commands".into(), action: Action::SettingsAt(crate::settings::SEC_SAVED, None) });
+                    }
+                    for (i, saved) in config.saved.iter().enumerate() {
+                        let name = config.saved_names.get(saved).map(String::as_str).unwrap_or(saved);
+                        if empty || format!("{name} {saved}").to_lowercase().contains(&q.to_lowercase()) {
+                            items.push(PaletteRow { num: "saved".into(), text: name.into(), action: Action::SavedUse(i, config.saved_run) });
                         }
                     }
                 }

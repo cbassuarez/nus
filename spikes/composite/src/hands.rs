@@ -118,7 +118,8 @@ fn parse(args: &Value) -> Result<Do, String> {
 impl App {
     /// The `hands` verb: policy, then the band or the act.
     pub(crate) fn hands_request(&mut self, args: &Value, reply: Sender<Value>) {
-        let answer = |reply: &Sender<Value>, v: Value| {
+        let answer = |reply: &Sender<Value>, mut v: Value| {
+            crate::secrets::scrub_json(&mut v);
             let _ = reply.send(v);
         };
         let what = match parse(args) {
@@ -174,6 +175,7 @@ impl App {
                     self.save_prefs();
                 }
                 let v = self.hands_do(tab, right, &ask.who, &ask.what);
+                let mut v = v; crate::secrets::scrub_json(&mut v);
                 let _ = ask.reply.send(v);
             }
         }

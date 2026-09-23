@@ -471,12 +471,12 @@ impl App {
 
     /// A tooltip for a rect that isn't an icon button.
     pub(crate) fn tip_words(&mut self, anchor: Rect, words: &str) {
-        let since = self.tip_since.get_or_insert_with(Instant::now);
-        let since = *since;
-        self.tip = Some(crate::app::Tip { anchor, text: words.into(), since });
-        if crate::clock::since(since).as_millis() < 700 {
-            self.dirty = true;
-        }
+        let same = |a: Rect, b: Rect| a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+        let (key, hit) = self.tip_icon.filter(|(_, logical, _)| same(*logical, anchor))
+            .map(|(key, _, clipped)| (key, clipped))
+            .unwrap_or_else(|| (crate::app::hover_key(&format!("words:{}:{}:{}:{}:{}", self.drawing_tab,
+                anchor.x.to_bits(), anchor.y.to_bits(), anchor.w.to_bits(), anchor.h.to_bits()), 0), anchor));
+        self.offer_tip(key, hit, words.to_owned());
     }
 
     /// A lamp was clicked: fold or unfold its block. Returns true when one was.

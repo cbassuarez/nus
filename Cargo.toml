@@ -41,6 +41,7 @@ parking_lot = "0.12"
 rusqlite = { version = "0.40", features = ["bundled"] }
 keyring = "3"
 notify-rust = "4"
+criterion = { package = "codspeed-criterion-compat", version = "5" }
 
 [profile.release]
 lto = "thin"

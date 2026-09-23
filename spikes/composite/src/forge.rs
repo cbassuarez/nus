@@ -103,12 +103,12 @@ pub fn load() -> Option<Forge> {
 }
 
 pub fn token() -> Option<String> {
-    std::fs::read_to_string(token_path()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+    crate::protected_state::read_text(&token_path()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
 
 fn write_private(path: &PathBuf, text: &str) {
     let _ = std::fs::create_dir_all(sync_dir());
-    let _ = std::fs::write(path, text);
+    let _ = if *path == token_path() {crate::protected_state::write(path,text.as_bytes())} else {std::fs::write(path,text)};
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

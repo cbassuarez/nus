@@ -73,6 +73,7 @@
 //!   newwindowlook prompt|shell|launch   set new-window behavior
 //!   newwindow                  a second window
 //!
+//!   awaitperf metric_name     wait for an NUS_PERF sample; external timeout required
 //! NUS_SHOT_DIR isolates a macOS bundle's profile during scripted checks.
 //!   quit                       (implicit at the end)
 
@@ -90,6 +91,7 @@ pub struct Shot {
     until: Option<Instant>,
     /// The last `eval`, for `assertreply`.
     reply: Option<i32>,
+    bench_started: Option<(String, Instant, u64, Option<(std::path::PathBuf, u64)>)>,
     out: PathBuf,
     face: &'static str,
     /// A capture asked for by the last step, taken after the next draw.
@@ -163,11 +165,44 @@ impl Shot {
             .collect();
         let out = std::env::var_os("NUS_SHOT_OUT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("docs/media"));
         let face = if std::env::var("NUS_MODE").ok().as_deref() == Some("paper") { "paper" } else { "ink" };
-        Some(Shot { steps, next: 0, until: None, reply: None, out, face, pending: None, done: false, rec: None, settle: None })
+        Some(Shot { steps, next: 0, until: None, reply: None, bench_started: None, out, face, pending: None, done: false, rec: None, settle: None })
     }
 }
 
 impl App {
+    /// Semantic waits for real-clock workflow runs. No sleeps or fixture ports
+    /// are substituted for app behavior; the parent harness owns the timeout.
+    fn benchmark_ready(&mut self, step: &str) -> bool {
+        let (verb, rest) = step.split_once(' ').unwrap_or((step, ""));
+        match verb {
+            "awaitfile" => std::path::Path::new(rest).is_file(),
+            "awaitpage" => {
+                let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };
+                let s = w.tab.shared.borrow();
+                s.title == rest && s.paints > 0
+            },
+            "awaitreply" => {
+                let id = self.shot.as_ref().and_then(|s| s.reply).expect("eval first");
+                let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { panic!("awaitreply needs page") };
+                let Some(v) = w.tab.take_reply(id) else { return false };
+                let text = v.pointer("/result/value").map(|x| match x { serde_json::Value::String(s) => s.clone(), other => other.to_string() }).unwrap_or_else(|| v.to_string());
+                assert_eq!(text, rest, "workflow page oracle failed");
+                true
+            },
+            "awaitportowner" => {
+                let mut parts = rest.split_whitespace();
+                let port: u16 = parts.next().unwrap().parse().unwrap();
+                let index: usize = parts.next().unwrap().parse().unwrap();
+                let pid_path = parts.next().unwrap();
+                let Ok(text) = std::fs::read_to_string(pid_path) else { return false };
+                let pid: u32 = text.trim().parse().expect("fixture pid");
+                let id = self.tabs.get(index).expect("owner tab").id;
+                self.board.rows.iter().any(|r| r.port == port && r.pid == pid && r.tab == Some(id))
+            },
+            _ => true,
+        }
+    }
+
     /// One step per call, when the last wait is over and no capture is
     /// outstanding. Called from the main loop before the frame.
     pub fn shot_tick(&mut self) {
@@ -189,7 +224,20 @@ impl App {
             s.done = true;
             return;
         };
-        s.next += 1;
+        // Wait for a semantic event without blocking the UI or clearing startup
+        // samples. The external native harness supplies the hard timeout.
+        if let Some(metric) = step.strip_prefix("awaitperf ") {
+            assert!(crate::perf::enabled(), "awaitperf requires NUS_PERF=1");
+            if !crate::perf::has_samples(metric.trim()) {
+                self.dirty = true;
+                return;
+            }
+        }
+        if !self.benchmark_ready(&step) {
+            self.dirty = true;
+            return;
+        }
+        self.shot.as_mut().unwrap().next += 1;
         self.shot_step(&step);
     }
 
@@ -201,6 +249,45 @@ impl App {
             eprintln!("shot: {step}");
         }
         match verb {
+            "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" => {},
+            "benchbegin" => {
+                assert!(crate::perf::enabled() && !crate::clock::recording(), "benchmark requires real-clock NUS_PERF");
+                let s = self.shot.as_mut().unwrap();
+                assert!(s.bench_started.is_none(), "nested benchmark");
+                let (name, load) = rest.split_once(' ').map_or((rest, None), |(name, path)| {
+                    let path = std::path::PathBuf::from(path);
+                    let count = std::fs::read_to_string(&path).expect("load counter").trim().parse::<u64>().expect("load count");
+                    (name, Some((path, count)))
+                });
+                s.bench_started = Some((name.into(), Instant::now(), self.frames, load));
+            },
+            "benchend" => {
+                let (name, began, frames, load) = self.shot.as_mut().unwrap().bench_started.take().expect("benchbegin first");
+                assert_eq!(name, rest);
+                assert!(self.frames > frames, "no application frame during workflow");
+                if let Some((path, before)) = load {
+                    let after = std::fs::read_to_string(path).expect("load counter").trim().parse::<u64>().expect("load count");
+                    assert!(after > before, "background output did not advance during workflow");
+                    eprintln!("WORKFLOW_LOAD: {before} -> {after}");
+                }
+                let metric = match rest {
+                    "edit-verify" => "workflow_edit_verify_v1",
+                    "port-conflict" => "workflow_port_conflict_v1",
+                    "project-switch" => "workflow_project_switch_v1",
+                    _ => panic!("unknown benchmark"),
+                };
+                crate::perf::record(metric, began.elapsed().as_secs_f64() * 1000.0);
+            },
+            "benchtab" => self.run(crate::app::Action::SwitchTab(rest.parse().expect("tab index"))),
+            "benchportjump" => {
+                let port: u16 = rest.parse().unwrap();
+                let key = self.board.rows.iter().find(|r| r.port == port && r.pid != 0 && r.tab.is_some()).expect("owned port").key.clone();
+                self.ports_act(&key, crate::ports::Act::Jump);
+            },
+            "asserteditorpath" => {
+                let b = self.focused_editor().and_then(|e| e.buf()).expect("editor buffer");
+                assert_eq!(b.path.as_deref(), Some(std::path::Path::new(rest)));
+            },
             "privatecheck" => {
                 assert!(crate::private::enabled());
                 assert!(!self.behavior.remember && self.recorder.is_none() && self.hotkey.is_none());
@@ -247,6 +334,7 @@ impl App {
             "assertwindows" => assert_eq!(self.windows.len(), rest.parse::<usize>().unwrap(), "native window count"),
             "keychaincheck" => {
                 use cef::ImplCommandLine;
+                assert!(crate::browser_runtime::ensure());
                 let cl=cef::command_line_get_global().unwrap();
                 let mock=cl.has_switch(Some(&"use-mock-keychain".into()))!=0;
                 assert_eq!(mock, cfg!(target_os="macos") && std::env::var_os("NUS_TEST_REAL_KEYCHAIN").is_none(), "Keychain mode");
@@ -333,6 +421,40 @@ impl App {
                 }
             }
             "board" => self.open_board(),
+            "portactionscheck" => {
+                assert!(std::env::var_os("NUS_PORTS_FIXTURE").is_some());
+                let profile = self.behavior.default_profile;
+                let left = self.new_term_pane(false, profile).expect("fixture left terminal");
+                let right = self.new_term_pane(true, profile).expect("fixture right terminal");
+                let pids = (left.pty.pid(), right.pty.pid());
+                let tab = self.make_tab(Pane::Term(left), Some(Pane::Term(right)));
+                let owner = self.tabs.len();
+                let id = tab.id;
+                self.tabs.push(tab);
+                let command = "printf nus-port-regression";
+                let mut row = crate::ports::Remembered {port:3000,process:"fixture".into(),command:command.into(),cwd:std::env::current_dir().unwrap().display().to_string(),last_seen:0}.row();
+                row.group = crate::ports::Group::Mine;
+                row.tab = Some(id);
+                let key = row.key.clone();
+                self.board.rows = vec![row];
+                let count = self.tabs.len();
+                self.ports_act(&key, crate::ports::Act::Again);
+                assert_eq!(self.tabs.len(), count+1, "rerun must use a fresh terminal");
+                let Pane::Term(t) = &mut self.tabs[self.active].left else {panic!("new command terminal")};
+                assert_eq!(t.type_at_prompt.take(), Some(format!("{command}\r")));
+                self.ports_act(&key, crate::ports::Act::Tunnel);
+                assert_eq!(self.tabs.len(), count+2, "occupied split must create a tunnel tab");
+                let tunnel_id = self.tabs[self.active].id;
+                let Pane::Term(t) = &mut self.tabs[self.active].left else {panic!("new tunnel terminal")};
+                // Inspect and clear before returning to the event loop. This
+                // regression fixture never starts an actual public tunnel.
+                assert!(t.type_at_prompt.take().is_some());
+                assert_eq!(self.board.rows[0].tunnel.as_ref().unwrap().tab, tunnel_id);
+                let tab = &self.tabs[owner];
+                let Pane::Term(left) = &tab.left else {panic!("preserved left terminal")};
+                let Some(Pane::Term(right)) = &tab.right else {panic!("preserved right terminal")};
+                assert_eq!((left.pty.pid(),right.pty.pid()),pids);
+            },
             "boardfixture"=>{
                 assert!(std::env::var_os("NUS_PORTS_FIXTURE").is_some());
                 self.board.rows=(0..24).map(|i|{
@@ -343,6 +465,20 @@ impl App {
                 }).collect();self.board.polls=1;self.board.last=Some(crate::clock::now());self.board.ghosts.clear();self.dirty=true;
             },
             "boardpage"=>self.expand_board(),
+            "stationchange"=>{
+                assert!(std::env::var_os("NUS_PORTS_FIXTURE").is_some());
+                self.board.rows[0].name=Some("updated preview".into());
+                self.board.rows[1].name=Some("updated api".into());
+                self.dirty=true;
+            },
+            "stationcheck"=>{
+                let a=&self.board.flaps[&self.board.rows[0].key];let b=&self.board.flaps[&self.board.rows[1].key];
+                assert!(a.after[1].contains("UPDATED"));assert!(b.after[1].contains("UPDATED"));
+                let gap=if a.at>b.at{a.at-b.at}else{b.at-a.at};
+                assert!(gap<Duration::from_millis(40),"rows must not queue behind each other");
+                let steady=&self.board.flaps[&self.board.rows[2].key];
+                assert!(a.at>steady.at+Duration::from_millis(500),"unchanged row must keep its own clock");
+            },
             "boardbounds"=>{
                 let body=self.board.viewport;assert!(body.h>0.0);
                 for (r,hit) in &self.board.hits {
@@ -419,6 +555,28 @@ impl App {
             "pipforeground"=>{self.pip.as_ref().unwrap().window.focus_window();},
             "pipretarget"=>{let p=self.pip.as_ref().unwrap();let (id,rect,tab,right)=(p.window.id(),p.cur,p.tab,p.right);assert!(self.retarget_pip(tab,right));let p=self.pip.as_ref().unwrap();assert_eq!(id,p.window.id());assert_eq!(rect,p.cur);},
             "uilabels"=>self.check_ui_labels(),
+            "pipfocus"=>self.focus_changed(rest=="on"),
+            "pipassert"=>assert_eq!(self.pip.is_some(),rest=="open"),
+            "pipclose"=>self.close_pip(),
+            "pipaspect"=>{
+                let expected:f64=rest.parse().unwrap();let p=self.pip.as_ref().expect("PiP exists");
+                assert!((p.aspect-expected).abs()<0.00001,"wrong stream ratio: {}",p.aspect);
+                assert!((p.cur.w/p.cur.h-expected).abs()<0.00001,"logical geometry drifted: {:?}",p.cur);
+                let size=p.window.inner_size();
+                assert!((size.width as f64-size.height as f64*expected).abs()<=(1.0+expected)*0.5+0.01,"native window has wrong shape: {:?}",size);
+                eprintln!("PIP_ASPECT {expected} NATIVE {size:?}");
+            },
+            "pipnativesize"=>{
+                let (w,h)=rest.split_once(' ').unwrap();let (w,h):(f64,f64)=(w.parse().unwrap(),h.parse().unwrap());
+                let p=self.pip.as_ref().unwrap();let _=p.window.request_inner_size(winit::dpi::LogicalSize::new(w,h));
+            },
+            "readingcontext"=>{
+                let id=self.library_rows(rest).first().expect("matching reading item").id.clone();
+                let Some(Pane::Home(h))=self.tabs.get(self.active).map(|t|t.focused_ref())else{panic!("library")};
+                let rect=h.library_ui.hits.iter().find(|(_,hit)|matches!(hit,crate::library::Hit::Row(k) if *k==id)).unwrap().0;
+                self.mouse_moved(rect.x+rect.w/2.0,rect.y+rect.h/2.0);
+                self.mouse_button(MouseButton::Right,ElementState::Pressed);self.mouse_button(MouseButton::Right,ElementState::Released);
+            },
             "pipcheck"=>{
                 let before=self.pip.as_ref().expect("PiP exists").cur;self.pip_wheel(winit::event::MouseScrollDelta::LineDelta(0.0,0.0));assert_eq!(self.pip.as_ref().unwrap().cur,before,"zero scroll changed PiP");
                 self.pip_pinch(0.01);let after=self.pip.as_ref().unwrap().cur;assert!(after.w>before.w&&after.w<before.w*1.02,"small gesture must be proportional");
@@ -471,6 +629,7 @@ impl App {
                 self.tree_click(k);
             }
             "mecard" => match rest.trim() {
+                "import" => self.open_me_card_at(crate::me::Step::Import),
                 "next" => self.me_next_pub(),
                 "back" => self.me_back_pub(),
                 "sync" => self.open_me_card_at(crate::me::Step::Sync),
@@ -597,8 +756,10 @@ impl App {
                 let _=self.proxy.send_event(crate::UserEvent::ApplicationMenuCheck(command));
             }
             "memory" => eprintln!("MEMORY {} {}", rest, crate::perf::memory_snapshot()),
+            "awaitperf" => assert!(crate::perf::has_samples(rest), "missing performance metric: {rest}"),
             "perfreset" => crate::perf::reset(),
             "perfstats" => eprintln!("PERF {} {}", rest, crate::perf::snapshot()),
+            "assertpresented" => assert!(self.frames > 0, "no frame has been presented"),
             "asserteditorready" => {
                 let b = self.focused_editor().and_then(|e| e.buf()).expect("editor buffer");
                 assert!(b.ready(), "file is still loading: {:?}", b.load_error);
@@ -621,10 +782,55 @@ impl App {
             "openfile" => self.run(crate::app::Action::OpenFile(rest.into())),
             "hatchkey" => {self.in_hatch(|a|a.shot_key(rest));},
             "asserthatchzoom" => {let i=self.hatch_tab().expect("Hatch session");let Pane::Term(t)=self.tabs[i].focused_ref() else {panic!("Hatch terminal")};assert_eq!(t.zoom,rest.parse::<u32>().unwrap());},
+            "trafficcheck" => self.check_traffic_lights(),
+            "trafficfullscreen" => {let _=self.proxy.send_event(crate::UserEvent::WindowControl(self.window.id(),2));},
+            "trafficsize" => {let (w,h)=rest.split_once(' ').unwrap();let _=self.window.request_inner_size(winit::dpi::LogicalSize::new(w.parse::<f64>().unwrap(),h.parse::<f64>().unwrap()));let size=self.window.inner_size();self.resize(size.width,size.height);},
             "assertchrome" => {
                 let pane=self.tabs[self.active].focused_ref();
                 assert!((pane.rect().y-self.strip_rect().bottom()).abs()<40.0*self.scale,"page zoom changed window chrome");
                 assert_eq!(self.px(10.0),(10.0*self.scale).round(),"page zoom escaped its drawing scope");
+            }
+            "zoomprobe" => {
+                use cef::ImplBrowserHost;
+                if rest == "start" {
+                    self.zoom_focused(1);
+                    self.zoom_focused(1);
+                    self.zoom_focused(1);
+                }
+                let Pane::Web(w) = self.tabs[self.active].focused_ref() else { panic!("zoomprobe needs a page") };
+                let host = w.tab.host().unwrap();
+                match rest {
+                    "start" => {
+                        assert_eq!(w.tab.zoom_percent(), 150, "rapid presses must accumulate toward the target");
+                        assert!(w.tab.shared.borrow().zoom_motion.is_some());
+                        w.tab.zoom_to(150, 1.0);
+                    }
+                    "middle" => {
+                        let actual = 1.2_f64.powf(host.zoom_level()) * 100.0;
+                        assert!(actual > 100.0 && actual < 150.0, "expected a real intermediate page zoom, got {actual}");
+                        assert_eq!(w.tab.zoom_percent(), 150);
+                    }
+                    "end" => {
+                        assert!(w.tab.shared.borrow().zoom_motion.is_none());
+                        assert_eq!((1.2_f64.powf(host.zoom_level()) * 100.0).round() as u32, 150);
+                        let s = w.tab.shared.borrow();
+                        let expected = ((s.size.0 * s.scale).round() as u32, (s.size.1 * s.scale).round() as u32);
+                        assert_eq!(s.paint_size, expected, "page backing texture must match physical pixel density");
+                    }
+                    "reduce" => {
+                        w.tab.zoom_to(200, 1.0);
+                        w.tab.tick_zoom(true);
+                        assert!(w.tab.shared.borrow().zoom_motion.is_none());
+                        assert_eq!(w.tab.zoom_percent(), 200);
+                        w.tab.zoom_to(100, 0.0);
+                    }
+                    "dpi" => {
+                        w.tab.set_scale(1.0);
+                        w.tab.set_scale(self.scale);
+                        assert_eq!(w.tab.shared.borrow().scale, self.scale);
+                    }
+                    _ => panic!("unknown zoom probe"),
+                }
             }
             "assertzoom" => {
                 use cef::ImplBrowserHost;
@@ -633,6 +839,19 @@ impl App {
                     Pane::Term(t)=>t.zoom, Pane::Editor(e)=>e.zoom, _=>self.ui_zoom,
                 };
                 assert_eq!(percent,rest.parse::<u32>().unwrap());
+            }
+            // Exercise the real idle policy without a minute-long fixture wait.
+            "ageinactivetabs" => {
+                let age=Duration::from_secs(rest.parse::<u64>().unwrap());
+                for (i,tab) in self.tabs.iter_mut().enumerate() {if i!=self.active {tab.last_active=crate::clock::now()-age;}}
+                self.last_tend=crate::clock::now()-Duration::from_secs(6);
+                self.tend_idle_tabs();
+            }
+            "activatetab" => self.activate(rest.parse().unwrap()),
+            "assertsleep" => {
+                let (i,asleep)=rest.split_once(' ').unwrap();
+                let Pane::Web(w)=&self.tabs[i.parse::<usize>().unwrap()].left else {panic!("expected page")};
+                assert_eq!(w.asleep.is_some(),asleep=="true","tab suspension");
             }
             "assertbrowsers" => {assert_eq!(crate::browser::live_count(),rest.parse::<usize>().unwrap(),"CEF browser lifecycle");}
             "resourcestats" => {
@@ -974,6 +1193,37 @@ impl App {
                 }
                 self.behavior.prompt=c;
             },
+            "savedfixture"=>{
+                let c=&mut self.behavior.prompt;
+                c.saved=vec!["> cargo test --workspace".into(),"> git status --short".into(),"https://docs.rs".into(),"@codex Review the current changes".into()];
+                c.saved_names=c.saved.iter().cloned().zip(["Test the workspace","Working tree","Rust documentation","Review changes"].map(String::from)).collect();
+                c.saved_preview=true;c.saved_library=true;c.saved_run=false;self.save_prefs();self.dirty=true;
+            },
+            "savedcheck"=>{
+                use crate::app::Action;
+                let before=self.behavior.prompt.clone();
+                assert!(matches!(self.prompt_rows("Test the workspace")[0].action,Action::SavedUse(0,false)));
+                self.behavior.prompt.sources=self.behavior.prompt.ordered();
+                let source=self.behavior.prompt.sources.iter_mut().find(|s|s.source==crate::prompt::Source::Saved).unwrap();source.home=false;source.search=false;
+                assert!(self.prompt_rows("").iter().all(|r|!r.num.starts_with("saved")));
+                assert!(self.prompt_rows("Test the workspace").iter().all(|r|!matches!(r.action,Action::SavedUse(..))));
+                self.behavior.prompt=before;
+                self.saved_edit(0,true,"Run workspace tests".into());assert!(matches!(self.prompt_rows("Run workspace tests")[0].action,Action::SavedUse(0,false)));
+                self.saved_edit(0,true,"Test the workspace".into());
+            },
+            "savedinsertprobe"=>{
+                let path=std::env::current_dir().unwrap().join("insert-must-not-execute");
+                let value=format!("> touch '{}'",path.display().to_string().replace('\'',"'\\''"));
+                let i=self.behavior.prompt.saved.len();self.behavior.prompt.saved.push(value);self.saved_use(i,false);self.behavior.prompt.saved.pop();
+            },
+            "savedinsertcheck"=>{
+                assert!(!std::env::current_dir().unwrap().join("insert-must-not-execute").exists(),"Insert executed the saved command");
+                let Pane::Term(t)=self.tabs[self.active].focused_ref()else{panic!("Insert must open a shell")};assert!(t.type_at_prompt.is_none(),"command never reached the shell prompt");
+            },
+            "reelat"=>{self.me_card.import.phase=rest.parse().unwrap();self.me_card.import.focus=1;self.dirty=true;},
+            "importsource"=>self.import_hit(crate::me::CardHit::ImportOpen),
+            "importfixture"=>{self.open_me_card_at(crate::me::Step::ImportReview);self.me_card.import.source=0;self.me_card.import.plan=Some(crate::import_flow::parse(0,r#"<a href="https://docs.rs">Rust documentation</a><a href="https://nus.dev">nus</a>"#).unwrap());},
+            "importapplycheck"=>{self.import_hit(crate::me::CardHit::ImportApply);assert!(self.folders.iter().any(|f|f.name=="Imported from Arc"&&f.items.len()==2));assert!(self.me_card.import.plan.is_none());},
             "assertpromptfirst"=>{let Some((mode,input))=&self.palette else{panic!("palette not open")};let rows=self.palette_rows(*mode,input);assert!(rows.first().is_some_and(|r|r.text.contains(rest)),"unexpected route: {:?}",rows.iter().map(|r|&r.text).collect::<Vec<_>>());},
             "assertconnections"=>{assert!(self.assistants.pending.is_none(),"connection checks did not finish");for entry in &self.assistants.entries{assert!(entry.checked);assert!(entry.path.is_some());assert!(!entry.version.is_empty());}assert_eq!(self.assistants.entries[2].models,vec!["test-model:latest"],"connections: {:?}",self.assistants.entries);},
             "assertfonts"=>{let c=&self.behavior.typography;let Pane::Term(t)=&self.tabs[self.active].left else{panic!("not terminal")};assert!((t.grid.px-self.terminal_px()).abs()<0.01);let plain=self.fonts.metrics(self.f.term,self.terminal_px());assert!(t.grid.metrics.advance>=plain.advance+c.terminal_spacing*self.scale-0.01);assert!(t.grid.metrics.line_height>=plain.line_height);},
@@ -981,8 +1231,103 @@ impl App {
             "reviewbounds"=>{assert!(matches!(self.palette,Some((PaletteMode::Assistant(_),_))));let size=self.window.inner_size();for r in self.palette_hits.iter().filter(|r|r.h>0.0){assert!(r.x>=0.0&&r.right()<=size.width as f32&&r.y>=0.0&&r.bottom()<=size.height as f32,"review row outside window: {r:?}");}if rest=="scrollable"{assert!(self.palette_scroll_max>0.0);}},
             "reviewscroll"=>{self.wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0,-rest.parse::<f64>().unwrap())));},
             "settingsbounds"=>{let Pane::Settings(p)=&self.tabs[self.active].left else{panic!("not settings")};for (r,h) in &self.settings_hits{assert!(r.x>=p.rect.x-1.0&&r.right()<=p.rect.right()+1.0&&r.bottom()<=p.rect.bottom()+1.0,"escaped hit {h:?} {r:?} {:?}",p.rect);}},
+            "mercuryclaim" => {self.claim_mercury();assert!(crate::mercury::earned());},
+            "mercurystate" => {
+                match rest {
+                    "absent" => assert!(self.me_card.mercury_reveal.is_none()),
+                    "moving" => assert!(self.me_card.mercury_reveal.is_some()),
+                    "closed" => {assert!(self.me_card.mercury_reveal.is_none());assert!(!self.me_card.open);assert!(matches!(self.tabs[self.active].focused_ref(),Pane::Settings(_)));},
+                    _ => panic!("unknown Mercury state"),
+                }
+            },
+            "mercurypresentationcheck" => {
+                use crate::me::CardHit;
+                assert!(self.me_card.mercury_reveal.is_some());
+                let expected=1;
+                assert_eq!(self.me_card.hits.len(),expected);
+                let (w,h)=(self.target.size.0 as f32,self.target.size.1 as f32);
+                for (rect,hit) in &self.me_card.hits {
+                    assert!(matches!(hit,CardHit::MercuryDone));
+                    assert!(rect.x>=0.0&&rect.y>=0.0&&rect.right()<=w&&rect.bottom()<=h,"escaped Mercury target: {rect:?}");
+                }
+                let tree=self.access_tree();
+                assert_eq!(tree.nodes.len(),expected+1,"underlying controls leaked into Mercury dialog");
+                assert_eq!(self.access_map.len(),expected);
+            },
+            "mercuryexport" => {
+                assert!(crate::mercury::earned());
+                std::fs::create_dir_all(rest).unwrap();
+                for size in [16,32,64,128,256,512] {
+                    let pixels=crate::mercury::icon(size);
+                    std::fs::write(std::path::Path::new(rest).join(format!("mercury-{size}.png")),nus_render::icon::png(&pixels,size,size)).unwrap();
+                }
+            },
+            "mercurycontinue" => {
+                let rect=self.me_card.hits.iter().find(|(_,h)|*h==crate::me::CardHit::MercuryDone).expect("Continue button").0;
+                self.mouse_moved(rect.x+rect.w*0.5,rect.y+rect.h*0.5);
+                self.mouse_button(MouseButton::Left,ElementState::Pressed);
+                self.mouse_button(MouseButton::Left,ElementState::Released);
+                assert!(self.me_card.mercury_reveal.is_none());
+            },
+            "mercurycheck" => {
+                assert!(crate::mercury::earned());
+                assert!(std::path::Path::new("profile/mercury.json").is_file());
+                assert!(crate::mercury::label().to_lowercase().contains("earned"));
+                assert_eq!(crate::mercury::date(crate::mercury::CUTOFF),"2027-01-01");
+            },
+            "vaultcheck" => {
+                let path=std::env::current_dir().unwrap().join("profile/memory.md");
+                crate::protected_state::write(&path,b"synthetic vault canary").unwrap();
+                assert_eq!(crate::protected_state::read_text(&path).unwrap(),"synthetic vault canary");
+                let bytes=std::fs::read(path).unwrap();assert!(bytes.starts_with(b"NUSENC01"));
+                assert!(!bytes.windows(9).any(|b|b==b"synthetic"));
+            },
+            "heldvaultcheck" => {
+                let dir=Self::hold_dir();
+                let profile=nus_pty::Profile{name:"vault probe".into(),program:"/bin/sh".into(),args:vec!["-c".into(),"printf held-vault-canary; sleep 10".into()],cwd:None,env:Vec::new()};
+                let pty=nus_pty::Pty::spawn_held(&profile,80,24,&dir,||{}).expect("encrypted held process");
+                let id=pty.held_id().unwrap().to_owned();let info=nus_pty::hold::Info::read(&dir,&id).unwrap();
+                let bytes=std::fs::read(nus_pty::hold::Info::path(&dir,&id)).unwrap();
+                assert!(bytes.starts_with(b"NUSENC01"));assert!(!bytes.windows(info.token.len()).any(|b|b==info.token.as_bytes()));
+                pty.detach();std::thread::sleep(Duration::from_millis(80));
+                let mut resumed=nus_pty::Pty::attach(info,80,24,||{}).expect("reattach with decrypted token");
+                std::thread::sleep(Duration::from_millis(80));
+                let output=resumed.take_output();resumed.kill();assert!(String::from_utf8_lossy(&output).contains("held-vault-canary"));
+            },
+            "updatewarningcheck" => {
+                assert!(crate::updates::status().confirming);
+                let bottom=self.settings_hits.iter().find(|(_,h)|matches!(h,crate::settings::Hit::UpdateConfirm)).expect("update confirmation button").0.bottom();
+                if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|&mut t.left){p.scroll+=(bottom-p.rect.bottom()+self.scale*32.0).max(0.0);}self.dirty=true;
+            },
+            "updateready" => {crate::updates::preview_warning();crate::updates::confirm(false);self.dirty=true;},
+            "updateheaderclick" => {
+                assert!(crate::updates::status().available);
+                let r=self.crumb_hits.iter().find(|(_,h)|*h==crate::app::CrumbHit::Updates).expect("header update icon").0;
+                for (other,hit) in &self.crumb_hits{if matches!(hit,crate::app::CrumbHit::Search|crate::app::CrumbHit::Start){assert!(r.right()<=other.x||other.right()<=r.x,"header buttons overlap");}}
+                self.mouse_moved(r.x+r.w/2.0,r.y+r.h/2.0);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);
+                assert!(crate::updates::status().confirming);
+            },
+            "updatereview" => {crate::updates::preview_warning();self.dirty=true;},
             "settingscheck" => self.check_settings_bindings(),
             "assertprofile" => assert_eq!(self.me_card.open, rest == "open"),
+            "loadbarfixture" => {
+                let progress: f32 = rest.parse().expect("progress");
+                self.load_bar.style=crate::anim::BarStyle::Radiance;
+                let Pane::Web(w)=self.tabs[self.active].focused() else {panic!("loadbar needs web")};
+                w.load=crate::anim::Follow::new(progress.clamp(0.0,1.0));
+                w.load_reported=progress.clamp(0.0,1.0);
+                w.load_fade=crate::anim::Anim::at(1.0);
+                w.load_since=Some(crate::clock::now());
+                let mut shared=w.tab.shared.borrow_mut();shared.loading=progress<1.0;shared.progress=progress as f64;
+                self.dirty=true;
+            },
+            "assertloadbar" => {
+                let Pane::Web(w)=self.tabs[self.active].focused_ref() else {panic!("loadbar needs web")};
+                let expected:f32=rest.parse().unwrap();
+                assert!((w.load.target-expected).abs()<0.001,"loading target drifted: {}",w.load.target);
+            },
+            "asserthdr" => assert_eq!(self.target.hdr(),rest=="enabled"),
+            "hdrpixels" => { let peak=self.gpu.verify_hdr_signal().expect("native HDR pixels");eprintln!("HDR source readback: {peak:.3} x SDR white");self.dirty=true; },
             "closeprofile" => self.close_me_card(),
             "welcome" => self.open_welcome(),
             "welcomedismiss" => self.dismiss_hints(),
@@ -1009,6 +1354,7 @@ impl App {
                 }
                 self.dirty = true;
             }
+            "document" => self.open_from_tree(std::path::Path::new(rest),false),
             "devtools" => self.toggle_devtools(),
             "libraryclick" => {
                 let Some(Pane::Home(h))=self.tabs.get(self.active).map(|t|t.focused_ref()) else{panic!("library expected")};
@@ -1042,6 +1388,16 @@ impl App {
             "arrival" => {
                 let mut sp=crate::splash::Splash::new();sp.arrival=true;sp.begun=true;
                 sp.started=crate::clock::now()-std::time::Duration::from_secs_f32(rest.parse().unwrap());self.splash=Some(sp);self.dirty=true;
+            },
+            "arrivalcheck" => {
+                assert_eq!(self.arriving(),rest=="active");
+                if self.arriving() {assert!(self.target.translucent(),"arrival requires a transparent compositor");}
+                eprintln!("ARRIVAL CHECK PASSED {rest}");
+            },
+            "trafficpress" => self.press_traffic_light(rest.parse().unwrap()),
+            "trafficstate" => {
+                assert_eq!(self.window.fullscreen().is_some(),rest=="fullscreen");
+                assert_eq!(self.fullscreen,rest=="fullscreen");
             },
             "reader" => self.toggle_reader(),
             "split" => self.divide(),
@@ -1654,7 +2010,8 @@ impl App {
     /// as a PNG at `path`. Returns the written size.
     pub(crate) fn snapshot_png(&mut self, clear: [f32; 4], crop: Option<(u32, u32, u32, u32)>, path: &std::path::Path) -> Result<(u32, u32), String> {
         let (w, h) = self.target.size;
-        let rgba = self.gpu.snapshot((w, h), &self.scene, clear);
+        let rgba = if self.arriving() { self.gpu.snapshot_alpha((w, h), &self.scene, clear) }
+            else { self.gpu.snapshot((w, h), &self.scene, clear) };
         let (x0, y0, cw, ch) = match crop {
             Some((x, y, cw, ch)) => (x.min(w - 1), y.min(h - 1), cw.max(1).min(w - x.min(w - 1)), ch.max(1).min(h - y.min(h - 1))),
             None => (0, 0, w, h),
@@ -1664,11 +2021,13 @@ impl App {
             let start = ((row * w + x0) * 4) as usize;
             px.extend_from_slice(&rgba[start..start + (cw * 4) as usize]);
         }
-        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), cw, ch);
+        let mut encoded=Vec::new();
+        let mut enc = png::Encoder::new(&mut encoded, cw, ch);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
         enc.write_header().and_then(|mut wr| wr.write_image_data(&px)).map_err(|e| e.to_string())?;
+        if path.starts_with(crate::replay::dir()) {crate::protected_state::write(path,&encoded).map_err(|e|e.to_string())?;}
+        else {std::fs::write(path,&encoded).map_err(|e|e.to_string())?;}
         Ok((cw, ch))
     }
 

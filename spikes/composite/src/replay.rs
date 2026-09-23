@@ -44,7 +44,7 @@ pub struct Recorder {
 
 struct Cast {
     path: PathBuf,
-    file: Option<std::io::BufWriter<std::fs::File>>,
+    file: Option<nus_vault::StreamWriter>,
     header: String,
     bytes: u64,
     utf8: Vec<u8>,
@@ -53,21 +53,22 @@ struct Cast {
 impl Cast {
     fn write(&mut self, event: &Value, limit: u64) {
         let line = format!("{event}\n");
-        if line.len() as u64 > limit / 2 { return; }
-        if self.bytes + line.len() as u64 > limit {
+        let stored=line.len() as u64+52;
+        if stored > limit / 2 { return; }
+        if self.bytes + stored > limit {
             // Close before renaming, including on Windows. Failure stops this
             // write rather than allowing the current file to grow indefinitely.
             if let Some(mut file) = self.file.take() { let _ = file.flush(); }
             let previous = self.path.with_extension("previous.cast");
             if previous.exists() && std::fs::remove_file(&previous).is_err() { return; }
             if std::fs::rename(&self.path, &previous).is_err() { return; }
-            let Ok(mut file) = std::fs::File::create(&self.path).map(std::io::BufWriter::new) else { return; };
+            let Ok(mut file) = nus_vault::StreamWriter::create(&self.path) else { return; };
             if file.write_all(self.header.as_bytes()).is_err() { return; }
-            self.bytes = self.header.len() as u64;
+            self.bytes = self.header.len() as u64+132;
             self.file = Some(file);
         }
         if let Some(file) = self.file.as_mut() {
-            if file.write_all(line.as_bytes()).is_ok() { self.bytes += line.len() as u64; }
+            if file.write_all(line.as_bytes()).is_ok() { self.bytes += stored; }
         }
     }
 }
@@ -78,6 +79,7 @@ impl Recorder {
     pub fn new(_keep_days: u32) -> Option<Recorder> {
         if crate::private::enabled() { return None; }
         let root = dir();
+        crate::protected_state::ready(&nus_vault::profile_for(&root)).ok()?;
         std::fs::create_dir_all(&root).ok()?;
         let mut stamp = now_secs();
         loop {
@@ -98,10 +100,11 @@ impl Recorder {
     fn cast(&mut self, tab: u64, cols: usize, rows: usize) -> Option<&mut Cast> {
         if !self.casts.contains_key(&tab) {
             let path = self.dir.join(format!("tab-{tab}.cast"));
-            let mut file = std::io::BufWriter::new(std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?);
+            let existing=if path.is_file(){Some(nus_vault::read(&path).ok()?)}else{None};
+            let mut file = nus_vault::StreamWriter::create(&path).ok()?;
             let header = format!("{}\n", json!({ "version": 2, "width": cols, "height": rows, "timestamp": now_secs(), "env": { "TERM": "xterm-256color", "SHELL": "nus" } }));
-            let mut bytes = file.get_ref().metadata().ok()?.len();
-            if bytes == 0 { file.write_all(header.as_bytes()).ok()?; bytes = header.len() as u64; }
+            let initial=existing.as_deref().unwrap_or(header.as_bytes());
+            file.write_all(initial).ok()?;let bytes=initial.len() as u64+132;
             self.casts.insert(tab, Cast { path, file: Some(file), header, bytes, utf8: Vec::new() });
         }
         self.casts.get_mut(&tab)
@@ -331,8 +334,8 @@ impl Timeline {
 
 /// A PNG's pixels as RGBA, with its size.
 fn read_png(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
-    let file = std::fs::File::open(path).ok()?;
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let bytes=nus_vault::read(path).ok()?;
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).ok()?;
@@ -539,7 +542,7 @@ impl App {
         for record in &mut stills {
             let png=record.pointer("/page/png").and_then(Value::as_str).and_then(|rel| {
                 let path=session.join(rel);let canonical=path.canonicalize().ok()?;
-                if !canonical.starts_with(session.canonicalize().ok()?){return None;}std::fs::read(canonical).ok()
+                if !canonical.starts_with(session.canonicalize().ok()?){return None;}nus_vault::read(&canonical).ok()
             }).map(|b|b64(&b));
             record["png"]=json!(png);
         }
@@ -602,6 +605,7 @@ mod tests {
     #[test]
     fn noisy_replay_rotates_and_keeps_recent_command_boundaries() {
         let root = tempfile::tempdir().unwrap();
+        nus_vault::install_test_key(root.path()).unwrap();
         let mut rec = Recorder { dir: root.path().to_path_buf(), t0: Instant::now(), casts: HashMap::new(), stills: 0, pending_bytes: 0 };
         for i in 0..100 {
             let cast = rec.cast(1, 80, 24).unwrap();
@@ -618,12 +622,14 @@ mod tests {
         assert!(rec.casts.is_empty());
         let before = std::fs::metadata(&path).unwrap().len();
         rec.mark(1, 80, 24, &json!({"cmd":"reopened"}));
+        rec.flush();
         assert!(std::fs::metadata(path).unwrap().len() > before, "reopening must append, not truncate");
     }
 
     #[test]
     fn session_budget_counts_stills_and_closes_evicted_cast_handles() {
         let root = tempfile::tempdir().unwrap();
+        nus_vault::install_test_key(root.path()).unwrap();
         std::fs::create_dir(root.path().join("blobs")).unwrap();
         let mut rec = Recorder { dir: root.path().to_path_buf(), t0: Instant::now(), casts: HashMap::new(), stills: 0, pending_bytes: 0 };
         for id in 1..15 {

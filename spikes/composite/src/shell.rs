@@ -47,7 +47,9 @@ pub fn kind_of(program: &str) -> Kind {
     match base {
         "pwsh" | "powershell" => Kind::PowerShell,
         "cmd" => Kind::Cmd,
-        "bash" | "sh" => Kind::Bash,
+        // /bin/sh is commonly dash on Linux. Bash's --rcfile option makes
+        // those shells exit immediately; do not assume a compatible binary.
+        "bash" => Kind::Bash,
         "zsh" => Kind::Zsh,
         "fish" => Kind::Fish,
         "nu" | "nushell" => Kind::Nu,
@@ -69,8 +71,12 @@ pub fn describe(kind: Kind) -> &'static str {
 }
 
 /// The profile, rewritten so its shell sources the integration.
-pub fn integrate(mut p: nus_pty::Profile, on: bool) -> nus_pty::Profile {
+pub fn integrate(p: nus_pty::Profile, on: bool) -> nus_pty::Profile {
     let d = install();
+    integrate_at(p, on, &d)
+}
+
+fn integrate_at(mut p: nus_pty::Profile, on: bool, d: &std::path::Path) -> nus_pty::Profile {
     p.env.push(("NUS_SHELL_INTEGRATION".into(), if on { "on".into() } else { "off".into() }));
     if !on {
         return p;
@@ -112,12 +118,46 @@ pub fn integrate(mut p: nus_pty::Profile, on: bool) -> nus_pty::Profile {
         Kind::Fish => {
             if !p.args.iter().any(|a| a == "-c") {
                 p.args.push("-C".into());
-                p.args.push(format!("source '{}'", path("nus.fish")));
+                p.args.push(format!("source {}", fish_quote(&path("nus.fish"))));
             }
         }
         Kind::Nu | Kind::Other => {}
     }
     p
+}
+
+fn fish_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn profile(program: &str, args: &[&str]) -> nus_pty::Profile {
+        nus_pty::Profile {name:"fixture".into(),program:program.into(),args:args.iter().map(|s|s.to_string()).collect(),cwd:None,env:vec![]}
+    }
+    #[test]
+    fn posix_sh_does_not_receive_bash_only_startup_flags() {
+        for shell in ["/bin/sh", "/bin/dash", "/bin/ksh"] {
+            let p = integrate_at(profile(shell, &["-l"]), true, std::path::Path::new("/fixture"));
+            assert_eq!(p.args, ["-l"]);
+            assert_eq!(p.program, shell);
+        }
+        let p = integrate_at(profile("/bin/bash", &["-l"]), true, std::path::Path::new("/fixture"));
+        assert!(p.args.iter().any(|arg| arg == "--rcfile"));
+    }
+    #[test]
+    fn fish_script_path_is_quoted_as_one_argument() {
+        let p = integrate_at(profile("fish", &[]), true, std::path::Path::new("/home/O'Brien/nus"));
+        assert_eq!(p.args[1], "source '/home/O\\'Brien/nus/nus.fish'");
+        assert_eq!(fish_quote("a\\b'c"), "'a\\\\b\\'c'");
+    }
+    #[test]
+    fn windows_shell_names_are_case_insensitive_and_paths_are_supported() {
+        assert_eq!(kind_of(r"C:\Program Files\PowerShell\7\PWSH.EXE"), Kind::PowerShell);
+        let p = integrate_at(profile("powershell.exe", &["-File", "work.ps1"]), true, std::path::Path::new("/fixture"));
+        assert_eq!(p.args, ["-File", "work.ps1"]);
+    }
 }
 
 /// Standard base64, for -EncodedCommand.

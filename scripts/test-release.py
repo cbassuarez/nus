@@ -113,7 +113,8 @@ class ReleaseTests(unittest.TestCase):
                 path.write_text(json.dumps(record))
                 with self.assertRaisesRegex(ValueError,'not signed'): self.run_release()
                 record['signing']=signing[target];path.write_text(json.dumps(record))
-        calls=self.run_release()
+        with patch.object(release.support,'evaluate',return_value={'kind':'current','latest':True,'support_until':None}):
+            calls=self.run_release()
         self.assertIn('--latest=true',calls[-1])
 
     def test_invalid_tag_cannot_publish(self):

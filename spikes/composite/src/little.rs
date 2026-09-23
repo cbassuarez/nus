@@ -4,7 +4,7 @@
 //! instance handoff that makes that possible, and default-browser
 //! registration (Windows; the others are noted).
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -28,8 +28,6 @@ pub enum Claim {
     /// We are the instance: URLs from later launches arrive here; the
     /// port other processes reach us on.
     Primary(Receiver<Inbound>, u16, Sender<Inbound>),
-    /// Another instance took the URLs; exit.
-    HandedOff,
 }
 
 fn instance_file() -> std::path::PathBuf {
@@ -44,7 +42,7 @@ pub enum Inbound {
 }
 
 /// Claim the instance, handing `urls` to a running one if there is one.
-pub fn claim(urls: &[String]) -> Claim {
+pub fn handoff(urls: &[String]) -> bool {
     if let Ok(instance) = std::fs::read_to_string(instance_file()) {
         let mut lines = instance.lines();
         let port = lines.next().unwrap_or("").parse::<u16>().unwrap_or(0);
@@ -54,15 +52,20 @@ pub fn claim(urls: &[String]) -> Claim {
             if let Ok(mut s) = TcpStream::connect_timeout(&addr, crate::security::IO_TIMEOUT) {
                 let _ = s.set_read_timeout(Some(crate::security::IO_TIMEOUT));
                 let _ = s.set_write_timeout(Some(crate::security::IO_TIMEOUT));
-                let request = serde_json::json!({"token":token,"cmd":"__handoff","args":urls});
+                let request = serde_json::json!({"token":token,"cmd":"__handoff","args":urls,"protocol":nus_compat::CLI_PROTOCOL});
                 if writeln!(s, "{request}").is_ok() {
                     if let Ok(Some(reply)) = crate::security::line(&mut BufReader::new(s), 4096, Instant::now()+crate::security::IO_TIMEOUT) {
-                        if serde_json::from_str::<serde_json::Value>(&reply).ok().is_some_and(|v| v["ok"] == true) { return Claim::HandedOff; }
+                        if serde_json::from_str::<serde_json::Value>(&reply).ok().is_some_and(|v| v["ok"] == true) { return true; }
                     }
                 }
             }
         }
     }
+    false
+}
+
+/// Called only while holding the profile lifetime lock.
+pub fn claim(urls: &[String]) -> Claim {
     let token = crate::remote::new_token();
     let (rx, port, tx) = listen(urls, token.clone());
     if port != 0 {
@@ -114,6 +117,10 @@ pub fn listen(urls: &[String], token: String) -> (Receiver<Inbound>, u16, Sender
                                 };
                                 if !crate::security::token_matches(&token, v.get("token").and_then(|t| t.as_str()).unwrap_or("")) {
                                     let _ = writeln!(w, "{}", serde_json::json!({ "ok": false, "error": "bad token" }));
+                                    break;
+                                }
+                                if !nus_compat::protocol_matches(v.get("protocol"), nus_compat::CLI_PROTOCOL) {
+                                    let _ = writeln!(w, "{}", serde_json::json!({"ok":false,"error":"CLI_PROTOCOL_MISMATCH: use the CLI bundled with this nus", "protocol":nus_compat::CLI_PROTOCOL}));
                                     break;
                                 }
                                 let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("").to_string();
@@ -222,10 +229,7 @@ impl App {
         let Ok(target) = self.gpu.target(window.clone()) else { return };
         let Some(pane) = self.new_web_pane(url) else { return };
         let scale = window.scale_factor() as f32;
-        {
-            let mut s = pane.tab.shared.borrow_mut();
-            s.scale = scale;
-        }
+        pane.tab.set_scale(scale);
         let mut l = Little {
             window,
             target,
@@ -253,11 +257,11 @@ impl App {
         {
             let mut s = l.pane.tab.shared.borrow_mut();
             s.origin = (0.0, band + head);
-            s.scale = scale;
             if let Ok(p) = l.window.outer_position() {
                 s.window_pos = (p.x, p.y);
             }
         }
+        l.pane.tab.set_scale(scale);
         l.pane.tab.resized((w / scale).floor(), ((h - band - head) / scale).floor());
         let isz = (16.0 * scale).round();
         l.close = Rect::new(w - 14.0 * scale - isz, band, isz + 14.0 * scale, head);

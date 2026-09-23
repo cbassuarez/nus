@@ -8,7 +8,9 @@ mod termui;
 mod predict;
 mod webui;
 mod welcome;
+mod page_signal;
 mod install;
+mod compatibility;
 mod themes;
 mod macos;
 mod dock;
@@ -17,6 +19,8 @@ mod sidebar;
 mod pins;
 mod fonts;
 mod prompt;
+mod saved_commands;
+mod import_flow;
 mod assistants;
 mod look_menu;
 mod windows;
@@ -72,10 +76,16 @@ mod syncui;
 mod me;
 mod hotkey;
 mod anim;
+mod split_flap;
 mod app;
 mod browser;
+mod browser_runtime;
+mod browser_cache;
 mod little;
 mod pip;
+mod pip_policy;
+mod file_viewer;
+mod file_viewer_app;
 mod prefs;
 mod reader;
 mod library;
@@ -84,6 +94,7 @@ mod settings;
 mod sound;
 mod shot;
 mod splash;
+mod hyperdrive;
 mod plate;
 mod toast;
 mod page_menu;
@@ -96,6 +107,11 @@ mod diffs;
 mod phone;
 mod private;
 mod security;
+mod secrets;
+mod protected_state;
+mod updates;
+mod mercury;
+mod update_install;
 mod support;
 mod pick;
 mod files;
@@ -120,6 +136,7 @@ use app::App;
 
 #[derive(Debug)]
 pub enum UserEvent {
+    BrowserWork,
     Wake,
     ApplicationCommand(application_menu::Command),
     ApplicationMenuCheck(application_menu::Command),
@@ -292,6 +309,7 @@ impl Host {
             // The same ID on Wayland and X11 links the window to its launcher.
             attrs=winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs,"dev.nus.app","nus");
         }
+        let attrs = crate::macos::main_window_attributes(attrs);
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -299,6 +317,7 @@ impl Host {
                 return;
             }
         };
+        perf::startup(perf::StartupMark::WindowCreated);
         // The adapter must exist before the window is first shown.
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
         crate::macos::prepare_window(&window);
@@ -307,6 +326,7 @@ impl Host {
         let born_in = from.and_then(|i| self.apps.get(i)).and_then(|a| a.workspace.as_ref().map(|w| w.to_string_lossy().to_string()).or_else(|| a.focused_cwd()));
         match App::new(window.clone(), self.proxy.clone(), secondary, self.made, born_in) {
             Ok(mut a) => {
+                perf::startup(perf::StartupMark::AppReady);
                 a.inbound = Some(self.inbound.clone());
                 a.phone_at_launch();
                 a.fullscreen = start == settings::WindowStart::Fullscreen;
@@ -439,6 +459,7 @@ impl ApplicationHandler<UserEvent> for Host {
                     }
                 }
             }
+            UserEvent::BrowserWork => {},
             UserEvent::Wake => {
                 for a in self.apps.iter_mut() {
                     a.dirty = true;
@@ -786,7 +807,7 @@ fn chromium_version() -> String {
 /// shell, as a terminal launched from a terminal would have it, so language
 /// servers and tools installed with Homebrew are found.
 #[cfg(target_os = "macos")]
-fn settle_as_app(dock: &mut dock::Dock) {
+fn settle_as_app(_dock: &mut dock::Dock) {
     if private::enabled() { return; }
     let in_bundle = std::env::current_exe().map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/")).unwrap_or(false);
     if !in_bundle {
@@ -802,10 +823,13 @@ fn settle_as_app(dock: &mut dock::Dock) {
         let dir = install::bundle_root(&base, bundle).expect("create isolated installation profile");
         std::env::set_current_dir(&dir).expect("use installation profile");
     }
-    dock.begin_launch(prefs::Prefs::load().motion.unwrap_or_default().reduced());
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_app_environment() {
+    if private::enabled() || !std::env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/")) { return; }
     // What Chromium is told on its command line comes from the prefs, and
     // has to be known before the browser process starts.
-    prefs::apply_start_switches();
     // Only isolated native checks may deliberately hold startup open, proving
     // that a slow launch loops and a fast launch never waits for an animation.
     if std::env::var_os("NUS_SHOT").is_some() {
@@ -846,17 +870,25 @@ fn settle_as_app(dock: &mut dock::Dock) {
 
 fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("nus {} ({})", env!("CARGO_PKG_VERSION"), env!("NUS_BUILD_REVISION"));
+        println!("nus {} ({})", env!("NUS_BUILD_VERSION"), env!("NUS_BUILD_REVISION"));
         return ExitCode::SUCCESS;
     }
+    if std::env::args().nth(1).as_deref() == Some("--compatibility") {
+        println!("{}", serde_json::to_string(&compatibility::contract()).unwrap());
+        return ExitCode::SUCCESS;
+    }
+    let child_process = std::env::args().any(|a| a == "--type" || a.starts_with("--type="));
+    let urls = little::urls_from_args();
     perf::start();
     let _private_root = match private::prepare() {
         Ok(root) => root,
         Err(_) => { eprintln!("Could not create an isolated incognito session."); return ExitCode::FAILURE; }
     };
+    perf::startup(perf::StartupMark::PrivateReady);
     let mut dock = dock::Dock::bootstrap();
     #[cfg(target_os = "macos")]
-    settle_as_app(&mut dock);
+    if !child_process { settle_as_app(&mut dock); }
+    perf::startup(perf::StartupMark::DockReady);
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -864,75 +896,78 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    // macOS links CEF as a framework inside the bundle rather than a dylib on
-    // the search path, so it has to be loaded before any CEF call — and the
-    // loader has to outlive all of them.
-    #[cfg(target_os = "macos")]
-    let _cef_library = {
-        let loader = library_loader::LibraryLoader::new(&std::env::current_exe().unwrap(), false);
-        assert!(loader.load(), "could not load the CEF framework from the bundle");
-        loader
+    #[cfg(not(target_os = "macos"))]
+    if !child_process {
+        if let Err(e) = distribution::settle() {
+            eprintln!("Could not open the nus data directory: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    if !child_process && !private::enabled() && little::handoff(&urls) {
+        return ExitCode::SUCCESS;
+    }
+    let profile_guard = if child_process { None } else {
+        match compatibility::start() {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                eprintln!("nus could not safely open this profile: {e}");
+                if std::env::var_os("NUS_SHOT").is_none() {
+                    rfd::MessageDialog::new().set_title("nus profile preserved")
+                        .set_description(format!("nus could not safely open this profile. No settings were loaded.\n\n{e}"))
+                        .set_level(rfd::MessageLevel::Error).show();
+                }
+                return ExitCode::FAILURE;
+            }
+        }
     };
+    if !child_process {
+        dock.begin_launch(prefs::Prefs::load().motion.unwrap_or_default().reduced());
+        prefs::apply_start_switches();
+        #[cfg(target_os = "macos")]
+        prepare_app_environment();
+    }
 
-    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-    let args = Args::new();
-    let cmd = args.as_cmd_line().unwrap();
-    let is_browser_process = cmd.has_switch(Some(&"type".into())) != 1;
-    let mut cef_app = browser::AppBuilder::new(browser::AppHandler);
-    let ret = execute_process(Some(args.as_main_args()), Some(&mut cef_app), std::ptr::null_mut());
-    if !is_browser_process {
+    if child_process {
+        browser_runtime::load_library();
+        let args = Args::new();
+        let mut cef_app = browser::AppBuilder::new(browser::AppHandler);
+        let ret = execute_process(Some(args.as_main_args()), Some(&mut cef_app), std::ptr::null_mut());
         return ExitCode::from(ret.max(0) as u8);
     }
-    assert_eq!(ret, -1, "browser process must not be executed here");
 
-    #[cfg(not(target_os = "macos"))]
-    if let Err(e) = distribution::settle() {
-        eprintln!("Could not open the nus data directory: {e}");
-        return ExitCode::FAILURE;
-    }
-
-    // One instance: a second launch hands its URLs to the first and exits.
-    let urls = little::urls_from_args();
+    // The profile lock serializes ownership; a racing launch cannot overwrite instance credentials.
     let (urls_rx, port, inbound_tx) = match if private::enabled() {
         let (tx, rx) = std::sync::mpsc::channel();
         little::Claim::Primary(rx, 0, tx)
     } else { little::claim(&urls) } {
-        little::Claim::HandedOff => return ExitCode::SUCCESS,
         little::Claim::Primary(rx, port, tx) => (rx, port, tx),
     };
+    mercury::observe_installation();
+    protected_state::migrate(&std::env::current_dir().unwrap_or_default().join("profile"));
 
-    let profile = std::env::current_dir().unwrap().join("profile");
-    let cache = profile.clone();
-    let root = cache.clone();
-    let settings = Settings {
-        windowless_rendering_enabled: 1,
-        external_message_pump: 1,
-        // Brands "Google Chrome" in Sec-CH-UA; sites treat bare "Chromium" as a bot.
-        user_agent_product: format!("Chrome/{}", chromium_version()).as_str().into(),
-        // Chromium otherwise appends an unbounded debug.log in production.
-        log_severity: cef::LogSeverity::DISABLE,
-        root_cache_path: root.to_string_lossy().as_ref().into(),
-        cache_path: if private::enabled() { "".into() } else { cache.to_string_lossy().as_ref().into() },
-        ..Default::default()
-    };
-    assert_eq!(
-        initialize(Some(args.as_main_args()), Some(&settings), Some(&mut cef_app), std::ptr::null_mut()),
-        1
-    );
+    // Native windows can open before the browser engine is needed.
+    perf::startup(perf::StartupMark::CefDeferred);
 
     let mut event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+    perf::startup(perf::StartupMark::EventLoopReady);
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
+    browser_runtime::set_proxy(proxy.clone());
     let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None, inbound: inbound_tx, tray: None, application_menu: None, work_at: None, hatch_owner: None, dock };
     let mut urls_rx = Some(urls_rx);
     let _ = port;
+    let mut launch_acknowledged = false;
     let code = loop {
-        do_message_loop_work();
+        browser_runtime::pump();
         let background=!host.apps.is_empty() && host.apps.iter().all(|a| a.hatch_state.main_hidden && a.hatch.as_ref().is_none_or(|h|!h.visible) && a.little.is_none() && a.pip.is_none());
-        let wait=Duration::from_millis(if background {50} else {2});
-        // Poll ignores the pump timeout and spins tens of thousands of times
-        // a second even on an idle editor. Native input/proxy events wake this
-        // wait immediately; the short deadline also services CEF and PTYs.
+        // Input, CEF deadlines and worker completions wake idle maintenance.
+        // Preserve the existing animated cadence; a positive pump timeout also
+        // lets AppKit return control when redraw events are continuously queued.
+        let animated=host.apps.iter().any(|a|a.dirty);
+        let arrival=host.apps.iter().any(|a|a.arriving());
+        let maintenance=Duration::from_millis(if arrival || (animated && !background) {2} else {50});
+        let maintenance=host.apps.iter().filter_map(|a|a.browser_frame_wait()).fold(maintenance,Duration::min);
+        let wait=browser_runtime::wait(maintenance).max(Duration::from_millis(1));
         event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now()+wait));
         let status = event_loop.pump_app_events(Some(wait), &mut host);
         if let PumpStatus::Exit(code) = status {
@@ -965,7 +1000,17 @@ fn main() -> ExitCode {
                 a.register_window();
             }
             a.tick();
+            if !launch_acknowledged {
+                if let Some(guard) = &profile_guard {
+                    match guard.healthy() {
+                        Ok(()) => launch_acknowledged = true,
+                        Err(e) => tracing::warn!("Could not record launch health: {e}"),
+                    }
+                }
+            }
             a.shot_tick();
+            if !a.arriving() {
+            a.tend_updates();
             a.poll_deferred();
             a.poll_page_menus();
             a.tend_tree();
@@ -984,6 +1029,7 @@ fn main() -> ExitCode {
             // rather than letting redraw() pump a second time and see nothing.
             if a.pump() {
                 a.dirty = true;
+            }
             }
             if a.dirty && !a.hatch_state.main_hidden {
                 a.redraw();
@@ -1019,7 +1065,10 @@ fn main() -> ExitCode {
     }
     containers::shutdown();
     containers::release_private_context();
-    cef::shutdown();
+    if browser_runtime::ready() {
+        cef::shutdown();
+    }
+    if !private::enabled() { browser_cache::maintain(std::path::Path::new("profile"), browser_cache::BUDGET); }
     if private::enabled() {
         // Windows cannot remove the current working directory.
         let _ = std::env::set_current_dir(std::env::temp_dir());

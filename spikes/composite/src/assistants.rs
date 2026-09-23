@@ -161,6 +161,9 @@ pub fn resolve(bin: &str, custom: &str) -> Option<PathBuf> {
 /// Bound output and runtime. stderr is discarded and never shown in
 /// connection cards because authentication output may contain account data.
 fn capture(path: &Path, args: &[&str]) -> Result<(bool, String), String> {
+    capture_with_timeout(path, args, Duration::from_secs(8))
+}
+fn capture_with_timeout(path: &Path, args: &[&str], timeout: Duration) -> Result<(bool, String), String> {
     use std::io::Read;
     let mut c = Command::new(path);
     c.args(args)
@@ -176,18 +179,25 @@ fn capture(path: &Path, args: &[&str]) -> Result<(bool, String), String> {
         .spawn()
         .map_err(|_| "Could not start the CLI".to_string())?;
     let stdout = child.stdout.take().unwrap();
-    let read = std::thread::spawn(move || {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
         let mut reader = stdout;
         let _ = reader.by_ref().take(128 * 1024).read_to_end(&mut bytes);
         let _ = std::io::copy(&mut reader, &mut std::io::sink());
-        String::from_utf8_lossy(&bytes).to_string()
+        let _ = tx.send(String::from_utf8_lossy(&bytes).to_string());
     });
     let start = crate::clock::now();
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Ok((status.success(), read.join().unwrap_or_default())),
-            Ok(None) if crate::clock::since(start) < Duration::from_secs(8) => {
+            Ok(Some(status)) => {
+                // A spawned descendant can keep stdout open after its parent
+                // exits. The output read must share the process deadline.
+                let remaining = timeout.saturating_sub(crate::clock::since(start));
+                return rx.recv_timeout(remaining).map(|text| (status.success(), text))
+                    .map_err(|_| "Check timed out while reading CLI output.".into());
+            }
+            Ok(None) if crate::clock::since(start) < timeout => {
                 std::thread::sleep(Duration::from_millis(40))
             }
             _ => {
@@ -281,6 +291,15 @@ pub fn quote(value: &str, powershell: bool) -> String {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
+
+fn packaged_cli(exe: &Path, platform: &str) -> Option<PathBuf> {
+    let directory = exe.parent()?;
+    Some(match platform {
+        "macos" => directory.parent()?.join("Resources/bin/nus"),
+        "windows" => directory.join("bin/nus.exe"),
+        _ => directory.join("bin/nus"),
+    })
+}
 impl App {
     pub(crate) fn default_assistant(&self) -> u8 {
         index(&self.behavior.ask_backend).unwrap_or_else(|| {
@@ -297,11 +316,7 @@ impl App {
         }
         let cli = std::env::current_exe()
             .ok()
-            .and_then(|p| {
-                p.parent()
-                    .and_then(|p| p.parent())
-                    .map(|p| p.join("Resources/bin/nus"))
-            })
+            .and_then(|p| packaged_cli(&p, std::env::consts::OS))
             .filter(|p| p.is_file())
             .or_else(|| resolve("nus", ""));
         let Some(cli) = cli else {
@@ -315,10 +330,15 @@ impl App {
             self.notice("Set up the assistant first.");
             return;
         };
-        let ps = self
+        let shell = self
             .profiles
             .get(self.behavior.default_profile)
-            .is_some_and(|p| p.program.contains("pwsh") || p.program.contains("powershell"));
+            .map(|p| crate::shell::kind_of(&p.program));
+        if shell == Some(crate::shell::Kind::Cmd) {
+            self.notice("Choose PowerShell or a POSIX shell to configure assistant tools.");
+            return;
+        }
+        let ps = shell == Some(crate::shell::Kind::PowerShell);
         let command = format!(
             "{}{} mcp add nus -- {} mcp",
             if ps { "& " } else { "" },
@@ -624,7 +644,7 @@ impl App {
             .join("profile/memory.md");
         if !path.exists() {
             let _ = std::fs::create_dir_all(path.parent().unwrap());
-            let _ = std::fs::write(&path, "");
+            let _ = crate::protected_state::write(&path, b"");
         }
         self.open_file(&path, false);
     }
@@ -632,6 +652,24 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn companion_cli_matches_every_shipping_package_layout() {
+        for (exe, platform, expected) in [
+            ("/Apps/nus.app/Contents/MacOS/nus", "macos", "/Apps/nus.app/Contents/Resources/bin/nus"),
+            ("/package/nus.exe", "windows", "/package/bin/nus.exe"),
+            ("/package/nus-desktop", "linux", "/package/bin/nus"),
+        ] {
+            assert_eq!(packaged_cli(Path::new(exe), platform), Some(PathBuf::from(expected)));
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cli_checks_timeout_when_a_descendant_keeps_stdout_open() {
+        let start = Instant::now();
+        let result = capture_with_timeout(Path::new("/bin/sh"), &["-c", "sleep 1 & exit 0"], Duration::from_millis(100));
+        assert!(result.is_err());
+        assert!(start.elapsed() < Duration::from_millis(800));
+    }
     #[test]
     fn long_review_preserves_every_character_and_fits() {
         let mut fonts = nus_render::FontSystem::new();

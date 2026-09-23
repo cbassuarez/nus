@@ -35,21 +35,50 @@ pub fn integrate(mut p: nus_pty::Profile) -> nus_pty::Profile {
     if p.args.iter().any(|a| a.contains("NUS_EOF_1")) {
         return p;
     }
-    let host = p.args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
-    if host.is_empty() {
+    let Some(host) = destination(&p.args) else {
         return p;
-    }
-    let mut args: Vec<String> = p.args.iter().filter(|a| a.starts_with('-') && *a != "-t").cloned().collect();
-    args.insert(0, "-t".into());
-    args.push(host);
-    args.push(bootstrap());
-    p.args = args;
+    };
+    // Explicit remote commands and noninteractive sessions belong to the user.
+    if host + 1 != p.args.len() || p.args.iter().any(|a| a == "-T" || a == "-N") { return p; }
+    if !p.args.iter().any(|a| a == "-t" || a == "-tt") { p.args.insert(0, "-t".into()); }
+    p.args.push(bootstrap());
     p
+}
+
+fn destination(args: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--" { return (i+1 < args.len()).then_some(i+1); }
+        if !arg.starts_with('-') { return (!arg.is_empty()).then_some(i); }
+        if arg.len() == 2 && "BbcDEeFIiJLlmOopQRSWw".contains(arg.as_bytes()[1] as char) {
+            i += 1; // This option's argument is not the destination.
+            if i >= args.len() { return None; }
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integration_preserves_option_values_and_explicit_remote_commands() {
+        for args in [vec!["-p", "2222", "-i", "/keys/key with space", "user@host"], vec!["-o", "ProxyJump=jump", "-p2222", "host"]] {
+            let mut p = nus_pty::Profile::ssh("unused");
+            p.args = args.iter().map(|s|s.to_string()).collect();
+            let integrated = integrate(p.clone());
+            assert_eq!(&integrated.args[1..integrated.args.len()-1], &p.args);
+            assert_eq!(integrated.args[0], "-t");
+        }
+        for args in [vec!["host", "echo hello"], vec!["-T", "host"], vec!["-N", "-L", "3000:localhost:3000", "host"], vec!["-p"]] {
+            let mut p = nus_pty::Profile::ssh("unused");
+            p.args = args.iter().map(|s|s.to_string()).collect();
+            assert_eq!(integrate(p.clone()).args, p.args);
+        }
+    }
 
     #[test]
     fn bootstrap_shape() {

@@ -1,6 +1,5 @@
 //! Keyboard and menus share the focused surface's zoom, separate from DPI.
 use crate::app::{App, KeyIn, Pane};
-use cef::ImplBrowserHost;
 use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
 
 pub fn shortcut(ev: &KeyIn, mods: ModifiersState) -> Option<i32> {
@@ -27,16 +26,29 @@ pub fn next(current: u32, step: i32, reset: u32, min: u32, max: u32) -> u32 {
 }
 
 impl App {
+    pub(crate) fn tend_zoom(&mut self) {
+        let reduced = self.motion.reduced();
+        for tab in &self.tabs {
+            for pane in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Web(w) = pane {
+                    self.dirty |= w.tab.tick_zoom(reduced);
+                    if let Some(d) = &w.devtools { self.dirty |= d.tick_zoom(reduced); }
+                }
+            }
+        }
+        if let Some(l) = &self.little { self.dirty |= l.pane.tab.tick_zoom(reduced); }
+    }
+
     pub(crate) fn zoom_focused(&mut self, step: i32) {
         let term_px = self.terminal_px();
+        let duration = self.motion.dur(160.0);
         let Some(pane) = self.tabs.get_mut(self.active).map(|t|t.focused()) else { return; };
         let percent = match pane {
             Pane::Web(w) => {
                 let target = if w.focus_devtools { w.devtools.as_ref().unwrap_or(&w.tab) } else { &w.tab };
-                let Some(host) = target.host() else { return; };
-                let current = (1.2_f64.powf(host.zoom_level()) * 100.0).round() as u32;
+                let current = target.zoom_percent();
                 let value = next(current, step, crate::sites::default_zoom(), 25, 500);
-                host.set_zoom_level((value as f64 / 100.0).ln() / 1.2_f64.ln());
+                target.zoom_to(value, duration);
                 if !w.focus_devtools {
                     let name = crate::sites::host_of(&w.tab.shared.borrow().url);
                     if !name.is_empty() { let mut prefs = crate::sites::prefs(&name); prefs.zoom = value; crate::sites::set(&name, prefs); }

@@ -299,7 +299,7 @@ impl GridRenderer {
                     }
                 }
                 if !self.text.trim().is_empty() {
-                    for g in fonts.shape(self.font, self.px, &self.text) {
+                    for g in fonts.shape(self.font, self.px, &self.text).iter() {
                         let Some(a) = fonts.glyph(g.font, self.px, g.id) else {
                             continue;
                         };

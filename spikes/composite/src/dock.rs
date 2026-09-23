@@ -10,6 +10,10 @@ use nus_render::{
 
 #[derive(Default)]
 pub struct Dock {
+    #[cfg(target_os="macos")]
+    mercury_motion: Option<mercury_motion::Mercury>,
+    #[cfg(target_os="macos")]
+    mercury_revision: u64,
     quitting: bool,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     signal: Option<nus_render::Color>,
@@ -29,6 +33,8 @@ pub struct Dock {
     launch: Option<launch::Launch>,
     #[cfg(target_os = "linux")]
     publisher: Option<linux::Publisher>,
+    #[cfg(target_os="linux")]
+    mercury_seen: bool,
 }
 
 impl Dock {
@@ -47,6 +53,13 @@ impl Dock {
     }
 
     pub fn begin_launch(&mut self, reduced: bool) {
+        #[cfg(target_os = "macos")]
+        if crate::mercury::earned() {
+            self.launch = None;
+            self.mercury_revision = crate::mercury::presentation_revision();
+            self.mercury_motion = Some(mercury_motion::Mercury::new(reduced, true));
+            return;
+        }
         #[cfg(target_os = "macos")]
         if let Some(launch) = &mut self.launch {
             launch.begin(reduced);
@@ -77,6 +90,7 @@ impl Dock {
         #[cfg(target_os = "macos")]
         {
             self.launch = None;
+            self.mercury_motion = None;
             self.stop();
             if let Some(mtm) = objc2::MainThreadMarker::new() {
                 unsafe {
@@ -103,6 +117,18 @@ impl Dock {
                 return;
             };
             let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            if crate::mercury::earned() {
+                let revision = crate::mercury::presentation_revision();
+                if self.mercury_motion.is_none() || revision != self.mercury_revision {
+                    self.launch = None;
+                    self.stop();
+                    self.mercury_motion = None; // Stop the old timer before sampling its visible icon.
+                    self.mercury_revision = revision;
+                    self.mercury_motion = Some(mercury_motion::Mercury::new(reduced, true));
+                }
+                if let Some(motion) = &mut self.mercury_motion { motion.update(reduced); }
+                return;
+            }
             if self.signal != Some(signal) {
                 let worker = self.renderer.get_or_insert_with(Renderer::new);
                 let _ = worker.send.send(signal);
@@ -153,7 +179,8 @@ impl Dock {
             }
         }
         #[cfg(target_os = "linux")]
-        if self.signal != Some(signal) {
+        if self.signal != Some(signal) || self.mercury_seen != crate::mercury::earned() {
+            self.mercury_seen=crate::mercury::earned();
             self.signal = Some(signal);
             self.publisher
                 .get_or_insert_with(linux::Publisher::new)
@@ -292,13 +319,13 @@ fn trace(event: &str, face: Option<Face>, signal: Color) {
     {
         let _ = writeln!(file, "{row}");
     }
-    if let (Some(face), Some(mtm)) = (face, objc2::MainThreadMarker::new()) {
+    if let Some(mtm) = objc2::MainThreadMarker::new().filter(|_| face.is_some() || event.starts_with("mercury")) {
         if let Some(data) = objc2_app_kit::NSApplication::sharedApplication(mtm)
             .applicationIconImage()
             .and_then(|img| img.TIFFRepresentation())
         {
             let _ = std::fs::write(
-                dir.join(format!("{ms}-{}.tiff", face as usize)),
+                dir.join(format!("{ms}-{}.tiff", face.map(|f| (f as usize).to_string()).unwrap_or_else(|| event.into()))),
                 data.to_vec(),
             );
         }
@@ -361,3 +388,7 @@ impl Drop for Dock {
         self.stop();
     }
 }
+
+#[cfg(target_os = "macos")]
+#[path = "dock_mercury.rs"]
+mod mercury_motion;

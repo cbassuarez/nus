@@ -72,7 +72,7 @@ impl Buffer {
         b.opened_at = crate::perf::enabled().then(Instant::now);
         let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let abs = PathBuf::from(abs.to_string_lossy().trim_start_matches(r"\\?\"));
-        b.uri = Url::from_file_path(&abs).ok();
+        b.uri = if crate::protected_state::is_private_path(&abs){None}else{Url::from_file_path(&abs).ok()};
         b.language = nus_lsp::registry::language_for(&abs);
         b.path = Some(abs.clone());
         b.loading = Some(Task::start(move |cancel| work::load(&abs, cancel))
@@ -760,6 +760,7 @@ impl EditorPane {
 /// Text, as far as a look at the first bytes can tell: no NULs, and
 /// mostly printable. File size is not a reason to reject a text file.
 pub(crate) fn looks_text(path: &Path) -> bool {
+    if crate::protected_state::is_private_path(path){return true;}
     let Ok(mut f) = std::fs::File::open(path) else { return false };
     let mut buf = [0u8; 4096];
     let n = std::io::Read::read(&mut f, &mut buf).unwrap_or(0);
@@ -2178,14 +2179,14 @@ pub fn buffer_with<'a>(
     tab: &'a mut crate::app::Tab,
     uri: &Url,
 ) -> Option<(&'a mut EditorPane, usize)> {
-    // Servers spell file URIs their own way (`c%3A` for `C:`, case), so
-    // match on the path, not the string.
-    let want = uri.to_file_path().ok().map(|p| p.to_string_lossy().to_lowercase());
+    // Decode URI spelling, but preserve filename case on case-sensitive
+    // volumes. Canonical paths reconcile aliases of existing files.
+    let want = uri.to_file_path().ok();
     for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
         if let Pane::Editor(e) = p {
             if let Some(i) = e.buffers.iter().position(|b| {
                 b.uri.as_ref() == Some(uri)
-                    || (want.is_some() && b.path.as_ref().map(|p| p.to_string_lossy().to_lowercase()) == want)
+                    || want.as_ref().zip(b.path.as_ref()).is_some_and(|(a,b)| same_file_path(a,b))
             }) {
                 return Some((e, i));
             }
@@ -2194,11 +2195,33 @@ pub fn buffer_with<'a>(
     None
 }
 
+fn same_file_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 pub type Diags = HashMap<Url, Vec<Diagnostic>>;
 
 #[cfg(test)]
 mod performance_tests {
     use super::*;
+    #[test]
+    fn language_server_paths_do_not_merge_case_distinct_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let upper = dir.path().join("Module.rs");
+        let lower = dir.path().join("module.rs");
+        assert!(!same_file_path(&upper, &lower));
+        std::fs::write(&upper, "upper").unwrap();
+        std::fs::write(&lower, "lower").unwrap();
+        // On a case-sensitive filesystem these are different files. On a
+        // case-insensitive filesystem both names intentionally refer to one.
+        if std::fs::read_to_string(&upper).unwrap() == "upper" {
+            assert!(!same_file_path(&upper, &lower));
+        }
+        assert!(same_file_path(&upper, &dir.path().join("./Module.rs")));
+    }
     fn settle(b: &mut Buffer) {
         let until = Instant::now() + std::time::Duration::from_secs(5);
         while b.loading.is_some() || b.highlighting.is_some() {

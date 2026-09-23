@@ -139,7 +139,7 @@ impl App {
         if self.previous_install.is_some() {
             start.insert(0, row("", "Previous installation", "This installation uses defaults. Import appearance, start-page and sidebar settings, or Get started to keep defaults. Browsing data stays in the previous installation.", Some(("IMPORT SETTINGS", Act::ImportSettings))));
         }
-        start.push(row("", "Starter references", "The bundled shelf links to the Rust standard library and MDN Web Docs: programming references, opened only when you choose them. Edit or remove the shelf in Rules.", Some(("RULES", Act::Settings(RULES)))));
+        start.push(row("", "Reading list", "One list for saved pages, local files and notes. Right-click to add or edit an item. The starting nus.dev link can be removed permanently.", None));
         let shell = vec![
             row("ENTER", "A URL at the prompt", "type a URL at a fresh prompt and Enter opens it beside; Ctrl+Enter runs it in the shell", Some(("TRY", Act::Demo("https://docs.rs/wgpu")))),
             row(k("↑ / ↓"), "Jump between prompts", "each command is a block: a hairline where it starts, an × code when it failed, DONE when a long one finishes", Some(("TRY", Act::Demo("git log --oneline -3")))),

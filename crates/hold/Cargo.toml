@@ -12,6 +12,9 @@ name = "nus-hold"
 path = "src/main.rs"
 
 [dependencies]
+nus-compat = { path = "../compat" }
+getrandom = "0.4"
+nus-vault = { path = "../vault" }
 nus-pty = { path = "../pty" }
 anyhow.workspace = true
 serde_json.workspace = true

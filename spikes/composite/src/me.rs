@@ -197,6 +197,9 @@ pub enum Step {
     ForgeWait,
     /// The key: made here, or joined with the word from another device.
     Key,
+    Import,
+    ImportSources,
+    ImportReview,
     Done,
 }
 
@@ -211,6 +214,11 @@ pub enum Way {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CardHit {
+    ImportOpen,
+    ImportSource(usize),
+    ImportPick,
+    ImportApply,
+    MercuryDone,
     Next,
     Back,
     NotNow,
@@ -242,6 +250,9 @@ pub enum CardHit {
 }
 
 pub struct MeCard {
+    pub import: crate::import_flow::Flow,
+    pub mercury_reveal: Option<crate::mercury::Reveal>,
+    pub mercury_art: Option<std::sync::Arc<wgpu::BindGroup>>,
     pub open: bool,
     /// None: the view. Some: a step of the walk, or an edit of one field.
     pub step: Option<Step>,
@@ -267,6 +278,9 @@ pub struct MeCard {
 impl Default for MeCard {
     fn default() -> Self {
         MeCard {
+            import: Default::default(),
+            mercury_reveal: None,
+            mercury_art: None,
             open: false,
             step: None,
             editing: false,
@@ -313,8 +327,9 @@ impl App {
         };
         let c = &mut self.me_card;
         c.step = Some(step);
+        if step==Step::Import {c.import.focus=0;c.import.at=crate::clock::now();}
         // The sync steps are a walk of their own, never a one-field edit.
-        c.editing = self.me.is_some() && !matches!(step, Step::Sync | Step::Folder | Step::Forge | Step::ForgeToken | Step::ForgeWait | Step::Key);
+        c.editing = self.me.is_some() && !matches!(step, Step::Sync | Step::Folder | Step::Forge | Step::ForgeToken | Step::ForgeWait | Step::Key | Step::Import | Step::ImportSources | Step::ImportReview);
         c.input = seed;
         c.face = self.me.as_ref().map(|m| m.face.clone()).unwrap_or_default();
         c.way = if !self.behavior.sync_git.is_empty() { Way::Forge } else if !self.behavior.sync_folder.is_empty() { Way::Folder } else { Way::Here };
@@ -328,7 +343,10 @@ impl App {
     }
 
     pub(crate) fn close_me_card(&mut self) {
+        self.me_card.import.picker=None;
+        self.me_card.import.pending=None;
         self.me_card.open = false;
+        self.me_card.mercury_reveal = None;
         self.me_card.hits.clear();
         if let Some(f) = self.me_card.flow.take() {
             f.cancel();
@@ -469,6 +487,9 @@ impl App {
                 self.me_sync_done();
                 self.sync_now();
             }
+            Step::Import => self.me_card.step=Some(Step::Done),
+            Step::ImportSources => self.import_hit(CardHit::ImportPick),
+            Step::ImportReview => self.import_hit(CardHit::ImportApply),
             Step::Done => {
                 self.me_card.step = None;
             }
@@ -495,13 +516,16 @@ impl App {
         me.save();
         self.me = Some(me);
         self.user_name = self.me_name();
-        self.me_card.step = Some(Step::Done);
+        self.me_card.step = Some(Step::Import);
+        self.me_card.import = Default::default();
         self.me_card.input.clear();
         self.play_event("onboarding.tick");
     }
 
     fn me_back(&mut self) {
         let c = &mut self.me_card;
+        c.import.picker=None;
+        c.import.pending=None;
         if c.editing {
             c.step = None;
             c.editing = false;
@@ -511,6 +535,8 @@ impl App {
             f.cancel();
         }
         c.step = match c.step {
+            Some(Step::ImportSources) => Some(Step::Import),
+            Some(Step::ImportReview) => Some(Step::ImportSources),
             Some(Step::Name) => Some(Step::Hello),
             Some(Step::Face) => Some(Step::Name),
             Some(Step::Device) => Some(Step::Face),
@@ -527,8 +553,10 @@ impl App {
         };
     }
 
-    fn me_hit(&mut self, hit: CardHit) {
+    pub(crate) fn me_hit(&mut self, hit: CardHit) {
         match hit {
+            CardHit::ImportOpen | CardHit::ImportSource(_) | CardHit::ImportPick | CardHit::ImportApply => self.import_hit(hit),
+            CardHit::MercuryDone => self.mercury_action(hit),
             CardHit::Next => self.me_next(),
             CardHit::Back => self.me_back(),
             CardHit::NotNow => {
@@ -649,6 +677,21 @@ impl App {
         if ev.state != ElementState::Pressed {
             return true;
         }
+        if self.me_card.mercury_reveal.is_some(){
+            self.mercury_key(&ev.logical_key);return true;
+        }
+        if matches!(self.me_card.step,Some(Step::Import|Step::ImportSources|Step::ImportReview)) {
+            match &ev.logical_key {
+                WKey::Named(NamedKey::Tab) if self.me_card.step==Some(Step::Import)=>{self.me_card.import.focus=1-self.me_card.import.focus;self.dirty=true;return true;}
+                WKey::Named(NamedKey::Enter) if self.me_card.step==Some(Step::Import)&&self.me_card.import.focus==1=>{self.import_hit(CardHit::ImportOpen);return true;}
+                WKey::Named(NamedKey::ArrowRight|NamedKey::ArrowDown|NamedKey::ArrowLeft|NamedKey::ArrowUp|NamedKey::Tab) if self.me_card.step==Some(Step::ImportSources)=>{
+                    let back=matches!(ev.logical_key,WKey::Named(NamedKey::ArrowLeft|NamedKey::ArrowUp));
+                    let i=self.me_card.import.source;self.import_hit(CardHit::ImportSource((i+if back{11}else{1})%12));return true;
+                }
+                WKey::Named(NamedKey::Escape) if self.me_card.step!=Some(Step::Import)=>{self.me_back();self.dirty=true;return true;}
+                _=>{}
+            }
+        }
         let typing = matches!(self.me_card.step, Some(Step::Name) | Some(Step::Device) | Some(Step::Folder) | Some(Step::ForgeToken))
             || (self.me_card.step == Some(Step::Face) && matches!(self.me_card.face, Face::Emoji(_)))
             || (self.me_card.step == Some(Step::Forge) && self.me_card.forge != crate::forge::Kind::GitHub)
@@ -703,22 +746,7 @@ impl App {
 
     /// A rest under the pointer, for a tooltip with words of its own.
     fn me_tip(&mut self, key: u64, hit: Rect, words: String) {
-        let (mx, my) = self.mouse;
-        let hot = hit.contains(mx, my);
-        let h = self.hovers.entry(key).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
-        if hot != h.hot {
-            h.hot = hot;
-            if hot {
-                h.since = crate::clock::now();
-            }
-        }
-        if hot {
-            let since = h.since;
-            self.tip = Some(Tip { anchor: hit, text: words, since });
-            if crate::clock::since(since).as_millis() < 700 {
-                self.dirty = true;
-            }
-        }
+        self.offer_tip(key, hit, words);
     }
 
     /// The face at `r`: the picture, the emoji, or the initial in the signal.
@@ -744,7 +772,7 @@ impl App {
     }
 
     /// A chip button: ink outline, hard shadow when primary, the word.
-    fn me_button(&mut self, scene: &mut Scene, x: f32, base: f32, word: &str, primary: bool, hit: CardHit) -> f32 {
+    pub(crate) fn me_button(&mut self, scene: &mut Scene, x: f32, base: f32, word: &str, primary: bool, hit: CardHit) -> f32 {
         let strong = self.label_strong();
         let t = self.theme.clone();
         let w = self.fonts.measure(strong, word) + self.px(24.0);
@@ -790,6 +818,7 @@ impl App {
     /// Draw the card: above the footer's avatar when the sidebar shows,
     /// centred otherwise.
     pub(crate) fn draw_me_card(&mut self, scene: &mut Scene) {
+        if self.me_card.mercury_reveal.is_some(){return;}
         if !self.me_card.open && !self.me_card.rise.active() {
             return;
         }
@@ -807,7 +836,7 @@ impl App {
         let dim = Style { color: t.dim, ..label };
         let pad = self.px(20.0);
         let step = self.me_card.step;
-        let wide = matches!(step, Some(Step::Sync) | Some(Step::Folder) | Some(Step::Forge) | Some(Step::ForgeToken) | Some(Step::ForgeWait) | Some(Step::Key));
+        let wide = matches!(step, Some(Step::Sync) | Some(Step::Folder) | Some(Step::Forge) | Some(Step::ForgeToken) | Some(Step::ForgeWait) | Some(Step::Key) | Some(Step::Import) | Some(Step::ImportSources) | Some(Step::ImportReview));
         let cw = self.px(if wide { 440.0 } else { 380.0 }).min(w - self.px(32.0));
         self.me_card.hits.clear();
 
@@ -815,10 +844,13 @@ impl App {
         let editing = self.me_card.editing;
         let has_me = self.me.is_some();
         let head_h = self.px(76.0);
-        let row_h = self.px(40.0);
         let foot_h = self.px(52.0);
+        let row_h = if step.is_none(){((h-head_h-foot_h-self.px(32.0))/6.0).clamp(self.px(24.0),self.px(40.0))}else{self.px(40.0)};
         let body_h = match step {
-            None => row_h * 5.0 + self.px(12.0),
+            Some(Step::Import) => self.px(if self.me_card.import.message.is_empty(){172.0}else{224.0}),
+            Some(Step::ImportSources) => self.px(if self.me_card.import.message.is_empty(){296.0}else{338.0}),
+            Some(Step::ImportReview) => self.px(312.0),
+            None => row_h * 6.0 + self.px(12.0),
             Some(Step::Hello) => self.px(150.0),
             Some(Step::Name) | Some(Step::Device) => self.px(126.0),
             Some(Step::Face) => self.px(176.0),
@@ -830,6 +862,7 @@ impl App {
             Some(Step::Key) => self.px(196.0),
             Some(Step::Done) => self.px(126.0),
         };
+        let body_h=if matches!(step,Some(Step::Import|Step::ImportSources|Step::ImportReview)){body_h.min((h-head_h-foot_h-self.px(20.0)).max(self.px(150.0)))}else{body_h};
         let ch = head_h + body_h + foot_h;
 
         // Where: over the avatar, or the middle.
@@ -906,6 +939,7 @@ impl App {
         let mut y = r.y + head_h + self.px(14.0);
         let foot_base = r.bottom() - foot_h / 2.0 + self.px(4.0);
         match step {
+            Some(Step::Import|Step::ImportSources|Step::ImportReview) => self.draw_import_page(scene,bx,y,bw,foot_base),
             None => {
                 let me = self.me.clone().unwrap_or(Me { name: os_user(), face: Face::Initial, created: today() });
                 let face_word = match &me.face {
@@ -927,7 +961,8 @@ impl App {
                     ("FACE", face_word, icons::SMILEY, CardHit::Edit(Step::Face)),
                     ("DEVICE", device(), icons::DESKTOP, CardHit::Edit(Step::Device)),
                     ("SYNC", sync, icons::BROADCAST, CardHit::SetupSync),
-                    ("PRIVATE", "nothing leaves · no account".into(), icons::EYE_SLASH, CardHit::Folder),
+                    ("PRIVATE", "no usage telemetry".into(), icons::EYE_SLASH, CardHit::Folder),
+                    ("USED SINCE", me.created.clone(), icons::CALENDAR, CardHit::Badge),
                 ];
                 let (mx, my) = self.mouse;
                 for (k, (what, value, icon, hit)) in rows.into_iter().enumerate() {
@@ -939,7 +974,7 @@ impl App {
                     let isz = self.px(14.0);
                     self.fonts.draw_icon(scene, icon, isz, bx, base - isz + self.px(2.0), if k == 4 { t.dim } else { ink });
                     self.fonts.draw(scene, label, bx + isz + self.px(10.0), base, what);
-                    let vx = bx + isz + self.px(10.0) + self.px(64.0);
+                    let vx = bx + isz + self.px(10.0) + self.fonts.measure(label,"USED SINCE") + self.px(12.0);
                     let vs = if k == 4 { dim } else { ui };
                     let shown = if matches!(icon.0, "smiley") && matches!(me.face, Face::Emoji(_)) { value.clone() } else { value.to_lowercase() };
                     let vw = r.right() - pad - vx - self.px(20.0);
@@ -967,7 +1002,7 @@ impl App {
                 let head = Style { font: self.f.strong, px: self.px(15.0), color: ink, tracking: 0.0 };
                 self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "This is your profile.");
                 y += self.px(34.0);
-                let words = "It is a folder on this machine — settings, rules, memory, sites, the lot. There is no account behind it, no server, and nothing is counted or sent. Sync, if you want it, is a key you copy; only ciphertext ever leaves.";
+                let words = "Your profile lives on this machine. No nus account or usage telemetry. Optional sync encrypts profile data. Automatic GitHub update checks can be disabled in Settings.";
                 for l in crate::reader::wrap(&self.fonts, ui, words, bw) {
                     self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
                     y += self.px(19.0);

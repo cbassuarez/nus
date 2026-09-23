@@ -245,7 +245,9 @@ impl App {
             let slip = Rect::new((tx - pad).round(), (ty - label.px - pad / 2.0).round(), (tw + 2.0 * pad).round(), (label.px + pad * 1.5).round());
             let hit = Rect::new(slip.x.min(sx - side), slip.y.min(sy - side), slip.right().max(sx + side) - slip.x.min(sx - side), slip.bottom().max(sy + side) - slip.y.min(sy - side));
             let hot = k + 1 == sel || hit.contains(mx, my);
-            scene.rect(Rect::new((sx - side / 2.0).round(), (sy - side / 2.0).round(), side, side), fade(if hot { signal } else { ink }, up));
+            if self.saved_detail(row).is_some() {
+                scene.poly(&[[sx-side/2.0,sy-side/2.0],[sx+side/2.0,sy-side/2.0],[sx+side/2.0,sy+side/2.0],[sx,sy+side*0.2],[sx-side/2.0,sy+side/2.0]],fade(signal,up));
+            } else {scene.rect(Rect::new((sx - side / 2.0).round(), (sy - side / 2.0).round(), side, side), fade(if hot { signal } else { ink }, up));}
             scene.rect(slip, fade(paper, up));
             self.fonts.draw(scene, Style { color: fade(ink, if hot { 1.0 } else { 0.62 } * up), ..label }, tx, ty, &text);
             p.hits.push((hit, k));

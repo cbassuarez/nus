@@ -22,6 +22,8 @@ pub enum Target {
     HintSkip,
     Download(crate::downloads::Hit),
     Replay(crate::replay::HistoryHit),
+    Mercury(crate::me::CardHit),
+    Import(crate::me::CardHit),
     None,
 }
 
@@ -55,12 +57,16 @@ impl App {
             CrumbHit::Maximize => if cfg!(target_os="macos") {"enter full screen"} else {"maximize window"}.into(),
             CrumbHit::Minimize => "minimize window".into(),
             CrumbHit::Start => "atlas: last session and recent places".into(),
+            CrumbHit::Updates => {let s=crate::updates::status();if s.busy{"Update in progress. View status"}else if s.available{"Update ready. Review update and restart"}else{"Updates. Check for a new version"}.into()},
         }
     }
 
     /// Build the whole tree. Ids below 100 are structure; the rest are
     /// handed out per frame and mapped back to targets in `access_map`.
     pub fn access_tree(&mut self) -> TreeUpdate {
+        if let Some(tree) = self.mercury_access_tree() { return tree; }
+        if let Some(tree) = self.import_access_tree() { return tree; }
+        if let Some(tree) = self.page_menu_access_tree() { return tree; }
         let mut nodes: Vec<(NodeId, Node)> = Vec::new();
         let mut map: HashMap<u64, Target> = HashMap::new();
         let mut next = 100u64;
@@ -392,6 +398,24 @@ impl App {
 
     /// A screen reader (or automation) activated a node.
     pub fn access_action(&mut self, req: ActionRequest) {
+        if let Some(Target::Import(hit))=self.access_map.get(&req.target_node.0).copied() {
+            match req.action {Action::Click=>self.me_hit(hit),Action::Focus=>{if let crate::me::CardHit::ImportSource(i)=hit{self.me_card.import.source=i;}self.me_card.import.focus=usize::from(hit==crate::me::CardHit::ImportOpen);self.dirty=true;},_=>{}}
+            return;
+        }
+        if self.me_card.mercury_reveal.is_some() {
+            if let Some(Target::Mercury(hit)) = self.access_map.get(&req.target_node.0).copied() {
+                match req.action {
+                    Action::Click => self.mercury_action(hit),
+                    Action::Focus => {
+                        if let Some(r) = &mut self.me_card.mercury_reveal { r.keyboard_focus = true; }
+                        self.dirty = true;
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+        if self.page_menu.is_some() { self.page_menu_access_action(req); return; }
         let Some(&target) = self.access_map.get(&req.target_node.0) else { return };
         if let Target::Replay(hit)=target {
             match req.action {

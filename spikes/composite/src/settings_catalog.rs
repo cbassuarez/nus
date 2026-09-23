@@ -105,6 +105,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::PortsTunnel(Tunnel::Cloudflared) => "Share with installed cloudflared.", Hit::PortsTunnel(Tunnel::Ngrok) => "Share with installed ngrok.",
         Hit::HatchSpaces(HatchSpaces::Follow) => "Use the hatch for the current space.", Hit::HatchSpaces(HatchSpaces::One) => "Share one hatch across spaces.",
         Hit::HatchHotkey(_) => "Press this shortcut to show the hatch.",
+        Hit::BarStyle(BarStyle::Radiance) => "A continuous bar with an HDR highlight on supported displays; holds when loading stalls.",
         Hit::BarStyle(BarStyle::Rule) => "A solid line grows with loading.", Hit::BarStyle(BarStyle::Comet) => "A bright head with a fading trail.", Hit::BarStyle(BarStyle::Carapace) => "Loading fills the window frame.",
         Hit::BarColor(BarColor::Signal) => "Use the theme accent colour.", Hit::BarColor(BarColor::Tab) => "Use this tab's assigned colour.", Hit::BarColor(BarColor::Ink) => "Use the theme text colour.",
         Hit::StatusStyle(Status::Lamp) => "Show a small page-status indicator.", Hit::StatusStyle(Status::Both) => "Show an indicator and status text.", Hit::StatusStyle(Status::Word) => "Show status as text only.", Hit::StatusStyle(Status::None) => "Hide the page-status indicator.",

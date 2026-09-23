@@ -11,8 +11,17 @@ use cef::*;
 /// What the app reads each frame.
 #[derive(Default)]
 pub struct Shared {
+    pub sleep_safe: bool,
+    pub suspended: bool,
+    pub restore_scroll: Option<(f64,f64)>,
+    pub capture_guard: bool,
+    pub scroll_position: (f64,f64),
+    pub viewer: crate::file_viewer::Shared,
+    pub edit_source: Option<std::path::PathBuf>,
+    pub save_reading: bool,
     /// Latest imported paint, bound for the quad pipeline.
     pub bind: Option<Arc<wgpu::BindGroup>>,
+    pub paint_size: (u32, u32),
     pub title: String,
     pub url: String,
     pub loading: bool,
@@ -29,6 +38,9 @@ pub struct Shared {
     /// Logical size CEF should render at; app sets it, view_rect reads it.
     pub size: (f32, f32),
     pub scale: f32,
+    /// Page zoom is re-rasterized by Chromium at each intermediate size.
+    /// Never animate the previously painted page texture.
+    pub zoom_motion: Option<crate::anim::Anim>,
     /// Where the browser pane sits in the window (physical px), for
     /// screen_point → popup placement.
     pub origin: (f32, f32),
@@ -279,6 +291,11 @@ pub struct Video {
     pub h: f32,
     pub vw: f32,
     pub vh: f32,
+    /// Intrinsic stream dimensions, independent of the page's CSS layout.
+    pub video_width: f64,
+    pub video_height: f64,
+    /// Visible fraction of the intrinsic picture (CSS can crop the source).
+    pub picture: [f32; 4],
     pub paused: bool,
     pub ended: bool,
     pub muted: bool,
@@ -342,6 +359,8 @@ wrap_app! {
             command_line: Option<&mut CommandLine>,
         ) {
             let Some(cl) = command_line else { return };
+            for flag in ["no-sandbox","disable-gpu-sandbox","disable-seccomp-filter-sandbox","disable-namespace-sandbox","single-process","in-process-gpu","disable-site-isolation-trials"] {cl.remove_switch(Some(&flag.into()));}
+            cl.append_switch(Some(&"site-per-process".into()));
             cl.append_switch(Some(&"no-startup-window".into()));
             // Disposable HTTP cache; cookies and site storage stay.
             cl.append_switch_with_value(Some(&"disk-cache-size".into()), Some(&"67108864".into()));
@@ -395,6 +414,7 @@ wrap_browser_process_handler! {
     }
 
     impl BrowserProcessHandler {
+        fn on_schedule_message_pump_work(&self, delay_ms: i64) { crate::browser_runtime::schedule(delay_ms); }
         fn on_before_child_process_launch(&self, command_line: Option<&mut CommandLine>) {
             let Some(cl) = command_line else { return };
             cl.append_switch(Some(&"disable-session-crashed-bubble".into()));
@@ -479,6 +499,7 @@ wrap_render_handler! {
             _dirty: Option<&[Rect]>,
             info: Option<&AcceleratedPaintInfo>,
         ) {
+            if self.osr.shared.borrow().suspended { return; }
             let Some(info) = info else { return };
             let popup = type_ != PaintElementType::default();
             use cef::osr_texture_import::shared_texture_handle::SharedTextureHandle;
@@ -492,6 +513,7 @@ wrap_render_handler! {
                         s.select.bind = Some(bind);
                     } else {
                         s.bind = Some(bind);
+                        s.paint_size = (texture.width(), texture.height());
                         if s.paints == 0 {
                             tracing::info!("first paint +{}ms", s.created.elapsed().as_millis());
                         }
@@ -548,6 +570,7 @@ wrap_display_handler! {
                     s.favicon = None;
                     s.favicon_url.clear();
                 }
+                if s.url != u { s.zoom_motion = None; }
                 s.url = u;
             }
             // A new page is on its way: draw it as soon as it paints, even
@@ -591,13 +614,20 @@ wrap_display_handler! {
             }
         }
 
-        fn on_loading_progress_change(&self, _browser: Option<&mut Browser>, progress: f64) {
+        fn on_loading_progress_change(&self, browser: Option<&mut Browser>, progress: f64) {
             let mut s = self.d.shared.borrow_mut();
             if progress >= 1.0 && s.loading {
                 if !crate::private::enabled() { tracing::info!("loaded {} +{}ms", s.url, s.created.elapsed().as_millis()); }
             }
             s.loading = progress < 1.0;
             s.progress = progress;
+            let restore = if progress >= 1.0 { s.restore_scroll.take() } else { None };
+            drop(s);
+            if let Some((x,y)) = restore.filter(|(x,y)| x.is_finite() && y.is_finite()) {
+                if let Some(frame) = browser.and_then(|b|b.main_frame()) {
+                    frame.execute_java_script(Some(&format!("scrollTo({x},{y})").as_str().into()), None, 0);
+                }
+            }
         }
     }
 }
@@ -739,6 +769,9 @@ wrap_dev_tools_message_observer! {
                     h: f("h") as f32,
                     vw: f("vw") as f32,
                     vh: f("vh") as f32,
+                    video_width: f("videoWidth"),
+                    video_height: f("videoHeight"),
+                    picture: [f("dx") as f32,f("dy") as f32,f("dw") as f32,f("dh") as f32],
                     paused: b("paused"),
                     ended: b("ended"),
                     muted: b("muted"),
@@ -747,6 +780,10 @@ wrap_dev_tools_message_observer! {
                 })
             });
             let mut s = self.o.shared.borrow_mut();
+            if report.get("top").and_then(|v|v.as_bool()) == Some(true) {
+            s.sleep_safe=report.get("sleepSafe").and_then(|v|v.as_bool()).unwrap_or(false);
+            s.scroll_position=(report.get("scrollX").and_then(|v|v.as_f64()).unwrap_or(0.0),report.get("scrollY").and_then(|v|v.as_f64()).unwrap_or(0.0));
+            }
             s.video = video;
             if s.media != media {
                 s.media = media;
@@ -821,6 +858,11 @@ wrap_context_menu_handler! {
             sep(&mut items);
             items.push((CMD_COPY_PAGE, "COPY PAGE ADDRESS".into(), true));
             items.push((132, "VIEW SOURCE".into(), true));
+            if url::Url::parse(&s(p.page_url())).ok().and_then(|u|u.to_file_path().ok()).is_some_and(|p|crate::file_viewer::Kind::of(&p).is_some()) {
+                items.push((29001,"EDIT SOURCE".into(),true));
+            }
+            if !crate::private::enabled(){items.push((29002,"SAVE TO READING LIST".into(),true));}
+
             let mut sh = self.display.shared.borrow_mut();
             if let Some(old) = sh.menu.take() {
                 old.callback.cancel();
@@ -855,6 +897,8 @@ wrap_context_menu_handler! {
                 CMD_COPY_LINK => { copy(&link); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&link, 60))); }
                 CMD_COPY_PAGE => { copy(&page); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&page, 60))); }
                 CMD_PIP => sh.said = Some("PIP".into()),
+                29001 => sh.edit_source=url::Url::parse(&page).ok().and_then(|u|u.to_file_path().ok()).filter(|p|crate::file_viewer::Kind::of(p).is_some()),
+                29002 => sh.save_reading=true,
                 CMD_NOTHING => {}
                 _ => return 0,
             }
@@ -1044,6 +1088,7 @@ wrap_permission_handler! {
 
     impl PermissionHandler {
         fn on_request_media_access_permission(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, requesting_origin: Option<&CefString>, requested_permissions: u32, callback: Option<&mut MediaAccessCallback>) -> ::std::os::raw::c_int {
+            self.display.shared.borrow_mut().capture_guard=true;
             let Some(cb) = callback else { return 0 };
             let origin = requesting_origin.map(|s| s.to_string()).unwrap_or_default();
             let video = requested_permissions & MediaAccessPermissionTypes::DEVICE_VIDEO_CAPTURE.get_raw() as u32 != 0;
@@ -1085,9 +1130,17 @@ wrap_resource_request_handler! {
     pub struct BlockBuilder {
         display: Display,
         navigation: bool,
+        viewer: crate::file_viewer::Shared,
     }
 
     impl ResourceRequestHandler {
+        fn resource_handler(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>) -> Option<ResourceHandler> {
+            if !self.navigation || !frame.is_some_and(|f|f.is_main()!=0) {return None;}
+            let url=CefString::from(&request?.url()).to_string();
+            let config=self.viewer.read().ok()?.clone();
+            let bytes=crate::file_viewer::load(&url,&config)?;
+            Some(DocumentResource::new(Arc::new(bytes),Arc::new(std::sync::Mutex::new(0))))
+        }
         fn on_before_resource_load(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, request: Option<&mut Request>, _callback: Option<&mut Callback>) -> ReturnValue {
             let Some(req) = request else { return ReturnValue::CONTINUE };
             // BROWSER · PRIVACY SIGNAL: Global Privacy Control and Do Not
@@ -1140,11 +1193,12 @@ wrap_cookie_access_filter! {
 wrap_request_handler! {
     pub struct RequestBuilder {
         display: Display,
+        viewer: crate::file_viewer::Shared,
     }
 
     impl RequestHandler {
         fn resource_request_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, is_navigation: ::std::os::raw::c_int, _is_download: ::std::os::raw::c_int, _request_initiator: Option<&CefString>, _disable_default_handling: Option<&mut ::std::os::raw::c_int>) -> Option<ResourceRequestHandler> {
-            Some(BlockBuilder::new(self.display.clone(), is_navigation != 0))
+            Some(BlockBuilder::new(self.display.clone(), is_navigation != 0,self.viewer.clone()))
         }
 
         /// One certificate is trusted without asking: the one this window is
@@ -1226,7 +1280,7 @@ thread_local! { static LIVE_BROWSERS: RefCell<std::collections::HashSet<i32>> = 
 pub fn live_count() -> usize { LIVE_BROWSERS.with(|b| b.borrow().len()) }
 
 pub struct BrowserTab {
-    pub browser: Browser,
+    pub browser: Option<Browser>,
     pub shared: SharedRef,
     _observer: Option<Registration>,
 }
@@ -1238,11 +1292,26 @@ impl Drop for BrowserTab {
         if let Some(menu) = menu { menu.callback.cancel(); }
         // Releasing the Rust wrapper does not close a CEF browser. Without
         // this, closed/sleeping tabs keep renderers, timers and GPU surfaces.
-        if let Some(host) = self.browser.host() { host.close_dev_tools(); host.close_browser(1); }
+        if let Some(host) = self.browser.as_ref().and_then(|b|b.host()) { host.close_dev_tools(); host.close_browser(1); }
     }
 }
 
 impl BrowserTab {
+    /// Single-entry pages can be recreated without losing navigation history.
+    /// Complex/dirty/media pages and DevTools keep their live browser.
+    pub fn can_suspend(&self) -> bool {
+        let s=self.shared.borrow();
+        self.browser.is_some() && s.sleep_safe && !s.capture_guard && !s.loading && s.permission.is_none()
+            && !self.can_go_back() && !self.can_go_forward() && !self.has_devtools()
+    }
+    pub fn suspend(&mut self) {
+        self._observer.take();
+        if let Some(browser)=self.browser.take() {if let Some(host)=browser.host(){host.close_browser(1);}}
+        let mut s=self.shared.borrow_mut();
+        if let Some(menu)=s.menu.take(){menu.callback.cancel();}
+        s.suspended=true;s.bind=None;s.select.bind=None;s.log=Vec::new();s.replies=Vec::new();
+    }
+
     pub fn create(
         url: &str,
         shared: SharedRef,
@@ -1260,6 +1329,7 @@ impl BrowserTab {
         bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
         container: &str,
     ) -> Option<BrowserTab> {
+        if !crate::browser_runtime::ensure() { return None; }
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             shared_texture_enabled: 1,
@@ -1284,7 +1354,7 @@ impl BrowserTab {
             FindBuilder::new(Display { shared: shared.clone() }),
             DownloadBuilder::new(Display { shared: shared.clone() },container.to_string()),
             PermissionBuilder::new(Display { shared: shared.clone() }),
-            RequestBuilder::new(Display { shared: shared.clone() }),
+            RequestBuilder::new(Display { shared: shared.clone() },shared.borrow().viewer.clone()),
             MenuBuilder::new(Display { shared: shared.clone() }),
         );
         // The container's context: the global one for PERSONAL, else its own
@@ -1306,7 +1376,7 @@ impl BrowserTab {
         if !crate::private::enabled() { tracing::info!("create_browser_sync {url} took {}ms", crate::clock::since(t0).as_millis()); }
         let mut observer = ObserverBuilder::new(Observer { shared: shared.clone() });
         let registration = browser.host().and_then(|h| h.add_dev_tools_message_observer(Some(&mut observer)));
-        let tab = BrowserTab { browser, shared, _observer: registration };
+        let tab = BrowserTab { browser: Some(browser), shared, _observer: registration };
         tab.devtools("Runtime.enable", serde_json::json!({}));
         tab.devtools("Page.enable", serde_json::json!({}));
         tab.devtools("Network.enable", serde_json::json!({}));
@@ -1319,7 +1389,7 @@ impl BrowserTab {
     }
 
     pub fn host(&self) -> Option<BrowserHost> {
-        self.browser.host()
+        self.browser.as_ref().and_then(|b|b.host())
     }
 
     /// Find in page; `next` continues the same search.
@@ -1416,7 +1486,7 @@ impl BrowserTab {
     pub fn close_devtools(&self) { if let Some(host) = self.host() { host.close_dev_tools(); } }
 
     pub fn load(&self, url: &str) {
-        if let Some(f) = self.browser.main_frame() {
+        if let Some(f) = self.browser.as_ref().and_then(|b|b.main_frame()) {
             f.load_url(Some(&url.into()));
         }
         self.nudge();
@@ -1433,6 +1503,52 @@ impl BrowserTab {
         if let Some(h) = self.host() {
             h.was_resized();
         }
+    }
+
+    /// CEF caches screen information separately from its logical view size.
+    /// A monitor/DPI change must invalidate it even if the view size is equal.
+    pub fn set_scale(&self, scale: f32) {
+        let changed = {
+            let mut s = self.shared.borrow_mut();
+            if s.scale == scale { false } else { s.scale = scale; true }
+        };
+        if changed {
+            if let Some(h) = self.host() {
+                h.notify_screen_info_changed();
+                h.was_resized();
+            }
+        }
+    }
+
+    pub fn zoom_percent(&self) -> u32 {
+        let pending = self.shared.borrow().zoom_motion.map(|a| a.target() as f64);
+        let level = pending.or_else(|| self.host().map(|h| h.zoom_level())).unwrap_or(0.0);
+        (1.2_f64.powf(level) * 100.0).round() as u32
+    }
+
+    pub fn zoom_to(&self, percent: u32, duration: f32) {
+        let Some(host) = self.host() else { return };
+        let target = crate::sites::zoom_level(percent);
+        if duration <= 0.0 {
+            self.shared.borrow_mut().zoom_motion = None;
+            host.set_zoom_level(target);
+        } else {
+            let mut motion = crate::anim::Anim::at(host.zoom_level() as f32);
+            motion.go(target as f32, duration);
+            self.shared.borrow_mut().zoom_motion = Some(motion);
+        }
+    }
+
+    pub fn tick_zoom(&self, reduced: bool) -> bool {
+        let Some(motion) = self.shared.borrow().zoom_motion else { return false };
+        let done = reduced || !motion.active();
+        // Drop the borrow before entering CEF; callbacks may read Shared.
+        if done { self.shared.borrow_mut().zoom_motion = None; }
+        if let Some(host) = self.host() {
+            host.set_zoom_level(if done { motion.target() } else { motion.value() } as f64);
+            host.send_external_begin_frame();
+        }
+        true
     }
 
     pub fn begin_frame(&self) {
@@ -1487,21 +1603,21 @@ impl BrowserTab {
     }
 
     pub fn back(&self) {
-        self.browser.go_back();
+        if let Some(b)=&self.browser { b.go_back(); }
         self.nudge();
     }
 
     pub fn forward(&self) {
-        self.browser.go_forward();
+        if let Some(b)=&self.browser { b.go_forward(); }
         self.nudge();
     }
 
     pub fn can_go_back(&self) -> bool {
-        self.browser.can_go_back() != 0
+        self.browser.as_ref().is_some_and(|b|b.can_go_back()!=0)
     }
 
     pub fn can_go_forward(&self) -> bool {
-        self.browser.can_go_forward() != 0
+        self.browser.as_ref().is_some_and(|b|b.can_go_forward()!=0)
     }
 
     /// After a navigation: ask for a paint and a frame straight away, so
@@ -1516,13 +1632,13 @@ impl BrowserTab {
     }
 
     pub fn reload(&self) {
-        self.browser.reload();
+        if let Some(b)=&self.browser { b.reload(); }
         self.nudge();
     }
 
     /// A hard reload: the page again, past the cache.
     pub fn reload_ignore_cache(&self) {
-        self.browser.reload_ignore_cache();
+        if let Some(b)=&self.browser { b.reload_ignore_cache(); }
         self.nudge();
     }
 
@@ -1534,6 +1650,28 @@ impl BrowserTab {
             } else {
                 h.set_zoom_level(h.zoom_level() + steps as f64 * 0.5);
             }
+        }
+    }
+}
+
+// Immutable response bytes, with a synchronized cursor because CEF may move
+// resource callbacks between its worker threads.
+wrap_resource_handler! {
+    struct DocumentResource { bytes: Arc<Vec<u8>>, cursor: Arc<std::sync::Mutex<usize>>, }
+    impl ResourceHandler {
+        fn open(&self, _request:Option<&mut Request>, handle:Option<&mut ::std::os::raw::c_int>, _callback:Option<&mut Callback>)->::std::os::raw::c_int {if let Some(h)=handle{*h=1;}1}
+        fn response_headers(&self, response:Option<&mut Response>, length:Option<&mut i64>, _redirect:Option<&mut CefString>) {
+            if let Some(r)=response{r.set_status(200);r.set_mime_type(Some(&"text/html".into()));r.set_charset(Some(&"utf-8".into()));}
+            if let Some(l)=length{*l=self.bytes.len() as i64;}
+        }
+        fn read(&self,out:*mut u8,count: ::std::os::raw::c_int,read:Option<&mut ::std::os::raw::c_int>,_callback:Option<&mut ResourceReadCallback>)->::std::os::raw::c_int {
+            let Some(read)=read else{return 0;};*read=0;if out.is_null()||count<=0{return 0;}
+            let Ok(mut at)=self.cursor.lock() else{return 0;};let n=(count as usize).min(self.bytes.len().saturating_sub(*at));
+            if n==0{return 0;}unsafe{std::ptr::copy_nonoverlapping(self.bytes.as_ptr().add(*at),out,n);}
+            *at+=n;*read=n as i32;1
+        }
+        fn skip(&self,count:i64,skipped:Option<&mut i64>,_callback:Option<&mut ResourceSkipCallback>)->::std::os::raw::c_int {
+            let Some(skipped)=skipped else{return 0;};*skipped=0;if count<0{return 0;}let Ok(mut at)=self.cursor.lock()else{return 0;};let n=(count as usize).min(self.bytes.len().saturating_sub(*at));*at+=n;*skipped=n as i64;i32::from(n>0)
         }
     }
 }

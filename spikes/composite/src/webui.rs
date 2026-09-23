@@ -224,6 +224,7 @@ impl App {
         }
         self.last_tend = crate::clock::now();
         let sleep_after = self.behavior.sleep_after_min;
+        let media_window = self.pip.is_some() || self.little.is_some();
         let archive_after = self.behavior.archive_after_h;
         let mut archive: Vec<usize> = Vec::new();
         let kept: Vec<String> = self.folders.iter().filter(|f| f.kind == crate::folders::Kind::Plain).flat_map(|f| f.items.iter().map(|i| i.url.clone())).collect();
@@ -242,11 +243,12 @@ impl App {
             }
             if sleep_after > 0 && idle_min >= sleep_after as f32 {
                 if let Pane::Web(w) = &mut tab.left {
-                    if w.asleep.is_none() {
+                    if w.asleep.is_none() && !media_window && w.hands.ask.is_none() && w.reader.is_none() && w.tab.can_suspend() {
                         let url = w.tab.shared.borrow().url.clone();
                         if !url.is_empty() && !url.starts_with("about:") {
                             w.asleep = Some(url);
-                            w.tab.load("about:blank");
+                            w.tab.suspend();
+                            // Keep the existing small-tab/replay preview unchanged.
                         }
                     }
                 }
@@ -274,8 +276,16 @@ impl App {
             tab.last_active = crate::clock::now();
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
-                    if let Some(url) = w.asleep.take() {
-                        w.tab.load(&url);
+                    if let Some(url) = w.asleep.as_ref() {
+                        let old=w.tab.shared.borrow();
+                        let (x,y)=old.scroll_position;
+                        let fresh=std::rc::Rc::new(std::cell::RefCell::new(crate::browser::Shared {
+                            scale:old.scale,size:old.size,viewer:old.viewer.clone(),restore_scroll:Some((x,y)),..Default::default()
+                        }));
+                        drop(old);
+                        if let Some(tab)=crate::browser::BrowserTab::create_in(url,fresh,self.device.clone(),self.bind_texture.clone(),&w.container) {
+                            w.tab=tab;w.asleep=None;w.seen_paints=0;
+                        }
                     }
                 }
             }

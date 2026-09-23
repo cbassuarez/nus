@@ -110,6 +110,9 @@ impl App {
     pub(crate) fn import_settings(&mut self, source: &std::path::Path) -> std::io::Result<()> {
         let bytes = std::fs::read(source)?;
         let mut prefs: Prefs = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        if prefs.schema > SCHEMA {
+            return Err(std::io::Error::other("These settings require a newer nus version; nothing was imported"));
+        }
         migrate(&mut prefs);
         // Commit before changing live state. The ordinary save merges only
         // changed fields, so applying first would reset its comparison baseline.

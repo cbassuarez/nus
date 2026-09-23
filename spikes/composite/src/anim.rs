@@ -175,6 +175,8 @@ impl Follow {
 /// How the loading bar looks; edited in settings → BROWSER.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BarStyle {
+    /// Continuous material with an extended-range highlight at its leading edge.
+    Radiance,
     /// A rule growing from the left.
     Rule,
     /// A bright head with a fading tail.
@@ -184,9 +186,10 @@ pub enum BarStyle {
 }
 
 impl BarStyle {
-    pub const ALL: [BarStyle; 3] = [BarStyle::Rule, BarStyle::Comet, BarStyle::Carapace];
+    pub const ALL: [BarStyle; 4] = [BarStyle::Radiance, BarStyle::Rule, BarStyle::Comet, BarStyle::Carapace];
     pub fn name(self) -> &'static str {
         match self {
+            BarStyle::Radiance => "radiance",
             BarStyle::Rule => "rule",
             BarStyle::Comet => "comet",
             BarStyle::Carapace => "carapace",
@@ -213,7 +216,7 @@ pub struct LoadBar {
 
 impl Default for LoadBar {
     fn default() -> Self {
-        LoadBar { style: BarStyle::Comet, color: BarColor::Signal, thickness: 2.0, chase: 6.0 }
+        LoadBar { style: BarStyle::Radiance, color: BarColor::Signal, thickness: 2.0, chase: 6.0 }
     }
 }
 

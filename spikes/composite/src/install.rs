@@ -6,15 +6,26 @@ use std::path::{Path, PathBuf};
 /// bundle has a new filesystem identity, even when its version is unchanged.
 #[cfg(target_os = "macos")]
 pub fn bundle_root(base: &Path, bundle: &Path) -> std::io::Result<PathBuf> {
+    let identity=bundle_identity(bundle)?;
+    let channel = nus_compat::Channel::for_version(env!("NUS_BUILD_VERSION")).directory();
+    prepare(base, channel, &identity)
+}
+#[cfg(target_os="macos")]
+fn bundle_identity(bundle:&Path)->std::io::Result<String>{
     use std::os::macos::fs::MetadataExt;
     let m = std::fs::metadata(bundle)?;
     let identity = format!("{:x}-{:x}-{:x}-{:x}", m.st_dev(), m.st_ino(), m.st_birthtime(), m.st_birthtime_nsec());
-    let channel = if cfg!(debug_assertions) { "development" } else { "release" };
-    prepare(base, channel, &identity)
+    Ok(identity)
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn package_root(base: &Path, exe: &Path) -> std::io::Result<PathBuf> {
+    let identity=package_identity(exe)?;
+    let channel = nus_compat::Channel::for_version(env!("NUS_BUILD_VERSION")).directory();
+    prepare(base, channel, &identity)
+}
+#[cfg(not(target_os="macos"))]
+fn package_identity(exe:&Path)->std::io::Result<String>{
     let meta = std::fs::metadata(exe)?;
     let directory = std::fs::metadata(exe.parent().unwrap())?;
     use std::hash::{Hash, Hasher};
@@ -28,12 +39,28 @@ pub fn package_root(base: &Path, exe: &Path) -> std::io::Result<PathBuf> {
         meta.dev().hash(&mut hash);
         meta.ino().hash(&mut hash);
     }
-    let channel = if cfg!(debug_assertions) { "development" } else { "release" };
-    prepare(base, channel, &format!("{:x}", hash.finish()))
+    Ok(format!("{:x}",hash.finish()))
+}
+
+/// Only the verified in-app updater registers this continuation. Redownloads
+/// retain their separate onboarding/import behavior.
+pub fn continue_after_update(current:&Path,candidate:&Path)->std::io::Result<()> {
+    let channel=current.parent().ok_or_else(||std::io::Error::other("No installation channel"))?;
+    if !matches!(channel.file_name().and_then(|n|n.to_str()),Some("release"|"preview"|"development")) || !current.join("profile").is_dir(){return Err(std::io::Error::other("Updates require an installed profile"));}
+    #[cfg(target_os="macos")] let identity=bundle_identity(candidate)?;
+    #[cfg(not(target_os="macos"))] let identity=package_identity(&candidate.join(if cfg!(windows){"nus.exe"}else{"nus-desktop"}))?;
+    crate::security::write_secret(&channel.join(format!("{identity}.update")),current.to_string_lossy().as_bytes())
 }
 
 fn prepare(base: &Path, channel: &str, identity: &str) -> std::io::Result<PathBuf> {
     let channel_root = base.join("installs").join(channel);
+    if let Ok(previous)=std::fs::read_to_string(channel_root.join(format!("{identity}.update"))) {
+        let previous=PathBuf::from(previous);
+        if let (Ok(root),Ok(allowed))=(previous.canonicalize(),channel_root.canonicalize()) {
+            if root.parent()==Some(allowed.as_path()) && root.join("profile").is_dir(){return Ok(root);}
+        }
+        return Err(std::io::Error::other("Update profile continuation is invalid; original profile preserved"));
+    }
     let root = channel_root.join(identity);
     let profile = root.join("profile");
     let exists = profile.exists();
@@ -66,6 +93,17 @@ pub fn complete() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_registered_updates_continue_an_existing_profile() {
+        let temp=tempfile::tempdir().unwrap();
+        let current=prepare(temp.path(),"release","old").unwrap();
+        let marker=current.parent().unwrap().join("verified.update");
+        std::fs::write(&marker,current.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(prepare(temp.path(),"release","verified").unwrap(),current.canonicalize().unwrap());
+        assert_ne!(prepare(temp.path(),"release","redownload").unwrap(),current);
+        std::fs::write(marker,temp.path().to_string_lossy().as_bytes()).unwrap();
+        assert!(prepare(temp.path(),"release","verified").is_err());
+    }
     #[test]
     fn fresh_regular_redownload_and_other_builds() {
         let temp = tempfile::tempdir().unwrap();

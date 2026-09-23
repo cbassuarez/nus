@@ -130,7 +130,7 @@ mod desktop {
                     .is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)));
                 if !wayland && self.shown != Some(face) {
                     if let Some(icon) = self.icons.get(face as usize) {
-                        window.set_window_icon(Some(icon.clone()));
+                        window.set_window_icon(if crate::mercury::earned(){Icon::from_rgba(crate::mercury::icon(64),64,64).ok()}else{Some(icon.clone())});
                         self.shown = Some(face);
                     }
                 }
@@ -143,7 +143,7 @@ mod desktop {
             if let Some(window) = self.window.take() {
                 window.request_user_attention(None);
                 if let Some(icon) = self.icons.get(Face::Newsreader as usize) {
-                    window.set_window_icon(Some(icon.clone()));
+                    window.set_window_icon(if crate::mercury::earned(){Icon::from_rgba(crate::mercury::icon(64),64,64).ok()}else{Some(icon.clone())});
                 }
             }
             self.shown = None;

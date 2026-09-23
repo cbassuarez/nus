@@ -29,6 +29,8 @@ fn aliases(title:&str)->String {
     let title=title.to_lowercase();
     let mut out=String::new();
     for (terms,synonyms) in [
+        ("recovery","rollback downgrade previous version restore"),
+        ("support details","diagnostics version compatibility report"),
         ("location","place latitude longitude timezone privacy gps city"),
         ("font","typeface typography lettering family"),("weight","font bold regular medium thickness"),
         ("radius","rounded rounding corners carapace window"),("footer","theme switcher picker slots grid favorites favourites"),
@@ -65,6 +67,7 @@ fn rank(query:&str,title:&str,body:&str,context:&str)->Option<i32> {
 
 fn contents(control:&Control)->String {
     match control {
+        Control::Mercury => "Claim replay silver liquid metal app icon early edition".into(),
         Control::Info(s)|Control::Slider(_,_,s)=>s.clone(),
         Control::Choice(v)|Control::Strip(v)=>v.iter().map(|v|v.0.as_str()).collect::<Vec<_>>().join(" "),
         Control::Pics(v)=>v.iter().map(|v|format!("{} {}",v.0,v.1)).collect::<Vec<_>>().join(" "),

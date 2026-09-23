@@ -86,8 +86,8 @@ entirely on which backend answers:
 | The Anthropic API via curl (`ANTHROPIC_API_KEY`) | Anthropic |
 | `NUS_ASK_CMD`, or `profile/assistants.json` | Wherever you pointed it |
 
-nus adds no backend of its own, holds no key of its own, and sends nothing on
-its own initiative: a request leaves only when you send a question.
+nus adds no model service of its own. An Ask request leaves when you send a
+question. Release update checks are separate and may run automatically; see below.
 
 The chips above the field are the disclosure, and they are accurate. Each one
 names what it attaches, and only the lit ones are gathered:
@@ -100,8 +100,8 @@ names what it attaches, and only the lit ones are gathered:
 - **memory** — `profile/memory.md`, which grows only when you press REMEMBER
 
 Shell, block and page are lit by default. Page and editor context mean page
-text and file contents are sent verbatim; treat a lit chip as consent for that
-question, to that backend. Nothing from the panel is written to disk except the
+text and bounded file excerpts are included after local secret scanning; treat a
+lit chip as consent for that question, to that backend. Nothing from the panel is written to disk except the
 line REMEMBER appends to `profile/memory.md`; the turns themselves live in the
 panel and end with it.
 
@@ -195,3 +195,20 @@ attributes, native DevTools, report controls,
 CLI authentication, oversized requests and idle input expiry. On macOS it also
 checks that the normal fixture's cookie is encrypted on disk. It never needs
 the user's browser profile or a live website.
+
+## Encrypted state, redaction and updates
+
+Sensitive nus-owned session, history, replay and credential state uses an
+OS-keychain-backed encrypted vault. Missing keychain access stops sensitive
+persistence. Opening a file does not by itself send it to a model. Ask submission,
+not RUN, authorizes selected context disclosure; RUN authorizes a shell command.
+Automatic secret redaction is best effort and offers an explicit, one-payload
+original-text override. Independent CLI agents can read and send additional data.
+See [the exact coverage and limits](LOCAL_SECURITY.md).
+
+Release builds check GitHub Releases automatically unless disabled in Settings.
+GitHub receives ordinary connection metadata including IP address, but no nus
+profile identifier, usage events or local content. Download/install requires a
+click and a restart warning. Incognito and development builds do not check
+at startup. [Mercury claims](UPDATES_AND_MERCURY.md) are local receipts, with no
+claim server or worldwide numbering.

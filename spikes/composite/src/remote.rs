@@ -107,11 +107,14 @@ impl App {
                     }
                 }
             }
-            Ok(result) => {
+            Ok(mut result) => {
+                // Credential-management verbs intentionally return a key to
+                // the local user. Content-reading verbs always sanitize.
+                if !(req.cmd=="sync" && req.args["do"]=="key") {crate::secrets::scrub_json(&mut result);}
                 let _ = req.reply.send(json!({ "ok": true, "result": result }));
             }
             Err(e) => {
-                let _ = req.reply.send(json!({ "ok": false, "error": e }));
+                let _ = req.reply.send(json!({ "ok": false, "error": crate::secrets::scrub(&e).text }));
             }
         }
     }
@@ -147,7 +150,7 @@ impl App {
                     match reply {
                         Some(v) => {
                             let value = v.pointer("/result/value").cloned().unwrap_or(Value::Null);
-                            let result = match shape {
+                            let mut result = match shape {
                                 Shape::Value => value,
                                 Shape::Article => {
                                     let json = value.as_str().unwrap_or("");
@@ -173,6 +176,7 @@ impl App {
                                     }
                                 }
                             };
+                            crate::secrets::scrub_json(&mut result);
                             let _ = d.reply.send(json!({ "ok": true, "result": result }));
                         }
                         None if crate::clock::since(d.since).as_secs() > 10 => {
@@ -214,7 +218,7 @@ impl App {
         let n = |k: &str| args.get(k).and_then(Value::as_u64).map(|v| v as usize);
         let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
         match cmd {
-            "version" => Ok(json!({ "nus": env!("CARGO_PKG_VERSION") })),
+            "version" => Ok(json!({ "nus": crate::updates::CURRENT })),
             "raise" => {
                 self.hatch_state.main_hidden = false;
                 self.window.set_visible(true);

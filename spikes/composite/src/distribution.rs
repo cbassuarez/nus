@@ -22,6 +22,5 @@ pub fn settle() -> std::io::Result<()> {
     let mut paths = vec![dir.join("bin")];
     paths.extend(std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default());
     if let Ok(path) = std::env::join_paths(paths) { std::env::set_var("PATH", path); }
-    crate::prefs::apply_start_switches();
     Ok(())
 }

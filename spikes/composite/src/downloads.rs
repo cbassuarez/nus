@@ -887,11 +887,8 @@ impl App {
             );
         }
         if hot {
-            self.tip = Some(crate::app::Tip {
-                anchor: r,
-                text: self.download_label(hit),
-                since: crate::clock::now() - std::time::Duration::from_millis(800),
-            });
+            let clipped = scene.clip().map(|clip| r.intersect(&clip)).unwrap_or(r);
+            self.offer_tip(crate::app::hover_key(&format!("download:{hit:?}"), 0), clipped, self.download_label(hit));
         }
         self.download_ui.hits.push((r, hit));
     }
@@ -1160,12 +1157,10 @@ impl App {
                     self.download_button(scene, b, "", hit);
                 }
             }
-            if Rect::new(tx, y + px(10.0), tw, px(65.0)).contains(self.mouse.0, self.mouse.1) {
-                self.tip = Some(crate::app::Tip {
-                    anchor: Rect::new(tx, y + px(10.0), tw, px(65.0)),
-                    text: format!("{}\n{}\n{}", d.name, d.status(), d.path),
-                    since: crate::clock::now() - std::time::Duration::from_millis(800),
-                });
+            let details = Rect::new(tx, y + px(10.0), tw, px(65.0)).intersect(&body);
+            if details.w > 0.0 && details.h > 0.0 && details.contains(self.mouse.0, self.mouse.1) {
+                self.offer_tip(crate::app::hover_key("download-details", d.key as usize), details,
+                    format!("{}\n{}\n{}", d.name, d.status(), d.path));
             }
         }
         scene.layer(Some(r));

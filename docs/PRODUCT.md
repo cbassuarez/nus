@@ -1473,9 +1473,17 @@ and the small-sidebar style persist and update other windows through preferences
 
 Pane headers share a 32px logical height, and browser/editor footers share 32px.
 Layout edges are rounded once in physical pixels; hidden DevTools reserves no
-separator. Traffic lights are 12px (10px in narrow windows), with hover glyphs
-and full-height click targets. Initial shell rendering happens before the main
-window becomes visible.
+separator. macOS traffic lights use AppKit's standard controls, native glyphs,
+and button-sized hit targets. Their centers and reserved header space retain the
+existing wide/narrow layout; the borderless window preserves nus's outer corner
+shape. Empty space around the controls remains available for header dragging.
+Initial shell rendering happens before the main window becomes visible.
+
+Run `scripts/check-traffic-lights.py` against a review bundle for native hit tests,
+resize/fullscreen transitions, theme changes, hidden headers and custom borders.
+The grouped-hover host uses an isolated AppKit compatibility selector in
+`macos.rs`; native hover/menu behavior and macOS 26 Liquid Glass appearance need
+platform UI verification in addition to these geometry checks.
 
 Run scripts/check-downloads-sidebar.py for local CEF transfers, naming and
 collision handling, pause/resume/cancel/retry, search, history clearing without

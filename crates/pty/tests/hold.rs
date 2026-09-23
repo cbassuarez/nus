@@ -59,6 +59,15 @@ fn spawn_detach_attach_kill() {
     let dir = std::env::temp_dir().join(format!("nus-hold-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
+    // Headless CI may have no Secret Service/login credential store. It must
+    // exercise the fail-closed path rather than silently writing a plaintext token.
+    if nus_vault::available(&dir).is_err() {
+        assert!(Pty::spawn_held(&shell(), 80, 24, &dir, || {}).is_err());
+        assert!(Info::all(&dir).is_empty());
+        eprintln!("Credential store unavailable: fail-closed holder path verified; live resume requires a native keychain session");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     // Spawn through the holder; the shell's greeting arrives over the socket.
     let mut pty = Pty::spawn_held(&shell(), 80, 24, &dir, || {}).expect("spawn held");
     let id = pty.held_id().expect("held").to_string();
@@ -66,12 +75,36 @@ fn spawn_detach_attach_kill() {
     assert!(got.contains("held-hello"), "no greeting: {got:?}");
     let info = Info::read(&dir, &id).expect("info file");
     assert_eq!(info.id, id);
+    let ciphertext = std::fs::read(Info::path(&dir, &id)).unwrap();
+    assert!(ciphertext.starts_with(b"NUSENC01"));
+    assert!(!ciphertext
+        .windows(info.token.len())
+        .any(|w| w == info.token.as_bytes()));
     assert!(info.pid > 0);
     // A health probe must answer promptly and leave the attached client live.
     let probe_started = Instant::now();
     assert!(info.alive(&dir), "live holder did not answer ping");
     assert!(probe_started.elapsed() < Duration::from_millis(400));
     assert!(Info::path(&dir, &id).exists(), "ping removed a live holder");
+
+    // A future client must not take over the existing attached terminal.
+    let mut stranger = std::net::TcpStream::connect(("127.0.0.1", info.port)).unwrap();
+    stranger
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let bad = serde_json::json!({"token":info.token,"protocol":999});
+    nus_pty::hold::send(&mut stranger, b'a', &serde_json::to_vec(&bad).unwrap()).unwrap();
+    assert!(matches!(
+        nus_pty::hold::recv(&mut stranger).unwrap(),
+        Some((b'e', _))
+    ));
+    pty.write(b"compatibility-still-attached\n").unwrap();
+    assert!(wait_for(&mut pty, "compatibility-still-attached", 5)
+        .contains("compatibility-still-attached"));
+    let mut incompatible = info.clone();
+    incompatible.protocol = 999;
+    assert!(Pty::attach(incompatible, 80, 24, || {}).is_err());
+    assert!(Info::path(&dir, &id).exists());
 
     // Detach: the holder and the shell stay.
     pty.detach();
@@ -101,5 +134,6 @@ fn spawn_detach_attach_kill() {
     assert!(again.exit_code().is_some(), "no exit after kill");
     std::thread::sleep(Duration::from_millis(600));
     assert!(!Info::path(&dir, &id).exists(), "info file left behind");
+    nus_vault::remove_test_key(&dir).expect("remove fixture credential");
     let _ = std::fs::remove_dir_all(&dir);
 }

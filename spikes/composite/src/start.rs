@@ -154,14 +154,14 @@ impl SavedTab {
 
 /// When the last session was saved (unix seconds), for what counts as news.
 pub fn last_saved() -> Option<u64> {
-    let text = std::fs::read_to_string(profile_dir().join("session.json")).ok()?;
+    let text = crate::protected_state::read_text(&profile_dir().join("session.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     v.get("saved").and_then(|s| s.as_u64())
 }
 
 impl Session {
     pub fn load() -> Option<Session> {
-        let text = std::fs::read_to_string(profile_dir().join("session.json")).ok()?;
+        let text = crate::protected_state::read_text(&profile_dir().join("session.json")).ok()?;
         let v: serde_json::Value = serde_json::from_str(&text).ok()?;
         Session::from_value(&v)
     }
@@ -200,7 +200,7 @@ impl Session {
         let mut v = self.to_value();
         v["saved"] = serde_json::json!(now());
         let _ = std::fs::create_dir_all(profile_dir());
-        let _ = crate::store::write_json(&profile_dir().join("session.json"), &v);
+        let _ = crate::protected_state::write_json(&profile_dir().join("session.json"), &v);
     }
 
     /// This window's session as JSON, the other windows under `windows`.
@@ -225,7 +225,7 @@ impl Session {
 }
 
 pub fn load_recent() -> Vec<Recent> {
-    let Ok(text) = std::fs::read_to_string(profile_dir().join("recent.json")) else { return Vec::new() };
+    let Ok(text) = crate::protected_state::read_text(&profile_dir().join("recent.json")) else { return Vec::new() };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
     v.as_array()
         .map(|a| {
@@ -247,7 +247,7 @@ pub fn save_recent(list: &[Recent]) {
         })
         .collect();
     let _ = std::fs::create_dir_all(profile_dir());
-    let _ = crate::store::write_json(&profile_dir().join("recent.json"), &v);
+    let _ = crate::protected_state::write_json(&profile_dir().join("recent.json"), &v);
 }
 
 // ── The modal ────────────────────────────────────────────────────────────
@@ -779,6 +779,8 @@ mod tests {
         };
         let dir = std::env::temp_dir().join(format!("nus-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("profile")).unwrap();
+        // Serialization does not depend on an interactive OS credential store.
+        nus_vault::install_test_key(&dir.join("profile")).unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
         s.save();

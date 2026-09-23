@@ -20,6 +20,7 @@ use nus_pty::hold::{parse_frames, recv, send, Info, Ring, RING};
 use nus_pty::{Profile, Pty};
 
 struct Args {
+    vault_key_stdin: bool,
     id: String,
     dir: PathBuf,
     cols: u16,
@@ -28,6 +29,7 @@ struct Args {
 }
 
 fn parse() -> Result<Args> {
+    let mut vault_key_stdin = false;
     let mut it = std::env::args().skip(1);
     let (mut id, mut dir, mut cols, mut rows) = (None, None, 80u16, 24u16);
     let mut profile = Profile {
@@ -39,6 +41,7 @@ fn parse() -> Result<Args> {
     };
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--vault-key-stdin" => vault_key_stdin = true,
             "--id" => id = it.next(),
             "--dir" => dir = it.next().map(PathBuf::from),
             "--cols" => cols = it.next().and_then(|v| v.parse().ok()).unwrap_or(80),
@@ -64,6 +67,7 @@ fn parse() -> Result<Args> {
         return Err(anyhow!("--program is required"));
     }
     Ok(Args {
+        vault_key_stdin,
         id: id.ok_or_else(|| anyhow!("--id is required"))?,
         dir: dir.ok_or_else(|| anyhow!("--dir is required"))?,
         cols,
@@ -87,17 +91,21 @@ fn strip_dsr(out: &[u8]) -> Vec<u8> {
     v
 }
 
-fn token() -> String {
-    // Enough to stop a stray local process from guessing; the file it lives
-    // in is the real gate.
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{:x}{:x}", t, std::process::id() as u128 * 2_654_435_761)
+fn token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| anyhow!("secure random source unavailable"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!(
+            "nus-hold {} protocol {}",
+            env!("CARGO_PKG_VERSION"),
+            nus_compat::HOLD_PROTOCOL
+        );
+        return;
+    }
     if let Err(e) = run() {
         eprintln!("nus-hold: {e:#}");
         std::process::exit(1);
@@ -106,6 +114,13 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = parse()?;
+    if args.vault_key_stdin {
+        nus_vault::receive_child_key(
+            &nus_vault::profile_for(&args.dir.join("state.json")),
+            std::io::stdin().lock(),
+        )?;
+    }
+    nus_vault::available(&nus_vault::profile_for(&args.dir.join("state.json")))?;
     let listener = TcpListener::bind(("127.0.0.1", 0)).context("listen")?;
     let port = listener.local_addr()?.port();
     listener.set_nonblocking(true)?;
@@ -122,9 +137,10 @@ fn run() -> Result<()> {
     .context("spawn the shell")?;
     let pid = pty.pid().unwrap_or(0);
     let info = Info {
+        protocol: nus_compat::HOLD_PROTOCOL,
         id: args.id.clone(),
         port,
-        token: token(),
+        token: token()?,
         holder: std::process::id(),
         pid,
         program: args.profile.program.clone(),
@@ -183,7 +199,13 @@ fn run() -> Result<()> {
         if let Ok((mut s, _)) = listener.accept() {
             s.set_nodelay(true).ok();
             s.set_read_timeout(Some(Duration::from_millis(500))).ok();
-            let ok = matches!(recv(&mut s), Ok(Some((b't', t))) if t == info.token.as_bytes());
+            s.set_write_timeout(Some(Duration::from_millis(500))).ok();
+            let request = recv(&mut s);
+            let ok = match &request {
+                Ok(Some((b't', token))) => token == info.token.as_bytes(), // documented legacy v1
+                Ok(Some((b'a', bytes))) => valid_hello(bytes, &info.token),
+                _ => false,
+            };
             if ok {
                 let greeting = serde_json::to_vec(&info).unwrap_or_default();
                 if send(&mut s, b'i', &greeting).is_ok() {
@@ -195,9 +217,11 @@ fn run() -> Result<()> {
                         inbuf.clear();
                     }
                 }
-            } else {
-                // A ping (no token) still gets the greeting tag so `alive` can tell.
+            } else if matches!(request, Ok(Some((b'p', _)))) {
+                // Probes never replace the attached client or reveal credentials.
                 let _ = s.write_all(b"i");
+            } else {
+                let _ = send(&mut s, b'e', b"HOLD_HANDSHAKE_REJECTED");
             }
         }
         // The client's frames: bytes to the shell, a resize, a kill. Read
@@ -247,4 +271,27 @@ fn run() -> Result<()> {
     }
     let _ = std::fs::remove_file(file);
     Ok(())
+}
+
+fn valid_hello(bytes: &[u8], token: &str) -> bool {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    v["token"].as_str() == Some(token)
+        && v["protocol"].as_u64() == Some(nus_compat::HOLD_PROTOCOL as u64)
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    #[test]
+    fn handshake_rejects_other_protocols_and_missing_fields() {
+        assert!(super::valid_hello(br#"{"token":"t","protocol":1}"#, "t"));
+        for bad in [
+            br#"{"token":"t","protocol":2}"#.as_slice(),
+            br#"{"token":"t"}"#,
+            br#"{"token":"wrong","protocol":1}"#,
+        ] {
+            assert!(!super::valid_hello(bad, "t"));
+        }
+    }
 }

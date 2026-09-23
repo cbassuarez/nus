@@ -66,6 +66,7 @@ pub fn shutdown() {
 /// The request context for a container: the global one for PERSONAL,
 /// else one made (once) with its own cache directory.
 pub fn context(name: &str) -> Option<cef::RequestContext> {
+    if !crate::browser_runtime::ensure() { return None; }
     if crate::private::enabled() { return private_context(); }
     if name.is_empty() || name == PERSONAL {
         return cef::request_context_get_global_context();

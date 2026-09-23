@@ -180,6 +180,11 @@ impl App {
     /// replaces the temporary shell; opening a tab preserves existing work.
     pub(crate) fn open_start_page(&mut self, launch: bool) {
         use crate::settings::Then;
+        if launch && crate::compatibility::recovery_launch() {
+            self.show_start_pane(Pane::Home(HomePane::new()), true);
+            self.notice("Previous profile restored. Newer work was preserved separately. Open saved sessions deliberately; running processes were not rewound.");
+            return;
+        }
         match self.behavior.then {
             Then::Palette => {
                 self.open_palette(PaletteMode::Go);
@@ -510,6 +515,7 @@ impl App {
                 y += self.px(26.0);
             }
             for (k, row) in rows.iter().enumerate() {
+                let row_h = if self.saved_detail(row).is_some() && self.behavior.prompt.saved_preview && !self.behavior.prompt.compact { self.px(54.0) } else { row_h };
                 if y + row_h > foot_y - self.px(8.0) {
                     break;
                 }
@@ -520,6 +526,11 @@ impl App {
                 }
                 let rr = Rect::new(x0, y, line_w, row_h);
                 let hot = k + 1 == sel || rr.contains(mx, my);
+                if self.saved_detail(row).is_some() {
+                    self.draw_saved_row(scene,rr,row,false,self.behavior.prompt.saved_preview && !self.behavior.prompt.compact);
+                    if hot { scene.outline(rr,self.px(1.0),fade(self.surface.signal,0.5*up)); }
+                    p.hits.push((rr,k)); y += row_h; continue;
+                }
                 if k + 1 == sel {
                     scene.rect(Rect::new(x0 - self.px(10.0), y + self.px(6.0), self.px(2.0), row_h - self.px(12.0)), fade(self.surface.signal, up));
                 }

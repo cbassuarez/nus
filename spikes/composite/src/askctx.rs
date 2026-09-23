@@ -92,11 +92,16 @@ impl Gathered {
 
     /// The prompt's context section: what's there, in a fixed order.
     pub fn render(&self) -> String {
+        self.render_filtered(true)
+    }
+    pub fn render_original(&self)->String{self.render_filtered(false)}
+    fn render_filtered(&self,redact:bool)->String {
         let mut s = String::new();
         if let Some((profile, cwd, os)) = &self.shell {
             s.push_str(&format!("The shell is {profile} on {os}; the working directory is {cwd}.\n"));
         }
         if let Some((cmd, out, exit)) = &self.block {
+            let out=if redact{crate::secrets::scrub(out).text}else{out.clone()};
             let tail: Vec<&str> = out.lines().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
             s.push_str(&format!("\nThe command in focus was:\n{}\n", cmd.trim()));
             if let Some(e) = exit {
@@ -105,6 +110,7 @@ impl Gathered {
             s.push_str(&format!("Its output ended with:\n{}\n", tail.join("\n")));
         }
         if let Some((title, url, text)) = &self.page {
+            let text=if redact{crate::secrets::scrub(text).text}else{text.clone()};
             let text: String = text.chars().take(6000).collect();
             s.push_str(&format!("\nThe page beside the shell is \"{title}\" ({url}). Its text:\n{text}\n"));
         }
@@ -115,6 +121,7 @@ impl Gathered {
             }
         }
         if let Some((path, text)) = &self.editor {
+            let text=if redact{crate::secrets::scrub(text).text}else{text.clone()};
             let text: String = text.chars().take(8000).collect();
             s.push_str(&format!("\nThe file open in the editor is {path}:\n{text}\n"));
         }
@@ -132,7 +139,7 @@ fn memory_path() -> std::path::PathBuf {
 }
 
 pub fn read_memory() -> String {
-    std::fs::read_to_string(memory_path()).unwrap_or_default()
+    crate::protected_state::read_text(&memory_path()).unwrap_or_default()
 }
 
 pub fn remember(line: &str) {
@@ -142,7 +149,7 @@ pub fn remember(line: &str) {
     }
     m.push_str(&format!("- {}\n", line.trim()));
     let _ = std::fs::create_dir_all(memory_path().parent().unwrap());
-    let _ = std::fs::write(memory_path(), m);
+    let _ = crate::protected_state::write(&memory_path(), m.as_bytes());
 }
 
 impl App {

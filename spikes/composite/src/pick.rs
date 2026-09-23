@@ -52,6 +52,7 @@ impl Pending {
 #[derive(Clone, Debug)]
 pub enum Kind {
     Picture,
+    File,
     Folder,
     /// Save as: the folder to start in and the name to offer.
     Save { dir: PathBuf, name: String },
@@ -71,6 +72,9 @@ impl Picker {
 /// The system's folder chooser.
 pub fn folder(window: &winit::window::Window, title: &str) -> Result<Picker, String> {
     Ok(Picker { dialog: platform::Dialog::open(window, title, Kind::Folder)? })
+}
+pub fn file(window: &winit::window::Window, title: &str) -> Result<Picker, String> {
+    Ok(Picker { dialog: platform::Dialog::open(window, title, Kind::File)? })
 }
 
 /// The system's save dialog, starting in `dir` with `name` offered.
@@ -111,6 +115,11 @@ mod platform {
                 Kind::Folder=>{
                     let panel=NSOpenPanel::openPanel(mtm);
                     panel.setCanChooseFiles(false);panel.setCanChooseDirectories(true);panel.setAllowsMultipleSelection(false);panel.setCanCreateDirectories(true);
+                    Retained::into_super(panel)
+                }
+                Kind::File=>{
+                    let panel=NSOpenPanel::openPanel(mtm);
+                    panel.setCanChooseFiles(true);panel.setCanChooseDirectories(false);panel.setAllowsMultipleSelection(false);
                     Retained::into_super(panel)
                 }
                 Kind::Picture=>{
@@ -171,6 +180,7 @@ mod platform {
             let dialog=rfd::AsyncFileDialog::new().set_parent(window).set_title(title);
             let future:Pin<Box<dyn Future<Output=Option<rfd::FileHandle>>>>=match kind {
                 Kind::Picture=>Box::pin(dialog.add_filter("Pictures",IMAGE_EXTS).pick_file()),
+                Kind::File=>Box::pin(dialog.pick_file()),
                 Kind::Folder=>Box::pin(dialog.pick_folder()),
                 Kind::Save{dir,name}=>Box::pin(dialog.set_directory(dir).set_file_name(name).save_file()),
             };

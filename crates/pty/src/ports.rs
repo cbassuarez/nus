@@ -34,7 +34,7 @@ pub struct Socket {
 }
 
 impl Socket {
-    /// Bound to every interface: reachable from the network.
+    /// Wildcard binding. This does not establish network reachability.
     pub fn exposed(&self) -> bool {
         matches!(self.local_addr.as_str(), "0.0.0.0" | "::" | "[::]" | "*")
     }
@@ -48,6 +48,100 @@ pub struct Process {
     pub exe: String,
     pub cmdline: String,
     pub started: Option<SystemTime>,
+    /// OS process birth identifier; a PID alone may refer to a later process.
+    pub identity: Option<u64>,
+}
+
+/// A process birth identifier, or None when it cannot be checked. Never use
+/// an executable name as identity: a restarted server often has the same name.
+pub fn process_identity(pid: u32) -> Option<u64> {
+    if pid <= 1 || pid > i32::MAX as u32 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        // The kernel initializes the complete structure on a full-size result.
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid as i32,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if n != size {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        return info
+            .pbi_start_tvsec
+            .checked_mul(1_000_000)?
+            .checked_add(info.pbi_start_tvusec);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        return linux_birth(&stat);
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            Foundation::{CloseHandle, FILETIME},
+            System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        };
+        // Avoid spawning PowerShell for every process identity check.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let result =
+            unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
+        let _ = unsafe { CloseHandle(handle) };
+        result.ok()?;
+        return Some((created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_birth(stat: &str) -> Option<u64> {
+    // comm may contain spaces and parentheses; fields after its final ')' start
+    // at field 3. starttime is field 22.
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
+/// Stop only the selected process incarnation and its currently identified
+/// descendants. Recheck each birth identifier immediately before signalling.
+pub fn kill_identified(pid: u32, identity: u64, force: bool) -> bool {
+    if pid == std::process::id() || process_identity(pid) != Some(identity) {
+        return false;
+    }
+    let tree = process_tree();
+    let mut targets: Vec<_> = descendants_in(&tree, pid)
+        .into_iter()
+        .filter_map(|p| process_identity(p).map(|id| (p, id)))
+        .collect();
+    targets.push((pid, identity));
+    if process_identity(pid) != Some(identity) {
+        return false;
+    }
+    let mut signalled = false;
+    for (p, id) in targets {
+        if p != std::process::id() && process_identity(p) == Some(id) {
+            signalled |= kill_one(p, force);
+        }
+    }
+    signalled
 }
 
 /// Every socket, as the system reports it.
@@ -347,6 +441,7 @@ pub fn process_info(pids: &[u32]) -> HashMap<u32, Process> {
                     name: s("Name").trim_end_matches(".exe").to_string(),
                     exe: s("ExecutablePath"),
                     cmdline: s("CommandLine"),
+                    identity: process_identity(pid),
                     started: it
                         .get("Started")
                         .and_then(|v| v.as_i64())
@@ -389,6 +484,7 @@ pub fn process_info(pids: &[u32]) -> HashMap<u32, Process> {
                     exe,
                     cmdline,
                     started: None,
+                    identity: process_identity(pid),
                 },
             );
         }
@@ -684,6 +780,35 @@ pub struct Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_birth_handles_spaces_and_parentheses_in_process_names() {
+        let stat =
+            "42 (worker (pool) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 0";
+        assert_eq!(linux_birth(stat), Some(987654));
+        assert_eq!(linux_birth("truncated"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_birth_identity_cannot_stop_a_live_process() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let identity = process_identity(pid).expect("OS process birth identifier");
+            assert!(!kill_identified(pid, identity.wrapping_add(1), true));
+            assert!(child.try_wait().unwrap().is_none());
+            assert!(kill_identified(pid, identity, false));
+        }));
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
 
     /// pid → (ppid, name), the shape `process_tree` returns.
     fn tree(rows: &[(u32, u32, &str)]) -> HashMap<u32, (u32, String)> {

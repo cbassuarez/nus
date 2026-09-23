@@ -232,6 +232,7 @@ impl App {
     /// preview (the last preview goes if it was not touched); `keep`
     /// pins it — its own buffer, and nothing replaces it.
     pub(crate) fn open_from_tree(&mut self, path: &Path, keep: bool) {
+        if self.open_document(path,true) {return;}
         if !crate::editor::looks_text(path) {
             crate::app::open_with_os(path);
             return;
@@ -395,22 +396,7 @@ impl App {
 
     /// A tooltip for a sidebar rect, in the footer's manner.
     fn side_tip(&mut self, key: u64, hit: Rect, words: String) {
-        let (mx, my) = self.mouse;
-        let hot = hit.contains(mx, my);
-        let h = self.hovers.entry(key).or_insert_with(|| crate::app::Hover { alpha: crate::anim::Anim::at(0.0), pulse: crate::anim::Anim::at(1.0), hot: false, since: crate::clock::now() });
-        if hot != h.hot {
-            h.hot = hot;
-            if hot {
-                h.since = crate::clock::now();
-            }
-        }
-        if hot {
-            let since = h.since;
-            self.tip = Some(crate::app::Tip { anchor: hit, text: words, since });
-            if crate::clock::since(since).as_millis() < 700 {
-                self.dirty = true;
-            }
-        }
+        self.offer_tip(key, hit, words);
     }
 }
 

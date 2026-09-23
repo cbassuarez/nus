@@ -16,6 +16,11 @@ pub const CLOSED_TABS: usize = 50;
 /// Read a bounded tail, discarding the partial first line. A large historic
 /// file must not first be loaded into RAM just to truncate its entries.
 pub fn tail(path: &Path, limit: u64) -> std::io::Result<String> {
+    if path.components().any(|p|p.as_os_str()=="journal"||p.as_os_str()=="replay") || path.extension().is_some_and(|e|e=="cast") {
+        let text=crate::protected_state::read_text(path)?;
+        let mut start=text.len().saturating_sub(limit as usize);while !text.is_char_boundary(start){start+=1;}
+        let tail=&text[start..];return Ok(if start>0{tail.split_once('\n').map(|(_,rest)|rest).unwrap_or("")}else{tail}.to_string());
+    }
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let skipped = len.saturating_sub(limit);
@@ -33,6 +38,19 @@ pub fn append_line(path: &Path, line: &str, limit: u64, lines: usize) -> std::io
     let _guard = FILE_ACCESS.lock().unwrap_or_else(|e| e.into_inner());
     // One pathological command cannot become an oversized history record.
     if line.len() as u64 + 1 > limit / 4 { return Ok(()); }
+    if path.components().any(|p|p.as_os_str()=="journal") {
+        return crate::protected_state::update(path, |old| {
+            let old=std::str::from_utf8(old).map_err(|e|std::io::Error::new(std::io::ErrorKind::InvalidData,e))?;
+            let mut kept=vec![line];let mut bytes=line.len()+1;
+            for item in old.lines().rev().take(lines.saturating_sub(1)) {
+                if bytes+item.len()+1>limit as usize {break;}
+                bytes+=item.len()+1;kept.push(item);
+            }
+            let mut out=Vec::with_capacity(bytes);
+            for item in kept.into_iter().rev() {out.extend_from_slice(item.as_bytes());out.push(b'\n');}
+            Ok(out)
+        });
+    }
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{line}")?;
@@ -102,12 +120,16 @@ pub fn maintain(root: &Path, active: &[PathBuf], journal_days: u32, replay_days:
     }
     let replay = root.join("replay");
     let mut sessions = Vec::new();
+    let mut active_bytes = 0_u64;
     if let Ok(rd) = std::fs::read_dir(&replay) {
         for e in rd.flatten() {
             if !e.file_type().is_ok_and(|t| t.is_dir()) || e.file_name().to_string_lossy().parse::<u64>().is_err() { continue; }
             let path = e.path();
-            if active.iter().any(|a| a == &path || a.canonicalize().ok() == path.canonicalize().ok()) { continue; }
             let entries = files(&path, true);
+            if active.iter().any(|a| a == &path || a.canonicalize().ok().is_some_and(|a| Some(a) == path.canonicalize().ok())) {
+                active_bytes += entries.iter().map(|e| e.bytes).sum::<u64>();
+                continue;
+            }
             let size = entries.iter().map(|e| e.bytes).sum::<u64>();
             let modified = entries.iter().map(|e| e.modified).max().unwrap_or(0);
             sessions.push(Entry { path, bytes: size, modified });
@@ -117,7 +139,7 @@ pub fn maintain(root: &Path, active: &[PathBuf], journal_days: u32, replay_days:
     let mut total: u64 = sessions.iter().map(|e| e.bytes).sum();
     let cutoff = now.saturating_sub(replay_days.max(1) as u64 * 86400);
     for e in sessions {
-        if (e.modified < cutoff || total > 128 * MIB) && std::fs::remove_dir_all(&e.path).is_ok() { total = total.saturating_sub(e.bytes); }
+        if (e.modified < cutoff || total > (128 * MIB).saturating_sub(active_bytes)) && std::fs::remove_dir_all(&e.path).is_ok() { total = total.saturating_sub(e.bytes); }
     }
     // Chromium file logging is disabled. Bound legacy logs from older builds.
     for path in [root.join("debug.log"), root.join("chrome_debug.log"), root.join("pses.log"), root.parent().unwrap_or(root).join("debug.log")] {
@@ -130,6 +152,34 @@ pub fn maintain(root: &Path, active: &[PathBuf], journal_days: u32, replay_days:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn encrypted_journal_append_keeps_tail_and_preserves_corruption() {
+        let dir=tempfile::tempdir().unwrap();
+        let profile=dir.path().join("profile");
+        nus_vault::install_test_key(&profile).unwrap();
+        let path=profile.join("journal/1.jsonl");
+        for i in 0..30 {append_line(&path,&format!("line {i} é"),128,5).unwrap();}
+        let text=nus_vault::read_text(&path).unwrap();
+        assert_eq!(text.lines().count(),5);
+        assert!(text.starts_with("line 25") && text.ends_with("line 29 é\n") && text.len()<=128);
+        let mut bytes=std::fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap()^=1;
+        std::fs::write(&path,&bytes).unwrap();
+        assert!(append_line(&path,"new",128,5).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);
+    }
+    #[test]
+    fn active_replays_count_toward_retention_without_being_deleted() {
+        let dir=tempfile::tempdir().unwrap();
+        let root=dir.path();
+        for id in [1,2] {std::fs::create_dir_all(root.join(format!("replay/{id}"))).unwrap();}
+        let active=root.join("replay/2/tab.cast");
+        std::fs::File::create(&active).unwrap().set_len(128*MIB+1).unwrap();
+        std::fs::write(root.join("replay/1/tab.cast"),b"inactive").unwrap();
+        maintain(root,&[root.join("replay/2")],7,7,0);
+        assert!(active.exists());
+        assert!(!root.join("replay/1").exists());
+    }
     #[test]
     fn oversized_history_is_bounded_before_loading_and_after_append() {
         let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("history.txt");

@@ -2,6 +2,25 @@
 //! clamping never relocates a window to a different corner.
 use super::LRect;
 
+pub fn stream_aspect(width: f64, height: f64) -> Option<f64> {
+    let ratio = width / height;
+    (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0
+        && ratio.is_finite() && ratio > 0.0).then_some(ratio)
+}
+
+/// Keep the chosen width and center when metadata changes the stream shape.
+pub fn with_aspect(r: LRect, aspect: f64, area: LRect) -> LRect {
+    let h = r.w / aspect;
+    fit(LRect { y: r.y + (r.h - h) / 2.0, h, ..r }, area, 16.0)
+}
+
+/// Native resize proposals may change either dimension. Honor the dimension
+/// that moved most, then restore the stream ratio before the next gesture.
+pub fn native_resize(previous: LRect, w: f64, h: f64, aspect: f64, area: LRect) -> LRect {
+    let w = if (w - previous.w).abs() >= (h - previous.h).abs() * aspect { w } else { h * aspect };
+    fit(LRect { w, h: w / aspect, ..previous }, area, 16.0)
+}
+
 pub fn fit(mut r: LRect, area: LRect, margin: f64) -> LRect {
     let m = margin.min(area.w.min(area.h) * 0.05).max(0.0);
     let (w, h) = ((area.w - m * 2.0).max(1.0), (area.h - m * 2.0).max(1.0));
@@ -36,6 +55,31 @@ pub fn resize(r: LRect, delta: (f64, f64), edge: (i8, i8), area: LRect) -> LRect
 mod tests {
     use super::*;
     fn area() -> LRect { LRect{x:-1600.0,y:24.0,w:1600.0,h:916.0} }
+    #[test]
+    fn stream_shape_survives_source_changes_native_resize_and_gestures() {
+        let mut r=LRect{x:-1000.0,y:300.0,w:480.0,h:270.0};
+        for aspect in [9.0/16.0,4.0/3.0,21.0/9.0,1.0,16.0/9.0] {
+            r=with_aspect(r,aspect,area());
+            for edge in [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)] {
+                let sized=resize(r,(35.0,20.0),edge,area());
+                assert!((sized.w/sized.h-aspect).abs()<1e-10);
+            }
+            for (w,h) in [(600.0,300.0),(250.0,700.0),(4000.0,3000.0)] {
+                let sized=native_resize(r,w,h,aspect,area());
+                assert!((sized.w/sized.h-aspect).abs()<1e-10);
+                assert!(sized.x+sized.w<=area().x+area().w && sized.y+sized.h<=area().y+area().h);
+            }
+            r=zoom(r,1.2,area(),(0.5,0.5));
+            assert!((r.w/r.h-aspect).abs()<1e-10);
+        }
+    }
+    #[test]
+    fn only_valid_intrinsic_dimensions_replace_the_ratio() {
+        assert_eq!(stream_aspect(1080.0,1920.0),Some(9.0/16.0));
+        for (w,h) in [(0.0,0.0),(1.0,0.0),(-1.0,1.0),(f64::NAN,1.0),(1.0,f64::INFINITY)] {
+            assert_eq!(stream_aspect(w,h),None);
+        }
+    }
     #[test]
     fn gestures_preserve_anchor_and_aspect_without_corner_snap() {
         let r=LRect{x:-1000.0,y:300.0,w:480.0,h:270.0};

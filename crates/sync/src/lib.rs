@@ -40,6 +40,7 @@ const MAGIC: &[u8; 4] = b"NUS1";
 pub const ALWAYS: &[&str] = &[
     "settings.json",
     "me.json",
+    "mercury.json",
     "rules.luau",
     "folders.json",
     "ports.json",
@@ -55,6 +56,17 @@ pub const SESSION: &str = "session.json";
 /// it worked — merge as the union of their lines instead of one side
 /// losing: theirs in their order, then whatever of ours they lacked.
 pub const UNION: &[&str] = &["memory.md"];
+
+fn private_local(rel: &str) -> bool {
+    matches!(rel, "session.json" | "memory.md")
+}
+fn read_local(profile: &Path, rel: &str) -> std::io::Result<Vec<u8>> {
+    if private_local(rel) {
+        nus_vault::read_at(profile, &profile.join(rel))
+    } else {
+        std::fs::read(profile.join(rel))
+    }
+}
 
 fn library_path(rel: &str) -> bool {
     rel == "library" || rel.starts_with("library/") || rel.starts_with("library\\")
@@ -350,7 +362,7 @@ fn local_manifest_with_library(
             continue;
         }
         let p = profile.join(&rel);
-        let Ok(bytes) = std::fs::read(&p) else {
+        let Ok(bytes) = read_local(profile, &rel) else {
             continue;
         };
         let written = std::fs::metadata(&p)
@@ -675,7 +687,14 @@ pub fn exchange(
         // goes back out on the push as the newer of the two.
         let union = UNION.contains(&rel.as_str()) && dest.is_file();
         let plain = if union {
-            let ours = std::fs::read(&dest).unwrap_or_default();
+            let ours = match read_local(profile, rel) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    rep.errors
+                        .push(format!("{rel}: local state is locked; merge skipped"));
+                    continue;
+                }
+            };
             union_lines(
                 &String::from_utf8_lossy(&plain),
                 &String::from_utf8_lossy(&ours),
@@ -685,8 +704,13 @@ pub fn exchange(
             plain
         };
         if dest.is_file() && !union {
+            if private_local(rel) && read_local(profile, rel).is_err() {
+                rep.errors
+                    .push(format!("{rel}: local state is locked; replacement skipped"));
+                continue;
+            }
             let lost = profile.join(format!("{rel}.{device}.lost"));
-            let backup = if library_path(rel) {
+            let backup = if library_path(rel) || private_local(rel) {
                 std::fs::copy(&dest, &lost).map(|_| ())
             } else {
                 std::fs::rename(&dest, &lost)
@@ -700,7 +724,9 @@ pub fn exchange(
                 continue;
             }
         }
-        let write = if library_path(rel) {
+        let write = if private_local(rel) {
+            nus_vault::write_at(profile, &dest, &plain)
+        } else if library_path(rel) {
             replace_library(&dest, &plain, *written)
         } else {
             std::fs::write(&dest, &plain)
@@ -734,7 +760,7 @@ pub fn exchange(
             if same {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(profile.join(rel)) else {
+            let Ok(bytes) = read_local(profile, rel) else {
                 continue;
             };
             match c.write(key, device, rel, &bytes) {
@@ -1091,6 +1117,8 @@ mod tests {
         let (a, b, carrier) = (base.join("a"), base.join("b"), base.join("carrier"));
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
+        nus_vault::install_test_key(&a).unwrap();
+        nus_vault::install_test_key(&b).unwrap();
         let k = new_key();
         let f = Folder {
             root: carrier.clone(),

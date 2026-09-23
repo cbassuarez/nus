@@ -82,7 +82,7 @@ fn prune(path: &PathBuf, keep_days: u32) {
     if kept.is_empty() {
         let _ = std::fs::remove_file(path);
     } else {
-        let _ = crate::store::write_atomic(path, (kept.join("\n") + "\n").as_bytes());
+        let _ = crate::protected_state::write(path, (kept.join("\n") + "\n").as_bytes());
     }
 }
 

@@ -32,7 +32,7 @@ fn key_path() -> PathBuf {
 
 /// The key on this device, if one has been made or joined.
 pub fn key() -> Option<[u8; nus_sync::KEY_LEN]> {
-    let word = std::fs::read_to_string(key_path()).ok()?;
+    let word = crate::protected_state::read_text(&key_path()).ok()?;
     nus_sync::decode_key(word.trim())
 }
 
@@ -50,7 +50,7 @@ pub fn make_key() -> String {
 pub fn write_key(word: &str) {
     let p = key_path();
     let _ = std::fs::create_dir_all(p.parent().unwrap());
-    let _ = std::fs::write(&p, word.trim());
+    let _ = crate::protected_state::write(&p, word.trim().as_bytes());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

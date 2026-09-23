@@ -2,6 +2,7 @@
 //! (ConPTY on Windows, openpty elsewhere).
 
 pub mod ports;
+mod ring;
 
 use std::io::{Read, Write};
 use std::sync::mpsc;

@@ -188,7 +188,7 @@ impl App {
         if self.palette.is_none() && command!=Find {
             if let Some(Pane::Web(w))=self.tabs.get(self.active).map(|t|t.focused_ref()) {
                 let target=if w.focus_devtools{w.devtools.as_ref().unwrap_or(&w.tab)}else{&w.tab};
-                if let Some(frame)=target.browser.focused_frame().or_else(||target.browser.main_frame()) {
+                if let Some(frame)=target.browser.as_ref().and_then(|b|b.focused_frame().or_else(||b.main_frame())) {
                     match command {Undo=>frame.undo(),Redo=>frame.redo(),Cut=>frame.cut(),Copy=>frame.copy(),Paste=>frame.paste(),SelectAll=>frame.select_all(),_=>{}}
                 }
                 return;

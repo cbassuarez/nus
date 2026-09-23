@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nus-vault = { path = "../vault" }
 chacha20poly1305 = "0.10"
 getrandom = "0.2"
 blake3 = "1"
@@ -15,3 +16,11 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+nus-vault = { path = "../vault", features = ["test-vault"] }
+criterion.workspace = true
+
+[[bench]]
+name = "sync"
+harness = false

@@ -9,6 +9,9 @@
 use nus_render::Color;
 use std::path::PathBuf;
 
+#[path = "reading_rules_migration.rs"]
+mod reading_rules_migration;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Shell {
     Band,
@@ -529,12 +532,8 @@ chains = {
 -- folders: live folders in the sidebar, under the tabs. Each is a list of
 -- { title, url, detail } or a function returning one (polled each minute;
 -- os_hour is there for time-of-day lists). GITHUB and PORTS are built in.
-folders = {
-  ["Starter references"] = {
-    { title = "Rust standard library", url = "https://doc.rust-lang.org/std/", detail = "Rust project · API reference" },
-    { title = "MDN Web Docs", url = "https://developer.mozilla.org/", detail = "MDN · web platform reference" },
-  },
-}
+-- Your saved pages belong in the Reading library, not a second starter shelf.
+folders = {}
 
 -- group(tab): the group tidy proposes for a tab, or nil for the default
 -- (a page's host, a shell's project folder). tab has kind, title, url,
@@ -705,6 +704,9 @@ impl Rules {
             let _ = std::fs::create_dir_all(path.parent().unwrap());
             let _ = std::fs::write(&path, DEFAULT_RULES);
         }
+        // Only the exact old bundled shelf is migrated. A customized Rules
+        // folder remains the user's; a backup is kept before any replacement.
+        let reading_migration_error = reading_rules_migration::migrate_file(&path).err();
         // Older files get the chains and folders examples appended, once each.
         for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("group", "-- group(tab):"), ("skills", "-- skills:"), ("on_block", "-- on_block(b):"), ("program", "-- program(p):"), ("ports", "-- ports:")] {
             let Ok(src) = std::fs::read_to_string(&path) else { break };
@@ -726,6 +728,10 @@ impl Rules {
         }
         let mut r = Rules { lua: mlua::Lua::new(), path, status: String::new(), source: String::new(), queued: Default::default(), programs: Default::default() };
         r.reload();
+        if let Some(e) = reading_migration_error {
+            tracing::warn!("Reading shelf migration: {e}");
+            r.status.push_str(&format!(" · Starter shelf unchanged: {e}"));
+        }
         r
     }
 
@@ -1195,6 +1201,7 @@ mod tests {
     fn default_rules_run() {
         let r = Rules::from_source(DEFAULT_RULES);
         assert!(r.status.starts_with("ok"), "{}", r.status);
+        assert!(r.folders().is_empty(), "defaults must not create a second reading shelf");
         let ctx = TabCtx { kind: "terminal", index: 1, profile: "pwsh", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: None, tab_colours: "family" };
         let o = r.new_tab(&ctx);
         assert!(o.bg.is_some() && o.signal.is_some());

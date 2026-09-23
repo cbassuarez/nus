@@ -52,12 +52,13 @@ fn publish(data: &Path, exe: &Path, signal: Color) -> io::Result<()> {
     let apps = data.join("applications");
     std::fs::create_dir_all(&icons)?;
     std::fs::create_dir_all(&apps)?;
-    let path = icons.join(format!(
+    let mercury=crate::mercury::earned();
+    let path = if mercury{icons.join("mercury-tidal-v1.png")}else{icons.join(format!(
         "orbit-{:02x}{:02x}{:02x}{:02x}.png",
         colour[0], colour[1], colour[2], colour[3]
-    ));
+    ))};
     if !path.exists() {
-        let rgba = dock_icon::render(256, signal, Face::Newsreader);
+        let rgba = if mercury{crate::mercury::icon(256)}else{dock_icon::render(256, signal, Face::Newsreader)};
         atomic_write(&path, &nus_render::icon::png(&rgba, 256, 256))?;
     }
     let entry = apps.join(format!("{APP_ID}.desktop"));

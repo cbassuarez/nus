@@ -39,6 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 scripts/test-release.py
+      - run: python3 -m unittest discover -s scripts/tests -p test_release_support.py
       - id: version
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -95,6 +96,8 @@ jobs:
       - name: Fetch pinned CEF
         run: bash scripts/fetch-cef.sh
       - name: Test and build native application
+        env:
+          NUS_RELEASE_VERSION: ${{ needs.version.outputs.tag }}
         run: |
           source scripts/env.sh
           cargo build --locked --release -p nus-hold
@@ -150,12 +153,17 @@ jobs:
           pattern: release-*
           path: dist/release
           merge-multiple: true
+      - name: Read current maintenance policy
+        # An old maintenance branch must not keep claiming that it is Current.
+        run: |
+          git fetch --no-tags origin main
+          git show FETCH_HEAD:release-support.json > dist/release/support-policy.json
       - name: Validate hashes and publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
           RELEASE_TARGETS: ${{ needs.version.outputs.targets }}
-        run: python3 scripts/publish-release.py --tag "$RELEASE_TAG" --revision "$GITHUB_SHA" --targets "$RELEASE_TARGETS"
+        run: python3 scripts/publish-release.py --tag "$RELEASE_TAG" --revision "$GITHUB_SHA" --targets "$RELEASE_TARGETS" --support-policy dist/release/support-policy.json
       - name: Tell the site
         # nus.dev refreshes its download snapshot on this event. The token needs
         # `repo` (classic) or Contents: write on nus.dev; without it the site's

@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "transition_days": 30,
+  "feature_lines": [],
+  "platforms": ["macos-arm64", "windows-x86_64", "linux-x86_64"]
+}

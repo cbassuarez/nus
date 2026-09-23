@@ -4,6 +4,13 @@
 pub(crate) mod store;
 #[path = "library_access.rs"]
 mod access;
+#[path = "library_menu.rs"]
+mod menu;
+#[path = "library_form.rs"]
+mod form;
+pub(crate) use menu::MenuAction;
+
+const DEFAULT_READING_SOURCE: &str = "https://cbassuarez.com/nus.dev/";
 use std::{collections::BTreeMap, path::{Path, PathBuf}, time::Instant};
 use nus_render::{Rect, Scene, text::Style};
 use crate::{app::{App, Pane}, home::HomePane, reader::{Article, Reader, Block}};
@@ -13,16 +20,19 @@ use crate::reader::interaction::{Hit as TextHit, Picture};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Hit {
+    Add, Field(u8), SaveDraft, CancelDraft,
     Search, Filter(u8), Row(String), Back, More, Original, Finished, Archive,
     Refresh, Remove, ConfirmRemove, CancelRemove, Undo, Find, Copy,
     Smaller, Larger, Link(String), Code(usize),
 }
 #[derive(Default)]
 pub struct Ui {
+    pub draft: Option<form::Draft>,
     pub hits: Vec<(Rect, Hit)>,
     pub focus: Option<Hit>,
     pub filter: u8,
     pub confirm: bool,
+    pub remove_target: Option<(String, u64)>,
     pub selected: Option<String>,
     pub reveal: bool,
     pub size: f32,
@@ -30,6 +40,9 @@ pub struct Ui {
 pub struct Library {
     pub entries: BTreeMap<String, Entry>,
     loaded: bool,
+    defaults_ready: bool,
+    defaults_retry: Option<Instant>,
+    defaults_error: Option<String>,
     pending: Vec<Pending>,
     dirty: BTreeMap<String, (Instant, Position)>,
     store: Store,
@@ -58,7 +71,8 @@ pub struct Reading {
 }
 impl Default for Library {
     fn default() -> Self {
-        Self { entries: BTreeMap::new(), loaded: false, pending: vec![], dirty: BTreeMap::new(),
+        Self { entries: BTreeMap::new(), loaded: false, defaults_ready: false,
+            defaults_retry: None, defaults_error: None, pending: vec![], dirty: BTreeMap::new(),
             store: Store::new(PathBuf::from("profile/library")), last_scan: crate::clock::now(), serial: 0, scan: None,
             status: String::new(), undo: None, access_ids: BTreeMap::new(), access_map: BTreeMap::new() }
     }
@@ -69,9 +83,25 @@ impl Library {
     /// success/failure acknowledgement through Store.
     pub fn reload(&mut self) {
         if crate::private::enabled() || self.scan.is_some() { return; }
+        if !self.defaults_ready && self.defaults_retry.is_none_or(|at| crate::clock::since(at).as_secs() >= 2) {
+            match self.store.seed_links_once(1, &[(DEFAULT_READING_SOURCE, "nus.dev")], crate::journal::now()) {
+                Ok(entries) => {
+                    self.defaults_ready = true;
+                    self.defaults_retry = None;
+                    if self.defaults_error.as_ref().is_some_and(|e| *e == self.status) { self.status.clear(); }
+                    self.defaults_error = None;
+                    for e in entries { self.remember(e); }
+                },
+                Err(e) => {
+                    let message = format!("Could not initialize the starting link: {e}. Your saved items are unchanged.");
+                    self.status = message.clone(); self.defaults_error = Some(message);
+                    self.defaults_retry = Some(crate::clock::now());
+                },
+            }
+        }
         let store=self.store.clone();let (tx,rx)=std::sync::mpsc::sync_channel(1);
         match std::thread::Builder::new().name("nus-library-scan".into()).spawn(move || {let _=tx.send(store.list());}) {
-            Ok(_)=>{self.scan=Some((self.serial,rx));if !self.loaded{self.status="Loading reading library…".into();}},
+            Ok(_)=>{self.scan=Some((self.serial,rx));if !self.loaded && self.status.is_empty(){self.status="Loading reading list…".into();}},
             Err(e)=>self.status=format!("Could not start the library scan: {e}"),
         }
         self.last_scan=crate::clock::now();
@@ -98,13 +128,13 @@ impl Library {
                 let changed=!self.loaded||entries!=self.entries||!errors.is_empty();
                 self.entries=entries;self.loaded=true;
                 if !errors.is_empty(){self.status=format!("{} unreadable record(s); original files left untouched. {}",errors.len(),errors[0]);}
-                else if self.status=="Loading reading library…"{self.status.clear();}
+                else if self.status=="Loading reading list…"{self.status.clear();}
                 changed
             },
             Err(e)=>{self.status=format!("Could not read the library; previous view retained: {e}");true},
         }
     }
-    fn ensure(&mut self) { if !self.loaded { self.reload(); } }
+    fn ensure(&mut self) { if !self.loaded || !self.defaults_ready { self.reload(); } }
     fn remember(&mut self, e: Entry) { self.serial=self.serial.wrapping_add(1);self.entries.insert(e.id.clone(), e); }
     pub(crate) fn flush(&mut self, force: bool) {
         if crate::private::enabled() { return; }
@@ -190,20 +220,26 @@ impl App {
             if let Some(right) = right { self.tabs[i].focus_right = right; self.activate(i); return; }
         }
         let mut h = HomePane::new(); h.library = true; h.library_ui.focus = Some(Hit::Search);
-        let mut tab = self.make_tab(Pane::Home(h), None); tab.name = Some("Reading library".into());
+        let mut tab = self.make_tab(Pane::Home(h), None); tab.name = Some("Reading list".into());
         self.tabs.push(tab); self.activate(self.tabs.len()-1); self.layout(); self.dirty = true;
     }
-    pub(crate) fn save_reading(&mut self) { self.save_reading_mode(false); }
-    pub(crate) fn refresh_reading(&mut self) { self.save_reading_mode(true); }
-    fn save_reading_mode(&mut self, refresh: bool) {
+    pub(crate) fn save_reading(&mut self) { self.save_reading_mode(false, None); }
+    pub(crate) fn refresh_reading(&mut self) { self.save_reading_mode(true, None); }
+    fn save_reading_mode(&mut self, refresh: bool, requested: Option<String>) {
         if crate::private::enabled() { self.library_message("Reading is not saved from an incognito window."); return; }
         self.library.ensure();
         if self.library.pending.len() >= 4 { self.library_message("Four pages are already being saved. Try again after one finishes."); return; }
         // Refresh from a saved copy only uses an already-open matching source.
         // It never opens the network behind the user's back.
-        let reading = self.library_home().and_then(|h| h.reading.as_ref()).map(|r| r.id.clone());
+        let reading = requested.or_else(|| self.library_home().and_then(|h| h.reading.as_ref()).map(|r| r.id.clone()));
+        let saved_entry = if refresh {
+            match reading.as_ref().map(|id| self.library.store.read(id)).transpose() {
+                Ok(e) if e.as_ref().is_none_or(|e| !e.deleted) => e,
+                _ => { self.library_message("This reading item is no longer available. Refresh was not started."); return; },
+            }
+        } else { None };
         let target = if refresh {
-            reading.as_ref().and_then(|id| self.library.entries.get(id)).and_then(|e| {
+            saved_entry.as_ref().and_then(|e| {
                 self.tabs.iter().enumerate().find_map(|(i,t)| [(false,Some(&t.left)),(true,t.right.as_ref())].into_iter().find_map(|(right,p)| match p {
                     Some(Pane::Web(w)) if w.tab.shared.borrow().url == e.source && container(&w.container) == e.container => Some((i,right)), _ => None,
                 }))
@@ -231,10 +267,17 @@ impl App {
                 let source = b.path.as_ref().map(|p| format!("file:{}",p.display())).unwrap_or_else(|| format!("note:{}",store::id(&text)));
                 (source, title.clone(), None, Some(Article { title, blocks: vec![Block::Pre(text)], ..Default::default() }))
             },
-            _ => { self.library_message("Open a page or text file, then Save to reading library."); return; },
+            _ => { self.library_message("Open a page or text file, then Save to reading list."); return; },
         };
         let tab_id = t.id;
-        let saved = self.library.store.save_link(&source, &title, context.clone(), crate::journal::now());
+        // Refresh an existing id without calling Save: an explicit Save may
+        // restore a tombstone, whereas Refresh must never resurrect one.
+        let saved = if let Some(e) = saved_entry {
+            if e.source != source || e.container != context {
+                self.library_message("The source changed before refresh. The saved copy is unchanged."); return;
+            }
+            Ok((e, false))
+        } else { self.library.store.save_link(&source, &title, context.clone(), crate::journal::now()) };
         let (e, created) = match saved { Ok(v) => v, Err(e) => { tracing::info!("reading link save failed: {e}"); self.library_message("Could not add this item to your library. Please try again."); return; } };
         self.library.remember(e.clone());
         if !created && !refresh { self.library_message("Already in your library."); return; }
@@ -316,7 +359,7 @@ impl App {
         let words: Vec<_> = q.split_whitespace().collect();
         let mut rows: Vec<_> = self.library.entries.values().filter(|e| !e.deleted && match if archived {3} else {filter} {
             0 => !e.archived && !e.finished, 1 => true, 2 => !e.archived && e.finished, _ => e.archived,
-        }).filter(|e| { let text = format!("{} {}",e.title,e.source).to_lowercase(); words.iter().all(|w|text.contains(w)) }).cloned().collect();
+        }).filter(|e| { let text = format!("{} {} {}",e.title,e.source,e.extra.get("user_notes").and_then(|v|v.as_str()).unwrap_or("")).to_lowercase(); words.iter().all(|w|text.contains(w)) }).cloned().collect();
         rows.sort_by(|a,b| {
             let ongoing = |e:&Entry| filter == 0 && e.progress > 0.0 && !e.finished;
             ongoing(b).cmp(&ongoing(a)).then_with(||b.saved.cmp(&a.saved)).then_with(||a.id.cmp(&b.id))
@@ -324,21 +367,34 @@ impl App {
         rows
     }
     pub(crate) fn read_saved(&mut self,key:&str) {
+        self.read_saved_mode(key, true);
+    }
+    fn read_saved_mode(&mut self, key: &str, allow_link: bool) {
+        if crate::private::enabled() { return; }
         self.library.flush(true);
         self.library.ensure();
         let e = match self.library.store.read(key) { Ok(e) if !e.deleted => e, _ => { self.library_message("This reading item is no longer available."); return; } };
         let loaded = self.library.store.article(&e).and_then(|(bytes,hash)| serde_json::from_slice::<Article>(&bytes).map(|a|(a,hash)).map_err(std::io::Error::other));
         let (article,version,available,note) = match loaded {
+            Err(ref err) if allow_link && store::link_only_fallback(&e, err.kind())
+                && reading_action_available(&e.source, false, &Hit::Original) => {
+                    self.library.remember(e.clone());
+                    self.open_reading_source(&e);
+                    return;
+                },
             Ok((a,h)) => (a,h,true,if e.note.is_empty(){"Saved copy · available offline".into()}else{format!("Saved copy · {}",e.note)}),
             Err(err) => (Article{title:e.title.clone(),..Default::default()},String::new(),false,{tracing::info!("reading copy unavailable: {err}");if e.source.starts_with("note:"){"Saved text is unavailable.".into()}else{"Saved text is unavailable. Open the original from Reading options.".into()}}),
         };
+        let mut article=article;article.title=e.title.clone();
+        if !e.source.starts_with("note:"){if let Some(notes)=e.extra.get("user_notes").and_then(|v|v.as_str()).filter(|s|!s.is_empty()){article.blocks.insert(0,Block::Quote(notes.into()));}}
         let mut reader = Reader::new(article); reader.saved.offline = true;
         let image_note = self.library_pictures(&mut reader);
         let resume = e.position.clone().or_else(|| (!e.anchor.is_empty() || e.progress > 0.0).then(||Position{quote:e.anchor.clone(),fraction:e.progress,..Default::default()}));
         self.library.remember(e.clone()); self.open_library();
         if let Some(h) = self.library_home_mut() {
             h.reading = Some(Reading{id:e.id,reader,resume,version,available,note:format!("{note}{image_note}")});
-            h.library_ui.confirm = false; h.library_ui.focus = Some(Hit::Back);
+            h.library_ui.confirm = false; h.library_ui.remove_target = None;
+            h.library_ui.focus = Some(Hit::Back);
         }
         self.dirty = true;
     }
@@ -400,36 +456,44 @@ impl App {
         match arboard::Clipboard::new().and_then(|mut cb|cb.set_text(text)) {Ok(())=>self.library_message("Copied."),Err(e)=>self.library_message(format!("Could not copy: {e}"))}
     }
     pub(crate) fn library_action(&mut self,hit:Hit) {
-        self.library.flush(true);
+        if crate::private::enabled() { return; }
+        if self.library_form_action(&hit){return;}
+        if hit != Hit::ConfirmRemove { self.library.flush(true); }
         let id=self.library_home().and_then(|h|h.reading.as_ref()).map(|r|r.id.clone());
-        let e=id.as_ref().and_then(|id|self.library.entries.get(id)).cloned();
+        let e=id.as_ref().and_then(|id|self.library.store.read(id).ok()).filter(|e| !e.deleted);
         if matches!(hit,Hit::Original|Hit::Refresh|Hit::Find|Hit::Copy|Hit::Smaller|Hit::Larger) {
             if let Some(reading)=self.library_home().and_then(|h|h.reading.as_ref()) {
                 if !reading_action_available(e.as_ref().map(|e|e.source.as_str()).unwrap_or(""),reading.available,&hit){return;}
             }
         }
         match hit {
+            Hit::Add|Hit::Field(_)|Hit::SaveDraft|Hit::CancelDraft=>{},
             Hit::Row(id)=>self.read_saved(&id),
             Hit::Search=>{if let Some(h)=self.library_home_mut(){h.library_ui.focus=Some(Hit::Search);}},
             Hit::Filter(filter)=>{if let Some(h)=self.library_home_mut(){h.library_ui.filter=filter;h.library_ui.selected=None;h.library_scroll=0.0;h.sel=0;h.library_ui.focus=Some(Hit::Filter(filter));}},
-            Hit::Back=>{if let Some(h)=self.library_home_mut(){h.reading=None;h.library_ui.confirm=false;h.library_ui.focus=Some(Hit::Search);}},
-            Hit::More=>{self.open_palette(crate::app::PaletteMode::Go);if let Some((_,q))=self.palette.as_mut(){*q="reading: ".into();}},
+            Hit::Back=>{if let Some(h)=self.library_home_mut(){h.reading=None;h.library_ui.confirm=false;h.library_ui.remove_target=None;h.library_ui.focus=Some(Hit::Search);}},
+            Hit::More=>if let Some(id)=id {
+                let at=self.library_context_anchor(&id);
+                self.library_context_menu(&id,at);
+            },
             Hit::Original=>if let Some(e)=e{self.open_reading_source(&e);},
             Hit::Refresh=>self.refresh_reading(),
             Hit::Finished|Hit::Archive=>if let Some(e)=e{
                 let result=self.library.store.state(&e.id,if hit==Hit::Finished{Some(!e.finished)}else{None},if hit==Hit::Archive{Some(!e.archived)}else{None});
                 match result{Ok(e)=>{self.library.remember(e);self.library_message("Reading state saved.");},Err(e)=>self.library_message(format!("State was not saved: {e}"))}
             },
-            Hit::Remove=>{if let Some(h)=self.library_home_mut(){h.library_ui.confirm=true;h.library_ui.focus=Some(Hit::CancelRemove);if let Some(r)=h.reading.as_mut(){r.reader.saved.find=None;r.reader.saved.found=None;}}},
-            Hit::CancelRemove=>{if let Some(h)=self.library_home_mut(){h.library_ui.confirm=false;h.library_ui.focus=Some(Hit::Remove);}},
-            Hit::ConfirmRemove=>if let Some(e)=e{
-                if !self.library_home().is_some_and(|h|h.library_ui.confirm){return;}
-                match self.library.store.remove(&e.id){
-                    Ok(e)=>{self.library.dirty.remove(&e.id);self.library.undo=Some((e.id.clone(),e.revision));self.library.remember(e);self.library_action(Hit::Back);self.library_message("Removed from your library. Undo is available.");},
-                    Err(err)=>self.library_message(format!("Removal failed: {err}")),
-                }
+            Hit::Remove=>if let Some(e)=e {if let Some(h)=self.library_home_mut(){
+                h.library_ui.remove_target=Some((e.id,e.revision));
+                h.library_ui.confirm=true;h.library_ui.focus=Some(Hit::CancelRemove);
+                if let Some(r)=h.reading.as_mut(){r.reader.saved.find=None;r.reader.saved.found=None;}
+            }},
+            Hit::CancelRemove=>{if let Some(h)=self.library_home_mut(){h.library_ui.confirm=false;h.library_ui.remove_target=None;h.library_ui.focus=Some(Hit::Remove);}},
+            Hit::ConfirmRemove=>{
+                let target=self.library_home().filter(|h|h.library_ui.confirm)
+                    .and_then(|h|h.library_ui.remove_target.clone());
+                if let Some((id,revision))=target {self.library_remove_revision(&id,revision);}
             },
-            Hit::Undo=>if let Some((id,rev))=self.library.undo.clone(){match self.library.store.undo_remove(&id,rev){Ok(e)=>{self.library.remember(e);self.library.undo=None;self.library_message("Restored to the reading library.");},Err(e)=>self.library_message(format!("Undo failed: {e}"))}},
+            Hit::Undo=>if let Some((id,rev))=self.library.undo.clone(){match self.library.store.undo_remove(&id,rev){Ok(e)=>{self.library.remember(e);self.library.undo=None;self.library_message("Restored to the reading list.");},Err(e)=>self.library_message(format!("Undo failed: {e}"))}},
             Hit::Find=>if let Some(h)=self.library_home_mut(){if let Some(r)=h.reading.as_mut(){r.reader.saved.find.get_or_insert_with(String::new);h.library_ui.focus=Some(Hit::Find);}},
             Hit::Copy=>{let text=self.library_home().and_then(|h|h.reading.as_ref()).map(|r|r.reader.reading_selected_text()).unwrap_or_default();self.library_copy(text);},
             Hit::Smaller|Hit::Larger=>if let Some(h)=self.library_home_mut(){h.library_ui.size=((if h.library_ui.size==0.0{1.0}else{h.library_ui.size})+if hit==Hit::Larger{0.1}else{-0.1}).clamp(0.8,1.8);},
@@ -448,6 +512,7 @@ impl App {
     pub(crate) fn library_key(&mut self,ev:&crate::app::KeyIn)->bool {
         use winit::keyboard::{Key,NamedKey};
         if ev.state!=winit::event::ElementState::Pressed || self.library_home().is_none(){return false;}
+        if self.library_form_key(ev){return true;}
         let modifiers=self.mods;
         let command=if cfg!(target_os="macos"){modifiers.super_key()}else{modifiers.control_key()};
         let character=match &ev.logical_key{Key::Character(s)=>s.to_lowercase(),_=>String::new()};
@@ -601,6 +666,9 @@ impl App {
         self.dirty=true;true
     }
     pub(crate) fn library_mouse(&mut self,button:winit::event::MouseButton,state:winit::event::ElementState,x:f32,y:f32)->bool {
+        if button==winit::event::MouseButton::Right && state==winit::event::ElementState::Pressed {
+            return self.library_context_at(x,y);
+        }
         if button!=winit::event::MouseButton::Left{return false;}
         if state==winit::event::ElementState::Pressed{return self.library_click(x,y);}
         let mut dragged=false;
@@ -621,6 +689,7 @@ impl App {
     pub(crate) fn library_label(&self,hit:&Hit)->String {
         let e=self.library_home().and_then(|h|h.reading.as_ref()).and_then(|r|self.library.entries.get(&r.id));
         match hit {
+            Hit::Add=>"Add item".into(),Hit::Field(0)=>"Title".into(),Hit::Field(1)=>"Link or file path".into(),Hit::Field(_)=>"Text / personal notes".into(),Hit::SaveDraft=>"Save".into(),Hit::CancelDraft=>"Cancel".into(),
             Hit::Search=>"Search title or source".into(),Hit::Filter(0)=>"Unfinished".into(),Hit::Filter(1)=>"All saved".into(),Hit::Filter(2)=>"Finished".into(),Hit::Filter(_)=>"Archived".into(),
             Hit::Row(id)=>self.library.entries.get(id).map(|e|format!("Open saved {}",e.title)).unwrap_or_else(||"Open saved article".into()),
             Hit::Back=>"Library".into(),Hit::More=>"Reading options".into(),Hit::Original=>"Open original".into(),Hit::Finished=>if e.is_some_and(|e|e.finished){"Mark unfinished"}else{"Mark finished"}.into(),
@@ -645,8 +714,10 @@ impl App {
             if cell.contains(self.mouse.0,self.mouse.1){scene.rect(cell,self.theme.tint);}
             if selected{scene.hline(cell.x+px(8.0),cell.bottom()-px(3.0),(cell.w-px(16.0)).max(0.0),px(2.0),self.surface.signal);}
             if focused{scene.outline(cell,px(1.5),self.surface.signal);}
+            let primary=matches!(hit,Hit::Add|Hit::SaveDraft);
+            if primary{scene.outline(cell,px(1.0),self.surface.signal);}
             let text=self.fit(label,text,(width-px(12.0)).max(1.0));
-            self.fonts.draw(scene,Style{color:if selected||focused{ink}else{dim},..label},x+px(8.0),y+px(26.0),&text);
+            self.fonts.draw(scene,Style{color:if primary{self.surface.signal}else if selected||focused{ink}else{dim},..label},x+px(8.0),y+px(26.0),&text);
             let clipped=cell.intersect(&r);if clipped.w>0.0&&clipped.h>0.0{h.library_ui.hits.push((clipped,hit.clone()));}
             x+=width+gap;
         }
@@ -656,6 +727,7 @@ impl App {
         let outer=scene.clip();let r=h.rect;let scale=self.scale;let px=|v:f32|v*scale;
         let ink=self.theme.ink;let dim=self.theme.dim;let paper=self.paper();let label=self.label();
         scene.layer(Some(r));scene.rect(r,paper);h.hits.clear();h.keys.clear();h.library_ui.hits.clear();
+        if h.library_ui.draft.is_some(){self.draw_library_form(scene,h);scene.layer(outer);return;}
         if h.library_ui.size==0.0{h.library_ui.size=1.0;}
         let current=h.reading.as_ref().and_then(|rd|self.library.entries.get(&rd.id)).cloned();
         let mut y=r.y+px(12.0);
@@ -713,10 +785,10 @@ impl App {
             scene.layer(outer);return;
         }
         let width=px(760.0).min((r.w-px(40.0)).max(1.0));let x=r.x+(r.w-width)/2.0;
-        let title=self.fit(Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},"Reading library",width);
+        let title=self.fit(Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},"Reading list",width);
         self.fonts.draw(scene,Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},x,y+px(40.0),&title);y+=px(66.0);
         for line in crate::reader::wrap(&self.fonts,label,"A place for what you want to return to.",width){self.fonts.draw(scene,Style{color:dim,..label},x,y,&line);y+=px(20.0);}
-        let controls=[(Hit::Filter(0),"Unfinished".into()),(Hit::Filter(1),"All saved".into()),(Hit::Filter(2),"Finished".into()),(Hit::Filter(3),"Archived".into())];
+        let controls=[(Hit::Add,"+ Add item".into()),(Hit::Filter(0),"Unfinished".into()),(Hit::Filter(1),"All saved".into()),(Hit::Filter(2),"Finished".into()),(Hit::Filter(3),"Archived".into())];
         y=self.library_controls(scene,h,&controls,y+px(8.0));
         let search=Rect::new(x,y,width,px(44.0));
         scene.hline(search.x,search.bottom()-px(3.0),search.w,px(1.0),if h.library_ui.focus==Some(Hit::Search){self.surface.signal}else{dim});
@@ -726,6 +798,12 @@ impl App {
         if self.library.undo.is_some(){y=self.library_controls(scene,h,&[(Hit::Undo,"Undo removal".into())],y);}
         if !self.library.status.is_empty(){let message=self.fit(label,&self.library.status,width);self.fonts.draw(scene,Style{color:dim,..label},x,y+px(14.0),&message);y+=px(28.0);}
         let rows=self.library_rows_for(&h.input,h.library_ui.filter);
+        if h.library_ui.selected.as_ref().is_some_and(|id| !rows.iter().any(|e| &e.id==id)) {
+            let next=h.sel.saturating_sub(1).min(rows.len().saturating_sub(1));
+            h.library_ui.selected=rows.get(next).map(|e|e.id.clone());
+            h.library_ui.focus=Some(h.library_ui.selected.clone().map(Hit::Row).unwrap_or(Hit::Search));
+            h.sel=if rows.is_empty(){0}else{next+1};
+        }
         let area=Rect::new(x,y,width,(r.bottom()-y-px(16.0)).max(1.0));let row_h=px(82.0);
         h.library_reach=(rows.len() as f32*row_h-area.h).max(0.0);
         if h.library_ui.reveal{if let Some(i)=h.library_ui.selected.as_ref().and_then(|key|rows.iter().position(|e|&e.id==key)){
@@ -733,7 +811,7 @@ impl App {
         }h.library_ui.reveal=false;}
         h.library_scroll=h.library_scroll.clamp(0.0,h.library_reach);
         scene.layer(Some(area.intersect(&r)));
-        if rows.is_empty(){let message=if !self.library.loaded{"Reading the saved library…"}else if self.library.entries.values().all(|e|e.deleted){"Save a page or text file using ‘Save to reading library’ in the command palette."}else{"No matching items in this view."};for (i,line) in crate::reader::wrap(&self.fonts,label,message,width).iter().enumerate(){self.fonts.draw(scene,label,x,y+px(28.0)+i as f32*px(22.0),line);}}
+        if rows.is_empty(){let message=if !self.library.loaded{"Reading the saved library…"}else if self.library.entries.values().all(|e|e.deleted){"Add a link or note above, or right-click a page to save it here."}else{"No matching items in this view."};for (i,line) in crate::reader::wrap(&self.fonts,label,message,width).iter().enumerate(){self.fonts.draw(scene,label,x,y+px(28.0)+i as f32*px(22.0),line);}}
         for (i,e) in rows.iter().enumerate(){
             let row=Rect::new(x,y+i as f32*row_h-h.library_scroll,width,row_h);
             if row.bottom()<area.y||row.y>area.bottom(){continue;}

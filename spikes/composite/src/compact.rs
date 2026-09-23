@@ -4,7 +4,7 @@
 //! SIDEBAR. The rows are the same rows, so clicks, drags, selection and
 //! the tab menu all work unchanged; titles show as a tooltip on hover.
 
-use crate::app::{Caps, hover_key, App, IconMotion, SideHit};
+use crate::app::{hover_key, App, IconMotion, SideHit};
 use nus_render::text::icons;
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene, Style};
@@ -30,7 +30,7 @@ impl App {
         }
         let st = self.strip_rect();
         let near = self.mouse.1 <= st.bottom() + self.px(6.0) && self.mouse.0 >= st.x && self.mouse.0 <= st.right();
-        near || self.win_menu || self.kinds_menu || self.resized_at.is_some_and(|t| crate::clock::since(t).as_millis() < 900)
+        near || self.traffic_hovered() || self.win_menu || self.kinds_menu || self.resized_at.is_some_and(|t| crate::clock::since(t).as_millis() < 900)
     }
 
     pub(crate) fn toggle_compact(&mut self) {
@@ -152,34 +152,20 @@ impl App {
         self.draw_sidebar_menus(scene, sb);
     }
 
-    /// The hovered row's title beside the column, drawn after the panes so
-    /// it sits over them.
-    pub(crate) fn draw_compact_tip(&mut self, scene: &mut Scene) {
-        let Some((i, y)) = self.compact_tip.take() else { return };
-        if i >= self.tabs.len() || !self.sidebar_visible() {
-            return;
-        }
-        let t = self.theme.clone();
-        let ink = t.ink;
+    /// Offer the visible row to the shared tooltip controller; it is drawn
+    /// after the panes and follows the same dwell/dismissal rules as chrome.
+    pub(crate) fn draw_compact_tip(&mut self, _scene: &mut Scene) {
+        let Some((i, _)) = self.compact_tip.take() else { return; };
+        if !self.sidebar_visible() { return; }
+        let Some(tab) = self.tabs.get(i) else { return; };
+        let id = tab.id;
+        let (title, detail) = tab.row_text();
+        let words = if detail.is_empty() { title } else { format!("{title} · {detail}") };
         let sb = self.sidebar_rect();
-        {
-            let (title, detail) = self.tabs[i].row_text();
-            let ui = self.ui();
-            let label = self.label();
-            let text = title.caps();
-            let tw = self.fonts.measure(ui, &text);
-            let dw = if detail.is_empty() { 0.0 } else { self.fonts.measure(label, &detail.caps()) };
-            let w = tw.max(dw) + self.px(24.0);
-            let h = if detail.is_empty() { self.px(28.0) } else { self.px(44.0) };
-            let x = if self.sidebar_right() { sb.x - w - self.px(6.0) } else { sb.right() + self.px(6.0) };
-            let r = Rect::new(x, y + ((self.px(m::ROW_H) - h) / 2.0).round(), w, h);
-            scene.layer(None);
-            scene.rect(Rect::new(r.x + self.px(2.0), r.y + self.px(2.0), r.w, r.h), crate::app::fade(ink, 0.5));
-            scene.rect(r, self.paper());
-            scene.outline(r, self.px(m::STRUCTURE), ink);
-            self.fonts.draw(scene, Style { color: ink, ..ui }, r.x + self.px(12.0), r.y + self.px(19.0), &text);
-            if !detail.is_empty() {
-                self.fonts.draw(scene, Style { color: t.dim, ..label }, r.x + self.px(12.0), r.y + self.px(36.0), &detail.caps());
+        let geometry = self.sidebar_geometry();
+        if let Some((_, y, height)) = geometry.rows.iter().find(|(index, _, _)| *index == i) {
+            if let Some(hit) = geometry.clip(sb, *y, *height) {
+                self.offer_tip(hover_key("compact-tab", id as usize), hit, words);
             }
         }
     }

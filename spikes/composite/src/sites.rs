@@ -248,10 +248,8 @@ impl App {
                 if host.is_empty() || SITES.read().unwrap().contains_key(&host) {
                     continue;
                 }
-                if let Some(h) = w.tab.host() {
-                    h.set_zoom_level(zoom_level(default_zoom()));
-                    n += 1;
-                }
+                w.tab.zoom_to(default_zoom(), self.motion.dur(160.0));
+                n += 1;
             }
         }
         if n > 0 {
@@ -264,7 +262,7 @@ impl App {
     /// through DevTools on any page that is up, since it is one cache.
     pub(crate) fn clear_browsing(&mut self, what: u8) {
         if what == 0 {
-            if let Some(cm) = cef::cookie_manager_get_global_manager(None) {
+            if let Some(cm) = crate::browser_runtime::ensure().then(||cef::cookie_manager_get_global_manager(None)).flatten() {
                 cm.delete_cookies(None, None, None);
                 cm.flush_store(None);
             }
@@ -294,9 +292,7 @@ impl App {
         }
         let p = prefs(&host);
         if loading {
-            if let Some(h) = w.tab.host() {
-                h.set_zoom_level(zoom_level(p.zoom));
-            }
+            w.tab.zoom_to(p.zoom, 0.0);
             w.tab.devtools("Emulation.setScriptExecutionDisabled", serde_json::json!({ "value": !p.js }));
         }
         if !p.autoplay {
@@ -495,8 +491,8 @@ impl App {
         let mut p = prefs(&host);
         let mut reload = false;
         match h {
-            SiteHit::ZoomOut => p.zoom = (p.zoom.saturating_sub(10)).max(30),
-            SiteHit::ZoomIn => p.zoom = (p.zoom + 10).min(300),
+            SiteHit::ZoomOut => p.zoom = crate::zoom::next(w.tab.zoom_percent(), -1, default_zoom(), 25, 500),
+            SiteHit::ZoomIn => p.zoom = crate::zoom::next(w.tab.zoom_percent(), 1, default_zoom(), 25, 500),
             SiteHit::ZoomReset => p.zoom = default_zoom(),
             SiteHit::Autoplay => p.autoplay = !p.autoplay,
             SiteHit::Js => {
@@ -508,7 +504,7 @@ impl App {
                 reload = true;
             }
             SiteHit::ClearCookies => {
-                if let Some(cm) = cef::cookie_manager_get_global_manager(None) {
+                if let Some(cm) = crate::browser_runtime::ensure().then(||cef::cookie_manager_get_global_manager(None)).flatten() {
                     let u: cef::CefString = url.as_str().into();
                     cm.delete_cookies(Some(&u), None, None);
                 }
@@ -534,9 +530,7 @@ impl App {
             }
         }
         set(&host, p.clone());
-        if let Some(h) = w.tab.host() {
-            h.set_zoom_level(zoom_level(p.zoom));
-        }
+        w.tab.zoom_to(p.zoom, self.motion.dur(160.0));
         w.tab.devtools("Emulation.setScriptExecutionDisabled", serde_json::json!({ "value": !p.js }));
         if !p.autoplay {
             w.tab.eval(NO_AUTOPLAY);

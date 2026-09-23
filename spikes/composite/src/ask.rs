@@ -58,6 +58,7 @@ pub struct Turn {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AskHit {
+    ReviewSecrets,
     Field,
     Close,
     Insert(usize, usize),
@@ -73,7 +74,9 @@ pub enum AskHit {
     Backend,
 }
 
+struct RedactionReview { prompt:String, preview:String, backend:Backend, cwd:String, findings:usize }
 pub struct Ask {
+    redaction_review: Option<RedactionReview>,
     pub input: String,
     pub focus: bool,
     pub turns: Vec<Turn>,
@@ -112,7 +115,7 @@ impl Ask {
     }
 
     pub fn with_ctx(ctx: Vec<crate::askctx::Ctx>) -> Ask {
-        Ask { input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, armed: None, ctx, gathering: None, remembered: Vec::new(), art: false, stream: None, partial: String::new() }
+        Ask { redaction_review:None, input: String::new(), focus: true, turns: Vec::new(), pending: None, scroll: 0.0, hits: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), copied: None, armed: None, ctx, gathering: None, remembered: Vec::new(), art: false, stream: None, partial: String::new() }
     }
 }
 
@@ -213,8 +216,15 @@ fn no_window(c: &mut std::process::Command) {
 /// Run one prompt through a backend, blocking; called on a worker thread.
 /// With `stream`, each line of the answer is sent as it arrives.
 fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<String>>, cwd: Option<&str>) -> Result<String, String> {
+    run_reviewed(backend,prompt,stream,cwd,false)
+}
+fn run_reviewed(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<String>>, cwd: Option<&str>,allow_original:bool) -> Result<String, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    // A final boundary shared by every provider, including custom commands
+    // and the direct API. Scan complete payloads before bytes leave nus.
+    let sanitized=if allow_original {crate::secrets::Scrubbed{text:prompt.into(),findings:0}}else{crate::secrets::scrub(prompt)};
+    let prompt=sanitized.text.as_str();
     let config = crate::prefs::Prefs::load().behavior.map(|b|b.assistants).unwrap_or_default();
     let program = |i: usize| crate::assistants::resolve(crate::assistants::BINS[i], &config.providers[i].executable).ok_or_else(|| format!("{} is unavailable. Check Assistants settings.", crate::assistants::NAMES[i]));
     let mut c = match backend.name.as_str() {
@@ -260,12 +270,15 @@ fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<S
             })
             .to_string();
             let mut c = Command::new("curl");
-            c.args(["-s", "https://api.anthropic.com/v1/messages", "-H", "content-type: application/json", "-H", "anthropic-version: 2023-06-01", "-H", &format!("x-api-key: {key}"), "--data-binary", "@-"]);
+            // The credential and payload travel through a pipe, never argv or a file.
+            c.args(["--disable", "--silent", "--show-error", "--max-time", "110", "--proto", "=https", "--config", "-"]);
+            let quote=|s:&str| serde_json::to_string(s).unwrap();
+            let config=format!("url = \"https://api.anthropic.com/v1/messages\"\nheader = \"content-type: application/json\"\nheader = \"anthropic-version: 2023-06-01\"\nheader = {}\ndata-binary = {}\n",quote(&format!("x-api-key: {key}")),quote(&body));
             no_window(&mut c);
             c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = c.spawn().map_err(|e| e.to_string())?;
             if let Some(mut si) = child.stdin.take() {
-                let _ = si.write_all(body.as_bytes());
+                let _ = si.write_all(config.as_bytes());
             }
             let out = child.wait_with_output().map_err(|e| e.to_string())?;
             let text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -372,6 +385,20 @@ pub fn parse(md: &str) -> Vec<Block> {
 }
 
 impl App {
+    fn review_ask_secrets(&mut self){
+        let Some(review)=self.ask_term().and_then(|t|t.ask.as_mut()).and_then(|a|if a.pending.is_none(){a.redaction_review.take()}else{None})else{return;};
+        let preview:String=review.preview.chars().take(10000).collect();
+        let answer=rfd::MessageDialog::new().set_title("Review redacted assistant context")
+            .set_description(format!("{} suspected secrets were replaced before sending to {}.\n\nRedacted payload:\n{}\n\nSend the ORIGINAL payload once? This sends the hidden values to this provider. The exception applies only to this payload; future requests remain protected.",review.findings,review.backend.name,preview))
+            .set_buttons(rfd::MessageButtons::YesNo).show();
+        if answer!=rfd::MessageDialogResult::Yes{if let Some(a)=self.ask_term().and_then(|t|t.ask.as_mut()){a.redaction_review=Some(review);}return;}
+        let (tx,rx)=channel();let (stx,srx)=channel();let name=review.backend.name.clone();
+        std::thread::spawn(move||{let _=tx.send(run_reviewed(&review.backend,&review.prompt,Some(stx),Some(&review.cwd),true));});
+        if let Some(a)=self.ask_term().and_then(|t|t.ask.as_mut()){
+            a.turns.push(Turn{q:"Resent original context with your one-time approval".into(),blocks:Vec::new(),error:None,web:true});
+            a.pending=Some((rx,crate::clock::now(),name));a.stream=Some(srx);a.partial.clear();
+        }self.dirty=true;
+    }
     /// The shell the panel belongs to: the focused terminal.
     pub(crate) fn ask_term(&mut self) -> Option<&mut TermPane> {
         let tab = self.tabs.get_mut(self.active)?;
@@ -511,12 +538,18 @@ impl App {
              Reply with at most three fenced code blocks when a command is the answer, each one complete and ready to paste, each preceded by one short line saying what it does; \
              answer in short plain prose otherwise. No preamble, no closing remarks, no headings.\n\n",
         );
+        let mut original=prompt.clone();original.push_str(&g.render_original());
         prompt.push_str(&g.render());
-        match (skill_prompt, q.is_empty()) {
-            (Some(p), true) => prompt.push_str(&format!("\nTask: {p}\n")),
-            (Some(p), false) => prompt.push_str(&format!("\nTask: {p}\nAbout: {q}\n")),
-            (None, _) => prompt.push_str(&format!("\nQuestion: {q}\n")),
-        }
+        let task=match (skill_prompt, q.is_empty()) {
+            (Some(p), true) => format!("\nTask: {p}\n"),
+            (Some(p), false) => format!("\nTask: {p}\nAbout: {q}\n"),
+            (None, _) => format!("\nQuestion: {q}\n"),
+        };prompt.push_str(&task);original.push_str(&task);
+        let mut sanitized=crate::secrets::scrub(&prompt);
+        sanitized.findings=sanitized.findings.max(sanitized.text.matches(crate::secrets::MASK).count());
+        let review=if sanitized.findings>0 {Some(RedactionReview{prompt:original,preview:sanitized.text.clone(),backend:backend.clone(),cwd:self.assistant_folder(),findings:sanitized.findings})}else{None};
+        if sanitized.findings>0 {self.notice(&format!("Redacted {} suspected secrets before sending to the assistant",sanitized.findings));}
+        let prompt=sanitized.text;
         let (tx, rx) = channel();
         let (stx, srx) = channel::<String>();
         let b = backend.clone();
@@ -526,6 +559,7 @@ impl App {
             let _ = tx.send(run(&b, &p, Some(stx), Some(&cwd)));
         });
         if let Some(ask) = self.ask_term().and_then(|t| t.ask.as_mut()) {
+            ask.redaction_review=review;
             ask.pending = Some((rx, crate::clock::now(), backend.name.clone()));
             ask.stream = Some(srx);
             ask.partial.clear();
@@ -672,6 +706,7 @@ impl App {
         let mut copy: Option<String> = None;
         let mut sound: Option<&'static str> = None;
         match hit {
+            Some(AskHit::ReviewSecrets)=>{self.review_ask_secrets();return true;},
             Some(AskHit::Field) | None => ask.focus = true,
             Some(AskHit::Backend) => {
                 let all = backends();
@@ -842,8 +877,14 @@ impl App {
         scene.hline(pr.x, pr.y + head_h, pr.w, self.px(m::STRUCTURE), ink);
         // The chips: what goes along, and the skills.
         let ctx_now = ask.ctx.clone();
-        let (chips_h, chip_hits) = self.draw_ask_chips(scene, &ctx_now, pr.x + pad, pr.y + head_h + self.px(6.0), pr.w - 2.0 * pad);
+        let (mut chips_h, chip_hits) = self.draw_ask_chips(scene, &ctx_now, pr.x + pad, pr.y + head_h + self.px(6.0), pr.w - 2.0 * pad);
         ask.hits.extend(chip_hits);
+        if let Some(review)=&ask.redaction_review {
+            let row=Rect::new(pr.x+pad,pr.y+head_h+chips_h+self.px(6.0),pr.w-2.0*pad,self.px(24.0));
+            let text=format!("{} REDACTED · REVIEW",review.findings);
+            self.fonts.draw(scene,label,row.x,row.y+self.px(16.0),&text);
+            if ask.pending.is_none(){ask.hits.push((row,AskHit::ReviewSecrets));}chips_h+=self.px(26.0);
+        }
         // The field.
         let fy = pr.y + head_h + self.px(8.0) + chips_h;
         let field = Rect::new(pr.x + pad, fy, pr.w - 2.0 * pad, self.px(28.0));

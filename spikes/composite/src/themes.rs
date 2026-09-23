@@ -158,7 +158,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xffffff, 0x141414, 0xffffff, None),
             face(0x141414, 0xece7da, 0xffffff, None),
             Surface::default(),
-            C::Theme, BarStyle::Comet, BarColor::Signal,
+            C::Theme, BarStyle::Radiance, BarColor::Signal,
             &[], "family", false,
         ),
         theme(
@@ -185,7 +185,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xf2eee6, 0x1c1a17, 0xfaf8f3, ansi(KYOTO_PAPER)),
             face(0x1c1a17, 0xe8e2d4, 0xfaf8f3, ansi(KYOTO_INK)),
             surface(0xe34234, &[0xe34234, 0x1c1a17, 0xd4a017], Shell::Band, 8.0, 0.0, TextureKind::Stitch, 0.16, 6.0),
-            C::Signal, BarStyle::Comet, BarColor::Signal,
+            C::Signal, BarStyle::Radiance, BarColor::Signal,
             &[("launch", "chime"), ("bell", "pulse")], "family", false,
         ),
         theme(
@@ -194,7 +194,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xe6eef7, 0x0b2a4a, 0xffffff, ansi(BLUEPRINT_PAPER)),
             face(0x0b2a4a, 0xdbe7f3, 0xffffff, ansi(BLUEPRINT_INK)),
             Surface { drift: 0.05, breath: 0.2, angle: 30.0, ..surface(0x2fb8d8, &[0x2fb8d8, 0x0b2a4a, 0x7fc4ff], Shell::Aurora, 4.0, 10.0, TextureKind::Linen, 0.1, 5.0) },
-            C::Signal, BarStyle::Comet, BarColor::Signal,
+            C::Signal, BarStyle::Radiance, BarColor::Signal,
             &[("launch", "scan"), ("page.ready", "ready")], "wheel", true,
         ),
         theme(
@@ -230,7 +230,7 @@ pub fn stock() -> Vec<StockTheme> {
             face(0xffffff, 0x141414, 0xffffff, None),
             face(0x121420, 0xe6e4ee, 0xffffff, None),
             Surface { base: Some(hex(0x1f5fbf)), tint: 0.22, breath: 0.35, ..surface(0x1f5fbf, &[0x1f5fbf, 0x6b3fa0, 0x1a7f8a], Shell::Aurora, 4.0, 12.0, TextureKind::Linen, 0.05, 5.0) },
-            C::Signal, BarStyle::Comet, BarColor::Tab,
+            C::Signal, BarStyle::Radiance, BarColor::Tab,
             &[("launch", "bloom")], "wheel", true,
         ),
         theme(
@@ -272,7 +272,7 @@ pub fn stock() -> Vec<StockTheme> {
     ];
     // Ports: their tokens and sixteens, a nus surface each.
     let mut port = |name: &str, story: &str, paper: Face, ink: Face, s: Surface, prefers_ink: bool| {
-        let mut t = theme(name, story, paper, ink, s, C::Signal, BarStyle::Comet, BarColor::Signal, &[], "wheel", prefers_ink);
+        let mut t = theme(name, story, paper, ink, s, C::Signal, BarStyle::Radiance, BarColor::Signal, &[], "wheel", prefers_ink);
         t.port = true;
         v.push(t);
     };

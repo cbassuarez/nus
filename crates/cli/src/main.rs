@@ -74,7 +74,8 @@ fn connect() -> Result<(TcpStream, String), String> {
 
 fn call(cmd: &str, args: Value) -> Result<Value, String> {
     let (mut s, token) = connect()?;
-    let req = json!({ "token": token, "cmd": cmd, "args": args });
+    let req =
+        json!({ "token": token, "cmd": cmd, "args": args, "protocol": nus_compat::CLI_PROTOCOL });
     writeln!(s, "{req}").map_err(|e| e.to_string())?;
     let mut r = BufReader::new(s);
     let mut line = String::new();

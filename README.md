@@ -1,39 +1,22 @@
-<h1 align="center">nus</h1>
+# nus
 
 <p align="center"><em>terminus</em>: the endpoint. the last terminal emulator, multiplexer, and browser you’ll install.</p>
 
 <p align="center">
-  <a href="https://github.com/cbassuarez/nus/releases">Download</a> ·
+  <a href="https://github.com/cbassuarez/nus/releases/latest">Download</a> ·
   <a href="docs/PRODUCT.md">Product</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/cbassuarez/nus/releases"><img alt="Latest preview" src="https://img.shields.io/github/v/release/cbassuarez/nus?include_prereleases&amp;label=preview&amp;color=303030"></a>
-  <a href="https://github.com/cbassuarez/nus/actions/workflows/ci.yml"><img alt="Build checks" src="https://github.com/cbassuarez/nus/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-303030"></a>
-  <a href="docs/REVIEWING.md"><img alt="Unsigned preview distribution" src="https://img.shields.io/badge/preview%20signing-unsigned-a04b00"></a>
-</p>
-
-<img width="100%" alt="nus with a shell and browser page open in one workspace" src="./docs/media/readme-window.png">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/media/window-ink.png">
+  <source media="(prefers-color-scheme: light)" srcset="./docs/media/window-paper.png">
+  <img alt="nus with a shell and browser page open in one workspace" src="./docs/media/window-paper.png">
+</picture>
 
 <p align="center"><sub>A shell and the page it started, in one workspace.</sub></p>
-
-## Status
-
-Native preview releases are published for macOS, Windows and Linux. They are previews: expect breakage and no support schedule.
-
-| Platform | Target | Preview |
-| --- | --- | :---: |
-| macOS | Apple silicon | ✓ |
-| Windows 11 | x86-64 | ✓ |
-| Linux | Wayland + X11, x86-64 | ✓ |
-
-[Download the latest preview](https://github.com/cbassuarez/nus/releases).
-
----
 
 ## What nus is
 
@@ -41,33 +24,34 @@ A terminal, browser, editor, local processes and an optional assistant usually l
 
 <table>
   <tr>
-    <td width="33%" align="center"><strong>shell + page</strong></td>
-    <td width="33%" align="center"><strong>page as peer</strong></td>
-    <td width="33%" align="center"><strong>process ownership</strong></td>
+    <td width="33%"><strong>shell + page</strong></td>
+    <td width="33%"><strong>page as peer</strong></td>
+    <td width="33%"><strong>process ownership</strong></td>
   </tr>
   <tr>
     <td>
-      <img width="100%" alt="a shell and page together in nus" src="./docs/media/readme-shell-page.png">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/window-ink.png">
+        <source media="(prefers-color-scheme: light)" srcset="./docs/media/window-paper.png">
+        <img alt="a shell and page together in nus" src="./docs/media/window-paper.png">
+      </picture>
     </td>
     <td>
-      <img width="100%" alt="a browser page as a peer pane in nus" src="./docs/media/readme-page.png">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/hero-page-ink.png">
+        <source media="(prefers-color-scheme: light)" srcset="./docs/media/hero-page-paper.png">
+        <img alt="a browser page as a peer pane in nus" src="./docs/media/hero-page-paper.png">
+      </picture>
     </td>
     <td>
-      <img width="100%" alt="the nus ports board showing process ownership" src="./docs/media/readme-ports.png">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ports-ink.png">
+        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ports-paper.png">
+        <img alt="the nus ports board showing process ownership" src="./docs/media/ports-paper.png">
+      </picture>
     </td>
   </tr>
 </table>
-
-```mermaid
-flowchart LR
-    spaces[Spaces] --> tabs[tabs]
-    tabs --> splits[splits]
-    splits --> shell[shell]
-    splits --> page[browser page]
-    splits --> editor[editor pane]
-```
-
----
 
 ## What it does
 
@@ -108,21 +92,27 @@ flowchart LR
 - **Targets:** Windows 11 (daily), macOS (Apple silicon) and Linux (Wayland +
   X11).
 
----
-
 ## A few surfaces
 
 <table>
   <tr>
-    <td width="50%" align="center"><strong>Ports</strong></td>
-    <td width="50%" align="center"><strong>Ask</strong></td>
+    <td width="50%"><strong>Ports</strong></td>
+    <td width="50%"><strong>Ask</strong></td>
   </tr>
   <tr>
     <td>
-      <img width="100%" alt="nus ports board" src="./docs/media/readme-ports.png">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ports-ink.png">
+        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ports-paper.png">
+        <img alt="nus ports board" src="./docs/media/ports-paper.png">
+      </picture>
     </td>
     <td>
-      <img width="100%" alt="nus assistant surface" src="./docs/media/readme-ask.png">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ask-ink.png">
+        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ask-paper.png">
+        <img alt="nus assistant surface" src="./docs/media/ask-paper.png">
+      </picture>
     </td>
   </tr>
   <tr>
@@ -131,15 +121,33 @@ flowchart LR
   </tr>
   <tr>
     <td>
-      <img width="100%" alt="nus command palette" src="./docs/media/readme-palette.png">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/palette-ink.png">
+        <source media="(prefers-color-scheme: light)" srcset="./docs/media/palette-paper.png">
+        <img alt="nus command palette" src="./docs/media/palette-paper.png">
+      </picture>
     </td>
     <td>
-      <img width="100%" alt="Chromium DevTools inside nus" src="./docs/media/readme-devtools.png">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/devtools-ink.png">
+        <source media="(prefers-color-scheme: light)" srcset="./docs/media/devtools-paper.png">
+        <img alt="Chromium DevTools inside nus" src="./docs/media/devtools-paper.png">
+      </picture>
     </td>
   </tr>
 </table>
 
----
+## Status
+
+Native preview releases are published for macOS, Windows and Linux. They are previews: expect breakage and no support schedule.
+
+| Platform | Target | Preview |
+| --- | --- | :---: |
+| macOS | Apple silicon | ✓ |
+| Windows 11 | x86-64 | ✓ |
+| Linux | Wayland + X11, x86-64 | ✓ |
+
+[Download the latest preview](https://github.com/cbassuarez/nus/releases/latest).
 
 ## What this is, and isn't
 
@@ -159,8 +167,6 @@ That means:
   [CONTRIBUTING.md](CONTRIBUTING.md) before opening anything, and email contact@cbassuarez.com for secured/responsible disclosure of vulnerabilities. There are limited funds available (I am one person, funding this by themselves, though I am awaiting extra funding to establish an actual program).
 - **Preview releases, no support schedule.** Native previews are published for
   macOS, Windows and Linux. Expect breakage and expect no answer on a schedule.
-
----
 
 ## Building
 

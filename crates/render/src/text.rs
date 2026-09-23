@@ -155,11 +155,12 @@ pub struct FontSystem {
     fallbacks: std::cell::RefCell<HashMap<&'static str, FontId>>,
     fallback_chars: std::cell::RefCell<HashMap<char, Option<FontId>>>,
     /// Measured widths by (font, px, tracking, text): the sidebar measures
-    /// the same strings every frame. Cleared when it grows large.
-    widths: std::cell::RefCell<HashMap<(u16, u32, u32, String), f32>>,
-    shaped: std::cell::RefCell<HashMap<(u16, u32, String), Vec<ShapedGlyph>>>,
-    shaped_glyphs: std::cell::Cell<usize>,
+    /// the same strings every frame. Cold entries are evicted incrementally.
+    widths: std::cell::RefCell<crate::cache::Cache<(u16, u32, u32, String), f32>>,
+    shaped: std::cell::RefCell<ShapedCache>,
 }
+
+type ShapedCache = crate::cache::Cache<(u16, u32, String), std::sync::Arc<[ShapedGlyph]>>;
 
 /// Font ids at or above this index the `extra` (fallback) faces.
 const EXTRA_BASE: u16 = 0x8000;
@@ -215,9 +216,8 @@ impl FontSystem {
             extra: std::cell::RefCell::new(Vec::new()),
             fallbacks: std::cell::RefCell::new(HashMap::new()),
             fallback_chars: std::cell::RefCell::new(HashMap::new()),
-            widths: std::cell::RefCell::new(HashMap::new()),
-            shaped: std::cell::RefCell::new(HashMap::new()),
-            shaped_glyphs: std::cell::Cell::new(0),
+            widths: std::cell::RefCell::new(crate::cache::Cache::new(4096, 4096)),
+            shaped: std::cell::RefCell::new(crate::cache::Cache::new(1024, 8192)),
         }
     }
 
@@ -418,23 +418,18 @@ impl FontSystem {
 
     /// Shape with `font`; runs it has no glyphs for are reshaped with the
     /// first fallback face that has them.
-    pub fn shape(&self, font: FontId, px: f32, text: &str) -> Vec<ShapedGlyph> {
+    pub fn shape(&self, font: FontId, px: f32, text: &str) -> std::sync::Arc<[ShapedGlyph]> {
         if text.len() > 512 {
-            return self.shape_uncached(font, px, text);
+            return self.shape_uncached(font, px, text).into();
         }
         let key = (font.0, px.to_bits(), text.to_owned());
-        if let Some(glyphs) = self.shaped.borrow().get(&key) {
+        if let Some(glyphs) = self.shaped.borrow_mut().get(&key) {
             return glyphs.clone();
         }
-        let glyphs = self.shape_uncached(font, px, text);
-        let mut cache = self.shaped.borrow_mut();
-        if cache.len() >= 1024 || self.shaped_glyphs.get() + glyphs.len() > 8192 {
-            cache.clear();
-            self.shaped_glyphs.set(0);
-        }
-        self.shaped_glyphs
-            .set(self.shaped_glyphs.get() + glyphs.len());
-        cache.insert(key, glyphs.clone());
+        let glyphs: std::sync::Arc<[ShapedGlyph]> = self.shape_uncached(font, px, text).into();
+        self.shaped
+            .borrow_mut()
+            .insert(key, glyphs.clone(), glyphs.len());
         glyphs
     }
 
@@ -568,7 +563,7 @@ impl FontSystem {
             text.to_string()
         };
         let mut pen = x;
-        for g in self.shape(font, px, &text) {
+        for g in self.shape(font, px, &text).iter() {
             if let Some(a) = self.glyph(g.font, px, g.id) {
                 scene.push(Instance::glyph(
                     (pen + g.x_offset + a.left as f32).round(),
@@ -599,7 +594,7 @@ impl FontSystem {
             s.tracking.to_bits(),
             text.to_string(),
         );
-        if let Some(w) = self.widths.borrow().get(&key) {
+        if let Some(w) = self.widths.borrow_mut().get(&key) {
             return *w;
         }
         let w = self
@@ -608,11 +603,8 @@ impl FontSystem {
             .map(|g| g.x_advance + s.tracking)
             .sum();
         let mut cache = self.widths.borrow_mut();
-        if cache.len() >= 4096 {
-            cache.clear();
-        }
         if text.len() <= 256 {
-            cache.insert(key, w);
+            cache.insert(key, w, 1);
         }
         w
     }
@@ -863,7 +855,7 @@ mod tests {
         for i in 0..3000 {
             fonts.shape(id, 16.0, &format!("line {i}"));
         }
-        assert!(fonts.shaped_glyphs.get() <= 8192);
+        assert!(fonts.shaped.borrow().weight() <= 8192);
         assert!(fonts.shaped.borrow().len() <= 1024);
         let other = FontSystem::new();
         assert!(std::rc::Rc::ptr_eq(&fonts.database(), &other.database()));

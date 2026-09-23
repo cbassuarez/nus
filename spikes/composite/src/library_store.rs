@@ -204,6 +204,18 @@ impl Store {
         if source.is_empty() || source.len() > 16384 || title.len() > 8192 { return Err(invalid("Invalid saved source or title")); }
         let key = match &container { None => id(source), Some(c) => id(&format!("container\0{c}\0{source}")) };
         let _lock = self.lock()?;
+        let (entries,errors)=self.list()?;
+        if !errors.is_empty(){return Err(invalid("Unreadable library records; save was not applied"));}
+        if let Some(mut existing)=entries.into_values().find(|e|e.source==source && e.container==container) {
+            if existing.deleted {existing.deleted=false;existing.capture=None;self.write(&mut existing)?;}
+            return Ok((existing,false));
+        }
+        let key=match self.read(&key) {
+            Ok(e) if e.extra.get("original_source").and_then(|v|v.as_str())==Some(source)=>id(&token()?),
+            Ok(_)=>return Err(invalid("Reading identifier collision; original left untouched")),
+            Err(e) if e.kind()==io::ErrorKind::NotFound=>key,
+            Err(e)=>return Err(e),
+        };
         match self.read(&key) {
             Ok(mut e) => {
                 if e.source != source || e.container != container { return Err(invalid("Reading identifier collision; original left untouched")); }
@@ -223,6 +235,55 @@ impl Store {
         self.write(&mut e)?;
         Ok((e, true))
     }
+    /// Install a versioned set of link defaults once. Unlike an explicit Save,
+    /// this never restores tombstones or rewrites an existing record. All reads,
+    /// record writes and the completion marker share the normal writer lock.
+    /// A crash before the marker is safe: a retry preserves any completed records.
+    pub fn seed_links_once(&self, version: u32, links: &[(&str, &str)], now: u64) -> io::Result<Vec<Entry>> {
+        if version == 0 || links.is_empty() || links.len() > 32 {
+            return Err(invalid("Invalid reading-default version or count"));
+        }
+        // Construct and validate everything before touching the filesystem.
+        let mut candidates = BTreeMap::new();
+        for &(source, title) in links {
+            if source.is_empty() { return Err(invalid("Empty reading-default source")); }
+            let e = Entry { id: id(source), source: source.into(), title: title.into(), saved: now,
+                words: 0, progress: 0.0, anchor: String::new(), archived: false,
+                schema: 1, revision: 0, container: None, finished: false, deleted: false,
+                snapshot: None, position: None, capture: None, note: String::new(), extra: BTreeMap::new() };
+            check_entry(&e)?;
+            if candidates.insert(e.id.clone(), e).is_some() {
+                return Err(invalid("Duplicate reading-default identifier"));
+            }
+        }
+        let _lock = self.lock()?;
+        // Not JSON: list() must never mistake this for an Entry. The typed
+        // version also means a caller cannot supply a path or lockfile name.
+        let marker = self.root.join(format!(".defaults-v{version}"));
+        match bounded(&marker, 16) {
+            Ok(bytes) if bytes == b"complete\n" => return Ok(Vec::new()),
+            Ok(_) => return Err(invalid("Unrecognized reading-default marker; original left untouched")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+            Err(e) => return Err(e),
+        }
+        let mut missing = Vec::new();
+        for candidate in candidates.into_values() {
+            match self.read(&candidate.id) {
+                Ok(existing) => {
+                    if existing.source != candidate.source || existing.container.is_some() {
+                        return Err(invalid("Reading-default identifier collision; original left untouched"));
+                    }
+                    // Existing means existing, even when deleted or archived.
+                },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => missing.push(candidate),
+                Err(e) => return Err(e),
+            }
+        }
+        for e in &mut missing { self.write(e)?; }
+        atomic(&marker, b"complete\n", true)?;
+        Ok(missing)
+    }
+
     pub fn start_capture(&self, key: &str) -> io::Result<Entry> {
         let _lock = self.lock()?;
         let mut e = self.read(key)?;
@@ -261,6 +322,9 @@ impl Store {
         check_entry(e)?;
         let path = match &e.snapshot {
             Some(h) => self.root.join("objects").join(format!("{h}.article")),
+            None if e.extra.get("legacy_article_disabled").and_then(|v| v.as_bool()) == Some(true) => {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "The edited source has no saved article yet"));
+            }
             None => self.root.join(format!("{}.article", e.id)),
         };
         let bytes = bounded(&path, MAX_TEXT)?;
@@ -282,6 +346,41 @@ impl Store {
         self.write(&mut e)?;
         Ok(e)
     }
+    /// Save an explicit form in one record commit. Edits keep their identity;
+    /// another window's changes cause a conflict instead of being overwritten.
+    pub fn save_item(&self, target: Option<(&str,u64)>, source: &str, title: &str, notes: &str, now: u64) -> io::Result<Entry> {
+        if source.is_empty() || source.len()>16384 || title.trim().is_empty() || title.len()>8192 || notes.len()>24000 {return Err(invalid("Title, source or notes exceed their limit"));}
+        let _lock=self.lock()?;
+        let (all,errors)=self.list()?;
+        if !errors.is_empty(){return Err(invalid("Repair unreadable library records before editing sources"));}
+        if all.values().any(|e|!e.deleted && e.source==source && e.container.is_none() && target.is_none_or(|(id,_)|id!=e.id)) {
+            return Err(invalid("This source is already in your reading list. Edit its existing item."));
+        }
+        let mut e=if let Some((id,revision))=target {
+            let e=self.read(id)?;if e.deleted||e.revision!=revision{return Err(conflict());}e
+        }else {
+            let key=id(source);
+            let key=if all.contains_key(&key){id(&token()?)}else{key};
+            Entry{id:key,source:source.into(),title:title.into(),saved:now,words:0,progress:0.0,anchor:String::new(),archived:false,schema:1,revision:0,container:None,finished:false,deleted:false,snapshot:None,position:None,capture:None,note:String::new(),extra:BTreeMap::new()}
+        };
+        if e.source!=source {
+            e.extra.entry("original_source".into()).or_insert_with(||serde_json::Value::String(e.source.clone()));
+            e.extra.insert("legacy_article_disabled".into(), serde_json::Value::Bool(true));
+            e.snapshot=None;e.position=None;e.progress=0.0;e.finished=false;e.words=0;e.anchor.clear();e.note.clear();
+        }
+        e.source=source.into();e.title=title.trim().into();e.capture=None;
+        let changed=e.extra.get("user_notes").and_then(|v|v.as_str()).unwrap_or("")!=notes;
+        e.extra.insert("user_notes".into(),serde_json::Value::String(notes.into()));
+        if source.starts_with("note:") {
+            let bytes=serde_json::to_vec(&serde_json::json!({"title":e.title,"byline":"","when":"","blocks":[{"Para":notes}]})).map_err(invalid_json)?;
+            validate_article(&bytes)?;let hash=digest(&bytes);
+            atomic(&self.root.join("objects").join(format!("{hash}.article")),&bytes,true)?;
+            e.snapshot=Some(hash);e.words=notes.split_whitespace().count();
+            if changed{e.position=None;e.progress=0.0;e.anchor.clear();}
+        }
+        self.write(&mut e)?;Ok(e)
+    }
+
     pub fn state(&self, key: &str, finished: Option<bool>, archived: Option<bool>) -> io::Result<Entry> {
         let _lock = self.lock()?;
         let mut e = self.read(key)?;
@@ -292,9 +391,17 @@ impl Store {
         Ok(e)
     }
     pub fn remove(&self, key: &str) -> io::Result<Entry> {
+        self.remove_checked(key, None)
+    }
+    /// Confirmation binds to the revision actually shown, not a cached row or
+    /// whichever reader happens to have focus when the user accepts it.
+    pub fn remove_at_revision(&self, key: &str, revision: u64) -> io::Result<Entry> {
+        self.remove_checked(key, Some(revision))
+    }
+    fn remove_checked(&self, key: &str, revision: Option<u64>) -> io::Result<Entry> {
         let _lock = self.lock()?;
         let mut e = self.read(key)?;
-        if e.deleted { return Err(conflict()); }
+        if e.deleted || revision.is_some_and(|r| r != e.revision) { return Err(conflict()); }
         e.deleted = true;
         e.capture = None;
         self.write(&mut e)?;
@@ -310,6 +417,15 @@ impl Store {
         Ok(e)
     }
 }
+/// A deliberately link-only item may open its original on explicit activation.
+/// A missing declared snapshot, legacy reading position, corruption, permission
+/// error or symlink refusal must NOT silently become network navigation.
+/// article() is always tried first, including its legacy <id>.article lookup.
+pub fn link_only_fallback(e: &Entry, error: io::ErrorKind) -> bool {
+    error == io::ErrorKind::NotFound && !e.deleted && e.snapshot.is_none()
+        && e.words == 0 && e.position.is_none() && e.anchor.is_empty() && e.progress == 0.0
+}
+
 fn invalid_json(e: serde_json::Error) -> io::Error { invalid(e.to_string()) }
 pub fn validate_article(bytes: &[u8]) -> io::Result<()> {
     if bytes.len() > MAX_TEXT { return Err(invalid("Article exceeds the 2 MiB snapshot limit")); }
@@ -611,5 +727,207 @@ mod tests {
         let (_t2, s2) = store(); let e2 = saved(&s2, "https://example.test/b");
         let target = s2.root.join("private-article"); fs::write(&target, article("text")).unwrap();
         symlink(target, s2.root.join(format!("{}.article",e2.id))).unwrap(); assert!(s2.article(&e2).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod defaults_and_context_tests {
+    use super::*;
+
+    const SITE: &str = "https://cbassuarez.com/nus.dev/";
+    fn fixture() -> (tempfile::TempDir, Store) {
+        let t = tempfile::tempdir().unwrap();
+        let s = Store::new(t.path().canonicalize().unwrap().join("library"));
+        (t, s)
+    }
+    #[test]
+    fn defaults_are_ordinary_links_and_idempotent() {
+        let (_t, s) = fixture();
+        let added = s.seed_links_once(1, &[(SITE, "nus.dev")], 10).unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].id, id(SITE));
+        assert_eq!(added[0].source, SITE);
+        assert_eq!(added[0].title, "nus.dev");
+        assert!(added[0].snapshot.is_none() && added[0].capture.is_none());
+        let bytes = fs::read(s.path(&added[0].id).unwrap()).unwrap();
+        assert!(s.seed_links_once(1, &[(SITE, "Changed")], 20).unwrap().is_empty());
+        assert_eq!(fs::read(s.path(&added[0].id).unwrap()).unwrap(), bytes);
+        let (entries, errors) = s.list().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(errors.is_empty(), "marker was parsed as a reading record");
+    }
+    #[test]
+    fn defaults_preserve_existing_records_and_tombstones_byte_for_byte() {
+        for removed in [false, true] {
+            let (_t, s) = fixture();
+            let e = s.save_link(SITE, "My title", None, 3).unwrap().0;
+            s.state(&e.id, Some(true), Some(true)).unwrap();
+            if removed { s.remove(&e.id).unwrap(); }
+            let before = fs::read(s.path(&e.id).unwrap()).unwrap();
+            assert!(s.seed_links_once(1, &[(SITE, "nus.dev")], 100).unwrap().is_empty());
+            assert_eq!(fs::read(s.path(&e.id).unwrap()).unwrap(), before);
+        }
+    }
+    #[test]
+    fn deletion_and_manual_record_removal_survive_relaunch() {
+        let (_t, s) = fixture();
+        s.seed_links_once(1, &[(SITE, "nus.dev")], 1).unwrap();
+        s.remove(&id(SITE)).unwrap();
+        let restarted = Store::new(s.root.clone());
+        restarted.seed_links_once(1, &[(SITE, "nus.dev")], 2).unwrap();
+        assert!(restarted.read(&id(SITE)).unwrap().deleted);
+        fs::remove_file(s.path(&id(SITE)).unwrap()).unwrap();
+        restarted.seed_links_once(1, &[(SITE, "nus.dev")], 3).unwrap();
+        assert!(restarted.list().unwrap().0.is_empty());
+    }
+    #[test]
+    fn failed_seed_does_not_claim_completion_and_can_retry() {
+        let (_t, s) = fixture();
+        let mut failing = s.clone();
+        failing.fail_record_write = true;
+        assert!(failing.seed_links_once(1, &[(SITE, "nus.dev")], 1).is_err());
+        assert!(!s.root.join(".defaults-v1").exists());
+        assert_eq!(s.seed_links_once(1, &[(SITE, "nus.dev")], 2).unwrap().len(), 1);
+    }
+    #[test]
+    fn interrupted_seed_with_a_written_record_finishes_without_rewriting() {
+        let (_t, s) = fixture();
+        let e = s.save_link(SITE, "Already committed", None, 1).unwrap().0;
+        let bytes = fs::read(s.path(&e.id).unwrap()).unwrap();
+        s.seed_links_once(1, &[(SITE, "nus.dev")], 2).unwrap();
+        assert_eq!(fs::read(s.path(&e.id).unwrap()).unwrap(), bytes);
+        assert_eq!(fs::read(s.root.join(".defaults-v1")).unwrap(), b"complete\n");
+    }
+    #[test]
+    fn busy_seed_uses_the_existing_writer_lock_and_retries_safely() {
+        let (_t, s) = fixture();
+        let other = Store::new(s.root.clone());
+        let guard = s.lock().unwrap();
+        assert!(other.seed_links_once(1, &[(SITE, "nus.dev")], 1).is_err());
+        assert!(!s.root.join(".defaults-v1").exists());
+        drop(guard);
+        other.seed_links_once(1, &[(SITE, "nus.dev")], 2).unwrap();
+        assert!(s.seed_links_once(1, &[(SITE, "nus.dev")], 3).unwrap().is_empty());
+    }
+    #[test]
+    fn invalid_seed_is_rejected_before_filesystem_access() {
+        let (_t, s) = fixture();
+        assert!(s.seed_links_once(0, &[(SITE, "nus.dev")], 1).is_err());
+        assert!(s.seed_links_once(1, &[("", "empty")], 1).is_err());
+        assert!(s.seed_links_once(1, &[(SITE, "x"), (SITE, "y")], 1).is_err());
+        assert!(!s.root.exists());
+    }
+    #[test]
+    fn corrupt_defaults_marker_is_not_replaced() {
+        let (_t, s) = fixture();
+        fs::create_dir_all(&s.root).unwrap();
+        fs::write(s.root.join(".defaults-v1"), b"future format").unwrap();
+        assert!(s.seed_links_once(1, &[(SITE, "nus.dev")], 1).is_err());
+        assert_eq!(fs::read(s.root.join(".defaults-v1")).unwrap(), b"future format");
+        assert!(s.list().unwrap().0.is_empty());
+    }
+    #[test]
+    fn corrupted_existing_default_is_never_replaced() {
+        let (_t, s) = fixture();
+        fs::create_dir_all(&s.root).unwrap();
+        fs::write(s.path(&id(SITE)).unwrap(), b"{broken").unwrap();
+        assert!(s.seed_links_once(1, &[(SITE, "nus.dev")], 1).is_err());
+        assert_eq!(fs::read(s.path(&id(SITE)).unwrap()).unwrap(), b"{broken");
+        assert!(!s.root.join(".defaults-v1").exists());
+    }
+    #[test]
+    fn context_mutations_and_guarded_removal_touch_only_the_explicit_id() {
+        let (_t, s) = fixture();
+        let a = s.save_link("https://example.test/a", "A", None, 1).unwrap().0;
+        let b = s.save_link("https://example.test/b", "B", None, 2).unwrap().0;
+        let before_a = fs::read(s.path(&a.id).unwrap()).unwrap();
+        let updated = s.state(&b.id, Some(true), Some(true)).unwrap();
+        assert!(s.remove_at_revision(&b.id, b.revision).is_err());
+        assert_eq!(s.read(&b.id).unwrap(), updated);
+        let deleted = s.remove_at_revision(&b.id, updated.revision).unwrap();
+        assert!(deleted.deleted);
+        assert_eq!(fs::read(s.path(&a.id).unwrap()).unwrap(), before_a);
+        let undone = s.undo_remove(&b.id, deleted.revision).unwrap();
+        assert!(!undone.deleted && undone.finished && undone.archived);
+    }
+    #[test]
+    fn guarded_remove_cancels_capture_and_stale_confirm_cannot_remove_restored_item() {
+        let (_t, s) = fixture();
+        let e = s.save_link(SITE, "nus", None, 1).unwrap().0;
+        let pending = s.start_capture(&e.id).unwrap();
+        assert!(s.remove_at_revision(&e.id, e.revision).is_err());
+        let removed = s.remove_at_revision(&e.id, pending.revision).unwrap();
+        assert!(removed.capture.is_none());
+        let restored = s.undo_remove(&e.id, removed.revision).unwrap();
+        assert!(s.remove_at_revision(&e.id, pending.revision).is_err());
+        assert_eq!(s.read(&e.id).unwrap(), restored);
+    }
+    #[test]
+    fn only_missing_link_only_content_can_fall_back_to_source() {
+        let (_t, s) = fixture();
+        let e = s.save_link(SITE, "nus", None, 1).unwrap().0;
+        assert!(link_only_fallback(&e, io::ErrorKind::NotFound));
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(!link_only_fallback(&e, kind));
+        }
+        let mut old = e.clone(); old.words = 10;
+        assert!(!link_only_fallback(&old, io::ErrorKind::NotFound));
+        let mut old = e.clone(); old.snapshot = Some("0".repeat(64));
+        assert!(!link_only_fallback(&old, io::ErrorKind::NotFound));
+        let mut old = e.clone(); old.position = Some(Position::default());
+        assert!(!link_only_fallback(&old, io::ErrorKind::NotFound));
+        let mut old = e; old.deleted = true;
+        assert!(!link_only_fallback(&old, io::ErrorKind::NotFound));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn defaults_marker_symlink_is_refused() {
+        let (_t, s) = fixture();
+        fs::create_dir_all(&s.root).unwrap();
+        let target = s.root.join("outside");
+        fs::write(&target, b"complete\n").unwrap();
+        std::os::unix::fs::symlink(&target, s.root.join(".defaults-v1")).unwrap();
+        assert!(s.seed_links_once(1, &[(SITE, "nus.dev")], 1).is_err());
+    }
+}
+
+#[cfg(test)] mod form_tests {
+    use super::*;
+    #[test]
+    fn changing_a_legacy_source_does_not_show_the_old_article_as_the_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("library");
+        let store = Store::new(root.clone());
+        let a = store.save_link("https://example.test/old", "Old", None, 1).unwrap().0;
+        let article = br#"{"title":"Old","byline":"","when":"","blocks":[{"Para":"Original article"}]}"#;
+        let legacy = root.join(format!("{}.article", a.id));
+        std::fs::write(&legacy, article).unwrap();
+        assert!(store.article(&a).is_ok());
+        let a = store.state(&a.id, Some(true), None).unwrap();
+        let b = store.save_item(Some((&a.id,a.revision)), "https://example.test/new", "New", "", 2).unwrap();
+        assert!(!b.finished);
+        assert_eq!(store.article(&b).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(std::fs::read(legacy).unwrap(), article);
+    }
+    #[test] fn edit_is_atomic_revision_guarded_and_preserves_identity(){
+        let dir=tempfile::tempdir().unwrap();let store=Store::new(dir.path().canonicalize().unwrap().join("library"));
+        let a=store.save_item(None,"https://example.test/a","First","remember",1).unwrap();
+        let b=store.save_item(Some((&a.id,a.revision)),"https://example.test/b","Edited","new note",2).unwrap();
+        assert_eq!(a.id,b.id);assert_eq!(b.extra["user_notes"],"new note");
+        assert!(store.save_item(Some((&a.id,a.revision)),"https://example.test/c","stale","lost",3).is_err());
+        assert_eq!(store.read(&a.id).unwrap(),b);
+        assert_eq!(store.save_link("https://example.test/b","ignored",None,4).unwrap().0.id,b.id);
+        assert_ne!(store.save_link("https://example.test/a","new original",None,4).unwrap().0.id,b.id);
+        assert!(store.save_item(None,"https://example.test/b","duplicate","",5).is_err());
+    }
+    #[test] fn note_edits_save_readable_content_and_cancel_old_captures(){
+        let dir=tempfile::tempdir().unwrap();let store=Store::new(dir.path().canonicalize().unwrap().join("library"));
+        let a=store.save_item(None,"note:first","My note","one two three",1).unwrap();
+        assert_eq!(a.words,3);assert!(store.article(&a).is_ok());
+        let capturing=store.start_capture(&a.id).unwrap();
+        let b=store.save_item(Some((&a.id,capturing.revision)),"note:first","Changed","four five",2).unwrap();
+        assert_eq!(b.words,2);assert_ne!(a.snapshot,b.snapshot);assert!(b.capture.is_none());
+        assert!(store.commit(&a.id,capturing.capture.as_deref().unwrap(),&store.article(&a).unwrap().0,"Old",3,"").is_err());
     }
 }

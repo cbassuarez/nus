@@ -13,6 +13,7 @@ pub const MAX_MATCHES: usize = 10_000;
 pub type LineSpans = HashMap<usize, Vec<(usize, usize, Tok)>>;
 
 pub fn load(path: &Path, cancel: &AtomicUsize) -> io::Result<Rope> {
+    if crate::protected_state::is_private_path(path){return crate::protected_state::read_text(path).map(|text|Rope::from_str(&text));}
     struct Reader<'a>(std::fs::File, &'a AtomicUsize);
     impl Read for Reader<'_> {
         fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {

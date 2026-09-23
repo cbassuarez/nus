@@ -68,10 +68,11 @@ code named here.
    bounded, and expires idle input. `browser.rs`, `little.rs`, `security.rs`
 7. **Site permissions belong to a full origin** — scheme, host and port.
    `sites.rs`
-8. **nus sends nothing on its own.** No telemetry, no analytics, no crash
-   upload. Bug reports are a draft you review and post yourself. Assistants
-   reach a backend only when you send a question, with only the context whose
-   chips are lit. `docs/PRIVACY_AND_DIAGNOSTICS.md`
+8. **No usage telemetry, analytics or automatic crash uploads.** Release builds
+   check GitHub for updates when automatic checks are enabled. Bug reports are
+   a draft you review and post yourself. Assistants receive nus-selected context
+   when you send a question. Independently installed CLI agents have their own
+   file access and networking. `docs/PRIVACY_AND_DIAGNOSTICS.md`
 
 ## Known limits
 
@@ -104,3 +105,12 @@ bad advice", missing hardening with no attack behind it, or scanner output
 with no reproduction. So is anything that requires an attacker who already has
 your user account on your machine — at that point they have the shell nus
 would have given them anyway.
+
+## Local encryption and managed agents
+
+[Local security boundaries](docs/LOCAL_SECURITY.md) documents the encrypted-state
+vault, fail-closed behavior, secret redaction, exact disclosure gates and current
+platform sandbox limits. [Managed agent runtime](docs/MANAGED_AGENT_RUNTIME.md)
+is a design for isolating agent files and egress; it is not a shipped sandbox.
+[Updates and Mercury](docs/UPDATES_AND_MERCURY.md) describes GitHub checks,
+installation recovery and the local commemorative claim.

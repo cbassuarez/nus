@@ -111,10 +111,10 @@ for mode, kind, count in [("Prompt", "home", 1), ("HomePage", "web", 1), ("Layou
     # Same on-disk profile, including settings/session written by the first run.
     run(name, f"assertpane {kind}\nasserttabs {count}\nassertnoshells", marker=None)
 
-fresh = run("tour-once", "assertpane welcome\nasserttabs 1\ncloseprofile", base, marker=None)
+fresh = run("tour-once", "assertpane welcome\nasserttabs 1\nassertprofile open\nshot first-profile\ncloseprofile\nassertprofile closed", base, marker=None)
 assert (fresh / "onboarded").read_text() == "00000"
-run("tour-once", "assertpane welcome\nasserttabs 1\ncloseprofile\nwelcomedismiss", marker=None)
-run("tour-once", "assertpane home\nasserttabs 1\nassertnoshells", marker=None)
+run("tour-once", "assertpane welcome\nasserttabs 1\nassertprofile open\ncloseprofile\nwelcomedismiss", marker=None)
+run("tour-once", "assertpane home\nasserttabs 1\nassertprofile closed\nassertnoshells", marker=None)
 
 # Select the actual art cards, then reopen the existing Home tab and relaunch
 # the same profile. Neither selection nor relaunch may require a location.

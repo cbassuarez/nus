@@ -70,12 +70,12 @@ pub enum Group {
 impl Group {
     pub fn name(self) -> &'static str {
         match self {
-            Group::Mine => "MINE",
-            Group::Others => "OTHERS",
-            Group::System => "SYSTEM",
+            Group::Mine => "NUS TERMINALS",
+            Group::Others => "OTHER PROCESSES",
+            Group::System => "RESERVED / FILTERED",
             Group::Connections => "CONNECTIONS",
             Group::Docker => "DOCKER",
-            Group::Remembered => "WAS LISTENING",
+            Group::Remembered => "REMEMBERED",
         }
     }
 }
@@ -105,6 +105,7 @@ impl Remembered {
             bound: String::new(),
             exposed: false,
             started: None,
+            identity: None,
             tab: None,
             cwd: Some(self.cwd.clone()),
             command: Some(self.command.clone()),
@@ -154,6 +155,7 @@ pub struct Row {
     pub bound: String,
     pub exposed: bool,
     pub started: Option<SystemTime>,
+    pub identity: Option<u64>,
     /// The nus tab whose shell is an ancestor, and that shell's cwd and
     /// last command.
     pub tab: Option<u64>,
@@ -180,6 +182,14 @@ pub struct TunnelState {
 }
 
 impl Row {
+    pub fn status(&self)->&'static str {
+        if self.group==Group::Remembered {"No current listener observed"}
+        else if self.dying.is_some(){"Stop requested"}
+        else if matches!(self.key, Key::Conn { .. }) {"Established connections observed"}
+        else if matches!(self.key, Key::Docker { .. }) {"Docker port mapping observed"}
+        else if self.proto==Proto::Udp {"UDP socket bound"}
+        else {"TCP listener observed"}
+    }
     pub fn lamp(&self) -> Lamp {
         if self.group == Group::Remembered {
             Lamp::Gone
@@ -209,7 +219,7 @@ impl Row {
                     }
                 }
                 if self.process.is_empty() {
-                    "?".into()
+                    "Unknown process".into()
                 } else {
                     self.process.clone()
                 }
@@ -271,14 +281,14 @@ pub enum Act {
 impl Act {
     pub fn label(self) -> &'static str {
         match self {
-            Act::Open => "OPEN",
-            Act::Copy => "COPY URL",
-            Act::Jump => "JUMP TO SHELL",
-            Act::Kill => "KILL",
-            Act::Again => "RUN AGAIN",
-            Act::Tunnel => "TUNNEL",
-            Act::Watch => "WATCH",
-            Act::Name => "NAME",
+            Act::Open => "OPEN IN BROWSER",
+            Act::Copy => "COPY LOCAL URL",
+            Act::Jump => "SHOW TERMINAL",
+            Act::Kill => "STOP PROCESS",
+            Act::Again => "RUN SAVED COMMAND",
+            Act::Tunnel => "CREATE PUBLIC LINK",
+            Act::Watch => "NOTIFY ON CHANGE",
+            Act::Name => "RENAME",
         }
     }
     pub fn key(self) -> &'static str {
@@ -296,6 +306,7 @@ impl Act {
 }
 
 pub struct Board {
+    pub flaps: HashMap<Key, crate::split_flap::RowChange>,
     pub open: bool,
     pub rows: Vec<Row>,
     pub departed: Vec<Departed>,
@@ -326,7 +337,7 @@ pub struct Board {
     pub rise: crate::anim::Anim,
     pub probed: HashSet<u16>,
     /// Kill: pids with a graceful ask out, and when.
-    pub killing: HashMap<u32, Instant>,
+    pub killing: HashMap<u32, (Instant, u64)>,
 }
 
 impl Board {
@@ -338,6 +349,7 @@ impl Board {
         let remembered = load_remembered();
         let ghosts = remembered.iter().map(Remembered::row).collect();
         Board {
+            flaps: HashMap::new(),
             open: false,
             rows: Vec::new(),
             departed: Vec::new(),
@@ -395,10 +407,14 @@ impl Board {
 
     /// The rows in display order with their group heads, filtered.
     pub fn listing(&self, grouping: PortsGrouping) -> Vec<Entry> {
-        let q = self.filter.as_deref().unwrap_or("").to_lowercase();
-        let mut rows: Vec<&Row> = self
-            .rows
-            .iter()
+        listing(&self.rows, &self.ghosts, self.filter.as_deref(), grouping)
+    }
+}
+
+fn listing(live: &[Row], ghosts: &[Row], filter: Option<&str>, grouping: PortsGrouping) -> Vec<Entry> {
+        let q = filter.unwrap_or("").to_lowercase();
+        let mut rows: Vec<&Row> = live.iter()
+            .chain(ghosts.iter())
             .filter(|r| !r.rule.hide)
             .filter(|r| {
                 q.is_empty()
@@ -411,7 +427,7 @@ impl Board {
         let mut out = Vec::new();
         match grouping {
             PortsGrouping::Origin => {
-                for g in [Group::Mine, Group::Others, Group::System, Group::Connections, Group::Docker] {
+                for g in [Group::Mine, Group::Others, Group::System, Group::Connections, Group::Docker, Group::Remembered] {
                     let mut in_g: Vec<&Row> = rows.iter().copied().filter(|r| r.group == g).collect();
                     if in_g.is_empty() {
                         continue;
@@ -420,23 +436,19 @@ impl Board {
                     out.push(Entry::Head(g, in_g.len()));
                     out.extend(in_g.into_iter().map(|r| Entry::Row(r.key.clone())));
                 }
-                let ghosts: Vec<&Row> = self.ghosts.iter().filter(|r| q.is_empty() || r.port.to_string().contains(&q) || r.process.to_lowercase().contains(&q) || r.cmdline.to_lowercase().contains(&q)).collect();
-                if !ghosts.is_empty() {
-                    out.push(Entry::Head(Group::Remembered, ghosts.len()));
-                    out.extend(ghosts.into_iter().map(|r| Entry::Row(r.key.clone())));
-                }
+
             }
             PortsGrouping::Port => {
                 rows.sort_by_key(|r| (r.port, r.pid));
                 out.extend(rows.into_iter().map(|r| Entry::Row(r.key.clone())));
             }
             PortsGrouping::Process => {
-                rows.sort_by(|a, b| a.process.to_lowercase().cmp(&b.process.to_lowercase()).then(a.port.cmp(&b.port)));
-                let mut last = String::new();
-                for r in rows {
-                    if r.process != last {
-                        last = r.process.clone();
-                        let n = self.rows.iter().filter(|x| x.process == r.process).count();
+                rows.sort_by(|a, b| a.process.to_lowercase().cmp(&b.process.to_lowercase()).then(a.process.cmp(&b.process)).then(a.port.cmp(&b.port)));
+                let mut last: Option<&str> = None;
+                for r in &rows {
+                    if last != Some(r.process.as_str()) {
+                        last = Some(r.process.as_str());
+                        let n = rows.iter().filter(|x| x.process == r.process).count();
                         out.push(Entry::Process(r.process.clone(), n));
                     }
                     out.push(Entry::Row(r.key.clone()));
@@ -444,7 +456,6 @@ impl Board {
             }
         }
         out
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -512,15 +523,15 @@ fn spawn_worker(tx: Sender<Update>, wants: Arc<Mutex<Wants>>) {
                 }
                 let sockets = nus_pty::ports::sockets();
                 let tree = nus_pty::ports::process_tree();
-                // Facts for pids we haven't seen (or that changed name).
+                // Refresh process birth identities too: a PID can be reused between polls.
                 let pids: Vec<u32> = sockets
                     .iter()
                     .map(|s| s.pid)
                     .filter(|p| *p != 0)
                     .collect::<HashSet<_>>()
                     .into_iter()
-                    .filter(|p| !known.contains_key(p))
                     .collect();
+                known.clear();
                 if !pids.is_empty() {
                     for (pid, info) in nus_pty::ports::process_info(&pids) {
                         known.insert(pid, info);
@@ -589,6 +600,9 @@ impl App {
                 }
             }
         }
+        // Each row runs independently; its flaps follow their preceding neighbor.
+        if (self.board.open || self.ports_page_open()) && !self.motion.reduced()
+            && self.board.flaps.values().any(|c|c.before!=c.after && crate::clock::now()<c.at+Duration::from_secs_f32(crate::split_flap::duration(c.cells))) {self.dirty=true;}
         // Flaps and the toast expire.
         let before = self.board.departed.len();
         self.board.departed.retain(|d| crate::clock::since(d.at).as_millis() < 450);
@@ -606,11 +620,10 @@ impl App {
             self.dirty = true;
         }
         // Kills: force after three seconds if still there.
-        let due: Vec<u32> = self.board.killing.iter().filter(|(_, at)| crate::clock::since(at).as_secs() >= 3).map(|(p, _)| *p).collect();
+        let due: Vec<u32> = self.board.killing.iter().filter(|(_, (at, _))| crate::clock::since(at).as_secs() >= 3).map(|(p, _)| *p).collect();
         for pid in due {
-            self.board.killing.remove(&pid);
-            if self.board.rows.iter().any(|r| r.pid == pid) {
-                nus_pty::ports::kill(pid, true);
+            if let Some((_, identity)) = self.board.killing.remove(&pid) {
+                nus_pty::ports::kill_identified(pid, identity, true);
             }
         }
         // Tunnels: the public URL shows up in the tunnel tab's grid.
@@ -699,6 +712,7 @@ impl App {
                 bound: sock.local_addr.clone(),
                 exposed: sock.exposed(),
                 started: info.and_then(|i| i.started),
+                identity: info.and_then(|i| i.identity),
                 tab: shell.map(|s| s.0),
                 cwd: shell.and_then(|s| s.2.clone()),
                 command: shell.and_then(|s| s.3.clone()),
@@ -754,6 +768,7 @@ impl App {
                     bound: String::new(),
                     exposed: false,
                     started: info.and_then(|i| i.started),
+                identity: info.and_then(|i| i.identity),
                     tab: shell.map(|s| s.0),
                     cwd: shell.and_then(|s| s.2.clone()),
                     command: shell.and_then(|s| s.3.clone()),
@@ -784,6 +799,7 @@ impl App {
                 bound: "0.0.0.0".into(),
                 exposed: false,
                 started: None,
+            identity: None,
                 tab: None,
                 cwd: None,
                 command: None,
@@ -1017,27 +1033,23 @@ impl App {
                 self.ports_kill(key);
             }
             Act::Again => {
-                if let (Some(tab), Some(cmd)) = (r.tab, r.command.clone()) {
-                    if let Some(i) = self.tabs.iter().position(|t| t.id == tab) {
-                        self.close_board();
-                        self.activate(i);
-                        if let Some(Pane::Term(t)) = self.tabs.get_mut(i).map(|t| &mut t.left) {
-                            let _ = t.pty.write(format!("{cmd}\r").as_bytes());
-                        }
-                    }
-                } else if let (Group::Remembered, Some(cmd)) = (r.group, r.command.clone()) {
-                    // Start again: a shell where it ran, the command at its first prompt.
-                    self.close_board();
+                // Never type into an existing shell: it may now be running a
+                // different foreground program, or the owner may be a split pane.
+                if let Some(cmd) = r.command.clone() {
                     let profile = self.behavior.default_profile;
-                    if let Ok(mut t) = self.new_term_pane_at(false, profile, r.cwd.clone()) {
-                        t.type_at_prompt = Some(format!("{cmd}\r"));
-                        let tab = self.make_tab(Pane::Term(t), None);
-                        self.tabs.push(tab);
-                        let i = self.tabs.len() - 1;
-                        self.activate(i);
+                    match self.new_term_pane_at(false, profile, r.cwd.clone()) {
+                        Ok(mut t) => {
+                            t.type_at_prompt = Some(format!("{cmd}\r"));
+                            let tab = self.make_tab(Pane::Term(t), None);
+                            self.tabs.push(tab);
+                            self.close_board();
+                            self.activate(self.tabs.len() - 1);
+                        }
+                        Err(_) => self.ports_toast("Could not start a terminal".into(), key.clone()),
                     }
                 }
             }
+
             Act::Tunnel => {
                 if r.port == 0 || r.tunnel.is_some() {
                     return;
@@ -1046,27 +1058,28 @@ impl App {
                     Tunnel::Cloudflared => format!("cloudflared tunnel --url http://localhost:{}", r.port),
                     Tunnel::Ngrok => format!("ngrok http {}", r.port),
                 };
-                // In the owning tab when we know it, else a new shell tab.
-                let at = r.tab.and_then(|id| self.tabs.iter().position(|t| t.id == id));
-                match at {
-                    Some(i) => self.activate(i),
-                    None => {
-                        let p = self.behavior.default_profile;
-                        self.new_tab(p);
-                    }
-                }
-                // Its own pane beside: a fresh shell in the split runs it
-                // (typed ahead; the shell reads it once it's up).
+                let owner = r.tab.and_then(|id| self.tabs.iter().position(|t| t.id == id))
+                    .filter(|&i| self.tabs[i].right.is_none());
                 let profile = self.behavior.default_profile;
-                if let Ok(mut t) = self.new_term_pane(true, profile) {
-                    let _ = t.pty.write(format!("{cmd}\r").as_bytes());
-                    let tab = &mut self.tabs[self.active];
-                    if tab.right.is_none() {
-                        tab.right = Some(Pane::Term(t));
+                let mut t = match self.new_term_pane_at(owner.is_some(), profile, r.cwd.clone()) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        self.ports_toast("Could not start a tunnel terminal".into(), key.clone());
+                        return;
                     }
-                    tab.focus_right = true;
-                }
-                let id = self.tabs[self.active].id;
+                };
+                t.type_at_prompt = Some(format!("{cmd}\r"));
+                let i = if let Some(i) = owner {
+                    self.tabs[i].right = Some(Pane::Term(t));
+                    self.tabs[i].focus_right = true;
+                    i
+                } else {
+                    let tab = self.make_tab(Pane::Term(t), None);
+                    self.tabs.push(tab);
+                    self.tabs.len() - 1
+                };
+                self.activate(i);
+                let id = self.tabs[i].id;
                 if let Some(row) = self.board.row_mut(key) {
                     row.tunnel = Some(TunnelState { tab: id, url: None });
                 }
@@ -1099,20 +1112,17 @@ impl App {
         if r.pid == 0 {
             return;
         }
-        // Ours: Ctrl+C through the pty, the gentlest ask. Else taskkill / TERM.
-        let mut asked = false;
-        if let Some(tab) = r.tab.and_then(|id| self.tabs.iter_mut().find(|t| t.id == id)) {
-            if let Pane::Term(t) = &mut tab.left {
-                if t.pty.foreground_process().is_some() {
-                    let _ = t.pty.write(b"\x03");
-                    asked = true;
-                }
-            }
+        // Signal the selected process, never an unrelated foreground job in
+        // its terminal. Unknown or stale process identity fails closed.
+        let Some(identity) = r.identity else {
+            self.ports_toast("Could not verify this process; refresh and try again".into(), key.clone());
+            return;
+        };
+        if !nus_pty::ports::kill_identified(r.pid, identity, false) {
+            self.ports_toast("Process changed, exited, or could not be stopped".into(), key.clone());
+            return;
         }
-        if !asked {
-            nus_pty::ports::kill(r.pid, false);
-        }
-        self.board.killing.insert(r.pid, crate::clock::now());
+        self.board.killing.insert(r.pid, (crate::clock::now(), identity));
         if let Some(row) = self.board.row_mut(key) {
             row.dying = Some(crate::clock::now());
         }
@@ -1353,21 +1363,9 @@ impl App {
         self.draw_board(scene, r, true);
     }
 
-    fn draw_flap_text(&mut self, scene:&mut Scene, style:Style, r:Rect, text:&str, cw:f32, paper:nus_render::Color) {
-        let clip=scene.clip();
-        scene.layer(Some(clip.map_or(r,|c|r.intersect(&c))));
-        let chars:Vec<char>=text.chars().collect();
-        for i in 0..(r.w/cw).floor().max(0.0) as usize {
-            let cell=Rect::new(r.x+i as f32*cw,r.y,cw-self.px(2.0),r.h);
-            scene.rect(cell,crate::surface::mix(paper,style.color,0.10));
-            scene.rect(Rect::new(cell.x,cell.y,cell.w,cell.h*0.5),crate::surface::mix(paper,style.color,0.15));
-            if let Some(ch)=chars.get(i) {
-                let text=ch.to_string();let w=self.fonts.measure(style,&text);
-                self.fonts.draw(scene,style,cell.x+(cell.w-w)*0.5,cell.y+(cell.h+style.px)*0.5-self.px(3.0),&text);
-            }
-            scene.hline(cell.x,cell.y+cell.h*0.5,cell.w,self.px(0.5),paper);
-        }
-        scene.layer(clip);
+    fn draw_flap_text(&mut self,scene:&mut Scene,style:Style,r:Rect,old:&str,text:&str,cw:f32,paper:nus_render::Color,elapsed:f32) {
+        let pin=crate::surface::mix(paper,style.color,0.5);
+        crate::split_flap::text(&mut self.fonts,scene,style,r,old,text,cw,elapsed,paper,pin,self.scale);
     }
 
     /// The board itself, in `r` (the overlay sheet or a page).
@@ -1393,13 +1391,15 @@ impl App {
         let reduced = self.motion.reduced();
         let grouping = self.behavior.ports_grouping;
         let cw = self.fonts.measure(mono, "M").max(1.0) + self.px(3.0);
+        let live:HashSet<_>=self.board.rows.iter().chain(&self.board.ghosts).map(|r|r.key.clone()).collect();
+        self.board.flaps.retain(|key,_|live.contains(key));
         self.board.hits.clear();
         scene.layer(Some(r));
         scene.rect(r, paper);
         let mut y = r.y + self.px(16.0);
         self.fonts.draw_icon(scene,nus_render::text::icons::PORTS,self.px(20.0),r.x+pad,y,signal);
         let title = Style {px:self.px(20.0),..strong};
-        self.fonts.draw(scene,title,r.x+pad+self.px(30.0),y+self.px(17.0),"PORTS");
+        self.fonts.draw(scene,title,r.x+pad+self.px(30.0),y+self.px(17.0),"PORT CONTROL");
         if overlay && r.w<self.px(440.0) {y+=self.px(31.0);}
         let mut rx = r.right()-pad;
         let chips: Vec<(&str,Hit)> = if overlay {vec![("CLOSE",Hit::Close),("EXPAND",Hit::Expand)]} else {vec![]};
@@ -1411,11 +1411,12 @@ impl App {
             self.board.hits.push((hr,hit));rx-=self.px(8.0);
         }
         y+=self.px(37.0);
-        let n_listen=self.board.rows.iter().filter(|row|matches!(row.key,Key::Port{..})).count();
+        let n_listen=self.board.rows.iter().filter(|row|matches!(row.key,Key::Port{proto:Proto::Tcp,..})).count();
+        let n_udp=self.board.rows.iter().filter(|row|matches!(row.key,Key::Port{proto:Proto::Udp,..})).count();
         let n_exposed=self.board.rows.iter().filter(|row|row.exposed&&matches!(row.key,Key::Port{..})).count();
-        let stats=format!("LOCAL TRAFFIC  /  {n_listen:02} LISTENING  /  {n_exposed:02} EXPOSED");
-        self.fonts.draw(scene,dim,r.x+pad,y,&self.fit(dim,&stats,r.w-pad*2.0));
-        y+=self.px(14.0);
+        let stats=format!("{n_listen} TCP listeners · {n_udp} UDP bindings · {n_exposed} all-interface bindings");
+        for line in crate::reader::wrap(&self.fonts,dim,&stats,r.w-pad*2.0){self.fonts.draw(scene,dim,r.x+pad,y,&line);y+=self.px(18.0);}
+        y-=self.px(4.0);
         let word=format!("GROUP: {}  ·  G",grouping.name().to_uppercase());
         let gw=self.fonts.measure(label,&word)+self.px(14.0);
         let group=Rect::new(r.x+pad,y,gw.min(r.w-pad*2.0),self.px(25.0));
@@ -1442,7 +1443,7 @@ impl App {
         let col_up=right-up_w;
         let col_owner=col_up-owner_w;
         let col_proc=col_owner-proc_w;
-        for (x,width,word) in [(col_port,col_name-col_port,"PORT"),(col_name,col_proc-col_name,"SERVICE"),(col_proc,proc_w,"PROCESS"),(col_owner,owner_w,"OWNER"),(col_up,up_w,"UPTIME")] {
+        for (x,width,word) in [(col_port,col_name-col_port,"PORT"),(col_name,col_proc-col_name,"SERVICE"),(col_proc,proc_w,"PROCESS"),(col_owner,owner_w,"OWNER"),(col_up,up_w,"PROCESS AGE")] {
             if width>0.0 {self.fonts.draw(scene,dim,x,y+self.px(14.0),word);}
         }
         y+=self.px(25.0);
@@ -1463,7 +1464,7 @@ impl App {
         let rename = self.board.rename.clone();
         let mut departed: Vec<(Row, f32)> = self.board.departed.iter().map(|d| (d.row.clone(), crate::clock::since(d.at).as_secs_f32())).collect();
         if listing.is_empty() && departed.is_empty() {
-            let msg = if self.board.polls == 0 { "listening…" } else if self.board.filter.is_some() { "nothing matches" } else { "nothing listening · start a dev server and it lands here" };
+            let msg = if self.board.polls == 0 { "Checking local ports…" } else if self.board.filter.is_some() { "No matching entries" } else { "No entries match your port settings" };
             self.fonts.draw(scene, dim, r.x + pad, y + self.px(30.0), msg);
             y += self.px(50.0);
         }
@@ -1480,7 +1481,7 @@ impl App {
                     let count = format!("{n}");
                     self.fonts.draw(scene, dim, r.x + pad + self.fonts.measure(strong, g.name()) + self.px(8.0), base, &count);
                     if *g == Group::Mine {
-                        self.fonts.draw(scene, dim, r.x + pad + self.fonts.measure(strong, g.name()) + self.px(8.0) + self.fonts.measure(label, &count) + self.px(10.0), base, &self.fit(dim,"· YOUR SHELLS",(r.w-self.px(120.0)).max(0.0)));
+                        self.fonts.draw(scene, dim, r.x + pad + self.fonts.measure(strong, g.name()) + self.px(8.0) + self.fonts.measure(label, &count) + self.px(10.0), base, &self.fit(dim,"· STARTED FROM YOUR TERMINALS",(r.w-self.px(120.0)).max(0.0)));
                     }
                     self.board.hits.push((Rect::new(r.x, y, r.w, head_h), Hit::Head(*g)));
                     y += head_h;
@@ -1498,8 +1499,8 @@ impl App {
                     let rr = Rect::new(r.x, y, r.w, row_h);
                     let hot = rr.contains(mx, my);
                     // Split-flap on arrival: the row's text drops in from the flap line.
-                    let age = crate::clock::since(row.seen).as_secs_f32();
-                    let flap = if reduced || age > 0.45 { 1.0 } else { ease_out(age / 0.45) };
+
+                    let flap = 1.0;
                     if is_sel {
                         scene.rect(rr, fade(signal, 0.12));
                     } else if hot {
@@ -1537,15 +1538,14 @@ impl App {
                         Key::Conn { .. } => format!("{:>5}", format!("×{}", row.conns)),
                         _ => format!("{:>5}{}", row.port, if row.proto == Proto::Udp { "u" } else { " " }),
                     };
-                    self.draw_flap_text(scene,mono,Rect::new(col_port,y+self.px(5.0)+drop,cw*6.0,row_h-self.px(10.0)),&port_s,cw,paper);
                     let name = match &rename {
                         Some((rk, s)) if rk == k => format!("{s}_"),
                         _ => row.title(),
                     };
                     let name_w = col_proc - col_name - cw;
                     let name_fit = self.fit(mono, &name, name_w);
-                    let nc = ink;
-                    self.draw_flap_text(scene,Style {color:nc,..mono},Rect::new(col_name,y+self.px(5.0)+drop,name_w,row_h-self.px(10.0)),&name_fit.to_uppercase(),cw,paper);
+
+
                     self.board.hits.push((Rect::new(col_name, y, name_w, row_h), Hit::Name(k.clone())));
                     let proc_s = match &row.key {
                         Key::Conn { .. } => row.remotes.first().cloned().unwrap_or_default(),
@@ -1558,19 +1558,35 @@ impl App {
                             s
                         }
                     };
-                    if proc_w>0.0 {self.draw_flap_text(scene,mono_dim,Rect::new(col_proc,y+self.px(5.0)+drop,proc_w-cw,row_h-self.px(10.0)),&proc_s.to_uppercase(),cw,paper);}
+                    let fields=[port_s.clone(),name_fit.to_uppercase(),proc_s.to_uppercase(),row.uptime()];
+                    let widths=[cw*6.0,name_w,(proc_w-cw).max(0.0),up_w];
+                    let cells:usize=widths.iter().map(|w|(w/cw).floor().max(0.0)as usize).sum();
+                    let visible=rr.intersect(&body).h>0.0;
+                    let now=crate::clock::now();
+                    let change=self.board.flaps.entry(k.clone()).or_insert_with(||crate::split_flap::RowChange{before:if visible&&!reduced{Default::default()}else{fields.clone()},after:fields.clone(),at:now,cells});
+                    if change.after!=fields {change.before=change.after.clone();change.after=fields.clone();change.at=now;}
+                    change.cells=cells;
+                    let editing=rename.as_ref().is_some_and(|(key,_)| key==k);
+                    if !visible||reduced||editing {change.before=fields.clone();}
+                    let change=change.clone();
+                    let elapsed=if reduced||!visible{f32::INFINITY}else{crate::clock::since(change.at).as_secs_f32()};
+                    let xs=[col_port,col_name,col_proc,col_up];let mut offset=0usize;
+                    for field in 0..4 {
+                        if widths[field]>0.0 {self.draw_flap_text(scene,if field<2{mono}else{mono_dim},Rect::new(xs[field],y+self.px(5.0),widths[field],row_h-self.px(10.0)),&change.before[field],&fields[field],cw,paper,elapsed-offset as f32*crate::split_flap::STAGGER);}
+                        offset+=(widths[field]/cw).floor().max(0.0)as usize;
+                    }
                     let owner = match row.group {
                         Group::Mine => row.tab.and_then(|id| self.tabs.iter().position(|t| t.id == id)).map(|i| format!("tab {}", i + 1)).unwrap_or_else(|| "shell".into()),
                         Group::Docker => "docker".into(),
-                        Group::Remembered => "was here".into(),
+                        Group::Remembered => "remembered".into(),
                         Group::System => "system".into(),
                         Group::Connections => if row.tab.is_some() { "mine".into() } else { String::new() },
-                        Group::Others => if row.exposed { "exposed".into() } else { String::new() },
+                        Group::Others => "outside nus".into(),
                     };
                     if owner_w>0.0 {self.fonts.draw(scene,mono_dim,col_owner,base,&self.fit(mono_dim,&owner,col_up-col_owner-cw));}
                     // A fixed slot at the right edge for the × that comes
                     // up on hover, so nothing shifts under the pointer.
-                    if up_w>0.0 {self.draw_flap_text(scene,mono_dim,Rect::new(col_up,y+self.px(5.0)+drop,up_w,row_h-self.px(10.0)),&row.uptime(),cw,paper);}
+
                     // ×: stop this process, and everything under it,
                     // without opening the row first. Only where KILL is
                     // on offer at all — docker rows and dead ones have
@@ -1602,22 +1618,23 @@ impl App {
                     if is_open {
                         let lines: Vec<(String, String)> = {
                             let mut v = Vec::new();
+                            if matches!(row.key, Key::Port { .. }) {
+                                v.push(("STATUS".into(), row.status().into()));
+                                v.push(("BOUND ADDRESS".into(), format!("{} · {}", if row.bound.is_empty(){"unknown"}else{&row.bound}, bind_scope(&row.bound))));
+                            }
                             if !row.cmdline.is_empty() {
                                 v.push(("COMMAND".into(), row.cmdline.clone()));
                             } else if !row.exe.is_empty() {
                                 v.push(("EXE".into(), row.exe.clone()));
                             }
                             if let Some(c) = &row.command {
-                                v.push(("STARTED BY".into(), c.clone()));
+                                v.push(("SAVED COMMAND".into(), c.clone()));
                             }
                             if let Some(c) = &row.cwd {
                                 v.push(("IN".into(), c.clone()));
                             }
-                            if matches!(row.key, Key::Port { .. }) {
-                                v.push(("BOUND".into(), format!("{} · {}", row.bound, if row.exposed { "every interface — reachable from the network" } else { "this machine only" })));
-                            }
                             if let Some(p) = &row.probe {
-                                let mut s = if p.status > 0 { format!("HTTP {}", p.status) } else { "no http answer".into() };
+                                let mut s = if p.status > 0 { format!("HTTP {}", p.status) } else { "No HTTP response observed".into() };
                                 if !p.title.is_empty() {
                                     s.push_str(&format!(" · {}", p.title));
                                 }
@@ -1627,10 +1644,10 @@ impl App {
                                 if !p.server.is_empty() {
                                     s.push_str(&format!(" · {}", p.server));
                                 }
-                                v.push(("PROBE".into(), s));
+                                v.push(("HTTP CHECK".into(), s));
                             }
                             if !row.remotes.is_empty() {
-                                v.push(("TALKING TO".into(), row.remotes.join(" · ")));
+                                v.push(("REMOTE ADDRESSES".into(), row.remotes.join(" · ")));
                             }
                             if let Some((c, i)) = &row.container {
                                 v.push(("CONTAINER".into(), format!("{c} · {i}")));
@@ -1640,17 +1657,20 @@ impl App {
                             }
                             v
                         };
-                        let dh = self.px(12.0) + lines.len() as f32 * self.px(22.0) + self.px(40.0);
-                        let dr = Rect::new(r.x, y, r.w, dh);
-                        scene.rect(dr, crate::surface::mix(paper, ink, 0.03));
-                        let mut ly = y + self.px(10.0);
-                        let lx = col_port;
-                        let kw = (cw * 12.0).min((r.w-pad*2.0)*0.38);
-                        for (k2, v) in &lines {
-                            self.fonts.draw(scene, dim, lx, ly + self.px(15.0), &self.fit(dim,k2,kw-self.px(8.0)));
-                            let vv = self.fit(mono, v, r.right() - pad - lx - kw);
-                            self.fonts.draw(scene, mono, lx + kw, ly + self.px(15.0), &vv);
-                            ly += self.px(22.0);
+                        let lx=col_port;
+                        let stacked=r.w<self.px(480.0);
+                        let kw=if stacked{0.0}else{(cw*12.0).min((r.w-pad*2.0)*0.38)};
+                        let width=(r.right()-pad-lx-kw).max(self.px(30.0));
+                        let wrapped:Vec<_>=lines.iter().map(|(label,value)|(label,wrap_detail(&self.fonts,mono,value,width))).collect();
+                        let label_h=if stacked{self.px(19.0)}else{0.0};
+                        let dh=self.px(52.0)+wrapped.iter().map(|(_,v)|label_h+v.len()as f32*self.px(22.0)+self.px(4.0)).sum::<f32>();
+                        scene.rect(Rect::new(r.x,y,r.w,dh),crate::surface::mix(paper,ink,0.03));
+                        let mut ly=y+self.px(10.0);
+                        for (label,values) in &wrapped {
+                            self.fonts.draw(scene,dim,lx,ly+self.px(15.0),label);
+                            ly+=label_h;
+                            for value in values {self.fonts.draw(scene,mono,lx+kw,ly+self.px(15.0),value);ly+=self.px(22.0);}
+                            ly+=self.px(4.0);
                         }
                         // The action strip.
                         ly += self.px(6.0);
@@ -1674,9 +1694,11 @@ impl App {
                             }
                         };
                         if confirm.as_ref() == Some(k) {
-                            let q = format!("KILL {} ({})?", row.process, row.pid);
-                            ax += self.fonts.draw(scene, Style { color: ansi(1), ..strong }, ax, ly + self.px(16.0), &q) + self.px(16.0);
-                            for (word, yes) in [("YES · ENTER", true), ("NO · ESC", false)] {
+                            let q = self.fit(strong,&format!("Stop {} ({})?", row.process, row.pid),r.w-pad*2.0);
+                            self.fonts.draw(scene,Style{color:ansi(1),..strong},ax,ly+self.px(16.0),&q);ly+=self.px(24.0);
+                            for line in crate::reader::wrap(&self.fonts,dim,"Requests a stop. After 3 seconds, force-stops the same process if it is still running.",r.w-pad*2.0){self.fonts.draw(scene,dim,lx,ly+self.px(16.0),&line);ly+=self.px(20.0);}
+                            ax=lx;
+                            for (word, yes) in [("STOP · ENTER", true), ("CANCEL · ESC", false)] {
                                 let ww = self.fonts.measure(label, word);
                                 if ax+ww+self.px(6.0)>r.right()-pad {
                                     ax=lx;ly+=self.px(30.0);
@@ -1748,7 +1770,7 @@ impl App {
         // Foot: the keys.
         let fy = r.bottom() - self.px(34.0);
         scene.hline(r.x + pad, fy, r.w - 2.0 * pad, hair, ink);
-        let foot = if self.board.sel.is_some() { "ENTER DETAIL · O OPEN · C COPY · J JUMP · K KILL · R RUN AGAIN · T TUNNEL · W WATCH · N NAME · / FILTER" } else { "↑↓ PICK · ENTER DETAIL · / FILTER · G GROUPING" };
+        let foot = if r.w<self.px(480.0){"ENTER DETAILS · / FILTER · G GROUP"}else if self.board.sel.is_some(){"ENTER DETAILS · O OPEN · K STOP · / FILTER"}else{"↑↓ PICK · ENTER DETAILS · / FILTER · G GROUP"};
         self.fonts.draw(scene, dim, r.x + pad, fy + self.px(20.0), &self.fit(dim, foot, r.w - 2.0 * pad));
         scene.layer(outer);
     }
@@ -1758,6 +1780,52 @@ impl App {
 fn ease_out(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     1.0 - (1.0 - x) * (1.0 - x) * (1.0 - x)
+}
+
+fn bind_scope(address:&str)->&'static str {
+    if matches!(address,"0.0.0.0"|"::"|"[::]"|"*"){return "All interfaces; network reachability not checked";}
+    match address.trim_matches(['[',']']).parse::<std::net::IpAddr>() {
+        Ok(ip) if ip.is_loopback()=>"Loopback interface",
+        Ok(_)=>"Specific interface; network reachability not checked",
+        Err(_)=>"Interface unknown",
+    }
+}
+
+fn wrap_detail(fonts:&nus_render::FontSystem,style:Style,text:&str,width:f32)->Vec<String>{
+    crate::reader::wrap(fonts,style,text,width).into_iter().flat_map(|line|{
+        let mut lines=Vec::new();let mut part=String::new();
+        for ch in line.chars(){let mut next=part.clone();next.push(ch);if !part.is_empty()&&fonts.measure(style,&next)>width{lines.push(std::mem::take(&mut part));}part.push(ch);}
+        if !part.is_empty(){lines.push(part);}lines
+    }).collect()
+}
+
+#[cfg(test)] mod label_tests {
+    use super::*;
+    fn remembered(port: u16) -> Row {
+        Remembered {port, process:"node".into(),command:"npm start".into(),cwd:"/tmp".into(),last_seen:0}.row()
+    }
+    #[test]
+    fn remembered_entries_survive_every_grouping_and_filter() {
+        let mut r = remembered(3000);
+        r.name = Some("My saved server".into());
+        for grouping in [PortsGrouping::Origin, PortsGrouping::Port, PortsGrouping::Process] {
+            let entries = listing(&[], &[r.clone()], Some("saved server"), grouping);
+            assert!(entries.iter().any(|e| matches!(e, Entry::Row(k) if k == &r.key)));
+        }
+    }
+    #[test]
+    fn process_counts_include_only_visible_filtered_entries() {
+        let mut live = remembered(3000);
+        live.group = Group::Mine;
+        let mut hidden = remembered(3001);
+        hidden.rule.hide = true;
+        let entries = listing(&[live, hidden], &[remembered(3002)], None, PortsGrouping::Process);
+        assert!(matches!(&entries[0], Entry::Process(name, 2) if name == "node"));
+        let entries = listing(&[remembered(3000)], &[remembered(3002)], Some("3002"), PortsGrouping::Process);
+        assert!(matches!(&entries[0], Entry::Process(_, 1)));
+    }
+    #[test] fn binding_does_not_claim_reachability(){assert!(bind_scope("0.0.0.0").contains("not checked"));assert!(bind_scope("192.168.1.8").starts_with("Specific"));assert_eq!(bind_scope("[::1]"),"Loopback interface");assert_eq!(bind_scope("127.0.0.2"),"Loopback interface");assert_eq!(bind_scope(""),"Interface unknown");}
+    #[test] fn udp_and_stop_requests_are_not_reported_as_live_tcp(){let mut r=Remembered{port:53,process:"dns".into(),command:String::new(),cwd:String::new(),last_seen:0}.row();assert_eq!(r.status(),"No current listener observed");r.group=Group::Others;r.proto=Proto::Udp;assert_eq!(r.status(),"UDP socket bound");r.dying=Some(crate::clock::now());assert_eq!(r.status(),"Stop requested");}
 }
 
 /// The board as a page.

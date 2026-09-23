@@ -12,6 +12,7 @@ use vte::ansi::{
 use crate::cell::{Cell, Color, Flags};
 use crate::grid::Grid;
 use crate::palette::{Palette, Rgb};
+use crate::utf8::Utf8Prefix;
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,6 +135,9 @@ pub struct Term {
     pub progress: Option<(u8, u8)>,
     /// Bytes of an OSC that ended past the last chunk.
     pending_osc: Vec<u8>,
+    /// Transport state, separate from terminal modes and the vte decoder.
+    scan_utf8: Utf8Prefix,
+    feed_utf8: Utf8Prefix,
     /// Terminal images: decoded once, placed at absolute lines.
     pub images: Vec<crate::images::Image>,
     pub placements: Vec<crate::images::Placement>,
@@ -173,6 +177,8 @@ impl Term {
             cwd: None,
             progress: None,
             pending_osc: Vec::new(),
+            scan_utf8: Utf8Prefix::default(),
+            feed_utf8: Utf8Prefix::default(),
             images: Vec::new(),
             placements: Vec::new(),
             pending_image: None,
@@ -198,6 +204,19 @@ impl Term {
         let mut start = 0;
         let mut i = 0;
         while i < bytes.len() {
+            // C1-valued bytes inside UTF-8 (e.g. 面 = e9 9d a2) are text,
+            // not OSC introducers. Carry this boundary state across PTY reads.
+            if self.scan_utf8.observe(bytes[i]) {
+                i += 1;
+                continue;
+            }
+            // Keep a split ESC introducer for the interception layer as well
+            // as vte. Otherwise an OSC arriving one byte at a time bypasses us.
+            if bytes[i] == 0x1b && i + 1 == bytes.len() {
+                self.feed(&bytes[start..i]);
+                self.pending_osc = bytes[i..].to_vec();
+                return;
+            }
             // Queries vte doesn't carry: XTVERSION (CSI > q) and XTGETTCAP
             // (DCS + q … ST). Answered here and kept from vte.
             if bytes[i] == 0x1b && i + 1 < bytes.len() {
@@ -388,7 +407,14 @@ impl Term {
             // Find the terminator: BEL, ESC \, or C1 ST.
             let mut end = None;
             let mut j = body;
+            let mut payload_utf8 = Utf8Prefix::default();
             while j < bytes.len() {
+                // C1 ST can also occur inside a UTF-8 pathname/title. Buffered
+                // control strings are rescanned from their start on each read.
+                if payload_utf8.observe(bytes[j]) {
+                    j += 1;
+                    continue;
+                }
                 match bytes[j] {
                     0x07 | 0x9c => {
                         end = Some((j, j + 1));
@@ -396,6 +422,11 @@ impl Term {
                     }
                     0x1b if j + 1 < bytes.len() && bytes[j + 1] == b'\\' => {
                         end = Some((j, j + 2));
+                        break;
+                    }
+                    0x1b if j + 1 == bytes.len() => {
+                        // The second byte of ESC \ may arrive in the next read.
+                        j = bytes.len();
                         break;
                     }
                     0x1b => break, // another sequence began: not an OSC for us
@@ -440,8 +471,28 @@ impl Term {
             return;
         }
         let mut processor = std::mem::take(&mut self.processor);
-        processor.advance(self, bytes);
+        // vte 0.15's partial-UTF-8 lookahead can consume a following ASCII byte
+        // without dispatching it. Finish only the outstanding scalar one byte
+        // at a time, then keep the normal bulk parser fast path for the rest.
+        // No bytes are decoded, replaced, coalesced, or heap-buffered here.
+        let mut prefix = self.feed_utf8;
+        let scan_utf8 = self.scan_utf8;
+        let mut offset = 0;
+        while prefix.is_pending() && offset < bytes.len() {
+            processor.advance(self, &bytes[offset..offset + 1]);
+            prefix.observe(bytes[offset]);
+            offset += 1;
+        }
+        if offset < bytes.len() {
+            let rest = &bytes[offset..];
+            processor.advance(self, rest);
+            prefix = Utf8Prefix::at_end(rest);
+        }
         self.processor = processor;
+        // A terminal reset handled inside advance() must not erase the byte
+        // boundary of the transport stream currently being processed.
+        self.feed_utf8 = prefix;
+        self.scan_utf8 = scan_utf8;
     }
 
     /// One of ours: 133;<A|B|C|D[;exit]>, 7;file://host/path, 9;4;state;pct.

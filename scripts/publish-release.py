@@ -11,12 +11,17 @@ spec = importlib.util.spec_from_file_location('package_release', Path(__file__).
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
 
+support_spec = importlib.util.spec_from_file_location('release_support', Path(__file__).with_name('release-support.py'))
+support = importlib.util.module_from_spec(support_spec)
+support_spec.loader.exec_module(support)
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--tag',required=True)
     p.add_argument('--revision',required=True)
     p.add_argument('--targets',default=','.join(sorted(package.TARGETS)))
     p.add_argument('--directory',type=Path,default=Path('dist/release'))
+    p.add_argument('--support-policy',type=Path,default=package.ROOT/'release-support.json')
     args=p.parse_args()
     if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-preview\.\d+)?', args.tag):
         raise ValueError('Expected vX.Y.Z or vX.Y.Z-preview.N')
@@ -36,7 +41,8 @@ def main():
         if channel == 'stable' and entry['signing'] != required_signing[target]:
             raise ValueError('A stable desktop package is not signed')
         entries.append(entry)
-    manifest={'schema':1,'version':args.tag,'revision':args.revision,'channel':entries[0]['channel'],'assets':entries}
+    maintenance=support.evaluate(json.loads(args.support_policy.read_text()),args.tag)
+    manifest={'state':'active','maintenance':maintenance,'schema':1,'version':args.tag,'revision':args.revision,'channel':entries[0]['channel'],'assets':entries}
     (args.directory/'release.json').write_text(json.dumps(manifest,indent=2)+'\n')
     (args.directory/'SHA256SUMS.txt').write_text(''.join(f'{e["sha256"]}  {e["name"]}\n' for e in entries))
     notes=args.directory/'notes.md'
@@ -71,6 +77,6 @@ def main():
         subprocess.run(command,check=True)
     assets=[str(args.directory/e['name']) for e in entries]+[str(args.directory/'release.json'),str(args.directory/'SHA256SUMS.txt')]
     subprocess.run(['gh','release','upload',args.tag,*assets,'--clobber'],check=True)
-    subprocess.run(['gh','release','edit',args.tag,'--draft=false','--latest='+('true' if manifest['channel']=='stable' else 'false')],check=True)
+    subprocess.run(['gh','release','edit',args.tag,'--draft=false','--latest='+('true' if maintenance['latest'] else 'false')],check=True)
 
 if __name__=='__main__': main()

@@ -20,10 +20,20 @@ fn encode(text: &str) -> String {
 pub fn version() -> String {
     format!(
         "nus {} ({}); Chromium {}",
-        env!("CARGO_PKG_VERSION"),
+        env!("NUS_BUILD_VERSION"),
         env!("NUS_BUILD_REVISION"),
         crate::chromium_version()
     )
+}
+
+/// Deliberate allowlist: no instance identity, paths, URLs, logs or process data.
+/// The exact text is shown in Settings before the user copies it.
+pub fn details() -> String {
+    format!("{} · OS {} · architecture {} · channel {:?} · profile format {} · settings schema {} · CLI protocol {} · holder protocol {} · last update failure {}",
+        version(), std::env::consts::OS, std::env::consts::ARCH,
+        nus_compat::Channel::for_version(env!("NUS_BUILD_VERSION")), nus_compat::PROFILE_FORMAT,
+        crate::prefs::SCHEMA, nus_compat::CLI_PROTOCOL, nus_compat::HOLD_PROTOCOL,
+        { let code = crate::updates::status().failure_code; if code.is_empty() { "none this session" } else { code } })
 }
 
 pub fn issue_url(kind: Kind) -> String {

@@ -2,7 +2,7 @@
 //! log output. These are CPU/event-loop timings, not display scanout timings.
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::OnceLock,
     time::Instant,
 };
@@ -32,36 +32,104 @@ impl Samples {
                 .copied()
                 .unwrap_or(0.0)
         };
-        serde_json::json!({"count":self.count,"p50_ms":p(50),"p95_ms":p(95),"p99_ms":p(99),"max_ms":self.worst,"over_16_67_ms":self.over_16ms})
+        serde_json::json!({
+            "count": self.count,
+            "p50_ms": p(50),
+            "p95_ms": p(95),
+            "p99_ms": p(99),
+            "max_ms": self.worst,
+            "over_16_67_ms": self.over_16ms
+        })
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StartupMark {
+    PrivateReady,
+    DockReady,
+    CefReady,
+    CefDeferred,
+    EventLoopReady,
+    WindowCreated,
+    AppReady,
+    FirstPresent,
+}
+impl StartupMark {
+    fn metric(self) -> &'static str {
+        match self {
+            StartupMark::PrivateReady => "startup_private_ready",
+            StartupMark::DockReady => "startup_dock_ready",
+            StartupMark::CefReady => "startup_cef_ready",
+            StartupMark::CefDeferred => "startup_cef_deferred",
+            StartupMark::EventLoopReady => "startup_event_loop_ready",
+            StartupMark::WindowCreated => "startup_window_created",
+            StartupMark::AppReady => "startup_app_ready",
+            StartupMark::FirstPresent => "startup_first_present",
+        }
+    }
+}
+
+struct Launch {
+    at: Instant,
+    seen: BTreeSet<StartupMark>,
+}
+
 thread_local! {
     static DATA: RefCell<BTreeMap<&'static str, Samples>> = RefCell::new(BTreeMap::new());
-    static LAUNCH: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    static LAUNCH: RefCell<Option<Launch>> = const { RefCell::new(None) };
 }
+
 pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("NUS_PERF").is_some())
 }
+
 pub fn start() {
     if enabled() {
-        LAUNCH.with(|t| *t.borrow_mut() = Some(Instant::now()));
-    }
-}
-pub fn first_frame() {
-    if enabled() {
         LAUNCH.with(|t| {
-            if let Some(at) = t.borrow_mut().take() {
-                record("main_to_first_submit", at.elapsed().as_secs_f64() * 1000.0);
-            }
+            *t.borrow_mut() = Some(Launch {
+                at: Instant::now(),
+                seen: BTreeSet::new(),
+            })
         });
     }
 }
+
+/// Record a semantic startup milestone once, as elapsed time from `start()`.
+/// Keeping startup names in an enum prevents accidental metric drift in the
+/// machine-readable performance output.
+pub fn startup(mark: StartupMark) -> Option<f64> {
+    if !enabled() {
+        return None;
+    }
+    let ms = LAUNCH.with(|t| {
+        let mut launch = t.borrow_mut();
+        let launch = launch.as_mut()?;
+        if !launch.seen.insert(mark) {
+            return None;
+        }
+        Some(launch.at.elapsed().as_secs_f64() * 1000.0)
+    });
+    if let Some(ms) = ms {
+        record(mark.metric(), ms);
+    }
+    ms
+}
+
+pub fn first_frame() {
+    if let Some(ms) = startup(StartupMark::FirstPresent) {
+        // Preserve the original metric for existing scripts while exposing a
+        // name that says what was actually observed: a successful present.
+        record("main_to_first_submit", ms);
+    }
+}
+
 pub fn record(name: &'static str, ms: f64) {
     if enabled() {
         DATA.with(|d| d.borrow_mut().entry(name).or_default().add(ms));
     }
 }
+
 pub struct Scope(&'static str, Option<Instant>);
 pub fn scope(name: &'static str) -> Scope {
     Scope(name, enabled().then(Instant::now))
@@ -73,6 +141,13 @@ impl Drop for Scope {
         }
     }
 }
+
+/// A cheap readiness probe for opt-in native scripts. Unlike snapshot(), this
+/// does not allocate, sort distributions, or sample the clock while waiting.
+pub fn has_samples(name: &str) -> bool {
+    enabled() && DATA.with(|d| d.borrow().get(name).is_some_and(|s| s.count > 0))
+}
+
 pub fn snapshot() -> serde_json::Value {
     DATA.with(|d| {
         d.borrow()
@@ -82,6 +157,10 @@ pub fn snapshot() -> serde_json::Value {
             .into()
     })
 }
+
+/// Clear sampled operation timings. Startup milestone state deliberately stays
+/// intact: a shot may reset interaction samples after launch without turning a
+/// reset-relative timestamp into a fake startup measurement.
 pub fn reset() {
     DATA.with(|d| d.borrow_mut().clear());
 }
@@ -131,5 +210,11 @@ pub fn memory_snapshot() -> serde_json::Value {
         .filter(|r| children.contains(&r.0))
         .map(|r| r.2)
         .sum();
-    serde_json::json!({"available":main.is_some(),"main_rss_kib":main,"tree_rss_kib":tree,"processes":children.len(),"method":"sum RSS, includes shared pages"})
+    serde_json::json!({
+        "available": main.is_some(),
+        "main_rss_kib": main,
+        "tree_rss_kib": tree,
+        "processes": children.len(),
+        "method": "sum RSS, includes shared pages"
+    })
 }

@@ -1,0 +1,1 @@
+{"name":"nus-benchmark-readiness","displayName":"Benchmark readiness oracle","version":"0.0.1","publisher":"local-benchmark","engines":{"vscode":"^1.90.0"},"activationEvents":["*"],"main":"./extension.cjs"}

@@ -248,9 +248,88 @@ fn sky(in: VsOut) -> vec4<f32> {
 // params.y = thickness). 3 and 4 blend toward color2 along a diagonal
 // gradient when color2.a > 0; `phase` slides it (aurora).
 fn shade(in: VsOut) -> vec4<f32> {
+    if in.kind == 18u {
+        let scale = in.params.y;
+        let head = in.size.x * in.params.x;
+        let y = (in.local.y - in.size.y * 0.5) / scale;
+        let dx = max(max(-in.local.x, in.local.x-head), 0.0) / scale;
+        let d = length(vec2(dx,y));
+        let core = exp(-d*d/0.65);
+        let halo = 0.10 * exp(-d*d/8.0);
+        let tip = exp(-pow((in.local.x-head)/(2.6*scale),2.0)-y*y);
+        let coverage = clamp(core+halo+tip,0.0,1.0);
+        let body = mix(in.color.rgb,vec3(0.94,0.97,1.0),0.72);
+        // Encoded value for a 4x linear-light highlight. No SDR tone map.
+        let hot = vec3(1.8248,1.799,1.746);
+        return vec4(mix(body,hot,tip),coverage*in.color.a);
+    }
     if in.kind == 0u {
         return in.color;
     }
+    if in.kind == 17u {
+        let pixel = in.params.x;
+        let uv = in.local / in.size;
+        let cell = floor(in.local / (pixel * 12.0));
+        let seed = hash(cell);
+        let star = (cell + vec2(hash(cell + vec2(19.0, 7.0)), hash(cell + vec2(2.0, 31.0)))) * pixel * 12.0;
+        let life = 3.0 + seed * 7.0;
+        let pulse = pow(max(0.0, sin((in.phase / life + seed) * 6.2831853)), 3.0);
+        let size = pixel * select(0.75, 1.4, seed > 0.92);
+        let delta = abs(in.local - star);
+        var alpha = select(0.0, (0.2 + seed * 0.5) * pulse, max(delta.x, delta.y) < size * 0.5 && seed > 0.42);
+        alpha *= 1.0 - smoothstep(0.56, 0.77, uv.y);
+        var mask = 0.0;
+        let aspect = in.size.y / in.size.x;
+        let p = uv * vec2(1.0, aspect);
+        for (var i = 0u; i < in.raw2; i++) {
+            let at = in.extra + i * 2u;
+            let a = points[at] * vec2(1.0, aspect);
+            let age = points[at + 1u].x;
+            var distance = length(p - a);
+            if i + 1u < in.raw2 {
+                let b = points[at + 2u] * vec2(1.0, aspect);
+                let ab = b - a;
+                let q = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.000001), 0.0, 1.0);
+                distance = length(p - a - ab * q);
+            }
+            let radius = 0.063 + age * 0.019;
+            mask = max(mask, exp(-1.7 * distance * distance / (radius * radius)) * pow(max(0.0, 1.0 - age / 2.3), 1.1));
+        }
+        if mask > 0.005 {
+            let t = in.phase * 0.13;
+            let a = uv.x * 1.3 + uv.y * 0.67 + 0.105 * sin(uv.y * 5.1 + t);
+            let b = uv.y - uv.x * 0.34 + 0.13 * sin(uv.x * 4.9 - t * 0.6);
+            let fold = 0.5 + 0.5 * sin(a * 10.4 - t + b * b * 4.5);
+            let density = mask * (0.10 + 0.65 * pow(fold, 1.4));
+            let bayer = array<u32, 64>(0,32,8,40,2,34,10,42,48,16,56,24,50,18,58,26,12,44,4,36,14,46,6,38,60,28,52,20,62,30,54,22,3,35,11,43,1,33,9,41,51,19,59,27,49,17,57,25,15,47,7,39,13,45,5,37,63,31,55,23,61,29,53,21);
+            let grid = vec2<u32>(floor(in.local / (pixel * 1.0)));
+            let threshold = (f32(bayer[(grid.y & 7u) * 8u + (grid.x & 7u)]) + 0.5) / 64.0;
+            alpha = max(alpha, select(0.0, 0.78, density > threshold));
+        }
+        return vec4(in.color.rgb, alpha * in.color.a);
+    }
+    if in.kind == 16u {
+        let p = (in.local / in.size - vec2(0.5)) * 2.0;
+        let r2 = dot(p, p);
+        let falloff = exp(-4.5 * r2) * (1.0 - smoothstep(0.65, 1.0, r2));
+        return vec4(in.color.rgb, in.color.a * falloff);
+    }
+    if in.kind == 15u {
+        // Fixed silhouette; reflections advect along the wet stems and orbit.
+        let t = in.phase * 0.7853981634;
+        let uv = in.uv;
+        let orbit = smoothstep(0.66, 0.76, uv.y);
+        let direction = mix(vec2(-0.30, 0.954), vec2(0.94, -0.342), orbit);
+        let travel = uv.y * 19.0 - uv.x * 7.0 - t;
+        let offset = (sin(travel) + 0.3 * sin(travel * 2.0 + t)) * 0.009 * in.color.r;
+        let body = textureSample(tex, tex_sampler, uv);
+        let reflection = textureSample(tex, tex_sampler, uv + direction * offset);
+        let guard = min(textureSample(tex, tex_sampler, uv - direction * 0.012).a,
+                        textureSample(tex, tex_sampler, uv + direction * 0.012).a);
+        let interior = smoothstep(0.98, 1.0, body.a) * smoothstep(0.98, 1.0, reflection.a) * smoothstep(0.98, 1.0, guard);
+        return vec4(mix(body.rgb, reflection.rgb, interior * 0.85), body.a * in.color.a);
+    }
+
     if in.kind == 14u {
         return sky(in);
     }
@@ -416,7 +495,13 @@ fn shade(in: VsOut) -> vec4<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let color = shade(in);
+    var color = shade(in);
+    // Existing UI and Chromium textures are encoded sRGB. Extended linear
+    // surfaces need linear light; SDR snapshots keep their original encoding.
+    if globals.padding > 0.0 {
+        let rgb = max(color.rgb, vec3(0.0));
+        color = vec4(select(rgb / 12.92, pow((rgb + vec3(0.055)) / 1.055, vec3(2.4)), rgb > vec3(0.04045)) * globals.padding, color.a);
+    }
     let radius = min(globals.corner_radius, min(globals.screen.x, globals.screen.y) * 0.5);
     if radius <= 0.0 { return color; }
     let half_size = globals.screen * 0.5;

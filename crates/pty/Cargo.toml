@@ -7,15 +7,30 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_keep_ghost)'] }
+
 [dependencies]
+nus-compat = { path = "../compat" }
+nus-vault = { path = "../vault" }
 portable-pty.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+verus_builtin_macros = "=0.0.0-2026-09-20-0158"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 
 [dev-dependencies]
+nus-vault = { path = "../vault", features = ["test-vault"] }
+criterion.workspace = true
 nus-vt = { path = "../vt" }
+
+[[bench]]
+name = "hold"
+harness = false

@@ -30,7 +30,7 @@ impl Pin {
     pub fn defaults() -> Vec<Self> {
         [
             ("welcome", "Welcome", Target::Welcome),
-            ("reading", "Reading library", Target::Library),
+            ("reading", "Reading list", Target::Library),
             ("downloads", "Downloads", Target::Downloads),
             ("ports", "Ports", Target::Ports),
         ]
@@ -587,7 +587,7 @@ impl App {
                 self.fonts.draw_icon(scene, pin.icon(), size, ix, iy, color);
             }
             self.side_hits.push((hit, SideHit::Pinned(Act::Open(k))));
-            self.tip_words(hit, &pin.title);
+            self.offer_tip(crate::app::hover_key(&format!("pin:{}", pin.id), 0), hit, pin.title.clone());
             if tiles && !compact {
                 let style = self.label();
                 let text = self.fit(style, &pin.title, rr.w - self.px(8.0));
