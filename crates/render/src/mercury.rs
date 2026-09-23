@@ -339,8 +339,10 @@ mod tests {
         assert_ne!(a, c);
         for phase in [a, c] {
             assert!(phase
-                .chunks_exact(4)
-                .zip(art.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(art.as_chunks::<4>().0.iter())
                 .all(|(p, q)| p[3] == q[3]));
         }
     }

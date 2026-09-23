@@ -70,7 +70,7 @@ for mode in ['Icon', 'Preview']:
     prefs = copy.deepcopy(base)
     prefs['sidebar']['pin_display'] = mode
     prefs['surface']['shell_radius'] = 12.0
-    run('pins-' + mode, 'sidebarwidth 280\nwait 150\npinsbounds\npindrag 0 1\nwait 200\npinsassert Reading library|Welcome|Downloads|Ports\nshot tiles\npinclick Open(1)\nwait 200\nassertpane welcome\nsidebarwidth 80\nwait 200\npinsbounds\nshot compact', prefs)
+    run('pins-' + mode, 'sidebarwidth 280\nwait 150\npinsbounds\npindrag 0 1\nwait 200\npinsassert Reading list|Welcome|Downloads|Ports\nshot tiles\npinclick Open(1)\nwait 200\nassertpane welcome\nsidebarwidth 80\nwait 200\npinsbounds\nshot compact', prefs)
 
 page = root / 'preview.html'
 page.write_text('<title>Preview check</title><body style="background:#1d5bdb;color:white;font:40px sans-serif">Live preview<script>setInterval(()=>document.body.style.background = document.body.style.background === "rgb(29, 91, 219)" ? "#af2862" : "#1d5bdb",500)</script>')

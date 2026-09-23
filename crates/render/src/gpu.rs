@@ -601,7 +601,9 @@ impl Gpu {
             data[(20 * stride) as usize + 1],
         ]);
         let peak = data
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .flat_map(|px| {
                 [
                     u16::from_le_bytes([px[0], px[1]]),
