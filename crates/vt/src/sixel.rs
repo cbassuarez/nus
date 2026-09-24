@@ -91,6 +91,9 @@ pub fn decode(params: &[u32], data: &[u8]) -> Option<Sixel> {
     let mut ops: Vec<(usize, usize, u8, u32)> = Vec::new(); // (x, band, colour, sixel) after repeats
     let mut colour: u8 = 0;
     while i < data.len() {
+        if ops.len() >= 1_048_576 {
+            return None;
+        }
         let b = data[i];
         i += 1;
         match b {
@@ -142,7 +145,12 @@ pub fn decode(params: &[u32], data: &[u8]) -> Option<Sixel> {
     }
     let bands = ops.iter().map(|o| o.1).max().map(|b| b + 1).unwrap_or(0);
     height = height.max(bands * 6);
-    if width == 0 || height == 0 || width > 8192 || height > 8192 {
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
+        || width.saturating_mul(height) > crate::images::MAX_RGBA_BYTES / 4
+    {
         return None;
     }
     let mut rgba = vec![0u8; width * height * 4];

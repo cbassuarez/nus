@@ -1,0 +1,244 @@
+{
+  "cycles": 64,
+  "summary": {
+    "main_rss_kib": {
+      "early_median": 272128.0,
+      "late_median": 275528.0,
+      "peak": 280208,
+      "settled": 280096,
+      "growth": 3400.0
+    },
+    "tree_rss_kib": {
+      "early_median": 495832.0,
+      "late_median": 501256.0,
+      "peak": 507664,
+      "settled": 505216,
+      "growth": 5424.0
+    },
+    "main_footprint_kib": {
+      "early_median": 382809.0,
+      "late_median": 241473.0,
+      "peak": 440977,
+      "settled": 236513,
+      "growth": -141336.0
+    }
+  },
+  "samples": [
+    {
+      "label": "pressure-before",
+      "available": true,
+      "main_footprint_kib": 380113,
+      "main_rss_kib": 269504,
+      "method": "sum RSS, includes shared pages",
+      "processes": 6,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 825604,
+      "tree_rss_kib": 683552
+    },
+    {
+      "label": "pressure-after",
+      "available": true,
+      "main_footprint_kib": 381089,
+      "main_rss_kib": 272576,
+      "method": "sum RSS, includes shared pages",
+      "processes": 6,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 735700,
+      "tree_rss_kib": 683056
+    },
+    {
+      "label": "closed-4",
+      "available": true,
+      "main_footprint_kib": 381313,
+      "main_rss_kib": 274992,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 612306,
+      "tree_rss_kib": 503728
+    },
+    {
+      "label": "closed-8",
+      "available": true,
+      "main_footprint_kib": 381873,
+      "main_rss_kib": 271216,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 615218,
+      "tree_rss_kib": 494656
+    },
+    {
+      "label": "closed-12",
+      "available": true,
+      "main_footprint_kib": 382209,
+      "main_rss_kib": 271520,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 615714,
+      "tree_rss_kib": 495136
+    },
+    {
+      "label": "closed-16",
+      "available": true,
+      "main_footprint_kib": 382593,
+      "main_rss_kib": 271920,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 616162,
+      "tree_rss_kib": 495600
+    },
+    {
+      "label": "closed-20",
+      "available": true,
+      "main_footprint_kib": 383025,
+      "main_rss_kib": 272336,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 621074,
+      "tree_rss_kib": 496064
+    },
+    {
+      "label": "closed-24",
+      "available": true,
+      "main_footprint_kib": 383457,
+      "main_rss_kib": 272736,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 621650,
+      "tree_rss_kib": 496608
+    },
+    {
+      "label": "closed-28",
+      "available": true,
+      "main_footprint_kib": 383729,
+      "main_rss_kib": 273024,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 617570,
+      "tree_rss_kib": 497024
+    },
+    {
+      "label": "closed-32",
+      "available": true,
+      "main_footprint_kib": 384225,
+      "main_rss_kib": 273728,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 618162,
+      "tree_rss_kib": 498016
+    },
+    {
+      "label": "closed-36",
+      "available": true,
+      "main_footprint_kib": 384337,
+      "main_rss_kib": 273904,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 622770,
+      "tree_rss_kib": 498208
+    },
+    {
+      "label": "closed-40",
+      "available": true,
+      "main_footprint_kib": 384369,
+      "main_rss_kib": 273936,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 618370,
+      "tree_rss_kib": 498304
+    },
+    {
+      "label": "closed-44",
+      "available": true,
+      "main_footprint_kib": 384513,
+      "main_rss_kib": 274080,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 623042,
+      "tree_rss_kib": 498496
+    },
+    {
+      "label": "closed-48",
+      "available": true,
+      "main_footprint_kib": 384561,
+      "main_rss_kib": 274032,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 623106,
+      "tree_rss_kib": 498176
+    },
+    {
+      "label": "closed-52",
+      "available": true,
+      "main_footprint_kib": 440977,
+      "main_rss_kib": 275088,
+      "method": "sum RSS, includes shared pages",
+      "processes": 5,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": null,
+      "tree_rss_kib": 502400
+    },
+    {
+      "label": "closed-56",
+      "available": true,
+      "main_footprint_kib": 242033,
+      "main_rss_kib": 275424,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 476258,
+      "tree_rss_kib": 499840
+    },
+    {
+      "label": "closed-60",
+      "available": true,
+      "main_footprint_kib": 240913,
+      "main_rss_kib": 275632,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 479682,
+      "tree_rss_kib": 500112
+    },
+    {
+      "label": "closed-64",
+      "available": true,
+      "main_footprint_kib": 236497,
+      "main_rss_kib": 280208,
+      "method": "sum RSS, includes shared pages",
+      "processes": 6,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 475794,
+      "tree_rss_kib": 507664
+    },
+    {
+      "label": "settled",
+      "available": true,
+      "main_footprint_kib": 236513,
+      "main_rss_kib": 280096,
+      "method": "sum RSS, includes shared pages",
+      "processes": 4,
+      "system_pressure": "Normal",
+      "tree_footprint_kib": 343058,
+      "tree_rss_kib": 505216
+    }
+  ],
+  "limits": "Debug native macOS bundle. Controlled canvas fixture; simulated reclamation, not real memory exhaustion. Does not establish the cause of the reported system-wide spike.",
+  "host": {
+    "os": "macOS",
+    "arch": "arm64",
+    "physical_ram_gib": 48,
+    "build": "debug"
+  }
+}

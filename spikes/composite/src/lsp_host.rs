@@ -41,7 +41,8 @@ pub fn bin_dir() -> PathBuf {
 /// PowerShell Editor Services: the bundle unzips to bin/pses; the server
 /// is its Start-EditorServices.ps1 run by pwsh (or Windows PowerShell).
 fn pses_launch() -> Option<(PathBuf, Vec<String>)> {
-    let dir = bin_dir().join("pses");
+    let managed=std::env::current_dir().ok()?.join("profile/tools/powershell-editor-services");
+    let dir=if managed.join(".installed").is_file(){managed}else{bin_dir().join("pses")};
     let script = ["PowerShellEditorServices/Start-EditorServices.ps1", "Start-EditorServices.ps1"].iter().map(|s| dir.join(s)).find(|p| p.is_file())?;
     let host = nus_lsp::registry::resolve("pwsh", None).or_else(|| nus_lsp::registry::resolve("powershell", None))?;
     let profile = std::env::current_dir().unwrap_or_default().join("profile");
@@ -90,7 +91,7 @@ impl App {
                 }
             }
         } else {
-            match nus_lsp::registry::resolve(server.command, Some(&bin_dir())) {
+            match crate::bundles::resolve(server.command) {
                 Some(bin) => (bin, server.args.iter().map(|s| s.to_string()).collect()),
                 None => {
                     self.lsp.failed.insert(key.clone(), missing.clone());

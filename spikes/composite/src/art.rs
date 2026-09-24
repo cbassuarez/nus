@@ -145,10 +145,35 @@ impl Backdrop {
 struct State {
     env: Env,
     cmds: Vec<Cmd>,
+    command_bytes: usize,
     t: f32,
     dt: f32,
     /// An artwork can request readable text independently of the app theme.
     backdrop: Backdrop,
+}
+
+impl State {
+    fn push(&mut self, cmd: Cmd) -> mlua::Result<()> {
+        let bytes = std::mem::size_of::<Cmd>() + match &cmd {
+            Cmd::Poly(p, _) => p.len() * std::mem::size_of::<[f32; 2]>(),
+            Cmd::Text(_, _, s, ..) => s.len(),
+            _ => 0,
+        };
+        if self.cmds.len() >= 8192 || bytes > (4 * 1024 * 1024usize).saturating_sub(self.command_bytes) {
+            return Err(mlua::Error::runtime("artwork drawing budget exceeded"));
+        }
+        self.command_bytes += bytes;
+        self.cmds.push(cmd);
+        Ok(())
+    }
+}
+
+fn execution_budget(lua: &mlua::Lua, millis: u64) {
+    let deadline = Instant::now() + std::time::Duration::from_millis(millis);
+    lua.set_interrupt(move |_| {
+        if Instant::now() > deadline { Err(mlua::Error::runtime("artwork execution budget exceeded")) }
+        else { Ok(mlua::VmState::Continue) }
+    });
 }
 
 #[derive(Clone)]
@@ -190,9 +215,10 @@ fn table_color(lua: &mlua::Lua, c: Color) -> mlua::Result<mlua::Table> {
     Ok(t)
 }
 
-fn points_of(t: &mlua::Table) -> Vec<[f32; 2]> {
+fn points_of(t: &mlua::Table) -> mlua::Result<Vec<[f32; 2]>> {
     let mut out = Vec::new();
-    for v in t.sequence_values::<mlua::Value>().flatten() {
+    for (i, v) in t.sequence_values::<mlua::Value>().flatten().enumerate() {
+        if i >= 2048 { return Err(mlua::Error::runtime("artwork point budget exceeded")); }
         match v {
             mlua::Value::Table(p) => {
                 let x = p.get::<f32>(1).ok().or_else(|| p.get::<f32>("x").ok());
@@ -209,9 +235,9 @@ fn points_of(t: &mlua::Table) -> Vec<[f32; 2]> {
     // A flat list of numbers: pairs.
     if out.iter().all(|p| p[1].is_nan()) && out.len() >= 4 {
         let flat: Vec<f32> = out.iter().map(|p| p[0]).collect();
-        return flat.chunks(2).filter(|c| c.len() == 2).map(|c| [c[0], c[1]]).collect();
+        return Ok(flat.chunks(2).filter(|c| c.len() == 2).map(|c| [c[0], c[1]]).collect());
     }
-    out
+    Ok(out)
 }
 
 /// A smooth closed curve through the points (quadratics through the
@@ -306,13 +332,13 @@ impl mlua::UserData for Canvas {
     fn add_methods<M: mlua::UserDataMethods<Self>>(m: &mut M) {
         m.add_method("rect", |_, c, (x, y, w, h, col, a, r): (f32, f32, f32, f32, mlua::Value, Option<f32>, Option<f32>)| {
             if let Some(col) = color_of(&col, a) {
-                c.0.borrow_mut().cmds.push(Cmd::Rect(Rect::new(x, y, w, h), col, r.unwrap_or(0.0)));
+                c.0.borrow_mut().push(Cmd::Rect(Rect::new(x, y, w, h), col, r.unwrap_or(0.0)))?;
             }
             Ok(())
         });
         m.add_method("circle", |_, c, (cx, cy, r, col, a): (f32, f32, f32, mlua::Value, Option<f32>)| {
             if let Some(col) = color_of(&col, a) {
-                c.0.borrow_mut().cmds.push(Cmd::Rect(Rect::new(cx - r, cy - r, r * 2.0, r * 2.0), col, r));
+                c.0.borrow_mut().push(Cmd::Rect(Rect::new(cx - r, cy - r, r * 2.0, r * 2.0), col, r))?;
             }
             Ok(())
         });
@@ -320,43 +346,43 @@ impl mlua::UserData for Canvas {
             if let Some(col) = color_of(&col, a) {
                 let n = ((rx.max(ry) * 0.8) as usize).clamp(24, 96);
                 let pts: Vec<[f32; 2]> = (0..n).map(|i| { let th = i as f32 / n as f32 * std::f32::consts::TAU; [cx + rx * th.cos(), cy + ry * th.sin()] }).collect();
-                c.0.borrow_mut().cmds.push(Cmd::Poly(pts, col));
+                c.0.borrow_mut().push(Cmd::Poly(pts, col))?;
             }
             Ok(())
         });
         m.add_method("line", |_, c, (x1, y1, x2, y2, w, col, a): (f32, f32, f32, f32, f32, mlua::Value, Option<f32>)| {
             if let Some(col) = color_of(&col, a) {
-                c.0.borrow_mut().cmds.push(Cmd::Line(x1, y1, x2, y2, w, col));
+                c.0.borrow_mut().push(Cmd::Line(x1, y1, x2, y2, w, col))?;
             }
             Ok(())
         });
         m.add_method("quad", |_, c, (pts, col, a): (mlua::Table, mlua::Value, Option<f32>)| {
-            let p = points_of(&pts);
+            let p = points_of(&pts)?;
             if let (Some(col), true) = (color_of(&col, a), p.len() >= 4) {
-                c.0.borrow_mut().cmds.push(Cmd::Quad([p[0], p[1], p[2], p[3]], col));
+                c.0.borrow_mut().push(Cmd::Quad([p[0], p[1], p[2], p[3]], col))?;
             }
             Ok(())
         });
         m.add_method("poly", |_, c, (pts, col, a): (mlua::Table, mlua::Value, Option<f32>)| {
-            let p = points_of(&pts);
+            let p = points_of(&pts)?;
             if let (Some(col), true) = (color_of(&col, a), p.len() >= 3) {
-                c.0.borrow_mut().cmds.push(Cmd::Poly(p, col));
+                c.0.borrow_mut().push(Cmd::Poly(p, col))?;
             }
             Ok(())
         });
         m.add_method("blob", |_, c, (pts, col, a): (mlua::Table, mlua::Value, Option<f32>)| {
-            let p = smooth_closed(&points_of(&pts), 5);
+            let p = smooth_closed(&points_of(&pts)?, 5);
             if let (Some(col), true) = (color_of(&col, a), p.len() >= 3) {
-                c.0.borrow_mut().cmds.push(Cmd::Poly(p, col));
+                c.0.borrow_mut().push(Cmd::Poly(p, col))?;
             }
             Ok(())
         });
         m.add_method("curve", |_, c, (pts, w, col, a): (mlua::Table, f32, mlua::Value, Option<f32>)| {
-            let p = smooth_open(&points_of(&pts), 4);
+            let p = smooth_open(&points_of(&pts)?, 4);
             if let Some(col) = color_of(&col, a) {
                 let mut s = c.0.borrow_mut();
                 for pair in p.windows(2) {
-                    s.cmds.push(Cmd::Line(pair[0][0], pair[0][1], pair[1][0], pair[1][1], w, col));
+                    s.push(Cmd::Line(pair[0][0], pair[0][1], pair[1][0], pair[1][1], w, col))?;
                 }
             }
             Ok(())
@@ -369,7 +395,7 @@ impl mlua::UserData for Canvas {
                     align = match o.get::<String>("align").unwrap_or_default().as_str() { "center" | "centre" => 1, "right" => 2, _ => 0 };
                     tracked = o.get::<bool>("caps").unwrap_or(false);
                 }
-                c.0.borrow_mut().cmds.push(Cmd::Text(x, y, text, px, col, font, align, tracked));
+                c.0.borrow_mut().push(Cmd::Text(x, y, text, px, col, font, align, tracked))?;
             }
             Ok(())
         });
@@ -393,7 +419,7 @@ impl mlua::UserData for Canvas {
             let g = |k: &str, d: f32| o.get::<f32>(k).unwrap_or(d);
             let r = Rect::new(g("x", 0.0), g("y", 0.0), g("w", w), g("h", h));
             let seed = o.get::<mlua::Table>("seed").ok().map(|t| [t.get::<f32>(1).unwrap_or(0.0), t.get::<f32>(2).unwrap_or(0.0)]).unwrap_or([3.7, 1.3]);
-            s.cmds.push(Cmd::Sky(r, g("az", 0.0).clamp(-1.0, 1.0), g("alt", 0.5).clamp(-1.0, 1.0), g("cover", 0.4).clamp(0.0, 1.0), g("wind", 1.0), seed, [g("moon_az",0.0),g("moon_alt",-1.0),g("moon_light",0.0),g("moon_waxing",1.0)]));
+            s.push(Cmd::Sky(r, g("az", 0.0).clamp(-1.0, 1.0), g("alt", 0.5).clamp(-1.0, 1.0), g("cover", 0.4).clamp(0.0, 1.0), g("wind", 1.0), seed, [g("moon_az",0.0),g("moon_alt",-1.0),g("moon_light",0.0),g("moon_waxing",1.0)]))?;
             Ok(())
         });
         // Explicit artwork brightness wins over the application theme.
@@ -507,7 +533,7 @@ impl Art {
             path,
             checked: crate::clock::now(),
             lua: mlua::Lua::new(),
-            state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, backdrop: Backdrop::Theme })),
+            state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), command_bytes: 0, t: 0.0, dt: 0.0, backdrop: Backdrop::Theme })),
             backdrop: Backdrop::Theme,
             status: None,
             started: crate::clock::now(),
@@ -522,6 +548,12 @@ impl Art {
         let lua = mlua::Lua::new();
         lua.sandbox(true).ok();
         self.status = None;
+        if let Err(e) = lua.set_memory_limit(32 * 1024 * 1024) {
+            self.status = Some(short_error(&e));
+            self.lua = lua;
+            return;
+        }
+        execution_budget(&lua, 250);
         match lua.load(src).set_name(&self.key).exec() {
             Ok(()) => {}
             Err(e) => self.status = Some(short_error(&e)),
@@ -564,6 +596,7 @@ impl Art {
             let mut s = self.state.borrow_mut();
             s.env = env;
             s.cmds.clear();
+            s.command_bytes = 0;
             s.backdrop = Backdrop::Theme;
             s.t = time;
             s.dt = dt;
@@ -571,6 +604,7 @@ impl Art {
         if self.status.is_some() {
             return Vec::new();
         }
+        execution_budget(&self.lua, 100);
         let canvas = Canvas(self.state.clone());
         let g = self.lua.globals();
         let result: mlua::Result<()> = match g.get::<mlua::Function>("draw") {
@@ -751,6 +785,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runaway_artwork_stops_without_unbounded_host_or_lua_memory() {
+        let mut art = Art::open("memphis");
+        art.load("function draw(c) for i=1,10000 do c:rect(0,0,1,1,'#ffffff') end end");
+        assert!(art.frame(Env::default()).len() <= 8192);
+        assert!(art.status.as_deref().unwrap().contains("budget"));
+        art.load("function draw(c) while true do end end");
+        art.frame(Env::default());
+        assert!(art.status.as_deref().unwrap().contains("execution budget"));
+        art.load("local huge = string.rep('x', 64*1024*1024)");
+        assert!(art.status.is_some());
+        art.load("function draw(c) c:text(0,0,'Recovered',12,'#ffffff') end");
+        assert_eq!(art.frame(Env::default()).len(), 1);
+        assert!(art.status.is_none());
+    }
+
+    #[test]
     fn headers_and_slugs() {
         assert_eq!(header("-- name: the pond\n-- says: koi, quiet\nlocal x = 1", "name"), "the pond");
         assert_eq!(header("-- name: the pond\n-- says: koi, quiet\n", "says"), "koi, quiet");
@@ -833,7 +883,7 @@ mod tests {
 
     #[test]
     fn a_script_draws() {
-        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: crate::clock::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), t: 0.0, dt: 0.0, backdrop: Backdrop::Theme })), status: None, backdrop: Backdrop::Theme, started: crate::clock::now(), last: crate::clock::now(), reloads: 0 };
+        let mut art = Art { key: "t".into(), name: "t".into(), path: None, mtime: None, checked: crate::clock::now(), lua: mlua::Lua::new(), state: Rc::new(RefCell::new(State { env: Env::default(), cmds: Vec::new(), command_bytes: 0, t: 0.0, dt: 0.0, backdrop: Backdrop::Theme })), status: None, backdrop: Backdrop::Theme, started: crate::clock::now(), last: crate::clock::now(), reloads: 0 };
         art.load("function draw(c) c:rect(1, 2, 3, 4, c.ink) c:circle(5, 5, 2, '#c8102e', 0.5) c:text(0, 10, 'hi', 11, c.dim, 1, { caps = true }) c:blob({ {0,0}, {10,0}, {10,10}, {0,10} }, c.signal) end");
         let cmds = art.frame(Env { w: 100.0, h: 100.0, ..Default::default() });
         assert!(cmds.len() >= 4, "{}", cmds.len());

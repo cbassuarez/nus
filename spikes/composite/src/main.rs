@@ -3,6 +3,7 @@
 
 mod access;
 mod clock;
+mod memory_pressure;
 mod shell;
 mod termui;
 mod predict;
@@ -36,6 +37,8 @@ mod syntax;
 mod panes;
 mod scrolling;
 mod bundles;
+mod pointer;
+mod app_icon;
 mod editor;
 mod editor_work;
 mod perf;
@@ -137,6 +140,7 @@ use app::App;
 #[derive(Debug)]
 pub enum UserEvent {
     BrowserWork,
+    BrowserRedirect(i32,String,String),
     Wake,
     ApplicationCommand(application_menu::Command),
     ApplicationMenuCheck(application_menu::Command),
@@ -459,6 +463,13 @@ impl ApplicationHandler<UserEvent> for Host {
                     }
                 }
             }
+            UserEvent::BrowserRedirect(id,from,to)=>{
+                for app in &mut self.apps {for tab in &mut app.tabs {for pane in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                    if let app::Pane::Web(w)=pane {if w.tab.browser.as_ref().is_some_and(|b|b.identifier()==id) {
+                        w.tab.shared.borrow_mut().redirect(&from,&to);app.dirty=true;
+                    }}
+                }}}
+            },
             UserEvent::BrowserWork => {},
             UserEvent::Wake => {
                 for a in self.apps.iter_mut() {
@@ -493,7 +504,12 @@ impl ApplicationHandler<UserEvent> for Host {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(level) = memory_pressure::poll() {
+            tracing::warn!(?level, "system memory pressure: reclaiming disposable caches");
+            for app in &mut self.apps { app.reclaim_memory(level); }
+        }
         if let Some(a)=self.focused.and_then(|id|self.apps.iter().find(|a|a.window.id()==id)).or_else(||self.apps.first()) {
+            crate::app_icon::select(a.behavior.app_icon);
             self.dock.tick(a.surface.signal,a.motion.reduced(),self.any_window_focused());
             if let Some(tray)=&mut self.tray {tray.refresh_icon(a.surface.signal);}
         }
@@ -775,6 +791,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 a.dirty = true;
             }
             WindowEvent::CursorMoved { position, .. } => a.mouse_moved(position.x as f32, position.y as f32),
+            WindowEvent::CursorEntered { .. } => a.cursor_entered(),
             WindowEvent::CursorLeft { .. } => a.cursor_left(),
             WindowEvent::MouseInput { state, button, .. } => {
                 a.mouse_button(button, state);

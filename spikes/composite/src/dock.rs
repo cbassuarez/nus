@@ -35,6 +35,8 @@ pub struct Dock {
     publisher: Option<linux::Publisher>,
     #[cfg(target_os="linux")]
     mercury_seen: bool,
+    #[cfg(target_os="linux")]
+    icon_seen: Option<crate::app_icon::Choice>,
 }
 
 impl Dock {
@@ -54,7 +56,7 @@ impl Dock {
 
     pub fn begin_launch(&mut self, reduced: bool) {
         #[cfg(target_os = "macos")]
-        if crate::mercury::earned() {
+        if crate::app_icon::mercury() {
             self.launch = None;
             self.mercury_revision = crate::mercury::presentation_revision();
             self.mercury_motion = Some(mercury_motion::Mercury::new(reduced, true));
@@ -117,7 +119,7 @@ impl Dock {
                 return;
             };
             let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-            if crate::mercury::earned() {
+            if crate::app_icon::mercury() {
                 let revision = crate::mercury::presentation_revision();
                 if self.mercury_motion.is_none() || revision != self.mercury_revision {
                     self.launch = None;
@@ -129,6 +131,7 @@ impl Dock {
                 if let Some(motion) = &mut self.mercury_motion { motion.update(reduced); }
                 return;
             }
+            if self.mercury_motion.take().is_some(){self.shown=None;}
             if self.signal != Some(signal) {
                 let worker = self.renderer.get_or_insert_with(Renderer::new);
                 let _ = worker.send.send(signal);
@@ -163,10 +166,11 @@ impl Dock {
                 self.launch = None;
                 self.shown = None;
             }
-            let face = self
+            let mut face = self
                 .cycle
                 .tick(crate::clock::now(), reduced, app.isActive());
             if !self.cycle.active() {
+                face=crate::app_icon::face();
                 self.stop();
             }
             if self.shown != Some(face) {
@@ -179,8 +183,9 @@ impl Dock {
             }
         }
         #[cfg(target_os = "linux")]
-        if self.signal != Some(signal) || self.mercury_seen != crate::mercury::earned() {
-            self.mercury_seen=crate::mercury::earned();
+        if self.signal != Some(signal) || self.mercury_seen != crate::app_icon::mercury() || self.icon_seen!=Some(crate::app_icon::selected()) {
+            self.icon_seen=Some(crate::app_icon::selected());
+            self.mercury_seen=crate::app_icon::mercury();
             self.signal = Some(signal);
             self.publisher
                 .get_or_insert_with(linux::Publisher::new)

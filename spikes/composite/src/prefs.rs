@@ -221,6 +221,7 @@ impl App {
     /// downloads, the privacy signal, the default zoom. Once at load and
     /// again whenever one of them changes.
     pub(crate) fn apply_behavior_statics(&self, b: &Behavior) {
+        crate::app_icon::select(b.app_icon);
         use std::sync::atomic::Ordering::Relaxed;
         crate::browser::set_downloads_dir(&b.download_dir);
         crate::browser::DOWNLOAD_ASK.store(b.download_ask, Relaxed);

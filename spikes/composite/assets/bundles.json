@@ -7,11 +7,29 @@
     "size_mb": 45,
     "into": "bin",
     "platforms": {
-      "windows-x64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-pc-windows-msvc.zip", "unpack": "zip" },
-      "windows-arm64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-aarch64-pc-windows-msvc.zip", "unpack": "zip" },
-      "macos-arm64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-aarch64-apple-darwin.gz", "unpack": "gz", "file": "rust-analyzer" },
-      "macos-x64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-apple-darwin.gz", "unpack": "gz", "file": "rust-analyzer" },
-      "linux-x64": { "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz", "unpack": "gz", "file": "rust-analyzer" }
+      "windows-x64": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-pc-windows-msvc.zip",
+        "unpack": "zip"
+      },
+      "windows-arm64": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-aarch64-pc-windows-msvc.zip",
+        "unpack": "zip"
+      },
+      "macos-arm64": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-aarch64-apple-darwin.gz",
+        "unpack": "gz",
+        "file": "rust-analyzer"
+      },
+      "macos-x64": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-apple-darwin.gz",
+        "unpack": "gz",
+        "file": "rust-analyzer"
+      },
+      "linux-x64": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz",
+        "unpack": "gz",
+        "file": "rust-analyzer"
+      }
     }
   },
   {
@@ -22,66 +40,131 @@
     "size_mb": 30,
     "into": "bin/pses",
     "platforms": {
-      "windows-x64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
-      "windows-arm64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
-      "macos-arm64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
-      "macos-x64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" },
-      "linux-x64": { "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip", "unpack": "zip" }
-    }
+      "windows-x64": {
+        "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip",
+        "unpack": "zip"
+      },
+      "windows-arm64": {
+        "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip",
+        "unpack": "zip"
+      },
+      "macos-arm64": {
+        "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip",
+        "unpack": "zip"
+      },
+      "macos-x64": {
+        "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip",
+        "unpack": "zip"
+      },
+      "linux-x64": {
+        "url": "https://github.com/PowerShell/PowerShellEditorServices/releases/latest/download/PowerShellEditorServices.zip",
+        "unpack": "zip"
+      }
+    },
+    "entrypoints": [
+      "PowerShellEditorServices/Start-EditorServices.ps1"
+    ]
   },
   {
     "id": "bash-language-server",
     "name": "bash-language-server",
     "kind": "lsp",
-    "about": "the shell language server, for .sh files and the bash/zsh prompt line · through npm",
+    "about": "the shell language server, for .sh files and the bash/zsh prompt line \u00b7 through npm",
     "size_mb": 20,
     "into": "",
-    "command": ["npm", "install", "-g", "bash-language-server"]
+    "command": [
+      "npm",
+      "install",
+      "-g",
+      "bash-language-server"
+    ],
+    "entrypoints": [
+      "bin/bash-language-server"
+    ]
   },
   {
     "id": "typescript-language-server",
     "name": "typescript-language-server",
     "kind": "lsp",
-    "about": "TypeScript and JavaScript · through npm",
+    "about": "TypeScript and JavaScript \u00b7 through npm",
     "size_mb": 60,
     "into": "",
-    "command": ["npm", "install", "-g", "typescript", "typescript-language-server"]
+    "command": [
+      "npm",
+      "install",
+      "-g",
+      "typescript",
+      "typescript-language-server"
+    ],
+    "entrypoints": [
+      "bin/typescript-language-server"
+    ]
   },
   {
     "id": "pyright",
     "name": "pyright",
     "kind": "lsp",
-    "about": "the Python language server · through npm",
+    "about": "the Python language server \u00b7 through npm",
     "size_mb": 30,
     "into": "",
-    "command": ["npm", "install", "-g", "pyright"]
+    "command": [
+      "npm",
+      "install",
+      "-g",
+      "pyright"
+    ],
+    "entrypoints": [
+      "bin/pyright-langserver"
+    ]
   },
   {
     "id": "vscode-langservers",
-    "name": "json · css · html servers",
+    "name": "json \u00b7 css \u00b7 html servers",
     "kind": "lsp",
-    "about": "the servers VS Code ships for JSON, CSS and HTML · through npm",
+    "about": "the servers VS Code ships for JSON, CSS and HTML \u00b7 through npm",
     "size_mb": 25,
     "into": "",
-    "command": ["npm", "install", "-g", "vscode-langservers-extracted"]
+    "command": [
+      "npm",
+      "install",
+      "-g",
+      "vscode-langservers-extracted"
+    ],
+    "entrypoints": [
+      "bin/vscode-json-language-server",
+      "bin/vscode-css-language-server",
+      "bin/vscode-html-language-server"
+    ]
   },
   {
     "id": "yaml-language-server",
     "name": "yaml-language-server",
     "kind": "lsp",
-    "about": "YAML, with schemas · through npm",
+    "about": "YAML, with schemas \u00b7 through npm",
     "size_mb": 15,
     "into": "",
-    "command": ["npm", "install", "-g", "yaml-language-server"]
+    "command": [
+      "npm",
+      "install",
+      "-g",
+      "yaml-language-server"
+    ],
+    "entrypoints": [
+      "bin/yaml-language-server"
+    ]
   },
   {
     "id": "gopls",
     "name": "gopls",
     "kind": "lsp",
-    "about": "the Go language server · through go install",
+    "about": "the Go language server \u00b7 through go install",
     "size_mb": 30,
     "into": "",
-    "command": ["go", "install", "golang.org/x/tools/gopls@latest"]
+    "command": [
+      "go",
+      "install",
+      "golang.org/x/tools/gopls@latest"
+    ]
   },
   {
     "id": "taplo",
@@ -91,10 +174,25 @@
     "size_mb": 8,
     "into": "bin",
     "platforms": {
-      "windows-x64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-windows-x86_64.zip", "unpack": "zip" },
-      "macos-arm64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-darwin-aarch64.gz", "unpack": "gz", "file": "taplo" },
-      "macos-x64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-darwin-x86_64.gz", "unpack": "gz", "file": "taplo" },
-      "linux-x64": { "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-linux-x86_64.gz", "unpack": "gz", "file": "taplo" }
+      "windows-x64": {
+        "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-windows-x86_64.zip",
+        "unpack": "zip"
+      },
+      "macos-arm64": {
+        "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-darwin-aarch64.gz",
+        "unpack": "gz",
+        "file": "taplo"
+      },
+      "macos-x64": {
+        "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-darwin-x86_64.gz",
+        "unpack": "gz",
+        "file": "taplo"
+      },
+      "linux-x64": {
+        "url": "https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz",
+        "unpack": "gz",
+        "file": "taplo"
+      }
     }
   },
   {
@@ -105,19 +203,41 @@
     "size_mb": 40,
     "into": "bin",
     "platforms": {
-      "windows-x64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman.exe", "unpack": "none", "file": "marksman.exe" },
-      "macos-arm64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-macos", "unpack": "none", "file": "marksman" },
-      "macos-x64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-macos", "unpack": "none", "file": "marksman" },
-      "linux-x64": { "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-linux-x64", "unpack": "none", "file": "marksman" }
+      "windows-x64": {
+        "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman.exe",
+        "unpack": "none",
+        "file": "marksman.exe"
+      },
+      "macos-arm64": {
+        "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-macos",
+        "unpack": "none",
+        "file": "marksman"
+      },
+      "macos-x64": {
+        "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-macos",
+        "unpack": "none",
+        "file": "marksman"
+      },
+      "linux-x64": {
+        "url": "https://github.com/artempyanykh/marksman/releases/latest/download/marksman-linux-x64",
+        "unpack": "none",
+        "file": "marksman"
+      }
     }
   },
   {
     "id": "copilot-cli",
     "name": "GitHub Copilot CLI",
     "kind": "tool",
-    "about": "an ask backend through gh (needs a Copilot subscription); gh fetches it on first use",
+    "about": "Install GitHub Copilot CLI using its publisher\u2019s installer; managed installation is not yet available.",
     "size_mb": 60,
     "into": "",
-    "command": ["gh", "copilot", "--", "--version"]
+    "command": [
+      "gh",
+      "copilot",
+      "--",
+      "--version"
+    ],
+    "soon": true
   }
 ]

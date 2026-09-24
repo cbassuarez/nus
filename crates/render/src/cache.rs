@@ -23,6 +23,11 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
             budget,
         }
     }
+    pub fn clear(&mut self) {
+        self.map = HashMap::new();
+        self.clock = VecDeque::new();
+        self.weight = 0;
+    }
     pub fn get(&mut self, key: &K) -> Option<&V> {
         let e = self.map.get_mut(key)?;
         e.hot = true;

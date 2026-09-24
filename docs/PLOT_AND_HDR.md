@@ -3,12 +3,13 @@
 `page_signal.rs` owns parsed local-address classification and Plot geometry.
 The page keeps its content dimensions and pointer behavior. Four solid brackets
 anchor a quiet, stationary dashed perimeter. Compact address/status versions
-keep only the brackets. The marks have a narrow contrasting keyline so they
+keep only the brackets. Local pages use these bounds alone, without an overlaid
+colored loading strip. The marks have a narrow contrasting keyline so they
 remain visible over light and dark page content. Each pane owns its own bounds.
 
 Radiance is an instanced strip in the existing quad renderer, not a separate
 animated web view. Its full-width fill follows reported loading progress. The
-small tip emits above SDR white; the resting Plot perimeter does not. Completed
+small tip on non-local pages emits above SDR white; the resting Plot perimeter does not. Completed
 loads fade out and stop requesting animation frames. There is no fictional
 trickle progress. Existing Rule, Comet and Carapace choices remain available.
 

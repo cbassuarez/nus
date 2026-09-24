@@ -135,6 +135,10 @@ pub struct Term {
     pub progress: Option<(u8, u8)>,
     /// Bytes of an OSC that ended past the last chunk.
     pending_osc: Vec<u8>,
+    discard_control: bool,
+    discard_escape: bool,
+    discard_utf8: Utf8Prefix,
+    hyperlink_bytes: usize,
     /// Transport state, separate from terminal modes and the vte decoder.
     scan_utf8: Utf8Prefix,
     feed_utf8: Utf8Prefix,
@@ -177,6 +181,10 @@ impl Term {
             cwd: None,
             progress: None,
             pending_osc: Vec::new(),
+            discard_control: false,
+            discard_escape: false,
+            discard_utf8: Utf8Prefix::default(),
+            hyperlink_bytes: 0,
             scan_utf8: Utf8Prefix::default(),
             feed_utf8: Utf8Prefix::default(),
             images: Vec::new(),
@@ -191,6 +199,47 @@ impl Term {
     /// point they occur, so a mark lands on the row the cursor is on when
     /// the shell sent it; the bytes still go to vte untouched.
     pub fn advance(&mut self, bytes: &[u8]) {
+        // Bound both complete and split control strings, including callers
+        // feeding an entire replay at once. Never render an oversized payload
+        // as shell text: discard through its terminator, then resume parsing.
+        for chunk in bytes.chunks(16 * 1024) {
+            let mut offset = 0;
+            while self.discard_control && offset < chunk.len() {
+                let b = chunk[offset];
+                let text = self.discard_utf8.observe(b);
+                if !text
+                    && (matches!(b, 7 | 0x9c | 0x18 | 0x1a) || (self.discard_escape && b == b'\\'))
+                {
+                    self.discard_control = false;
+                    self.scan_utf8 = Utf8Prefix::default();
+                }
+                self.discard_escape = b == 0x1b;
+                offset += 1;
+            }
+            if offset < chunk.len() {
+                self.advance_chunk(&chunk[offset..]);
+                let image = self.pending_osc.starts_with(b"\x1b_G")
+                    || self.pending_osc.starts_with(b"\x1bP")
+                    || self.pending_osc.starts_with(b"\x1b]1337;")
+                    || self.pending_osc.starts_with(b"\x9d1337;")
+                    || self.pending_osc.starts_with(b"\x1b]52;")
+                    || self.pending_osc.starts_with(b"\x9d52;");
+                let limit = if image {
+                    crate::images::MAX_ENCODED_BYTES
+                } else {
+                    64 * 1024
+                };
+                if self.pending_osc.len() > limit {
+                    self.discard_escape = self.pending_osc.last() == Some(&0x1b);
+                    self.discard_utf8 = Utf8Prefix::at_end(&self.pending_osc);
+                    self.discard_control = true;
+                    self.pending_osc = Vec::new();
+                }
+            }
+        }
+    }
+
+    fn advance_chunk(&mut self, bytes: &[u8]) {
         if self.pending_osc.is_empty() {
             self.advance_scan(bytes);
         } else {
@@ -386,7 +435,8 @@ impl Term {
                 i += 1;
                 continue;
             };
-            // Only the sequences we care about; anything else passes straight through.
+            // Inspect every OSC before handing it to vte: its std parser has
+            // an unbounded OSC buffer. Unhandled, bounded sequences pass through.
             let rest = &bytes[body..];
             let ours = if apc {
                 rest.starts_with(b"G")
@@ -396,10 +446,6 @@ impl Term {
                     || rest.starts_with(b"9;4;")
                     || rest.starts_with(b"1337;File=")
             };
-            if !ours && rest.len() >= 10 {
-                i += 1;
-                continue;
-            }
             if apc && !ours && !rest.is_empty() {
                 i += 1;
                 continue;
@@ -435,7 +481,7 @@ impl Term {
                 j += 1;
             }
             let Some((pay_end, seq_end)) = end else {
-                if j >= bytes.len() && (ours || rest.len() < 10) {
+                if j >= bytes.len() && (!apc || ours || rest.len() < 10) {
                     // Ends in a later chunk: feed what came before, keep the rest.
                     self.feed(&bytes[start..at]);
                     self.pending_osc = bytes[at..].to_vec();
@@ -518,6 +564,9 @@ impl Term {
                     self.marks.pop();
                 }
             }
+            if self.marks.len() >= 65_536 {
+                self.marks.drain(..32_768);
+            }
             self.marks.push(Mark { line, col, kind });
             // Forget marks whose rows are gone.
             let oldest = self.primary.oldest_abs();
@@ -578,6 +627,7 @@ impl Term {
             height: pic.height,
             rgba: pic.rgba,
         });
+        self.trim_images();
         // Sixel scrolling mode (DECSDM off, the default): the cursor ends
         // on the line after the picture.
         self.place_image(id, 0, 0, false);
@@ -791,6 +841,11 @@ impl Term {
                     rows: control_num(&c, 'r', 0) as usize,
                     quiet,
                 });
+                if data.len() > crate::images::MAX_ENCODED_BYTES.saturating_sub(pending.data.len())
+                {
+                    respond(self, pending.id, "E2BIG:image transmission limit exceeded");
+                    return;
+                }
                 pending.data.extend_from_slice(data);
                 if more {
                     self.pending_image = Some(pending);
@@ -832,7 +887,9 @@ impl Term {
     /// Keep image memory under 64 MB: oldest first, placements with them.
     fn trim_images(&mut self) {
         let mut total: usize = self.images.iter().map(|im| im.rgba.len()).sum();
-        while total > 64 * 1024 * 1024 && !self.images.is_empty() {
+        while (total > crate::images::MAX_RGBA_BYTES || self.images.len() > 1024)
+            && !self.images.is_empty()
+        {
             let gone = self.images.remove(0);
             total -= gone.rgba.len();
             self.placements.retain(|p| p.image != gone.id);
@@ -855,9 +912,13 @@ impl Term {
         } else {
             (im.height as f32 / ch).ceil().max(1.0) as usize
         };
+        let rows = rows.min(16_384);
         let cols = cols.min(self.primary.cols().max(1));
         let line = self.primary.abs_row(self.cursor.row);
         let col = self.cursor.col;
+        if self.placements.len() >= 4096 {
+            self.placements.drain(..2048);
+        }
         self.placements.push(crate::images::Placement {
             image: id,
             line,
@@ -2020,8 +2081,19 @@ impl Handler for Term {
     fn set_hyperlink(&mut self, link: Option<Hyperlink>) {
         self.cursor.template.link = match link {
             Some(h) => {
-                self.hyperlinks.push(h.uri);
-                self.hyperlinks.len() as u32
+                // IDs already stored in cells must never be recycled. Stop
+                // accepting new links at the budget; ordinary text still prints.
+                if self.hyperlinks.last() == Some(&h.uri) {
+                    self.hyperlinks.len() as u32
+                } else if self.hyperlinks.len() >= 16_384
+                    || h.uri.len() > (4 * 1024 * 1024usize).saturating_sub(self.hyperlink_bytes)
+                {
+                    0
+                } else {
+                    self.hyperlink_bytes += h.uri.len();
+                    self.hyperlinks.push(h.uri);
+                    self.hyperlinks.len() as u32
+                }
             }
             None => 0,
         };
@@ -2095,6 +2167,88 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn unterminated_control_is_bounded_and_recovers_after_split_terminator() {
+        let mut t = term(20, 2);
+        t.advance(b"\x1b]7;file://host/");
+        let chunk = [b'x'; 16 * 1024];
+        for _ in 0..32 {
+            t.advance(&chunk);
+        }
+        assert!(t.discard_control);
+        assert!(t.pending_osc.is_empty());
+        // U+271C includes a UTF-8 continuation byte equal to C1 ST.
+        t.advance("✜".as_bytes());
+        assert!(t.discard_control);
+        t.advance(b"\x1b");
+        t.advance(b"\\ok");
+        assert!(!t.discard_control);
+        assert_eq!(t.grid().text().trim(), "ok");
+        t.advance(b"\x1b]7;file://host/recovered\x07");
+        assert_eq!(t.cwd.as_deref(), Some("/recovered"));
+    }
+
+    #[test]
+    fn unhandled_osc_cannot_grow_the_underlying_vte_parser() {
+        for prefix in [b"\x1b]0;".as_slice(), b"\x1b]999;"] {
+            let mut t = term(20, 2);
+            t.advance(prefix);
+            for _ in 0..20 {
+                t.advance(&[b'x'; 16 * 1024]);
+            }
+            assert!(t.discard_control);
+            assert!(t.pending_osc.is_empty());
+            t.advance(b"\x07ok");
+            assert_eq!(t.grid().text().trim(), "ok");
+        }
+    }
+
+    #[test]
+    fn kitty_chunk_budget_rejects_and_releases_accumulated_data() {
+        let mut t = term(20, 2);
+        t.pending_image = Some(crate::images::Pending {
+            id: 42,
+            data: vec![b'A'; crate::images::MAX_ENCODED_BYTES],
+            ..Default::default()
+        });
+        t.graphics_apc(b"Gm=1;AAAA");
+        assert!(t.pending_image.is_none());
+        assert!(String::from_utf8(t.take_responses())
+            .unwrap()
+            .contains("E2BIG"));
+        assert!(t.images.is_empty());
+    }
+
+    #[test]
+    fn repeated_sixels_and_placements_obey_retention_budgets() {
+        let mut t = term(20, 2);
+        for _ in 0..1100 {
+            t.sixel(&[], b"~");
+        }
+        assert_eq!(t.images.len(), 1024);
+        assert!(t
+            .placements
+            .iter()
+            .all(|p| t.images.iter().any(|i| i.id == p.image)));
+        let id = t.images.last().unwrap().id;
+        for _ in 0..5000 {
+            t.place_image(id, 1, 1, true);
+        }
+        assert!(t.placements.len() <= 4096);
+    }
+
+    #[test]
+    fn hyperlink_budget_preserves_old_cell_ids() {
+        let mut t = term(20, 2);
+        t.advance(b"\x1b]8;;https://example.com/first\x07a\x1b]8;;\x07");
+        for i in 0..16_500 {
+            t.advance(format!("\x1b]8;;https://example.com/{i}\x07").as_bytes());
+        }
+        assert_eq!(t.hyperlinks.len(), 16_384);
+        assert_eq!(t.hyperlinks[0], "https://example.com/first");
+        assert_eq!(t.cursor.template.link, 0);
+    }
 
     #[test]
     fn a_sixel_becomes_a_placement() {

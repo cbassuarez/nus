@@ -1076,6 +1076,7 @@ pub struct App {
     pub hint_hits: Vec<(Rect, usize)>,
     /// The welcome page's controls, the icon texture, a demo waiting.
     pub welcome_hits: Vec<(Rect, crate::welcome::Act)>,
+    pub icon_previews: Vec<crate::app_icon::Preview>,
     pub welcome_icon_tex: Option<((nus_render::Mode, nus_render::Color), Arc<wgpu::BindGroup>)>,
     pub welcome_art: Option<(Instant, crate::art::Art)>,
     pub welcome_shapes: Vec<Rect>,
@@ -1364,6 +1365,7 @@ impl App {
             hints: App::load_hints(),
             hint_hits: Vec::new(),
             welcome_hits: Vec::new(),
+            icon_previews: Vec::new(),
             welcome_icon_tex: None,
             welcome_art: None,
             welcome_shapes: Vec::new(), welcome_taps: Vec::new(), welcome_anim_until: None,
@@ -1848,6 +1850,7 @@ impl App {
         self.tip_icon = None;
         self.compact_tip = None;
         self.pointer_inside = false;
+        if self.sidebar_hover {self.sidebar_leave=Some(crate::clock::now()+std::time::Duration::from_millis(self.sidebar_rules.grace_ms));}
         // Nothing is hovered once the pointer is gone.
         self.mouse = (-1.0, -1.0);
         self.dirty = true;
@@ -2197,19 +2200,13 @@ impl App {
                         if w.load_since.is_none() {
                             w.load_since = Some(crate::clock::now());
                         }
-                    } else if (w.load_since.is_some() || w.load_fade.target() > 0.0)
-                        && (w.load.target < 1.0 || w.load.value < 0.999) {
-                        w.load.target = 1.0;
-                        if let Some(t0) = w.load_since.take() {
-                            if crate::clock::since(t0).as_secs_f32() > 1.0 {
-                                ready_cue = true;
-                            }
+                    } else {
+                        if let Some(t0)=w.load_since.take() {
+                            ready_cue |= crate::clock::since(t0).as_secs_f32()>1.0;
+                            w.load.target=1.0;
                         }
-                    } else if w.load_fade.target() > 0.0 {
-                        w.load_fade.go(0.0, out);
-                    } else if !w.load_fade.active() && w.load.value >= 0.999 {
-                        // Rest for the next navigation.
-                        w.load = Follow::new(0.0);
+                        if w.load_fade.target()>0.0 && w.load.value>=0.999 {w.load_fade.go(0.0,out);self.dirty=true;}
+                        else if w.load_fade.target()==0.0 && !w.load_fade.active() && w.load.value!=0.0 {w.load=Follow::new(0.0);self.dirty=true;}
                     }
                     if self.motion.reduced() && w.load.value != w.load.target {
                         w.load = Follow::new(w.load.target);
@@ -2933,7 +2930,7 @@ impl App {
     /// macOS uses the process-wide Dock controller; winit covers other desktops.
     pub(crate) fn refresh_icon(&self) {
         if cfg!(target_os="macos") {return;}
-        let rgba = if crate::mercury::earned(){crate::mercury::icon(64)}else{nus_render::dock_icon::render(64, self.surface.signal, nus_render::dock_icon::Face::Newsreader)};
+        let rgba = crate::app_icon::render(64,self.surface.signal);
         if let Ok(icon) = winit::window::Icon::from_rgba(rgba, 64, 64) {
             self.window.set_window_icon(Some(icon.clone()));
             if let Some(l) = &self.little {
@@ -3039,6 +3036,7 @@ impl App {
 
     /// The loading bar for a page: chases progress, fades when done.
     fn draw_load_bar(&mut self, scene: &mut Scene, page: Rect, w: &WebPane, tab_signal: Option<nus_render::Color>) {
+        if is_local(&w.tab.shared.borrow().url) {return;}
         let alpha = w.load_fade.value();
         if alpha <= 0.001 {
             return;
@@ -3053,7 +3051,7 @@ impl App {
         let th = self.px(self.load_bar.thickness);
         match self.load_bar.style {
             BarStyle::Radiance => {
-                let r = if is_local(&w.tab.shared.borrow().url) { page.inset(self.px(1.0)) } else { page };
+                let r = page;
                 scene.layer(Some(page));
                 let scale = self.px(self.load_bar.thickness * 0.5).max(0.5);
                 scene.push(nus_render::Instance::loading_light(
@@ -8310,6 +8308,8 @@ impl App {
         }
         if !focused {if let Some(tl)=&mut self.timeline{tl.map_drag=None;}}
         self.window_focused = focused;
+        self.sidebar_leave=None;
+        if focused {self.refresh_pointer(true);} else {self.hover_row=None;}
         self.news_focus(focused);
         if !focused {
             self.pip_away_pending = self.behavior.pip_policy.leave_app.then(crate::clock::now);
@@ -8336,6 +8336,56 @@ impl App {
         mods
     }
 
+    pub(crate) fn refresh_sidebar_hover(&mut self,x:f32,y:f32) {
+        if !self.sidebar_pinned() && self.sidebar_hoverable() {
+            let c = self.content_rect();
+            let sb = self.sidebar_rect();
+            let inside = sb.contains(x, y);
+            let edge = self.px(6.0);
+            let at_edge = if self.sidebar_right() { x <= self.target.size.0 as f32 && x > self.target.size.0 as f32 - edge } else { x >= 0.0 && x < edge };
+            // "Inside window" means the pointer must have travelled from inside
+            // to the edge; arriving straight from the desktop doesn't count.
+            let allowed = match self.sidebar_rules.hover_from {
+                HoverFrom::ScreenEdge => true,
+                HoverFrom::InsideWindow => self.pointer_inside,
+            };
+            if !self.sidebar_hover && at_edge && y >= c.y && y < c.bottom() && allowed {
+                self.sidebar_hover = true;
+                self.play_event("sidebar.reveal");
+                self.tick_hint(3);
+                self.sidebar_leave = None;
+                self.dirty = true;
+            } else if self.sidebar_hover {
+                if inside {
+                    self.sidebar_leave = None;
+                } else if self.sidebar_leave.is_none() {
+                    self.sidebar_leave = Some(crate::clock::now() + std::time::Duration::from_millis(self.sidebar_rules.grace_ms));
+                }
+            }
+            if !at_edge {
+                self.pointer_inside = true;
+            }
+        }
+    }
+
+    pub fn cursor_entered(&mut self) {
+        self.refresh_pointer(false);
+    }
+    fn refresh_pointer(&mut self,focused:bool) {
+        if let Some((x,y))=crate::pointer::in_window(&self.window) {
+            if x>=0.0 && y>=0.0 && x<self.target.size.0 as f32 && y<self.target.size.1 as f32 {
+                self.mouse=(x,y);
+                // Focus is an explicit return to this window, including at its edge.
+                if focused {self.pointer_inside=true;}
+                self.refresh_sidebar_hover(x,y);
+            } else {self.cursor_left();}
+        } else if self.mouse.0>=0.0 && self.mouse.1>=0.0 {
+            if focused {self.pointer_inside=true;}
+            self.refresh_sidebar_hover(self.mouse.0,self.mouse.1);
+        }
+        self.dirty=true;
+    }
+
     pub fn mouse_moved(&mut self, x: f32, y: f32) {
         let was = self.mouse;
         self.mouse = (x, y);
@@ -8347,6 +8397,7 @@ impl App {
             self.window.set_cursor_visible(true);
             self.pointer_hidden = false;
         }
+        self.refresh_sidebar_hover(x,y);
         if self.page_menu_motion(x, y) { return; }
         self.pin_drag_move(x, y);
         if self.timeline_pointer(x,y){self.dirty=true;return;}
@@ -8397,35 +8448,6 @@ impl App {
                 Some(crate::tiles::Divider::X) => self.window.set_cursor(winit::window::CursorIcon::ColResize),
                 Some(crate::tiles::Divider::Y) => self.window.set_cursor(winit::window::CursorIcon::RowResize),
                 None => self.pointer_request = Some(self.cursor.pointer),
-            }
-        }
-        if !self.sidebar_pinned() && self.sidebar_hoverable() {
-            let c = self.content_rect();
-            let sb = self.sidebar_rect();
-            let inside = sb.contains(x, y);
-            let edge = self.px(6.0);
-            let at_edge = if self.sidebar_right() { x > self.target.size.0 as f32 - edge } else { x < edge };
-            // "Inside window" means the pointer must have travelled from inside
-            // to the edge; arriving straight from the desktop doesn't count.
-            let allowed = match self.sidebar_rules.hover_from {
-                HoverFrom::ScreenEdge => true,
-                HoverFrom::InsideWindow => self.pointer_inside,
-            };
-            if !self.sidebar_hover && at_edge && y >= c.y && allowed {
-                self.sidebar_hover = true;
-                self.play_event("sidebar.reveal");
-                self.tick_hint(3);
-                self.sidebar_leave = None;
-                self.dirty = true;
-            } else if self.sidebar_hover {
-                if inside {
-                    self.sidebar_leave = None;
-                } else if self.sidebar_leave.is_none() {
-                    self.sidebar_leave = Some(crate::clock::now() + std::time::Duration::from_millis(self.sidebar_rules.grace_ms));
-                }
-            }
-            if !at_edge {
-                self.pointer_inside = true;
             }
         }
         if self.sidebar_visible() {

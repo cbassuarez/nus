@@ -202,6 +202,12 @@ const FALLBACK_FAMILIES: &[&str] = &[
 ];
 
 impl FontSystem {
+    /// Drop reproducible CPU layout caches without invalidating atlas handles.
+    pub fn reclaim_caches(&self) {
+        self.widths.borrow_mut().clear();
+        self.shaped.borrow_mut().clear();
+    }
+
     pub fn new() -> FontSystem {
         FontSystem {
             faces: Vec::new(),

@@ -25,6 +25,8 @@ pub struct Shared {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    pub requested_url: String,
+    pub(crate) failed_url: Option<String>,
     /// 0..1 from on_loading_progress_change.
     pub progress: f64,
     /// Bumped on every accelerated paint; the app redraws when it changes.
@@ -77,6 +79,50 @@ pub struct Shared {
     pub permission: Option<PermissionAsk>,
     /// A <select> (or other popup widget): where it is and its texture.
     pub select: SelectPopup,
+}
+
+impl Shared {
+    fn address(&mut self, url: &str) {
+        // Chrome's error document is an implementation detail, not the destination.
+        if url.starts_with("chrome-error:") || self.failed_url.as_deref().is_some_and(|failed|failed!=url) {return;}
+        if crate::sites::host_of(url)!=crate::sites::host_of(&self.url) {self.favicon=None;self.favicon_url.clear();}
+        if self.url!=url {self.zoom_motion=None;}
+        self.url=url.into();self.paints+=1;
+    }
+    pub fn redirect(&mut self,from:&str,to:&str){
+        if self.url==from {
+            if self.failed_url.is_some(){self.failed_url=Some(to.into());}
+            self.address(to);
+        }
+    }
+    fn failed(&mut self, url: &str, authoritative: bool) {
+        // A late CEF error/display callback can name the pre-redirect URL.
+        // CDP unreachableUrl is authoritative for the committed error document.
+        let destination = if !authoritative && url==self.requested_url && self.url!=self.requested_url {self.url.clone()} else {url.into()};
+        self.failed_url=Some(destination.clone());
+        self.address(&destination);
+        self.loading=false;self.progress=1.0;
+    }
+    fn navigation(&mut self,url:&str) {
+        self.failed_url=None;
+        self.address(url);self.requested_url=url.into();self.loading=true;self.progress=0.0;
+    }
+}
+
+wrap_load_handler! {
+    pub struct LoadBuilder { shared: SharedRef }
+    impl LoadHandler {
+        fn on_loading_state_change(&self,_browser:Option<&mut Browser>,is_loading: ::std::os::raw::c_int,_back: ::std::os::raw::c_int,_forward: ::std::os::raw::c_int) {
+            let mut s=self.shared.borrow_mut();s.loading=is_loading!=0;
+            if !s.loading {s.progress=1.0;}
+            s.paints+=1;
+        }
+        fn on_load_error(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,error_code:Errorcode,_error_text:Option<&CefString>,failed_url:Option<&CefString>) {
+            // Aborted navigations include downloads and requests superseded by another URL.
+            if cef::sys::cef_errorcode_t::from(error_code)==cef::sys::cef_errorcode_t::ERR_ABORTED || !frame.is_some_and(|f|f.is_main()!=0) {return;}
+            if let Some(url)=failed_url {self.shared.borrow_mut().failed(&url.to_string(),false);}
+        }
+    }
 }
 
 /// A permission prompt or a media-access request, one at a time.
@@ -565,13 +611,7 @@ wrap_display_handler! {
                 let mut s = self.d.shared.borrow_mut();
                 tracing::info!("address {} +{}ms", u, s.created.elapsed().as_millis());
                 let u = u.to_string();
-                // A new site: the old favicon must not linger on it.
-                if crate::sites::host_of(&u) != crate::sites::host_of(&s.url) {
-                    s.favicon = None;
-                    s.favicon_url.clear();
-                }
-                if s.url != u { s.zoom_motion = None; }
-                s.url = u;
+                s.address(&u);
             }
             // A new page is on its way: draw it as soon as it paints, even
             // when it arrives in a fresh process the frame clock has not met.
@@ -619,8 +659,8 @@ wrap_display_handler! {
             if progress >= 1.0 && s.loading {
                 if !crate::private::enabled() { tracing::info!("loaded {} +{}ms", s.url, s.created.elapsed().as_millis()); }
             }
-            s.loading = progress < 1.0;
-            s.progress = progress;
+            s.progress = progress.clamp(0.0,1.0);
+            s.paints += 1;
             let restore = if progress >= 1.0 { s.restore_scroll.take() } else { None };
             drop(s);
             if let Some((x,y)) = restore.filter(|(x,y)| x.is_finite() && y.is_finite()) {
@@ -706,6 +746,15 @@ wrap_dev_tools_message_observer! {
             // large console objects or page-generated payloads.
             if params.len() > 256 * 1024 { return; }
             let Ok(v) = serde_json::from_slice::<serde_json::Value>(params) else { return };
+            // Chrome error documents report the attempted destination here even
+            // when CEF's display callback retains the original redirect URL.
+            if method=="Page.frameNavigated" && v.pointer("/frame/parentId").is_none() {
+                if let Some(failed)=v.pointer("/frame/unreachableUrl").and_then(|v|v.as_str()).filter(|s|!s.is_empty()) {
+                    self.o.shared.borrow_mut().failed(failed,true);
+                } else if let Some(address)=v.pointer("/frame/url").and_then(|v|v.as_str()) {
+                    self.o.shared.borrow_mut().address(address);
+                }
+            }
             // The page's console and network, kept for eyes (`nus mcp`) and the block beside.
             let entry = match method.as_str() {
                 "Runtime.consoleAPICalled" => {
@@ -1134,6 +1183,13 @@ wrap_resource_request_handler! {
     }
 
     impl ResourceRequestHandler {
+        fn on_resource_redirect(&self,browser:Option<&mut Browser>,frame:Option<&mut Frame>,request:Option<&mut Request>,_response:Option<&mut Response>,new_url:Option<&mut CefString>) {
+            if !self.navigation || !frame.is_some_and(|f|f.is_main()!=0){return;}
+            if let (Some(browser),Some(request),Some(url))=(browser,request,new_url) {
+                // Resource callbacks run on CEF's IO thread. Deliver through the UI loop.
+                crate::browser_runtime::redirect(browser.identifier(),CefString::from(&request.url()).to_string(),url.to_string());
+            }
+        }
         fn resource_handler(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>) -> Option<ResourceHandler> {
             if !self.navigation || !frame.is_some_and(|f|f.is_main()!=0) {return None;}
             let url=CefString::from(&request?.url()).to_string();
@@ -1197,6 +1253,10 @@ wrap_request_handler! {
     }
 
     impl RequestHandler {
+        fn on_before_browse(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,request:Option<&mut Request>,_gesture: ::std::os::raw::c_int,_redirect: ::std::os::raw::c_int)->::std::os::raw::c_int {
+            if frame.is_some_and(|f|f.is_main()!=0) {if let Some(request)=request {let url=CefString::from(&request.url()).to_string();if !url.starts_with("chrome-error:"){self.display.shared.borrow_mut().navigation(&url);}}}
+            0
+        }
         fn resource_request_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, is_navigation: ::std::os::raw::c_int, _is_download: ::std::os::raw::c_int, _request_initiator: Option<&CefString>, _disable_default_handling: Option<&mut ::std::os::raw::c_int>) -> Option<ResourceRequestHandler> {
             Some(BlockBuilder::new(self.display.clone(), is_navigation != 0,self.viewer.clone()))
         }
@@ -1240,6 +1300,7 @@ wrap_client! {
     pub struct ClientBuilder {
         render: RenderHandler,
         display: DisplayHandler,
+        load: LoadHandler,
         life: LifeSpanHandler,
         find: FindHandler,
         download: DownloadHandler,
@@ -1255,6 +1316,7 @@ wrap_client! {
         fn display_handler(&self) -> Option<DisplayHandler> {
             Some(self.display.clone())
         }
+        fn load_handler(&self) -> Option<LoadHandler> {Some(self.load.clone())}
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
             Some(self.life.clone())
         }
@@ -1350,6 +1412,7 @@ impl BrowserTab {
             DisplayBuilder::new(Display {
                 shared: shared.clone(),
             }),
+            LoadBuilder::new(shared.clone()),
             LifeBuilder::new(Display { shared: shared.clone() }),
             FindBuilder::new(Display { shared: shared.clone() }),
             DownloadBuilder::new(Display { shared: shared.clone() },container.to_string()),
@@ -1487,6 +1550,7 @@ impl BrowserTab {
 
     pub fn load(&self, url: &str) {
         if let Some(f) = self.browser.as_ref().and_then(|b|b.main_frame()) {
+            self.shared.borrow_mut().navigation(url);
             f.load_url(Some(&url.into()));
         }
         self.nudge();
@@ -1673,5 +1737,34 @@ wrap_resource_handler! {
         fn skip(&self,count:i64,skipped:Option<&mut i64>,_callback:Option<&mut ResourceSkipCallback>)->::std::os::raw::c_int {
             let Some(skipped)=skipped else{return 0;};*skipped=0;if count<0{return 0;}let Ok(mut at)=self.cursor.lock()else{return 0;};let n=(count as usize).min(self.bytes.len().saturating_sub(*at));*at+=n;*skipped=n as i64;i32::from(n>0)
         }
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    #[test]
+    fn late_original_address_cannot_replace_a_committed_failed_redirect() {
+        let mut s=Shared::default();
+        s.navigation("https://original.test/");
+        s.redirect("https://original.test/","https://failed.test/");
+        s.failed("https://original.test/",false);
+        s.address("https://original.test/");
+        assert_eq!(s.url,"https://failed.test/");
+        s.failed("https://final.test/",true);
+        s.address("https://original.test/");
+        assert_eq!(s.url,"https://final.test/");
+        s.navigation("https://recovery.test/");
+        s.address("https://recovery.test/ok");
+        assert_eq!(s.url,"https://recovery.test/ok");
+        assert!(s.failed_url.is_none());
+    }
+    #[test]
+    fn pending_and_error_documents_keep_the_requested_address() {
+        let mut s=Shared::default();s.address("https://example.com/");
+        s.navigation("http://127.0.0.1:1/missing");
+        assert_eq!(s.url,"http://127.0.0.1:1/missing");assert!(s.loading);assert_eq!(s.progress,0.0);
+        s.address("chrome-error://chromewebdata/");assert_eq!(s.url,"http://127.0.0.1:1/missing");
+        s.address("https://example.org/redirected");assert_eq!(s.url,"https://example.org/redirected");
     }
 }

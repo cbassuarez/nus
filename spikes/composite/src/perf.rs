@@ -213,6 +213,9 @@ pub fn memory_snapshot() -> serde_json::Value {
     serde_json::json!({
         "available": main.is_some(),
         "main_rss_kib": main,
+        "main_footprint_kib": crate::memory_pressure::footprint_kib(pid),
+        "tree_footprint_kib": children.iter().map(|&pid|crate::memory_pressure::footprint_kib(pid)).collect::<Option<Vec<_>>>().map(|v|v.into_iter().sum::<u64>()),
+        "system_pressure": crate::memory_pressure::system_level(),
         "tree_rss_kib": tree,
         "processes": children.len(),
         "method": "sum RSS, includes shared pages"

@@ -96,3 +96,52 @@ PowerShell's accepted log levels are documented in its
 [official bootstrap script](https://github.com/PowerShell/PowerShellEditorServices/blob/main/module/PowerShellEditorServices/Start-EditorServices.ps1).
 The HTTP cache switch was also checked against the bundled Chromium 152 binary;
 an obsolete media-cache switch was removed rather than claiming a separate limit.
+
+## Preview 9: intermittent pressure hardening
+
+The reported approximately 112 GB was total system usage under severe pressure,
+not an attribution to nus. The cause has not been reproduced. This pass closes
+specific unbounded paths and adds conservative recovery; it cannot guarantee a
+maximum for arbitrary web pages, extensions, agents, or other applications.
+
+- Terminal interception retains at most 64 KiB for ordinary incomplete control
+  strings, or 16 MiB for image/clipboard control strings (plus one 16 KiB input chunk).
+  Oversized strings are discarded through a terminator, with UTF-8/split-ST
+  recovery. Chunked Kitty transmissions are limited to 16 MiB encoded bytes.
+- PNG/raw image dimensions are checked before pixel allocation; decoded image
+  retention is 64 MiB and 1,024 images per terminal, including sixel. Sixel
+  operation storage and image placements are also bounded. Decode intermediates
+  are temporary and can exceed the retained-image budget.
+- Hyperlinks stop accepting new IDs after 16,384 entries or 4 MiB of URL text;
+  existing cell IDs remain valid. Shell marks and image placements have finite
+  entry budgets even when a program repeatedly updates one line.
+- Each artwork VM has 32 MiB, a 250 ms load budget and 100 ms per invocation.
+  Rust drawing commands have an independent 4 MiB/8,192-command budget, with
+  bounded polygon input. A failing artwork reports an error and can be reloaded.
+- Scene uploads occur only after successful surface acquisition. Failed surface
+  draws still submit pending glyph/image writes and poll completion so temporary
+  staging buffers can retire during resize/occlusion.
+- Every five seconds while the event loop runs, nus samples native macOS memory
+  pressure, Windows available physical memory, or Linux `MemAvailable`. On
+  warning/critical pressure it clears reproducible CPU layout/icon caches,
+  flushes GPU uploads, and sends Chromium a moderate/critical memory-pressure
+  notification. Responses are throttled to 30 seconds except escalation.
+  This path does not close tabs, clear page state, kill processes, or discard
+  terminal/editor buffers. Linux metrics describe the host, not cgroup limits.
+- Opt-in `NUS_SHOT memory` samples include macOS `phys_footprint` for the main
+  process and child tree, alongside RSS and the current pressure level. Missing
+  metrics are null, not zero. RSS can count shared pages multiple times; neither
+  metric is total system usage. There is no telemetry upload.
+
+`scripts/check-memory-pressure.py` exercises 64 real CEF open/close cycles with
+an animated canvas, resizing and the reclamation path, checks browser closure
+and retained form/JavaScript state, and records early/late/peak samples in a
+local temporary directory. It deliberately does not exhaust the user's machine.
+
+Local macOS arm64 verification (48 GiB RAM, debug bundle, animated canvas):
+64 cycles passed with every browser closed and form/JavaScript state preserved
+through reclamation. After warm-up, early/late median RSS was 265.75/269.07 MiB
+for the main process and 484.21/489.51 MiB for its tree. Main physical footprint
+settled at 230.97 MiB. System pressure stayed Normal; this is a controlled
+regression test, not a reproduction of the reported incident. See the
+[local sample report](releases/preview9-memory-macos.json).

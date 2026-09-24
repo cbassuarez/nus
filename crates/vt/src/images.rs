@@ -3,6 +3,15 @@
 //! (OSC 1337 File=inline=1). Images are decoded here to RGBA; the host
 //! uploads them once and draws placements at their absolute lines.
 
+/// Per-terminal retained RGBA budget and per-transmission encoded budget.
+pub const MAX_RGBA_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_ENCODED_BYTES: usize = 16 * 1024 * 1024;
+
+fn pixels(w: u32, h: u32) -> Option<usize> {
+    let n = (w as usize).checked_mul(h as usize)?;
+    (n > 0 && n <= MAX_RGBA_BYTES / 4).then_some(n)
+}
+
 /// A decoded image.
 #[derive(Clone, Debug)]
 pub struct Image {
@@ -90,60 +99,48 @@ pub fn base64_decode(s: &[u8]) -> Vec<u8> {
 
 /// Decode PNG bytes to RGBA.
 pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_limits(png::Limits {
+        bytes: MAX_RGBA_BYTES,
+    });
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.info();
+    let n = pixels(info.width, info.height)?;
+    let size = reader.output_buffer_size();
+    if size > MAX_RGBA_BYTES {
+        return None;
+    }
+    let mut buf = vec![0; size];
     let info = reader.next_frame(&mut buf).ok()?;
-    let (w, h) = (info.width, info.height);
-    let n = info.buffer_size();
-    let rgba: Vec<u8> = match info.color_type {
-        png::ColorType::Rgba => buf[..n].to_vec(),
-        png::ColorType::Rgb => buf[..n]
-            .chunks(3)
+    let buf = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf.to_vec(),
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
-        png::ColorType::Grayscale => buf[..n].iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf[..n]
-            .chunks(2)
+        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf
+            .chunks_exact(2)
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
         _ => return None,
     };
-    // 16-bit depths come out as 2 bytes per sample; take the high byte.
-    if info.bit_depth == png::BitDepth::Sixteen {
-        let per = match info.color_type {
-            png::ColorType::Rgba => 4,
-            png::ColorType::Rgb => 3,
-            png::ColorType::Grayscale => 1,
-            png::ColorType::GrayscaleAlpha => 2,
-            _ => return None,
-        };
-        let samples: Vec<u8> = buf[..n].chunks(2).map(|p| p[0]).collect();
-        let rgba: Vec<u8> = match per {
-            4 => samples,
-            3 => samples
-                .chunks(3)
-                .flat_map(|p| [p[0], p[1], p[2], 255])
-                .collect(),
-            1 => samples.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-            _ => samples
-                .chunks(2)
-                .flat_map(|p| [p[0], p[0], p[0], p[1]])
-                .collect(),
-        };
-        return Some((w, h, rgba));
+    if rgba.len() != n * 4 {
+        return None;
     }
-    Some((w, h, rgba))
+    Some((info.width, info.height, rgba))
 }
 
-/// Raw RGB (24) or RGBA (32) payloads.
+/// Raw RGB (24) or RGBA (32) payloads; check dimensions before allocation.
 pub fn decode_raw(format: u32, w: u32, h: u32, data: &[u8]) -> Option<Vec<u8>> {
-    let n = (w * h) as usize;
+    let n = pixels(w, h)?;
     match format {
         32 if data.len() >= n * 4 => Some(data[..n * 4].to_vec()),
         24 if data.len() >= n * 3 => Some(
             data[..n * 3]
-                .chunks(3)
+                .chunks_exact(3)
                 .flat_map(|p| [p[0], p[1], p[2], 255])
                 .collect(),
         ),
@@ -198,5 +195,37 @@ mod tests {
         let c = kitty_controls("a=T,f=100,s=2,v=2,i=7,m=0");
         assert_eq!(control_str(&c, 'a'), Some("T"));
         assert_eq!(control_num(&c, 'i', 0), 7);
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn raw_dimensions_do_not_overflow_or_allocate_past_budget() {
+        assert!(decode_raw(32, u32::MAX, u32::MAX, &[0; 4]).is_none());
+        assert!(decode_raw(24, 0, 1, &[]).is_none());
+        assert!(decode_raw(32, 8192, 8192, &[]).is_none());
+        assert_eq!(decode_raw(24, 1, 1, &[1, 2, 3]), Some(vec![1, 2, 3, 255]));
+    }
+    #[test]
+    fn png_expansion_checks_dimensions_and_handles_sixteen_bit_samples() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Sixteen);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[1, 0, 2, 0, 3, 0, 255, 255])
+                .unwrap();
+        }
+        assert_eq!(decode_png(&bytes), Some((1, 1, vec![1, 2, 3, 255])));
+        let mut huge = Vec::new();
+        let writer = png::Encoder::new(&mut huge, 8192, 8192)
+            .write_header()
+            .unwrap();
+        drop(writer);
+        assert!(decode_png(&huge).is_none());
     }
 }

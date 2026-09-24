@@ -15,6 +15,9 @@ pub fn ready() -> bool {
 pub fn set_proxy(proxy: EventLoopProxy<crate::UserEvent>) {
     let _ = PROXY.set(proxy);
 }
+pub fn redirect(browser:i32,from:String,to:String) {
+    if let Some(proxy)=PROXY.get(){let _=proxy.send_event(crate::UserEvent::BrowserRedirect(browser,from,to));}
+}
 pub fn wake() {
     if let Some(proxy) = PROXY.get() {
         let _ = proxy.send_event(crate::UserEvent::BrowserWork);

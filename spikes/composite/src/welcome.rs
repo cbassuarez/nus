@@ -203,12 +203,13 @@ impl App {
             .map(|b| {
                 let state = self.bundle_state(&b);
                 let (status, button): (String, Option<&'static str>) = match &state {
-                    State::Installed => ("installed".into(), Some("REMOVE")),
+                    State::Installed => ("installed in this profile".into(), Some("REMOVE")),
+                    State::External => ("available on this machine · managed outside nus".into(), None),
                     State::Fetching => ("fetching…".into(), None),
                     State::Failed(e) => (format!("failed · {e}"), Some("TRY AGAIN")),
-                    State::Soon => ("coming with the first release".into(), None),
+                    State::Soon => ("managed installation unavailable".into(), None),
                     State::NoPlatform => ("not for this platform yet".into(), None),
-                    State::Absent => (format!("about {} MB · profile/{}", b.size_mb, if b.into.is_empty() { "—".to_string() } else { b.into.clone() }), Some("GET")),
+                    State::Absent => (format!("about {} MB · profile/{}", b.size_mb, format!("tools/{}",b.id)), Some("GET")),
                 };
                 let what = format!("{} · {}", b.about, status);
                 row(b.kind.caps(), b.name.clone(), what, button.map(|w| (w, Act::Bundle(b.id.clone()))))

@@ -868,6 +868,8 @@ impl App {
     pub(crate) fn notice(&mut self, s: &str) {
         if let Some(e) = self.focused_editor() {
             e.notice = Some((s.to_string(), crate::clock::now()));
+        } else {
+            self.toast_with(None, "nus", s, None);
         }
         self.dirty = true;
     }

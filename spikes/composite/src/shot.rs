@@ -175,6 +175,7 @@ impl App {
     fn benchmark_ready(&mut self, step: &str) -> bool {
         let (verb, rest) = step.split_once(' ').unwrap_or((step, ""));
         match verb {
+            "awaitbundle"=>{assert!(!self.jobs.failed.contains_key(rest),"tool failed: {:?}",self.jobs.failed.get(rest));!self.jobs.running.iter().any(|id|id==rest)},
             "awaitfile" => std::path::Path::new(rest).is_file(),
             "awaitpage" => {
                 let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };
@@ -249,7 +250,7 @@ impl App {
             eprintln!("shot: {step}");
         }
         match verb {
-            "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" => {},
+            "awaitbundle" | "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" => {},
             "benchbegin" => {
                 assert!(crate::perf::enabled() && !crate::clock::recording(), "benchmark requires real-clock NUS_PERF");
                 let s = self.shot.as_mut().unwrap();
@@ -754,6 +755,10 @@ impl App {
             "appmenu" => {
                 let command=crate::application_menu::ITEMS.iter().find(|i|format!("{:?}",i.command)==rest).expect("menu command").command;
                 let _=self.proxy.send_event(crate::UserEvent::ApplicationMenuCheck(command));
+            }
+            "memorypressure" => {
+                let level = match rest { "warning" => crate::memory_pressure::Level::Warning, "critical" => crate::memory_pressure::Level::Critical, _ => panic!("memorypressure requires warning or critical") };
+                self.reclaim_memory(level);
             }
             "memory" => eprintln!("MEMORY {} {}", rest, crate::perf::memory_snapshot()),
             "awaitperf" => assert!(crate::perf::has_samples(rest), "missing performance metric: {rest}"),
@@ -1308,6 +1313,24 @@ impl App {
                 assert!(crate::updates::status().confirming);
             },
             "updatereview" => {crate::updates::preview_warning();self.dirty=true;},
+            "bundle"=>self.bundle_toggle(rest),
+            "assertbundle"=>{let b=crate::bundles::list().into_iter().find(|b|b.id==rest).unwrap();assert_eq!(self.bundle_state(&b),crate::bundles::State::Installed);for entry in &b.entrypoints{let stem=std::path::Path::new(entry).file_stem().unwrap().to_str().unwrap();assert!(crate::bundles::resolve(stem).is_some());}},
+            "asserttoast"=>{let t=self.toast.as_ref().expect("toast expected");assert!(format!("{} {}",t.text,t.tail).contains(rest));},
+            "noticefixture"=>self.notice(rest),
+            "assertloadidle"=>{let Pane::Web(w)=self.tabs[self.active].focused_ref()else{panic!("web")};assert!(!w.tab.shared.borrow().loading);assert!(w.load_fade.value()<=0.001);assert!(w.load_since.is_none());assert_eq!(w.load.target,0.0);},
+            "iconsettings"=>{self.open_settings();self.look_tab=crate::settings::LOOK_APP_ICON;if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|t.focused()){p.section=crate::settings::SEC_LOOK;p.scroll=0.0;}self.dirty=true;},
+            "iconchoose"=>{let choice=crate::app_icon::Choice::ALL.into_iter().find(|c|c.name()==rest).unwrap();let r=self.settings_hits.iter().find(|(_,h)|*h==crate::settings::Hit::AppIcon(choice)).expect("icon card visible").0;self.mouse_moved(r.x+r.w/2.0,r.y+r.h/2.0);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);assert_eq!(self.behavior.app_icon,choice);assert_eq!(crate::app_icon::selected(),choice);},
+            "asserticon"=>assert_eq!(self.behavior.app_icon.name(),rest),
+            "sidebarhoverprobe"=>{
+                self.sidebar=false;self.focus=false;self.sidebar_rules.hover_from=crate::surface::HoverFrom::InsideWindow;self.sidebar_rules.side=crate::surface::Side::Left;self.sidebar_hover=false;self.sidebar_leave=None;self.layout();
+                let y=self.content_rect().y+self.px(100.0);
+                self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_hover,"content handler swallowed edge hover");
+                self.cursor_left();assert!(self.sidebar_leave.is_some());
+                self.mouse_moved(self.px(100.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_leave.is_none(),"reentry must cancel stale hide timer");
+                self.focus_changed(false);self.focus_changed(true);self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_hover,"hover after focus return");
+                self.sidebar_rules.side=crate::surface::Side::Right;self.sidebar_hover=false;self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.target.size.0 as f32-self.px(1.0),y);assert!(self.sidebar_hover,"right edge hover");
+                self.sidebar_rules.side=crate::surface::Side::Left;self.sidebar_hover=false;self.sidebar_leave=None;self.layout();
+            },
             "settingscheck" => self.check_settings_bindings(),
             "assertprofile" => assert_eq!(self.me_card.open, rest == "open"),
             "loadbarfixture" => {

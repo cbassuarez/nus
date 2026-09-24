@@ -1,7 +1,7 @@
 //! Wayland docks resolve the desktop entry's icon, not winit's window icon.
 //! Publish a colour-specific asset and update Icon= so launchers invalidate it.
 use nus_render::{
-    dock_icon::{self, Face},
+    dock_icon,
     Color,
 };
 use std::{
@@ -52,13 +52,14 @@ fn publish(data: &Path, exe: &Path, signal: Color) -> io::Result<()> {
     let apps = data.join("applications");
     std::fs::create_dir_all(&icons)?;
     std::fs::create_dir_all(&apps)?;
-    let mercury=crate::mercury::earned();
+    let mercury=crate::app_icon::mercury();
     let path = if mercury{icons.join("mercury-tidal-v1.png")}else{icons.join(format!(
-        "orbit-{:02x}{:02x}{:02x}{:02x}.png",
+        "orbit-{:?}-{:02x}{:02x}{:02x}{:02x}.png",
+        crate::app_icon::face(),
         colour[0], colour[1], colour[2], colour[3]
     ))};
     if !path.exists() {
-        let rgba = if mercury{crate::mercury::icon(256)}else{dock_icon::render(256, signal, Face::Newsreader)};
+        let rgba = if mercury{crate::mercury::icon(256)}else{dock_icon::render(256, signal, crate::app_icon::face())};
         atomic_write(&path, &nus_render::icon::png(&rgba, 256, 256))?;
     }
     let entry = apps.join(format!("{APP_ID}.desktop"));

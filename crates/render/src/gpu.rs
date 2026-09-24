@@ -406,6 +406,13 @@ impl Gpu {
         );
     }
 
+    /// Glyph/image writes may precede surface acquisition. Flush even when a
+    /// hidden/resizing window cannot present so staging allocations can retire.
+    pub fn flush_uploads(&self) {
+        self.queue.submit(std::iter::empty());
+        let _ = self.device.poll(wgpu::PollType::Poll);
+    }
+
     /// Draw a scene into `target`. Returns false if the surface wasn't available.
     pub fn render(&mut self, target: &mut Target, scene: &Scene, clear: [f32; 4]) -> bool {
         // scRGB uses an absolute 80-nit unit on Windows. Track the user's SDR
@@ -416,7 +423,6 @@ impl Gpu {
         {
             target.update_white_scale(&self.adapter);
         }
-        self.upload_instances(scene);
         let frame = match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
@@ -427,10 +433,15 @@ impl Gpu {
                 // A native resize/show can invalidate the drawable before a
                 // resize callback arrives. Reconfigure and retry next frame.
                 target.configure(&self.device);
+                self.flush_uploads();
                 return false;
             }
-            _ => return false,
+            _ => {
+                self.flush_uploads();
+                return false;
+            }
         };
+        self.upload_instances(scene);
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());

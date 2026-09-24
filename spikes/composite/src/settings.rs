@@ -395,6 +395,7 @@ pub enum Outside {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Behavior {
+    #[serde(default)] pub app_icon: crate::app_icon::Choice,
     #[serde(default = "default_true")]
     pub update_checks: bool,
     pub links: Links,
@@ -870,6 +871,7 @@ fn default_outside() -> Outside {
 impl Default for Behavior {
     fn default() -> Self {
         Behavior {
+            app_icon: Default::default(),
             update_checks: true,
             links: Links::Stack,
             prompt_url: PromptUrl::Split,
@@ -1016,6 +1018,7 @@ pub enum Slider {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
+    AppIcon(crate::app_icon::Choice),
     Mercury,
     CopySupportDetails,
     RecoverPrevious,
@@ -1332,6 +1335,7 @@ fn key(k: &str, shift: bool) -> String {
 
 /// One row's control.
 enum Control {
+    AppIcons,
     SavedCommand(usize),
     Mercury,
     FontProof,
@@ -1629,6 +1633,7 @@ impl App {
             Hit::Welcome => "open the welcome page".into(),
             Hit::PinDisplay(mode) => format!("pinned tiles {mode:?}"),
             Hit::Report(crate::support::Kind::Bug) => "Report a bug · opens a GitHub draft with version and OS".into(),
+            Hit::AppIcon(choice)=>format!("Use {} app icon",choice.name()),
             Hit::Mercury => if crate::mercury::earned() { "Replay Mercury" } else { "Claim Mercury" }.into(),
             Hit::CopySupportDetails=>"Copy the support details shown below".into(),
             Hit::RecoverPrevious=>"Review recovery to the previous version".into(),
@@ -2059,6 +2064,7 @@ impl App {
             Hit::Welcome => self.open_welcome(),
             Hit::PinDisplay(mode) => self.sidebar_rules.pin_display = mode,
             Hit::Report(kind) => self.run(crate::app::Action::Report(kind)),
+            Hit::AppIcon(choice)=>{if choice!=crate::app_icon::Choice::Mercury || crate::mercury::earned(){self.behavior.app_icon=choice;crate::app_icon::select(choice);self.refresh_icon();self.toast_with(None,"App icon changed",choice.name(),None);}},
             Hit::Mercury => self.claim_mercury(),
             Hit::CopySupportDetails => {
                 match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(crate::support::details())) {
@@ -3311,7 +3317,8 @@ impl App {
                 v
             }
                     LOOK_APP_ICON => vec![
-                        ("APP ICON".into(), Info("Your icon in the Dock and app switcher.".into())),
+                        ("APP ICON".into(), Info("Choose your running app’s icon. Automatic uses Mercury when claimed; choosing another icon keeps your badge. The installed package icon remains unchanged.".into())),
+                        ("".into(),AppIcons),
                         ("MERCURY".into(), Mercury),
                     ],
                     LOOK_TYPE => vec![
@@ -4523,7 +4530,7 @@ impl App {
         for (row_index, (k, control)) in rows.into_iter().enumerate() {
             // Full-width controls: caption above, the control across the column.
             let stacked = tiles && matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..));
-            let full = stacked || matches!(control, Control::Mercury | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_))
+            let full = stacked || matches!(control, Control::AppIcons | Control::Mercury | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_))
                 || matches!(control, Control::Info(_) | Control::SavedCommand(_));
             let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
             let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
@@ -4534,6 +4541,7 @@ impl App {
             let text_w = if full { maxw } else { maxw - label_w };
             let rh = match &control {
                 Control::SavedCommand(i) => self.saved_card_height(*i,maxw),
+                Control::AppIcons=>self.icon_choices_height(maxw)+cap_h+self.px(18.0),
                 Control::Mercury => self.mercury_settings_height(maxw) + cap_h + self.px(18.0),
                 Control::FontProof | Control::PromptProof => self.px(226.0) + cap_h,
                 Control::Pics(cards) => cap_h + cards.len().div_ceil(per_row) as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0),
@@ -4614,6 +4622,7 @@ impl App {
                 Control::SavedCommand(i) => {
                     self.draw_saved_card(scene,Rect::new(cx,y,maxw,rh),i);
                 }
+                Control::AppIcons=>self.draw_icon_choices(scene,Rect::new(cx,y+cap_h,maxw,self.icon_choices_height(maxw))),
                 Control::Mercury => self.draw_mercury_settings(scene, Rect::new(cx, y+cap_h, maxw, self.mercury_settings_height(maxw))),
                 Control::FontProof | Control::PromptProof => {self.draw_type_proof(scene,Rect::new(cx,y+cap_h,maxw,self.px(206.0)),matches!(control,Control::PromptProof));}
                 Control::Caption => {}
