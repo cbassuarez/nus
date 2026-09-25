@@ -5,7 +5,7 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
 use cef::{ImplBrowser, ImplFrame};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Command { Settings, Quit, NewTab, NewShell, NewWindow, NewPrivateWindow, ReportBug, RequestFeature, CloseTab, CloseWindow, Reopen, Undo, Redo, Cut, Copy, Paste, SelectAll, Find, ZoomIn, ZoomOut, ZoomReset, Home, Downloads, Palette, Sidebar, Reload, Fullscreen, Split, History, Devtools, Hatch, Minimize, NextTab, PreviousTab, Welcome }
+pub enum Command { Settings, Quit, NewTab, NewShell, NewWindow, NewPrivateWindow, ReportBug, RequestFeature, CloseTab, CloseWindow, Reopen, Undo, Redo, Cut, Copy, Paste, SelectAll, Find, ZoomIn, ZoomOut, ZoomReset, Home, Downloads, Palette, Sidebar, Reload, HardReload, Fullscreen, Split, History, Devtools, Hatch, Minimize, NextTab, PreviousTab, Welcome }
 
 pub struct Item { pub group: &'static str, pub label: &'static str, pub command: Command, pub key: Option<&'static str> }
 macro_rules! item { ($group:literal,$label:literal,$command:ident,$key:expr) => { Item{group:$group,label:$label,command:Command::$command,key:$key} }; }
@@ -34,6 +34,7 @@ pub const ITEMS: &[Item] = &[
     item!("View","Command Palette…",Palette,Some("CmdOrCtrl+KeyK")),
     item!("View","Show / Hide Sidebar",Sidebar,None),
     item!("View","Reload Page",Reload,Some("CmdOrCtrl+KeyR")),
+    item!("View","Hard Reload",HardReload,Some("CmdOrCtrl+Shift+KeyR")),
     item!("View","Toggle Full Screen",Fullscreen,None),
     item!("View","Split Pane",Split,None),
     item!("View","Shell History",History,None),
@@ -144,11 +145,11 @@ impl App {
         let pane=self.tabs.get(index).map(|t|t.focused_ref());
         let field=self.palette.is_some() || matches!(pane,Some(Pane::Home(_)));
         match command {
-            Command::Reload|Command::Devtools=>matches!(pane,Some(Pane::Web(_))),
+            Command::Reload|Command::HardReload|Command::Devtools=>matches!(pane,Some(Pane::Web(_))),
             Command::History=>matches!(pane,Some(Pane::Term(_))),
             Command::Undo|Command::Redo=>!field && matches!(pane,Some(Pane::Editor(_)|Pane::Web(_))),
             Command::Cut=>field || matches!(pane,Some(Pane::Editor(_)|Pane::Web(_))),
-            Command::SelectAll=>!field && matches!(pane,Some(Pane::Editor(_)|Pane::Web(_))),
+            Command::SelectAll=>self.palette.is_none() && matches!(pane,Some(Pane::Home(h)) if !h.library && !h.input.is_empty()) || !field && matches!(pane,Some(Pane::Editor(_)|Pane::Web(_))),
             Command::Find=>matches!(pane,Some(Pane::Term(_)|Pane::Web(_)|Pane::Editor(_)|Pane::Settings(_))),
             Command::Reopen=>!self.closed.is_empty(),
             Command::NextTab|Command::PreviousTab=>self.tabs.iter().filter(|t|!t.hatch).count()>1,
@@ -171,7 +172,7 @@ impl App {
             Sidebar=>self.run(Action::ToggleSidebar), Fullscreen=>self.toggle_fullscreen(), Split=>self.run(Action::ToggleSplit),
             History=>self.toggle_timeline(), Devtools=>self.toggle_devtools(), Hatch=>self.toggle_hatch(),
             Minimize=>self.window.set_minimized(true), Welcome=>self.run(Action::Welcome),
-            Reload=>{if let Some(Pane::Web(w))=self.tabs.get(self.active).map(|t|t.focused_ref()){w.tab.reload();}},
+            Reload=>self.reload_page(false), HardReload=>self.reload_page(true),
             NextTab|PreviousTab=>{
                 let ids:Vec<_>=self.tabs.iter().enumerate().filter(|(_,t)|!t.hatch).map(|(i,_)|i).collect();
                 if let Some(i)=ids.iter().position(|i|*i==self.active) {self.activate(ids[(i+if command==NextTab{1}else{ids.len()-1})%ids.len()]);}

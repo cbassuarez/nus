@@ -2,6 +2,18 @@
 //! See docs/SPIKES.md.
 
 mod access;
+mod interstitial;
+mod interstitial_ui;
+mod agent;
+mod ledger;
+mod director;
+mod pane_mode;
+mod send;
+mod shell_colors;
+mod live;
+mod intelligence;
+mod finish_work;
+mod finish_work_native;
 mod clock;
 mod memory_pressure;
 mod shell;
@@ -184,6 +196,8 @@ struct Host {
     work_at: Option<std::time::Instant>,
     hatch_owner: Option<WindowId>,
     dock: dock::Dock,
+    /// Finish Work's one lease for the whole process (finish_work.rs).
+    finish: finish_work::FinishWork,
 }
 
 impl Host {
@@ -358,6 +372,52 @@ impl Host {
         }
     }
 
+    /// Move tab `id` out of window `i`, to `dest` (send.rs). A point on
+    /// screen lands in the nus window under it, or a new window there.
+    fn send_tab(&mut self, event_loop: &ActiveEventLoop, i: usize, id: u64, dest: send::Dest) {
+        use send::Dest;
+        let dest = match dest {
+            Dest::At(x, y) => {
+                let under = self.apps.iter().position(|a| {
+                    let Ok(p) = a.window.outer_position() else { return false };
+                    let s = a.window.outer_size();
+                    a.window.is_visible() != Some(false) && x >= p.x && y >= p.y && x < p.x + s.width as i32 && y < p.y + s.height as i32
+                });
+                match under {
+                    Some(j) if j == i => return,
+                    Some(j) => Dest::Window(u64::from(self.apps[j].window.id())),
+                    None => Dest::At(x, y),
+                }
+            }
+            d => d,
+        };
+        let Some(tab) = self.apps.get_mut(i).and_then(|a| a.take_tab(id)) else { return };
+        match dest {
+            Dest::Window(w) => match self.apps.iter().position(|a| u64::from(a.window.id()) == w) {
+                Some(j) => {
+                    self.apps[j].receive_tab(tab);
+                    self.apps[j].window.focus_window();
+                }
+                None => self.apps[i].receive_tab(tab),
+            },
+            Dest::New | Dest::At(..) => {
+                let before = self.apps.len();
+                self.spawn_window(event_loop, Some(i));
+                if self.apps.len() > before {
+                    let a = self.apps.last_mut().expect("just made");
+                    if let Dest::At(x, y) = dest {
+                        a.window.set_outer_position(winit::dpi::PhysicalPosition::new(x - 60, y - 20));
+                    }
+                    a.receive_tab(tab);
+                    // The window's own first tab gives way to the one it was made for.
+                    a.drop_birth = true;
+                } else {
+                    self.apps[i].receive_tab(tab);
+                }
+            }
+        }
+    }
+
     /// Tell every app about every window.
     fn share_registry(&mut self) {
         let entries: Vec<windows::Entry> = self
@@ -378,6 +438,9 @@ impl Host {
 
 impl ApplicationHandler<UserEvent> for Host {
     fn exiting(&mut self, _: &ActiveEventLoop) {
+        // Whatever Finish Work holds goes first: a quit is always the user's
+        // (or the OS's) word, and nothing outlives it.
+        self.release_finish_work();
         // AppKit's native Quit can terminate inside the event pump, before
         // main reaches its normal shutdown path.
         self.dock.prepare_quit();
@@ -514,11 +577,16 @@ impl ApplicationHandler<UserEvent> for Host {
             if let Some(tray)=&mut self.tray {tray.refresh_icon(a.surface.signal);}
         }
         self.refresh_hatch_work();
+        self.refresh_finish_work();
         if let Some(menu)=&self.application_menu {if let Some(a)=self.focused.and_then(|id|self.app_index(id)).and_then(|i|self.apps.get(i)).or(self.apps.first()){menu.refresh(a);}}
         // Requests the apps can't answer themselves: new windows, fronting.
         let mut spawn_from: Vec<usize> = Vec::new();
         let mut front: Vec<u64> = Vec::new();
+        let mut sends: Vec<(usize, u64, send::Dest)> = Vec::new();
         for (i, a) in self.apps.iter_mut().enumerate() {
+            if let Some((id, dest)) = a.send_request.take() {
+                sends.push((i, id, dest));
+            }
             if a.new_window_request {
                 a.new_window_request = false;
                 spawn_from.push(i);
@@ -542,6 +610,9 @@ impl ApplicationHandler<UserEvent> for Host {
         }
         for i in spawn_from {
             self.spawn_window(event_loop, Some(i));
+        }
+        for (i, id, dest) in sends {
+            self.send_tab(event_loop, i, id, dest);
         }
         for id in front {
             if let Some(a) = self.apps.iter_mut().find(|a| u64::from(a.window.id()) == id) {
@@ -586,18 +657,8 @@ impl ApplicationHandler<UserEvent> for Host {
             match event_loop.create_window(attrs){Ok(w)=>{let adapter=accesskit_winit::Adapter::with_event_loop_proxy(event_loop,&w,self.proxy.clone());self.access.push((w.id(),adapter,0));a.attach_menu_drawer(Arc::new(w));},Err(e)=>tracing::warn!("Menu drawer: {e}")}
         }
         a.hatch_ride();
-        if let Some(p) = a.pointer_request.take() {
-            let cursor = match p {
-                settings::Pointer::System => winit::window::Cursor::Icon(winit::window::CursorIcon::Default),
-                settings::Pointer::InkArrow | settings::Pointer::SignalDot => {
-                    let (rgba, hot) = a.pointer_image(p);
-                    match winit::window::CustomCursor::from_rgba(rgba, 32, 32, hot.0, hot.1) {
-                        Ok(src) => winit::window::Cursor::Custom(event_loop.create_custom_cursor(src)),
-                        Err(_) => winit::window::Cursor::Icon(winit::window::CursorIcon::Default),
-                    }
-                }
-            };
-            a.window.set_cursor(cursor);
+        if std::mem::take(&mut a.pointer_reset) {
+            a.window.set_cursor(winit::window::CursorIcon::Default);
         }
         if let Some(url) = a.little_request.take() {
             let attrs = Window::default_attributes()
@@ -970,7 +1031,7 @@ fn main() -> ExitCode {
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
     browser_runtime::set_proxy(proxy.clone());
-    let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None, inbound: inbound_tx, tray: None, application_menu: None, work_at: None, hatch_owner: None, dock };
+    let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None, inbound: inbound_tx, tray: None, application_menu: None, work_at: None, hatch_owner: None, dock, finish: finish_work::FinishWork::new(finish_work_native::native()) };
     let mut urls_rx = Some(urls_rx);
     let _ = port;
     let mut launch_acknowledged = false;
@@ -988,6 +1049,7 @@ fn main() -> ExitCode {
         event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now()+wait));
         let status = event_loop.pump_app_events(Some(wait), &mut host);
         if let PumpStatus::Exit(code) = status {
+            host.release_finish_work();
             break code;
         }
         // A NUS_SHOT script that has run out: leave, the pictures are on disk.
@@ -1000,8 +1062,28 @@ fn main() -> ExitCode {
         if let Some(rx) = urls_rx.as_ref() {
             let focused = host.focused;
             let idx = host.apps.iter().position(|a| Some(a.window.id()) == focused).or(if host.apps.is_empty() { None } else { Some(0) });
+            let mut rest = Vec::new();
+            for inbound in rx.try_iter() {
+                match inbound {
+                    // An assistant's hook: to whichever window has its pane.
+                    little::Inbound::Request(req) if req.cmd == "agent" => {
+                        let reply = if !req.origin.allows(&req.cmd) {
+                            serde_json::json!({ "ok": false, "error": "agent is not available from the phone" })
+                        } else if private::enabled() {
+                            serde_json::json!({ "ok": false, "error": "unavailable in incognito" })
+                        } else {
+                            match agent::route(&mut host.apps, &req.args) {
+                                Ok(v) => serde_json::json!({ "ok": true, "result": v }),
+                                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                            }
+                        };
+                        let _ = req.reply.send(reply);
+                    }
+                    other => rest.push(other),
+                }
+            }
             if let Some(a) = idx.and_then(|i| host.apps.get_mut(i)) {
-                for inbound in rx.try_iter() {
+                for inbound in rest {
                     match inbound {
                         little::Inbound::Url(url) => {
                             a.open_little(&url);

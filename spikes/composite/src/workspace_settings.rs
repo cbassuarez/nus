@@ -9,6 +9,8 @@ use crate::{
 pub enum Hit {
     AssistantTab(usize),
     Tools(u8),
+    /// Connect (true) or disconnect an assistant's hooks: the Ledger's feed.
+    Hooks(u8, bool),
     Check,
     Default(u8),
     Draft(u8),
@@ -68,6 +70,7 @@ pub fn label(h: Hit) -> String {
             "Review {} connection to nus tools",
             assistants::NAMES[i as usize]
         ),
+        Hit::Hooks(i, on) => format!("{} {} status hooks", if on { "Connect" } else { "Disconnect" }, assistants::NAMES[i as usize]),
         Hit::AssistantTab(i) => format!(
             "Assistants · {}",
             ["Connections", "Work", "Context", "Advanced"][i]
@@ -160,6 +163,7 @@ impl App {
     pub(super) fn apply_workspace_setting(&mut self, h: Hit) {
         match h {
             Hit::Tools(i) => self.review_assistant_tools(i),
+            Hit::Hooks(i, on) => self.review_assistant_hooks(i, on),
             Hit::AssistantTab(i) => {
                 self.assistants.tab = i;
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left)
@@ -332,45 +336,36 @@ impl App {
     }
     pub(super) fn prompt_settings(&self) -> Vec<(String, Control)> {
         let c = &self.behavior.prompt;
-        let mut rows=vec![info("Your Home prompt and command palette share these sources and routing rules. Choose a starting point, then shape the mix."),
-   ("STARTING POINT".into(),strip(Preset::ALL.into_iter().map(|p|(p.name(),Hit::PromptPreset(p),c.matches(p))).collect())),
-   ("HOME PREVIEW".into(),Control::PromptProof),
-   ("ENTER WITH NO SUGGESTION SELECTED".into(),strip(Route::ALL.into_iter().map(|r|(r.name(),Hit::Route(r),c.route==r)).collect())),
-   info("Explicit routes always work: > command, ? web search, @claude prompt, @codex prompt, @ollama prompt. Assistant prompts open a review before sending. Home always opens this surface."),
+        let mut rows=vec![info("The Home prompt and the command palette show suggestions from these sources. Pick a starting point, then adjust the mix. The preview shows your real suggestions; point at anything about typing to see what appears while you type."),
+   ("START FROM A PRESET".into(),strip(Preset::ALL.into_iter().map(|p|(p.name(),Hit::PromptPreset(p),c.matches(p))).collect())),
+   ("WHAT'S SUGGESTED".into(),Control::Section),
+   ("".into(),Control::Sources(c.ordered().into_iter().map(|s|(s.source,s.home,s.search,s.count)).collect())),
+   info("Before typing: what Home lists on an empty line. While typing: what's searched as you type. How many: the most from each source. Empty sources take no space."),
+   ("MOST BEFORE TYPING".into(),Control::Stepper(c.home_limit.to_string(),hit(Hit::Limit(true,-1)),hit(Hit::Limit(true,1)))),
+   ("MOST WHILE TYPING".into(),Control::Stepper(c.search_limit.to_string(),hit(Hit::Limit(false,-1)),hit(Hit::Limit(false,1)))),
+   ("PRESSING ENTER".into(),Control::Section),
+   ("WITH NO SUGGESTION PICKED, ENTER".into(),strip(Route::ALL.into_iter().map(|r|(match r { Route::Automatic=>"Opens a URL, else runs it", Route::Shell=>"Runs it in a shell", Route::Web=>"Searches the web", Route::Assistant=>"Asks your assistant" },Hit::Route(r),c.route==r)).collect())),
+   info("Prefixes always win: > runs a command, ? searches the web, @claude, @codex or @ollama asks that assistant (you review the prompt before it's sent)."),
    ("SEARCH ENGINE".into(),strip(SearchEngine::ALL.into_iter().map(|e|(e.name(),Hit::Engine(e),c.engine==e)).collect())),
    info(match c.engine {
-       SearchEngine::Custom if c.search_url.contains("%s") => format!("? and the search row ask {} · %s stands for the words.", c.search_url),
-       SearchEngine::Custom => "Custom needs a template with %s where the words go, such as https://example.com/search?q=%s · until then Google answers.".to_string(),
-       e => format!("? and the search row under the line ask {} · words that are not an address still run in a shell unless Enter routes to web search.", e.name()),
+       SearchEngine::Custom if c.search_url.contains("%s") => format!("Searches go to {} (%s is where your words go).", c.search_url),
+       SearchEngine::Custom => "Custom needs an address with %s where the words go, like https://example.com/search?q=%s. Until then, Google answers.".to_string(),
+       e => format!("Web searches go to {}.", e.name()),
    }),
-   (String::new(),buttons(vec![("Edit custom engine",Hit::EditSearchUrl)])),
-   ("LAYOUT".into(),strip(vec![("Wide",Hit::Layout(0),c.wide),("Compact",Hit::Layout(1),c.compact),("Near top",Hit::Layout(2),c.top),("Route keys",Hit::Layout(3),c.hints)])),
-   info("Route keys are the marks at the foot of Home: a shell, a page, an assistant, the rows. The one Enter would take is lit, the pointer names each, and a click puts its prefix on the line. Turn them off for a bare line."),
-   (format!("HOME · {} RESULTS",c.home_limit),buttons(vec![("Fewer",Hit::Limit(true,-1)),("More",Hit::Limit(true,1))])),
-   (format!("SEARCH · {} RESULTS",c.search_limit),buttons(vec![("Fewer",Hit::Limit(false,-1)),("More",Hit::Limit(false,1))])),
-   ("SOURCES · IN DISPLAY ORDER".into(),Control::Caption),info("Home controls the suggestions before you type. Search controls matching suggestions as you type. Empty sources take no space. Reorder with Up and Down; the limit applies per source.")];
-        for s in c.ordered() {
-            rows.push((
-                format!("{} · LIMIT {}", s.source.name().to_uppercase(), s.count),
-                strip(vec![
-                    ("Home", Hit::Source(s.source, 0), s.home),
-                    ("Search", Hit::Source(s.source, 1), s.search),
-                    ("Up", Hit::Move(s.source, -1), false),
-                    ("Down", Hit::Move(s.source, 1), false),
-                    ("−", Hit::Count(s.source, -1), false),
-                    ("+", Hit::Count(s.source, 1), false),
-                ]),
-            ));
-        }
+   (String::new(),buttons(vec![("Set a custom search address",Hit::EditSearchUrl)])),
+   ("HOW IT LOOKS".into(),Control::Section),
+   ("LAYOUT".into(),strip(vec![("Full width",Hit::Layout(0),c.wide),("Tighter rows",Hit::Layout(1),c.compact),("Line near the top",Hit::Layout(2),c.top),("Hints at the bottom",Hit::Layout(3),c.hints)])),
+   info("Each is on or off. Hints at the bottom shows where Enter will go (shell, web, assistant) and lets you click one to switch."),
+   ("SAVED COMMANDS".into(),Control::Section)];
         rows.extend(self.saved_options());
-        rows.push(("YOUR COLLECTION".into(), buttons(vec![("Manage saved commands",Hit::SavedLibrary),("Add command",Hit::Pin)])));
+        rows.push(("YOUR COLLECTION".into(), buttons(vec![("Manage saved commands",Hit::SavedLibrary),("Add a command",Hit::Pin)])));
         rows.push((String::new(), buttons(vec![("Open Home", Hit::Home)])));
         rows
     }
     fn saved_options(&self) -> Vec<(String,Control)> {
         let c=&self.behavior.prompt;
-        vec![("SAVED COMMANDS · PRESENTATION".into(),strip(vec![("Command previews",Hit::SavedOption(0),c.saved_preview),("Collection entry",Hit::SavedOption(1),c.saved_library)])),
-            ("ACTIVATE A SAVED SHELL COMMAND".into(),strip(vec![("Insert for review",Hit::SavedRun(false),!c.saved_run),("Run immediately",Hit::SavedRun(true),c.saved_run)])),
+        vec![("SHOW IN SUGGESTIONS".into(),strip(vec![("The command under its name",Hit::SavedOption(0),c.saved_preview),("A “Saved commands” entry",Hit::SavedOption(1),c.saved_library)])),
+            ("PICKING A SAVED SHELL COMMAND".into(),strip(vec![("Puts it on the line to review",Hit::SavedRun(false),!c.saved_run),("Runs it right away",Hit::SavedRun(true),c.saved_run)])),
             info("Saved items keep their bookmark mark and action label. Insert opens a terminal with the command ready to edit; Run executes it. URLs open normally and assistant prompts still open a review.")]
     }
     pub(super) fn saved_settings(&self) -> Vec<(String,Control)> {
@@ -395,6 +390,8 @@ impl App {
    (String::new(),strip(["Connections","Work","Context","Advanced"].into_iter().enumerate().map(|(i,n)|(n,Hit::AssistantTab(i),self.assistants.tab==i)).collect()))];
         match self.assistants.tab {
             0 => {
+                rows.push(("INTELLIGENCE".into(), Control::Intelligence));
+                rows.push(info("One level for every launch. Claude on Auto picks its model from it and every level sets its effort; Codex gets the matching reasoning effort. Drag the ring, tap either side of it, or drag around the dial in the preview; click the nucleus for the next Claude model. Launching, ⌥← and ⌥→ turn it."));
                 rows.push((
                     "CONNECTIONS".into(),
                     buttons(vec![(
@@ -432,10 +429,10 @@ impl App {
                         format!(
                             "MODEL · {}",
                             if config.model.is_empty() {
-                                if i == 2 {
-                                    "choose a model"
-                                } else {
-                                    "provider default"
+                                match i {
+                                    0 => "auto · follows intelligence",
+                                    1 => "provider default",
+                                    _ => "choose a model",
                                 }
                             } else {
                                 &config.model
@@ -574,6 +571,14 @@ impl App {
                             }
                         ),
                         buttons(vec![("Review tool connection", Hit::Tools(i as u8))]),
+                    ));
+                }
+                rows.push(("STATUS IN THE SIDEBAR".into(),Control::Info("Hooks let Claude and Codex tell nus what they are doing — working, waiting on a permission, done — so the tab says so and you can answer from the sidebar. nus adds its hooks beside your own and takes only those out again; outside nus they do nothing.".into())));
+                for i in 0..2u8 {
+                    let on = assistants::hooks_connected(i);
+                    rows.push((
+                        format!("{} · {}", assistants::NAMES[i as usize], if on { "connected" } else { "not connected" }),
+                        buttons(vec![if on { ("Disconnect", Hit::Hooks(i, false)) } else { ("Connect", Hit::Hooks(i, true)) }]),
                     ));
                 }
                 rows.push(("SAVED INSTRUCTIONS".into(),Control::Info("Claude and Codex load their own workspace instruction files. nus skills can add reusable prompts and context to the Ask panel.".into())));

@@ -57,6 +57,9 @@ impl App {
             CrumbHit::Maximize => if cfg!(target_os="macos") {"enter full screen"} else {"maximize window"}.into(),
             CrumbHit::Minimize => "minimize window".into(),
             CrumbHit::Start => "atlas: last session and recent places".into(),
+            CrumbHit::Agents => { let (w, k) = self.agent_counts(); format!("assistants: {w} waiting, {k} working") }
+            CrumbHit::Nus => if self.home_latch.is_some() { "back to where you were".into() } else { "home".into() },
+            CrumbHit::FinishWork => crate::finish_work::tooltip(crate::finish_work::view().phase, crate::finish_work::view().capability),
             CrumbHit::Updates => {let s=crate::updates::status();if s.busy{"Update in progress. View status"}else if s.available{"Update ready. Review update and restart"}else{"Updates. Check for a new version"}.into()},
         }
     }
@@ -152,9 +155,10 @@ impl App {
                 S::Settings => "settings".into(),
                 S::TabRename(i) => format!("rename tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::TabIcon(_) => "tab icon".into(),
-                S::TabColour(_, 0) => "tab colour: none".into(),
-                S::TabColour(_, k) => format!("tab colour {}", crate::surface::SWATCHES.get(k - 1).map(|s| s.0).unwrap_or("")),
+                S::TabColour(_, 0) => "tab color: none".into(),
+                S::TabColour(_, k) => format!("tab color {}", crate::surface::SWATCHES.get(k - 1).map(|s| s.0).unwrap_or("")),
                 S::TabPin(i) => (if self.tabs.get(i).map(|t| t.pinned).unwrap_or(false) { "unpin tab" } else { "pin tab" }).into(),
+                S::Answer(i, a) => format!("{} for tab {}", match a { crate::agent::Answer::Allow => "allow", crate::agent::Answer::Deny => "deny", crate::agent::Answer::Always => "always allow" }, i + 1),
                 S::TabClose(i) => format!("close tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::TabFolder(_) => "save to a folder".into(),
                 S::Folder(fi) => format!("folder {}", self.folders.get(fi).map(|f| f.name.clone()).unwrap_or_default()),

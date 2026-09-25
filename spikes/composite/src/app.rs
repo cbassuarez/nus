@@ -160,6 +160,19 @@ pub enum Action {
     AttachHeld(String),
     /// STARTUP · THEN · HOME PAGE, set from the palette.
     SetHome(String),
+    /// A page pinned to the sidebar by its address, without visiting it.
+    PinUrl(String),
+    /// The active tab, pinned (the palette's `pin` with no address).
+    PinActive,
+    /// Any open tab, pinned by id, without going to it (`pin <its name>`).
+    PinTab(u64),
+    /// The layout's history (the pane director).
+    PaneUndo,
+    PaneRedo,
+    /// A pane op from the palette, on the active tab.
+    Pane(crate::director::Op),
+    /// The focused pane (or tab) to another window, or a new one.
+    SendTo(crate::send::Dest),
     /// PROMPT · SEARCH ENGINE: a template of your own, from the palette.
     SetSearch(String),
     /// What is open now becomes the launch tabs.
@@ -204,6 +217,12 @@ pub enum CrumbHit {
     Minimize,
     Start,
     Updates,
+    /// The wordmark: home, latched (home.rs).
+    Nus,
+    /// The strip's assistant count: to the one waiting (ledger.rs).
+    Agents,
+    /// Finish Work: the coffee, on laptops (finish_work.rs).
+    FinishWork,
 }
 
 #[derive(Clone)]
@@ -264,6 +283,16 @@ pub struct TermPane {
     /// Most recent shell-marked command; updated on marks, not polled from scrollback.
     pub work_command: String,
     pub work_completed: bool,
+    /// The running command's generation (finish_work.rs), from the shell's
+    /// start mark to its end mark; and how the user started it, if they did.
+    pub work_id: Option<u64>,
+    pub work_origin: Option<crate::finish_work::Origin>,
+    /// The user's own submission, waiting for the shell to say a command
+    /// started: Enter at the prompt, or a click that typed the command.
+    pub armed: Option<(Instant, crate::finish_work::Origin)>,
+    /// Who asked for `type_at_prompt`: the user (Home, Run again, a saved
+    /// command, a port action) or nobody (a restore re-running something).
+    pub type_origin: Option<crate::finish_work::Origin>,
     /// A command that took a while just finished: (exit, when) for the badge.
     pub done: Option<(Option<i32>, Instant)>,
     /// A paste waiting for a yes (many lines, or control characters).
@@ -286,6 +315,16 @@ pub struct TermPane {
     /// the mark count it was read at.
     pub program: String,
     pub program_marks: usize,
+    /// The assistant at work here, as the Ledger shows it (agent.rs).
+    pub agent: Option<crate::agent::Agent>,
+    /// A program's last notification (OSC 9 / 777), until it is seen.
+    pub notice: Option<String>,
+    /// This pane's name for `nus hook`: exported to its shell as NUS_PANE.
+    pub pane_uid: String,
+    /// An ssh profile's host: this whole pane is somewhere else.
+    pub ssh_host: Option<String>,
+    /// The folder the shell opened in, for SHELL COLORS · BY FOLDER.
+    pub opened_in: Option<String>,
     pub chip_hits: Vec<(Rect, usize)>,
     /// The command a restart killed, drawn at the seam after the snapshot.
     pub cutoff: Option<crate::cutoff::CutOff>,
@@ -376,9 +415,16 @@ pub struct WebPane {
     pub asleep: Option<String>,
     /// Wheel fractions not yet handed to the page (scrolling.rs).
     pub wheel_carry: (f32, f32),
-    /// A sideways swipe in progress: how far (logical px, + = back),
-    /// and when it last moved. Past the threshold it is back or forward.
-    pub swipe: Option<(f32, Instant)>,
+    /// A sideways swipe in progress (swipe.rs).
+    pub swipe: Option<crate::swipe::Swipe>,
+    /// When it went to sleep, for the waking transcript.
+    pub slept: Option<Instant>,
+    /// When it was woken: a page back within a moment never shows the
+    /// waking transcript, so it doesn't flicker.
+    pub woke: Option<Instant>,
+    /// The overlay transcript's highlighted command, and its rows as drawn.
+    pub overlay_sel: usize,
+    pub overlay_hits: Vec<(Rect, String)>,
 }
 
 pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::icons::CONSOLE), ("network", nus_render::text::icons::NETWORK), ("elements", nus_render::text::icons::CODE)];
@@ -435,6 +481,8 @@ pub enum Pane {
 /// Sidebar click targets besides tab rows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SideHit {
+    /// The Ledger: an answer to the tab's assistant (ledger.rs).
+    Answer(usize, crate::agent::Answer),
     Close(usize),
     Profile,
     NewTab,
@@ -659,6 +707,9 @@ pub struct Tab {
     pub solo: bool,
     /// Colours the rules gave this tab.
     pub look: Overrides,
+    /// A shell stack's place in the signal's family (shell_colors.rs); the
+    /// color is worked out from it and the theme.
+    pub shell_slot: Option<u8>,
 }
 
 impl Tab {
@@ -828,6 +879,7 @@ pub struct App {
     pub access_map: std::collections::HashMap<u64, crate::access::Target>,
     /// Palette row rects from the last frame (clicks, AccessKit).
     pub palette_hits: Vec<Rect>,
+    pub intel: crate::intelligence::Dial,
     pub palette_scroll: f32,
     pub palette_scroll_max: f32,
     pub palette_reveal: bool,
@@ -841,6 +893,8 @@ pub struct App {
     /// Ask the host for the hatch window: where and how big (physical px).
     pub hatch_request: Option<((i32, i32), (u32, u32))>,
     pub hotkey: Option<crate::hotkey::Hotkey>,
+    /// HATCH · HOTKEY · RECORD: the next chord pressed becomes the hotkey.
+    pub hotkey_recording: bool,
     pub little_pos: (f32, f32),
     /// URLs handed over by later launches (see little::claim).
     pub urls_rx: Option<std::sync::mpsc::Receiver<String>>,
@@ -885,7 +939,20 @@ pub struct App {
     pub drag_armed: Option<(usize, f32, f32)>,
     /// Two to four tabs sharing the content, and a divider being dragged.
     pub tiling: Option<crate::tiles::Tiling>,
-    pub tile_drag: Option<crate::tiles::Divider>,
+    /// Every layout change goes through here, and can be taken back.
+    pub director: crate::director::Director,
+    /// What a divider drag started from, recorded for undo when it ends.
+    pub drag_from: Option<crate::director::Op>,
+    /// Pane mode (Ctrl+Alt+P): single keys drive the director.
+    pub pane_mode: bool,
+    /// A tiling set aside by zoom, to come back on the next zoom.
+    pub pane_zoomed: Option<crate::tiles::Tiling>,
+    /// A sidebar row press: the tab that was active before it, and where
+    /// the press was across, so a drag can show that tab to drop beside.
+    pub row_host: Option<(usize, f32)>,
+    /// A tab (by id) this window gives up, and where to; the host moves it.
+    pub send_request: Option<(u64, crate::send::Dest)>,
+    pub tile_drag: Option<crate::tiles::Grab>,
     /// The pointer is a resize arrow over a divider.
     pub resize_cursor: Option<crate::tiles::Divider>,
     pub peek_anim: Anim,
@@ -957,8 +1024,13 @@ pub struct App {
     /// Last keystroke into a shell, for blink-after-idle and pointer hiding.
     pub last_key: Instant,
     pub pointer_hidden: bool,
-    pub pointer_request: Option<crate::settings::Pointer>,
+    pub pointer_reset: bool,
     pub blink_half: u64,
+    /// A slow clock the last frame asked for, in ms (a breathing mark, a
+    /// ticking count): App::tick redraws when it comes round, instead of
+    /// the drawing asking for every frame. And the slot it last fired.
+    pub beat_want: Option<u64>,
+    pub beat_slot: u64,
     /// The launch sequence's "then" has run.
     pub then_done: bool,
     pub window_rect: Option<(i32, i32, u32, u32)>,
@@ -1000,6 +1072,10 @@ pub struct App {
     /// The machine's processes, sampled once an art asks (procs.rs).
     pub procs: Option<crate::procs::Shared>,
     pub toast_anim: Anim,
+    /// A toast that arrived while a problem was up, waiting for it to go.
+    pub toast_held: Option<crate::toast::Toast>,
+    /// The nus button, held down over home (home.rs).
+    pub home_latch: Option<crate::home::Latch>,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
     pub shot: Option<crate::shot::Shot>,
     /// Remote answers waiting on the page (see remote.rs).
@@ -1031,6 +1107,12 @@ pub struct App {
     pub load_bar: LoadBar,
     /// 0 hidden … 1 shown, for the hover sidebar.
     pub sidebar_anim: Anim,
+    /// A pin on its way in: it slides over the content as the hover sidebar
+    /// does, and the layout makes room once, when it lands, rather than
+    /// resizing every page on every frame.
+    pub sidebar_arriving: bool,
+    /// The surface tint the theme was last made legible on (base, amount).
+    pub legible_on: (Option<nus_render::Color>, f32),
     /// 0 … 1 rise-and-fade for the palette.
     pub palette_anim: Anim,
     /// 0 … 1 drop for confirmation bands.
@@ -1197,6 +1279,7 @@ impl App {
             settings_hits: Vec::new(),
             access_map: std::collections::HashMap::new(),
             palette_hits: Vec::new(),
+            intel: Default::default(),
             palette_scroll: 0.0,
             palette_scroll_max: 0.0,
             palette_reveal: true,
@@ -1207,6 +1290,7 @@ impl App {
             menu_drawer: crate::menu_drawer::State::default(),
             hatch_request: None,
             hotkey: None,
+            hotkey_recording: false,
             little_pos: (0.0, 0.0),
             urls_rx: None,
             register_note: String::new(),
@@ -1236,6 +1320,12 @@ impl App {
             tab_menu_anim: Anim::at(0.0),
             tab_menu_last: None,
             tiling: None,
+            director: Default::default(),
+            drag_from: None,
+            pane_mode: false,
+            pane_zoomed: None,
+            row_host: None,
+            send_request: None,
             tile_drag: None,
             resize_cursor: None,
             peek_anim: Anim::at(0.0),
@@ -1289,8 +1379,10 @@ impl App {
             tok_sel: crate::settings::TokSel::Signal,
             last_key: crate::clock::now(),
             pointer_hidden: false,
-            pointer_request: None,
+            pointer_reset: false,
             blink_half: 0,
+            beat_want: None,
+            beat_slot: 0,
             then_done: false,
             window_rect: None,
             atlas_used: false,
@@ -1313,6 +1405,8 @@ impl App {
             plate: None,
             toast: None,
             toast_anim: Anim::at(0.0),
+            toast_held: None,
+            home_latch: None,
             page_menu: None,
             art: None,
             art_previews: std::collections::HashMap::new(),
@@ -1336,7 +1430,9 @@ impl App {
             pointer_inside: false,
             motion: Motion::default(),
             load_bar: LoadBar::default(),
-            sidebar_anim: Anim::at(0.0),
+            sidebar_anim: Anim::at_on(0.0, crate::anim::Curve::Glide),
+            sidebar_arriving: false,
+            legible_on: (None, 0.0),
             palette_anim: Anim::at(1.0),
             band_anim: Anim::at(1.0),
             tint_anim: Anim::at(0.0),
@@ -1406,6 +1502,8 @@ impl App {
         app.behavior = prefs.behavior.clone().unwrap_or_default();
         // A second window: one shell, no splash, no session restore, no name.
         let onboarded = App::onboarded();
+        // Profiles welcomed before the ledger existed count for their version.
+        if onboarded && !secondary { crate::install::mark_version_welcomed(); }
         if let Some(sp)=app.splash.as_mut() {sp.arrival=!secondary && !onboarded && !std::path::Path::new("profile/arrival-seen").is_file();}
         // Do not start a held shell just to replace it with a page. Those
         // hidden shells survive the app and used to accumulate on every launch.
@@ -1417,16 +1515,25 @@ impl App {
         // NUS_SHELL=<profile name> picks the first shell (a test hook).
         let first = std::env::var("NUS_SHELL").ok().and_then(|n| app.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(&n))).unwrap_or(app.behavior.default_profile.min(app.profiles.len().saturating_sub(1)));
         // A second window's shell is born in the asking window's folder.
-        if !secondary && !onboarded {
+        // A fresh install walks through the profile first (me.rs), in the
+        // big card the arrival draws; Welcome comes when that is done. A
+        // profile that finished the walk before only needs Welcome.
+        let first_walk = !secondary && !onboarded && (app.me.is_none() || !crate::me::agreed());
+        if !secondary && !onboarded && !first_walk {
             let welcome = app.make_tab(Pane::Hints(HintsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), scroll: 0.0 }), None);
             app.tabs.push(welcome);
             app.then_done = true;
             app.start_shown = true;
-            // Opening Welcome does not complete onboarding. Resume it until
-            // the user chooses Get started; exercises remain optional.
-            let _ = std::fs::create_dir_all("profile");
-            let _ = std::fs::write("profile/onboarding-pending", b"1");
+            // Welcome is shown once. Quitting without Get started must not
+            // bring it back in place of the start page and the kept session;
+            // it stays one click away in Settings.
             app.save_hints();
+            crate::install::complete();
+        } else if first_walk {
+            let home = app.make_tab(Pane::Home(crate::home::HomePane::new()), None);
+            app.tabs.push(home);
+            app.then_done = true;
+            app.start_shown = true;
         } else {
             let pane = if needs_shell {
                 Pane::Term(app.new_term_pane_at(false, first, if secondary { born_in.clone() } else { None })?)
@@ -1437,8 +1544,8 @@ impl App {
         app.apply_prefs(prefs);
         // The primary fresh/incomplete installation enters the existing profile
         // flow. The arrival is drawn above it; secondary windows never repeat it.
-        if !secondary && !onboarded && app.me.is_none() {
-            app.open_me_card();
+        if first_walk {
+            app.open_first_walk();
         }
         // The hatch's global hotkey: the first window registers it; a
         // second Space shares it (main routes the event to the focused one).
@@ -1588,8 +1695,23 @@ impl App {
             };
         }
         let is_ssh = profile.program.rsplit(['/', '\\']).next().unwrap_or("").trim_end_matches(".exe") == "ssh";
+        let ssh_host = if is_ssh { crate::ssh::host_of(&profile.args) } else { None };
+        let opened_in = profile.cwd.clone();
         let on = if is_ssh { self.behavior.shell_integration && self.behavior.ssh_integration } else { self.behavior.shell_integration };
-        let profile = crate::shell::integrate(profile, on);
+        let mut profile = crate::shell::integrate(profile, on);
+        // Who this shell is, for whatever runs in it: `nus hook` finds its
+        // way home with these (agent.rs). Not over ssh — they mean nothing there.
+        let pane_uid = crate::agent::mint_pane();
+        if !is_ssh {
+            profile.env.push(("NUS_PANE".into(), pane_uid.clone()));
+            profile.env.push(("TERM_PROGRAM".into(), "nus".into()));
+            if let Ok(dir) = std::env::current_dir() {
+                profile.env.push(("NUS_INSTANCE".into(), dir.join("profile").join("instance").to_string_lossy().into_owned()));
+            }
+            if let Some(cli) = crate::assistants::nus_cli() {
+                profile.env.push(("NUS_CLI".into(), cli.to_string_lossy().into_owned()));
+            }
+        }
         let proxy = self.proxy.clone();
         // Held when the setting says so and the holder is there; else ours.
         let held = self.behavior.keep_alive == crate::settings::KeepAlive::On && nus_pty::hold::holder_exe().is_some();
@@ -1635,6 +1757,10 @@ impl App {
             last_exit: None,
             work_command: String::new(),
             work_completed: false,
+            work_id: None,
+            work_origin: None,
+            armed: None,
+            type_origin: None,
             done: None,
             confirm_paste: None,
             ask: None,
@@ -1650,6 +1776,11 @@ impl App {
             plsp_tried: false,
             program: String::new(),
             program_marks: usize::MAX,
+            agent: None,
+            notice: None,
+            pane_uid,
+            ssh_host,
+            opened_in,
             chip_hits: Vec::new(),
             cutoff: None,
             cutoff_hit: None,
@@ -1713,6 +1844,10 @@ impl App {
             dedupe_label: String::new(),
             dedupe_hits: Vec::new(), hands: Default::default(), still: None, bare: false, site_panel: false, site_hits: Vec::new(),
             asleep: None,
+            slept: None,
+            woke: None,
+            overlay_sel: 0,
+            overlay_hits: Vec::new(),
             wheel_carry: (0.0, 0.0),
             swipe: None,
             load_since: None,
@@ -1752,7 +1887,7 @@ impl App {
 
     /// Pinned open: the user's pin, or the fullscreen rule. Never below Wide.
     pub fn sidebar_pinned(&self) -> bool {
-        if self.width_class() != Width::Wide || self.focus {
+        if self.sidebar_arriving || self.width_class() != Width::Wide || self.focus {
             return false;
         }
         if self.fullscreen {
@@ -1809,7 +1944,7 @@ impl App {
 
     pub(crate) fn content_rect(&self) -> Rect {
         let (st, sr, sb, sl) = self.shell_insets();
-        let top = st + if self.compact() || self.focus { 0.0 } else { self.px(m::TOP_STRIP) + self.px(m::STRUCTURE) };
+        let top = st + if self.focus { 0.0 } else { self.px(m::TOP_STRIP) + self.px(m::STRUCTURE) };
         let taken = if self.sidebar_pinned() { self.sidebar_w() + self.px(m::STRUCTURE) } else if self.focus { 0.0 } else { self.px(4.0) };
         let (left, right) = if self.sidebar_right() { (sl, sr + taken) } else { (sl + taken, sr) };
         Rect::new(left, top, self.target.size.0 as f32 - left - right, self.target.size.1 as f32 - top - sb)
@@ -1829,12 +1964,37 @@ impl App {
     }
 
     pub(crate) fn sidebar_visible(&self) -> bool {
-        self.sidebar_pinned() || self.sidebar_hover
+        self.sidebar_pinned() || self.sidebar_hover || self.sidebar_arriving
+    }
+
+    /// Pin or unpin. Opening slides in over the content and makes room when
+    /// it lands; closing gives the room back at once and slides out over it.
+    pub(crate) fn toggle_sidebar(&mut self) {
+        let arriving = std::mem::take(&mut self.sidebar_arriving);
+        let was = arriving || self.sidebar_pinned();
+        self.sidebar = !self.sidebar;
+        let now = self.sidebar_pinned();
+        if !was && now {
+            self.sidebar_arriving = true;
+        } else if was && !now && !arriving {
+            // Mid-arrival it simply turns round from where it is.
+            self.sidebar_anim = Anim::at_on(1.0, crate::anim::Curve::Glide);
+        }
+        self.layout();
+        self.dirty = true;
     }
 
     /// The paper the chrome draws on (theme paper tinted by the surface).
     pub fn paper(&self) -> nus_render::Color {
-        self.surface.paper(self.theme.paper)
+        // Already tinted by the surface: see `set_mode` and `theme_edit::legible`.
+        self.theme.paper
+    }
+
+    /// The colour for words on a `fill`: paper or ink, whichever reads
+    /// better, made to reach 4.5:1. A button that fills on hover asks this
+    /// so its label flips with the fill, whatever the fill turns out to be.
+    pub(crate) fn on_fill(&self, fill: nus_render::Color) -> nus_render::Color {
+        nus_render::oklch::on(fill, self.theme.paper, self.theme.ink, 4.5)
     }
 
     pub fn toggle_fullscreen(&mut self) {
@@ -1932,6 +2092,11 @@ impl App {
 
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
+        // The page's tint moved (a slider, a preset, a rule): the words
+        // are made to read on the new paper.
+        if self.legible_on != (self.surface.base, self.surface.tint) {
+            self.set_mode(self.theme.mode);
+        }
         self.sync_native_fullscreen();
         // AppKit can relayout its titlebar after a resize/fullscreen animation,
         // even when our GPU scene has no reason to redraw.
@@ -1997,6 +2162,11 @@ impl App {
                     if t.type_at_prompt.is_some() && t.term.at_prompt() {
                         if let Some(text) = t.type_at_prompt.take() {
                             let _ = t.pty.write(text.as_bytes());
+                            // Only what the user asked for may later keep the
+                            // machine awake; a restore's re-run may not.
+                            if let Some(origin) = t.type_origin.take() {
+                                t.armed = Some((crate::clock::now(), origin));
+                            }
                         }
                     }
                 }
@@ -2113,6 +2283,14 @@ impl App {
         if self.win_anim.active() || self.kinds_anim.active() || self.flash_anim.active() || self.rail_anim.active() || self.look_anim.active() || self.dl_anim.active() || self.tab_menu_anim.active() {
             self.dirty = true;
         }
+        // A slow clock the last frame asked for: a frame when it turns.
+        if let Some(ms) = self.beat_want {
+            let slot = (crate::clock::since(self.started).as_millis() / ms.max(16) as u128) as u64;
+            if slot != self.beat_slot {
+                self.beat_slot = slot;
+                self.dirty = true;
+            }
+        }
         // A blinking cursor wants a frame at each half period.
         let blinking = match self.cursor.blink {
             crate::settings::Blink::Never => false,
@@ -2147,11 +2325,18 @@ impl App {
     /// Point every animation at its current target (rows, tint, sidebar,
     /// loading bars). Cheap; runs each loop.
     fn sync_anims(&mut self) {
-        let hover_dur = self.motion.dur(base::SIDEBAR);
+        let hover_dur = self.motion.travel(base::SIDEBAR);
         let row_dur = self.motion.dur(base::ROW);
-        // Hover sidebar: shown while hovered and not pinned.
-        let want = if self.sidebar_hover && !self.sidebar_pinned() { 1.0 } else { 0.0 };
+        // Hover sidebar: shown while hovered (or arriving to pin) and not pinned.
+        let want = if (self.sidebar_hover || self.sidebar_arriving) && !self.sidebar_pinned() { 1.0 } else { 0.0 };
         self.sidebar_anim.go(want, hover_dur);
+        if self.sidebar_arriving && !self.sidebar_anim.active() && self.sidebar_anim.value() >= 0.999 {
+            // Landed: the pin takes over and the content makes room once.
+            self.sidebar_arriving = false;
+            if self.sidebar_pinned() { self.sidebar_anim = Anim::at_on(0.0, crate::anim::Curve::Glide); }
+            self.layout();
+            self.dirty = true;
+        }
         // Row heights.
         let compact = self.px(m::ROW_H);
         let ids: Vec<(u64, f32)> = (0..self.tabs.len())
@@ -2334,52 +2519,6 @@ impl App {
         crate::reader::ReaderFonts { serif: self.f.serif, serif_italic: self.f.wordmark, mono: self.f.term, mono_strong: self.f.term }
     }
 
-    /// A 32×32 pointer: an ink arrow with a paper edge, or a signal dot.
-    pub fn pointer_image(&self, p: crate::settings::Pointer) -> (Vec<u8>, (u16, u16)) {
-        let ink = self.theme.ink;
-        let paper = self.theme.paper;
-        let sig = self.surface.signal;
-        let mut px = vec![0u8; 32 * 32 * 4];
-        let put = |px: &mut Vec<u8>, x: i32, y: i32, c: nus_render::Color, a: f32| {
-            if !(0..32).contains(&x) || !(0..32).contains(&y) {
-                return;
-            }
-            let i = ((y * 32 + x) * 4) as usize;
-            px[i] = (c[0] * 255.0) as u8;
-            px[i + 1] = (c[1] * 255.0) as u8;
-            px[i + 2] = (c[2] * 255.0) as u8;
-            px[i + 3] = (a * 255.0) as u8;
-        };
-        match p {
-            crate::settings::Pointer::SignalDot => {
-                for y in 0..32 {
-                    for x in 0..32 {
-                        let d = (((x - 8) as f32).powi(2) + ((y - 8) as f32).powi(2)).sqrt();
-                        if d < 7.5 {
-                            put(&mut px, x, y, sig, 1.0);
-                        } else if d < 9.0 {
-                            put(&mut px, x, y, paper, (9.0 - d).clamp(0.0, 1.0));
-                        }
-                    }
-                }
-                (px, (8, 8))
-            }
-            _ => {
-                // A classic arrow: left edge vertical, hypotenuse, a tail.
-                for y in 0..24i32 {
-                    for x in 0..18i32 {
-                        let inside = x <= y * 2 / 3 && y <= 18 || (y > 12 && y < 24 && (x as f32 - (y - 12) as f32 * 0.6).abs() < 2.5 && x > 4);
-                        let edge = inside && (x == 0 || x >= y * 2 / 3 - 1 || y >= 17 && y <= 18);
-                        if inside {
-                            put(&mut px, x, y, if edge { paper } else { ink }, 1.0);
-                        }
-                    }
-                }
-                (px, (0, 0))
-            }
-        }
-    }
-
     /// Terminal images (Kitty / iTerm2): uploaded once per image, drawn at
     /// their placements' cells.
     fn draw_term_images(&mut self, scene: &mut Scene, p: &mut TermPane) {
@@ -2489,7 +2628,7 @@ impl App {
                 let (mx, my) = self.mouse;
                 self.icon_button(scene, nus_render::text::icons::PALETTE, isz, chip.x + self.px(10.0), chip.y + self.px(6.0), self.surface.signal, chip, hover_key("colour-offer", p.pty.pid().unwrap_or(0) as usize), IconMotion::Pop);
                 if chip.contains(mx, my) {
-                    self.tip_words(chip, "the shell set colours · apply them to the look");
+                    self.tip_words(chip, "the shell set colors · apply them to the look");
                 }
                 p.colour_offer_hit = Some(chip);
             }
@@ -2552,7 +2691,7 @@ impl App {
     }
 
     /// The focused terminal pane, if the focus is on one.
-    fn focused_term(&mut self) -> Option<&mut TermPane> {
+    pub(crate) fn focused_term(&mut self) -> Option<&mut TermPane> {
         let tab = self.tabs.get_mut(self.active)?;
         match tab.focused() {
             Pane::Term(t) => Some(t),
@@ -2674,6 +2813,49 @@ impl App {
             crate::settings::CursorColor::Theme => self.theme.caret,
             _ => self.surface.signal,
         }
+    }
+
+    /// Ask for the next frame in `ms`, not now: slow marks (a breathing
+    /// square, a ticking count) need a handful of frames a second, not
+    /// every one the display offers.
+    pub(crate) fn want_beat(&mut self, ms: u64) {
+        self.beat_want = Some(self.beat_want.map_or(ms, |w| w.min(ms)));
+    }
+
+    /// A working mark's ink: breathing at ten frames a second, or still
+    /// when motion is reduced.
+    pub(crate) fn breath(&mut self) -> f32 {
+        if self.motion.reduced() {
+            return 0.6;
+        }
+        self.want_beat(100);
+        0.35 + 0.45 * (0.5 + 0.5 * (crate::clock::since(self.started).as_secs_f32() * 2.2).sin())
+    }
+
+    /// The caret of a line you type into outside a shell — the home line,
+    /// the palette — as CURSOR says: its shape (SHELL is the bar a prompt
+    /// shows), its color, its blink, its weight. `x` is where the next
+    /// character goes; `size` the text's px; `since` the last keystroke.
+    pub(crate) fn draw_line_caret(&self, scene: &mut Scene, x: f32, baseline: f32, size: f32, alpha: f32, since: Instant) {
+        use crate::settings::{Blink, CursorShapePref};
+        let blinking = match self.cursor.blink {
+            Blink::Never => false,
+            Blink::AfterIdle => crate::clock::since(since).as_secs_f32() > 2.0,
+            Blink::Always => true,
+        };
+        // App::tick asks for a frame when the blink phase changes.
+        if blinking && (crate::clock::since(self.started).as_millis() / self.cursor.period.max(100) as u128) % 2 == 1 {
+            return;
+        }
+        let color = fade(self.caret_color(), alpha);
+        let (top, h) = (baseline - size * 0.8, size * 0.98);
+        let weight = self.px(self.cursor.weight.clamp(1.0, 6.0));
+        let r = match self.cursor.shape {
+            CursorShapePref::Block => Rect::new(x, top, size * 0.56, h),
+            CursorShapePref::Underline => Rect::new(x, baseline + size * 0.14, size * 0.56, weight),
+            CursorShapePref::Beam | CursorShapePref::Shell => Rect::new(x, top, weight, h),
+        };
+        scene.rect(r, color);
     }
 
     /// The cursor as the prefs want it, for one pane.
@@ -2834,7 +3016,11 @@ impl App {
     /// Rebuild the theme for a mode from Broadsheet plus the user's edits.
     pub(crate) fn set_mode(&mut self, mode: nus_render::Mode) {
         let t = self.theme_edit.build(mode, self.surface.signal);
-        self.set_theme(t);
+        self.legible_on = (self.surface.base, self.surface.tint);
+        let paper = self.surface.paper(t.paper);
+        self.set_theme(crate::theme_edit::legible(t, paper));
+        // Shell colors come from the face and the signal: worked out again.
+        self.recolor_shells();
     }
 
     /// Re-apply the current mode (after an edit, a family change, a signal).
@@ -2858,8 +3044,8 @@ impl App {
         }
         let dest=std::env::current_dir().unwrap_or_default().join("profile/avatar.png");
         match crate::pick::image_file(&self.window,"Choose a picture for your profile",dest) {
-            Ok(pending)=>{self.avatar_pick=Some(pending);self.notice("choose a picture for your profile");},
-            Err(e)=>self.notice(&format!("the picture chooser could not open · {e}")),
+            Ok(pending)=>{self.avatar_pick=Some(pending);self.notice(nus_render::text::icons::IMAGE,"Choose A Picture","for your profile");},
+            Err(e)=>self.notice_problem("Could Not Open Chooser",e.to_string()),
         }
     }
 
@@ -2879,9 +3065,9 @@ impl App {
                 }
                 self.me_card.face = crate::me::Face::Picture;
                 self.play_event("page.ready");
-                self.notice("your face is set · profile/avatar.png");
+                self.notice(nus_render::text::icons::CHECK, "Picture Set", "profile/avatar.png");
             }
-            Err(e) => self.notice(&format!("the picture could not be saved · {e}")),
+            Err(e) => self.notice_problem("Could Not Save Picture", e.to_string()),
         }
         self.dirty = true;
     }
@@ -3022,6 +3208,7 @@ impl App {
 
     fn anims_active(&self) -> bool {
         self.sidebar_anim.active()
+            || self.intel.animating(self.motion.reduced())
             || self.palette_anim.active()
             || self.band_anim.active()
             || self.tint_anim.active()
@@ -3138,12 +3325,7 @@ impl App {
         self.theme = theme;
         self.rules.forget_programs();
         for tab in &mut self.tabs {
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
-                if let Pane::Term(t) = p {
-                    self.theme.apply(&mut t.term.palette);
-                    t.term.grid_mut().damage_all();
-                }
-            }
+            Self::fit_palette(&self.theme, tab);
         }
         self.dirty = true;
     }
@@ -3211,9 +3393,22 @@ impl App {
                                 }
                             }
                             nus_vt::Event::Bell => {
+                                t.tend_program();
+                                crate::agent::notified(&mut t.agent, None, crate::clock::now());
                                 if !looked_at {
                                     t.waiting = true;
                                     changed = true;
+                                    bell = true;
+                                }
+                            }
+                            nus_vt::Event::Notify { title, body } => {
+                                let words = match title { Some(t) if !body.is_empty() => format!("{t} · {body}"), Some(t) => t, None => body };
+                                t.tend_program();
+                                crate::agent::notified(&mut t.agent, Some(&words), crate::clock::now());
+                                t.notice = Some(words);
+                                changed = true;
+                                if !looked_at {
+                                    t.waiting = true;
                                     bell = true;
                                 }
                             }
@@ -3221,6 +3416,11 @@ impl App {
                                 tracing::debug!("shell mark {kind:?}");
                                 match kind {
                                     nus_vt::MarkKind::OutputStart => {
+                                        // A new command generation. It is the user's if
+                                        // they submitted it moments ago; otherwise it
+                                        // runs, but can't hold the machine awake.
+                                        t.work_id = Some(crate::finish_work::next_command());
+                                        t.work_origin = t.armed.take().filter(|(at, _)| crate::clock::since(*at) < std::time::Duration::from_secs(10)).map(|(_, o)| o);
                                         t.waiting = false;
                                         t.work_completed = false;
                                         t.work_command = t.blocks().last().map(|b| crate::journal::oneline(&b.cmd)).unwrap_or_default();
@@ -3229,6 +3429,8 @@ impl App {
                                         t.done = None;
                                     }
                                     nus_vt::MarkKind::CommandEnd(exit) => {
+                                        t.work_id = None;
+                                        t.work_origin = None;
                                         t.last_exit = exit;
                                         // The command that just finished. Not the last B mark:
                                         // the chunk that carried this D usually carries the
@@ -3322,6 +3524,9 @@ impl App {
                             _ => {}
                         }
                     }
+                    // What runs here, for tabs that are not drawn too: the
+                    // Ledger knows an assistant by it (agent.rs).
+                    t.tend_program();
                     if t.term.grid().is_damaged() {
                         changed = true;
                     }
@@ -3334,9 +3539,18 @@ impl App {
         for (i, payload) in checkpoints {
             self.checkpoint(i, payload);
         }
-        for tab in self.tabs.iter_mut() {
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+        crate::interstitial::set_colors(crate::interstitial::Colors { paper: self.theme.paper, ink: self.theme.ink, dim: self.theme.dim, signal: self.surface.signal, dark: self.theme.mode == nus_render::theme::Mode::Ink });
+        let mut interstitial_acts: Vec<(u64, bool, String)> = Vec::new();
+        for (k, tab) in self.tabs.iter_mut().enumerate() {
+            let id = tab.id;
+            let shown = k == self.active;
+            for (right, p) in std::iter::once((false, &mut tab.left)).chain(tab.right.as_mut().map(|p| (true, p))) {
                 if let Pane::Web(w) = p {
+                    interstitial_acts.extend(w.tab.tend_interstitial().into_iter().map(|v| (id, right, v)));
+                    if shown && w.asleep.is_none() && w.devtools.is_none() {
+                        w.tab.watch();
+                    }
+                    crate::interstitial_ui::settle_waking(w);
                     let paints = w.tab.shared.borrow().paints + w.devtools.as_ref().map(|d| d.shared.borrow().paints).unwrap_or(0);
                     if paints != w.seen_paints {
                         w.seen_paints = paints;
@@ -3344,6 +3558,10 @@ impl App {
                     }
                 }
             }
+        }
+        for (id, right, verb) in interstitial_acts {
+            self.interstitial_act(id, right, &verb);
+            changed = true;
         }
         if detected != self.detected {
             self.detected = detected;
@@ -3554,15 +3772,11 @@ impl App {
         }
     }
 
-    /// The top strip: wordmark, crumb, window cluster. Drawn in place, or
-    /// over the content when the compact sidebar hides it until hovered.
+    /// The top strip: wordmark, crumb, window cluster. Compact narrows the
+    /// sidebar only; the strip stays where it is.
     fn draw_strip(&mut self, scene: &mut Scene) {
         let t = self.theme.clone();
         let ink = t.ink;
-        if self.compact() {
-            let st = self.strip_rect();
-            scene.rect(Rect::new(st.x, st.y, st.w, st.h + self.px(m::STRUCTURE)), self.paper());
-        }
         let strip = self.strip_rect();
         scene.hline(strip.x, strip.bottom(), strip.w, self.px(m::STRUCTURE), ink);
         let ic = self.px(16.0);
@@ -3576,12 +3790,28 @@ impl App {
             tracking: 0.0,
         };
         x += self.traffic_width();
-        x += self.fonts.draw(scene, wm, x, base, "nus") + self.px(18.0);
+        // The wordmark is the nus button: home, held down while it is up.
+        self.crumb_hits.clear();
+        self.tend_home_latch();
+        {
+            let ww = self.fonts.measure(wm, "nus");
+            let cell = Rect::new(x - self.px(8.0), strip.y + self.px(4.0), ww + self.px(16.0), strip.h - self.px(8.0));
+            let down = self.home_latch.is_some();
+            let hot = cell.contains(self.mouse.0, self.mouse.1);
+            if down {
+                scene.rect(cell, ink);
+            } else if hot {
+                scene.rect(cell, fade(t.tint, 0.6));
+            }
+            let color = if down { self.on_fill(ink) } else { ink };
+            self.fonts.draw(scene, Style { color, ..wm }, x, base, "nus");
+            self.crumb_hits.push((cell, CrumbHit::Nus));
+            x += ww + self.px(18.0);
+        }
         let label = self.label();
         let dim = Style { color: t.dim, ..label };
         let lbase = strip.y + self.px(19.0);
         // Crumb: Space chip · tab · cwd/host — each a click target (self.crumb_hits).
-        self.crumb_hits.clear();
         let (p4, p6, p12, p18, p8) = (self.px(4.0), self.px(6.0), self.px(12.0), self.px(18.0), self.px(8.0));
         let segment = move |hits: &mut Vec<(Rect, CrumbHit)>, x: &mut f32, w: f32, hit: CrumbHit| {
             let r = Rect::new(*x - p6, strip.y + p4, w + p12, strip.h - p8);
@@ -3658,7 +3888,7 @@ impl App {
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
                 Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
                 Pane::Home(h) if h.library => (nus_render::text::icons::BOOK, "Reading list".into()),
-                Pane::Home(_) => (nus_render::text::icons::TERMINAL, "home".into()),
+                Pane::Home(_) => (nus_render::text::icons::HOME, "home".into()),
                 Pane::Editor(e) => (nus_render::text::icons::CODE, e.title()),
                 Pane::Ports(_) => (nus_render::text::icons::PORTS, "ports".into()),
             Pane::Downloads(_) => (nus_render::text::icons::DOWNLOAD, "downloads".into()),
@@ -3675,6 +3905,9 @@ impl App {
                 scene.rect(Rect::new(x, strip.bottom() - self.px(2.0), (ic + p8 + tw) * v, self.px(2.0)), color);
             }
             segment(&mut self.crumb_hits, &mut x, ic + p8 + tw, CrumbHit::Tab);
+            if let Some(host) = self.active_tunnel() {
+                self.draw_tunnel_tag(scene, &host, x, lbase);
+            }
         }
         // Right side: status cluster, search, sidebar, window controls.
         let mut rx = strip.right() - self.px(18.0);
@@ -3722,6 +3955,28 @@ impl App {
         self.icon_button(scene, nus_render::text::icons::PLANET, ic, rx, iy, pc, hr, hover_key("atlas", 0), IconMotion::Spin(-25.0));
         self.crumb_hits.push((hr, CrumbHit::Start));
         rx -= gap;
+        // Finish Work: a fixed place just before the cluster, on laptops
+        // only, so nothing beside it moves when work comes and goes.
+        if crate::finish_work::offered() {
+            use crate::finish_work::Phase;
+            let view = crate::finish_work::view();
+            let (icon, color) = match view.phase {
+                Phase::Holding(_) => (nus_render::text::icons::COFFEE_FILL, self.surface.signal),
+                Phase::Ready(_) => (nus_render::text::icons::COFFEE, ink),
+                Phase::Unavailable | Phase::SafetyReleased(_) => (nus_render::text::icons::COFFEE, t.dim),
+            };
+            rx -= ic;
+            let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+            if let Phase::SafetyReleased(_) = view.phase {
+                // Let go for safety: a quiet warning mark beside the cup.
+                self.fonts.draw_icon(scene, nus_render::text::icons::WARNING, self.px(8.0), rx + ic - self.px(5.0), iy - self.px(3.0), self.surface.signal);
+            }
+            let key = hover_key("finish-work", 0);
+            self.icon_button(scene, icon, ic, rx, iy, color, hr, key, IconMotion::Pop);
+            self.offer_tip(key, hr, crate::finish_work::tooltip(view.phase, view.capability));
+            self.crumb_hits.push((hr, CrumbHit::FinishWork));
+            rx -= gap;
+        }
         // status cluster: waiting · pip · assistant · ports (one icon when narrow)
         let waiting = self.tabs.iter().filter(|t| t.waiting()).count();
         let mut cluster: Vec<((&'static str, &'static str), String, CrumbHit, bool)> = Vec::new();
@@ -3742,7 +3997,7 @@ impl App {
         }
         // A new port: the ports icon glows signal for six seconds — no words;
         // the line itself lives in the board's foot and the hatch's.
-        let toast_glow = self.board.toast.as_ref().map(|(_, at, _)| {
+        let toast_glow = self.board.toast.as_ref().map(|(at, _)| {
             let age = crate::clock::since(at).as_secs_f32();
             if age < 0.25 { age / 0.25 } else if age > 5.4 { ((6.0 - age) / 0.6).clamp(0.0, 1.0) } else { 1.0 }
         });
@@ -3770,10 +4025,18 @@ impl App {
             self.crumb_hits.push((hr, hit));
             rx -= gap;
         }
+        // The Ledger's count: [1 WAITING] 2 WORKING, left of the cluster.
+        if self.width_class() != Width::Narrow && self.behavior.ledger {
+            if let Some((_, hit)) = self.draw_agent_counts(scene, rx, strip, lbase) {
+                self.crumb_hits.push((hit, CrumbHit::Agents));
+            }
+        }
         let _ = dim;
     }
 
     fn build(&mut self) {
+        self.intel.hits.clear();
+        self.beat_want = None;
         if let Some(mut scene)=self.arrival_scene() {
             self.draw_splash(&mut scene);
             self.scene=scene;
@@ -3873,7 +4136,7 @@ impl App {
                 }
             }
         }
-        if !self.compact() && !self.focus {
+        if !self.focus {
             self.draw_strip(&mut scene);
         }
 
@@ -3905,6 +4168,7 @@ impl App {
         let look = self.tabs[active].look.clone();
         self.drawing_tab = self.tabs[active].id;
         self.pane_hits.clear();
+        self.gather_home_rows();
         let mut tabs = std::mem::take(&mut self.tabs);
         if !tiled {
             let tab = &mut tabs[active];
@@ -3994,7 +4258,9 @@ impl App {
         let slide = self.sidebar_anim.value();
         if slide > 0.001 && !self.sidebar_pinned() {
             let sb = self.sidebar_rect();
-            let off = (1.0 - slide) * (sb.w + self.px(12.0));
+            // Whole device pixels: glyphs snap to the pixel grid, so a
+            // fractional offset makes the text shimmer against the rules.
+            let off = ((1.0 - slide) * (sb.w + self.px(12.0))).round();
             let sb = if self.sidebar_right() { Rect::new(sb.x + off, sb.y, sb.w, sb.h) } else { Rect::new(sb.x - off, sb.y, sb.w, sb.h) };
             let shadow = if self.sidebar_right() { -self.px(8.0) } else { self.px(8.0) };
             scene.layer(None);
@@ -4011,15 +4277,15 @@ impl App {
         self.draw_compact_tip(&mut scene);
         self.draw_focus_hint(&mut scene);
         self.draw_pane_drag(&mut scene);
-        // In compact mode the strip rides over the content when summoned.
-        if self.compact() && self.strip_shown() {
-            self.draw_strip(&mut scene);
-        } else if self.compact() {
-            self.crumb_hits.clear();
+        self.draw_pane_mode(&mut scene);
+        if let Some((i, _, _)) = self.drag {
+            self.draw_drop(&mut scene, crate::pane_mode::Dragging::Tab(i));
         }
         if self.sidebar_visible() && (self.look_menu||self.look_anim.active()) {self.draw_look_menu(&mut scene,self.list_rect());}
         // Palette.
         if let Some((mode, input)) = self.palette.clone() {
+            // The palette is modal: nothing under it takes the atom's drags.
+            self.intel.hits.clear();
             scene.layer(None);
             let rise = self.palette_anim.value();
             scene.rect(Rect::new(0.0, 0.0, w, h), Theme::with_alpha(t.scrim, t.scrim[3] * rise));
@@ -4036,7 +4302,9 @@ impl App {
             } else { vec![row.text.clone()] }).collect();
             let heights: Vec<f32> = lines.iter().zip(&rows).map(|(l,r)| if self.saved_detail(r).is_some() && self.behavior.prompt.saved_preview { self.px(56.0) } else { row_h + leading * l.len().saturating_sub(1) as f32 }).collect();
             let total = heights.iter().sum::<f32>().max(row_h);
-            let view_h = total.min((h-by-head_h-self.px(24.0)).max(row_h));
+            // Launching an assistant: the atom and its ring above the review.
+            let band_h = if review { self.px(214.0) } else { 0.0 };
+            let view_h = total.min((h-by-head_h-band_h-self.px(24.0)).max(row_h));
             self.palette_sel = self.palette_sel.min(rows.len().saturating_sub(1));
             self.palette_scroll_max = (total-view_h).max(0.0);
             if self.palette_reveal {
@@ -4047,7 +4315,7 @@ impl App {
                 self.palette_reveal=false;
             }
             self.palette_scroll=self.palette_scroll.clamp(0.0,self.palette_scroll_max);
-            let bh = head_h + view_h;
+            let bh = head_h + band_h + view_h;
             let r = Rect::new(bx, by, pw, bh);
             scene.rect(Rect::new(r.x + self.px(8.0), r.y + self.px(8.0), r.w, r.h), ink);
             scene.rect(r, t.paper);
@@ -4079,13 +4347,16 @@ impl App {
             let shift = (iw - avail).max(0.0);
             px += self.fonts.draw(&mut scene, big, px - shift, base, &input) - shift;
             scene.layer(None);
-            scene.rect(Rect::new(px + self.px(2.0), base - self.px(14.0), self.px(9.0), self.px(18.0)), ink);
+            self.draw_line_caret(&mut scene, px + self.px(2.0), base, big.px, 1.0, self.last_key);
             self.fonts.draw(&mut scene, esc, r.right() - self.px(18.0) - ew, base - self.px(2.0), "ESC");
             scene.hline(r.x, r.y + head_h - self.px(2.0), r.w, self.px(2.0), ink);
+            if review {
+                self.draw_intel_band(&mut scene, Rect::new(r.x, r.y + head_h, r.w, band_h));
+            }
             // rows
-            let viewport=Rect::new(r.x,r.y+head_h,r.w,view_h);
+            let viewport=Rect::new(r.x,r.y+head_h+band_h,r.w,view_h);
             scene.layer(Some(viewport));
-            let mut y = r.y + head_h - self.palette_scroll;
+            let mut y = r.y + head_h + band_h - self.palette_scroll;
             self.palette_hits.clear();
             for (i, PaletteRow { num, text, .. }) in rows.iter().enumerate() {
                 let row_h=heights[i];
@@ -4508,7 +4779,7 @@ impl App {
                 continue;
             }
             let hidden = !self.row_visible(i);
-            let want = if hidden { 0.0 } else { row };
+            let want = if hidden { 0.0 } else { row + self.ledger_h(&self.tabs[i]) };
             // Animated height while a stack unfolds; otherwise the target.
             let h = match self.row_anims.get(&self.tabs[i].id) {
                 Some(a) if a.active() => a.value(),
@@ -4592,7 +4863,7 @@ impl App {
             return;
         }
         self.draw_pins(scene,sb);
-        let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids.clone()).unwrap_or_default();
+        let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
 
         // Legacy shell/file pins retain their session behavior.
@@ -4611,7 +4882,7 @@ impl App {
                     scene.rect(cell, fade(t.tint, 0.75));
                     scene.rect(Rect::new(cx, py, self.px(2.0), cell.h), tabs[i].look.signal.unwrap_or(self.surface.signal));
                 }
-                let st = Style { color: if active { t.paper } else { ink }, ..ui_strong };
+                let st = Style { color: if active { self.on_fill(ink) } else { ink }, ..ui_strong };
                 let base = py + self.px(8.0) + self.px(m::UI_PX) - self.px(3.0);
                 let mut x = cx + self.px(10.0);
                 let isz = self.px(12.0);
@@ -4649,15 +4920,15 @@ impl App {
             let selected = self.selected.contains(&i);
             if active {
                 let ty = if self.tint_anim.active() { self.tint_anim.value() } else { y };
-                scene.rect(Rect::new(sb.x, ty, sb.w, row_h), t.tint);
-                scene.rect(Rect::new(sb.x, ty, self.px(2.0), row_h), tab.look.signal.unwrap_or(self.surface.signal));
+                scene.rect(Rect::new(sb.x, ty, sb.w, h), t.tint);
+                scene.rect(Rect::new(sb.x, ty, self.px(2.0), h), tab.look.signal.unwrap_or(self.surface.signal));
             } else if selected {
                 // Held with Ctrl: the tint and the bar, as the active row wears
                 // them, so a selection reads as rows the active one is among.
-                scene.rect(Rect::new(sb.x, y, sb.w, row_h), fade(t.tint, if hovered { 1.0 } else { 0.75 }));
-                scene.rect(Rect::new(sb.x, y, self.px(2.0), row_h), tab.look.signal.unwrap_or(self.surface.signal));
+                scene.rect(Rect::new(sb.x, y, sb.w, h), fade(t.tint, if hovered { 1.0 } else { 0.75 }));
+                scene.rect(Rect::new(sb.x, y, self.px(2.0), h), tab.look.signal.unwrap_or(self.surface.signal));
             } else if hovered {
-                scene.rect(Rect::new(sb.x, y, sb.w, row_h), fade(t.tint, 0.5));
+                scene.rect(Rect::new(sb.x, y, sb.w, h), fade(t.tint, 0.5));
             }
             scene.layer(Some(row_clip));
             let base = y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0);
@@ -4683,7 +4954,7 @@ impl App {
                 Pane::Settings(_) => nus_render::text::icons::SETTINGS,
                 Pane::Hints(_) => nus_render::text::icons::HOME,
                 Pane::Home(h) if h.library => nus_render::text::icons::BOOK,
-                Pane::Home(_) => nus_render::text::icons::TERMINAL,
+                Pane::Home(_) => nus_render::text::icons::HOME,
                 Pane::Editor(_) => nus_render::text::icons::CODE,
                 Pane::Ports(_) => nus_render::text::icons::PORTS,
             Pane::Downloads(_) => nus_render::text::icons::DOWNLOAD,
@@ -4724,17 +4995,17 @@ impl App {
                 self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, cx, iy, ink);
                 self.side_hits.push((Rect::new(cx - self.px(6.0), y, isz + self.px(12.0), row_h), SideHit::Close(i)));
                 right = cx - self.px(8.0);
-            } else if let Some((name, is_waiting)) = tab.attention() {
+            } else if let Some((name, is_waiting)) = tab.attention().filter(|_| !self.ledger_shows(tab)) {
                 // A signal square when waiting for you; an assistant at work
-                // breathes in ink. The words are in the tooltip.
+                // breathes in ink. The words are in the tooltip. (With the
+                // Ledger's lines under the title, they say it instead.)
                 let d = self.px(7.0);
                 let dot = Rect::new(right - d, y + (row_h - d) / 2.0, d, d);
                 if is_waiting {
                     scene.rect(dot, self.surface.signal);
                 } else {
-                    let breath = 0.35 + 0.45 * (0.5 + 0.5 * (crate::clock::since(self.started).as_secs_f32() * 2.2).sin());
+                    let breath = self.breath();
                     scene.rect(dot, fade(ink, breath));
-                    self.dirty = true;
                 }
                 if dot.contains(self.mouse.0, self.mouse.1) {
                     let words = if is_waiting { format!("{name} · waiting for you") } else { format!("{name} · working") };
@@ -4764,10 +5035,20 @@ impl App {
                 }
             }
             let (title, _) = tab.row_text();
+            // A shell that only calls itself by its own name ("zsh") is
+            // called by the assistant at work in it, when the Ledger knows one.
+            let title = match (tab.agent(), &tab.left) {
+                (Some(a), Pane::Term(t)) if tab.name.is_none() && self.behavior.ledger && title.eq_ignore_ascii_case(&t.profile_name) => a.name.clone(),
+                _ => title,
+            };
             let st = if active { ui_strong } else { ui };
             let st = Style { color: if active { ink } else { Theme::with_alpha(ink, 0.82) }, ..st };
             let tab_id = tab.id;
             self.marquee(scene, st, x, base, right - x, &title, active || hovered, row_bg, hover_key("row", tab_id as usize));
+            // The Ledger: the assistant's lines, under the title.
+            if h > row_h + 1.0 {
+                self.draw_ledger(scene, tab, i, x, y + row_h - self.px(4.0), sb.right() - pad_x - x);
+            }
             // The shell's progress (OSC 9;4): a line under the title.
             if let (Some((state, pct)), true) = (tab.progress(), self.behavior.progress_sidebar) {
                 let (v, color) = self.progress_look(state, pct);
@@ -4931,6 +5212,9 @@ impl App {
         match hit {
             SideHit::Pinned(act) => self.pin_action(act),
             SideHit::MenuDrawer => self.toggle_menu_drawer(self.menu_footer_anchor()),
+            SideHit::Answer(i, answer) => {
+                self.answer_agent(i, answer);
+            }
             SideHit::Close(i) => {
                 // The × does what Ctrl+W does: a row in the selection takes
                 // the whole selection with it; a row outside it goes alone.
@@ -5023,10 +5307,10 @@ impl App {
             SideHit::FilesPin => {
                 if self.workspace.is_some() {
                     self.bind_workspace(None);
-                    self.notice("the tree follows the shell");
+                    self.notice(nus_render::text::icons::FOLDER, "Tree Follows The Shell", "");
                 } else if let Some(r) = self.tree.root.clone() {
                     self.bind_workspace(Some(r.clone()));
-                    self.notice(&format!("this window is {}'s", r.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+                    self.notice(nus_render::text::icons::FOLDER, "Window Bound", r.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
                 }
             }
             SideHit::FilesUp => {
@@ -5246,15 +5530,15 @@ impl App {
                 if let Some(f) = fill {
                     scene.rect(cell, f);
                 }
-                let c = if fill.is_some() { t.paper } else { ink };
+                let c = fill.map(|f| self.on_fill(f)).unwrap_or(ink);
                 let isz = self.px(12.0);
                 let ix = x + self.px(if bar && !masthead { 10.0 } else { 12.0 });
                 self.fonts.draw_icon(scene, nus_render::text::icons::PLUS, isz, ix, y + self.px(19.0) - isz + self.px(2.0), c);
                 self.fonts.draw(scene, Style { color: c, ..strong }, ix + isz + self.px(6.0), y + self.px(19.0), "NEW TAB");
                 if !bar || masthead {
-                    let k = "CTRL T";
-                    let kw = self.fonts.measure(label, k);
-                    self.fonts.draw(scene, Style { color: Theme::with_alpha(c, 0.6), ..label }, cell.right() - self.px(12.0) - kw, y + self.px(19.0), k);
+                    let k = key("T", false);
+                    let kw = self.fonts.measure(label, &k);
+                    self.fonts.draw(scene, Style { color: Theme::with_alpha(c, 0.6), ..label }, cell.right() - self.px(12.0) - kw, y + self.px(19.0), &k);
                 }
                 self.side_hits.push((cell, SideHit::NewShell));
                 if self.header.kinds_caret {
@@ -5265,7 +5549,7 @@ impl App {
                         scene.rect(Rect::new(cc.x + self.px(m::HAIRLINE), y, cc.w - self.px(m::HAIRLINE), rh), ink);
                     }
                     let csz = self.px(11.0);
-                    self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, cc.x + ((cc.w - csz) / 2.0).round(), y + ((rh - csz) / 2.0).round(), if chot || self.kinds_menu { t.paper } else { t.dim });
+                    self.fonts.draw_icon(scene, nus_render::text::icons::CARET_DOWN, csz, cc.x + ((cc.w - csz) / 2.0).round(), y + ((rh - csz) / 2.0).round(), if chot || self.kinds_menu { self.on_fill(ink) } else { t.dim });
                     self.side_hits.push((cc, SideHit::Kinds));
                 }
             }
@@ -5384,7 +5668,7 @@ impl App {
                     scene.rect(cell, t.tint);
                 }
                 let sq = self.px(10.0);
-                let ctx = TabCtx { kind: "terminal", index: self.tabs.len(), profile: &p.name, space: &self.space_name, space_signal: self.surface.signal, theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, host: "", parent: None, tab_colours: &self.tab_colours };
+                let ctx = TabCtx { kind: "terminal", index: self.tabs.len(), profile: &p.name, space: &self.space_name, space_signal: self.surface.signal, theme: if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, host: "", parent: None, tab_colours: &self.tab_colours, shell_color: self.shell_color(Some(crate::shell_colors::slot_for_folder(&p.name))) };
                 let color = self.rules.new_tab(&ctx).signal.unwrap_or(self.surface.signal);
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), color);
                 let st = if i == self.behavior.default_profile && !page_first { strong } else { label };
@@ -5645,7 +5929,7 @@ impl App {
 
     /// Open settings on a section, and on a LOOK tab when given.
     pub(crate) fn open_settings_at(&mut self, sec: usize, tab: Option<usize>) {
-        if crate::private::enabled() { self.notice("Open Settings in a regular nus window."); return; }
+        if crate::private::enabled() { self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "open Settings in a regular nus window"); return; }
         self.open_settings();
         if sec == crate::settings::SEC_ASSISTANTS { self.assistants.refresh(self.behavior.assistants.clone()); }
         if let Some(t) = tab {
@@ -5714,12 +5998,12 @@ impl App {
                 let url = format!("file:///{}", p.display().to_string().replace('\\', "/"));
                 self.open_url(&url, false);
             }
-            None => self.notice("could not write the log page"),
+            None => self.notice_problem("Could Not Write Log Page", ""),
         }
     }
 
     pub(crate) fn open_settings(&mut self) {
-        if crate::private::enabled() { self.notice("Open Settings in a regular nus window."); return; }
+        if crate::private::enabled() { self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "open Settings in a regular nus window"); return; }
         self.refresh_register_note();
         if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
             return self.activate(i);
@@ -5743,7 +6027,16 @@ impl App {
         if std::env::var_os("NUS_ONBOARD").is_some() {
             return false;
         }
-        if std::path::Path::new("profile/onboarding-pending").exists() { return false; }
+        if std::path::Path::new("profile/onboarding-pending").exists() {
+            // A new copy of a version already welcomed: no tour this time.
+            // Its previous-install offer stays, in Welcome from Settings.
+            if !crate::install::version_welcomed() { return false; }
+            let _ = std::fs::remove_file("profile/onboarding-pending");
+            if !App::onboarded_marker().is_file() {
+                let _ = std::fs::write(App::onboarded_marker(), b"skip");
+            }
+            return true;
+        }
         let s = std::fs::read_to_string(App::onboarded_marker()).unwrap_or_default();
         let marker = s.trim();
         marker == "skip" || (marker.len() == 5 && marker.bytes().all(|b| b == b'0' || b == b'1'))
@@ -5758,7 +6051,7 @@ impl App {
         h
     }
 
-    fn save_hints(&self) {
+    pub(crate) fn save_hints(&self) {
         let s: String = self.hints.iter().map(|&h| if h { '1' } else { '0' }).collect();
         let _ = std::fs::create_dir_all(App::onboarded_marker().parent().unwrap());
         let _ = std::fs::write(App::onboarded_marker(), s);
@@ -5932,6 +6225,9 @@ impl App {
                     x += isz + self.px(8.0);
                     let _ = n;
                     x += self.fonts.draw(scene, strong, x, base, &p.title.caps()) + self.px(14.0);
+                    if let Some(host) = p.tunnel() {
+                        x += self.draw_tunnel_tag(scene, &host, x, base) + self.px(14.0);
+                    }
                     let dims = format!("{}×{}", p.term.cols(), p.term.rows());
                     let dw = self.fonts.measure(label, &dims);
                     let dx = r.right() - self.px(m::HEADER_PAD_X) - dw;
@@ -5969,6 +6265,12 @@ impl App {
                     let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
                     scene.rect(clip, [bg[0], bg[1], bg[2], a]);
                 }
+                // In a tunnel the page takes the tunnel's hue, faintly; the
+                // rails and the tag below say where it goes.
+                let tunnel = p.tunnel().map(|h| { let c = self.tunnel_color(&h); (h, c) });
+                if let Some((_, c)) = &tunnel {
+                    scene.rect(clip, fade(*c, 0.08));
+                }
                 let pane_paper = look.bg.unwrap_or(self.paper());
                 let look = self.cursor_look(p, focused, look.signal);
                 let gliding = !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) && (p.cur_x.active() || p.cur_y.active() || p.smear.animating);
@@ -5998,6 +6300,14 @@ impl App {
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
                 self.draw_link_band(scene, p, r, hh);
+                if let Some((_, c)) = &tunnel {
+                    // Rails: a heavy rule down each side and a hairline
+                    // across the top, like a page set in a box.
+                    let (rail, hair) = (self.px(3.0), self.px(m::HAIRLINE));
+                    scene.rect(Rect::new(clip.x, clip.y, rail, clip.h), *c);
+                    scene.rect(Rect::new(clip.right() - rail, clip.y, rail, clip.h), *c);
+                    scene.rect(Rect::new(clip.x, clip.y, clip.w, hair), *c);
+                }
                 let _ = p.term.grid_mut().take_damage();
                 if swapped {
                     if let Some(tl) = self.timeline.as_mut() {
@@ -6221,9 +6531,18 @@ impl App {
     }
 
     pub(crate) fn fit(&self, style: Style, text: &str, max_w: f32) -> String {
+        self.fit_by(|t| self.fonts.measure(style, t), text, max_w)
+    }
+
+    /// `fit` for text drawn with `draw_as_is`, keeping its own case.
+    pub(crate) fn fit_as_is(&self, style: Style, text: &str, max_w: f32) -> String {
+        self.fit_by(|t| self.fonts.measure_as_is(style, t), text, max_w)
+    }
+
+    fn fit_by(&self, measure: impl Fn(&str) -> f32, text: &str, max_w: f32) -> String {
         // Padding arithmetic can lose a fraction of a pixel. An exact-fit
         // label should not lose its last letters to an ellipsis.
-        if self.fonts.measure(style, text) <= max_w + 0.01 {
+        if measure(text) <= max_w + 0.01 {
             return text.to_string();
         }
         // The longest prefix that fits with an ellipsis: width grows with
@@ -6233,7 +6552,7 @@ impl App {
         while lo < hi {
             let mid = (lo + hi).div_ceil(2);
             let s: String = chars[..mid].iter().collect();
-            if self.fonts.measure(style, &format!("{s}…")) <= max_w {
+            if measure(&format!("{s}…")) <= max_w {
                 lo = mid;
             } else {
                 hi = mid - 1;
@@ -6305,6 +6624,35 @@ impl App {
                 }
                 if let Some(u) = q.strip_prefix("home ").map(str::trim).filter(|u| !u.is_empty()) {
                     rows.push(row("⌂", format!("home page · {u} · opens at launch"), Action::SetHome(u.to_string())));
+                }
+                // First, so Enter on `pin …` pins; the address keeps its case.
+                let typed = input.trim();
+                if let Some(u) = typed.get(4..).filter(|_| q.starts_with("pin ")).map(str::trim).filter(|u| crate::prompt::pinnable(u)) {
+                    rows.insert(0, row("⌖", format!("pin to sidebar · {u}"), Action::PinUrl(u.to_string())));
+                } else if q == "pin" {
+                    rows.insert(0, row("⌖", "pin this tab · or type an address, or another tab's name, after pin".into(), Action::PinActive));
+                }
+                // Any open tab, not just this one: `pin` lists them, `pin mail` narrows.
+                if let Some(rest) = q.strip_prefix("pin").filter(|r| r.is_empty() || r.starts_with(' ')).map(str::trim) {
+                    let pinned: Vec<u64> = self.pins.live.values().copied().collect();
+                    let open = self.tabs.iter().enumerate().filter(|(i, t)| *i != self.active && !t.pinned && !pinned.contains(&t.id)).filter_map(|(_, t)| {
+                        let title = t.title();
+                        let url = match &t.left { Pane::Web(w) => w.asleep.clone().unwrap_or_else(|| w.tab.shared.borrow().url.clone()), _ => String::new() };
+                        let hay = format!("{} {}", title.to_lowercase(), url.to_lowercase());
+                        (rest.is_empty() || hay.contains(rest)).then(|| row("⌖", format!("pin tab · {title}"), Action::PinTab(t.id)))
+                    }).take(8);
+                    let at = rows.iter().take_while(|r| matches!(r.action, Action::PinUrl(_) | Action::PinActive)).count();
+                    for (k, r) in open.enumerate() { rows.insert(at + k, r); }
+                }
+                if q.starts_with("pane") || q.starts_with("layout") {
+                    for (text, action) in self.pane_rows(&hit) {
+                        rows.push(row("▦", text, action));
+                    }
+                }
+                if q.starts_with("pane") || q.starts_with("move") || q.starts_with("window") {
+                    for (text, action) in self.send_rows(&hit) {
+                        rows.push(row("⇱", text, action));
+                    }
                 }
                 if hit("launch tabs") || hit("startup") {
                     rows.push(row("⇥", "set this window as the launch tabs".into(), Action::SetLaunchTabs));
@@ -6388,7 +6736,7 @@ impl App {
                     (format!("tile the selected tabs · {} with rows selected", key("D", true)), Action::Tile),
                     ("untile · one tab in the content again".to_string(), Action::Untile),
                     ("keep the peek · CTRL+ENTER · into the stack".to_string(), Action::KeepPeek),
-                    (format!("compact sidebar · {} · icons only, the strip hides", key("B", true)), Action::Compact),
+                    (format!("compact sidebar · {} · icons only", key("B", true)), Action::Compact),
                     (format!("{} · CTRL+SHIFT+F11 · the page alone in the window", if self.focus { "leave focus" } else { "focus" }), Action::Focus),
                     (format!("ask · {} · a question beside this shell, commands back", key("?", true)), Action::Ask),
                     ("swap tiles · CTRL+ALT+SHIFT+→".to_string(), Action::TileSwap),
@@ -6643,6 +6991,7 @@ impl App {
             t.line.clear();
             t.line_col = None;
             t.line_ok = true;
+            t.armed = Some((crate::clock::now(), crate::finish_work::Origin::NusAction));
         }
         tab.focus_right = false;
     }
@@ -6668,7 +7017,7 @@ impl App {
 
     pub(crate) fn run(&mut self, action: Action) {
         if crate::private::enabled() && !crate::private::allows(&action) {
-            self.notice("This feature is available in a regular nus window.");
+            self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "this works in a regular nus window");
             return;
         }
         match action {
@@ -6683,7 +7032,7 @@ impl App {
             Action::NewWindow => self.new_window_request = true,
             Action::NewPrivateWindow => {
                 if crate::private::enabled() { self.new_window_request = true; }
-                else if let Err(e) = crate::private::launch() { self.notice(&format!("Could not open incognito: {e}")); }
+                else if let Err(e) = crate::private::launch() { self.notice_problem("Could Not Open Incognito", e.to_string()); }
             }
             Action::Report(kind) => self.open_url(&crate::support::issue_url(kind), true),
             Action::Welcome => self.open_welcome(),
@@ -6712,11 +7061,11 @@ impl App {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     let _ = cb.set_text(word.clone());
                 }
-                self.notice(&format!("sync key copied · {word}"));
+                self.notice(nus_render::text::icons::COPY, "Copied", format!("sync key · {word}"));
             }
             Action::SyncJoin(word) => {
                 crate::syncui::write_key(&word);
-                self.notice("joined · this device has the key");
+                self.notice(nus_render::text::icons::CHECK, "Joined Sync", "this device has the key");
                 self.sync_now();
             }
             Action::SyncFolder(p) => {
@@ -6781,7 +7130,7 @@ impl App {
             }
             Action::CopyUrl => {
                 if !self.copy_page_url() {
-                    self.toast("NO PAGE HAS THE FOCUS", None);
+                    self.toast(nus_render::text::icons::GLOBE, "No Page Focused", "", None);
                 }
             }
             Action::ShellAt(cwd) => {
@@ -6797,32 +7146,39 @@ impl App {
                     self.attach_held(info);
                 }
             }
+            Action::PinUrl(url) => self.pin_url(&url),
+            Action::PinActive => self.pin_tab(self.active),
+            Action::PaneUndo => self.pane_undo(),
+            Action::PaneRedo => self.pane_redo(),
+            Action::Pane(op) => { self.direct(op); }
+            Action::SendTo(dest) => self.send_focused(dest),
+            Action::PinTab(id) => if let Some(i) = self.tabs.iter().position(|t| t.id == id) { self.pin_tab(i); },
             Action::SetHome(url) => {
                 self.behavior.home_url = crate::links::normalize(&url);
                 self.behavior.then = crate::settings::Then::HomePage;
                 self.save_prefs();
-                self.notice(&format!("home page · {} · opens at launch and in new tabs", crate::links::host(&self.behavior.home_url)));
+                self.notice(nus_render::text::icons::HOME, "Home Page Set", format!("{} · opens at launch and in new tabs", crate::links::host(&self.behavior.home_url)));
             }
             Action::SetSearch(template) => {
                 let template = if template.contains("://") { template } else { format!("https://{template}") };
                 self.behavior.prompt.search_url = template;
                 self.behavior.prompt.engine = crate::prompt::SearchEngine::Custom;
                 self.save_prefs();
-                self.notice(&format!("search engine · {} · ? and the search row go there", crate::links::host(&self.behavior.prompt.search_url)));
+                self.notice(nus_render::text::icons::SEARCH, "Search Engine Set", format!("{} · ? and the search row go there", crate::links::host(&self.behavior.prompt.search_url)));
             }
             Action::SetLaunchTabs => {
                 self.save_layout("launch");
                 self.behavior.then = crate::settings::Then::Layout;
                 self.behavior.then_layout = "launch".into();
                 self.save_prefs();
-                self.notice("layout saved · Start/New Tab opens it at launch and in new tabs");
+                self.notice(nus_render::text::icons::CHECK, "Layout Saved", "Start/New Tab opens it at launch and in new tabs");
             }
             Action::ShareReplay => match self.share_replay(self.active) {
                 Ok(p) => {
                     let url = format!("file:///{}", p.display().to_string().replace('\\', "/"));
                     self.open_url(&url, true);
                 }
-                Err(e) => self.notice(&format!("share: {e}")),
+                Err(e) => self.notice_problem("Could Not Share", e.to_string()),
             },
             Action::SaveToFolder(i, fi) => self.save_to_folder(i, fi),
             Action::OpenItem(fi, k) => self.open_item(fi, k),
@@ -6877,7 +7233,7 @@ impl App {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(p.markdown());
                     }
-                    self.notice("copied as markdown");
+                    self.notice(nus_render::text::icons::COPY, "Copied", "as Markdown");
                 }
             }
             Action::BlockGist(u) => {
@@ -6887,9 +7243,9 @@ impl App {
                             if let Ok(mut cb) = arboard::Clipboard::new() {
                                 let _ = cb.set_text(url.clone());
                             }
-                            self.notice(&format!("gist · {url} · copied"));
+                            self.notice(nus_render::text::icons::COPY, "Copied", format!("gist · {url}"));
                         }
-                        Err(e) => self.notice(&format!("gist failed · {e}")),
+                        Err(e) => self.notice_problem("Could Not Create Gist", e.to_string()),
                     }
                 }
             }
@@ -6922,10 +7278,7 @@ impl App {
                 self.layout();
             }
             Action::Downloads => self.open_downloads(),
-            Action::ToggleSidebar => {
-                self.sidebar = !self.sidebar;
-                self.layout();
-            }
+            Action::ToggleSidebar => self.toggle_sidebar(),
             Action::ToggleFiles => self.toggle_files(),
             Action::OpenFolder(f) => self.open_folder(&f),
             Action::Workspace(f) => {
@@ -6933,8 +7286,8 @@ impl App {
                 let name = f.as_ref().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
                 self.bind_workspace(f);
                 match name {
-                    Some(n) => self.notice(&format!("this window is {n}'s")),
-                    None => self.notice("the window follows the shell"),
+                    Some(n) => self.notice(nus_render::text::icons::FOLDER, "Window Bound", n),
+                    None => self.notice(nus_render::text::icons::FOLDER, "Window Follows The Shell", ""),
                 }
             }
         }
@@ -6969,10 +7322,15 @@ impl App {
             return;
         }
         if self.library_context_key(ev) { return; }
+        if self.palette.is_none() && self.mods.is_empty() && self.overlay_key(ev) { return; }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
         let sup = self.mods.super_key();
+        if self.hotkey_recording {
+            if pressed { self.record_hotkey(ev); }
+            return;
+        }
         if pressed && ev.physical_key == PhysicalKey::Code(KeyCode::KeyN) && (if cfg!(target_os="macos") {sup} else {ctrl}) && shift {
             return self.run(Action::NewPrivateWindow);
         }
@@ -7066,6 +7424,14 @@ impl App {
         if self.palette.is_none() && (!app || editor_chord) && self.editor_key(ev) {
             return;
         }
+        // Launching an assistant: ⌥← and ⌥→ turn the intelligence ring.
+        if pressed && alt && matches!(self.palette, Some((PaletteMode::Assistant(_), _))) {
+            if let WKey::Named(k @ (NamedKey::ArrowLeft | NamedKey::ArrowRight)) = &ev.logical_key {
+                let l = self.intelligence();
+                self.set_intelligence(if *k == NamedKey::ArrowLeft { l.saturating_sub(1) } else { l + 1 });
+                return;
+            }
+        }
         if let Some((_, input)) = self.palette.as_mut() {
             if !pressed {
                 return;
@@ -7140,6 +7506,16 @@ impl App {
             PhysicalKey::Code(c) => Some(c),
             _ => None,
         };
+        // Pane mode: Ctrl+Alt+P in and out; while it is on, every key is its.
+        if pressed && ctrl && alt && code == Some(KeyCode::KeyP) {
+            return self.toggle_pane_mode();
+        }
+        if self.pane_mode {
+            if pressed {
+                self.pane_mode_key(code, shift);
+            }
+            return;
+        }
         if pressed && code==Some(KeyCode::KeyJ) && (if cfg!(target_os="macos"){sup}else{ctrl}) && !shift {return self.open_downloads();}
         if pressed && code == Some(KeyCode::F11) && !ctrl && !shift {
             return self.toggle_fullscreen();
@@ -7166,6 +7542,11 @@ impl App {
                 return self.keep_peek();
             }
         }
+        // The layout's history: Ctrl+Alt+Z takes the last change back,
+        // with Shift it comes again.
+        if pressed && ctrl && alt && code == Some(KeyCode::KeyZ) {
+            return if shift { self.pane_redo() } else { self.pane_undo() };
+        }
         // Tiles: Ctrl+Alt+arrows walk them, with Shift they swap.
         if pressed && ctrl && alt && self.tiling_shown() {
             let dir = match code {
@@ -7191,7 +7572,10 @@ impl App {
         }
         if pressed && app {
             // The shell's copy and paste chords, on the prompt: its line.
-            if matches!(code, Some(KeyCode::KeyC) | Some(KeyCode::KeyV) | Some(KeyCode::KeyX)) && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Home(_))) && self.home_key(ev) {
+            // Select all, too, once there is something on it; on an empty
+            // line the chord keeps opening Ask.
+            let home_line = self.tabs.get(self.active).and_then(|t| if let Pane::Home(h) = t.focused_ref() { Some(!h.library && !h.input.is_empty()) } else { None });
+            if (matches!(code, Some(KeyCode::KeyC) | Some(KeyCode::KeyV) | Some(KeyCode::KeyX)) && home_line.is_some() || code == Some(KeyCode::KeyA) && !shift && home_line == Some(true)) && self.home_key(ev) {
                 return;
             }
             match code {
@@ -7201,8 +7585,11 @@ impl App {
                 Some(KeyCode::KeyF) => return self.search_open(),
                 Some(KeyCode::KeyO) => {
                     // While a new-port line shows, O opens that port; else hints.
-                    if let Some((_, _, k)) = self.board.toast.clone() {
+                    if let Some((_, k)) = self.board.toast.clone() {
                         self.board.toast = None;
+                        if matches!(self.toast.as_ref().and_then(|t| t.act.as_ref()), Some(crate::toast::Act::OpenPort(_))) {
+                            self.toast = None;
+                        }
                         self.ports_act(&k, crate::ports::Act::Open);
                         return;
                     }
@@ -7232,10 +7619,7 @@ impl App {
                 // ⌘R reloads the focused page; with Shift (and Ctrl+Shift+R
                 // everywhere) past the cache. A shell keeps its own Ctrl+R.
                 Some(KeyCode::KeyR) => return self.reload_page(shift || !cfg!(target_os = "macos")),
-                Some(KeyCode::KeyS) => {
-                    self.sidebar = !self.sidebar;
-                    return self.layout();
-                }
+                Some(KeyCode::KeyS) => return self.toggle_sidebar(),
                 Some(KeyCode::KeyE) => return self.toggle_files(),
                 _ => {}
             }
@@ -7391,6 +7775,37 @@ impl App {
                     return;
                 };
 
+                // A selection in the command being typed edits like one:
+                // Backspace or Delete takes it out, a character replaces it.
+                // The shell only has a caret, so it is walked to the
+                // selection's end and backspaced through it, wherever it was.
+                // Once: the selection goes with the key.
+                if action == KeyAction::Press && !ctrl && !alt && !sup && matches!(key, Key::Backspace | Key::Delete | Key::Char(_)) {
+                    let span = t.sel.as_ref().and_then(|sel| {
+                        let (a, b) = sel.bounds(&t.term);
+                        t.term.command_selection(a, b)
+                    });
+                    if let Some((from, to, caret)) = span {
+                        let (modes, kb) = (t.term.modes(), t.term.keyboard_mode());
+                        let press = |k: Key, m: Mods| input::encode(k, m, KeyAction::Press, modes, kb);
+                        let (walk, steps) = if to >= caret { (Key::Right, to - caret) } else { (Key::Left, caret - to) };
+                        let mut out = press(walk, Mods::empty()).repeat(steps);
+                        out.extend(press(Key::Backspace, Mods::empty()).repeat(to - from));
+                        if let Key::Char(_) = key {
+                            out.extend(press(key, mods));
+                        }
+                        if t.term.grid().display_offset != 0 {
+                            let off = t.term.grid().display_offset as isize;
+                            t.term.grid_mut().scroll_display(-off);
+                        }
+                        let _ = t.pty.write(&out);
+                        t.sel = None;
+                        // The typed-line model no longer matches what the shell holds.
+                        t.line_ok = false;
+                        self.dirty = true;
+                        return;
+                    }
+                }
                 if pressed && t.sel.is_some() {
                     t.sel = None;
                 }
@@ -7457,6 +7872,7 @@ impl App {
                             t.line.clear();
                             t.line_col = None;
                             t.line_ok = true;
+                            t.armed = Some((crate::clock::now(), crate::finish_work::Origin::ShellInput));
                         }
                         (Key::Enter, true) => {
                             t.line.clear();
@@ -7488,6 +7904,8 @@ impl App {
                     let off = t.term.grid().display_offset as isize;
                     t.term.grid_mut().scroll_display(-off);
                 }
+                crate::agent::typed(&mut t.agent, &bytes, crate::clock::now());
+                t.notice = None;
                 let _ = t.pty.write(&bytes);
             }
             Pane::Web(w) if w.focus_devtools && w.devtools.is_some() => {
@@ -7527,12 +7945,21 @@ impl App {
     pub(crate) fn make_tab(&mut self, left: Pane, right: Option<Pane>) -> Tab {
         let id = self.next_id;
         self.next_id += 1;
-        let look = self.look_for(&left, None);
-        Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look }
+        let shell_slot = self.new_shell_slot(&left);
+        let look = self.look_with(&left, None, shell_slot);
+        let mut tab = Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look, shell_slot };
+        Self::fit_palette(&self.theme, &mut tab);
+        tab
     }
 
     /// Ask the rules what a new tab looks like.
     pub(crate) fn look_for(&self, left: &Pane, parent: Option<&Overrides>) -> Overrides {
+        self.look_with(left, parent, None)
+    }
+
+    /// The same, with a shell stack's family slot offered to the rules as
+    /// `ctx.shell_color`.
+    pub(crate) fn look_with(&self, left: &Pane, parent: Option<&Overrides>, slot: Option<u8>) -> Overrides {
         let (kind, profile) = match left {
             Pane::Term(t) => ("terminal", self.profiles.get(t.profile).map(|p| p.name.as_str()).unwrap_or("")),
             Pane::Web(_) => ("page", ""),
@@ -7561,6 +7988,7 @@ impl App {
             host: &host,
             parent,
             tab_colours: &self.tab_colours,
+            shell_color: self.shell_color(slot),
         })
     }
 
@@ -8142,7 +8570,7 @@ impl App {
         self.closed.push(Closed::Held(info));
         self.tab_removed(i);
         self.play_event("tab.close");
-        self.notice("detached · the shell keeps running; reopen-closed or the atlas brings it back");
+        self.notice(nus_render::text::icons::TERMINAL, "Detached", "the shell keeps running; reopen-closed or the atlas brings it back");
         self.dirty = true;
     }
 
@@ -8154,7 +8582,7 @@ impl App {
                 self.tabs.push(tab);
                 self.activate(self.tabs.len() - 1);
             }
-            Err(e) => self.notice(&format!("could not attach: {e}")),
+            Err(e) => self.notice_problem("Could Not Attach", e.to_string()),
         }
     }
 
@@ -8287,16 +8715,9 @@ impl App {
     }
 
     pub(crate) fn toggle_split(&mut self) {
-        let tab = &mut self.tabs[self.active];
-        if tab.right.is_some() {
-            tab.right = None;
-            tab.focus_right = false;
-        } else if let Some(w) = self.new_web_pane(&self.behavior.prompt.search_home()) {
-            let tab = &mut self.tabs[self.active];
-            tab.right = Some(Pane::Web(w));
-            tab.focus_right = true;
-        }
-        self.layout();
+        let Some(t) = self.tabs.get(self.active) else { return };
+        let op = if t.right.is_some() { crate::director::Op::Kill { tab: t.id, right: true } } else { crate::director::Op::Split { tab: t.id } };
+        self.direct(op);
     }
 
     pub fn focus_changed(&mut self, focused: bool) {
@@ -8403,6 +8824,9 @@ impl App {
         if self.timeline_pointer(x,y){self.dirty=true;return;}
         if self.palette.is_none() && !self.me_card.open && self.start.is_none() && self.library_pointer(x,y) { return; }
         if self.sidebar_resize.is_some(){self.sidebar_resize_to(x,y);return;}
+        if self.intel_move(x, y) {
+            return;
+        }
         if let Some(hit) = self.settings_drag {
             self.apply_setting(hit, x);
             return;
@@ -8421,10 +8845,16 @@ impl App {
         }
         self.term_drag(x, y);
         self.editor_motion(x, y);
+        self.home_drag(x);
         if let Some((i, off, y0)) = self.drag_armed {
-            if (y - y0).abs() > self.px(4.0) {
+            let x0 = self.row_host.map(|h| h.1).unwrap_or(x);
+            if (y - y0).abs() > self.px(4.0) || (x - x0).abs() > self.px(12.0) {
                 self.drag_armed = None;
                 self.drag = Some((i, off, y));
+                // The page shows the tab you were on, to drop this one beside.
+                if let Some((h, _)) = self.row_host.filter(|&(h, _)| h != i && h < self.tabs.len()) {
+                    self.activate(h);
+                }
             }
         }
         if let Some(d) = self.drag.as_mut() {
@@ -8441,13 +8871,13 @@ impl App {
             self.dirty = true;
         }
         // A resize arrow over a divider (or while dragging one).
-        let want = self.sidebar_resize_at(x,y).map(|r|if r==crate::sidebar::Resize::Width {crate::tiles::Divider::X}else{crate::tiles::Divider::Y}).or(self.tile_drag).or_else(|| self.divider_at(x, y)).or_else(|| if self.split_drag || self.split_divider_at(x, y) { Some(crate::tiles::Divider::X) } else { None });
+        let want = self.sidebar_resize_at(x,y).map(|r|if r==crate::sidebar::Resize::Width {crate::tiles::Divider::X}else{crate::tiles::Divider::Y}).or(self.tile_drag.as_ref().map(|g| if g.axis == crate::tiles::Axis::Row { crate::tiles::Divider::X } else { crate::tiles::Divider::Y })).or_else(|| self.divider_at(x, y)).or_else(|| if self.split_drag || self.split_divider_at(x, y) { Some(crate::tiles::Divider::X) } else { None });
         if want != self.resize_cursor {
             self.resize_cursor = want;
             match want {
                 Some(crate::tiles::Divider::X) => self.window.set_cursor(winit::window::CursorIcon::ColResize),
                 Some(crate::tiles::Divider::Y) => self.window.set_cursor(winit::window::CursorIcon::RowResize),
-                None => self.pointer_request = Some(self.cursor.pointer),
+                None => self.pointer_reset = true,
             }
         }
         if self.sidebar_visible() {
@@ -8479,6 +8909,22 @@ impl App {
         }
     }
 
+    /// This window's shell work for Finish Work: every command a shell says
+    /// is running, with how the user started it (None if they didn't).
+    pub(crate) fn finish_work_items(&self) -> Vec<crate::finish_work::Work> {
+        let mut out = Vec::new();
+        for tab in &self.tabs {
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Term(t) = p {
+                    if let (Some(id), Some(_)) = (t.work_id, t.running_since) {
+                        out.push(crate::finish_work::Work { id: crate::finish_work::WorkId::Shell(id), origin: t.work_origin });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// What a header icon does; shared by the mouse and AccessKit.
     pub(crate) fn crumb_action(&mut self, hit: CrumbHit) {
         match hit {
@@ -8489,15 +8935,14 @@ impl App {
             CrumbHit::Space | CrumbHit::Tab | CrumbHit::Search => self.open_palette(PaletteMode::Go),
             CrumbHit::Url => self.open_palette(PaletteMode::Url),
             CrumbHit::Start => self.open_start(),
+            CrumbHit::Nus => self.toggle_home_latch(),
+            CrumbHit::Agents => self.goto_agent(),
             CrumbHit::Updates => {
                 self.open_settings_at(14,None);
                 if crate::updates::status().available {crate::updates::confirm(true);}
                 self.dirty=true;
             },
-            CrumbHit::Sidebar => {
-                self.sidebar = !self.sidebar;
-                self.layout();
-            }
+            CrumbHit::Sidebar => self.toggle_sidebar(),
             CrumbHit::Ports => self.open_board(),
             CrumbHit::Assistant => self.open_settings_at(crate::settings::SEC_ASSISTANTS, None),
             CrumbHit::Pip => self.return_from_pip(),
@@ -8505,6 +8950,11 @@ impl App {
                 if let Some(i) = self.tabs.iter().position(|t| t.waiting()) {
                     self.activate(i);
                 }
+            }
+            // The host owns the lease (finish_work.rs); it answers next turn.
+            CrumbHit::FinishWork => {
+                crate::finish_work::request_toggle();
+                self.dirty = true;
             }
         }
     }
@@ -8522,6 +8972,9 @@ impl App {
         if self.timeline_mouse(button,state,x,y){return;}
         // The mouse's own back and forward buttons, on the page under them.
         if pressed && matches!(button, MouseButton::Back | MouseButton::Forward) {
+            if button == MouseButton::Back && self.home_latch_back() {
+                return;
+            }
             let under = self.tabs.get(self.active).and_then(|t| {
                 [(false, Some(&t.left)), (true, t.right.as_ref())].into_iter().find_map(|(right, p)| match p {
                     Some(Pane::Web(w)) if w.rect.contains(x, y) => Some(right),
@@ -8535,6 +8988,9 @@ impl App {
         }
         if !pressed && button == MouseButton::Left && self.settings_drag.take().is_some() {
             self.save_prefs();
+            return;
+        }
+        if button == MouseButton::Left && self.intel_mouse(pressed, x, y) {
             return;
         }
         let strip = self.strip_rect();
@@ -8655,6 +9111,7 @@ impl App {
                     self.selected.extend(a..=b);
                 } else {
                     self.selected.clear();
+                    self.row_host = Some((self.active, x));
                     self.activate(i);
                     // Armed: a few px of travel starts a drag.
                     if let Some(&(_, ry, _)) = g.rows.iter().find(|&&(t, _, _)| t == i) {
@@ -8707,12 +9164,14 @@ impl App {
         }
         if pressed && button == MouseButton::Left && self.split_divider_at(x, y) {
             self.split_drag = true;
+            self.drag_from = self.tabs.get(self.active).map(|t| crate::director::Op::SplitWidth { tab: t.id, w: t.split_w });
             return;
         }
         // Tiles: grab a divider, or focus the tile under the pointer.
         if pressed && button == MouseButton::Left {
-            if let Some(d) = self.divider_at(x, y) {
-                self.tile_drag = Some(d);
+            if let Some(g) = self.tile_rule_at(x, y) {
+                self.tile_drag = Some(g);
+                self.drag_from = Some(crate::director::Op::Tiling(self.tiling.clone()));
                 return;
             }
             if let Some(i) = self.tile_at(x, y) {
@@ -8770,12 +9229,14 @@ impl App {
             self.drag_armed = None;
             if self.tile_drag.take().is_some() {
                 self.apply_term_resizes(true);
+                self.divider_dragged();
                 self.save_session();
                 return;
             }
             if self.split_drag {
                 self.split_drag = false;
                 self.apply_term_resizes(true);
+                self.divider_dragged();
                 self.save_session();
                 return;
             }
@@ -8784,7 +9245,23 @@ impl App {
                 return;
             }
             if let Some((i, _, _)) = self.drag.take() {
+                self.row_host = None;
+                // Out of the window: onto another nus window, or a new one there.
+                if let Some(dest) = self.dropped_outside() {
+                    self.send_tab(i, dest);
+                    return;
+                }
+                let what = crate::pane_mode::Dragging::Tab(i);
+                if let Some(d) = self.drop_at(x, y, what) {
+                    self.apply_drop(what, d);
+                    return;
+                }
+                // A reorder in the sidebar; the dragged tab is in front again.
+                let id = self.tabs.get(i).map(|t| t.id);
                 self.drop_row(i, y);
+                if let Some(k) = id.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
+                    self.activate(k);
+                }
                 return;
             }
         }
@@ -8807,6 +9284,9 @@ impl App {
                 }
             }
         }
+        if !pressed && button == MouseButton::Left {
+            self.home_release();
+        }
         if self.editor_mouse(button, state, x, y) {
             return;
         }
@@ -8823,6 +9303,9 @@ impl App {
             return;
         }
         if pressed && button == MouseButton::Left && self.home_click(x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.palette.is_none() && self.overlay_click(x, y) {
             return;
         }
         if pressed && button == MouseButton::Left && self.hands_click(x, y) {
@@ -8999,6 +9482,7 @@ impl App {
             MouseScrollDelta::PixelDelta(p) => p.y as f32,
         };
         if self.timeline_wheel(x,y,dy_px){return;}
+        if self.me_wheel(x, y, dy_px) { return; }
         if self.palette.is_some() {
             let (at, max) = (self.palette_scroll, self.palette_scroll_max);
             self.palette_scroll = self.glide(crate::scrolling::Glider::Palette, at, -dy_px, max);
@@ -9189,19 +9673,7 @@ impl App {
                 let (lx, ly) = ((x - w.page.x) / scale, (y - w.page.y) / scale);
                 w.tab.wheel(lx as i32, ly as i32, cef_flags, dx, dy);
                 if sideways {
-                    let now = crate::clock::now();
-                    let far = match w.swipe {
-                        Some((far, at)) if crate::clock::since(at).as_millis() < 250 => far + sx,
-                        _ => sx,
-                    };
-                    w.swipe = Some((far, now));
-                    self.dirty = true;
-                    if far.abs() >= crate::swipe::THRESHOLD {
-                        // Fired: the rest of this gesture is spent.
-                        w.swipe = Some((far.signum() * crate::swipe::THRESHOLD, now - std::time::Duration::from_secs(1)));
-                        let back = far > 0.0;
-                        self.navigate(right, back);
-                    }
+                    self.swipe_step(right, sx);
                 }
             }
         }
@@ -9739,10 +10211,10 @@ impl App {
                 self.fonts.draw_icon(scene, nus_render::text::icons::SETTINGS, size, x, y, color);
             }
             Pane::Hints(_) => {
-                self.fonts.draw_icon(scene, nus_render::text::icons::HOME, size, x, y, color);
+                self.fonts.draw_icon(scene, nus_render::text::icons::ROCKET, size, x, y, color);
             }
-            Pane::Home(_) => {
-                self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, size, x, y, color);
+            Pane::Home(h) => {
+                self.fonts.draw_icon(scene, if h.library { nus_render::text::icons::BOOK } else { nus_render::text::icons::HOME }, size, x, y, color);
             }
             Pane::Editor(_) => {
                 self.fonts.draw_icon(scene, nus_render::text::icons::CODE, size, x, y, color);

@@ -556,20 +556,32 @@ impl FontSystem {
     /// Lay out `text` at (x, baseline) and push its glyphs. Returns the
     /// advance width.
     pub fn draw(&mut self, scene: &mut Scene, s: Style, x: f32, baseline: f32, text: &str) -> f32 {
+        // Labels (the tracked style) read in Caps, never ALLCAPS.
+        if s.tracking > 0.0 {
+            self.draw_as_is(scene, s, x, baseline, &caps(text))
+        } else {
+            self.draw_as_is(scene, s, x, baseline, text)
+        }
+    }
+
+    /// `draw`, keeping the text's own case even in a tracked style: a
+    /// value — a code to type, a URL, an error — is not a label.
+    pub fn draw_as_is(
+        &mut self,
+        scene: &mut Scene,
+        s: Style,
+        x: f32,
+        baseline: f32,
+        text: &str,
+    ) -> f32 {
         let Style {
             font,
             px,
             color,
             tracking,
         } = s;
-        // Labels (the tracked style) read in Caps, never ALLCAPS.
-        let text = if tracking > 0.0 {
-            caps(text)
-        } else {
-            text.to_string()
-        };
         let mut pen = x;
-        for g in self.shape(font, px, &text).iter() {
+        for g in self.shape(font, px, text).iter() {
             if let Some(a) = self.glyph(g.font, px, g.id) {
                 scene.push(Instance::glyph(
                     (pen + g.x_offset + a.left as f32).round(),
@@ -587,13 +599,15 @@ impl FontSystem {
 
     /// Width of `text` without drawing it.
     pub fn measure(&self, s: Style, text: &str) -> f32 {
-        let capped;
-        let text = if s.tracking > 0.0 {
-            capped = caps(text);
-            capped.as_str()
+        if s.tracking > 0.0 {
+            self.measure_as_is(s, &caps(text))
         } else {
-            text
-        };
+            self.measure_as_is(s, text)
+        }
+    }
+
+    /// Width of `text` as `draw_as_is` lays it out.
+    pub fn measure_as_is(&self, s: Style, text: &str) -> f32 {
         let key = (
             s.font.0,
             s.px.to_bits(),
@@ -714,6 +728,9 @@ pub mod icons {
     icon!(PAUSE, "pause");
     icon!(PLAY_FILL, "play-fill");
     icon!(PAUSE_FILL, "pause-fill");
+    // Finish Work: regular while idle, filled while it holds the machine awake.
+    icon!(COFFEE, "coffee");
+    icon!(COFFEE_FILL, "coffee-fill");
     icon!(BACK_10, "arrow-counter-clockwise");
     icon!(FORWARD_10, "arrow-clockwise");
     icon!(CALENDAR, "calendar-blank");

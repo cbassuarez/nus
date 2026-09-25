@@ -43,8 +43,11 @@ ANSI 0–15, ink theme:
 Terminal default fg/bg = ink/paper of the theme. Cursor: block, the
 theme's caret on paper, no blink by default. Caret and selection are
 tokens a theme may set per face (LOOK · TOKENS); the shell's selection,
-the editor's selection and both carets draw from them, and the cursor
-rule's other choices (signal, the tab's own) sit over the caret.
+the editor's selection and every caret draw from them — the shell's, the
+editor's, the home line's and the palette's — and the cursor rule's other
+choices (signal, the tab's own) sit over the caret. The home line and the
+palette follow CURSOR's shape, blink and weight too: at SHELL they show
+the bar a shell prompt shows.
 
 A program's own colours — truecolour and the 256 — are graded before
 they reach the screen: any text under 4.5:1 against its background is

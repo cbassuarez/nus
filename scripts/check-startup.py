@@ -58,12 +58,14 @@ base = json.loads((profile / "settings.json").read_text())
 base["behavior"].update(splash="None", atlas="Planet", home_url=url, window_start="Last")
 base["window_rect"] = [100, 100, 2880, 1800]
 
-# Startup and new-tab paths: no temporary shell left behind, no existing tabs lost.
+# Startup and new-tab paths: no temporary shell left behind, no existing tabs
+# lost. Home is never duplicated: a new tab goes back to the existing one.
 for mode, kind, count in [("Prompt", "home", 1), ("HomePage", "web", 1),
                           ("LastPage", "home", 1), ("Layout", "web", 2)]:
     prefs = copy.deepcopy(base)
     prefs["behavior"].update(then=mode, then_layout="qa")
-    steps = f"assertpane {kind}\nasserttabs {count}\nnewtab\nwait 500\nassertpane {kind}\nasserttabs {count * 2}"
+    after = count if kind == "home" else count * 2
+    steps = f"assertpane {kind}\nasserttabs {count}\nnewtab\nwait 500\nassertpane {kind}\nasserttabs {after}"
     if mode == "HomePage":
         steps += f"\nasserturl {url}"
     run("destination-" + mode, steps, prefs)
@@ -83,11 +85,13 @@ asserttabs 3
 startpage layout missing
 newtab
 assertpane home
-asserttabs 4
+asserttabs 3
 startpage prompt
 newtab
+newtab
+newtab
 assertpane home
-asserttabs 5""", base)
+asserttabs 3""", base)
 
 for mode, kind in [("prompt", "home"), ("shell", "term"), ("launch", "web")]:
     run("new-window-" + mode, f"newwindowlook {mode}\nstartpage home {url}\nnewwindow\nwait 6000",

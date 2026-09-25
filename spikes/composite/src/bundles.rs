@@ -286,15 +286,15 @@ impl App {
             State::Installed => {
                 if let Some(d) = dir_of(&b) {
                     match std::fs::remove_dir_all(d) {
-                        Ok(())=>self.toast_with(None,format!("{} removed",b.name),"",None),
-                        Err(e)=>self.toast_with(None,"Could not remove tool",e.to_string(),None),
+                        Ok(())=>self.toast(nus_render::text::icons::CHECK,"Removed",b.name.to_string(),None),
+                        Err(e)=>self.toast_problem("Could Not Remove",format!("{} · {e}",b.name),None),
                     }
                 }
             }
             State::Absent | State::Failed(_) => {
                 self.jobs.failed.remove(id);
                 self.jobs.running.push(id.to_string());
-                self.toast_with(None,format!("Installing {}",b.name),"You can keep working",None);
+                self.toast(nus_render::text::icons::DOWNLOAD,"Installing",format!("{} · you can keep working",b.name),None);
                 fetch(b, self.jobs.tx.clone(),self.proxy.clone());
             }
             _ => {}
@@ -317,10 +317,10 @@ impl App {
                     let mut buffers=Vec::new();
                     for (ti,tab) in self.tabs.iter().enumerate(){for (right,pane) in std::iter::once((false,&tab.left)).chain(tab.right.as_ref().map(|p|(true,p))) {if let crate::app::Pane::Editor(e)=pane{for (bi,b) in e.buffers.iter().enumerate(){if b.ready()&&!b.in_lsp{buffers.push((ti,right,bi));}}}}}
                     for (ti,right,bi) in buffers{self.lsp_open_buffer(ti,right,bi);}
-                    self.toast_with(None,format!("{id} installed"),"Ready to use",None);
+                    self.toast(nus_render::text::icons::CHECK,"Installed",format!("{id} · ready to use"),None);
                 }
                 Err(e) => {
-                    self.toast_with(None,format!("{id} failed"),&e,None);
+                    self.toast_problem("Could Not Install",format!("{id} · {e}"),Some(crate::toast::Act::RetryInstall(id.clone())));
                     self.jobs.failed.insert(id, e);
                 }
             }

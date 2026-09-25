@@ -52,6 +52,13 @@ pub enum Event {
     Cwd(String),
     /// Progress from the shell (OSC 9;4): state, percent.
     Progress(u8, u8),
+    /// A program asked for a desktop notification: OSC 9;<text> (iTerm2)
+    /// or OSC 777;notify;<title>;<body> (rxvt, foot, Ghostty). Assistants
+    /// use these to say they need you. Control characters are stripped.
+    Notify {
+        title: Option<String>,
+        body: String,
+    },
     ClipboardStore(u8, Vec<u8>),
     ClipboardLoad(u8),
     CursorStyle(CursorStyle),
@@ -132,6 +139,10 @@ pub struct Term {
     /// and progress. Fed by OSC 133 / 7 / 9;4 before the bytes reach vte.
     pub marks: Vec<Mark>,
     pub cwd: Option<String>,
+    /// The host OSC 7 named with the cwd (`file://host/path`), when it did.
+    /// Differs from this machine's name inside an ssh session whose remote
+    /// shell reports where it is.
+    pub cwd_host: Option<String>,
     pub progress: Option<(u8, u8)>,
     /// Bytes of an OSC that ended past the last chunk.
     pending_osc: Vec<u8>,
@@ -179,6 +190,7 @@ impl Term {
             max_scrollback,
             marks: Vec::new(),
             cwd: None,
+            cwd_host: None,
             progress: None,
             pending_osc: Vec::new(),
             discard_control: false,
@@ -443,7 +455,8 @@ impl Term {
             } else {
                 rest.starts_with(b"133;")
                     || rest.starts_with(b"7;")
-                    || rest.starts_with(b"9;4;")
+                    || rest.starts_with(b"9;")
+                    || rest.starts_with(b"777;notify;")
                     || rest.starts_with(b"1337;File=")
             };
             if apc && !ours && !rest.is_empty() {
@@ -541,7 +554,8 @@ impl Term {
         self.scan_utf8 = scan_utf8;
     }
 
-    /// One of ours: 133;<A|B|C|D[;exit]>, 7;file://host/path, 9;4;state;pct.
+    /// One of ours: 133;<A|B|C|D[;exit]>, 7;file://host/path, 9;4;state;pct,
+    /// 9;<notification>, 777;notify;<title>;<body>.
     fn integration_osc(&mut self, payload: &[u8]) {
         let text = String::from_utf8_lossy(payload);
         if let Some(rest) = text.strip_prefix("133;") {
@@ -576,6 +590,12 @@ impl Term {
             self.events.push(Event::Mark(kind));
         } else if let Some(rest) = text.strip_prefix("7;") {
             let url = rest.trim();
+            let host = url
+                .strip_prefix("file://")
+                .and_then(|u| u.split_once('/'))
+                .map(|(h, _)| h)
+                .filter(|h| !h.is_empty())
+                .map(str::to_string);
             // file://host/path → path; Windows drives come as /C:/…
             let path = url
                 .strip_prefix("file://")
@@ -592,6 +612,7 @@ impl Term {
                 .map(|p| p.to_string())
                 .unwrap_or(decoded);
             if !path.is_empty() {
+                self.cwd_host = host;
                 self.cwd = Some(path.clone());
                 self.events.push(Event::Cwd(path));
             }
@@ -611,7 +632,45 @@ impl Term {
                 Some((state, pct.min(100)))
             };
             self.events.push(Event::Progress(state, pct.min(100)));
+        } else if let Some(rest) = text.strip_prefix("777;notify;") {
+            let (title, body) = match rest.split_once(';') {
+                Some((t, b)) => (Some(t), b),
+                None => (None, rest),
+            };
+            self.notify(title, body);
+        } else if let Some(rest) = text.strip_prefix("9;") {
+            // ConEmu's OSC 9 commands are a number first (9;1 … 9;12);
+            // anything else is iTerm2's notification text.
+            let command = rest
+                .split(';')
+                .next()
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            if !command {
+                self.notify(None, rest);
+            }
         }
+    }
+
+    /// A notification, cleaned: no control characters, at most 240 chars.
+    fn notify(&mut self, title: Option<&str>, body: &str) {
+        let clean = |s: &str| -> String {
+            let t: String = s
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            t.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(240)
+                .collect()
+        };
+        let body = clean(body);
+        let title = title.map(clean).filter(|t| !t.is_empty());
+        if body.is_empty() && title.is_none() {
+            return;
+        }
+        self.events.push(Event::Notify { title, body });
     }
 
     /// A sixel picture at the cursor, as an image placement.
@@ -1195,6 +1254,62 @@ impl Term {
             line += 1;
         }
         out.trim().to_string()
+    }
+
+    /// A selection in the command being typed, as the shell's line editor
+    /// counts it: characters from the command's start (the B mark) to where
+    /// the selection begins, to just past where it ends, and to the cursor.
+    /// The command is the B mark's row and the rows its text wraps onto.
+    /// None unless the shell sits at a prompt on the primary screen with the
+    /// selection and the cursor on that command; a selection may begin in
+    /// the prompt on the same row (a whole-line pick) and counts from the
+    /// command's start.
+    pub fn command_selection(
+        &self,
+        a: (u64, usize),
+        b: (u64, usize),
+    ) -> Option<(usize, usize, usize)> {
+        if self.modes.contains(Modes::ALT_SCREEN) {
+            return None;
+        }
+        let mark = self
+            .marks
+            .last()
+            .filter(|m| m.kind == MarkKind::CommandStart)?;
+        let grid = &self.primary;
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        // Every cell of the command in order, and how far its text runs.
+        let mut cells: Vec<(u64, usize)> = Vec::new();
+        let mut text = 0;
+        let mut line = mark.line;
+        let mut last = mark.line;
+        while let Some(row) = grid.row_abs(line) {
+            let from = if line == mark.line { mark.col } else { 0 };
+            for (col, cell) in row.cells.iter().enumerate().skip(from) {
+                if cell.flags.contains(Flags::WIDE_SPACER) {
+                    continue;
+                }
+                cells.push((line, col));
+                if cell.ch != ' ' && cell.ch != '\0' {
+                    text = cells.len();
+                }
+            }
+            last = line;
+            if !row.wrapped {
+                break;
+            }
+            line += 1;
+        }
+        let cursor = (grid.abs_row(self.cursor.row), self.cursor.col);
+        let on = |l: u64| l >= mark.line && l <= last;
+        if !on(end.0) || !on(cursor.0) || start.0 < mark.line {
+            return None;
+        }
+        let before = |p: (u64, usize)| cells.iter().take_while(|c| **c < p).count();
+        let through = |p: (u64, usize)| cells.iter().take_while(|c| **c <= p).count();
+        let to = through(end).min(text);
+        let from = before(start).min(to);
+        (to > from).then(|| (from, to, before(cursor)))
     }
 
     /// Call periodically (e.g. once per frame): ends a synchronized update
@@ -2300,6 +2415,53 @@ mod tests {
     }
 
     #[test]
+    fn a_selection_in_the_command_counts_from_its_start() {
+        let mut t = term(40, 5);
+        feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07echo hello world");
+        // "hello" is columns 7..=11; the cursor sits after "world".
+        assert_eq!(t.command_selection((0, 7), (0, 11)), Some((5, 10, 16)));
+        // Backwards is the same selection.
+        assert_eq!(t.command_selection((0, 11), (0, 7)), Some((5, 10, 16)));
+        // A whole-row pick starts in the prompt and counts from the command.
+        assert_eq!(t.command_selection((0, 0), (0, 39)), Some((0, 16, 16)));
+        // The caret anywhere: moved back to "echo|".
+        feed(&mut t, "\x1b[12D");
+        assert_eq!(t.command_selection((0, 13), (0, 17)), Some((11, 16, 4)));
+        // Blank cells past the text are not part of it.
+        assert_eq!(t.command_selection((0, 20), (0, 30)), None);
+    }
+
+    #[test]
+    fn a_selection_follows_the_command_across_its_wrap() {
+        let mut t = term(10, 5);
+        feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07abcdefghijkl");
+        // b..=d on the first row, j..=k on the wrapped second.
+        assert_eq!(t.command_selection((0, 3), (0, 5)), Some((1, 4, 12)));
+        assert_eq!(t.command_selection((1, 1), (1, 2)), Some((9, 11, 12)));
+        assert_eq!(t.command_selection((0, 8), (1, 1)), Some((6, 10, 12)));
+    }
+
+    #[test]
+    fn a_selection_outside_the_command_is_not_its_business() {
+        let mut t = term(40, 6);
+        feed(
+            &mut t,
+            "\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07",
+        );
+        // Running or finished: no prompt, nothing to edit.
+        assert_eq!(t.command_selection((1, 0), (1, 2)), None);
+        feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07git st");
+        // Output above the prompt is not the command.
+        assert_eq!(t.command_selection((1, 0), (1, 2)), None);
+        // From the output into the command: not a command selection.
+        assert_eq!(t.command_selection((1, 0), (2, 4)), None);
+        assert_eq!(t.command_selection((2, 2), (2, 4)), Some((0, 3, 6)));
+        // A full-screen program owns the keys.
+        feed(&mut t, "\x1b[?1049h");
+        assert_eq!(t.command_selection((2, 2), (2, 4)), None);
+    }
+
+    #[test]
     fn marks_land_on_their_rows_and_survive_scrolling() {
         let mut t = term(20, 3);
         feed(
@@ -2337,11 +2499,41 @@ mod tests {
         assert!(t.cwd.is_none());
         feed(&mut t, "\x07y\x1b]9;4;1;42\x1b\\z");
         assert_eq!(t.cwd.as_deref(), Some("C:/Users/seb/nus"));
+        assert_eq!(t.cwd_host.as_deref(), Some("pc"));
         assert_eq!(t.progress, Some((1, 42)));
         assert_eq!(t.grid().row(0).text().trim_end(), "xyz");
         let events = t.take_events();
         assert!(events.iter().any(|e| matches!(e, Event::Cwd(_))));
         assert!(events.iter().any(|e| matches!(e, Event::Progress(1, 42))));
+    }
+
+    #[test]
+    fn notifications_from_programs() {
+        let mut t = term(40, 3);
+        // iTerm2's form, split across reads, BEL-terminated.
+        feed(&mut t, "a\x1b]9;Claude needs your");
+        feed(&mut t, " permission to use Bash\x07b");
+        // rxvt's form, ST-terminated, with a control character inside.
+        feed(&mut t, "\x1b]777;notify;Codex;turn\tdone\x1b\\c");
+        // ConEmu commands and progress are not notifications.
+        feed(&mut t, "\x1b]9;9;C:/x\x07\x1b]9;4;1;5\x07d");
+        assert_eq!(t.grid().row(0).text().trim_end(), "abcd");
+        let notes: Vec<_> = t
+            .take_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Notify { title, body } => Some((title, body)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                (None, "Claude needs your permission to use Bash".to_string()),
+                (Some("Codex".to_string()), "turn done".to_string()),
+            ]
+        );
+        assert_eq!(t.progress, Some((1, 5)));
     }
 
     #[test]

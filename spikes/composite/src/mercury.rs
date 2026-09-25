@@ -265,7 +265,7 @@ impl crate::app::App {
 
     pub(crate) fn claim_mercury(&mut self) {
         if let Err(e) = claim() {
-            self.notice(&e);
+            self.notice_problem("Could Not Claim", e);
             return;
         }
         let texture = self.mercury_texture();

@@ -11,14 +11,14 @@ impl App {
         if let Action::PromptShell(command) = row.action {
             if run { self.open_prompt_shell(&command); }
             else {
-                if !can_insert(&command) { self.notice("This command contains line breaks or control characters. Edit it to one line before inserting, or use Run explicitly.");return; }
+                if !can_insert(&command) { self.notice(nus_render::text::icons::TERMINAL,"Edit To One Line","this command has line breaks or control characters · edit it, or use Run");return; }
                 match self.new_term_pane(false, self.behavior.default_profile) {
                     Ok(mut pane) => {
                         pane.type_at_prompt = Some(command);
                         let tab = self.make_tab(crate::app::Pane::Term(pane), None);
                         self.tabs.push(tab); self.activate(self.tabs.len()-1); self.layout();
                     }
-                    Err(error) => self.notice(&format!("Could not open terminal: {error}")),
+                    Err(error) => self.notice_problem("Could Not Open Terminal", error.to_string()),
                 }
             }
         } else { self.run(row.action); }
@@ -32,8 +32,8 @@ impl App {
             if value.is_empty() { c.saved_names.remove(&previous); }
             else { c.saved_names.insert(previous, value.into()); }
         } else {
-            if value.is_empty() { self.notice("Enter a command, URL or assistant route."); return; }
-            if c.saved.iter().enumerate().any(|(i,v)|i!=index && v==value) { self.notice("That command is already saved."); return; }
+            if value.is_empty() { self.notice(nus_render::text::icons::PENCIL, "Enter A Command", "a command, URL or assistant route"); return; }
+            if c.saved.iter().enumerate().any(|(i,v)|i!=index && v==value) { self.notice(nus_render::text::icons::PENCIL, "Already Saved", ""); return; }
             c.saved[index] = value.into();
             if let Some(label) = c.saved_names.remove(&previous) { c.saved_names.insert(value.into(), label); }
         }
@@ -60,8 +60,8 @@ impl App {
     pub(crate) fn draw_saved_row(&mut self, scene: &mut Scene, r: Rect, row: &PaletteRow, selected: bool, preview: bool) {
         let Some((detail, verb)) = self.saved_detail(row) else { return };
         let t = self.theme.clone();
-        let fg = if selected { t.paper } else { t.ink };
-        let signal = if selected { t.paper } else { self.surface.signal };
+        let fg = if selected { self.on_fill(t.ink) } else { t.ink };
+        let signal = if selected { fg } else { self.surface.signal };
         if !selected { scene.rect(r, crate::app::fade(self.surface.signal, 0.045)); }
         scene.vline(r.x, r.y+self.px(6.0),r.h-self.px(12.0),self.px(2.0),signal);
         // Folded bookmark, with the same proportions at every density.

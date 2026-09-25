@@ -73,6 +73,7 @@ pub fn return_to_previous() -> Result<(), String> {
         .env("NUS_BACKUP", &backup).env("NUS_READY", &ready)
         .env("NUS_RESULT", std::env::current_dir().map_err(error)?.join("profile/update-result.txt"))
         .env("NUS_PLATFORM", std::env::consts::OS).env("NUS_RECOVER", r.generation.as_ref().unwrap())
+        .env("NUS_VERSION", &r.previous_version)
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)] { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000200); }
     let mut child = cmd.spawn().map_err(error)?;
@@ -464,6 +465,7 @@ pub fn stage_and_launch(release: &Release) -> Result<(), String> {
         .env("NUS_BACKUP", &backup)
         .env("NUS_READY", &ready)
         .env("NUS_RESULT", &result)
+        .env("NUS_VERSION", release.version.trim_start_matches('v'))
         .env("NUS_PLATFORM", std::env::consts::OS);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -507,7 +509,7 @@ const WINDOWS: &str = r#"$ErrorActionPreference='Stop'
 Set-Content -LiteralPath $env:NUS_READY -Value 'ready'
 $until=(Get-Date).AddMinutes(4)
 while(Get-Process -Id $env:NUS_PARENT_PID -ErrorAction SilentlyContinue){if((Get-Date) -gt $until){Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update cancelled: nus did not exit.';exit 1};Start-Sleep -Milliseconds 250}
-try{Move-Item -LiteralPath $env:NUS_TARGET -Destination $env:NUS_BACKUP;try{Move-Item -LiteralPath $env:NUS_STAGED -Destination $env:NUS_TARGET}catch{Move-Item -LiteralPath $env:NUS_BACKUP -Destination $env:NUS_TARGET;throw};Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update installed. Previous installation retained for recovery.';if($env:NUS_RECOVER){Start-Process -FilePath (Join-Path $env:NUS_TARGET 'nus.exe') -ArgumentList ('--recover-profile='+$env:NUS_RECOVER)}else{Start-Process -FilePath (Join-Path $env:NUS_TARGET 'nus.exe')}}catch{Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update failed; inspect the retained previous installation.';exit 1}
+try{Move-Item -LiteralPath $env:NUS_TARGET -Destination $env:NUS_BACKUP;try{Move-Item -LiteralPath $env:NUS_STAGED -Destination $env:NUS_TARGET}catch{Move-Item -LiteralPath $env:NUS_BACKUP -Destination $env:NUS_TARGET;throw};Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update installed. Previous installation retained for recovery.';try{Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue|ForEach-Object{$k=Get-ItemProperty -LiteralPath $_.PSPath;if($k.InstallLocation -and $k.InstallLocation.TrimEnd('\') -ieq $env:NUS_TARGET.TrimEnd('\')){Set-ItemProperty -LiteralPath $_.PSPath -Name DisplayVersion -Value $env:NUS_VERSION}}}catch{};if($env:NUS_RECOVER){Start-Process -FilePath (Join-Path $env:NUS_TARGET 'nus.exe') -ArgumentList ('--recover-profile='+$env:NUS_RECOVER)}else{Start-Process -FilePath (Join-Path $env:NUS_TARGET 'nus.exe')}}catch{Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update failed; inspect the retained previous installation.';exit 1}
 "#;
 #[cfg(test)]
 mod tests {

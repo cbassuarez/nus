@@ -38,7 +38,7 @@ the v1 crates implement; change the doc when a decision changes.
 - New tab opens ⌘K; there is no new-tab page. URL or search from the palette.
 - Search engine configurable (`browser.search`), default Google.
 - Third-party cookies blocked by default, per-site exceptions in config.
-- Downloads: silent to ~/Downloads, ruled toast with open / reveal.
+- Downloads: silent to ~/Downloads, a toast with Show In Folder.
 - Password manager: 1Password via the `op` CLI (biometric unlock), our own
   form detection and fill. Bitwarden later.
 - Import: bookmarks/history/Spaces from Chromium-family browsers (Arc, Chrome,
@@ -173,6 +173,21 @@ auto-collapse. Browser: per-site zoom, downloads directory, third-party
 cookie exceptions. Assistants: router table (default tool, model per tool,
 args vs stdin, web fallbacks).
 
+**Intelligence (built 2026-09-25).** One level, Instant · Quick · Balanced ·
+Deep · Max, for every assistant launch, shown as an atom: the fused-mercury
+nucleus is the model (nucleons = size) and the provider (chrome Claude, brass
+Codex, gunmetal local), flat hairline orbits and electrons are the level,
+the graduated dial reads it. It is set on an aperture ring (the scale turns
+under a fixed index and coasts to the nearest stop; a tap either side moves
+one), by dragging around the dial, or with ⌥← ⌥→ in a launch review;
+clicking the nucleus picks the next Claude model. It lives in the launch
+review and in Settings · Assistants (with the atom as the live preview).
+The level becomes only flags the CLI accepts: Claude on Auto gets `--model`
+haiku/sonnet/sonnet/opus/opus, and every level but Instant `--effort`
+low/medium/high/max (not for Haiku); Codex gets `model_reasoning_effort`
+minimal/low/medium/high/high; Ollama runs as installed. A model the person
+chose is never replaced. No cost meter, no labels on the atom.
+
 **Onboarding.** First launch opens a real shell with a ruled panel beside
 it: five things to try (⌘K, ⌘T + URL, a URL at the prompt, hover the edge,
 ⌥⌘T), each ticked off as you do it. No wizard, no modal.
@@ -306,8 +321,8 @@ tab. Start on login; make default browser.
 **Cursor.** Shape (the shell's, block, beam, underline), hollow or hidden
 when unfocused, blink never / after 2s idle / always with a period,
 colour ink / signal / the tab's own, motion jump / glide / comet on the
-motion register, beam weight, pointer over the chrome (system, ink arrow,
-signal dot), hide the pointer while typing.
+motion register, beam weight, hide the pointer while typing. The pointer
+itself is always the system's.
 
 **Width rule for all of it.** Every page is the same ruled two-column
 form; under 900px it becomes tiles that drill in. Settings changed by
@@ -442,10 +457,14 @@ short string in the favicon's place), a row of swatches (the user's
 tint beats the rules' and survives a theme), PIN, CLOSE, TILE, SAVE TO
 FOLDER. All of it in the session.
 
-**Tiles.** Ctrl+click rows, Ctrl+Shift+D: two side by side, three as an
-L, four as a grid. A tiling belongs to its tabs and shows whenever one
-is active; dividers drag; Ctrl+Alt+arrows walk, with Shift swap; a
-closed tile re-tiles the rest.
+**Tiles.** Ctrl+click rows, Ctrl+Shift+D. A tiling is a tree of splits
+over up to eight tabs: it starts from a template (two side by side,
+three as an L, four as a grid, more halved in turn) and a tab added to a
+shown tiling splits the largest tile along its longer side. A tiling
+belongs to its tabs and shows whenever one is active; every rule drags
+on its own; Ctrl+Alt+arrows walk, with Shift swap; a closed tile gives
+its room to its neighbour. The shape is kept in the session and in
+layout files (`tiles = { row = { 1, { column = { 2, 3 } } } }`).
 
 **Peek.** Alt+click a link: it floats over the page behind a scrim.
 Esc or a click outside closes it; Ctrl+Enter keeps it in the stack. A
@@ -521,6 +540,32 @@ then MOVE (drag onto a sidebar row, or NEW TAB), SWAP, SOLO, TO A TAB,
 CLOSE bloom out of it on a proximity field and fade as it leaves —
 never persistent. The rule between the panes lights as you near it and
 drags; the width is the tab's. TABS · PANE CONTROLS: NEAR or NEVER.
+
+**The pane director.** Every layout change (split, swap, solo, to a tab,
+join, close, a width, the tiling) is one op with its inverse on the
+window's layout history: Ctrl+Alt+Z undoes, with Shift redoes; a drop
+that takes several ops undoes as one. Closing a pane is the one change
+with no way back. The palette's `pane …` lists what the active tab
+allows.
+
+**Pane mode.** Ctrl+Alt+P, and single keys: hjkl focus, HJKL swap,
+arrows move the nearest rule, = evens every tile to the same area,
+z zooms one pane and back, s splits, t to a tab, w to another window,
+n to a new one, x closes, u / r undo and redo, Esc leaves.
+
+**Drop zones.** Drag a pane by its move handle, or a tab by its row,
+over the page: the pane under the pointer lights the edge or the middle
+it would land on, with what letting go does. An edge splits there, the
+middle swaps (or joins a tab with room). A row drag shows the tab you
+were on, to drop beside it; let go in the sidebar and it is a reorder.
+
+**Between windows.** Windows share one GPU device, so a tab moves whole:
+its shell keeps running, its page keeps its place. `move to window …`
+in the palette, w / n in pane mode, or drag a row or a pane out of the
+window: onto another nus window it joins it, anywhere else a new window
+opens there. A window's only tab, the quick terminal's, a peek and the
+floating player's stay. Moves between windows are not on the layout
+history; sending back is the way back.
 
 **The caret is Neovide's.** A port of its cursor renderer: four
 critically damped springs, the leading corners fast and the trailing
@@ -600,8 +645,9 @@ system), RUN AGAIN (its block command), TUNNEL (cloudflared or ngrok in
 the owning tab's split, the public URL on the row), WATCH (a toast when
 it comes up or goes), and an inline rename on the name cell (persisted
 by process+port in profile/ports.json). A new port: the status icon
-lights and a line rides beside it for 6 s — "5173 · vite is up · O to
-open" — never stealing focus.
+lights for 6 s and a toast says "New Port 5173 · vite" with an Open chip
+(O does the same while it glows) — never stealing focus. A failed action
+on a port is a problem toast.
 
 **Settings — PORTS:** GROUPING (origin · port · process); OPEN IN (tab ·
 split · peek); POLL WHILE OPEN (1 s · 5 s · 10 s); NEW-PORT TOAST (on ·
@@ -631,8 +677,7 @@ same pane machinery.
 the monitor, no top border, 2px edges, 40% tall (SIZE: 30–60%), the
 Space's band as a lip along its foot that you drag to resize; the
 masthead reads *quick* · the Space's square · the tab's title, with
-LAND · PIN · ESC on the right; the foot carries the ports toast or the
-hotkey's status. The CARD: 70% × 60% centred, the carapace as a 22px
+LAND · PIN · ESC on the right; the foot carries the hotkey's status. The CARD: 70% × 60% centred, the carapace as a 22px
 frame around the content (the one surface texture belongs on), a short
 signal mark in the frame's foot; drag the frame to move, the corner to
 resize. Both ride in on the motion register (the sheet drops, the card

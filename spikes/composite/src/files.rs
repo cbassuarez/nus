@@ -196,7 +196,7 @@ impl App {
     pub(crate) fn open_folder(&mut self, folder: &str) {
         let path = PathBuf::from(folder);
         if !path.is_dir() {
-            self.notice(&format!("not a folder · {folder}"));
+            self.notice(nus_render::text::icons::FOLDER, "Not A Folder", folder);
             return;
         }
         self.bind_workspace(Some(path.clone()));
@@ -218,7 +218,7 @@ impl App {
                     self.activate(self.tabs.len() - 1);
                 }
             }
-            Err(e) => self.notice(&format!("{e}")),
+            Err(e) => self.notice_problem("Could Not Open Terminal", e.to_string()),
         }
         if self.side_page != SidePage::Files {
             self.toggle_files();

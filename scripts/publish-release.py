@@ -40,11 +40,23 @@ def main():
         required_signing={'macos-arm64':'notarized','windows-x86_64':'authenticode','linux-x86_64':'checksum'}
         if channel == 'stable' and entry['signing'] != required_signing[target]:
             raise ValueError('A stable desktop package is not signed')
+        # The installer rides on its platform's record, so an updater that
+        # picks the first asset for its target still finds the portable package.
+        installer=entry.get('installer')
+        if installer is None and channel == 'stable' and target == 'windows-x86_64':
+            raise ValueError('A stable Windows release requires its installer')
+        if installer is not None:
+            setup=args.directory/installer['name']
+            if installer['name'] != f'{archive.name.removesuffix(".zip")}-setup.exe' or entry['signing'] != 'authenticode':
+                raise ValueError('Mixed release artifacts')
+            if setup.stat().st_size != installer['size'] or package.digest(setup) != installer['sha256']:
+                raise ValueError(f'Invalid installer: {setup.name}')
         entries.append(entry)
+    files=[f for e in entries for f in [e, e.get('installer')] if f]
     maintenance=support.evaluate(json.loads(args.support_policy.read_text()),args.tag)
     manifest={'state':'active','maintenance':maintenance,'schema':1,'version':args.tag,'revision':args.revision,'channel':entries[0]['channel'],'assets':entries}
     (args.directory/'release.json').write_text(json.dumps(manifest,indent=2)+'\n')
-    (args.directory/'SHA256SUMS.txt').write_text(''.join(f'{e["sha256"]}  {e["name"]}\n' for e in entries))
+    (args.directory/'SHA256SUMS.txt').write_text(''.join(f'{f["sha256"]}  {f["name"]}\n' for f in files))
     notes=args.directory/'notes.md'
     lines=[f'nus {args.tag}', '', 'A terminal, browser and workspace in one application.', '', f'Channel: **{manifest["channel"]}** · Source: `{args.revision}`']
     candidate=package.ROOT/'docs/releases'/f'{args.tag}.md'
@@ -58,10 +70,10 @@ def main():
         url=f'https://github.com/cbassuarez/nus/blob/{args.revision}/docs/releases/{args.tag}.md'
         lines += ['', f'[Candidate review notes, compatibility and known limitations]({url})']
     lines += ['', '## Downloads', '', '| Package | Signing |', '| --- | --- |']
-    lines.extend(f'| {e["target"]} | {e["signing"]} |' for e in entries)
+    lines.extend(f'| {e["target"]}{" (installer and portable ZIP)" if e.get("installer") else ""} | {e["signing"]} |' for e in entries)
     omitted=sorted(package.TARGETS-targets)
     if omitted: lines += ['', 'Not included in this preview: '+', '.join(omitted)+'. These packages remain unavailable until their platform checks and signing setup are complete.']
-    lines += ['', 'Extract the complete package before launching. macOS: move nus.app to Applications. Windows: launch nus.exe. Linux: run ./nus; see README.txt for desktop integration and runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://cbassuarez.com/nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
+    lines += ['', 'Extract the complete package before launching. macOS: move nus.app to Applications. Windows: run the -setup.exe installer, or extract the portable ZIP and launch nus.exe. Linux: run ./nus; see README.txt for desktop integration and runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://cbassuarez.com/nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
     # The public API returns release notes without a second cross-origin asset
     # request. Keep the same verified metadata available to the download page.
     lines += ['', '<!-- nus-release:'+json.dumps(manifest,separators=(',',':'))+' -->']
@@ -75,7 +87,7 @@ def main():
         command=['gh','release','create',args.tag,'--target',args.revision,'--title',f'nus {args.tag}','--draft','--notes-file',str(notes)]
         if manifest['channel']=='preview': command.append('--prerelease')
         subprocess.run(command,check=True)
-    assets=[str(args.directory/e['name']) for e in entries]+[str(args.directory/'release.json'),str(args.directory/'SHA256SUMS.txt')]
+    assets=[str(args.directory/f['name']) for f in files]+[str(args.directory/'release.json'),str(args.directory/'SHA256SUMS.txt')]
     subprocess.run(['gh','release','upload',args.tag,*assets,'--clobber'],check=True)
     subprocess.run(['gh','release','edit',args.tag,'--draft=false','--latest='+('true' if maintenance['latest'] else 'false')],check=True)
 

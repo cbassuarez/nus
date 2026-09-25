@@ -11,6 +11,13 @@ use cef::*;
 /// What the app reads each frame.
 #[derive(Default)]
 pub struct Shared {
+    /// Download provenance (Finish Work, finish_work.rs). The user's own
+    /// input into this page, as nus forwarded it: a page cannot make these.
+    pub gesture_at: Option<std::time::Instant>,
+    /// The last main-frame navigation Chromium marked as a user gesture.
+    pub nav_gesture_at: Option<std::time::Instant>,
+    /// nus itself started a download for the user (Save image, and so on).
+    pub nus_download_at: Option<std::time::Instant>,
     pub sleep_safe: bool,
     pub suspended: bool,
     pub restore_scroll: Option<(f64,f64)>,
@@ -64,7 +71,7 @@ pub struct Shared {
     /// Pages the menu asked to open: (url, beside).
     pub opens: Vec<(String, bool)>,
     /// A word for a toast the menu earned ("copied · …").
-    pub said: Option<String>,
+    pub said: Option<(String, String)>,
     /// What the page said and fetched: console calls, exceptions, requests
     /// and responses, as `{ "kind", "at", … }`, newest last, capped.
     pub log: Vec<serde_json::Value>,
@@ -73,18 +80,42 @@ pub struct Shared {
     pub favicon_url: String,
     /// Find in page: (matches, active ordinal), from the find handler.
     pub find: Option<(i32, i32)>,
-    /// Requests refused by content blocking on this page.
-    pub blocked: u32,
     /// A permission the page asked for, waiting on the band.
     pub permission: Option<PermissionAsk>,
     /// A <select> (or other popup widget): where it is and its texture.
     pub select: SelectPopup,
+    /// The page nus shows in place of this site (interstitial.rs): a load
+    /// error, a crash, a dangerous site, a `nus://` page.
+    pub interstitial: Option<crate::interstitial::Page>,
+    /// Write `interstitial` over the next main-frame document that loads.
+    pub(crate) inject: bool,
+    /// The renderer is gone or the site was refused: the app loads a blank
+    /// document to write the page over.
+    pub(crate) blank: bool,
+    /// Commands the page's transcript sent back, for the app to run.
+    pub interstitial_acts: Vec<String>,
+    /// Drawn by nus over the live page: hung, waking, mic/camera, file.
+    pub overlay: Option<crate::interstitial::Page>,
+    /// The renderer stopped answering; wait or stop through this.
+    pub hung: Option<UnresponsiveProcessCallback>,
+    /// The watch on a shown page: a trivial question it hasn't answered
+    /// yet (message id, asked at), and when it last answered one.
+    pub(crate) ping: Option<(i32, std::time::Instant)>,
+    pub(crate) answered: Option<std::time::Instant>,
+    /// You chose to stop the hung page: its crash reads as that.
+    pub(crate) stopping: bool,
+    /// A `nus://crash`-style command, run once the blank page is there.
+    pub(crate) debug: Option<crate::interstitial::Internal>,
+    /// Asking the network whether it wants a sign-in (a captive portal).
+    pub(crate) portal: Option<Arc<std::sync::Mutex<Option<Option<String>>>>>,
 }
 
 impl Shared {
     fn address(&mut self, url: &str) {
         // Chrome's error document is an implementation detail, not the destination.
         if url.starts_with("chrome-error:") || self.failed_url.as_deref().is_some_and(|failed|failed!=url) {return;}
+        // The blank document an interstitial is written over.
+        if url == "about:blank" && (self.interstitial.is_some() || self.overlay.is_some()) {return;}
         if crate::sites::host_of(url)!=crate::sites::host_of(&self.url) {self.favicon=None;self.favicon_url.clear();}
         if self.url!=url {self.zoom_motion=None;}
         self.url=url.into();self.paints+=1;
@@ -104,6 +135,10 @@ impl Shared {
         self.loading=false;self.progress=1.0;
     }
     fn navigation(&mut self,url:&str) {
+        if url == "about:blank" && (self.interstitial.is_some() || self.overlay.is_some()) {return;}
+        // Anywhere else: the interstitial is over.
+        self.interstitial=None;self.inject=false;
+        if self.overlay.as_ref().is_some_and(|o|o.kind!=crate::interstitial::Kind::Sleep) {self.overlay=None;}
         self.failed_url=None;
         self.address(url);self.requested_url=url.into();self.loading=true;self.progress=0.0;
     }
@@ -117,10 +152,47 @@ wrap_load_handler! {
             if !s.loading {s.progress=1.0;}
             s.paints+=1;
         }
-        fn on_load_error(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,error_code:Errorcode,_error_text:Option<&CefString>,failed_url:Option<&CefString>) {
+        fn on_load_error(&self,browser:Option<&mut Browser>,frame:Option<&mut Frame>,error_code:Errorcode,_error_text:Option<&CefString>,failed_url:Option<&CefString>) {
             // Aborted navigations include downloads and requests superseded by another URL.
             if cef::sys::cef_errorcode_t::from(error_code)==cef::sys::cef_errorcode_t::ERR_ABORTED || !frame.is_some_and(|f|f.is_main()!=0) {return;}
-            if let Some(url)=failed_url {self.shared.borrow_mut().failed(&url.to_string(),false);}
+            let Some(url)=failed_url else {return};
+            let code=cef::sys::cef_errorcode_t::from(error_code) as i32;
+            let can_back=browser.is_some_and(|b|b.can_go_back()!=0);
+            let mut s=self.shared.borrow_mut();
+            s.failed(&url.to_string(),false);
+            // In place of Chromium's error document: nus's transcript.
+            let dest=s.failed_url.clone().unwrap_or_else(||url.to_string());
+            let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_secs() as i64).unwrap_or(0);
+            s.interstitial=Some(crate::interstitial::for_error(&dest,code,can_back,now,crate::interstitial::built()));
+            s.inject=true;
+            if crate::interstitial::portal_suspect(code) {
+                let slot=Arc::new(std::sync::Mutex::new(None));
+                s.portal=Some(slot.clone());
+                std::thread::spawn(move||{
+                    let found=crate::interstitial::probe_portal();
+                    *slot.lock().unwrap_or_else(|e|e.into_inner())=Some(found);
+                    crate::browser_runtime::wake();
+                });
+            }
+        }
+        fn on_load_end(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,_status: ::std::os::raw::c_int) {
+            let Some(frame)=frame.filter(|f|f.is_main()!=0) else {return};
+            let mut s=self.shared.borrow_mut();
+            if let Some(debug)=s.debug.take() {
+                drop(s);
+                run_debug(frame,&debug);
+                return;
+            }
+            let url=CefString::from(&frame.url()).to_string();
+            // CEF names an error document by the address that failed.
+            let ours=url.starts_with("chrome-error:") || url=="about:blank" || s.failed_url.as_deref()==Some(url.as_str()) || s.interstitial.as_ref().is_some_and(|p|p.url==url);
+            if !s.inject || !ours {return;}
+            if let Some(page)=s.interstitial.as_ref() {
+                let script=page.script();
+                s.inject=false;s.paints+=1;
+                drop(s);
+                frame.execute_java_script(Some(&script.as_str().into()),Some(&url.as_str().into()),0);
+            }
         }
     }
 }
@@ -161,6 +233,10 @@ pub static SMOOTH_SCROLL: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 pub static SCROLLBARS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 /// BROWSER · PRIVACY SIGNAL: Sec-GPC and DNT on every request.
 pub static PRIVACY_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Requests refused by content blocking, per browser identifier. Counted
+/// on Chromium's IO thread, so it lives here rather than in `Shared`,
+/// which belongs to the UI thread.
+static BLOCKED: std::sync::Mutex<Option<std::collections::HashMap<i32, u32>>> = std::sync::Mutex::new(None);
 static BLOCKLIST: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
 
 const BUILTIN_BLOCKLIST: &[&str] = &[
@@ -192,25 +268,63 @@ fn blocklist() -> &'static std::sync::RwLock<std::collections::HashSet<String>> 
     })
 }
 
-/// Would this URL's host be refused? Any parent domain on the list counts.
-pub fn blocked(url: &str) -> bool {
+/// Would this request be refused on `page`? Its host, or any parent
+/// domain, on the list counts — but only from someone else's page. The
+/// list names trackers by their domain; on that domain's own site the
+/// same host serves the page's styles, scripts and images, and refusing
+/// them leaves a blank or unstyled page.
+pub fn blocked(url: &str, page: &str) -> bool {
     if !BLOCKING.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
-    let host = url.split("//").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("").split('@').next_back().unwrap_or("").split(':').next().unwrap_or("").to_lowercase();
-    if host.is_empty() {
-        return false;
-    }
-    let list = blocklist().read().unwrap();
-    let mut h = host.as_str();
+    refused(&blocklist().read().unwrap(), &host_of_url(url), &host_of_url(page))
+}
+
+fn host_of_url(url: &str) -> String {
+    url.split("//").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("").split('@').next_back().unwrap_or("").split(':').next().unwrap_or("").to_lowercase()
+}
+
+/// The list entry `host` falls under, if any.
+fn listed<'a>(list: &std::collections::HashSet<String>, host: &'a str) -> Option<&'a str> {
+    let mut h = host;
     loop {
+        if h.is_empty() {
+            return None;
+        }
         if list.contains(h) {
-            return true;
+            return Some(h);
         }
-        match h.find('.') {
-            Some(i) => h = &h[i + 1..],
-            None => return false,
-        }
+        h = &h[h.find('.')? + 1..];
+    }
+}
+
+fn refused(list: &std::collections::HashSet<String>, host: &str, page: &str) -> bool {
+    let Some(entry) = listed(list, host) else { return false };
+    // First party: the page itself is under the same entry.
+    !(page == entry || page.ends_with(&format!(".{entry}")))
+}
+
+#[cfg(test)]
+mod blocking_tests {
+    use super::refused;
+
+    #[test]
+    fn a_listed_domain_is_refused_only_on_other_sites() {
+        let list: std::collections::HashSet<String> = ["newrelic.com", "doubleclick.net", "sentry.io"].iter().map(|s| s.to_string()).collect();
+        // Someone else's page pulling in the tracker: refused.
+        assert!(refused(&list, "js-agent.newrelic.com", "www.nytimes.com"));
+        assert!(refused(&list, "ad.doubleclick.net", "news.example"));
+        assert!(refused(&list, "o123.ingest.sentry.io", "github.com"));
+        // The listed company's own site: its own hosts load.
+        assert!(!refused(&list, "newrelic.com", "newrelic.com"));
+        assert!(!refused(&list, "static.newrelic.com", "www.newrelic.com"));
+        assert!(!refused(&list, "sentry.io", "sentry.io"));
+        // But not someone else's tracker on it.
+        assert!(refused(&list, "ad.doubleclick.net", "newrelic.com"));
+        // Unlisted, and look-alike names that only end the same way.
+        assert!(!refused(&list, "cdn.example.com", "www.nytimes.com"));
+        assert!(refused(&list, "newrelic.com", "notnewrelic.com"));
+        assert!(!refused(&list, "notnewrelic.com", "a.com"));
     }
 }
 
@@ -715,7 +829,19 @@ wrap_dev_tools_message_observer! {
     impl DevToolsMessageObserver {
         fn on_dev_tools_method_result(&self, _browser: Option<&mut Browser>, message_id: ::std::os::raw::c_int, success: ::std::os::raw::c_int, result: Option<&[u8]>) {
             tracing::debug!("cdp result id={message_id} ok={success} {}", result.map(|r| String::from_utf8_lossy(r).chars().take(160).collect::<String>()).unwrap_or_default());
-            let _ = message_id;
+            {
+                // The watch's question, answered: the page is alive.
+                let mut s = self.o.shared.borrow_mut();
+                if s.ping.is_some_and(|(id, _)| id == message_id) {
+                    s.ping = None;
+                    s.answered = Some(crate::clock::now());
+                    if s.hung.is_none() && s.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Hung) {
+                        s.overlay = None;
+                        s.paints += 1;
+                    }
+                    return;
+                }
+            }
             if success == 0 {
                 return;
             }
@@ -781,6 +907,19 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             if method != "Runtime.bindingCalled" {
+                return;
+            }
+            // A command from an interstitial: only with the token that page
+            // was written with, which no site can read.
+            if v.get("name").and_then(|n| n.as_str()) == Some("nusInterstitial") {
+                let Some(sent) = v.get("payload").and_then(|p| p.as_str()).and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok()) else { return };
+                let mut s = self.o.shared.borrow_mut();
+                let ok = s.interstitial.as_ref().is_some_and(|p| sent.get("token").and_then(|t| t.as_str()) == Some(p.token.as_str()));
+                if let (true, Some(verb)) = (ok, sent.get("verb").and_then(|t| t.as_str())) {
+                    s.interstitial_acts.push(verb.to_string());
+                    s.paints += 1;
+                    crate::browser_runtime::wake();
+                }
                 return;
             }
             if v.get("name").and_then(|n| n.as_str()) != Some("nusVideo") {
@@ -935,17 +1074,18 @@ wrap_context_menu_handler! {
             let mut sh = self.display.shared.borrow_mut();
             match command_id {
                 CMD_SAVE_MEDIA => {
+                    sh.nus_download_at = Some(crate::clock::now());
                     if let Some(h) = browser.and_then(|b| b.host()) {
                         h.start_download(Some(&src.as_str().into()));
                     }
                 }
-                CMD_COPY_MEDIA => { copy(&src); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&src, 60))); }
+                CMD_COPY_MEDIA => { copy(&src); sh.said = Some(("Copied".into(), src.to_string())); }
                 CMD_OPEN_MEDIA => sh.opens.push((src, false)),
                 CMD_OPEN_LINK => sh.opens.push((link, false)),
                 CMD_OPEN_LINK_BESIDE => sh.opens.push((link, true)),
-                CMD_COPY_LINK => { copy(&link); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&link, 60))); }
-                CMD_COPY_PAGE => { copy(&page); sh.said = Some(format!("COPIED · {}", crate::app::fit_cmd(&page, 60))); }
-                CMD_PIP => sh.said = Some("PIP".into()),
+                CMD_COPY_LINK => { copy(&link); sh.said = Some(("Copied".into(), link.to_string())); }
+                CMD_COPY_PAGE => { copy(&page); sh.said = Some(("Copied".into(), page.to_string())); }
+                CMD_PIP => sh.said = Some(("PIP".into(), String::new())),
                 29001 => sh.edit_source=url::Url::parse(&page).ok().and_then(|u|u.to_file_path().ok()).filter(|p|crate::file_viewer::Kind::of(p).is_some()),
                 29002 => sh.save_reading=true,
                 CMD_NOTHING => {}
@@ -967,7 +1107,10 @@ wrap_life_span_handler! {
             if let Some(b) = browser { LIVE_BROWSERS.with(|v| { v.borrow_mut().insert(b.identifier()); }); }
         }
         fn on_before_close(&self, browser: Option<&mut Browser>) {
-            if let Some(b) = browser { LIVE_BROWSERS.with(|v| { v.borrow_mut().remove(&b.identifier()); }); }
+            if let Some(b) = browser {
+                LIVE_BROWSERS.with(|v| { v.borrow_mut().remove(&b.identifier()); });
+                if let Some(counts) = BLOCKED.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { counts.remove(&b.identifier()); }
+            }
         }
 
         // Popups would be separate native windows; hand the URL to the app instead.
@@ -994,6 +1137,48 @@ wrap_life_span_handler! {
             1
         }
     }
+}
+
+/// `nus://crash` and friends, done to the page in this frame for real.
+fn run_debug(frame: &Frame, what: &crate::interstitial::Internal) {
+    use crate::interstitial::Internal;
+    let js = match what {
+        // A renderer crash the ordinary way: a bad pointer in the page's own
+        // process is not something script can do, so CDP does it.
+        Internal::Crash => "",
+        // V8 aborts the renderer once the heap limit is hit.
+        Internal::Oom => "setTimeout(()=>{const a=[];for(;;)a.push(new Array(1e7).fill(1))},0)",
+        Internal::Hang => "setTimeout(()=>{for(;;){}},0)",
+        Internal::BlockDownload => "(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['MZ'],{type:'application/octet-stream'}));a.download='invoice.pdf.exe';document.documentElement.appendChild(a);a.click();a.remove()})()",
+        Internal::Show(_) => return,
+    };
+    if js.is_empty() {
+        if let Some(host) = frame.browser().and_then(|b| b.host()) {
+            let msg = serde_json::json!({ "id": 1_900_000_001, "method": "Page.crash", "params": {} }).to_string();
+            host.send_dev_tools_message(Some(msg.as_bytes()));
+        }
+        return;
+    }
+    frame.execute_java_script(Some(&js.into()), Some(&CefString::from(&frame.url())), 0);
+}
+
+/// The certificate this window is serving to the phone right now, matched
+/// by its exact bytes at the phone's own address.
+fn phone_certificate(url: &str, ssl_info: Option<&mut Sslinfo>) -> bool {
+    let Some(phone) = crate::phone::current() else { return false };
+    let Ok(url) = url::Url::parse(url) else { return false };
+    let host = url.host_str().unwrap_or_default();
+    let ours = url.port() == Some(phone.port)
+        && (host == phone.host || host == "127.0.0.1" || host == "localhost" || host == "[::1]");
+    if !ours {
+        return false;
+    }
+    let Some(der) = ssl_info.and_then(|i| i.x509_certificate()).and_then(|c| c.derencoded()) else { return false };
+    let mut bytes = vec![0u8; der.size()];
+    if der.data(Some(&mut bytes), 0) != bytes.len() {
+        return false;
+    }
+    crate::phone::is_session_certificate(&phone, &bytes)
 }
 
 pub type BrowserSlot = StdRc<RefCell<Option<Browser>>>;
@@ -1037,6 +1222,22 @@ wrap_find_handler! {
     }
 }
 
+/// How the user started a download, if they did: nus asked for it, or the
+/// user's own click or key reached this page (or a navigation Chromium
+/// marked as their gesture) just before it began. Anything else (a timer,
+/// a service worker, a background fetch) gets None and can never keep the
+/// machine awake. Pages have no say in this.
+fn download_origin(s: &Shared) -> Option<crate::finish_work::Origin> {
+    let recent = |t: Option<std::time::Instant>, secs: u64| t.is_some_and(|t| crate::clock::since(t) < std::time::Duration::from_secs(secs));
+    if recent(s.nus_download_at, 10) {
+        Some(crate::finish_work::Origin::NusAction)
+    } else if recent(s.gesture_at, 5) || recent(s.nav_gesture_at, 5) {
+        Some(crate::finish_work::Origin::BrowserGesture)
+    } else {
+        None
+    }
+}
+
 wrap_download_handler! {
     pub struct DownloadBuilder {
         display: Display,
@@ -1054,7 +1255,16 @@ wrap_download_handler! {
             let Some(item) = download_item else { return 0 };
             let Some(cb)=callback else {return 0;};
             let original=suggested_name.map(|s|s.to_string()).filter(|s|!s.is_empty()).unwrap_or_else(||"download".into());
+            let from=CefString::from(&item.url()).to_string();
+            if let Some(why)=crate::interstitial::dangerous_file(&original).filter(|_|!crate::interstitial::allowed(&format!("file:{from}"))) {
+                // Not continuing the callback cancels it: nothing is written.
+                let mut s=self.display.shared.borrow_mut();
+                s.overlay=Some(crate::interstitial::Page::file(&from,&original,why));
+                s.paints+=1;
+                return 1;
+            }
             let title=self.display.shared.borrow().title.clone();
+            let origin=download_origin(&self.display.shared.borrow());
             let name=crate::downloads::filename(&original,&title,crate::downloads::rename_mode());
             let dir=downloads_dir();if std::fs::create_dir_all(&dir).is_err(){return 0;}
             let path={
@@ -1062,7 +1272,7 @@ wrap_download_handler! {
                 let path=crate::downloads::available_path(&dir,&name,&rows);
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                 let key=(now.as_micros() as u64).max(rows.iter().map(|d|d.key).max().unwrap_or(0)+1);
-                rows.push(Download{key,id:item.id(),name:path.file_name().unwrap().to_string_lossy().into(),original:crate::downloads::safe_name(&original),path:path.to_string_lossy().into(),url:CefString::from(&item.url()).to_string(),container:self.container.clone(),source_url:_browser.and_then(|b|b.main_frame()).map(|f|CefString::from(&f.url()).to_string()).unwrap_or_default(),title,total:item.total_bytes(),started:now.as_secs(),live:true,..Default::default()});
+                rows.push(Download{key,id:item.id(),name:path.file_name().unwrap().to_string_lossy().into(),original:crate::downloads::safe_name(&original),path:path.to_string_lossy().into(),url:CefString::from(&item.url()).to_string(),container:self.container.clone(),source_url:_browser.and_then(|b|b.main_frame()).map(|f|CefString::from(&f.url()).to_string()).unwrap_or_default(),title,total:item.total_bytes(),started:now.as_secs(),live:true,origin,..Default::default()});
                 crate::downloads::save(&rows);path
             };
             crate::downloads::changed();
@@ -1143,6 +1353,15 @@ wrap_permission_handler! {
             let video = requested_permissions & MediaAccessPermissionTypes::DEVICE_VIDEO_CAPTURE.get_raw() as u32 != 0;
             let audio = requested_permissions & MediaAccessPermissionTypes::DEVICE_AUDIO_CAPTURE.get_raw() as u32 != 0;
             let what = match (video, audio) { (true, true) => "camera and microphone", (true, false) => "camera", (false, true) => "microphone", _ => "screen capture" }.to_string();
+            // Asking you is pointless when macOS will refuse nus anyway.
+            if let Some(denied) = crate::interstitial::os_denied(audio, video) {
+                cb.cont(0);
+                let mut s = self.display.shared.borrow_mut();
+                let url = s.url.clone();
+                s.overlay = Some(crate::interstitial::Page::permission(&url, denied));
+                s.paints += 1;
+                return 1;
+            }
             if let Some(allow) = crate::sites::remembered(&origin, &what) {
                 cb.cont(if allow { requested_permissions } else { 0 });
                 return 1;
@@ -1177,7 +1396,6 @@ wrap_permission_handler! {
 
 wrap_resource_request_handler! {
     pub struct BlockBuilder {
-        display: Display,
         navigation: bool,
         viewer: crate::file_viewer::Shared,
     }
@@ -1209,14 +1427,15 @@ wrap_resource_request_handler! {
             if self.navigation {
                 return ReturnValue::CONTINUE;
             }
-            let page = browser.and_then(|b| b.main_frame()).map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
+            let Some(browser) = browser else { return ReturnValue::CONTINUE };
+            let page = browser.main_frame().map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
             if !crate::sites::prefs(&crate::sites::host_of(&page)).blocking {
                 return ReturnValue::CONTINUE;
             }
             let url = CefString::from(&req.url()).to_string();
-            if blocked(&url) {
-                let mut s = self.display.shared.borrow_mut();
-                s.blocked += 1;
+            if blocked(&url, &page) {
+                let mut counts = BLOCKED.lock().unwrap_or_else(|e| e.into_inner());
+                *counts.get_or_insert_with(Default::default).entry(browser.identifier()).or_default() += 1;
                 return ReturnValue::CANCEL;
             }
             ReturnValue::CONTINUE
@@ -1254,11 +1473,54 @@ wrap_request_handler! {
 
     impl RequestHandler {
         fn on_before_browse(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,request:Option<&mut Request>,_gesture: ::std::os::raw::c_int,_redirect: ::std::os::raw::c_int)->::std::os::raw::c_int {
-            if frame.is_some_and(|f|f.is_main()!=0) {if let Some(request)=request {let url=CefString::from(&request.url()).to_string();if !url.starts_with("chrome-error:"){self.display.shared.borrow_mut().navigation(&url);}}}
+            if _gesture != 0 { self.display.shared.borrow_mut().nav_gesture_at = Some(crate::clock::now()); }
+            if frame.is_some_and(|f|f.is_main()!=0) {if let Some(request)=request {let url=CefString::from(&request.url()).to_string();if !url.starts_with("chrome-error:"){
+                if crate::interstitial::dangerous(&url) {
+                    let can_back=_browser.is_some_and(|b|b.can_go_back()!=0);
+                    let mut s=self.display.shared.borrow_mut();
+                    s.interstitial=Some(crate::interstitial::Page::malware(&url,"profile/dangerous.txt",can_back));
+                    s.inject=true;s.blank=true;s.url=url;s.loading=false;s.paints+=1;
+                    return 1;
+                }
+                self.display.shared.borrow_mut().navigation(&url);
+            }}}
             0
         }
         fn resource_request_handler(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, is_navigation: ::std::os::raw::c_int, _is_download: ::std::os::raw::c_int, _request_initiator: Option<&CefString>, _disable_default_handling: Option<&mut ::std::os::raw::c_int>) -> Option<ResourceRequestHandler> {
-            Some(BlockBuilder::new(self.display.clone(), is_navigation != 0,self.viewer.clone()))
+            // Chromium's IO thread: nothing here may touch `Display`, whose
+            // `Rc<RefCell>` belongs to the UI thread.
+            Some(BlockBuilder::new(is_navigation != 0,self.viewer.clone()))
+        }
+
+        fn on_render_process_terminated(&self,_browser:Option<&mut Browser>,status:TerminationStatus,error_code: ::std::os::raw::c_int,error_string:Option<&CefString>) {
+            let status=cef::sys::cef_termination_status_t::from(status);
+            let mut s=self.display.shared.borrow_mut();
+            s.hung=None;
+            if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Hung) {s.overlay=None;}
+            let url=s.url.clone();
+            let oom=status==cef::sys::cef_termination_status_t::TS_PROCESS_OOM;
+            let killed=status==cef::sys::cef_termination_status_t::TS_PROCESS_WAS_KILLED || std::mem::take(&mut s.stopping);
+            s.ping=None;
+            let code=error_string.map(|e|e.to_string()).filter(|e|!e.is_empty()&&e.parse::<i64>().is_err()).unwrap_or_else(||format!("exit code {error_code}"));
+            s.interstitial=Some(crate::interstitial::Page::crashed(&url,oom,&code,killed));
+            s.inject=true;s.blank=true;s.loading=false;s.paints+=1;
+            crate::browser_runtime::wake();
+        }
+        fn on_render_process_unresponsive(&self,_browser:Option<&mut Browser>,callback:Option<&mut UnresponsiveProcessCallback>)->::std::os::raw::c_int {
+            let Some(cb)=callback else {return 0};
+            let mut s=self.display.shared.borrow_mut();
+            let url=s.url.clone();
+            s.hung=Some(cb.clone());
+            s.overlay=Some(crate::interstitial::Page::hung(&url,15));
+            s.paints+=1;
+            crate::browser_runtime::wake();
+            1
+        }
+        fn on_render_process_responsive(&self,_browser:Option<&mut Browser>) {
+            let mut s=self.display.shared.borrow_mut();
+            s.hung=None;
+            if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Hung) {s.overlay=None;}
+            s.paints+=1;
         }
 
         /// One certificate is trusted without asking: the one this window is
@@ -1268,30 +1530,17 @@ wrap_request_handler! {
         /// through warnings. Every other certificate error is Chromium's to
         /// show, including anything at the same address after the phone stops.
         fn on_certificate_error(&self, _browser: Option<&mut Browser>, _cert_error: Errorcode, request_url: Option<&CefString>, ssl_info: Option<&mut Sslinfo>, callback: Option<&mut Callback>) -> ::std::os::raw::c_int {
-            let Some(phone) = crate::phone::current() else { return 0 };
+            let Some(c) = callback else { return 0 };
             let url = request_url.map(CefString::to_string).unwrap_or_default();
-            let Ok(url) = url::Url::parse(&url) else { return 0 };
-            let host = url.host_str().unwrap_or_default();
-            let ours = url.port() == Some(phone.port)
-                && (host == phone.host || host == "127.0.0.1" || host == "localhost" || host == "[::1]");
-            if !ours {
-                return 0;
+            // The phone's own certificate, or a host you went ahead to from
+            // the transcript this session: through. Everything else fails as
+            // a load error, so nus's page shows rather than Chrome's.
+            if phone_certificate(&url, ssl_info) || crate::interstitial::allowed(&format!("cert:{}", crate::interstitial::host(&url))) {
+                c.cont();
+            } else {
+                c.cancel();
             }
-            let Some(der) = ssl_info.and_then(|i| i.x509_certificate()).and_then(|c| c.derencoded()) else { return 0 };
-            let mut bytes = vec![0u8; der.size()];
-            if der.data(Some(&mut bytes), 0) != bytes.len() {
-                return 0;
-            }
-            if !crate::phone::is_session_certificate(&phone, &bytes) {
-                return 0;
-            }
-            match callback {
-                Some(c) => {
-                    c.cont();
-                    1
-                }
-                None => 0,
-            }
+            1
         }
     }
 }
@@ -1361,6 +1610,11 @@ impl Drop for BrowserTab {
 impl BrowserTab {
     /// Single-entry pages can be recreated without losing navigation history.
     /// Complex/dirty/media pages and DevTools keep their live browser.
+    /// Requests content blocking refused on this page so far.
+    pub fn blocked(&self) -> u32 {
+        let Some(id) = self.browser.as_ref().map(|b| b.identifier()) else { return 0 };
+        BLOCKED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(&id).copied()).unwrap_or(0)
+    }
     pub fn can_suspend(&self) -> bool {
         let s=self.shared.borrow();
         self.browser.is_some() && s.sleep_safe && !s.capture_guard && !s.loading && s.permission.is_none()
@@ -1392,6 +1646,18 @@ impl BrowserTab {
         container: &str,
     ) -> Option<BrowserTab> {
         if !crate::browser_runtime::ensure() { return None; }
+        // A `nus://` address: a blank document, and the page (or command) on it.
+        let internal = crate::interstitial::internal(url);
+        let original_url = internal.as_ref().map(|_| url.to_string());
+        let url = if internal.is_some() { "about:blank" } else { url };
+        if let Some(i) = internal.clone() {
+            let mut s = shared.borrow_mut();
+            match i {
+                crate::interstitial::Internal::Show(page) if page.kind.native() => s.overlay = Some(page),
+                crate::interstitial::Internal::Show(page) => { s.interstitial = Some(page); s.inject = true; }
+                other => s.debug = Some(other),
+            }
+        }
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             shared_texture_enabled: 1,
@@ -1444,10 +1710,14 @@ impl BrowserTab {
         tab.devtools("Page.enable", serde_json::json!({}));
         tab.devtools("Network.enable", serde_json::json!({}));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusVideo" }));
+        tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusInterstitial" }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));
         let id = tab.devtools("Target.getTargetInfo", serde_json::json!({}));
         tab.shared.borrow_mut().target_msg = id;
+        if internal.is_some() {
+            if let Some(original) = original_url { tab.shared.borrow_mut().url = original; }
+        }
         Some(tab)
     }
 
@@ -1524,6 +1794,7 @@ impl BrowserTab {
     /// Save a file the page is showing, through the page's own session
     /// (cookies and all), into ~/Downloads via the download handler.
     pub fn download(&self, url: &str) {
+        self.shared.borrow_mut().nus_download_at = Some(crate::clock::now());
         if let Some(h) = self.host() {
             h.start_download(Some(&url.into()));
         }
@@ -1549,11 +1820,120 @@ impl BrowserTab {
     pub fn close_devtools(&self) { if let Some(host) = self.host() { host.close_dev_tools(); } }
 
     pub fn load(&self, url: &str) {
+        if let Some(internal) = crate::interstitial::internal(url) {
+            return self.internal(url, internal);
+        }
         if let Some(f) = self.browser.as_ref().and_then(|b|b.main_frame()) {
             self.shared.borrow_mut().navigation(url);
             f.load_url(Some(&url.into()));
         }
         self.nudge();
+    }
+
+    /// A `nus://` address in a page that is already open.
+    fn internal(&self, url: &str, internal: crate::interstitial::Internal) {
+        use crate::interstitial::Internal;
+        let Some(f) = self.browser.as_ref().and_then(|b| b.main_frame()) else { return };
+        match internal {
+            Internal::Show(page) if page.kind.native() => { self.shared.borrow_mut().overlay = Some(page); }
+            Internal::Show(page) => {
+                {
+                    let mut s = self.shared.borrow_mut();
+                    s.interstitial = Some(page);
+                    s.inject = true;
+                    s.failed_url = None;
+                    s.url = url.into();
+                    s.paints += 1;
+                }
+                f.load_url(Some(&"about:blank".into()));
+            }
+            other => run_debug(&f, &other),
+        }
+        self.nudge();
+    }
+
+    /// The app's part, each frame: host a page whose renderer is gone,
+    /// swap in the Wi-Fi page when the network turned out to want a
+    /// sign-in, and hand over what the transcript asked for.
+    pub fn tend_interstitial(&self) -> Vec<String> {
+        let (blank, portal) = {
+            let mut s = self.shared.borrow_mut();
+            let blank = std::mem::take(&mut s.blank);
+            let portal = s.portal.as_ref().and_then(|p| p.lock().unwrap_or_else(|e| e.into_inner()).take());
+            if portal.is_some() { s.portal = None; }
+            (blank, portal)
+        };
+        if blank {
+            if let Some(f) = self.browser.as_ref().and_then(|b| b.main_frame()) {
+                f.load_url(Some(&"about:blank".into()));
+            }
+        }
+        if let Some(Some(network)) = portal {
+            let script = {
+                let mut s = self.shared.borrow_mut();
+                let Some(url) = s.interstitial.as_ref().filter(|p| matches!(p.kind, crate::interstitial::Kind::Unreachable | crate::interstitial::Kind::Cert)).map(|p| p.url.clone()) else { return std::mem::take(&mut s.interstitial_acts) };
+                let page = crate::interstitial::Page::portal(&url, &network);
+                let script = page.script();
+                s.interstitial = Some(page);
+                s.paints += 1;
+                script
+            };
+            if let Some(f) = self.browser.as_ref().and_then(|b| b.main_frame()) {
+                f.execute_java_script(Some(&script.as_str().into()), Some(&CefString::from(&f.url())), 0);
+            }
+        }
+        std::mem::take(&mut self.shared.borrow_mut().interstitial_acts)
+    }
+
+    /// The hung renderer: keep waiting, or end it.
+    pub fn answer_hung(&self, wait: bool) {
+        let cb = {
+            let mut s = self.shared.borrow_mut();
+            if s.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Hung) { s.overlay = None; }
+            s.paints += 1;
+            if wait {
+                // Asked again from now: another stretch before it shows.
+                if let Some(p) = s.ping.as_mut() { p.1 = crate::clock::now(); }
+            } else {
+                s.stopping = true;
+            }
+            s.hung.take()
+        };
+        match (cb, wait) {
+            (Some(cb), true) => cb.wait(),
+            (Some(cb), false) => cb.terminate(),
+            (None, true) => {}
+            // The renderer's IO thread still answers when its page is stuck.
+            (None, false) => { self.devtools("Page.crash", serde_json::json!({})); }
+        }
+    }
+
+    /// While shown: ask the page something trivial every few seconds. A
+    /// page whose main thread is stuck can't answer, and after
+    /// `HUNG_AFTER` without one the hung transcript comes up over it.
+    /// Chromium's own hang signal (on input) raises it too.
+    pub fn watch(&self) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+        const HUNG_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+        if self.browser.is_none() { return; }
+        let ask = {
+            let mut s = self.shared.borrow_mut();
+            if s.interstitial.is_some() || s.suspended { return; }
+            match s.ping {
+                Some((_, at)) if crate::clock::since(at) >= HUNG_AFTER && s.overlay.is_none() => {
+                    let url = s.url.clone();
+                    s.overlay = Some(crate::interstitial::Page::hung(&url, crate::clock::since(at).as_secs()));
+                    s.paints += 1;
+                    false
+                }
+                Some(_) => false,
+                None => s.answered.is_none_or(|a| crate::clock::since(a) >= EVERY),
+            }
+        };
+        if ask {
+            let id = self.devtools("Runtime.evaluate", serde_json::json!({ "expression": "1", "returnByValue": true }));
+            self.shared.borrow_mut().ping = Some((id, crate::clock::now()));
+        }
     }
 
     pub fn resized(&self, w: f32, h: f32) {
@@ -1633,6 +2013,9 @@ impl BrowserTab {
     }
 
     pub fn mouse_click(&self, x: i32, y: i32, mods: u32, button: MouseButtonType, up: bool, count: i32) {
+        if !up {
+            self.shared.borrow_mut().gesture_at = Some(crate::clock::now());
+        }
         if let Some(h) = self.host() {
             let ev = MouseEvent {
                 x,
@@ -1655,6 +2038,7 @@ impl BrowserTab {
     }
 
     pub fn key(&self, ev: &KeyEvent) {
+        self.shared.borrow_mut().gesture_at = Some(crate::clock::now());
         if let Some(h) = self.host() {
             h.send_key_event(Some(ev));
         }

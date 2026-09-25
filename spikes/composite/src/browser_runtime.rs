@@ -39,6 +39,7 @@ pub fn schedule(delay_ms: i64) {
     }
 }
 pub fn wait(maximum: Duration) -> Duration {
+    let maximum = if ready() { maximum.min(MAX_IDLE) } else { maximum };
     DEADLINE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -46,20 +47,32 @@ pub fn wait(maximum: Duration) -> Duration {
             at.saturating_duration_since(Instant::now()).min(maximum)
         })
 }
+/// The longest Chromium goes without a turn, asked for or not. It does not
+/// ask for every task it queues on this thread, so waiting only on its
+/// deadlines can leave a navigation queued behind nothing, for good. CEF's
+/// own external pump (cefclient) keeps the same 30 Hz floor.
+const MAX_IDLE: Duration = Duration::from_millis(33);
+static LAST_WORK: Mutex<Option<Instant>> = Mutex::new(None);
 pub fn pump() {
     if !ready() {
         return;
     }
+    let now = Instant::now();
     let due = {
         let mut next = DEADLINE.lock().unwrap_or_else(|e| e.into_inner());
-        if next.is_some_and(|at| at <= Instant::now()) {
+        if next.is_some_and(|at| at <= now) {
             *next = None;
             true
         } else {
             false
         }
     };
-    if due {
+    let idle = LAST_WORK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_none_or(|at| now.duration_since(at) >= MAX_IDLE);
+    if due || idle {
+        *LAST_WORK.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
         cef::do_message_loop_work();
     }
 }

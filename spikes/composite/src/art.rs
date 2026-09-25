@@ -724,7 +724,7 @@ impl App {
         self.behavior.home_art = key;
         self.save_prefs();
         self.open_file(&path, false);
-        self.toast("YOURS · IN THE PICKER · SAVE AND IT REDRAWS", None);
+        self.toast(nus_render::text::icons::PALETTE, "Your Art", "in the picker; save and it redraws", None);
     }
 
     /// The assistant writes one: the panel opens on a shell with the
@@ -745,7 +745,7 @@ impl App {
             ask.art = true;
         }
         self.layout();
-        self.toast("ASKING FOR AN ART · IT LANDS IN THE PICKER", None);
+        self.toast(nus_render::text::icons::ASSISTANT, "Asking For Art", "it lands in the picker", None);
     }
 
     /// An answer with a ```luau block, from an ask that wanted an art.

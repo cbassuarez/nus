@@ -1,5 +1,5 @@
 //! Compact mode: the sidebar is a 48px column of icons (favicon, emoji or
-//! kind), the top strip hides until the pointer reaches the top edge, and
+//! kind), the top strip stays, and
 //! the content takes the rest. Ctrl+Shift+B, the palette, or LOOK ·
 //! SIDEBAR. The rows are the same rows, so clicks, drags, selection and
 //! the tab menu all work unchanged; titles show as a tooltip on hover.
@@ -19,18 +19,10 @@ impl App {
         self.sidebar_rules.compact
     }
 
-    /// The strip is there in compact mode only while the pointer is at
-    /// the top, a menu is up, or the window is being resized.
+    /// The strip is there unless focus mode takes the chrome away. Compact
+    /// narrows the sidebar; it never takes the strip with it.
     pub(crate) fn strip_shown(&self) -> bool {
-        if self.focus {
-            return false;
-        }
-        if !self.compact() {
-            return true;
-        }
-        let st = self.strip_rect();
-        let near = self.mouse.1 <= st.bottom() + self.px(6.0) && self.mouse.0 >= st.x && self.mouse.0 <= st.right();
-        near || self.traffic_hovered() || self.win_menu || self.kinds_menu || self.resized_at.is_some_and(|t| crate::clock::since(t).as_millis() < 900)
+        !self.focus
     }
 
     pub(crate) fn toggle_compact(&mut self) {
@@ -72,7 +64,7 @@ impl App {
         }
         self.draw_pins(scene,sb);
         // Pinned tabs first, as a block.
-        let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids.clone()).unwrap_or_default();
+        let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
         let mut py = sb.y + COMPACT_HEAD * self.scale + self.pins_height();
         let pin_h = self.px(32.0);
@@ -84,7 +76,7 @@ impl App {
             } else if cell.contains(mx, my) {
                 scene.rect(cell, t.tint);
             }
-            let color = if active { t.paper } else { t.dim };
+            let color = if active { self.on_fill(ink) } else { t.dim };
             self.draw_tab_icon(scene, &tabs[i], cx, py + ((pin_h - isz) / 2.0).round(), isz, color);
             py += pin_h;
         }

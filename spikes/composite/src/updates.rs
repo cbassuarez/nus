@@ -264,7 +264,7 @@ pub fn confirm(on: bool) {
 impl crate::app::App {
     pub(crate) fn tend_updates(&mut self) {
         if let Some(message) = crate::protected_state::take_notice() {
-            self.notice(&message);
+            self.notice_problem("Could Not Unlock Secure State", message);
         }
         let revision = revision();
         if self.update_revision != revision {

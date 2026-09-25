@@ -67,7 +67,11 @@ impl TermPane {
             return;
         }
         self.program_marks = n;
-        self.program = self.blocks().last().filter(|b| b.running).map(|b| program_of(&b.cmd)).unwrap_or_default();
+        // The grid keeps a long command's wrap as a newline: join it first,
+        // or `/a/long/path/claude` reads as the path's first half.
+        self.program = self.blocks().last().filter(|b| b.running).map(|b| program_of(&crate::cutoff::oneline(&b.cmd))).unwrap_or_default();
+        let at_prompt = self.program.is_empty() && self.term.at_prompt();
+        crate::agent::observe(&mut self.agent, &self.program, at_prompt, crate::clock::now());
     }
 }
 
@@ -496,6 +500,17 @@ impl App {
         false
     }
 
+    /// The toast's Undo: the hunk the other way, and a word on it.
+    pub(crate) fn undo_hunk(&mut self, hunk: crate::diffs::Hunk, what: crate::diffs::Do, cwd: std::path::PathBuf) {
+        match crate::diffs::run(&hunk, what.undo(), &cwd) {
+            Ok(_) => {
+                self.play_event("toggle");
+                self.toast(nus_render::text::icons::UNDO, format!("Undid {}", what.verb()), format!("{} · {}", hunk.file(), hunk.counts()), None);
+            }
+            Err(e) => self.toast_problem("Could Not Undo", e, None),
+        }
+    }
+
     /// A hunk's chip: the patch of that hunk through git apply, in the
     /// shell's folder; the outcome as a toast, the output left as it was.
     pub(crate) fn hunk_click(&mut self, x: f32, y: f32) -> bool {
@@ -512,14 +527,13 @@ impl App {
         let Some((hunk, what, cwd)) = job else { return false };
         let cwd = if cwd.is_empty() { std::env::current_dir().unwrap_or_default() } else { std::path::PathBuf::from(cwd) };
         match crate::diffs::run(&hunk, what, &cwd) {
-            Ok(word) => {
+            Ok(_) => {
                 self.play_event("success");
-                self.toast_with(Some(nus_render::text::icons::CHECK), what.word(), format!("{} · {}", hunk.file(), hunk.counts()), None);
-                let _ = word;
+                let detail = format!("{} · {}", hunk.file(), hunk.counts());
+                self.toast(nus_render::text::icons::CHECK, what.done(), detail, Some(crate::toast::Act::UndoHunk(hunk, what, cwd)));
             }
             Err(e) => {
-                self.play_event("error");
-                self.toast_with(Some(nus_render::text::icons::WARNING), "NOT APPLIED", e, None);
+                self.toast_problem(format!("Could Not {}", what.verb()), e, None);
             }
         }
         self.dirty = true;
@@ -558,7 +572,7 @@ impl App {
                 self.open_url(&url, false);
                 self.block_pages.insert(url, page);
             }
-            None => self.notice("could not write the block page"),
+            None => self.notice_problem("Could Not Write Block Page", ""),
         }
     }
 }

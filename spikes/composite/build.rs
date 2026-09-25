@@ -33,6 +33,16 @@ fn main() {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=NUS_BUILD_REVISION={}", revision.trim());
+    // When this commit was made: a clock reading earlier is certainly wrong
+    // (interstitial.rs, the clock page).
+    let epoch = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%ct"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    println!("cargo:rustc-env=NUS_BUILD_EPOCH={}", epoch.trim());
     println!("cargo:rerun-if-changed=../../assets/icon/nus.ico");
     #[cfg(windows)]
     {

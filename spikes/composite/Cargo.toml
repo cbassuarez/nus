@@ -80,6 +80,9 @@ libc = "0.2"
 x11rb = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
 ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
+# logind inhibitors for Finish Work (finish_work_native.rs). Already in the tree
+# through ksni with async-io; blocking-api only adds the blocking wrappers.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon = { version = "0.24", default-features = false }

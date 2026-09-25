@@ -66,7 +66,7 @@ impl App {
             _ => { self.ui_zoom = next(self.ui_zoom, step, 100, 75, 200); self.ui_zoom }
         };
         self.layout(); self.apply_term_resizes(true); self.dirty = true;
-        self.notice(&format!("Zoom {percent}%"));
+        self.notice(nus_render::text::icons::SEARCH, "Zoom", format!("{percent}%"));
     }
 }
 

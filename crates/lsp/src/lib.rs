@@ -154,6 +154,54 @@ fn rope_change(old: &ropey::Rope, new: &ropey::Rope) -> TextDocumentContentChang
     }
 }
 
+/// The workspace a server may index: `root`, unless that is the top of
+/// the disk, the home folder or anything above it. A server walks its whole
+/// workspace in the background (bash-language-server globs every script
+/// in it), so a workspace of `~` reads Desktop, Documents, Downloads,
+/// Photos, Music, Contacts, Calendars and every app's data, and macOS asks
+/// the person about each of them in nus's name. Outside a real project a
+/// server gets no workspace and works file by file.
+pub fn workspace(root: &Path) -> Option<&Path> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    within(root, home.as_deref())
+}
+
+fn within<'a>(root: &'a Path, home: Option<&Path>) -> Option<&'a Path> {
+    let too_wide = root.as_os_str().is_empty()
+        || root.parent().is_none()
+        || home.is_some_and(|h| h.starts_with(root));
+    (!too_wide).then_some(root)
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::within;
+    use std::path::Path;
+
+    #[test]
+    fn a_server_never_gets_home_or_above_as_its_workspace() {
+        let home = Some(Path::new("/Users/seb"));
+        for wide in ["/", "/Users", "/Users/seb", "/Users/seb/", ""] {
+            assert_eq!(within(Path::new(wide), home), None, "{wide}");
+        }
+        for project in [
+            "/Users/seb/nus",
+            "/Users/seb/Desktop",
+            "/tmp/x",
+            "/Users/other",
+        ] {
+            assert_eq!(
+                within(Path::new(project), home),
+                Some(Path::new(project)),
+                "{project}"
+            );
+        }
+        assert_eq!(within(Path::new("/"), None), None);
+    }
+}
+
 pub struct Client {
     child: Arc<Mutex<Option<Child>>>,
     tx: SyncSender<Outbound>,
@@ -284,7 +332,7 @@ impl Client {
     }
 
     fn initialize(&self) {
-        let root_uri = Url::from_directory_path(&self.root).ok();
+        let root_uri = workspace(&self.root).and_then(|r| Url::from_directory_path(r).ok());
         #[allow(deprecated)]
         let params = InitializeParams {
             process_id: Some(std::process::id()),

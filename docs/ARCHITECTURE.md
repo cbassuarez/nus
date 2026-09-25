@@ -83,6 +83,10 @@ replace it.
   never gets a PTY handle, the terminal never gets a `CefBrowser`.
 - CEF is pinned and bumped on Chromium's 4-week cadence. A stale CEF is a stale
   browser.
+- Sleep inhibition (Finish Work) is a user-intent capability: user intent →
+  work registry → wake policy → platform lease, one process-wide lease owned by
+  the host. Pages and background activity cannot acquire it. See
+  LOCAL_SECURITY.md.
 
 ## Platform notes
 

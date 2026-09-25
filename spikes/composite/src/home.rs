@@ -43,6 +43,35 @@ pub struct HomePane {
     pub places: Option<(Instant, Vec<PaletteRow>)>,
     /// The route keys at the foot, where they were drawn.
     pub keys: Vec<(Rect, Key)>,
+    /// The rows as last drawn, for the line they were drawn for. Gathered
+    /// before the frame takes the tabs (rows name other tabs), and what a
+    /// click or Enter picks from, so the row taken is the row seen.
+    pub shown: Option<(String, Vec<PaletteRow>)>,
+    /// The line's caret and selection (field.rs).
+    pub cur: crate::field::Cursor,
+    /// The line as last drawn, for the pointer: where it sits, the first
+    /// character shown, and the x of each character edge from there.
+    pub line: Option<LineGeom>,
+    /// A press on the line that is still down: drag selects.
+    pub dragging: bool,
+    /// The last press on the line and how many came quickly before it,
+    /// for double (word) and triple (line) clicks.
+    pub clicked: Option<(Instant, u8)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LineGeom {
+    pub rect: Rect,
+    pub start: usize,
+    pub edges: Vec<f32>,
+}
+
+impl LineGeom {
+    /// The character edge nearest `x`.
+    fn index(&self, x: f32) -> usize {
+        let k = self.edges.iter().enumerate().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map(|(k, _)| k).unwrap_or(0);
+        self.start + k
+    }
 }
 
 /// A route the prompt can take, as one mark at the foot of the page.
@@ -85,9 +114,23 @@ impl Key {
     }
 }
 
+/// The nus button, held down: home is up, and the button remembers where
+/// it was pressed from. Pressing it again (or back) before anything is
+/// taken from home returns there; taking anything closes the loop.
+#[derive(Clone, Copy, Debug)]
+pub struct Latch {
+    /// The tab it was pressed from, and which of its panes had focus.
+    pub from: u64,
+    pub from_right: bool,
+    /// The home tab it brought up.
+    pub home: u64,
+    /// Whether that home tab was made for this press (and so goes again).
+    pub made: bool,
+}
+
 impl HomePane {
     pub fn new() -> HomePane {
-        HomePane { library_ui: Default::default(), library: false, reading: None, library_scroll: 0.0, library_reach: 0.0, rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new() }
+        HomePane { library_ui: Default::default(), library: false, reading: None, library_scroll: 0.0, library_reach: 0.0, rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new(), shown: None, cur: Default::default(), line: None, dragging: false, clicked: None }
     }
 }
 
@@ -115,6 +158,35 @@ impl App {
     }
 
     fn news_count(&self, _input: &str) -> usize { 0 }
+
+    /// Gather the home rows of the tab in front while `self.tabs` is still
+    /// whole: the frame takes the tabs to draw them, and rows like
+    /// `Resume · …` are made from the others — without them the rows
+    /// drawn and the rows a click picks from would differ by those.
+    pub(crate) fn gather_home_rows(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let mut want = Vec::new();
+        for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+            if let Pane::Home(h) = p {
+                if !h.library {
+                    want.push(h.input.clone());
+                }
+            }
+        }
+        let rows: Vec<_> = want.into_iter().map(|input| {
+            let r = self.home_rows(&input, &[]);
+            (input, r)
+        }).collect();
+        let tab = &mut self.tabs[self.active];
+        let mut rows = rows.into_iter();
+        for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            if let Pane::Home(h) = p {
+                if !h.library {
+                    h.shown = rows.next();
+                }
+            }
+        }
+    }
 
     /// Folders this window could be: the other windows', the last
     /// sessions' shells', the journal's — and the line itself when it
@@ -182,7 +254,19 @@ impl App {
         use crate::settings::Then;
         if launch && crate::compatibility::recovery_launch() {
             self.show_start_pane(Pane::Home(HomePane::new()), true);
-            self.notice("Previous profile restored. Newer work was preserved separately. Open saved sessions deliberately; running processes were not rewound.");
+            self.notice(nus_render::text::icons::HISTORY, "Profile Restored", "newer work was kept separately · running processes were not rewound · open saved sessions deliberately");
+            return;
+        }
+        // ON QUIT, KEEP · TABS AND WINDOWS: the first window comes back as
+        // it was left, and the start page still happens on top of it, as
+        // a new tab would (a saved session as the start page is this).
+        if launch && self.restores_at_launch() {
+            self.restore_session_pub();
+            self.drop_birth = self.tabs.len() > 1;
+            self.drop_birth_shell();
+            if self.behavior.then != Then::Restore {
+                self.open_start_page(false);
+            }
             return;
         }
         match self.behavior.then {
@@ -215,7 +299,7 @@ impl App {
                         return;
                     }
                 }
-                self.notice("No startup layout could be opened. Choose a saved layout in Start/New Tab.");
+                self.notice_problem("Could Not Open Startup Layout", "choose a saved layout in Start/New Tab");
             }
             Then::HomePage | Then::LastPage => {
                 let url = if self.behavior.then == Then::HomePage {
@@ -235,7 +319,21 @@ impl App {
             }
             Then::Prompt | Then::Restore => {}
         }
+        // There is only ever one home: a new tab goes back to it.
+        if !launch {
+            self.palette = None;
+            return self.open_home();
+        }
         self.show_start_pane(Pane::Home(HomePane::new()), launch);
+    }
+
+    /// The first window of a launch, with a kept session to bring back.
+    pub(crate) fn restores_at_launch(&self) -> bool {
+        self.ordinal == 0
+            && self.behavior.remember
+            && !crate::private::enabled()
+            && !crate::compatibility::recovery_launch()
+            && self.last_session.as_ref().is_some_and(|s| !s.tabs.is_empty())
     }
 
     fn show_start_pane(&mut self, pane: Pane, launch: bool) {
@@ -264,6 +362,68 @@ impl App {
         self.dirty = true;
     }
 
+    /// The nus button: down brings home up; down again, before anything
+    /// was taken from home, goes back to where it was pressed.
+    pub(crate) fn toggle_home_latch(&mut self) {
+        self.tend_home_latch();
+        if self.home_latch.is_some() {
+            self.home_latch_back();
+            return;
+        }
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let (from, from_right) = (tab.id, tab.focus_right);
+        let existed = self.tabs.iter().any(|t| matches!(&t.left, Pane::Home(h) if !h.library));
+        self.palette = None;
+        self.open_home();
+        let Some(home) = self.tabs.get(self.active).map(|t| t.id) else { return };
+        // Already home: there is nowhere to come back to.
+        if home == from {
+            return;
+        }
+        self.home_latch = Some(Latch { from, from_right, home, made: !existed });
+        self.play_event("toggle");
+        self.dirty = true;
+    }
+
+    /// Up again, or back: return to where the nus button was pressed.
+    /// False when it was not down (back then means what it always did).
+    pub(crate) fn home_latch_back(&mut self) -> bool {
+        self.tend_home_latch();
+        let Some(latch) = self.home_latch.take() else { return false };
+        // A home made for the press, still untouched, goes with it.
+        if latch.made && self.tabs.len() > 1 {
+            if let Some(k) = self.tabs.iter().position(|t| t.id == latch.home && t.right.is_none() && matches!(&t.left, Pane::Home(h) if !h.library && h.input.is_empty())) {
+                let tab = self.tabs.remove(k);
+                self.tile_forget(tab.id);
+                self.tab_removed(k);
+                if self.active >= self.tabs.len() {
+                    self.active = self.tabs.len() - 1;
+                }
+            }
+        }
+        if let Some(i) = self.tabs.iter().position(|t| t.id == latch.from) {
+            if let Some(t) = self.tabs.get_mut(i) {
+                t.focus_right = latch.from_right && t.right.is_some();
+            }
+            self.activate(i);
+        }
+        self.play_event("toggle");
+        self.layout();
+        self.dirty = true;
+        true
+    }
+
+    /// The loop closes once home is left for anything but the way back:
+    /// another tab came to the front, or home became what it opened.
+    pub(crate) fn tend_home_latch(&mut self) {
+        let Some(latch) = self.home_latch else { return };
+        let still = self.tabs.get(self.active).is_some_and(|t| t.id == latch.home && matches!(&t.left, Pane::Home(h) if !h.library));
+        if !still || !self.tabs.iter().any(|t| t.id == latch.from) {
+            self.home_latch = None;
+            self.dirty = true;
+        }
+    }
+
     /// Enter: the line becomes a page or a shell in this very tab; a
     /// picked row runs and the prompt gives way to what it opened.
     fn home_commit(&mut self) {
@@ -274,7 +434,10 @@ impl App {
         if crate::private::enabled() && input.is_empty() { return; }
         let sel = h.sel;
         let places = h.places.as_ref().map(|(_, v)| v.to_vec()).unwrap_or_default();
-        let rows = self.home_rows(&input, &places);
+        let rows = match &h.shown {
+            Some((line, rows)) if line.trim() == input => rows.clone(),
+            _ => self.home_rows(&input, &places),
+        };
         // Acting on anything is having seen the news.
         if self.news.since.is_some() {
             self.dismiss_news();
@@ -303,7 +466,7 @@ impl App {
                 return;
             }
         }
-        if input.starts_with('@') {self.notice("Choose @claude, @codex or @ollama, followed by your prompt.");return;}
+        if input.starts_with('@') {self.notice(nus_render::text::icons::ASSISTANT,"Choose An Assistant","@claude, @codex or @ollama, then your prompt");return;}
         if self.fresh && !input.is_empty() && std::path::Path::new(&input).is_dir() {
             self.open_folder(&input);
             return;
@@ -322,6 +485,7 @@ impl App {
                 Ok(mut t) => {
                     if !input.is_empty() {
                         t.type_at_prompt = Some(format!("{input}\r"));
+                        t.type_origin = Some(crate::finish_work::Origin::NusAction);
                     }
                     Some(Pane::Term(t))
                 }
@@ -350,9 +514,13 @@ impl App {
         }
         let i = self.active;
         let mods = self.mods;
+        // Alt+← is back, as on a page: to where the nus button was pressed.
+        if mods.alt_key() && !mods.control_key() && matches!(ev.logical_key, K::Named(NamedKey::ArrowLeft)) && self.home_latch_back() {
+            return true;
+        }
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
         // The line's own editing: typing, erasing, paste, copy (field.rs).
-        let took = crate::field::edit(&mut h.input, ev, mods, 2000);
+        let took = crate::field::edit_at(&mut h.input, &mut h.cur, ev, mods, 2000);
         if took.changed() {
             h.sel = 0;
         }
@@ -378,10 +546,16 @@ impl App {
                         self.dismiss_news();
                         return true;
                     }
-                    return false;
+                    return self.home_latch_back();
                 }
-                h.input.clear();
-                h.sel = 0;
+                // A selection goes first; then the line.
+                if h.cur.range(&h.input).is_some() {
+                    h.cur.anchor = None;
+                } else {
+                    h.input.clear();
+                    h.cur = Default::default();
+                    h.sel = 0;
+                }
             }
             _ => return false,
         }
@@ -411,11 +585,29 @@ impl App {
                         // Swap the route, keep what was typed after it.
                         let rest = h.input.trim_start().trim_start_matches(['>', '?', '@']).trim_start().to_string();
                         h.input = format!("{prefix}{rest}");
+                        h.cur = Default::default();
                         h.sel = 0;
                         h.since = crate::clock::now();
                     }
                 }
             }
+            self.dirty = true;
+            return true;
+        }
+        // The line itself: the caret goes where you press; again quickly,
+        // a word, then the whole line; a drag selects.
+        if let Some(g) = h.line.as_ref().filter(|g| g.rect.contains(x, y)) {
+            let at = g.index(x);
+            let now = crate::clock::now();
+            let n = match h.clicked { Some((t, n)) if now.duration_since(t).as_millis() < 450 => n % 3 + 1, _ => 1 };
+            h.clicked = Some((now, n));
+            match n {
+                2 => h.cur.select_word(&h.input, at),
+                3 => h.cur.select_all(&h.input),
+                _ => h.cur.move_to(&h.input, at, self.mods.shift_key()),
+            }
+            h.dragging = n == 1;
+            h.since = now;
             self.dirty = true;
             return true;
         }
@@ -430,6 +622,28 @@ impl App {
         h.sel = k + 1;
         self.home_commit();
         true
+    }
+
+    /// The pointer moved with the line pressed: the selection follows.
+    pub(crate) fn home_drag(&mut self, x: f32) {
+        let Some(Pane::Home(h)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) else { return };
+        if !h.dragging {
+            return;
+        }
+        let Some(at) = h.line.as_ref().map(|g| g.index(x)) else { return };
+        if at != h.cur.at(&h.input) {
+            h.cur.move_to(&h.input, at, true);
+            self.dirty = true;
+        }
+    }
+
+    /// The press on the line let go.
+    pub(crate) fn home_release(&mut self) {
+        for t in &mut self.tabs {
+            if let Pane::Home(h) = &mut t.left {
+                h.dragging = false;
+            }
+        }
     }
 
     /// The prompt, drawn: the line alone, or under the plate.
@@ -473,20 +687,54 @@ impl App {
             }
         }
         let caret_w = self.draw_lit(scene, Style { color: fade(self.surface.signal, up), ..mono }, x0, y0, "»", dark) + self.px(12.0);
-        let shown = self.fit(mono, &p.input, line_w - caret_w - px);
-        let tw = self.draw_lit(scene, mono, x0 + caret_w, y0, &shown, dark);
-        // The block caret, breathing.
-        if focused {
-            let blinking = match self.cursor.blink {
-                crate::settings::Blink::Never => false,
-                crate::settings::Blink::AfterIdle => crate::clock::since(p.since).as_secs_f32() > 2.0,
-                crate::settings::Blink::Always => true,
-            };
-            let on = !blinking || (crate::clock::since(self.started).as_millis() / self.cursor.period.max(100) as u128) % 2 == 0;
-            if on {
-                scene.rect(Rect::new(x0 + caret_w + tw + self.px(2.0), y0 - px * 0.78, px * 0.5, px * 0.95), fade(ink, up));
+        // The line scrolls to keep the caret in view.
+        let room = line_w - caret_w - px;
+        let n = p.input.chars().count();
+        let at = p.cur.at(&p.input);
+        let mut start = p.line.as_ref().map(|g| g.start).unwrap_or(0).min(at);
+        // Each character measured once, summed: the line's widths in one
+        // pass, not a measure per edge (the line runs to 2000 characters).
+        let mut sum = Vec::with_capacity(n + 1);
+        sum.push(0.0f32);
+        let mut buf = [0u8; 4];
+        for c in p.input.chars() {
+            let w = self.fonts.measure(mono, c.encode_utf8(&mut buf));
+            sum.push(sum.last().copied().unwrap_or(0.0) + w);
+        }
+        let width = |a: usize, b: usize| sum[b.min(n)] - sum[a.min(n)];
+        while start < at && width(start, at) > room {
+            start += 1;
+        }
+        let tail = &p.input[crate::field::byte_at(&p.input, start)..];
+        let shown = self.fit(mono, tail, room);
+        let tx = x0 + caret_w;
+        let edges: Vec<f32> = (start..=n).map(|k| tx + width(start, k)).take_while(|e| *e <= tx + room + px).collect();
+        // The selection: ink under paper, as a selected row is.
+        if let Some((a, b)) = p.cur.range(&p.input) {
+            let (a, b) = (a.max(start), b.max(start));
+            if let (Some(&ea), Some(&eb)) = (edges.get(a - start), edges.get((b - start).min(edges.len().saturating_sub(1)))) {
+                let band = Rect::new(ea, y0 - px * 0.82, (eb - ea).max(0.0), px * 1.08);
+                self.draw_lit(scene, mono, tx, y0, &shown, dark);
+                scene.rect(band, fade(ink, up));
+                let picked = &p.input[crate::field::byte_at(&p.input, a)..crate::field::byte_at(&p.input, b.min(start + edges.len() - 1))];
+                // Clipped to the band: a glyph's overhang must not paint
+                // paper over the ink letter beside it.
+                let outer = scene.clip();
+                scene.layer(Some(outer.map(|c| c.intersect(&band)).unwrap_or(band)));
+                self.draw_lit(scene, Style { color: fade(self.on_fill(ink), up), ..mono }, ea, y0, picked, dark);
+                scene.layer(outer);
+            } else {
+                self.draw_lit(scene, mono, tx, y0, &shown, dark);
             }
-            // App::tick requests a frame only when the blink phase changes.
+        } else {
+            self.draw_lit(scene, mono, tx, y0, &shown, dark);
+        }
+        let tw = edges.get(at - start).map(|e| e - tx).unwrap_or(0.0);
+        p.line = Some(LineGeom { rect: Rect::new(x0, y0 - px * 1.2, line_w, px * 1.8), start, edges });
+        // The caret; a selection shows instead.
+        if focused && p.cur.range(&p.input).is_none() {
+            // As CURSOR says, like every other caret (app.rs, draw_line_caret).
+            self.draw_line_caret(scene, x0 + caret_w + tw + self.px(1.0), y0, px, up, p.since);
         }
         scene.hline(x0, y0 + self.px(12.0), line_w, self.px(m::HAIRLINE), fade(ink, 0.45 * up));
         // Rows beneath: the palette's, for what is typed. Under the plate
@@ -494,7 +742,10 @@ impl App {
         let places = self.home_places(p);
         let _ = self.news_rows();
         let news_n = self.news_count(&p.input);
-        let rows = self.home_rows(&p.input, &places);
+        let rows = match &p.shown {
+            Some((line, rows)) if *line == p.input => rows.clone(),
+            _ => self.home_rows(&p.input, &places),
+        };
         p.hits.clear();
         let sel = p.sel.min(rows.len());
         p.sel = sel;
@@ -576,7 +827,7 @@ impl App {
             crate::prompt::Route::Web => Key::Page,
             crate::prompt::Route::Shell => Key::Shell,
             crate::prompt::Route::Automatic => {
-                if crate::prompt::looks_like_url(q) { Key::Page } else { Key::Shell }
+                if crate::prompt::shell_syntax(q) && !crate::prompt::looks_like_url(q) { Key::Shell } else { Key::Page }
             }
         })
     }

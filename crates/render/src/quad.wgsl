@@ -243,11 +243,234 @@ fn sky(in: VsOut) -> vec4<f32> {
     return vec4(col, 1.0);
 }
 
+// kind 19: the intelligence atom. One instance draws the instrument (dial,
+// flat hairline orbits, electrons) and the fused-mercury nucleus, raymarched
+// against the studio. params = (level, value); stop3 = signal; color = ink;
+// color2 = the provider's metal. `extra`: bits 0–3 mode (0 instrument, 1 a
+// chrome bead, 2 orbits without the dial), 8–15 pixel scale × 32, 16–23
+// nucleons × 16, 24–31 roughness × 255. `phase` is time in seconds.
+fn atom_env(d: vec3<f32>) -> vec3<f32> {
+    let y = d.y;
+    let sky = mix(vec3(0.86), vec3(1.0), smoothstep(0.0, 0.5, y));
+    let gr = mix(vec3(0.30), vec3(0.62), smoothstep(-0.9, -0.05, y));
+    var c = mix(gr, sky, smoothstep(-0.015, 0.015, y));
+    c *= 1.0 - 0.93 * exp(-pow((y - 0.035) / 0.022, 2.0));
+    c *= 1.0 - 0.55 * exp(-pow((y + 0.22) / 0.05, 2.0));
+    c *= 1.0 - 0.45 * exp(-pow((y - 0.38) / 0.045, 2.0));
+    c *= 1.0 - 0.60 * exp(-pow((d.x + 0.55) / 0.05, 2.0)) * smoothstep(-0.2, 0.2, y);
+    let k = normalize(vec3(-0.55, 0.62, 0.56));
+    c += vec3(2.2) * smoothstep(0.94, 0.975, dot(d, k));
+    let f = normalize(vec3(0.30, 0.95, 0.2));
+    c += vec3(1.4) * smoothstep(0.92, 0.97, dot(d, f));
+    let strip = smoothstep(0.975, 0.992, dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(0.9, 0.0, 0.3))))
+        * smoothstep(-0.3, 0.0, y) * smoothstep(0.9, 0.6, y);
+    return c + vec3(1.6) * strip;
+}
+
+fn atom_smin(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+// Nine nucleons on a golden spiral, turning slowly, breathing a little.
+fn atom_map(p: vec3<f32>, t: f32, nuc: f32) -> f32 {
+    var d = 1e5;
+    for (var i = 0; i < 9; i++) {
+        let k = f32(i);
+        let w = clamp(nuc - k, 0.0, 1.0);
+        if w > 0.0 {
+            let y = 1.0 - 2.0 * (k + 0.5) / 9.0;
+            let r = sqrt(max(0.0, 1.0 - y * y));
+            let a = k * 2.39996 + t * 0.22;
+            let c = vec3(cos(a) * r, y, sin(a) * r) * (0.36 + 0.012 * sin(t * 0.9 + k * 1.3));
+            d = atom_smin(d, length(p - c) - 0.30 * w, 0.24);
+        }
+    }
+    return d;
+}
+
+fn atom_metal(n: vec3<f32>, rd: vec3<f32>, tint: vec3<f32>, rough: f32) -> vec3<f32> {
+    let r = reflect(rd, n);
+    let fr = pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
+    var e = atom_env(r);
+    if rough > 0.01 {
+        let t1 = normalize(cross(r, vec3(0.0, 1.0, 0.001)));
+        let t2 = cross(r, t1);
+        let s = rough * 0.35;
+        e = (e + atom_env(normalize(r + t1 * s)) + atom_env(normalize(r - t1 * s))
+            + atom_env(normalize(r + t2 * s)) + atom_env(normalize(r - t2 * s))) / 5.0;
+    }
+    return e * mix(tint * 0.86, vec3(1.0), fr);
+}
+
+// Premultiplied colour of the nucleus at `uv` (y up, units of the short side).
+// The metal stays the provider's at every level; only the electrons and the
+// dial run hot.
+fn atom_nucleus(uv: vec2<f32>, px: f32, t: f32, nuc: f32, tint: vec3<f32>, rough: f32) -> vec4<f32> {
+    let ro = vec3(0.0, 0.35, 8.2);
+    let ww = normalize(-ro);
+    let uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
+    let vv = cross(uu, ww);
+    let rd = normalize(uv.x * uu + uv.y * vv + 1.42 * ww);
+    // Bound: nothing outside a sphere of radius 0.95.
+    let b = dot(ro, rd);
+    let disc = b * b - dot(ro, ro) + 0.95 * 0.95;
+    if disc < 0.0 {
+        return vec4(0.0);
+    }
+    var dist = -b - sqrt(disc);
+    var dmin = 1e5;
+    var tmin = dist;
+    var hit = false;
+    for (var i = 0; i < 72; i++) {
+        let h = atom_map(ro + rd * dist, t, nuc);
+        if h < dmin {
+            dmin = h;
+            tmin = dist;
+        }
+        if h < 0.0006 * dist {
+            hit = true;
+            break;
+        }
+        dist += h * 0.9;
+        if dist > -b + sqrt(disc) {
+            break;
+        }
+    }
+    // A pixel's footprint at that depth: the silhouette is antialiased.
+    let foot = tmin * px / 1.42;
+    var cov = 1.0;
+    if !hit {
+        cov = clamp(0.5 - dmin / foot, 0.0, 1.0);
+        if cov <= 0.0 {
+            return vec4(0.0);
+        }
+        dist = tmin;
+    }
+    let p = ro + rd * dist;
+    let e = vec2(0.0012, -0.0012);
+    let n = normalize(e.xyy * atom_map(p + e.xyy, t, nuc) + e.yyx * atom_map(p + e.yyx, t, nuc)
+        + e.yxy * atom_map(p + e.yxy, t, nuc) + e.xxx * atom_map(p + e.xxx, t, nuc));
+    var c = atom_metal(n, rd, tint, rough);
+    let ao = clamp(0.5 + 0.5 * atom_map(p + n * 0.12, t, nuc) / 0.12, 0.0, 1.0);
+    c *= mix(0.6, 1.0, ao);
+    return vec4(clamp(c, vec3(0.0), vec3(1.0)) * cov, cov);
+}
+
+// Degrees along the dial from its start (lower left, 225°) clockwise.
+fn atom_dial(q: vec2<f32>) -> f32 {
+    let deg = atan2(q.y, q.x) * 57.29578;
+    return ((225.0 - deg) % 360.0 + 360.0) % 360.0;
+}
+
+fn atom_over(acc: vec4<f32>, col: vec3<f32>, a: f32) -> vec4<f32> {
+    let k = clamp(a, 0.0, 1.0);
+    return vec4(acc.rgb * (1.0 - k) + col * k, acc.a * (1.0 - k) + k);
+}
+
+// Coverage of a line `w` px wide at distance `d` px from its centre.
+fn atom_line(d: f32, w: f32) -> f32 {
+    return clamp(0.5 * w + 0.5 - d, 0.0, 1.0);
+}
+
+fn atom(in: VsOut) -> vec4<f32> {
+    let mode = in.extra & 0xfu;
+    let s = max(f32((in.extra >> 8u) & 0xffu) / 32.0, 0.25);
+    let nuc = f32((in.extra >> 16u) & 0xffu) / 16.0;
+    let rough = f32((in.extra >> 24u) & 0xffu) / 255.0;
+    let tint = in.color2.rgb;
+    let ink = in.color.rgb;
+    let signal = in.stop3.rgb;
+    let level = in.params.x;
+    let value = in.params.y;
+    let t = in.phase;
+    let m = min(in.size.x, in.size.y);
+    let p = in.local - in.size * 0.5;
+    let q = vec2(p.x, -p.y);
+    if mode == 1u {
+        // A chrome bead: an analytic sphere in the same studio.
+        let uv = q / (0.5 * m);
+        let r = length(uv);
+        let a = clamp((1.0 - r) * 0.5 * m + 0.5, 0.0, 1.0);
+        if a <= 0.0 {
+            return vec4(0.0);
+        }
+        let n = vec3(uv, sqrt(max(0.0, 1.0 - r * r)));
+        var c = atom_metal(n, vec3(0.0, 0.0, -1.0), tint, rough);
+        c = mix(c, c * signal * 1.3 + signal * 0.4, clamp(value - 3.0, 0.0, 1.0));
+        return vec4(clamp(c, vec3(0.0), vec3(1.0)), a * in.color.a);
+    }
+    let heat = clamp(level - 3.0, 0.0, 1.0);
+    let hot = mix(ink, signal, heat);
+    let rq = length(q);
+    var acc = vec4(0.0);
+    // Orbits: flat hairlines, the current one drawn a touch firmer.
+    for (var f = 0; f < 5; f++) {
+        let ff = f32(f);
+        let act = max(0.0, 1.0 - abs(ff - level));
+        let r = m * (0.14 + 0.042 * ff);
+        let al = select(0.1, 0.24, ff < level) + 0.5 * act;
+        acc = atom_over(acc, ink, al * atom_line(abs(rq - r), (0.5 + 0.4 * act) * s));
+    }
+    // Electrons: one per level, evenly spaced, each with a short fading wake.
+    let rv = m * (0.14 + 0.042 * level);
+    let sp = 0.30 + 0.10 * level;
+    let count = level + 1.0;
+    let n = max(count, 1.0);
+    let ang = atan2(q.y, q.x);
+    for (var e = 0; e < 5; e++) {
+        let g = clamp(count - f32(e), 0.0, 1.0);
+        if g > 0.0 {
+            let a = t * sp + f32(e) * 6.2831853 / n;
+            let behind = ((a - ang) % 6.2831853 + 6.2831853) % 6.2831853;
+            if behind < 0.9 {
+                let u = 1.0 - behind / 0.9;
+                acc = atom_over(acc, hot, g * 0.7 * u * u * atom_line(abs(rq - rv), (0.5 + u) * s));
+            }
+            let c = vec2(cos(a), sin(a)) * rv;
+            let d = length(q - c) - 3.2 * s * g;
+            acc = atom_over(acc, hot, g * clamp(0.5 - d, 0.0, 1.0));
+        }
+    }
+    if mode == 0u {
+        // The dial: sixty-four graduations over 270°, majors at the stops,
+        // lit up to the value, and a hairline arc just outside them.
+        let r1 = m * 0.372;
+        let r2 = m * 0.392;
+        let d = atom_dial(q);
+        let lit_col = select(ink, signal, heat > 0.5);
+        if d <= 272.0 {
+            let i = clamp(round(d / 270.0 * 64.0), 0.0, 64.0);
+            let perp = abs(d - i / 64.0 * 270.0) / 57.29578 * rq;
+            let major = (u32(i) % 16u) == 0u;
+            let r0 = select(r1, r1 - 6.0 * s, major);
+            let radial = clamp(min(rq - r0, r2 - rq) + 0.5, 0.0, 1.0);
+            let lit = i / 16.0 <= value + 0.001;
+            let al = select(0.22, 0.95, lit);
+            let w = select(0.8, 1.2, major) * s;
+            acc = atom_over(acc, select(ink, lit_col, lit), al * radial * atom_line(perp, w));
+            let arc = d / 270.0 * 4.0;
+            if arc <= value {
+                acc = atom_over(acc, lit_col, 0.95 * atom_line(abs(rq - r2 - 4.0 * s), 1.5 * s));
+            }
+        }
+    }
+    let nucleus = atom_nucleus(q / m, 1.0 / m, t, nuc, tint, rough);
+    let out = vec4(acc.rgb * (1.0 - nucleus.a) + nucleus.rgb, acc.a * (1.0 - nucleus.a) + nucleus.a);
+    if out.a <= 0.0 {
+        return vec4(0.0);
+    }
+    return vec4(out.rgb / out.a, out.a * in.color.a);
+}
+
 // kind 0: solid. 1: atlas glyph (R = coverage). 2: external RGBA texture.
 // 3: rounded fill (params.x = radius). 4: rounded stroke (params.x = radius,
 // params.y = thickness). 3 and 4 blend toward color2 along a diagonal
 // gradient when color2.a > 0; `phase` slides it (aurora).
 fn shade(in: VsOut) -> vec4<f32> {
+    if in.kind == 19u {
+        return atom(in);
+    }
     if in.kind == 18u {
         let scale = in.params.y;
         let head = in.size.x * in.params.x;

@@ -108,8 +108,19 @@ fn lock_library(profile: &Path) -> std::io::Result<std::fs::File> {
         options.mode(0o600);
     }
     let file = options.open(path)?;
-    file.try_lock()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    // A process forked elsewhere in the app keeps a copy of this descriptor,
+    // and so the lock, until its exec: wait that moment out (the library
+    // store does the same) rather than fail a sync on it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => return Err(std::io::Error::other(e.to_string())),
+        }
+    }
     // Keep the inode: unlinking a lock permits two independent writers.
     Ok(file)
 }

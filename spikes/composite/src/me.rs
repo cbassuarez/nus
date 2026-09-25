@@ -59,6 +59,80 @@ fn me_path() -> PathBuf {
     profile_dir().join("me.json")
 }
 
+/// The fine print's version. Raise it when the privacy notes or the terms
+/// change in a way people should see again; the walk then asks once more.
+pub const TERMS_VERSION: u32 = 1;
+
+fn agreed_path() -> PathBuf {
+    profile_dir().join("agreed")
+}
+
+/// Whether this profile has agreed to the current fine print.
+pub fn agreed() -> bool {
+    std::fs::read_to_string(agreed_path()).ok().and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<u32>().ok())).is_some_and(|v| v >= TERMS_VERSION)
+}
+
+fn agree() {
+    let _ = std::fs::create_dir_all(profile_dir());
+    let _ = crate::store::write_atomic(&agreed_path(), format!("{TERMS_VERSION} {}\n", today()).as_bytes());
+}
+
+/// The fine print, as shipped: the repository's own documents, compiled in,
+/// so what you agree to is exactly what the source says.
+const PRIVACY: &str = include_str!("../../../docs/PRIVACY_AND_DIAGNOSTICS.md");
+const LICENSE: &str = include_str!("../../../LICENSE");
+const NOTICE: &str = include_str!("../../../NOTICE");
+
+/// Plain lines from Markdown: headings, emphasis, code marks and table
+/// rules dropped; a table row read as its cells.
+fn plain(md: &str) -> Vec<String> {
+    // Source lines are hard-wrapped; a paragraph is read back as one line
+    // so it wraps to the card. Headings, list items and table rows stand alone.
+    let mut out: Vec<String> = Vec::new();
+    let mut para = String::new();
+    let flush = |para: &mut String, out: &mut Vec<String>| {
+        if !para.is_empty() {
+            out.push(std::mem::take(para));
+        }
+    };
+    for line in md.lines() {
+        let t = line.trim();
+        let clean = |s: &str| s.replace("**", "").replace('`', "");
+        if t.is_empty() {
+            flush(&mut para, &mut out);
+            out.push(String::new());
+        } else if t.starts_with('|') {
+            flush(&mut para, &mut out);
+            if !t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
+                out.push(clean(&t.trim_matches('|').split('|').map(str::trim).filter(|c| !c.is_empty()).collect::<Vec<_>>().join(" — ")));
+            }
+        } else if t.starts_with('#') {
+            flush(&mut para, &mut out);
+            out.push(clean(t.trim_start_matches('#').trim()).to_uppercase());
+        } else if t.starts_with("- ") || t.starts_with("* ") {
+            flush(&mut para, &mut out);
+            para = format!("· {}", clean(&t[2..]));
+        } else {
+            if !para.is_empty() {
+                para.push(' ');
+            }
+            para.push_str(&clean(t));
+        }
+    }
+    flush(&mut para, &mut out);
+    out.dedup_by(|a, b| a.is_empty() && b.is_empty());
+    out
+}
+
+/// The three documents, with a line on top that says what each is.
+fn fine_print(tab: u8) -> (&'static str, Vec<String>) {
+    match tab {
+        0 => ("nus has no account and sends no usage data. Your profile stays on this machine unless you turn on sync, which encrypts it first. The full notes follow.", plain(PRIVACY)),
+        1 => ("nus is free software under the MIT License. These are its terms: use it, change it, share it; it comes with no warranty.", plain(LICENSE)),
+        _ => ("nus is built with work by others, each under its own license:", plain(NOTICE)),
+    }
+}
+
 fn device_path() -> PathBuf {
     profile_dir().join("sync").join("device")
 }
@@ -200,6 +274,8 @@ pub enum Step {
     Import,
     ImportSources,
     ImportReview,
+    /// Privacy, terms and licenses: read, then agreed to, once.
+    Terms,
     Done,
 }
 
@@ -247,6 +323,10 @@ pub enum CardHit {
     CopyKey,
     /// Undo the forge: the token and the repo's name forgotten.
     ForgeForget,
+    /// The fine print's tabs: 0 privacy, 1 terms, 2 licenses.
+    TermsTab(u8),
+    /// Agree to the fine print and finish the first walk.
+    Agree,
 }
 
 pub struct MeCard {
@@ -273,6 +353,17 @@ pub struct MeCard {
     pub made_key: String,
     /// The host typed for a forge that is not GitHub.
     pub host: String,
+    /// The first walk, on a fresh install: the big card in the middle, no
+    /// way out but through, and Welcome after it.
+    pub first: bool,
+    /// The first walk just finished: the card falls away as Welcome opens.
+    pub leaving: bool,
+    pub terms_tab: u8,
+    /// The fine print's scroll, and how far it can go (physical px).
+    pub terms_scroll: f32,
+    pub terms_reach: f32,
+    /// Set once the fall has begun (the frame it started on).
+    pub leave_from: Option<std::time::Instant>,
 }
 
 impl Default for MeCard {
@@ -295,6 +386,12 @@ impl Default for MeCard {
             flow: None,
             made_key: String::new(),
             host: String::new(),
+            first: false,
+            leaving: false,
+            terms_tab: 0,
+            terms_scroll: 0.0,
+            terms_reach: 0.0,
+            leave_from: None,
         }
     }
 }
@@ -310,6 +407,66 @@ impl App {
         c.rise.replay(0.0, 1.0, self.motion.dur(base::PALETTE) * 1.6);
         self.palette = None;
         self.dirty = true;
+    }
+
+    /// A fresh install: the walk in the big card, before Welcome. A profile
+    /// that exists but hasn't agreed to the fine print starts there.
+    pub(crate) fn open_first_walk(&mut self) {
+        self.open_me_card();
+        let c = &mut self.me_card;
+        c.first = true;
+        c.leaving = false;
+        c.step = Some(if self.me.is_none() { Step::Hello } else { Step::Terms });
+    }
+
+    /// The first walk is done: the card falls away and Welcome takes its
+    /// place. Onboarding is complete from here.
+    fn finish_first_walk(&mut self) {
+        let c = &mut self.me_card;
+        c.first = false;
+        c.leaving = true;
+        c.open = false;
+        c.hits.clear();
+        // The fall starts on the first frame that draws it: opening Welcome
+        // can hold that frame back longer than the fall itself lasts.
+        c.rise = Anim::at(1.0);
+        c.leave_from = None;
+        if let Some(f) = c.flow.take() {
+            f.cancel();
+        }
+        // The untouched prompt the window was born with gives way.
+        let birth = self.tabs.len() == 1 && matches!(&self.tabs[0].left, crate::app::Pane::Home(h) if h.input.is_empty() && !h.library);
+        if birth {
+            self.replace_birth(crate::app::Pane::Hints(crate::app::HintsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), scroll: 0.0 }));
+        } else {
+            self.open_welcome();
+        }
+        self.save_hints();
+        crate::install::complete();
+        self.play_event("onboarding.tick");
+        self.dirty = true;
+    }
+
+    /// For the shot driver: finish the first walk as someone clicking through
+    /// would, with the defaults (the OS user's name, the initial, kept here).
+    pub(crate) fn finish_first_walk_now(&mut self) {
+        if self.me.is_none() {
+            self.pending_name = os_user();
+            self.me_finish();
+        }
+        agree();
+        self.finish_first_walk();
+    }
+
+    /// The wheel over the fine print.
+    pub(crate) fn me_wheel(&mut self, x: f32, y: f32, dy: f32) -> bool {
+        if !self.me_card.open || self.me_card.step != Some(Step::Terms) || !self.me_card.rect.contains(x, y) {
+            return false;
+        }
+        let c = &mut self.me_card;
+        c.terms_scroll = (c.terms_scroll - dy).clamp(0.0, c.terms_reach.max(0.0));
+        self.dirty = true;
+        true
     }
 
     /// One field from the view (or the settings page).
@@ -475,7 +632,7 @@ impl App {
             Step::Key => {
                 if self.me_card.key_mode == 1 {
                     if nus_sync::decode_key(&input).is_none() {
-                        self.notice("that is not a nus key · nus5-…");
+                        self.notice(nus_render::text::icons::LOCK_KEY, "Not A nus Key", "keys start nus5-");
                         return;
                     }
                     crate::syncui::write_key(&input);
@@ -487,7 +644,15 @@ impl App {
                 self.me_sync_done();
                 self.sync_now();
             }
-            Step::Import => self.me_card.step=Some(Step::Done),
+            Step::Import => self.me_card.step = Some(if self.me_card.first { Step::Terms } else { Step::Done }),
+            Step::Terms => {
+                agree();
+                if self.me_card.first {
+                    self.finish_first_walk();
+                    return;
+                }
+                self.me_card.step = Some(Step::Done);
+            }
             Step::ImportSources => self.import_hit(CardHit::ImportPick),
             Step::ImportReview => self.import_hit(CardHit::ImportApply),
             Step::Done => {
@@ -536,6 +701,7 @@ impl App {
         }
         c.step = match c.step {
             Some(Step::ImportSources) => Some(Step::Import),
+            Some(Step::Terms) => Some(Step::Import),
             Some(Step::ImportReview) => Some(Step::ImportSources),
             Some(Step::Name) => Some(Step::Hello),
             Some(Step::Face) => Some(Step::Name),
@@ -559,6 +725,7 @@ impl App {
             CardHit::MercuryDone => self.mercury_action(hit),
             CardHit::Next => self.me_next(),
             CardHit::Back => self.me_back(),
+            CardHit::NotNow if self.me_card.first => {}
             CardHit::NotNow => {
                 if self.me_card.step == Some(Step::Sync) {
                     self.me_finish();
@@ -566,6 +733,7 @@ impl App {
                     self.close_me_card();
                 }
             }
+            CardHit::Close if self.me_card.first => {}
             CardHit::Close => self.close_me_card(),
             CardHit::PickPicture => {
                 self.me_card.face = Face::Picture;
@@ -628,7 +796,7 @@ impl App {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(user_code.clone());
                     }
-                    self.toast_with(Some(icons::COPY), "COPIED!", user_code.clone(), None);
+                    self.toast(icons::COPY, "Copied", user_code.clone(), None);
                 }
             }
             CardHit::KeyMode(k) => {
@@ -643,7 +811,7 @@ impl App {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     let _ = cb.set_text(word);
                 }
-                self.toast_with(Some(icons::COPY), "COPIED!", "the key · paste it on the other device", None);
+                self.toast(icons::COPY, "Copied", "the key · paste it on the other device", None);
             }
             CardHit::ForgeForget => {
                 crate::forge::forget();
@@ -665,6 +833,11 @@ impl App {
                 self.run_in_shell(&cmd);
             }
             CardHit::Badge => {}
+            CardHit::TermsTab(k) => {
+                self.me_card.terms_tab = k.min(2);
+                self.me_card.terms_scroll = 0.0;
+            }
+            CardHit::Agree => self.me_next(),
         }
         self.dirty = true;
     }
@@ -692,6 +865,27 @@ impl App {
                 _=>{}
             }
         }
+        if self.me_card.step == Some(Step::Terms) {
+            let page = self.me_card.rect.h * 0.4;
+            let step = match &ev.logical_key {
+                WKey::Named(NamedKey::ArrowDown) => Some(self.px(40.0)),
+                WKey::Named(NamedKey::ArrowUp) => Some(-self.px(40.0)),
+                WKey::Named(NamedKey::PageDown) | WKey::Named(NamedKey::Space) => Some(page),
+                WKey::Named(NamedKey::PageUp) => Some(-page),
+                WKey::Named(NamedKey::Tab) => {
+                    self.me_card.terms_tab = (self.me_card.terms_tab + if self.mods.shift_key() { 2 } else { 1 }) % 3;
+                    self.me_card.terms_scroll = 0.0;
+                    Some(0.0)
+                }
+                _ => None,
+            };
+            if let Some(d) = step {
+                let c = &mut self.me_card;
+                c.terms_scroll = (c.terms_scroll + d).clamp(0.0, c.terms_reach.max(0.0));
+                self.dirty = true;
+                return true;
+            }
+        }
         let typing = matches!(self.me_card.step, Some(Step::Name) | Some(Step::Device) | Some(Step::Folder) | Some(Step::ForgeToken))
             || (self.me_card.step == Some(Step::Face) && matches!(self.me_card.face, Face::Emoji(_)))
             || (self.me_card.step == Some(Step::Forge) && self.me_card.forge != crate::forge::Kind::GitHub)
@@ -707,7 +901,7 @@ impl App {
         }
         match &ev.logical_key {
             WKey::Named(NamedKey::Escape) => {
-                if self.me_card.editing {
+                if self.me_card.editing || self.me_card.first {
                     self.me_back();
                 } else {
                     self.close_me_card();
@@ -737,7 +931,7 @@ impl App {
         let pad = self.touch_pad();
         if let Some((_, h)) = self.me_card.hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)).copied() {
             self.me_hit(h);
-        } else if !self.me_card.rect.contains(x, y) {
+        } else if !self.me_card.rect.contains(x, y) && !self.me_card.first {
             self.close_me_card();
         }
         self.dirty = true;
@@ -819,7 +1013,13 @@ impl App {
     /// centred otherwise.
     pub(crate) fn draw_me_card(&mut self, scene: &mut Scene) {
         if self.me_card.mercury_reveal.is_some(){return;}
+        if self.me_card.leaving && self.me_card.leave_from.is_none() {
+            self.me_card.leave_from = Some(crate::clock::now());
+            self.me_card.rise.replay(1.0, 0.0, self.motion.dur(base::PALETTE) * 3.6);
+        }
         if !self.me_card.open && !self.me_card.rise.active() {
+            self.me_card.leaving = false;
+            self.me_card.leave_from = None;
             return;
         }
         let rise = self.me_card.rise.value();
@@ -836,8 +1036,12 @@ impl App {
         let dim = Style { color: t.dim, ..label };
         let pad = self.px(20.0);
         let step = self.me_card.step;
-        let wide = matches!(step, Some(Step::Sync) | Some(Step::Folder) | Some(Step::Forge) | Some(Step::ForgeToken) | Some(Step::ForgeWait) | Some(Step::Key) | Some(Step::Import) | Some(Step::ImportSources) | Some(Step::ImportReview));
-        let cw = self.px(if wide { 440.0 } else { 380.0 }).min(w - self.px(32.0));
+        let wide = matches!(step, Some(Step::Sync) | Some(Step::Folder) | Some(Step::Forge) | Some(Step::ForgeToken) | Some(Step::ForgeWait) | Some(Step::Key) | Some(Step::Import) | Some(Step::ImportSources) | Some(Step::ImportReview) | Some(Step::Terms));
+        // The first walk is a room of its own: bigger, centered, with the
+        // steps down its left side so you can see where you are.
+        let roomy = self.me_card.first || self.me_card.leaving;
+        let rail_w = if roomy && w > self.px(640.0) { self.px(196.0) } else { 0.0 };
+        let cw = if roomy { self.px(800.0).min(w - self.px(48.0)) } else { self.px(if wide { 440.0 } else { 380.0 }).min(w - self.px(32.0)) };
         self.me_card.hits.clear();
 
         // Height by what's on the card.
@@ -860,14 +1064,15 @@ impl App {
             Some(Step::ForgeToken) => self.px(150.0),
             Some(Step::ForgeWait) => self.px(170.0),
             Some(Step::Key) => self.px(196.0),
+            Some(Step::Terms) => self.px(300.0),
             Some(Step::Done) => self.px(126.0),
         };
         let body_h=if matches!(step,Some(Step::Import|Step::ImportSources|Step::ImportReview)){body_h.min((h-head_h-foot_h-self.px(20.0)).max(self.px(150.0)))}else{body_h};
-        let ch = head_h + body_h + foot_h;
+        let ch = if roomy { (h - self.px(48.0)).min(self.px(580.0)).max(head_h + body_h + foot_h).min(h - self.px(16.0)) } else { head_h + body_h + foot_h };
 
         // Where: over the avatar, or the middle.
         let sb = self.sidebar_rect();
-        let anchored = self.sidebar_visible() && sb.w > self.px(60.0);
+        let anchored = !roomy && self.sidebar_visible() && sb.w > self.px(60.0);
         let (cx, cy) = if anchored {
             let x = (sb.x + self.px(8.0)).min(w - cw - self.px(8.0)).max(self.px(8.0));
             let y = (sb.bottom() - self.px(m::FOOT_H) - self.px(10.0) - ch).max(self.px(8.0));
@@ -875,16 +1080,25 @@ impl App {
         } else {
             (((w - cw) / 2.0).round(), ((h - ch) * 0.4).round())
         };
-        let cy = cy + (1.0 - rise) * self.px(12.0);
+        let leaving = self.me_card.leaving;
+        if leaving && !self.me_card.rise.active() {
+            // Gone: Welcome has the room now.
+            self.me_card.leaving = false;
+            self.me_card.leave_from = None;
+            return;
+        }
+        // Rising, the card lifts a little into place; leaving, it drops out
+        // of sight, gathering speed, as Welcome opens behind it.
+        let cy = if leaving { cy + (1.0 - rise).powi(2) * (h - cy + self.px(24.0)) } else { cy + (1.0 - rise) * self.px(12.0) };
         let r = Rect::new(cx.round(), cy.round(), cw, ch);
         self.me_card.rect = r;
 
         scene.layer(None);
-        let a = rise;
+        let a = if leaving { rise.sqrt() } else { rise };
         scene.rect(Rect::new(r.x + self.px(8.0), r.y + self.px(8.0), r.w, r.h), fade(ink, a));
         scene.rect(r, fade(t.paper, a));
         scene.outline(r, self.px(m::FLOATING), fade(ink, a));
-        if a < 0.999 {
+        if a < 0.999 && !leaving {
             scene.layer(Some(Rect::new(r.x, r.y, r.w, r.h * a.max(0.01))));
         }
 
@@ -933,11 +1147,50 @@ impl App {
         }
         scene.hline(r.x, r.y + head_h - self.px(m::STRUCTURE), r.w, self.px(m::STRUCTURE), ink);
 
+        // The steps, down the left of the first walk.
+        if rail_w > 0.0 {
+            let stages = ["Hello", "Your name", "Your face", "This device", "Where it lives", "Bring things over", "The fine print"];
+            let at = match step {
+                Some(Step::Hello) | None => 0,
+                Some(Step::Name) => 1,
+                Some(Step::Face) => 2,
+                Some(Step::Device) => 3,
+                Some(Step::Sync | Step::Folder | Step::Forge | Step::ForgeToken | Step::ForgeWait | Step::Key) => 4,
+                Some(Step::Import | Step::ImportSources | Step::ImportReview) => 5,
+                Some(Step::Terms | Step::Done) => 6,
+            };
+            let rail = Rect::new(r.x, r.y + head_h, rail_w, r.h - head_h);
+            scene.rect(rail, fade(t.tint, 0.6));
+            scene.vline(rail.right(), rail.y, rail.h, self.px(m::HAIRLINE), ink);
+            let mut ry = rail.y + self.px(22.0);
+            for (k, name) in stages.iter().enumerate() {
+                let done = k < at;
+                let now = k == at;
+                let dot = Rect::new(rail.x + pad, ry - self.px(9.0), self.px(10.0), self.px(10.0));
+                if done {
+                    self.fonts.draw_icon(scene, icons::CHECK, self.px(11.0), dot.x, dot.y - self.px(0.5), ink);
+                } else if now {
+                    scene.rect(dot, self.surface.signal);
+                } else {
+                    scene.outline(dot, self.px(m::HAIRLINE), t.dim);
+                }
+                let st = Style { color: if now || done { ink } else { t.dim }, ..if now { ui_strong } else { ui } };
+                self.fonts.draw(scene, st, dot.right() + self.px(12.0), ry, name);
+                ry += self.px(34.0);
+            }
+            let st = Style { color: t.dim, ..label };
+            let word = format!("STEP {} OF {}", at + 1, stages.len());
+            self.fonts.draw(scene, st, rail.x + pad, rail.bottom() - self.px(18.0), &word);
+        }
+
         // Body.
-        let bx = r.x + pad;
-        let bw = r.w - 2.0 * pad;
-        let mut y = r.y + head_h + self.px(14.0);
+        let bx = r.x + rail_w + pad;
+        let bw = r.w - rail_w - 2.0 * pad;
+        let mut y = r.y + head_h + self.px(if roomy { 26.0 } else { 14.0 });
         let foot_base = r.bottom() - foot_h / 2.0 + self.px(4.0);
+        if roomy {
+            scene.hline(r.x + rail_w, r.bottom() - foot_h, r.w - rail_w, self.px(m::HAIRLINE), t.tint);
+        }
         match step {
             Some(Step::Import|Step::ImportSources|Step::ImportReview) => self.draw_import_page(scene,bx,y,bw,foot_base),
             None => {
@@ -998,18 +1251,49 @@ impl App {
             }
             Some(Step::Hello) => {
                 let isz = self.px(22.0);
-                self.fonts.draw_icon(scene, icons::SHIELD, isz, bx, y, self.surface.signal);
                 let head = Style { font: self.f.strong, px: self.px(15.0), color: ink, tracking: 0.0 };
-                self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "This is your profile.");
-                y += self.px(34.0);
-                let words = "Your profile lives on this machine. No nus account or usage telemetry. Optional sync encrypts profile data. Automatic GitHub update checks can be disabled in Settings.";
-                for l in crate::reader::wrap(&self.fonts, ui, words, bw) {
-                    self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
-                    y += self.px(19.0);
+                if !roomy {
+                    self.fonts.draw_icon(scene, icons::SHIELD, isz, bx, y, self.surface.signal);
                 }
-                let mut x = bx;
-                x += self.me_button(scene, x, foot_base, "BEGIN", true, CardHit::Next) + self.px(10.0);
-                self.me_button(scene, x, foot_base, "NOT NOW", false, CardHit::NotNow);
+                if roomy {
+                    let title = Style { font: self.f.serif, px: self.px(30.0), color: ink, tracking: 0.0 };
+                    self.fonts.draw(scene, title, bx, y + self.px(26.0), "First, a little about you.");
+                    y += self.px(52.0);
+                    let lead = "A minute to set up the profile that's yours on this machine. Everything here can be changed later from the avatar in the footer.";
+                    for l in crate::reader::wrap(&self.fonts, ui, lead, bw) {
+                        self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
+                        y += self.px(19.0);
+                    }
+                    y += self.px(16.0);
+                    let points: [((&'static str, &'static str), &str, &str); 3] = [
+                        (icons::SHIELD, "It stays here", "A folder on this machine. No nus account, no usage data sent anywhere."),
+                        (icons::BROADCAST, "It can travel, sealed", "If you choose sync, it's encrypted before it leaves, with a key only you hold."),
+                        (icons::DOWNLOAD, "It can start full", "Bring bookmarks, history and settings over from the browser and terminal you use now."),
+                    ];
+                    for (icon, what, why) in points {
+                        let isz = self.px(16.0);
+                        self.fonts.draw_icon(scene, icon, isz, bx, y + self.px(1.0), self.surface.signal);
+                        self.fonts.draw(scene, ui_strong, bx + isz + self.px(12.0), y + self.px(13.0), what);
+                        let mut ly = y + self.px(31.0);
+                        for l in crate::reader::wrap(&self.fonts, Style { color: t.dim, ..ui }, why, bw - isz - self.px(12.0)) {
+                            self.fonts.draw(scene, Style { color: t.dim, ..ui }, bx + isz + self.px(12.0), ly, &l);
+                            ly += self.px(18.0);
+                        }
+                        y = ly + self.px(10.0);
+                    }
+                    self.me_button(scene, bx, foot_base, "LET'S BEGIN", true, CardHit::Next);
+                } else {
+                    self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "This is your profile.");
+                    y += self.px(34.0);
+                    let words = "Your profile lives on this machine. No nus account or usage telemetry. Optional sync encrypts profile data. Automatic GitHub update checks can be disabled in Settings.";
+                    for l in crate::reader::wrap(&self.fonts, ui, words, bw) {
+                        self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
+                        y += self.px(19.0);
+                    }
+                    let mut x = bx;
+                    x += self.me_button(scene, x, foot_base, "BEGIN", true, CardHit::Next) + self.px(10.0);
+                    self.me_button(scene, x, foot_base, "NOT NOW", false, CardHit::NotNow);
+                }
             }
             Some(Step::Name) => {
                 self.fonts.draw(scene, strong, bx, y + self.px(8.0), if editing { "YOUR NAME" } else { "WHAT NUS CALLS YOU" });
@@ -1146,7 +1430,7 @@ impl App {
                 }
                 let mut x = bx;
                 x += self.me_button(scene, x, foot_base, if picked == Way::Here { "KEEP IT HERE" } else { "NEXT" }, true, CardHit::Next) + self.px(10.0);
-                if !editing && !has_me {
+                if !editing && !has_me && !self.me_card.first {
                     x += self.me_button(scene, x, foot_base, "NOT NOW", false, CardHit::NotNow) + self.px(10.0);
                 }
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
@@ -1178,7 +1462,7 @@ impl App {
                     } else {
                         scene.outline(chip, self.px(m::HAIRLINE), ink);
                     }
-                    self.fonts.draw(scene, Style { color: if on { t.paper } else { ink }, ..label }, x + self.px(10.0), chip.y + chip.h / 2.0 + self.px(4.0), kind.name());
+                    self.fonts.draw(scene, Style { color: if on { self.on_fill(ink) } else { ink }, ..label }, x + self.px(10.0), chip.y + chip.h / 2.0 + self.px(4.0), kind.name());
                     self.me_card.hits.push((chip, CardHit::ForgeKind(k as u8)));
                     x += w + self.px(8.0);
                 }
@@ -1307,7 +1591,7 @@ impl App {
                     } else {
                         scene.outline(chip, self.px(m::HAIRLINE), ink);
                     }
-                    self.fonts.draw(scene, Style { color: if on { t.paper } else { ink }, ..label }, x + self.px(10.0), chip.y + chip.h / 2.0 + self.px(4.0), word);
+                    self.fonts.draw(scene, Style { color: if on { self.on_fill(ink) } else { ink }, ..label }, x + self.px(10.0), chip.y + chip.h / 2.0 + self.px(4.0), word);
                     self.me_card.hits.push((chip, CardHit::KeyMode(k)));
                     x += w + self.px(8.0);
                 }
@@ -1342,6 +1626,66 @@ impl App {
                 let mut x = bx;
                 x += self.me_button(scene, x, foot_base, "DONE", true, CardHit::Next) + self.px(10.0);
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+            }
+            Some(Step::Terms) => {
+                let title = Style { font: self.f.serif, px: self.px(if roomy { 26.0 } else { 20.0 }), color: ink, tracking: 0.0 };
+                self.fonts.draw(scene, title, bx, y + self.px(20.0), "The fine print");
+                y += self.px(38.0);
+                // Three tabs: privacy, terms, licenses.
+                let mut tx = bx;
+                for (k, word) in ["PRIVACY", "TERMS", "LICENSES"].iter().enumerate() {
+                    let on = self.me_card.terms_tab == k as u8;
+                    let tw = self.fonts.measure(label, word) + self.px(22.0);
+                    let chip = Rect::new(tx, y, tw, self.px(24.0));
+                    if on { scene.rect(chip, ink); } else { scene.outline(chip, self.px(m::HAIRLINE), ink); }
+                    self.fonts.draw(scene, Style { color: if on { t.paper } else { ink }, ..label }, tx + self.px(11.0), chip.y + self.px(16.0), word);
+                    self.me_card.hits.push((chip, CardHit::TermsTab(k as u8)));
+                    tx += tw + self.px(8.0);
+                }
+                y += self.px(36.0);
+                let (lead, lines) = fine_print(self.me_card.terms_tab);
+                for l in crate::reader::wrap(&self.fonts, ui_strong, lead, bw) {
+                    self.fonts.draw(scene, ui_strong, bx, y + self.px(12.0), &l);
+                    y += self.px(19.0);
+                }
+                y += self.px(8.0);
+                // The document itself, scrolling in its own box.
+                let boxr = Rect::new(bx, y, bw, (foot_base - self.px(34.0) - y).max(self.px(60.0)));
+                scene.outline(boxr, self.px(m::HAIRLINE), t.dim);
+                let inner = Rect::new(boxr.x + self.px(12.0), boxr.y + self.px(4.0), boxr.w - self.px(24.0), boxr.h - self.px(8.0));
+                let body = Style { px: self.px(12.0), ..ui };
+                let lh = self.px(17.0);
+                let mut wrapped: Vec<String> = Vec::new();
+                for line in &lines {
+                    if line.is_empty() { wrapped.push(String::new()); continue; }
+                    wrapped.extend(crate::reader::wrap(&self.fonts, body, line, inner.w));
+                }
+                let total = wrapped.len() as f32 * lh + self.px(16.0);
+                self.me_card.terms_reach = (total - inner.h).max(0.0);
+                self.me_card.terms_scroll = self.me_card.terms_scroll.min(self.me_card.terms_reach);
+                scene.layer(Some(inner));
+                let mut ly = inner.y + self.px(16.0) - self.me_card.terms_scroll;
+                for l in &wrapped {
+                    if ly > inner.y - lh && ly < inner.bottom() + lh {
+                        self.fonts.draw(scene, body, inner.x, ly, l);
+                    }
+                    ly += lh;
+                }
+                scene.layer(None);
+                if self.me_card.terms_reach > 0.0 {
+                    let k = self.me_card.terms_scroll / self.me_card.terms_reach;
+                    let th = (inner.h * inner.h / total).max(self.px(24.0));
+                    scene.rect(Rect::new(boxr.right() - self.px(4.0), inner.y + (inner.h - th) * k, self.px(2.0), th), t.dim);
+                }
+                let mut x = bx;
+                x += self.me_button(scene, x, foot_base, "AGREE AND FINISH", true, CardHit::Agree) + self.px(10.0);
+                self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
+                let st = Style { color: t.dim, ..label };
+                let note = "SCROLL TO READ · ALSO IN SETTINGS › PROFILE";
+                let nw = self.fonts.measure(st, note);
+                if x + self.px(120.0) + nw < r.right() - pad {
+                    self.fonts.draw(scene, st, r.right() - pad - nw, foot_base, note);
+                }
             }
             Some(Step::Done) => {
                 let isz = self.px(22.0);

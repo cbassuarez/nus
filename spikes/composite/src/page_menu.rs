@@ -123,9 +123,9 @@ impl App {
         for path in edits {self.open_file(&path,true);}
         for (id,right) in saves {if let Some(i)=self.tabs.iter().position(|t|t.id==id){self.tabs[i].focus_right=right;self.activate(i);self.save_reading();}}
         for (url, beside) in opens { self.open_url(&url, !beside); }
-        for word in said {
-            if word == "PIP" { self.run(crate::app::Action::Pip); }
-            else { self.toast(word, None); }
+        for (words, detail) in said {
+            if words == "PIP" { self.run(crate::app::Action::Pip); }
+            else { self.toast(nus_render::text::icons::COPY, words, detail, None); }
         }
         if let Some(menu) = menu { self.show_context_menu(menu); }
     }
@@ -139,7 +139,7 @@ impl App {
         if saveable.len() == 1 {
             let src = saveable[0].src.clone();
             w.tab.download(&src);
-            self.toast(format!("SAVING · {}", crate::app::fit_cmd(&src, 60)), None);
+            self.toast(nus_render::text::icons::DOWNLOAD, "Saving", src, None);
             return;
         }
         let mut items = Vec::new();
@@ -176,7 +176,7 @@ impl App {
                     if let Some(Pane::Web(w)) = self.tabs.iter().find(|t| t.id == menu.tab)
                         .and_then(|t| if menu.right { t.right.as_ref() } else { Some(&t.left) }) {
                         w.tab.download(&item.src);
-                        self.toast(format!("SAVING · {}", crate::app::fit_cmd(&item.src, 60)), None);
+                        self.toast(nus_render::text::icons::DOWNLOAD, "Saving", item.src.clone(), None);
                     }
                 }
             },

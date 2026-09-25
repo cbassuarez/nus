@@ -11,6 +11,11 @@
 //! Enter, Escape, Tab and the arrows are not editing keys: the field's
 //! owner decides what they do. `Took` says whether the line changed, so a
 //! list under it can drop back to its first row.
+//!
+//! A field that shows a caret and a selection (the prompt) edits through
+//! `edit_at` instead, with a `Cursor`: ← → Home End move it, Shift
+//! extends, ⌥/Ctrl go by word, ⌘/Ctrl A selects the line, and typing,
+//! paste, cut and erase act on the selection when there is one.
 
 use winit::event::ElementState;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -158,6 +163,183 @@ pub fn edit(line: &mut String, ev: &KeyIn, mods: ModifiersState, room: usize) ->
     }
 }
 
+/// A caret and a selection on one line, in characters. `caret: None` is
+/// the end of the line, where `edit` keeps it; `anchor` is where a
+/// selection started, the caret its other end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cursor {
+    pub caret: Option<usize>,
+    pub anchor: Option<usize>,
+}
+
+impl Cursor {
+    /// The caret, as a character index into `line`.
+    pub fn at(&self, line: &str) -> usize {
+        let n = line.chars().count();
+        self.caret.unwrap_or(n).min(n)
+    }
+    /// The selection, start..end, when it holds anything.
+    pub fn range(&self, line: &str) -> Option<(usize, usize)> {
+        let n = line.chars().count();
+        let (a, b) = (self.anchor?.min(n), self.at(line));
+        (a != b).then(|| (a.min(b), a.max(b)))
+    }
+    pub fn select_all(&mut self, line: &str) {
+        self.anchor = Some(0);
+        self.caret = Some(line.chars().count());
+    }
+    /// Put the caret at `to`; `extend` keeps (or starts) a selection.
+    pub fn move_to(&mut self, line: &str, to: usize, extend: bool) {
+        if extend {
+            self.anchor.get_or_insert(self.at(line));
+        } else {
+            self.anchor = None;
+        }
+        let n = line.chars().count();
+        self.caret = (to < n).then_some(to).or(if self.anchor.is_some() { Some(n) } else { None });
+    }
+    /// Select the word around `at` (a double click).
+    pub fn select_word(&mut self, line: &str, at: usize) {
+        let chars: Vec<char> = line.chars().collect();
+        let at = at.min(chars.len());
+        let word = |c: char| !c.is_whitespace();
+        let mut a = at;
+        while a > 0 && word(chars[a - 1]) {
+            a -= 1;
+        }
+        let mut b = at;
+        while b < chars.len() && word(chars[b]) {
+            b += 1;
+        }
+        self.anchor = Some(a);
+        self.caret = Some(b);
+    }
+}
+
+/// Byte offset of character `i`.
+pub fn byte_at(line: &str, i: usize) -> usize {
+    line.char_indices().nth(i).map(|(b, _)| b).unwrap_or(line.len())
+}
+
+/// The next word boundary from `at`, left or right, as ⌥←/⌥→ go.
+fn word_step(line: &str, at: usize, right: bool) -> usize {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = at.min(chars.len());
+    if right {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+    } else {
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+    }
+    i
+}
+
+/// `edit` with a caret and a selection (see the module note).
+pub fn edit_at(line: &mut String, cur: &mut Cursor, ev: &KeyIn, mods: ModifiersState, room: usize) -> Took {
+    if ev.state != ElementState::Pressed {
+        return Took::No;
+    }
+    let cmd = command(mods);
+    let shift = mods.shift_key();
+    let n = line.chars().count();
+    let at = cur.at(line);
+    let range = cur.range(line);
+    // Moving: the caret, and with Shift the selection.
+    let moved = match &ev.logical_key {
+        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowRight) => {
+            let right = matches!(ev.logical_key, Key::Named(NamedKey::ArrowRight));
+            Some(if cmd {
+                if right { n } else { 0 }
+            } else if by_word(mods) {
+                word_step(line, at, right)
+            } else if let (Some((a, b)), false) = (range, shift) {
+                if right { b } else { a }
+            } else if right {
+                (at + 1).min(n)
+            } else {
+                at.saturating_sub(1)
+            })
+        }
+        Key::Named(NamedKey::Home) => Some(0),
+        Key::Named(NamedKey::End) => Some(n),
+        _ => None,
+    };
+    if let Some(to) = moved {
+        cur.move_to(line, to, shift);
+        return Took::Same;
+    }
+    if cmd && !shift && matches!(&ev.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("a")) {
+        cur.select_all(line);
+        return Took::Same;
+    }
+    let chord = |k: &str| cmd && matches!(&ev.logical_key, Key::Character(c) if c.eq_ignore_ascii_case(k));
+    // With a selection: copy and cut take just it; erasing and typing
+    // replace it.
+    if let Some((a, b)) = range {
+        let (ba, bb) = (byte_at(line, a), byte_at(line, b));
+        if chord("c") {
+            set_clipboard(&line[ba..bb]);
+            return Took::Same;
+        }
+        let erase = matches!(ev.logical_key, Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete));
+        let typing = !erase && !chord("x") && {
+            // Would this key type or paste? Try it on a scratch line.
+            let mut probe = String::new();
+            edit(&mut probe, ev, mods, usize::MAX).changed()
+        };
+        if !(erase || typing || chord("x")) {
+            return edit_tail(line, cur, ev, mods, room);
+        }
+        if chord("x") {
+            set_clipboard(&line[ba..bb]);
+        }
+        line.replace_range(ba..bb, "");
+        cur.move_to(line, a, false);
+        if typing {
+            edit_tail(line, cur, ev, mods, room);
+        }
+        return Took::Changed;
+    }
+    if matches!(ev.logical_key, Key::Named(NamedKey::Delete)) {
+        if at >= n {
+            return Took::Same;
+        }
+        let b = byte_at(line, at);
+        line.replace_range(b..byte_at(line, at + 1), "");
+        cur.move_to(line, at, false);
+        return Took::Changed;
+    }
+    // Copy and cut with nothing selected take the whole line, as before.
+    if chord("c") || chord("x") {
+        return edit(line, ev, mods, room);
+    }
+    edit_tail(line, cur, ev, mods, room)
+}
+
+/// `edit` on the part of the line before the caret, the rest kept after it.
+fn edit_tail(line: &mut String, cur: &mut Cursor, ev: &KeyIn, mods: ModifiersState, room: usize) -> Took {
+    let at = cur.at(line);
+    let split = byte_at(line, at);
+    let tail = line[split..].to_string();
+    let mut head = line[..split].to_string();
+    let took = edit(&mut head, ev, mods, room.saturating_sub(tail.chars().count()));
+    if took.changed() {
+        let caret = head.chars().count();
+        *line = head + &tail;
+        cur.move_to(line, caret, false);
+    }
+    took
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +416,40 @@ mod tests {
         let mut w = "a  ".to_string();
         pop_word(&mut w);
         assert!(w.is_empty());
+    }
+
+    #[test]
+    fn a_caret_and_a_selection() {
+        let cmd = if cfg!(target_os = "macos") { ModifiersState::SUPER } else { CTRL };
+        let mut l = "hello world".to_string();
+        let mut c = Cursor::default();
+        // Select all, then typing replaces it.
+        assert_eq!(edit_at(&mut l, &mut c, &ch("a"), cmd, 40), Took::Same);
+        assert_eq!(c.range(&l), Some((0, 11)));
+        assert_eq!(edit_at(&mut l, &mut c, &ch("y"), NONE, 40), Took::Changed);
+        assert_eq!(l, "y");
+        assert_eq!(c.range(&l), None);
+        // Typing in the middle.
+        l = "abcd".into();
+        c = Cursor::default();
+        edit_at(&mut l, &mut c, &named(NamedKey::ArrowLeft), NONE, 40);
+        edit_at(&mut l, &mut c, &named(NamedKey::ArrowLeft), NONE, 40);
+        edit_at(&mut l, &mut c, &ch("X"), NONE, 40);
+        assert_eq!(l, "abXcd");
+        assert_eq!(c.at(&l), 3);
+        edit_at(&mut l, &mut c, &named(NamedKey::Backspace), NONE, 40);
+        assert_eq!(l, "abcd");
+        edit_at(&mut l, &mut c, &named(NamedKey::Delete), NONE, 40);
+        assert_eq!(l, "abd");
+        // Shift extends; Backspace takes the selection.
+        edit_at(&mut l, &mut c, &named(NamedKey::ArrowRight), ModifiersState::SHIFT, 40);
+        assert_eq!(c.range(&l), Some((2, 3)));
+        edit_at(&mut l, &mut c, &named(NamedKey::Backspace), NONE, 40);
+        assert_eq!(l, "ab");
+        assert_eq!(c.at(&l), 2);
+        // A double click's word.
+        l = "git commit -m".into();
+        c.select_word(&l, 6);
+        assert_eq!(c.range(&l), Some((4, 10)));
     }
 }

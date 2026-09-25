@@ -253,7 +253,7 @@ pub fn stock() -> Vec<StockTheme> {
         ),
         theme(
             "onyx",
-            "Monochrome: pure black, white, no colour at all — the signal is white.",
+            "Monochrome: pure black, white, no color at all — the signal is white.",
             face(0xffffff, 0x000000, 0xffffff, ansi(ONYX_PAPER)),
             face(0x000000, 0xffffff, 0xffffff, ansi(ONYX)),
             surface(0xffffff, &[0xffffff, 0x555555], Shell::Stroke, 1.0, 0.0, TextureKind::None, 0.0, 3.0),

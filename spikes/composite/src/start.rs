@@ -37,10 +37,12 @@ pub struct ShellState {
     pub snapshot: Option<String>,
     /// The holder's id when the shell was held.
     pub held: Option<String>,
+    /// The pane's NUS_PANE: a held shell keeps the one it was born with.
+    pub pane: Option<String>,
 }
 
 fn shell_state_to_json(s: &ShellState) -> serde_json::Value {
-    serde_json::json!({ "cwd": s.cwd, "cmd": s.running.as_ref().map(|r| r.0.clone()), "since": s.running.as_ref().map(|r| r.1), "snapshot": s.snapshot, "held": s.held })
+    serde_json::json!({ "cwd": s.cwd, "cmd": s.running.as_ref().map(|r| r.0.clone()), "since": s.running.as_ref().map(|r| r.1), "snapshot": s.snapshot, "held": s.held, "pane": s.pane })
 }
 
 fn shell_state_from_json(v: &serde_json::Value) -> Option<ShellState> {
@@ -52,7 +54,7 @@ fn shell_state_from_json(v: &serde_json::Value) -> Option<ShellState> {
         (Some(c), Some(at)) if !c.trim().is_empty() => Some((c, at)),
         _ => None,
     };
-    Some(ShellState { cwd: st("cwd"), running, snapshot: st("snapshot"), held: st("held") })
+    Some(ShellState { cwd: st("cwd"), running, snapshot: st("snapshot"), held: st("held"), pane: st("pane") })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -75,6 +77,8 @@ pub struct SavedTab {
     pub hatch: bool,
     /// The right pane's width, once dragged.
     pub split: Option<f32>,
+    /// A shell stack's place in the signal's family (shell_colors.rs).
+    pub shell_slot: Option<u8>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -83,6 +87,9 @@ pub struct Session {
     pub active: usize,
     /// Tiled tabs by index, in tiling order (empty = none).
     pub tiles: Vec<usize>,
+    /// The tiling's shape over those indexes, rules where they were left.
+    /// None (an older session): the template for `tiles`.
+    pub tile_shape: Option<crate::tiles::Node<usize>>,
     /// The window's container.
     pub container: String,
     /// The other windows open at the time, each with its own tabs; they
@@ -147,6 +154,7 @@ impl SavedTab {
                     "colour": t.colour,
                     "container": t.container,
                     "split": t.split,
+                    "shell_slot": t.shell_slot,
                     "hatch": t.hatch,
                 })
     }
@@ -184,6 +192,7 @@ impl Session {
                 colour: t.get("colour").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 container: t.get("container").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 split: t.get("split").and_then(|v| v.as_f64()).map(|v| v as f32),
+                shell_slot: t.get("shell_slot").and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()).filter(|&v| (v as usize) < crate::shell_colors::SLOTS),
                 hatch: t.get("hatch").and_then(|v| v.as_bool()).unwrap_or(false),
             })
             .collect();
@@ -191,7 +200,8 @@ impl Session {
         let container = v.get("container").and_then(|c| c.as_str()).unwrap_or(crate::containers::PERSONAL).to_string();
         let others = v.get("windows").and_then(|w| w.as_array()).map(|a| a.iter().filter_map(Session::from_value).collect()).unwrap_or_default();
         let folder = v.get("folder").and_then(|f| f.as_str()).map(|s| s.to_string());
-        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize, tiles, container, others, folder })
+        let tile_shape = v.get("tile_shape").and_then(|s| serde_json::from_value(s.clone()).ok());
+        Some(Session { tabs, active: v.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize, tiles, tile_shape, container, others, folder })
     }
 
     pub fn save(&self) {
@@ -206,7 +216,7 @@ impl Session {
     /// This window's session as JSON, the other windows under `windows`.
     pub fn to_value(&self) -> serde_json::Value {
         let tabs: Vec<serde_json::Value> = self.tabs.iter().map(SavedTab::to_value).collect();
-        serde_json::json!({ "tabs": tabs, "active": self.active, "tiles": self.tiles, "container": self.container, "folder": self.folder, "windows": self.others.iter().map(Session::to_value).collect::<Vec<_>>() })
+        serde_json::json!({ "tabs": tabs, "active": self.active, "tiles": self.tiles, "tile_shape": self.tile_shape, "container": self.container, "folder": self.folder, "windows": self.others.iter().map(Session::to_value).collect::<Vec<_>>() })
     }
 
     pub fn summary(&self) -> String {
@@ -352,7 +362,10 @@ impl App {
             let dir = crate::app::App::hold_dir();
             if let Some(info) = nus_pty::hold::Info::read(&dir, id) {
                 if info.alive(&dir) {
-                    if let Ok(t) = self.new_term_pane_attached(false, info) {
+                    if let Ok(mut t) = self.new_term_pane_attached(false, info) {
+                        if let Some(p) = &s.pane {
+                            t.pane_uid = p.clone();
+                        }
                         return Some(t);
                     }
                 }
@@ -447,6 +460,12 @@ impl App {
                 Some(Saved::Layout { .. }) | None => None,
             };
             let mut tab = self.make_tab(left, right);
+            // The stack's color from last time, under today's theme.
+            if t.shell_slot.is_some() && tab.shell_slot.is_some() {
+                tab.shell_slot = t.shell_slot;
+                tab.look = self.look_with(&tab.left, None, t.shell_slot);
+                Self::fit_palette(&self.theme, &mut tab);
+            }
             tab.pinned = t.pinned;
             tab.name = t.name.clone();
             tab.emoji = t.emoji.clone();
@@ -467,9 +486,9 @@ impl App {
         if n > 0 {
             let first_new = n - ids.iter().filter(|i| i.is_some()).count();
             let tiled: Vec<u64> = sess.tiles.iter().filter_map(|&k| ids.get(k).copied().flatten()).collect();
-            if tiled.len() >= 2 {
-                self.tiling = Some(crate::tiles::Tiling { ids: tiled, x: 0.5, y: 0.5 });
-            }
+            // The saved shape when every tab in it came back; else the template.
+            let shaped = sess.tile_shape.as_ref().and_then(|s| s.map(&|k| ids.get(k).copied().flatten())).map(|root| crate::tiles::Tiling { root });
+            self.tiling = shaped.filter(|t| t.ids().len() >= 2).or_else(|| crate::tiles::Tiling::of(&tiled));
             self.activate((first_new + sess.active).min(n - 1));
         }
         // The other windows come back too: the host spawns one per session.
@@ -539,7 +558,7 @@ impl App {
                 let _ = (id, side);
                 let text = t.snapshot_text(400);
                 let snapshot = (!text.is_empty()).then_some(text);
-                Some(ShellState { cwd: t.term.cwd.clone(), running, snapshot, held: t.pty.held_id().map(String::from) })
+                Some(ShellState { cwd: t.term.cwd.clone(), running, snapshot, held: t.pty.held_id().map(String::from), pane: Some(t.pane_uid.clone()) })
             }
             _ => None,
         };
@@ -547,11 +566,12 @@ impl App {
         let index_of = |id: u64| listed.iter().position(|t| t.id == id);
         let tabs: Vec<SavedTab> = listed
             .iter()
-            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), shell: state(&t.left, t.id, "l"), shell_right: t.right.as_ref().and_then(|p| state(p, t.id, "r")), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch })
+            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), shell: state(&t.left, t.id, "l"), shell_right: t.right.as_ref().and_then(|p| state(p, t.id, "r")), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch, shell_slot: t.shell_slot })
             .filter(|t| t.left.is_some())
             .collect();
-        let tiles = self.tiling.as_ref().map(|t| t.ids.iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
-        Session { tabs, active: self.active, tiles, container: self.container.clone(), others: self.other_sessions.clone(), folder: self.workspace.as_ref().map(|w| w.to_string_lossy().to_string()) }
+        let tiles = self.tiling.as_ref().map(|t| t.ids().iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
+        let tile_shape = self.tiling.as_ref().and_then(|t| t.root.map(&|id| index_of(id)));
+        Session { tabs, active: self.active, tiles, tile_shape, container: self.container.clone(), others: self.other_sessions.clone(), folder: self.workspace.as_ref().map(|w| w.to_string_lossy().to_string()) }
     }
 
     /// Save the current tabs as the session (called when tabs change).
@@ -768,13 +788,14 @@ mod tests {
     fn session_json_roundtrip() {
         let s = Session {
             tabs: vec![
-                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), shell: Some(ShellState { cwd: Some("/x".into()), running: Some(("claude".into(), 7)), snapshot: Some("hi".into()), held: None }), shell_right: None, pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), container: Some("WORK".into()), split: None, hatch: false },
-                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, container: None, split: None, hatch: false },
+                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), shell: Some(ShellState { cwd: Some("/x".into()), running: Some(("claude".into(), 7)), snapshot: Some("hi".into()), held: None, pane: None }), shell_right: None, pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), container: Some("WORK".into()), split: None, hatch: false, shell_slot: Some(11) },
+                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, container: None, split: None, hatch: false, shell_slot: None },
             ],
             active: 1,
             tiles: vec![0, 1],
+            tile_shape: crate::tiles::Node::template(&[0usize, 1]),
             container: "PERSONAL".into(),
-            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, container: None, split: None, hatch: false }], active: 0, tiles: vec![], container: "WORK".into(), others: vec![], folder: None }],
+            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, container: None, split: None, hatch: false, shell_slot: None }], active: 0, tiles: vec![], tile_shape: None, container: "WORK".into(), others: vec![], folder: None }],
             folder: None,
         };
         let dir = std::env::temp_dir().join(format!("nus-test-{}", std::process::id()));
@@ -789,6 +810,8 @@ mod tests {
         assert_eq!(back.tabs.len(), 2);
         assert_eq!(back.tabs[1].parent, Some(0));
         assert!(back.tabs[0].pinned);
+        assert_eq!(back.tabs[0].shell_slot, Some(11));
+        assert_eq!(back.tabs[1].shell_slot, None);
         assert_eq!(back.tabs[0].name.as_deref(), Some("deploy notes"));
         assert_eq!(back.tabs[0].emoji.as_deref(), Some("📌"));
         assert_eq!(back.tabs[0].colour.as_deref(), Some("#2e7d32"));
@@ -800,6 +823,7 @@ mod tests {
         assert!(back.tabs[1].name.is_none());
         assert_eq!(back.active, 1);
         assert_eq!(back.tiles, vec![0, 1]);
+        assert_eq!(back.tile_shape, crate::tiles::Node::template(&[0usize, 1]));
         assert_eq!(back.others.len(), 1);
         assert_eq!(back.others[0].container, "WORK");
         assert_eq!(back.others[0].tabs.len(), 1);

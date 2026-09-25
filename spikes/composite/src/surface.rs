@@ -72,7 +72,7 @@ pub struct SidebarRules {
     pub fullscreen: Fullscreen,
     /// Milliseconds the sidebar stays after the pointer leaves it.
     pub grace_ms: u64,
-    /// A 48px column of icons; the top strip hides until hovered.
+    /// A 48px column of icons.
     #[serde(default)]
     pub compact: bool,
     #[serde(default="crate::sidebar::default_width")] pub width:f32,
@@ -164,6 +164,10 @@ pub struct Surface {
     /// Optional base the paper is tinted toward, and how far (0 = pure paper).
     pub base: Option<Color>,
     pub tint: f32,
+    /// What a shell in a tunnel (ssh, mosh) wears: its wash, its rails and
+    /// its tag. None gives every host a hue of its own.
+    #[serde(default)]
+    pub tunnel: Option<Color>,
     /// Texture strength 0..0.3; 0 = none.
     pub texture: f32,
     #[serde(default = "default_texture_kind")]
@@ -220,6 +224,7 @@ impl Default for Surface {
             stops: Vec::new(),
             base: None,
             tint: 0.0,
+            tunnel: None,
             texture: 0.08,
             texture_kind: TextureKind::Grain,
             texture_scale: 1.0,
@@ -452,24 +457,14 @@ pub struct TabCtx<'a> {
     pub parent: Option<&'a Overrides>,
     /// The theme's rule: "family" | "wheel" | "same".
     pub tab_colours: &'a str,
+    /// A shell stack's color from SHELL COLORS (random or by folder, from
+    /// the signal's family); None for pages and when the setting is NONE.
+    pub shell_color: Option<Overrides>,
 }
 
-pub const DEFAULT_RULES: &str = r##"-- nus rules · Luau, sandboxed. Edit, save, and the settings tab reloads it.
---
--- new_tab(ctx) runs for every new tab. ctx has:
---   kind      "terminal" | "page" | "settings"
---   index     1-based position among top-level tabs
---   profile   shell profile name (terminals)
---   space     the Space's name
---   signal    the Space's signal colour as "#rrggbb"
---   theme     "ink" (dark) or "paper" (light)
---   parent    { bg = "#..", signal = "#.." } when the tab joins a stack
--- Return { bg = "#rrggbb", signal = "#rrggbb" } (either key optional) or nil.
---
--- Helpers: hue(hex, turns) rotates hue; mix(a, b, t) blends; hsl(h, s, l);
--- family(hex, 1..5) picks a tint (1–2), the colour (3) or a shade (4–5).
-
--- Example: every new terminal gets its own background hue, and pages opened
+/// The default `new_tab` before SHELL COLORS, word for word: a rules file
+/// that still has it exactly gets the new one (the coral came from here).
+const OLD_NEW_TAB: &str = r##"-- Example: every new terminal gets its own background hue, and pages opened
 -- from it (its stack) stay in the same family, a touch lighter.
 -- ctx.tab_colours is the theme's wish: "family" (tints and shades of the
 -- signal), "wheel" (round the hue wheel from the signal), "same" (every
@@ -491,6 +486,39 @@ function new_tab(ctx)
     end
     local turn = (ctx.index - 1) * 0.11
     return { bg = hsl(turn, 0.18, light), signal = hue(ctx.signal, turn) }
+  end
+end
+
+"##;
+
+pub const DEFAULT_RULES: &str = r##"-- nus rules · Luau, sandboxed. Edit, save, and the settings tab reloads it.
+--
+-- new_tab(ctx) runs for every new tab. ctx has:
+--   kind      "terminal" | "page" | "settings"
+--   index     1-based position among top-level tabs
+--   profile   shell profile name (terminals)
+--   space     the Space's name
+--   signal    the Space's signal color as "#rrggbb"
+--   theme     "ink" (dark) or "paper" (light)
+--   parent    { bg = "#..", signal = "#.." } when the tab joins a stack
+--   shell_color  { bg = "#..", signal = "#.." }: SHELL COLORS' pick (shells)
+-- Return { bg = "#rrggbb", signal = "#rrggbb" } (either key optional) or nil.
+--
+-- Helpers: hue(hex, turns) rotates hue; mix(a, b, t) blends; hsl(h, s, l);
+-- family(hex, 1..5) picks a tint (1–2), the colour (3) or a shade (4–5).
+
+-- Shells: SHELL COLORS in settings gives each new shell stack a color from
+-- the signal's family, at random or by the folder it opened in, and hands
+-- it over as ctx.shell_color ({ bg, signal }, nil when the setting is NONE).
+-- Pages opened from a shell (its stack) wear its color too.
+-- ctx.tab_colours is the theme's old wish ("family", "wheel", "same"); a
+-- rule of your own can still read it.
+function new_tab(ctx)
+  if ctx.parent then
+    return { bg = ctx.parent.bg, signal = ctx.parent.signal }
+  end
+  if ctx.kind == "terminal" then
+    return ctx.shell_color
   end
 end
 
@@ -707,6 +735,16 @@ impl Rules {
         // Only the exact old bundled shelf is migrated. A customized Rules
         // folder remains the user's; a backup is kept before any replacement.
         let reading_migration_error = reading_rules_migration::migrate_file(&path).err();
+        // The old default new_tab, untouched, gives way to SHELL COLORS'.
+        // An edited one is the user's; a backup is kept either way.
+        if let Ok(src) = std::fs::read_to_string(&path) {
+            if src.contains(OLD_NEW_TAB) {
+                let start = DEFAULT_RULES.find("-- Shells: SHELL COLORS").unwrap_or(0);
+                let end = DEFAULT_RULES[start..].find("-- new_space(ctx)").map(|k| start + k).unwrap_or(DEFAULT_RULES.len());
+                let _ = std::fs::write(path.with_extension("luau.before-shell-colors"), &src);
+                let _ = std::fs::write(&path, src.replacen(OLD_NEW_TAB, &DEFAULT_RULES[start..end], 1));
+            }
+        }
         // Older files get the chains and folders examples appended, once each.
         for (word, marker) in [("chains", "-- chains:"), ("folders", "-- folders:"), ("group", "-- group(tab):"), ("skills", "-- skills:"), ("on_block", "-- on_block(b):"), ("program", "-- program(p):"), ("ports", "-- ports:")] {
             let Ok(src) = std::fs::read_to_string(&path) else { break };
@@ -883,6 +921,16 @@ impl Rules {
         let _ = t.set("theme", ctx.theme);
         let _ = t.set("host", ctx.host);
         let _ = t.set("tab_colours", ctx.tab_colours);
+        if let Some(c) = &ctx.shell_color {
+            let ct = self.lua.create_table().unwrap();
+            if let Some(bg) = c.bg {
+                let _ = ct.set("bg", hex(bg));
+            }
+            if let Some(s) = c.signal {
+                let _ = ct.set("signal", hex(s));
+            }
+            let _ = t.set("shell_color", ct);
+        }
         if let Some(p) = ctx.parent {
             let pt = self.lua.create_table().unwrap();
             if let Some(bg) = p.bg {
@@ -961,6 +1009,9 @@ impl Rules {
             let _ = tabs.set(i + 1, tt);
         }
         let _ = t.set("tabs", tabs);
+        if let Some(n) = l.tiles.as_ref().and_then(|n| crate::layout_file::tiles_to_lua(&self.lua, n).ok()) {
+            let _ = t.set("tiles", n);
+        }
         match f.call::<Option<mlua::Table>>(t) {
             Ok(Some(o)) => {
                 let tab_of = |v: mlua::Table| crate::layout_file::LayoutTab {
@@ -977,6 +1028,7 @@ impl Rules {
                     space: o.get("space").ok().or(l.space),
                     tabs: o.get::<mlua::Table>("tabs").map(|list| list.sequence_values::<mlua::Table>().filter_map(|r| r.ok()).map(tab_of).collect()).unwrap_or(l.tabs),
                     hatch: l.hatch,
+                    tiles: o.get::<mlua::Value>("tiles").ok().as_ref().and_then(crate::layout_file::tiles_from_lua).or(l.tiles),
                 }
             }
             Ok(None) => l,
@@ -1202,12 +1254,17 @@ mod tests {
         let r = Rules::from_source(DEFAULT_RULES);
         assert!(r.status.starts_with("ok"), "{}", r.status);
         assert!(r.folders().is_empty(), "defaults must not create a second reading shelf");
-        let ctx = TabCtx { kind: "terminal", index: 1, profile: "pwsh", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: None, tab_colours: "family" };
+        let ctx = TabCtx { kind: "terminal", index: 1, profile: "pwsh", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: None, tab_colours: "family", shell_color: crate::shell_colors::family(nus_render::theme::signal::RED, true).first().cloned() };
         let o = r.new_tab(&ctx);
         assert!(o.bg.is_some() && o.signal.is_some());
-        let child = TabCtx { kind: "page", index: 1, profile: "", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: Some(&o), tab_colours: "family" };
+        let child = TabCtx { kind: "page", index: 1, profile: "", space: "nus", space_signal: nus_render::theme::signal::RED, theme: "ink", host: "", parent: Some(&o), tab_colours: "family", shell_color: None };
         let c = r.new_tab(&child);
         assert_eq!(c.signal, o.signal);
+        // SHELL COLORS · NONE: a shell with no color.
+        assert!(r.new_tab(&TabCtx { shell_color: None, ..ctx }).bg.is_none());
+        // The old default, untouched, is what the migration looks for.
+        assert!(!DEFAULT_RULES.contains(OLD_NEW_TAB));
+        assert!(OLD_NEW_TAB.contains("function new_tab(ctx)"));
         assert!(r.new_tab(&TabCtx { kind: "page", parent: None, ..ctx }).bg.is_none());
     }
 
@@ -1222,7 +1279,7 @@ mod tests {
     fn sandbox_blocks_io() {
         let r = Rules::from_source("function new_tab(c) return { bg = tostring(io) } end");
         assert!(r.status.starts_with("ok"));
-        let ctx = TabCtx { kind: "terminal", index: 0, profile: "", space: "", space_signal: [0.0; 4], theme: "ink", host: "", parent: None, tab_colours: "family" };
+        let ctx = TabCtx { kind: "terminal", index: 0, profile: "", space: "", space_signal: [0.0; 4], theme: "ink", host: "", parent: None, tab_colours: "family", shell_color: None };
         assert_eq!(r.new_tab(&ctx).bg, None);
     }
 }

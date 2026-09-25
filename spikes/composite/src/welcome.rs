@@ -147,7 +147,7 @@ impl App {
             row(k("V"), "Paste, carefully", "bracketed when the program asks; many lines or control characters ask first", None),
             row(k("O"), "Hints", "labels over every URL, path and hash on screen · type one: URLs open, the rest copies", Some(("TRY", Act::Hints))),
             row(k("F"), "Find in scrollback", "a band; Enter next, Shift+Enter back; the scrollbar's ticks are the prompts", Some(("TRY", Act::Find))),
-            row("→ / END", "Predictions", "the history entry that continues your line ghosts after the caret; Right or End accepts · tokens colour as you type", Some(("TRY", Act::Demo("git st")))),
+            row("→ / END", "Predictions", "the history entry that continues your line ghosts after the caret; Right or End accepts · tokens color as you type", Some(("TRY", Act::Demo("git st")))),
             row("CLICK", "Select and move", "double-click a word, triple a line, Ctrl+triple a command's output · at a prompt a click moves the caret", None),
             row("", "Hover a block", "a gutter rule and two chips: copy its output, run it again", None),
             row("", "Images", "Kitty and iTerm2 image protocols draw right in the shell (icat, timg, chafa)", None),
@@ -173,9 +173,9 @@ impl App {
             row("SHIFT+F2", "Name this window", format!("“{}” · auto-named from the git root or the host; the name is in the title bar and Alt-Tab", self.window_name()), Some(("RENAME", Act::Rename))),
             row("CTRL+N", "New window", "windows own their tabs; the rail or the header lists them", Some(("OPEN ONE", Act::NewWindow))),
             row("CTRL+1–9", "Tabs by number", "Ctrl+` goes back to the last one; Ctrl+PgUp / PgDn walk them", None),
-            row("", "Containers", "named cookie jars: “container” in the palette lists them, switches this window's (its square wears the colour; new windows inherit it), reopens a page in one, or makes a new one — sign-ins stay apart", None),
+            row("", "Containers", "named cookie jars: “container” in the palette lists them, switches this window's (its square wears the color; new windows inherit it), reopens a page in one, or makes a new one — sign-ins stay apart", None),
             row("CTRL+SHIFT+F11", "Focus", "the page (or shell) alone in the window: no strip, no sidebar, no rows · the same chord leaves", None),
-            row(k("B"), "Compact", "a 48px column of icons; the top strip hides until the pointer reaches the top; hover a row for its name", None),
+            row(k("B"), "Compact", "a 48px column of icons; hover a row for its name", None),
             row(k("S"), "The sidebar", "pin it, or let it slide in from the edge · BAR or RAIL header under settings", None),
             row("", "Site panel", "the gear at the end of a page's URL row: zoom (remembered), autoplay, JavaScript, cookies, boosts, blocking and the permissions this site was given · per host", None),
             row("", "Folders", "under the tabs: GITHUB (open pull requests, via gh), PORTS (what's listening), lists from rules.luau, and your own — SAVE TO FOLDER in a page's menu; a saved page never archives", None),
@@ -183,16 +183,17 @@ impl App {
             row(k("K"), "Chains", "named lists of palette commands in rules.luau — open pages, run commands, tile — and every settings row, by name", None),
             row("ALT+CLICK", "Peek", "a link floats over the page instead of leaving it · Esc closes, Ctrl+Enter keeps it in the stack", None),
             row("", "Split panes", "near a pane's corner the controls bloom: move (drag it onto a sidebar row, or NEW TAB), swap, solo, to its own tab, close · the rule between the panes lights as you near it and drags", None),
-            row(k("D"), "Tiles", "Ctrl+click two to four rows, then tile them: side by side, an L, or a grid · drag the rules · Ctrl+Alt+arrows walk the tiles, with Shift they swap", None),
-            row("F2", "Name a tab", "right-click a tab for its menu: rename, an emoji or short string as its icon, a colour, pin, close", Some(("RENAME THIS TAB", Act::RenameTab))),
+            row(k("D"), "Tiles", "Ctrl+click rows, then tile them: side by side, an L, a grid, up to eight · drag a row onto the page to tile it there · every rule drags · Ctrl+Alt+arrows walk the tiles, with Shift they swap", None),
+            row("CTRL+ALT+P", "Pane mode", "single keys: hjkl focus, HJKL swap, arrows resize, z zoom, s split, t to a tab, w to another window · Ctrl+Alt+Z undoes any layout change", None),
+            row("F2", "Name a tab", "right-click a tab for its menu: rename, an emoji or short string as its icon, a color, pin, close", Some(("RENAME THIS TAB", Act::RenameTab))),
             row("", "Stacks", "pages a page opens sit under it, as deep as they go; fold with the caret, Ctrl+Shift+- folds all; drag a tab onto another to nest it", None),
-            row("", "Rules", "profile/rules.luau colours new tabs and windows, boosts pages, picks sounds", Some(("OPEN RULES", Act::Rules))),
+            row("", "Rules", "profile/rules.luau colors new tabs and windows, boosts pages, picks sounds", Some(("OPEN RULES", Act::Rules))),
         ];
         let look = vec![
             row("", "The studio", "a live proof of the window, presets as cards, tokens as tiles, a real picker", Some(("OPEN", Act::Settings(SEC_LOOK)))),
             row("", "Sound", "seventeen cues on fourteen events, synthesised in the app", Some(("OPEN", Act::Settings(SEC_SOUND)))),
             row("", "Start/New Tab", "how the window comes up, the splash, what follows, the atlas", Some(("OPEN", Act::Settings(SEC_STARTUP)))),
-            row("", "Cursor", "shape, blink, colour, glide or comet, the pointer over the chrome", Some(("OPEN", Act::Settings(SEC_LOOK)))),
+            row("", "Cursor", "shape, blink, color, glide or comet, the pointer over the chrome", Some(("OPEN", Act::Settings(SEC_LOOK)))),
             row("F11", "Fullscreen", "the sidebar follows the rule you set for it", None),
         ];
         let _ = (LOOK_PRESETS, RULES);
@@ -389,7 +390,7 @@ impl App {
                     let b=Rect::new(x,y+self.px(4.0),(self.fonts.measure(strong,text)+self.px(24.0)).min(width),self.px(28.0));
                     let hot=b.contains(self.mouse.0,self.mouse.1);
                     scene.rect(b,if hot {ink} else {t.paper});scene.outline(b,self.px(1.0),ink);
-                    self.fonts.draw(scene,Style{color:if hot {t.paper} else {ink},..strong},b.x+self.px(12.0),b.y+self.px(19.0),text);
+                    self.fonts.draw(scene,Style{color:if hot {self.on_fill(ink)} else {ink},..strong},b.x+self.px(12.0),b.y+self.px(19.0),text);
                     self.welcome_hits.push((b,act));y+=self.px(42.0);
                 }
                 y+=self.px(18.0);scene.hline(x,y,width,self.px(1.0),t.tint);y+=self.px(28.0);
@@ -445,12 +446,12 @@ impl App {
             Act::ImportSettings => {
                 if let Some(previous) = self.previous_install.clone() {
                     if let Err(error) = self.import_settings(&previous.join("settings.json")) {
-                        self.notice(&format!("Could not import previous settings: {error}"));
+                        self.notice_problem("Could Not Import Settings", error.to_string());
                         return;
                     }
                     let _ = std::fs::remove_file("profile/previous-install");
                     self.previous_install = None;
-                    self.notice("Previous settings imported. Browsing data remains in the previous installation.");
+                    self.notice(nus_render::text::icons::CHECK, "Settings Imported", "browsing data stays in the previous installation");
                     self.layout();
                 }
             }
@@ -512,10 +513,10 @@ impl App {
             Act::EditPins=>{self.sidebar=true;self.sidebar_hover=true;self.sidebar_leave=None;self.side_page=crate::files::SidePage::Tabs;self.pins.editing=true;self.sidebar_rules.compact=false;self.sidebar_rules.width=self.sidebar_rules.width.max(248.0);self.layout();},
             Act::Lead(l) => {
                 self.apply_setting(Hit::Lead(l), 0.0);
-                self.notice(match l {
-                    crate::settings::Lead::Terminal => "An empty prompt now starts a shell.",
-                    crate::settings::Lead::Browser => "An empty prompt now opens the atlas.",
-                });
+                match l {
+                    crate::settings::Lead::Terminal => self.notice(nus_render::text::icons::TERMINAL, "Empty Prompt Starts A Shell", ""),
+                    crate::settings::Lead::Browser => self.notice(nus_render::text::icons::GLOBE, "Empty Prompt Opens The Atlas", ""),
+                }
             }
             Act::Rename => self.open_palette(PaletteMode::Rename),
             Act::RenameTab => self.open_palette(PaletteMode::RenameTab(self.active)),

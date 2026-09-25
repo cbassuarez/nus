@@ -46,10 +46,17 @@ pub struct Provider {
     pub executable: String,
     pub model: String,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub providers: [Provider; 3],
+    /// Instant 0 … Max 4; see `intelligence`.
+    pub intelligence: u8,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Config { providers: Default::default(), intelligence: crate::intelligence::DEFAULT }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -300,7 +307,72 @@ fn packaged_cli(exe: &Path, platform: &str) -> Option<PathBuf> {
         _ => directory.join("bin/nus"),
     })
 }
+/// The `nus` command-line companion: the bundle's own, else one on PATH.
+pub(crate) fn nus_cli() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| packaged_cli(&p, std::env::consts::OS))
+        .filter(|p| p.is_file())
+        .or_else(|| resolve("nus", ""))
+}
+
+/// Whether an assistant's config carries nus's hooks (`nus hook install`).
+/// Settings asks every frame it is up; the files are read every two seconds.
+pub(crate) fn hooks_connected(id: u8) -> bool {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<(Instant, [bool; 2])>> = Mutex::new(None);
+    if id > 1 {
+        return false;
+    }
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    match *seen {
+        Some((at, v)) if crate::clock::since(at) < Duration::from_secs(2) => v[id as usize],
+        _ => {
+            let v = [read_hooks(0), read_hooks(1)];
+            *seen = Some((crate::clock::now(), v));
+            v[id as usize]
+        }
+    }
+}
+
+fn read_hooks(id: u8) -> bool {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    let (path, mark) = match id {
+        0 => (std::env::var_os("CLAUDE_CONFIG_DIR").map(|d| PathBuf::from(d).join("settings.json")).or_else(|| home.map(|h| h.join(".claude/settings.json"))), "hook claude"),
+        1 => (std::env::var_os("CODEX_HOME").map(|d| PathBuf::from(d).join("config.toml")).or_else(|| home.map(|h| h.join(".codex/config.toml"))), "hook codex"),
+        _ => return false,
+    };
+    path.and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| t.contains(mark) && t.contains("NUS_CLI"))
+}
+
 impl App {
+    /// Connect or disconnect an assistant's hooks: the command, typed and
+    /// not run, in a new shell — you read it, you press Enter.
+    pub(crate) fn review_assistant_hooks(&mut self, id: u8, on: bool) {
+        if id > 1 {
+            return;
+        }
+        let Some(cli) = nus_cli() else {
+            self.notice_problem("Companion Missing", "the nus command-line companion · reinstall the app bundle or add nus to PATH");
+            return;
+        };
+        let shell = self.profiles.get(self.behavior.default_profile).map(|p| crate::shell::kind_of(&p.program));
+        let ps = shell == Some(crate::shell::Kind::PowerShell);
+        let command = format!("{}{} hook {} {}", if ps { "& " } else { "" }, quote(&cli.display().to_string(), ps), if on { "install" } else { "uninstall" }, BINS[id as usize]);
+        match self.new_term_pane_at(false, self.behavior.default_profile, None) {
+            Ok(mut term) => {
+                term.type_at_prompt = Some(command);
+                let mut tab = self.make_tab(Pane::Term(term), None);
+                tab.name = Some(format!("{} · {} status", NAMES[id as usize], if on { "connect" } else { "disconnect" }));
+                self.tabs.push(tab);
+                self.activate(self.tabs.len() - 1);
+                self.layout();
+                self.notice(nus_render::text::icons::ENTER, "Review The Command", if on { "then press Enter · a backup of the config is kept beside it" } else { "then press Enter · only nus's hooks are removed" });
+            }
+            Err(e) => self.notice_problem("Could Not Open Terminal", e.to_string()),
+        }
+    }
+
     pub(crate) fn default_assistant(&self) -> u8 {
         index(&self.behavior.ask_backend).unwrap_or_else(|| {
             (0..3)
@@ -314,20 +386,15 @@ impl App {
         if id > 1 {
             return;
         }
-        let cli = std::env::current_exe()
-            .ok()
-            .and_then(|p| packaged_cli(&p, std::env::consts::OS))
-            .filter(|p| p.is_file())
-            .or_else(|| resolve("nus", ""));
-        let Some(cli) = cli else {
-            self.notice("The nus command-line companion is missing. Reinstall the app bundle or add nus to PATH.");
+        let Some(cli) = nus_cli() else {
+            self.notice_problem("Companion Missing", "the nus command-line companion · reinstall the app bundle or add nus to PATH");
             return;
         };
         let Some(provider) = resolve(
             BINS[id as usize],
             &self.behavior.assistants.providers[id as usize].executable,
         ) else {
-            self.notice("Set up the assistant first.");
+            self.notice(nus_render::text::icons::ASSISTANT, "Assistant Not Set Up", "set it up first");
             return;
         };
         let shell = self
@@ -335,7 +402,7 @@ impl App {
             .get(self.behavior.default_profile)
             .map(|p| crate::shell::kind_of(&p.program));
         if shell == Some(crate::shell::Kind::Cmd) {
-            self.notice("Choose PowerShell or a POSIX shell to configure assistant tools.");
+            self.notice(nus_render::text::icons::TERMINAL, "Choose Another Shell", "PowerShell or a POSIX shell can configure assistant tools");
             return;
         }
         let ps = shell == Some(crate::shell::Kind::PowerShell);
@@ -357,9 +424,9 @@ impl App {
                 self.tabs.push(tab);
                 self.activate(self.tabs.len() - 1);
                 self.layout();
-                self.notice("Review the command, then press Enter to register nus tools with this assistant.");
+                self.notice(nus_render::text::icons::ENTER, "Review The Command", "then press Enter to register nus tools with this assistant");
             }
-            Err(e) => self.notice(&e.to_string()),
+            Err(e) => self.notice_problem("Could Not Set Up Tools", e.to_string()),
         }
     }
     pub(crate) fn assistant_folder(&self) -> String {
@@ -408,8 +475,10 @@ impl App {
                 return Err("Choose an Ollama model in Assistants before starting.".into());
             }
             args.extend(["run".into(), q(config.model.trim())]);
-        } else if !config.model.trim().is_empty() {
-            args.extend(["--model".into(), q(config.model.trim())]);
+        } else {
+            // The intelligence level, as flags this CLI accepts.
+            let level = self.behavior.assistants.intelligence;
+            args.extend(crate::intelligence::flags(i, level, &config.model).iter().map(|a| q(a)));
         }
         if !prompt.trim().is_empty() {
             // A prompt beginning with '-' is still prompt text, never a CLI
@@ -492,7 +561,7 @@ impl App {
         let command = match self.assistant_command(id, prompt) {
             Ok(c) => c,
             Err(e) => {
-                self.notice(&e);
+                self.notice_problem("Could Not Start Assistant", e);
                 return;
             }
         };
@@ -500,6 +569,7 @@ impl App {
         match self.new_term_pane_at(false, self.behavior.default_profile, Some(cwd)) {
             Ok(mut term) => {
                 term.type_at_prompt = Some(format!("{command}\r"));
+                term.type_origin = Some(crate::finish_work::Origin::NusAction);
                 let mut tab = self.make_tab(Pane::Term(term), None);
                 tab.name = Some(format!("{} · session", NAMES[id as usize]));
                 self.tabs.push(tab);
@@ -507,7 +577,7 @@ impl App {
                 self.layout();
                 self.dirty = true;
             }
-            Err(e) => self.notice(&format!("Could not open assistant terminal: {e}")),
+            Err(e) => self.notice_problem("Could Not Open Terminal", format!("for the assistant · {e}")),
         }
     }
     pub(crate) fn assistant_setup(&mut self, id: u8, kind: u8) {
@@ -529,7 +599,7 @@ impl App {
             return;
         }
         let Some(path) = resolve(BINS[i], &self.behavior.assistants.providers[i].executable) else {
-            self.notice("Install the CLI or choose its executable first.");
+            self.notice(nus_render::text::icons::ASSISTANT, "CLI Not Found", "install it or choose its executable first");
             return;
         };
         let ps = self
@@ -608,7 +678,7 @@ impl App {
             }
             Field::Executable(id) => {
                 if !value.is_empty() && !executable(Path::new(value)) {
-                    self.notice("Choose the full path to an executable file.");
+                    self.notice(nus_render::text::icons::TERMINAL, "Not An Executable", "choose the full path to an executable file");
                     return;
                 }
                 self.behavior.assistants.providers[id as usize].executable = value.into();

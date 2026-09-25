@@ -108,6 +108,27 @@ impl Instance {
             extra: 0,
         }
     }
+    /// The intelligence atom (kind 19): see `atom` in quad.wgsl. `level` and
+    /// `value` run 0–4 (the orbits follow `level`, the dial `value`);
+    /// `nucleons` 0–9 is the model, `metal` and `roughness` its provider.
+    pub fn atom(r: Rect, look: AtomLook) -> Instance {
+        let q = |v: f32, k: f32| ((v * k).round().clamp(0.0, 255.0)) as u32;
+        let mut i = Self::rect(r, look.ink);
+        i.kind = 19;
+        i.phase = look.seconds;
+        i.uv = [
+            look.level,
+            look.value,
+            f32::from_bits(pack(look.signal)),
+            0.0,
+        ];
+        i.color2 = pack(look.metal);
+        i.extra = look.mode as u32
+            | q(look.scale, 32.0) << 8
+            | q(look.nucleons, 16.0) << 16
+            | q(look.roughness, 255.0) << 24;
+        i
+    }
     /// Rounded fill.
     pub fn rounded(r: Rect, radius: f32, color: Color) -> Instance {
         Instance {
@@ -290,6 +311,32 @@ impl Instance {
         i.uv = [radius, thickness, 0.0, 0.0];
         i
     }
+}
+
+/// What the atom shows this frame.
+#[derive(Clone, Copy, Debug)]
+pub struct AtomLook {
+    pub mode: AtomMode,
+    pub seconds: f32,
+    pub level: f32,
+    pub value: f32,
+    pub nucleons: f32,
+    pub metal: Color,
+    pub roughness: f32,
+    pub ink: Color,
+    pub signal: Color,
+    /// Device pixels per layout pixel, for hairlines.
+    pub scale: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtomMode {
+    /// Dial, orbits, electrons and the nucleus.
+    Instrument = 0,
+    /// A chrome bead alone.
+    Bead = 1,
+    /// Orbits, electrons and the nucleus, without the dial.
+    Orbits = 2,
 }
 
 pub fn pack(c: Color) -> u32 {
@@ -594,8 +641,63 @@ impl Scene {
         }
     }
 
+    /// Keep only what lies inside `a` or `b`. The two must not overlap
+    /// (anything in both would draw twice): each layer is kept once clipped
+    /// to `a` and once more, as a copy, clipped to `b`.
+    pub fn clip_existing_pair(&mut self, a: Rect, b: Rect) {
+        self.close();
+        let copies: Vec<Layer> = self
+            .layers
+            .iter()
+            .map(|layer| {
+                let mut copy = layer.clone();
+                copy.clip = Some(copy.clip.map_or(b, |old| old.intersect(&b)));
+                copy
+            })
+            .collect();
+        for layer in &mut self.layers {
+            layer.clip = Some(layer.clip.map_or(a, |old| old.intersect(&a)));
+        }
+        self.layers.extend(copies);
+    }
+
     /// Finish the frame (closes the open layer). Call before rendering.
     pub fn finish(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pair_of_clips_keeps_both_regions_and_draws_nothing_twice() {
+        let mut scene = Scene::new();
+        scene.layer(Some(Rect::new(0.0, 0.0, 100.0, 100.0)));
+        scene.rect(Rect::new(0.0, 0.0, 100.0, 100.0), [1.0; 4]);
+        scene.layer(None);
+        scene.rect(Rect::new(10.0, 10.0, 20.0, 20.0), [1.0; 4]);
+        scene.finish();
+        let before = scene.layers().len();
+        let a = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let b = Rect::new(20.0, 40.0, 50.0, 30.0);
+        scene.clip_existing_pair(a, b);
+        let layers = scene.layers();
+        assert_eq!(layers.len(), before * 2);
+        for layer in &layers[..before] {
+            let c = layer.clip.unwrap();
+            assert!(c.y >= a.y && c.bottom() <= a.bottom());
+        }
+        for layer in &layers[before..] {
+            let c = layer.clip.unwrap();
+            assert!(
+                c.w == 0.0
+                    || (c.y >= b.y
+                        && c.bottom() <= b.bottom()
+                        && c.x >= b.x
+                        && c.right() <= b.right())
+            );
+        }
     }
 }

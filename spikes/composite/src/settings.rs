@@ -268,13 +268,6 @@ pub enum CursorMotion {
     Smear,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub enum Pointer {
-    System,
-    InkArrow,
-    SignalDot,
-}
-
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CursorPrefs {
     pub shape: CursorShapePref,
@@ -286,7 +279,6 @@ pub struct CursorPrefs {
     /// Beam / underline weight, logical px.
     pub weight: f32,
     pub hollow_unfocused: bool,
-    pub pointer: Pointer,
     pub hide_while_typing: bool,
     /// Neovide's trail_size: how far the smear's tail lags its head, 0..1.
     #[serde(default = "default_smear")]
@@ -299,7 +291,7 @@ fn default_smear() -> f32 {
 
 impl Default for CursorPrefs {
     fn default() -> Self {
-        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Theme, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, pointer: Pointer::System, hide_while_typing: true, smear: 1.0 }
+        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Theme, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, hide_while_typing: true, smear: 1.0 }
     }
 }
 
@@ -378,6 +370,18 @@ pub enum HomeLook {
     Art,
 }
 
+/// What a sideways swipe on a page draws while it goes (swipe.rs): the
+/// arrow alone, the arrow with the words for what it will do, a band down
+/// the page's edge, or nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum SwipeLook {
+    #[default]
+    Arrow,
+    Card,
+    Edge,
+    Off,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum AtlasMode {
     Planet,
@@ -450,6 +454,9 @@ pub struct Behavior {
     /// OSC 10/11 from a shell: a chip offers the look, or it applies, or the pane only.
     #[serde(default)]
     pub shell_colours: ShellColours,
+    /// SHELL COLORS: how a new shell stack gets its color (shell_colors.rs).
+    #[serde(default)]
+    pub shell_tint: crate::shell_colors::ShellTint,
     /// Program colours: the contrast they must reach, and whether their
     /// truecolour wears the theme.
     #[serde(default)]
@@ -473,6 +480,9 @@ pub struct Behavior {
     /// OSC 9;4 progress: in the sidebar row and strip crumb, on the taskbar button.
     #[serde(default = "default_true")]
     pub progress_sidebar: bool,
+    /// SIDEBAR · ASSISTANTS IN TAB ROWS: the Ledger's lines (ledger.rs).
+    #[serde(default = "default_true")]
+    pub ledger: bool,
     #[serde(default = "default_true")]
     pub progress_taskbar: bool,
     /// Blocks: lamps in the gutter, and output longer than this folds itself (0 = never).
@@ -502,6 +512,11 @@ pub struct Behavior {
     /// HOME: the prompt as the line alone, or under the plate.
     #[serde(default)]
     pub home_look: HomeLook,
+    /// BACK & FORWARD · SWIPE OVERLAY and how far a swipe goes (swipe.rs).
+    #[serde(default)]
+    pub swipe_look: SwipeLook,
+    #[serde(default = "default_swipe_reach")]
+    pub swipe_reach: u16,
     /// TABS · OPENED BY OTHERS.
     #[serde(default)]
     pub opened_by_others: OpenedBy,
@@ -909,6 +924,8 @@ impl Default for Behavior {
             link_click: LinkClick::Ask,
             home_url: default_home_url(),
             home_look: HomeLook::Line,
+            swipe_look: SwipeLook::Arrow,
+            swipe_reach: default_swipe_reach(),
             opened_by_others: OpenedBy::Behind,
             new_window: NewWindow::Prompt,
             ask_backend: String::new(),
@@ -925,11 +942,13 @@ impl Default for Behavior {
             hands_hosts: Vec::new(),
             hands_confirm_submit: true,
             progress_sidebar: true,
+            ledger: true,
             progress_taskbar: true,
             ask_ctx: default_ask_ctx(),
             then_layout: String::new(),
             ssh_integration: true,
             shell_colours: ShellColours::Chip,
+            shell_tint: crate::shell_colors::ShellTint::Random,
             grade: Grade::Aa,
             truecolour: Truecolour::AsSent,
             sync_folder: String::new(),
@@ -952,7 +971,7 @@ impl Default for Behavior {
             ports_tunnel: Tunnel::Cloudflared,
             ports_hidden: default_hidden_processes(),
             hatch_look: HatchLook::Sheet,
-            hatch_hotkey: crate::hotkey::Chord::CtrlGrave,
+            hatch_hotkey: crate::hotkey::Chord::platform_default(),
             hatch_size: 40,
             hatch_monitor: HatchMonitor::Pointer,
             hatch_autohide: true,
@@ -1027,6 +1046,10 @@ pub enum Hit {
     UpdateConfirm,
     UpdateCancel,
     UpdateChecks(bool),
+    /// UPDATES · PROFILE: this copy keeps its own (`true`) or shares (install.rs).
+    ProfileSeparate(bool),
+    /// UPDATES · PROFILE: show the channel's profiles in the file manager.
+    ProfileFolder,
     Report(crate::support::Kind),
     Workspace(workspace::Hit),
     Section(usize),
@@ -1128,6 +1151,7 @@ pub enum Hit {
     HandsForget,
     FoldOver(u32),
     ProgressSidebar(bool),
+    Ledger(bool),
     ProgressTaskbar(bool),
     AskCtx(crate::askctx::Ctx),
     ForgetMemory,
@@ -1135,6 +1159,7 @@ pub enum Hit {
     TidyEvery(TidyEvery),
     Dedupe(bool),
     ShellColours(ShellColours),
+    ShellTint(crate::shell_colors::ShellTint),
     Lead(Lead),
     Grade(Grade),
     Truecolour(Truecolour),
@@ -1164,6 +1189,8 @@ pub enum Hit {
     PortsHidden,
     HatchLook(HatchLook),
     HatchHotkey(crate::hotkey::Chord),
+    /// Record a hotkey of your own: the next chord pressed.
+    HatchRecord,
     HatchSize(u8),
     HatchMonitor(HatchMonitor),
     HatchAutohide(bool),
@@ -1208,11 +1235,12 @@ pub enum Hit {
     CurColor(CursorColor),
     CurMotion(CursorMotion),
     CurHollow(bool),
-    CurPointer(Pointer),
     CurHide(bool),
     WindowStart(WindowStart),
     Splash(SplashMode),
     HomeLook(HomeLook),
+    SwipeLook(SwipeLook),
+    SwipeReach(u16),
     OpenedBy(OpenedBy),
     NewWindow(NewWindow),
     /// ASSISTANTS · ASK WITH: an index into the backends on the machine.
@@ -1325,7 +1353,7 @@ fn wrap_count(widths: &[f32], gap: f32, width: f32) -> usize {
     lines
 }
 
-fn key(k: &str, shift: bool) -> String {
+pub(crate) fn key(k: &str, shift: bool) -> String {
     if cfg!(target_os = "macos") {
         format!("⌘{}{}", if shift { "⇧" } else { "" }, k)
     } else {
@@ -1336,6 +1364,8 @@ fn key(k: &str, shift: bool) -> String {
 /// One row's control.
 enum Control {
     AppIcons,
+    /// The intelligence ring and what a launch sends.
+    Intelligence,
     SavedCommand(usize),
     Mercury,
     FontProof,
@@ -1366,6 +1396,16 @@ enum Control {
     Keys(Vec<String>, String),
     /// A group heading within a page: the row's label, small and dim.
     Caption,
+    /// A part of a page: a rule and a heading, above its captions.
+    Section,
+    /// The prompt's sources as a table: (source, before typing, while
+    /// typing, how many), in display order.
+    Sources(Vec<(crate::prompt::Source, bool, bool, u8)>),
+    /// A number with − and +: (shown value, minus, plus).
+    Stepper(String, Hit, Hit),
+    /// What the setting above does as it is set now: quieter than a note,
+    /// and joined to its setting with no rule between.
+    Help(String),
     /// Picture cards: (name, caption, picture, hit, current). Each option
     /// drawn as what it does, so it's clear what you're clicking on.
     Pics(Vec<(String, String, Pic, Hit, bool)>),
@@ -1403,6 +1443,17 @@ fn captioned(mut rows: Vec<(String, Control)>, caps: &[(&str, &str)]) -> Vec<(St
     for (before, cap) in caps {
         if let Some(i) = rows.iter().position(|(k, _)| k == before) {
             rows.insert(i, (cap.to_string(), Control::Caption));
+        }
+    }
+    rows
+}
+
+/// Section headings: stronger than a caption, for a page whose parts
+/// must not run together (Start/New Tab: launch vs. every new tab).
+fn sectioned(mut rows: Vec<(String, Control)>, heads: &[(&str, &str)]) -> Vec<(String, Control)> {
+    for (before, head) in heads {
+        if let Some(i) = rows.iter().position(|(k, _)| k == before) {
+            rows.insert(i, (head.to_string(), Control::Section));
         }
     }
     rows
@@ -1558,6 +1609,8 @@ impl App {
             Hit::Splash(v) => b.splash == v,
             Hit::Then(v) => b.then == v,
             Hit::HomeLook(v) => b.home_look == v,
+            Hit::SwipeLook(v) => b.swipe_look == v,
+            Hit::SwipeReach(v) => b.swipe_reach == v,
             Hit::HomeArt(i) => b.home_look == HomeLook::Art && crate::art::list().get(i).is_some_and(|a| a.key == b.home_art),
             Hit::NewWindow(v) => b.new_window == v,
             Hit::StartupLayout(i) => b.then == Then::Layout && crate::layout_file::saved().get(i).is_some_and(|(name, _)| *name == b.then_layout || (b.then_layout.is_empty() && i == 0)),
@@ -1613,7 +1666,7 @@ impl App {
             Hit::StopSel(i) => format!("stop {}", i + 1),
             Hit::StopAdd => "add a stop".into(),
             Hit::StopRemove => "remove a stop".into(),
-            Hit::StopColor(c) => format!("stop colour {}", surface::hex(c)),
+            Hit::StopColor(c) => format!("stop color {}", surface::hex(c)),
             Hit::TokPaper(c) => format!("paper {}", surface::hex(c)),
             Hit::TokInk(c) => format!("ink {}", surface::hex(c)),
             Hit::TokPage(c) => format!("page {}", surface::hex(c)),
@@ -1642,6 +1695,8 @@ impl App {
             Hit::UpdateConfirm=>"Download, verify, install and restart nus".into(),
             Hit::UpdateCancel=>"Cancel update".into(),
             Hit::UpdateChecks(on)=>format!("Automatic update checks {}",if on{"on"}else{"off"}),
+            Hit::ProfileSeparate(own)=>if own{"this copy keeps its own profile".into()}else{"this copy shares the profile".into()},
+            Hit::ProfileFolder=>"show profiles".into(),
             Hit::Report(crate::support::Kind::Feature) => "Request a feature · opens a GitHub draft with version and OS".into(),
             Hit::Block(b) => if b { "content blocking on".into() } else { "content blocking off".into() },
             Hit::StatusStyle(s) => format!("page status {:?}", s).to_lowercase(),
@@ -1660,8 +1715,8 @@ impl App {
             Hit::PromptLsp(m) => match m { PromptLsp::Quiet => "prompt lsp quiet".into(), PromptLsp::Menu => "prompt lsp menu".into(), PromptLsp::Off => "prompt lsp off".into() },
             Hit::FormatOnSave(b) => if b { "format on save".into() } else { "save as is".into() },
             Hit::Blocks(b) => if b { "block lamps on".into() } else { "block lamps off".into() },
-            Hit::Journal(b) => if b { "journal on".into() } else { "journal off".into() },
-            Hit::JournalKeep(n) => format!("journal keeps {n} days"),
+            Hit::Journal(b) => if b { "remember commands".into() } else { "don't remember commands".into() },
+            Hit::JournalKeep(n) => format!("keep command history {n} days"),
             Hit::CutOffMode(m) => match m { CutOff::Chip => "cut off: a chip".into(), CutOff::RunAgain => "cut off: run again".into(), CutOff::Off => "cut off: nothing".into() },
             Hit::PortsRemember(b) => if b { "ports remember".into() } else { "ports forget".into() },
             Hit::KeepAlive(k) => if k == KeepAlive::On { "shells are held".into() } else { "shells die with the app".into() },
@@ -1680,15 +1735,17 @@ impl App {
             Hit::HandsForget => "allowed hosts forgotten".into(),
             Hit::FoldOver(n) => if n == 0 { "never fold on its own".into() } else { format!("fold output over {n} lines") },
             Hit::ProgressSidebar(b) => if b { "progress in the sidebar".into() } else { "progress in the pane only".into() },
+            Hit::Ledger(b) => if b { "assistants in tab rows".into() } else { "assistants as a dot".into() },
             Hit::ProgressTaskbar(b) => if b { "progress on the taskbar".into() } else { "taskbar left alone".into() },
             Hit::AskCtx(c) => format!("ask context · {}", c.key()),
             Hit::ForgetMemory => "memory cleared".into(),
             Hit::SshIntegration(b) => if b { "ssh brings the integration".into() } else { "ssh as is".into() },
             Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
             Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
-            Hit::ShellColours(c) => format!("shell colours: {:?}", c).to_lowercase(),
-            Hit::Grade(g) => match g { Grade::Off => "program colours as they come".into(), g => format!("program colours graded to {}:1", g.ratio()) },
-            Hit::Truecolour(t) => match t { Truecolour::AsSent => "truecolour as sent".into(), Truecolour::Snapped => "truecolour wears the theme".into() },
+            Hit::ShellColours(c) => format!("shell colors: {:?}", c).to_lowercase(),
+            Hit::ShellTint(t) => format!("new shell colors: {:?}", t).to_lowercase(),
+            Hit::Grade(g) => match g { Grade::Off => "program colors as they come".into(), g => format!("program colors graded to {}:1", g.ratio()) },
+            Hit::Truecolour(t) => match t { Truecolour::AsSent => "truecolor as sent".into(), Truecolour::Snapped => "truecolor wears the theme".into() },
             Hit::SyncSession(b) => if b { "the session syncs".into() } else { "the session stays here".into() },
             Hit::SyncEvery(n) => if n == 0 { "sync on demand".into() } else { format!("sync every {n} min") },
             Hit::SyncAtQuit(b) => if b { "sync at quit".into() } else { "no sync at quit".into() },
@@ -1718,6 +1775,7 @@ impl App {
             Hit::MenuRecent(b)=>if b{"include finished work and downloads"}else{"only active work and downloads"}.into(),
             Hit::MenuPreview=>"open menu drawer".into(),
             Hit::HatchHotkey(c) => c.label().to_lowercase(),
+            Hit::HatchRecord => "record a hatch hotkey".into(),
             Hit::HatchSize(n) => format!("{n}% tall"),
             Hit::HatchMonitor(m) => format!("on the {:?} monitor", m).to_lowercase(),
             Hit::HatchStatus(b) => if b { "compact work status on".into() } else { "compact work status off".into() },
@@ -1737,15 +1795,16 @@ impl App {
             Hit::HdrFlash(b) => if b { "press flash".into() } else { "no press flash".into() },
             Hit::CurShape(s) => format!("cursor {:?}", s).to_lowercase(),
             Hit::CurBlink(b) => format!("blink {:?}", b).to_lowercase(),
-            Hit::CurColor(c) => format!("cursor colour {:?}", c).to_lowercase(),
+            Hit::CurColor(c) => format!("cursor color {:?}", c).to_lowercase(),
             Hit::CurMotion(m) => format!("cursor motion {:?}", m).to_lowercase(),
             Hit::CurHollow(h) => if h { "hollow when unfocused".into() } else { "hidden when unfocused".into() },
-            Hit::CurPointer(p) => format!("pointer {:?}", p).to_lowercase(),
             Hit::CurHide(h) => if h { "hide the pointer while typing".into() } else { "keep the pointer while typing".into() },
             Hit::WindowStart(w) => format!("window {:?}", w).to_lowercase(),
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::HomeLook(l) => format!("home {:?}", l).to_lowercase(),
             Hit::OpenedBy(o) => format!("opened by others {:?}", o).to_lowercase(),
+            Hit::SwipeLook(l) => format!("swipe overlay {:?}", l).to_lowercase(),
+            Hit::SwipeReach(r) => format!("swipe distance {r} px"),
             Hit::NewWindow(w) => format!("a new window {:?}", w).to_lowercase(),
             Hit::AskBackend(i) => format!("ask with {}", crate::ask::backends().get(i).map(|b| b.name.clone()).unwrap_or_default()),
             Hit::Phone(on) => if on { "serve this window to the phone".into() } else { "stop serving the phone".into() },
@@ -1790,7 +1849,7 @@ impl App {
             Hit::MakeDefault => "make nus the default browser".into(),
             Hit::Unregister => "unregister nus as a browser".into(),
             Hit::BarStyle(b) => format!("loading bar {}", b.name()),
-            Hit::BarColor(c) => format!("bar colour {:?}", c).to_lowercase(),
+            Hit::BarColor(c) => format!("bar color {:?}", c).to_lowercase(),
         }
     }
 
@@ -1847,7 +1906,7 @@ impl App {
             Hit::Downloads => self.open_downloads(),
             Hit::DownloadRename(mode) => { self.behavior.download_rename=mode;crate::downloads::set_rename(mode); },
             Hit::DownloadDir(0) => self.pick_download_dir(),
-            Hit::DownloadDir(1) => { self.behavior.download_dir.clear(); let b = self.behavior.clone(); self.apply_behavior_statics(&b); self.notice("downloads · back to the system's folder"); }
+            Hit::DownloadDir(1) => { self.behavior.download_dir.clear(); let b = self.behavior.clone(); self.apply_behavior_statics(&b); self.notice(nus_render::text::icons::FOLDER, "Downloads Folder Reset", "back to the system's folder"); }
             Hit::DownloadDir(_) => self.download_action(crate::downloads::Hit::Folder),
             Hit::DownloadAsk(on) => { self.behavior.download_ask = on; let b = self.behavior.clone(); self.apply_behavior_statics(&b); }
             Hit::DownloadDone(what) => self.behavior.download_done = what,
@@ -2064,12 +2123,12 @@ impl App {
             Hit::Welcome => self.open_welcome(),
             Hit::PinDisplay(mode) => self.sidebar_rules.pin_display = mode,
             Hit::Report(kind) => self.run(crate::app::Action::Report(kind)),
-            Hit::AppIcon(choice)=>{if choice!=crate::app_icon::Choice::Mercury || crate::mercury::earned(){self.behavior.app_icon=choice;crate::app_icon::select(choice);self.refresh_icon();self.toast_with(None,"App icon changed",choice.name(),None);}},
+            Hit::AppIcon(choice)=>{if choice!=crate::app_icon::Choice::Mercury || crate::mercury::earned(){self.behavior.app_icon=choice;crate::app_icon::select(choice);self.refresh_icon();self.toast(nus_render::text::icons::APP_WINDOW,"App Icon Changed",choice.name(),None);}},
             Hit::Mercury => self.claim_mercury(),
             Hit::CopySupportDetails => {
                 match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(crate::support::details())) {
-                    Ok(()) => self.notice("Support details copied. Review them before sharing."),
-                    Err(_) => self.notice("Could not access the clipboard."),
+                    Ok(()) => self.notice(nus_render::text::icons::COPY, "Copied", "support details · review them before sharing"),
+                    Err(_) => self.notice_problem("Could Not Use Clipboard", ""),
                 }
             }
             Hit::RecoverPrevious => self.recover_previous_version(),
@@ -2077,6 +2136,13 @@ impl App {
             Hit::UpdateInstall=>crate::updates::confirm(true),
             Hit::UpdateCancel=>crate::updates::confirm(false),
             Hit::UpdateChecks(on)=>self.behavior.update_checks=on,
+            Hit::ProfileSeparate(own)=>{
+                match crate::install::set_separate(own) {
+                    Ok(()) => self.notice(icons::RELOAD, "Restart To Switch", if own { "this copy keeps a profile of its own from its next launch" } else { "this copy shares the channel's profile from its next launch" }),
+                    Err(e) => self.notice_problem("Could Not Change Profile", e.to_string()),
+                }
+            },
+            Hit::ProfileFolder=>if let Some(p)=crate::install::placement(){crate::downloads::reveal(&p.channel_root,false);},
             Hit::UpdateConfirm=>self.install_update(),
             Hit::Block(b) => {
                 self.behavior.block_content = b;
@@ -2092,7 +2158,7 @@ impl App {
             Hit::WheelLines(n) => self.behavior.wheel_lines = n,
             Hit::PageSmooth(b) => {
                 self.behavior.page_smooth_scroll = b;
-                self.notice("Page scrolling will change after you restart nus.");
+                self.notice(nus_render::text::icons::RELOAD, "Restart To Apply", "page scrolling changes after you restart nus");
             }
             Hit::PaneDivider(b) => self.behavior.pane_divider = b,
             Hit::MiddlePaste(b) => self.behavior.middle_paste = b,
@@ -2111,7 +2177,7 @@ impl App {
                 if self.behavior.replay != k {
                     self.recorder = k.days().and_then(crate::replay::Recorder::new);
                     self.behavior.replay = if k.days().is_some() && self.recorder.is_none() { ReplayKeep::Off } else { k };
-                    if k.days().is_some() && self.recorder.is_none() { self.notice("Could not start recording. Check that the profile folder is writable."); }
+                    if k.days().is_some() && self.recorder.is_none() { self.notice_problem("Could Not Start Recording", "check that the profile folder is writable"); }
                 }
             },
             Hit::ClickToSource(b) => self.behavior.click_to_source = b,
@@ -2143,6 +2209,7 @@ impl App {
             Hit::HandsForget => self.behavior.hands_hosts.clear(),
             Hit::FoldOver(n) => self.behavior.fold_over = n,
             Hit::ProgressSidebar(b) => self.behavior.progress_sidebar = b,
+            Hit::Ledger(b) => self.behavior.ledger = b,
             Hit::ProgressTaskbar(b) => self.behavior.progress_taskbar = b,
             Hit::AskCtx(c) => {
                 let k = c.key().to_string();
@@ -2156,6 +2223,10 @@ impl App {
             Hit::TidyEvery(e) => self.behavior.tidy_every = e,
             Hit::Dedupe(b) => self.behavior.dedupe = b,
             Hit::ShellColours(c) => self.behavior.shell_colours = c,
+            Hit::ShellTint(t) => {
+                self.behavior.shell_tint = t;
+                self.recolor_shells();
+            }
             Hit::Grade(g) => self.behavior.grade = g,
             Hit::Truecolour(t) => self.behavior.truecolour = t,
             Hit::MeEdit(k) => self.open_me_card_at(match k { 0 => crate::me::Step::Name, 1 => crate::me::Step::Face, _ => crate::me::Step::Device }),
@@ -2188,7 +2259,7 @@ impl App {
             Hit::ForgeForget => {
                 crate::forge::forget();
                 self.behavior.sync_git.clear();
-                self.notice("the forge is forgotten · the repo is still yours to delete");
+                self.notice(nus_render::text::icons::GITHUB, "Forge Forgotten", "the repo is still yours to delete");
             }
             Hit::ForgetMemory => {
                 let _ = crate::protected_state::write(&std::env::current_dir().unwrap_or_default().join("profile").join("memory.md"), b"");
@@ -2219,8 +2290,12 @@ impl App {
             Hit::MenuRecent(b)=>self.behavior.menu_drawer.recent=b,
             Hit::MenuPreview=>self.toggle_menu_drawer(None),
             Hit::HatchHotkey(c) => {
+                self.hotkey_recording = false;
                 self.behavior.hatch_hotkey = c;
                 self.hatch_settings_changed();
+            }
+            Hit::HatchRecord => {
+                self.hotkey_recording = !self.hotkey_recording;
             }
             Hit::HatchSize(n) => {
                 self.behavior.hatch_size = n;
@@ -2249,10 +2324,6 @@ impl App {
             Hit::CurColor(c) => self.cursor.color = c,
             Hit::CurMotion(m) => self.cursor.motion = m,
             Hit::CurHollow(h) => self.cursor.hollow_unfocused = h,
-            Hit::CurPointer(p) => {
-                self.cursor.pointer = p;
-                self.pointer_request = Some(p);
-            }
             Hit::CurHide(h) => self.cursor.hide_while_typing = h,
             Hit::OpenThemes => {
                 let dir = crate::theme_edit::themes_dir();
@@ -2270,6 +2341,8 @@ impl App {
             Hit::Splash(m) => self.behavior.splash = m,
             Hit::HomeLook(l) => self.behavior.home_look = l,
             Hit::OpenedBy(o) => self.behavior.opened_by_others = o,
+            Hit::SwipeLook(l) => self.behavior.swipe_look = l,
+            Hit::SwipeReach(r) => self.behavior.swipe_reach = r,
             Hit::NewWindow(w) => self.behavior.new_window = w,
             Hit::AskBackend(i) => {
                 if let Some(b) = crate::ask::backends().get(i) {
@@ -2283,7 +2356,7 @@ impl App {
                     self.behavior.phone = crate::phone::current().is_some();
                 } else {
                     crate::phone::stop();
-                    self.notice("Phone access stopped. The old address no longer works.");
+                    self.notice(nus_render::text::icons::BROADCAST, "Phone Access Stopped", "the old address no longer works");
                 }
             }
             Hit::CopyPhoneUrl => {
@@ -2291,7 +2364,7 @@ impl App {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(p.url());
                     }
-                    self.toast_with(Some(icons::COPY), "COPIED!", p.url(), None);
+                    self.toast(icons::COPY, "Copied", p.url(), None);
                 }
             }
             Hit::HomeArt(i) => {
@@ -2431,15 +2504,18 @@ impl App {
     /// The colour of the token the picker is on.
     pub(crate) fn tok_color(&self) -> Color {
         let ink = self.theme.ink;
+        // The tokens as the user set them, before they were made legible on
+        // the tinted paper; editing the drawn ones would tint twice.
+        let own = self.theme_edit.build(self.theme.mode, self.surface.signal);
         match self.tok_sel {
             TokSel::Signal => self.surface.signal,
             TokSel::Stop(i) => self.surface.ramp(ink).get(i).copied().unwrap_or(self.surface.signal),
-            TokSel::Paper => self.theme.paper,
-            TokSel::Ink => self.theme.ink,
-            TokSel::Page => self.theme.page,
-            TokSel::Caret => self.theme.caret,
-            TokSel::Selection => nus_render::Theme::with_alpha(self.theme.selection, 1.0),
-            TokSel::Ansi(i) => crate::theme_edit::from_rgb(self.theme.ansi[i.min(15)]),
+            TokSel::Paper => own.paper,
+            TokSel::Ink => own.ink,
+            TokSel::Page => own.page,
+            TokSel::Caret => own.caret,
+            TokSel::Selection => nus_render::Theme::with_alpha(own.selection, 1.0),
+            TokSel::Ansi(i) => crate::theme_edit::from_rgb(own.ansi[i.min(15)]),
         }
     }
 
@@ -3009,12 +3085,12 @@ impl App {
     }
 
     fn rows_for_at(&self, section: usize, look_tab: usize) -> Vec<(String,Control)> {
-        let rows = self.visual_settings(section, self.rows_for_raw(section, look_tab));
+        let mut rows = self.visual_settings(section, self.rows_for_raw(section, look_tab));
+        rows.retain(|(k, c)| !(k.is_empty() && matches!(c, Control::Info(s) if s.is_empty())));
         match section {
-            2 => captioned(rows, &[("TERMINAL OR BROWSER", "LAUNCH"), ("START PAGE", "START & NEW TABS"), (key("N", false).as_str(), "NEW WINDOW BEHAVIOR"), ("SAVE CURRENT LAYOUT", "SAVED WORK"), ("LINKS FROM OTHER APPS", "FROM OUTSIDE")]),
+            2 => sectioned(rows, &[("WINDOW AT LAUNCH", "WHEN NUS LAUNCHES"), ("TERMINAL OR BROWSER", "START PAGE · AT LAUNCH AND EVERY NEW TAB"), (key("N", false).as_str(), "NEW WINDOWS"), ("LINKS FROM OTHER APPS", "FROM OTHER APPS")]),
             5 => rows,
             6 => captioned(rows, &[("LOADING BAR", "LOADING"), ("DEFAULT BROWSER", "THE SYSTEM"), ("SEARCH", "AS SHIPPED")]),
-            12 => captioned(rows, &[("THE PHONE", "ANOTHER DEVICE")]),
             _ => rows,
         }
     }
@@ -3379,7 +3455,7 @@ impl App {
                     ),
                     ("PERIOD".into(), Slider(self::Slider::BlinkPeriod, self.slider_value(self::Slider::BlinkPeriod), format!("{}ms", c.period))),
                     (
-                        "COLOUR".into(),
+                        "COLOR".into(),
                         Choice(vec![
                             ("THE THEME'S CARET".into(), Hit::CurColor(CursorColor::Theme), c.color == CursorColor::Theme),
                             ("SIGNAL".into(), Hit::CurColor(CursorColor::Signal), c.color == CursorColor::Signal),
@@ -3400,15 +3476,6 @@ impl App {
                     ("TRAIL".into(), Slider(self::Slider::Smear, self.slider_value(self::Slider::Smear), format!("{:.0}% · neovide's trail_size: how far the tail lags the head (smear only)", c.smear * 100.0))),
                     ("WEIGHT".into(), Slider(self::Slider::CurWeight, self.slider_value(self::Slider::CurWeight), format!("{}px · beam and underline", c.weight))),
                     (
-                        "POINTER".into(),
-                        Choice(vec![
-                            ("SYSTEM".into(), Hit::CurPointer(Pointer::System), c.pointer == Pointer::System),
-                            ("INK ARROW".into(), Hit::CurPointer(Pointer::InkArrow), c.pointer == Pointer::InkArrow),
-                            ("SIGNAL DOT".into(), Hit::CurPointer(Pointer::SignalDot), c.pointer == Pointer::SignalDot),
-                        ]),
-                    ),
-                    ("".into(), Info("over the chrome only · pages and shells keep the system pointer".into())),
-                    (
                         "WHILE TYPING".into(),
                         Choice(vec![("HIDE THE POINTER".into(), Hit::CurHide(true), c.hide_while_typing), ("KEEP IT".into(), Hit::CurHide(false), !c.hide_while_typing)]),
                     ),
@@ -3422,7 +3489,7 @@ impl App {
                 let on = self.sound.prefs.enabled;
                 let mut rows: Vec<(String, Control)> = vec![
                     (
-                        "SOUND".into(),
+                        "APP SOUNDS".into(),
                         Choice(vec![("ON".into(), Hit::SoundOn(true), on), ("OFF".into(), Hit::SoundOn(false), !on)]),
                     ),
                     (
@@ -3431,23 +3498,24 @@ impl App {
                     ),
                     (
                         "".into(),
-                        Info(if self.sound.player.is_some() { "cuelume's seventeen cues · synthesized here · click one to hear it".into() } else { "no audio output device found".into() }),
+                        Info(if self.sound.player.is_some() { "Seventeen short sounds, made on this device. Click any name below to hear it.".into() } else { "No audio output device found, so nothing will play.".into() }),
                     ),
                 ];
                 // The palette, in rows of six.
                 for chunk in (0..crate::sound::NAMES.len()).collect::<Vec<_>>().chunks(6) {
                     rows.push((
-                        if chunk[0] == 0 { "THE PALETTE".into() } else { "".into() },
+                        if chunk[0] == 0 { "HEAR THEM".into() } else { "".into() },
                         Choice(chunk.iter().map(|&i| (crate::sound::NAMES[i].caps(), Hit::Play(i), false)).collect()),
                     ));
                 }
-                rows.push(("".into(), Info("what plays when · the speaker silences an event · the name plays it · ▸ walks the palette".into())));
+                rows.push(("WHAT PLAYS WHEN".into(), Section));
+                rows.push(("".into(), Info("For each moment: the speaker button silences it, the sound's name plays it, and ▸ tries the next sound.".into())));
                 for (e, (ev, _, note)) in crate::sound::EVENTS.iter().enumerate() {
                     let cur = self.sound.prefs.cue_for(ev);
                     let ci = cur.as_deref().and_then(|c| crate::sound::NAMES.iter().position(|n| *n == c));
                     rows.push((ev.replace('.', " · ").caps(), Cue(e, ci, note.to_string())));
                 }
-                rows.push(("".into(), Info("rules.luau can override any event with on_event · cues by daniel belyi (cuelume, mit)".into())));
+                rows.push(("".into(), Info("Rules can change any of these with on_event. Sounds by Daniel Belyi (cuelume, MIT).".into())));
                 rows
             }
             2 => {
@@ -3466,14 +3534,6 @@ impl App {
                 let new_tab = key("T", !cfg!(target_os = "macos"));
                 let home_host = crate::links::host(&b.home_url);
                 vec![
-                    (
-                        "TERMINAL OR BROWSER".into(),
-                        Pics(vec![
-                            ("TERMINAL".into(), "shells first in the prompt palette".into(), Pic::LeadTerminal, Hit::Lead(Lead::Terminal), b.lead == Lead::Terminal),
-                            ("BROWSER".into(), "pages first in the prompt palette".into(), Pic::LeadBrowser, Hit::Lead(Lead::Browser), b.lead == Lead::Browser),
-                        ]),
-                    ),
-                    ("".into(), Info("Sets the order of palette suggestions and what an empty prompt opens. Also sets where links from other apps open; you can change that below.".into())),
                     (
                         "WINDOW AT LAUNCH".into(),
                         Pics(vec![
@@ -3495,6 +3555,39 @@ impl App {
                         "ANIMATION DURATION".into(),
                         Slider(self::Slider::SplashHold, self.slider_value(self::Slider::SplashHold), format!("{:.1} seconds", b.splash_hold)),
                     ),
+                    ("LAUNCH SOUND".into(), Choice(sound_chips)),
+                    (
+                        "ON QUIT, KEEP".into(),
+                        Choice(vec![
+                            ("TABS AND WINDOWS".into(), Hit::Remember(true), b.remember),
+                            ("NOTHING".into(), Hit::Remember(false), !b.remember),
+                        ]),
+                    ),
+                    ("".into(), Info("Kept tabs and windows come back at launch, and the start page below opens over them. Saved sessions are also in the atlas (the planet button).".into())),
+                    (
+                        "SESSION PICKER".into(),
+                        Choice(vec![
+                            ("WHEN I OPEN IT".into(), Hit::Atlas(AtlasMode::Planet), b.atlas == AtlasMode::Planet),
+                            ("SHOW AT LAUNCH".into(), Hit::Atlas(AtlasMode::AtLaunch), b.atlas == AtlasMode::AtLaunch),
+                            ("KEEP OPEN UNTIL I PICK".into(), Hit::Atlas(AtlasMode::Persistent), b.atlas == AtlasMode::Persistent),
+                        ]),
+                    ),
+                    (
+                        "OPEN AT LOGIN".into(),
+                        Choice(vec![
+                            ("YES".into(), Hit::LoginItem(true), crate::little::login_item_registered()),
+                            ("NO".into(), Hit::LoginItem(false), !crate::little::login_item_registered()),
+                        ]),
+                    ),
+                    ("".into(), Info(if self.login_note.is_empty() { "nus starts when you log in · change it any time".into() } else { self.login_note.clone() })),
+                    (
+                        "TERMINAL OR BROWSER".into(),
+                        Pics(vec![
+                            ("TERMINAL".into(), "shells first in the prompt palette".into(), Pic::LeadTerminal, Hit::Lead(Lead::Terminal), b.lead == Lead::Terminal),
+                            ("BROWSER".into(), "pages first in the prompt palette".into(), Pic::LeadBrowser, Hit::Lead(Lead::Browser), b.lead == Lead::Browser),
+                        ]),
+                    ),
+                    ("".into(), Info("Sets the order of palette suggestions and what an empty prompt opens. Also sets where links from other apps open; you can change that below.".into())),
                     (
                         "START PAGE".into(),
                         Pics(vec![
@@ -3522,6 +3615,14 @@ impl App {
                             Choice(layouts.iter().enumerate().map(|(i, name)| (name.caps(), Hit::StartupLayout(i), b.then == Then::Layout && (*name == b.then_layout || (b.then_layout.is_empty() && i == 0)))).collect())
                         },
                     ),
+                    (
+                        "SAVE CURRENT LAYOUT".into(),
+                        Choice(vec![
+                            ("SET FROM THIS WINDOW".into(), Hit::SetLaunchTabs, false),
+                            (if layouts.iter().any(|n| n == "launch") { "CLEAR".into() } else { "NONE SET".into() }, Hit::ClearLaunchTabs, false),
+                        ]),
+                    ),
+                    ("".into(), Info("Saves these tabs and panes as the layout “launch” and selects Custom layout above.".into())),
                     ("HOME BACKGROUND".into(), Caption),
                     ("".into(), Info("Applies to every Home prompt, including new tabs and startup when Home · Prompt is selected.".into())),
                     (
@@ -3573,213 +3674,142 @@ impl App {
                     ),
                     ("".into(), Info("Each new window has its own tabs and working folder.".into())),
                     (
-                        "SAVE CURRENT LAYOUT".into(),
-                        Choice(vec![
-                            ("SET FROM THIS WINDOW".into(), Hit::SetLaunchTabs, false),
-                            (if layouts.iter().any(|n| n == "launch") { "CLEAR".into() } else { "NONE SET".into() }, Hit::ClearLaunchTabs, false),
-                        ]),
-                    ),
-                    ("".into(), Info("Saves these tabs and panes as the layout “launch” and selects Custom layout above.".into())),
-                    (
-                        "ON QUIT, KEEP".into(),
-                        Choice(vec![
-                            ("TABS AND WINDOWS".into(), Hit::Remember(true), b.remember),
-                            ("NOTHING".into(), Hit::Remember(false), !b.remember),
-                        ]),
-                    ),
-                    ("".into(), Info("Saved sessions are available in the atlas (the planet button). Start/New Tab still opens the start page selected above.".into())),
-                    (
-                        "SESSION PICKER".into(),
-                        Choice(vec![
-                            ("WHEN I OPEN IT".into(), Hit::Atlas(AtlasMode::Planet), b.atlas == AtlasMode::Planet),
-                            ("SHOW AT LAUNCH".into(), Hit::Atlas(AtlasMode::AtLaunch), b.atlas == AtlasMode::AtLaunch),
-                            ("KEEP OPEN UNTIL I PICK".into(), Hit::Atlas(AtlasMode::Persistent), b.atlas == AtlasMode::Persistent),
-                        ]),
-                    ),
-                    ("LAUNCH SOUND".into(), Choice(sound_chips)),
-                    (
                         "LINKS FROM OTHER APPS".into(),
                         Choice(vec![
                             ("LITTLE WINDOW".into(), Hit::Outside(Outside::Little), b.outside == Outside::Little),
                             ("NEW TAB HERE".into(), Hit::Outside(Outside::NewTab), b.outside == Outside::NewTab),
                         ]),
                     ),
-                    (
-                        "OPEN AT LOGIN".into(),
-                        Choice(vec![
-                            ("YES".into(), Hit::LoginItem(true), crate::little::login_item_registered()),
-                            ("NO".into(), Hit::LoginItem(false), !crate::little::login_item_registered()),
-                        ]),
-                    ),
-                    ("".into(), Info(if self.login_note.is_empty() { "nus starts when you log in · change it any time".into() } else { self.login_note.clone() })),
                 ]
             }
             3 => vec![
-                (
-                    "HEADER".into(),
-                    Choice(vec![
-                        ("BAR".into(), Hit::HdrStyle(HeaderStyle::Bar), self.header.style == HeaderStyle::Bar),
-                        ("RAIL".into(), Hit::HdrStyle(HeaderStyle::Rail), self.header.style == HeaderStyle::Rail),
-                    ]),
-                ),
-                ("".into(), Info(match self.header.style { HeaderStyle::Bar => "The bar puts the window name and New tab button above the tabs.".into(), HeaderStyle::Rail => "The rail shows a square for each window along the edge, with the current window name above its tabs.".into() })),
-                (
-                    "TITLE".into(),
-                    Choice(vec![
-                        ("CAPS".into(), Hit::HdrMasthead(false), !self.header.masthead),
-                        ("MASTHEAD".into(), Hit::HdrMasthead(true), self.header.masthead),
-                    ]),
-                ),
-                (
-                    "DATELINE".into(),
-                    Choice(vec![
-                        ("WHERE · TABS · PORTS".into(), Hit::HdrDateline(true), self.header.dateline),
-                        ("OFF".into(), Hit::HdrDateline(false), !self.header.dateline),
-                    ]),
-                ),
-                (
-                    "NEW TAB".into(),
-                    Choice(vec![
-                        ("IN THE HEADER".into(), Hit::HdrButton(!self.header.header_button), self.header.header_button),
-                        ("AS THE NEXT ROW".into(), Hit::HdrNextRow(!self.header.next_row), self.header.next_row),
-                    ]),
-                ),
-                ("".into(), Info("Show either or both New tab buttons. Clicking opens the start page chosen in Start/New Tab. Hold or right-click to choose a tab type.".into())),
-                (
-                    "KINDS CARET".into(),
-                    Choice(vec![("ON".into(), Hit::HdrCaret(true), self.header.kinds_caret), ("OFF".into(), Hit::HdrCaret(false), !self.header.kinds_caret)]),
-                ),
-                (
-                    "WINDOW CELL".into(),
-                    Choice(vec![("SQUARE + NAME".into(), Hit::HdrName(true), self.header.show_name), ("SQUARE".into(), Hit::HdrName(false), !self.header.show_name)]),
-                ),
-                (
-                    "RAIL".into(),
-                    Choice(vec![("ALWAYS".into(), Hit::HdrRailHover(false), !self.header.rail_hover), ("ON HOVER".into(), Hit::HdrRailHover(true), self.header.rail_hover)]),
-                ),
-                (
-                    "PRESS".into(),
-                    Choice(vec![("FLASH".into(), Hit::HdrFlash(true), self.header.flash), ("NONE".into(), Hit::HdrFlash(false), !self.header.flash)]),
-                ),
-                ("SIDEBAR WIDTH".into(),Slider(self::Slider::SidebarWidth,self.slider_value(self::Slider::SidebarWidth),format!("{} px · drag the sidebar's inner edge",self.sidebar_rules.width as u32))),
-                ("FOOTER HEIGHT".into(),Slider(self::Slider::FooterSize,self.slider_value(self::Slider::FooterSize),format!("{} px per row · drag the footer's top edge",self.sidebar_rules.footer_row as u32))),
-                ("SMALL SIDEBAR".into(),Choice(vec![
-                    ("ICONS".into(),Hit::SmallTabs(crate::sidebar::SmallTabs::Icons),self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Icons),
-                    ("FAVICONS".into(),Hit::SmallTabs(crate::sidebar::SmallTabs::Favicons),self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Favicons),
-                    ("WEB PREVIEWS".into(),Hit::SmallTabs(crate::sidebar::SmallTabs::Preview),self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Preview),
+                ("SIZE & PLACE".into(), Section),
+                ("WIDTH".into(), Slider(self::Slider::SidebarWidth, self.slider_value(self::Slider::SidebarWidth), format!("{} px · you can also drag the sidebar's edge", self.sidebar_rules.width as u32))),
+                ("SIDE OF THE WINDOW".into(), Choice(vec![
+                    ("LEFT".into(), Hit::Side(Side::Left), self.sidebar_rules.side == Side::Left),
+                    ("RIGHT".into(), Hit::Side(Side::Right), self.sidebar_rules.side == Side::Right),
                 ])),
-                ("".into(),Info("Below 105 px, tab and file names give way to icons. Hover to read the full title or path. Web previews use the page's current image; pages without one show their icon. Footer buttons wrap to fit.".into())),
-                (
-                    "DENSITY".into(),
-                    Choice(vec![
-                        ("FULL".into(), Hit::Compact(false), !self.sidebar_rules.compact),
-                        ("COMPACT · ICONS ONLY".into(), Hit::Compact(true), self.sidebar_rules.compact),
-                    ]),
-                ),
-                (
-                    "SIDE".into(),
-                    Choice(vec![
-                        ("LEFT".into(), Hit::Side(Side::Left), self.sidebar_rules.side == Side::Left),
-                        ("RIGHT".into(), Hit::Side(Side::Right), self.sidebar_rules.side == Side::Right),
-                    ]),
-                ),
-                (
-                    "REVEAL".into(),
-                    Choice(vec![
-                        ("SCREEN EDGE".into(), Hit::HoverFrom(HoverFrom::ScreenEdge), self.sidebar_rules.hover_from == HoverFrom::ScreenEdge),
-                        ("INSIDE WINDOW ONLY".into(), Hit::HoverFrom(HoverFrom::InsideWindow), self.sidebar_rules.hover_from == HoverFrom::InsideWindow),
-                    ]),
-                ),
-                (
-                    "GRACE".into(),
-                    Slider(self::Slider::Grace, self.slider_value(self::Slider::Grace), format!("{}ms after the pointer leaves", self.sidebar_rules.grace_ms)),
-                ),
-                (
-                    "FULLSCREEN".into(),
-                    Choice(vec![
-                        ("HOVER".into(), Hit::Fullscreen(Fullscreen::Hover), self.sidebar_rules.fullscreen == Fullscreen::Hover),
-                        ("HIDDEN".into(), Hit::Fullscreen(Fullscreen::Hidden), self.sidebar_rules.fullscreen == Fullscreen::Hidden),
-                        ("PINNED".into(), Hit::Fullscreen(Fullscreen::Pinned), self.sidebar_rules.fullscreen == Fullscreen::Pinned),
-                    ]),
-                ),
-                (
-                    "NOW".into(),
-                    Choice(vec![
-                        ("PINNED".into(), Hit::Pin(true), self.sidebar),
-                        (format!("HOVER · {} PINS", key("S", true)), Hit::Pin(false), !self.sidebar),
-                    ]),
-                ),
-                ("PINNED TILES".into(), Choice(vec![
-                    ("FAVICON / ICON".into(), Hit::PinDisplay(crate::pins::Display::Icon), self.sidebar_rules.pin_display == crate::pins::Display::Icon),
-                    ("LIVE WEB PREVIEW".into(), Hit::PinDisplay(crate::pins::Display::Preview), self.sidebar_rules.pin_display == crate::pins::Display::Preview),
+                ("SIZE".into(), Choice(vec![
+                    ("FULL · ICONS AND TITLES".into(), Hit::Compact(false), !self.sidebar_rules.compact),
+                    ("COMPACT · ICONS ONLY".into(), Hit::Compact(true), self.sidebar_rules.compact),
                 ])),
-                ("".into(), Info("Pinned tiles use your theme and corner radius. Web previews use the open page; closed pages and shells show an icon.".into())),
-                ("ROWS".into(), Info("Compact rows show a preview when you hover over them.".into())),
+                ("ASSISTANTS IN TAB ROWS".into(), Choice(vec![
+                    ("STATUS, QUESTION & ANSWERS".into(), Hit::Ledger(true), self.behavior.ledger),
+                    ("A DOT".into(), Hit::Ledger(false), !self.behavior.ledger),
+                ])),
+                ("".into(), Info("Claude, Codex and other assistants show what they are doing under their tab: working, waiting for you with the question, or done. Answer a permission here or in the terminal; both stay in step. Settings · Assistants connects their hooks for the full picture.".into())),
+                ("WHEN IT'S NARROW, SHOW".into(), Choice(vec![
+                    ("TAB-TYPE ICONS".into(), Hit::SmallTabs(crate::sidebar::SmallTabs::Icons), self.sidebar_rules.small_tabs == crate::sidebar::SmallTabs::Icons),
+                    ("SITE ICONS".into(), Hit::SmallTabs(crate::sidebar::SmallTabs::Favicons), self.sidebar_rules.small_tabs == crate::sidebar::SmallTabs::Favicons),
+                    ("PAGE THUMBNAILS".into(), Hit::SmallTabs(crate::sidebar::SmallTabs::Preview), self.sidebar_rules.small_tabs == crate::sidebar::SmallTabs::Preview),
+                ])),
+                ("".into(), Info("Below about 105 px wide, and in compact size, titles give way to these. Hover a tab to read its title.".into())),
+                ("TOP OF THE SIDEBAR".into(), Section),
+                ("STYLE".into(), Choice(vec![
+                    ("TITLE BAR".into(), Hit::HdrStyle(HeaderStyle::Bar), self.header.style == HeaderStyle::Bar),
+                    ("WINDOW RAIL".into(), Hit::HdrStyle(HeaderStyle::Rail), self.header.style == HeaderStyle::Rail),
+                ])),
+                ("WINDOW NAME".into(), Choice(vec![
+                    ("SMALL CAPITALS".into(), Hit::HdrMasthead(false), !self.header.masthead),
+                    ("LARGE SERIF".into(), Hit::HdrMasthead(true), self.header.masthead),
+                ])),
+                ("NAME BESIDE THE WINDOW SQUARE".into(), Choice(vec![("SHOW".into(), Hit::HdrName(true), self.header.show_name), ("HIDE".into(), Hit::HdrName(false), !self.header.show_name)])),
+                ("FOLDER, TAB & PORT COUNTS".into(), Choice(vec![("SHOW".into(), Hit::HdrDateline(true), self.header.dateline), ("HIDE".into(), Hit::HdrDateline(false), !self.header.dateline)])),
+                ("WINDOW RAIL".into(), Choice(vec![("ALWAYS VISIBLE".into(), Hit::HdrRailHover(false), !self.header.rail_hover), ("ONLY ON HOVER".into(), Hit::HdrRailHover(true), self.header.rail_hover)])),
+                ("NEW TAB BUTTON".into(), Section),
+                ("+ IN THE TOP ROW".into(), Choice(vec![("SHOW".into(), Hit::HdrButton(true), self.header.header_button), ("HIDE".into(), Hit::HdrButton(false), !self.header.header_button)])),
+                ("“NEW TAB” AFTER THE LAST TAB".into(), Choice(vec![("SHOW".into(), Hit::HdrNextRow(true), self.header.next_row), ("HIDE".into(), Hit::HdrNextRow(false), !self.header.next_row)])),
+                ("ARROW FOR OTHER TAB TYPES".into(), Choice(vec![("SHOW".into(), Hit::HdrCaret(true), self.header.kinds_caret), ("HIDE".into(), Hit::HdrCaret(false), !self.header.kinds_caret)])),
+                ("FLASH WHEN PRESSED".into(), Choice(vec![("ON".into(), Hit::HdrFlash(true), self.header.flash), ("OFF".into(), Hit::HdrFlash(false), !self.header.flash)])),
+                ("".into(), Info("Either button opens the start page chosen in Start/New Tab. Hold it, or right-click, to pick a different kind of tab.".into())),
+                ("PINNED TILES".into(), Section),
+                ("TILES SHOW".into(), Choice(vec![
+                    ("AN ICON".into(), Hit::PinDisplay(crate::pins::Display::Icon), self.sidebar_rules.pin_display == crate::pins::Display::Icon),
+                    ("THE LIVE PAGE".into(), Hit::PinDisplay(crate::pins::Display::Preview), self.sidebar_rules.pin_display == crate::pins::Display::Preview),
+                ])),
+                ("SHOWING & HIDING".into(), Section),
+                (format!("RIGHT NOW · {}", key("S", true)), Choice(vec![
+                    ("ALWAYS VISIBLE".into(), Hit::Pin(true), self.sidebar),
+                    ("SLIDES IN ON HOVER".into(), Hit::Pin(false), !self.sidebar),
+                ])),
+                ("HOVER STARTS AT".into(), Choice(vec![
+                    ("THE SCREEN EDGE".into(), Hit::HoverFrom(HoverFrom::ScreenEdge), self.sidebar_rules.hover_from == HoverFrom::ScreenEdge),
+                    ("THIS WINDOW'S EDGE".into(), Hit::HoverFrom(HoverFrom::InsideWindow), self.sidebar_rules.hover_from == HoverFrom::InsideWindow),
+                ])),
+                ("WAIT BEFORE HIDING".into(), Slider(self::Slider::Grace, self.slider_value(self::Slider::Grace), format!("{} ms after the pointer leaves", self.sidebar_rules.grace_ms))),
+                ("IN FULLSCREEN".into(), Choice(vec![
+                    ("SLIDES IN ON HOVER".into(), Hit::Fullscreen(Fullscreen::Hover), self.sidebar_rules.fullscreen == Fullscreen::Hover),
+                    ("HIDDEN".into(), Hit::Fullscreen(Fullscreen::Hidden), self.sidebar_rules.fullscreen == Fullscreen::Hidden),
+                    ("ALWAYS VISIBLE".into(), Hit::Fullscreen(Fullscreen::Pinned), self.sidebar_rules.fullscreen == Fullscreen::Pinned),
+                ])),
+                ("FOOTER".into(), Section),
+                ("BUTTON ROW HEIGHT".into(), Slider(self::Slider::FooterSize, self.slider_value(self::Slider::FooterSize), format!("{} px · you can also drag the footer's top edge", self.sidebar_rules.footer_row as u32))),
             ],
             4 => vec![
-                (
-                    "OPENED BY OTHERS".into(),
-                    Choice(vec![
-                        ("BEHIND · WITH A TOAST".into(), Hit::OpenedBy(OpenedBy::Behind), self.behavior.opened_by_others == OpenedBy::Behind),
-                        ("IN FRONT".into(), Hit::OpenedBy(OpenedBy::Front), self.behavior.opened_by_others == OpenedBy::Front),
-                    ]),
-                ),
-                ("".into(), Info("Applies to tabs opened by commands, assistants, rules and other apps. Tabs you open yourself always come to the front.".into())),
-                (
-                    "PANE CONTROLS".into(),
-                    Choice(vec![
-                        ("NEAR THE CORNER".into(), Hit::PaneControls(crate::panes::Controls::Near), self.behavior.pane_controls == crate::panes::Controls::Near),
-                        ("NEVER".into(), Hit::PaneControls(crate::panes::Controls::Never), self.behavior.pane_controls == crate::panes::Controls::Never),
-                    ]),
-                ),
-                (
-                    "PANE DIVIDER".into(),
-                    Choice(vec![("DRAGS".into(), Hit::PaneDivider(true), self.behavior.pane_divider), ("FIXED".into(), Hit::PaneDivider(false), !self.behavior.pane_divider)]),
-                ),
-                ("".into(), Info("nothing shows until the pointer nears a pane's corner; then move (drag onto a sidebar row, or NEW TAB), swap, solo, to a tab of its own, close bloom out of it · the rule between the panes lights as you near it and drags".into())),
-                (
-                    "SLEEP IDLE PAGES".into(),
-                    Choice(vec![("NEVER".into(), Hit::SleepAfter(0), self.behavior.sleep_after_min == 0), ("10 MIN".into(), Hit::SleepAfter(10), self.behavior.sleep_after_min == 10), ("30 MIN".into(), Hit::SleepAfter(30), self.behavior.sleep_after_min == 30), ("2 H".into(), Hit::SleepAfter(120), self.behavior.sleep_after_min == 120)]),
-                ),
-                (
-                    "ARCHIVE IDLE PAGES".into(),
-                    Choice(vec![("NEVER".into(), Hit::ArchiveAfter(0), self.behavior.archive_after_h == 0), ("12 H".into(), Hit::ArchiveAfter(12), self.behavior.archive_after_h == 12), ("24 H".into(), Hit::ArchiveAfter(24), self.behavior.archive_after_h == 24), ("A WEEK".into(), Hit::ArchiveAfter(168), self.behavior.archive_after_h == 168)]),
-                ),
-                ("".into(), Info("Sleeping pages wake when selected. Archived pages move to Recently closed. Pinned tabs and terminals are excluded.".into())),
-                (
-                    "LINKS FROM PAGES".into(),
-                    Choice(vec![
-                        ("IN THE STACK".into(), Hit::Links(Links::Stack), self.behavior.links == Links::Stack),
-                        ("IN THE SPLIT".into(), Hit::Links(Links::Split), self.behavior.links == Links::Split),
-                        ("NEW TAB".into(), Hit::Links(Links::NewTab), self.behavior.links == Links::NewTab),
-                    ]),
-                ),
-                (
-                    "URL AT A PROMPT".into(),
-                    Choice(vec![
-                        ("OPENS BESIDE".into(), Hit::PromptUrl(PromptUrl::Split), self.behavior.prompt_url == PromptUrl::Split),
-                        ("NEW TAB".into(), Hit::PromptUrl(PromptUrl::NewTab), self.behavior.prompt_url == PromptUrl::NewTab),
-                    ]),
-                ),
-                (
-                    "CLOSING".into(),
-                    Choice(vec![
-                        ("ASK WHEN BUSY".into(), Hit::CloseAsks(true), self.behavior.close_asks),
-                        ("NEVER ASK".into(), Hit::CloseAsks(false), !self.behavior.close_asks),
-                    ]),
-                ),
-                ("".into(), Info("Closing a tab, a shell or a stack ends what it was running, and everything that started under it — a dev server takes its node with it, whichever you choose here. ASK WHEN BUSY names the command first; a shell sitting at its prompt closes without a word either way.".into())),
-                ("STACKS".into(), Info("Related tabs can be grouped one level deep. Closing a stack asks before closing its children.".into())),
-                ("NUMBERS".into(), Info(format!("{} → the stack, at its last-used member", key("1–9", false)))),
-                ("COLOURS".into(), Info("Choose tab colours in Look, or customize them in Rules.".into())),
-                ("TIDY".into(), Choice(vec![
-                    ("OFF".into(), Hit::TidyEvery(TidyEvery::Off), self.behavior.tidy_every == TidyEvery::Off),
-                    ("HOURLY".into(), Hit::TidyEvery(TidyEvery::Hourly), self.behavior.tidy_every == TidyEvery::Hourly),
-                    ("DAILY".into(), Hit::TidyEvery(TidyEvery::Daily), self.behavior.tidy_every == TidyEvery::Daily),
+                ("WHERE NEW PAGES OPEN".into(), Section),
+                ("A LINK CLICKED ON A PAGE".into(), Choice(vec![
+                    ("UNDER IT, AS A STACK".into(), Hit::Links(Links::Stack), self.behavior.links == Links::Stack),
+                    ("BESIDE IT".into(), Hit::Links(Links::Split), self.behavior.links == Links::Split),
+                    ("IN A NEW TAB".into(), Hit::Links(Links::NewTab), self.behavior.links == Links::NewTab),
                 ])),
-                ("".into(), Info("tidy suggests groups — tabs sharing a host or a project folder, or what group(tab) in rules.luau names — as a sheet: make a stack, archive, or skip, each a tap; nothing moves on its own · the palette has it any time".into())),
-                ("DEDUPE".into(), Choice(vec![("ON".into(), Hit::Dedupe(!self.behavior.dedupe), self.behavior.dedupe)])),
-                ("".into(), Info("When a page is already open, a notice lets you switch to it or keep both copies.".into())),
+                ("AN ADDRESS TYPED IN A SHELL".into(), Choice(vec![
+                    ("BESIDE THE SHELL".into(), Hit::PromptUrl(PromptUrl::Split), self.behavior.prompt_url == PromptUrl::Split),
+                    ("IN A NEW TAB".into(), Hit::PromptUrl(PromptUrl::NewTab), self.behavior.prompt_url == PromptUrl::NewTab),
+                ])),
+                ("A TAB FROM ANOTHER APP".into(), Choice(vec![
+                    ("BEHIND, WITH A NOTICE".into(), Hit::OpenedBy(OpenedBy::Behind), self.behavior.opened_by_others == OpenedBy::Behind),
+                    ("IN FRONT".into(), Hit::OpenedBy(OpenedBy::Front), self.behavior.opened_by_others == OpenedBy::Front),
+                ])),
+                ("".into(), Info("Covers tabs opened by other apps, nus open, assistants and rules. Tabs you open yourself always come to the front.".into())),
+                ("A PAGE THAT'S ALREADY OPEN".into(), Choice(vec![
+                    ("OFFER TO SWITCH".into(), Hit::Dedupe(true), self.behavior.dedupe),
+                    ("OPEN ANOTHER COPY".into(), Hit::Dedupe(false), !self.behavior.dedupe),
+                ])),
+                ("BACK & FORWARD".into(), Section),
+                ("SWIPE OVERLAY".into(), Choice(vec![
+                    ("ARROW".into(), Hit::SwipeLook(SwipeLook::Arrow), self.behavior.swipe_look == SwipeLook::Arrow),
+                    ("ARROW & WORDS".into(), Hit::SwipeLook(SwipeLook::Card), self.behavior.swipe_look == SwipeLook::Card),
+                    ("EDGE BAND".into(), Hit::SwipeLook(SwipeLook::Edge), self.behavior.swipe_look == SwipeLook::Edge),
+                    ("NONE".into(), Hit::SwipeLook(SwipeLook::Off), self.behavior.swipe_look == SwipeLook::Off),
+                ])),
+                ("SWIPE DISTANCE".into(), Choice(vec![
+                    ("SHORT".into(), Hit::SwipeReach(120), self.behavior.swipe_reach == 120),
+                    ("MEDIUM".into(), Hit::SwipeReach(180), self.behavior.swipe_reach == 180),
+                    ("LONG".into(), Hit::SwipeReach(260), self.behavior.swipe_reach == 260),
+                ])),
+                ("".into(), Info("Two fingers sideways on a page go back or forward. The overlay fills as the swipe nears the distance, then goes signal-colored once it fires, and shows when there's nowhere to go. Back on a tab's first page closes the tab.".into())),
+                ("SPLIT PANES".into(), Section),
+                ("CORNER BUTTONS".into(), Choice(vec![
+                    ("SHOW NEAR THE CORNER".into(), Hit::PaneControls(crate::panes::Controls::Near), self.behavior.pane_controls == crate::panes::Controls::Near),
+                    ("NEVER".into(), Hit::PaneControls(crate::panes::Controls::Never), self.behavior.pane_controls == crate::panes::Controls::Never),
+                ])),
+                ("".into(), Info("Move a pane to its own tab, swap the two sides, show one alone, or close it. They appear when the pointer nears a pane's top corner.".into())),
+                ("DIVIDER BETWEEN PANES".into(), Choice(vec![("DRAG TO RESIZE".into(), Hit::PaneDivider(true), self.behavior.pane_divider), ("FIXED".into(), Hit::PaneDivider(false), !self.behavior.pane_divider)])),
+                ("IDLE PAGES".into(), Section),
+                ("PAUSE A PAGE AFTER".into(), Choice(vec![("NEVER".into(), Hit::SleepAfter(0), self.behavior.sleep_after_min == 0), ("10 MIN".into(), Hit::SleepAfter(10), self.behavior.sleep_after_min == 10), ("30 MIN".into(), Hit::SleepAfter(30), self.behavior.sleep_after_min == 30), ("2 HOURS".into(), Hit::SleepAfter(120), self.behavior.sleep_after_min == 120)])),
+                ("CLOSE A PAGE AFTER".into(), Choice(vec![("NEVER".into(), Hit::ArchiveAfter(0), self.behavior.archive_after_h == 0), ("12 HOURS".into(), Hit::ArchiveAfter(12), self.behavior.archive_after_h == 12), ("A DAY".into(), Hit::ArchiveAfter(24), self.behavior.archive_after_h == 24), ("A WEEK".into(), Hit::ArchiveAfter(168), self.behavior.archive_after_h == 168)])),
+                ("".into(), Info("A paused page wakes when you select it. A closed page goes to Recently closed. Pinned tabs and terminals are never paused or closed.".into())),
+                ("CLOSING & TIDYING".into(), Section),
+                ("CLOSING A BUSY SHELL".into(), Choice(vec![
+                    ("ASK FIRST".into(), Hit::CloseAsks(true), self.behavior.close_asks),
+                    ("CLOSE AT ONCE".into(), Hit::CloseAsks(false), !self.behavior.close_asks),
+                ])),
+                ("".into(), Info("Closing a tab stops what it was running and everything it started: a dev server takes its node with it. Ask first names the command before it goes. A shell sitting at its prompt closes without asking either way.".into())),
+                ("SUGGEST TAB GROUPS".into(), Choice(vec![
+                    ("ONLY WHEN I ASK".into(), Hit::TidyEvery(TidyEvery::Off), self.behavior.tidy_every == TidyEvery::Off),
+                    ("EVERY HOUR".into(), Hit::TidyEvery(TidyEvery::Hourly), self.behavior.tidy_every == TidyEvery::Hourly),
+                    ("ONCE A DAY".into(), Hit::TidyEvery(TidyEvery::Daily), self.behavior.tidy_every == TidyEvery::Daily),
+                ])),
+                ("".into(), Info("Tidy finds tabs that belong together (same site, same project folder) and offers to stack or close them. Nothing moves without you. Also in the palette: tidy.".into())),
+                ("GOOD TO KNOW".into(), Section),
+                ("STACKS".into(), Info(format!("Related tabs can nest one level deep. {} jumps to a stack at its last-used tab. Closing a stack asks before closing what's inside.", key("1–9", false)))),
+                ("SHELL COLORS".into(), Choice(vec![
+                    ("RANDOM".into(), Hit::ShellTint(crate::shell_colors::ShellTint::Random), self.behavior.shell_tint == crate::shell_colors::ShellTint::Random),
+                    ("BY FOLDER".into(), Hit::ShellTint(crate::shell_colors::ShellTint::Folder), self.behavior.shell_tint == crate::shell_colors::ShellTint::Folder),
+                    ("NONE".into(), Hit::ShellTint(crate::shell_colors::ShellTint::None), self.behavior.shell_tint == crate::shell_colors::ShellTint::None),
+                ])),
+                ("".into(), Info("Each new shell, and every page opened from it, wears a color from the theme's signal family: rich on paper, tinted on ink. Random picks one no open shell is wearing; by folder gives the same project the same color every time. Change the theme and every shell follows.".into())),
+                ("TAB COLORS".into(), Info("Pick a tab's color from its right-click menu, or set them by rule in Rules.".into())),
             ],
             5 => {
                 let mut v: Vec<(String, Control)> = vec![(
@@ -3798,7 +3828,7 @@ impl App {
                     "COMMAND LINE".into(),
                     Choice(vec![("HIGHLIGHT".into(), Hit::Highlight(!self.behavior.highlight), self.behavior.highlight), ("PREDICT".into(), Hit::Predict(!self.behavior.predict), self.behavior.predict)]),
                 ));
-                v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens coloured as you type; the history entry that continues your line ghosts after the caret, Right or End accepts".into())));
+                v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens colored as you type; the history entry that continues your line ghosts after the caret, Right or End accepts".into())));
                 let pl = self.behavior.prompt_lsp;
                 v.insert(3, (
                     "PROMPT LSP".into(),
@@ -3837,8 +3867,9 @@ impl App {
                 v.insert(9, (
                     "JOURNAL".into(),
                     Choice(vec![
-                        ("ON".into(), Hit::Journal(!jn), jn),
-                        ("KEEP 7 DAYS".into(), Hit::JournalKeep(7), jk == 7),
+                        ("REMEMBER".into(), Hit::Journal(true), jn),
+                        ("DON'T REMEMBER".into(), Hit::Journal(false), !jn),
+                        ("7 DAYS".into(), Hit::JournalKeep(7), jk == 7),
                         ("30 DAYS".into(), Hit::JournalKeep(30), jk == 30),
                         ("90 DAYS".into(), Hit::JournalKeep(90), jk == 90),
                     ]),
@@ -3874,17 +3905,17 @@ impl App {
                 v.insert(16, ("".into(), Info(if nus_pty::hold::holder_exe().is_some() { "each shell runs in nus-hold, a small process that outlives the app: quit, crash or update, and a running command is still there when you come back; an idle prompt is let go".into() } else { "nus-hold was not found beside the app, so shells are not held".into() })));
                 let sc = self.behavior.shell_colours;
                 v.insert(17, (
-                    "SHELL COLOURS".into(),
+                    "SHELL COLORS".into(),
                     Choice(vec![
                         ("OFFER".into(), Hit::ShellColours(ShellColours::Chip), sc == ShellColours::Chip),
                         ("ALWAYS".into(), Hit::ShellColours(ShellColours::Always), sc == ShellColours::Always),
                         ("PANE ONLY".into(), Hit::ShellColours(ShellColours::PaneOnly), sc == ShellColours::PaneOnly),
                     ]),
                 ));
-                v.insert(8, ("".into(), Info("a script that sets the terminal's colours (OSC 10/11, like kitty's set-colors) changes the pane; OFFER puts a chip on it to apply them to the whole look — ink or paper by the background, the accent from the foreground — ALWAYS does it at once · nus theme <name> / nus look from the shell also work".into())));
+                v.insert(8, ("".into(), Info("a script that sets the terminal's colors (OSC 10/11, like kitty's set-colors) changes the pane; OFFER puts a chip on it to apply them to the whole look — ink or paper by the background, the accent from the foreground — ALWAYS does it at once · nus theme <name> / nus look from the shell also work".into())));
                 let (g, tc) = (self.behavior.grade, self.behavior.truecolour);
                 v.insert(9, (
-                    "PROGRAM COLOURS".into(),
+                    "PROGRAM COLORS".into(),
                     Choice(vec![
                         ("AS THEY COME".into(), Hit::Grade(Grade::Off), g == Grade::Off),
                         ("3:1".into(), Hit::Grade(Grade::Large), g == Grade::Large),
@@ -3893,13 +3924,13 @@ impl App {
                     ]),
                 ));
                 v.insert(10, (
-                    "TRUECOLOUR".into(),
+                    "TRUECOLOR".into(),
                     Choice(vec![
                         ("AS SENT".into(), Hit::Truecolour(Truecolour::AsSent), tc == Truecolour::AsSent),
                         ("THE THEME'S SIXTEEN".into(), Hit::Truecolour(Truecolour::Snapped), tc == Truecolour::Snapped),
                     ]),
                 ));
-                v.insert(11, ("".into(), Info("claude, codex and every TUI bring colours picked against someone else's background; the grade walks any text that can't be read against its paper toward ink until it reads (WCAG), and THE THEME'S SIXTEEN snaps their truecolour to the nearest of ours so they wear the theme · program(p) in rules.luau gives one program its own sixteen, remaps a colour it hardcodes, or sets these per program".into())));
+                v.insert(11, ("".into(), Info("claude, codex and every TUI bring colors picked against someone else's background; the grade walks any text that can't be read against its paper toward ink until it reads (WCAG), and THE THEME'S SIXTEEN snaps their truecolor to the nearest of ours so they wear the theme · program(p) in rules.luau gives one program its own sixteen, remaps a color it hardcodes, or sets these per program".into())));
                 v.insert(9, (
                     "SSH".into(),
                     Choice(vec![("BRING THE INTEGRATION".into(), Hit::SshIntegration(!self.behavior.ssh_integration), self.behavior.ssh_integration)]),
@@ -4016,7 +4047,7 @@ impl App {
                 ),
                 ("".into(), Info("the lamp at the end of the tools row: signal while loading, ink when live, Plot corners for local addresses, hollow while asleep".into())),
                 (
-                    "BAR COLOUR".into(),
+                    "BAR COLOR".into(),
                     Choice(vec![
                         ("SIGNAL".into(), Hit::BarColor(BarColor::Signal), self.load_bar.color == BarColor::Signal),
                         ("TAB".into(), Hit::BarColor(BarColor::Tab), self.load_bar.color == BarColor::Tab),
@@ -4122,47 +4153,47 @@ impl App {
             8 => {
                 let b = &self.behavior;
                 let hk = self.hotkey.as_ref().map(|k| k.status.clone()).unwrap_or_else(|| "not registered".into());
-                let status = if hk.is_empty() { format!("{} summons it from anywhere", b.hatch_hotkey.label()) } else { format!("{} · {} inside nus", hk, b.hatch_hotkey.label()) };
                 vec![
-                    ("".into(), Info("Ongoing work across every Space. Select a job to open its existing terminal; expand it into nus without restarting.".into())),
-                    ("LOOK".into(), Choice(vec![
-                        ("DROPDOWN".into(), Hit::HatchLook(HatchLook::Sheet), b.hatch_look == HatchLook::Sheet),
-                        ("MODAL".into(), Hit::HatchLook(HatchLook::Card), b.hatch_look == HatchLook::Card),
+                    ("".into(), Info("A terminal that drops down over any app with one shortcut, and a list of the work running in your shells. Pick a job to jump to its terminal; open it in nus without restarting it.".into())),
+                    ("OPENING IT".into(), Section),
+                    ("SHORTCUT".into(), Choice({
+                        let mut offered = crate::hotkey::Chord::offered().to_vec();
+                        if !offered.contains(&b.hatch_hotkey) { offered.push(b.hatch_hotkey); }
+                        offered.into_iter().map(|c| (c.label().into(), Hit::HatchHotkey(c), b.hatch_hotkey == c && !self.hotkey_recording)).collect()
+                    })),
+                    ("".into(), Help(if hk.is_empty() { format!("{} opens it from any app.", b.hatch_hotkey.label()) } else { format!("{hk} · {} still works inside nus.", b.hatch_hotkey.label()) })),
+                    ("OR YOUR OWN".into(), Choice(vec![(if self.hotkey_recording { "PRESS A SHORTCUT… · ESC CANCELS".into() } else { "RECORD A SHORTCUT".into() }, Hit::HatchRecord, self.hotkey_recording)])),
+                    ("OPENS ON".into(), Choice(vec![
+                        ("THE SCREEN WITH THE POINTER".into(), Hit::HatchMonitor(HatchMonitor::Pointer), b.hatch_monitor == HatchMonitor::Pointer),
+                        ("NUS'S SCREEN".into(), Hit::HatchMonitor(HatchMonitor::Foreground), b.hatch_monitor == HatchMonitor::Foreground),
+                        ("THE MAIN SCREEN".into(), Hit::HatchMonitor(HatchMonitor::Primary), b.hatch_monitor == HatchMonitor::Primary),
                     ])),
-                    ("".into(), Info("Dropdown opens below the Mac camera cutout or the screen top. Modal is centered. Drag the lower edge to resize.".into())),
-                    ("HOTKEY".into(), Choice(vec![
-                        ("CTRL+`".into(), Hit::HatchHotkey(crate::hotkey::Chord::CtrlGrave), b.hatch_hotkey == crate::hotkey::Chord::CtrlGrave),
-                        (crate::hotkey::Chord::SuperGrave.label().into(), Hit::HatchHotkey(crate::hotkey::Chord::SuperGrave), b.hatch_hotkey == crate::hotkey::Chord::SuperGrave),
-                        ("CTRL+SHIFT+SPACE".into(), Hit::HatchHotkey(crate::hotkey::Chord::CtrlShiftSpace), b.hatch_hotkey == crate::hotkey::Chord::CtrlShiftSpace),
+                    ("ON EVERY DESKTOP".into(), Choice(vec![
+                        ("ONE HATCH, SHARED".into(), Hit::HatchSpaces(HatchSpaces::One), b.hatch_spaces == HatchSpaces::One),
+                        ("ONE PER DESKTOP".into(), Hit::HatchSpaces(HatchSpaces::Follow), b.hatch_spaces == HatchSpaces::Follow),
                     ])),
-                    ("".into(), Info(status)),
-                    ("SIZE".into(), Choice(vec![
+                    ("HOW IT LOOKS".into(), Section),
+                    ("SHAPE".into(), Choice(vec![
+                        ("DROPS FROM THE TOP".into(), Hit::HatchLook(HatchLook::Sheet), b.hatch_look == HatchLook::Sheet),
+                        ("FLOATING CARD".into(), Hit::HatchLook(HatchLook::Card), b.hatch_look == HatchLook::Card),
+                    ])),
+                    ("HEIGHT".into(), Choice(vec![
                         ("30%".into(), Hit::HatchSize(30), b.hatch_size == 30),
                         ("40%".into(), Hit::HatchSize(40), b.hatch_size == 40),
                         ("50%".into(), Hit::HatchSize(50), b.hatch_size == 50),
                         ("60%".into(), Hit::HatchSize(60), b.hatch_size == 60),
                     ])),
-                    ("MONITOR".into(), Choice(vec![
-                        ("POINTER".into(), Hit::HatchMonitor(HatchMonitor::Pointer), b.hatch_monitor == HatchMonitor::Pointer),
-                        ("FOREGROUND".into(), Hit::HatchMonitor(HatchMonitor::Foreground), b.hatch_monitor == HatchMonitor::Foreground),
-                        ("PRIMARY".into(), Hit::HatchMonitor(HatchMonitor::Primary), b.hatch_monitor == HatchMonitor::Primary),
-                    ])),
-                    ("AUTOHIDE".into(), Choice(vec![
-                        ("ON".into(), Hit::HatchAutohide(true), b.hatch_autohide),
-                        ("OFF".into(), Hit::HatchAutohide(false), !b.hatch_autohide),
-                    ])),
-                    ("".into(), Info(format!("hides when it loses focus unless pinned · {} pins · Escape belongs to the terminal", key("↑", true)))),
-                    ("LIVE STATUS".into(), Choice(vec![("ON".into(), Hit::HatchStatus(true), b.hatch_status), ("OFF".into(), Hit::HatchStatus(false), !b.hatch_status)])),
-                    ("COMPLETION NOTICES".into(), Choice(vec![("ON".into(), Hit::HatchNotify(true), b.hatch_notify), ("OFF".into(), Hit::HatchNotify(false), !b.hatch_notify)])),
-                    ("".into(), Info("Brief notices appear beside the top edge without taking focus. Clicking a notice opens that session.".into())),
-                    ("BACKGROUND".into(), Choice(vec![("ON".into(), Hit::HatchBackground(true), b.hatch_background), ("OFF".into(), Hit::HatchBackground(false), !b.hatch_background)])),
-                    ("DIM MODAL".into(), Choice(vec![("ON".into(), Hit::HatchDim(true), b.hatch_dim), ("OFF".into(), Hit::HatchDim(false), !b.hatch_dim)])),
-                    ("".into(), Info("Closing a window keeps its sessions while background mode is on. Use Quit nus in the menu bar or tray to exit. No command runs when you summon Hatch.".into())),
-                    ("SPACES".into(), Choice(vec![
-                        ("FOLLOW".into(), Hit::HatchSpaces(HatchSpaces::Follow), b.hatch_spaces == HatchSpaces::Follow),
-                        ("ONE FOR ALL".into(), Hit::HatchSpaces(HatchSpaces::One), b.hatch_spaces == HatchSpaces::One),
-                    ])),
-                    ("".into(), Info(format!("chords: {} hoists the tab you're on · {} lands the hatch's tab", key("↑", true), key("↓", true)))),
+                    ("".into(), Info("You can also drag its lower edge. On a Mac with a camera notch, the top sheet opens just below it.".into())),
+                    ("DIM THE SCREEN BEHIND THE CARD".into(), Choice(vec![("YES".into(), Hit::HatchDim(true), b.hatch_dim), ("NO".into(), Hit::HatchDim(false), !b.hatch_dim)])),
+                    ("BEHAVIOR".into(), Section),
+                    ("HIDE WHEN I CLICK AWAY".into(), Choice(vec![("YES".into(), Hit::HatchAutohide(true), b.hatch_autohide), ("NO".into(), Hit::HatchAutohide(false), !b.hatch_autohide)])),
+                    ("".into(), Info(format!("{} pins it open. Escape always goes to the terminal, never closes the hatch.", key("↑", true)))),
+                    ("WORK STATUS BY THE NOTCH".into(), Choice(vec![("SHOW".into(), Hit::HatchStatus(true), b.hatch_status), ("HIDE".into(), Hit::HatchStatus(false), !b.hatch_status)])),
+                    ("NOTICE WHEN WORK FINISHES".into(), Choice(vec![("YES".into(), Hit::HatchNotify(true), b.hatch_notify), ("NO".into(), Hit::HatchNotify(false), !b.hatch_notify)])),
+                    ("".into(), Info("A short notice by the top edge that doesn't take focus. Click it to open that session.".into())),
+                    ("KEEP RUNNING WHEN WINDOWS CLOSE".into(), Choice(vec![("YES".into(), Hit::HatchBackground(true), b.hatch_background), ("NO".into(), Hit::HatchBackground(false), !b.hatch_background)])),
+                    ("".into(), Info("With this on, closing the last window keeps your shells and the hatch alive. Quit from the menu bar or tray to exit fully.".into())),
+                    ("".into(), Info(format!("Shortcuts: {} moves the tab you're on into the hatch · {} moves the hatch's tab into this window.", key("↑", true), key("↓", true)))),
                 ]
             }
             SEC_ASSISTANTS => self.assistants_settings(),
@@ -4173,7 +4204,8 @@ impl App {
                 // What the rules do right now: three shells, a stack child, a page.
                 let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
                 let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
-                    self.rules.new_tab(&surface::TabCtx { kind, index, profile: "powershell", space: &self.space_name, space_signal: self.surface.signal, theme, host, parent, tab_colours: &self.tab_colours })
+                    let shell_color = if kind == "terminal" && self.behavior.shell_tint != crate::shell_colors::ShellTint::None { self.shell_color(Some((index * 4 % crate::shell_colors::SLOTS) as u8)) } else { None };
+                    self.rules.new_tab(&surface::TabCtx { kind, index, profile: "powershell", space: &self.space_name, space_signal: self.surface.signal, theme, host, parent, tab_colours: &self.tab_colours, shell_color })
                 };
                 let a = mk("terminal", 0, "", None);
                 let b = mk("terminal", 1, "", None);
@@ -4195,7 +4227,7 @@ impl App {
                 ("".into(), Info("a starter replaces new_tab and new_space; on_page and on_event are kept".into())),
                 ("NOW".into(), Tabs(preview)),
                 ("TRY".into(), Info("new_tab { kind = \"terminal\", index = 4 } →".into())),
-                ("EXAMPLE COLOURS".into(), Tabs(vec![(try4.bg, try4.signal, "Next terminal tab".into(), false)])),
+                ("EXAMPLE COLORS".into(), Tabs(vec![(try4.bg, try4.signal, "Next terminal tab".into(), false)])),
                 ("HOOKS".into(), Info("new_tab · new_space · on_page · on_event   helpers: hue · mix · hsl · family".into())),
                 (
                     "".into(),
@@ -4243,51 +4275,48 @@ impl App {
             12 => {
                 let b = &self.behavior;
                 let has_key = crate::syncui::key().is_some();
+                let ready = has_key && (!b.sync_folder.is_empty() || !b.sync_git.is_empty());
                 vec![
-                    ("".into(), Info("Use your profile on another device. Choose an encrypted sync destination and share your key with that device. Sync stays off until both are set up.".into())),
-                    ("STATUS".into(), Info(self.sync_status())),
-                    ("".into(), Buttons({
-                        let mut b = vec![("HOW IT LIVES · THE WALK".into(), icons::USER, Hit::MeWalk(0)), ("SIGN IN TO A FORGE".into(), icons::GITHUB, Hit::MeWalk(1))];
-                        if crate::forge::load().is_some() {
-                            b.push(("FORGET THE FORGE".into(), icons::CLOSE, Hit::ForgeForget));
-                        }
-                        b
+                    ("".into(), Info("Keep your settings, rules and layouts the same on every device you use. Everything is encrypted on this device before it goes anywhere; without your key, the files are unreadable.".into())),
+                    ("STATUS".into(), Info(if ready { self.sync_status() } else if !has_key { "Not set up · start with step 1".into() } else { "Almost there · choose where to sync in step 2".into() })),
+                    ("STEP 1 · YOUR KEY".into(), Section),
+                    ("ENCRYPTION KEY".into(), Buttons({
+                        let mut v = vec![(if has_key { "SHOW & COPY MY KEY".into() } else { "CREATE A KEY".into() }, icons::SHIELD, Hit::SyncKey), ("I HAVE A KEY FROM ANOTHER DEVICE".into(), icons::ENTER, Hit::SyncEdit(2))];
+                        if has_key { v.push(("FORGET THIS KEY".into(), icons::CLOSE, Hit::SyncForget)); }
+                        v
+                    })),
+                    ("".into(), Info("First device: create a key. Every other device: paste that same key. Keep a copy somewhere safe; nus can't recover it for you.".into())),
+                    ("STEP 2 · WHERE TO SYNC".into(), Section),
+                    ("A SYNCED FOLDER".into(), Buttons(vec![(if b.sync_folder.is_empty() { "CHOOSE A FOLDER".into() } else { format!("FOLDER · {}", crate::app::fit_cmd(&b.sync_folder, 36)) }, icons::FOLDER, Hit::SyncEdit(0))])),
+                    ("".into(), Info("A folder your system already syncs, such as iCloud Drive, Dropbox or Syncthing.".into())),
+                    ("A PRIVATE GIT REPOSITORY".into(), Buttons({
+                        let mut v = vec![(if b.sync_git.is_empty() { "SET A REPOSITORY".into() } else { format!("GIT · {}", crate::app::fit_cmd(&b.sync_git, 36)) }, icons::GITHUB, Hit::SyncEdit(1)), ("SIGN IN TO GITHUB, GITLAB…".into(), icons::USER, Hit::MeWalk(1))];
+                        if crate::forge::load().is_some() { v.push(("SIGN OUT".into(), icons::CLOSE, Hit::ForgeForget)); }
+                        v
                     })),
                     ("".into(), Info(match crate::forge::load() {
-                        Some(f) => format!("{} · the token stays in profile/sync/forge.token, sent to the forge as a header, never in a url or on the carrier", f.word()),
-                        None => "The setup guide can connect a private repository on GitHub, Forgejo, Gitea or GitLab.".into(),
+                        Some(f) => format!("Signed in to {}. The token stays on this device and is only sent to that service.", f.word()),
+                        None => "GitHub, GitLab, Forgejo or Gitea. Use one or both destinations.".into(),
                     })),
-                    ("KEY".into(), Choice(vec![
-                        (if has_key { "SHOW · COPY".into() } else { "MAKE ONE".into() }, Hit::SyncKey, has_key),
-                        ("JOIN WITH A KEY".into(), Hit::SyncEdit(2), false),
-                        ("FORGET".into(), Hit::SyncForget, false),
+                    ("STEP 3 · WHAT & WHEN".into(), Section),
+                    ("ALSO SYNC OPEN TABS".into(), Choice(vec![("YES".into(), Hit::SyncSession(true), b.sync_session), ("NO".into(), Hit::SyncSession(false), !b.sync_session)])),
+                    ("".into(), Info("Settings, rules, layouts, folders, port labels, assistant memory and site preferences always sync. Cookies, caches, downloads and shell history never do.".into())),
+                    ("HOW OFTEN".into(), Choice(vec![
+                        ("ONLY WHEN I ASK".into(), Hit::SyncEvery(0), b.sync_every_min == 0),
+                        ("EVERY 5 MIN".into(), Hit::SyncEvery(5), b.sync_every_min == 5),
+                        ("EVERY 10 MIN".into(), Hit::SyncEvery(10), b.sync_every_min == 10),
+                        ("EVERY 30 MIN".into(), Hit::SyncEvery(30), b.sync_every_min == 30),
                     ])),
-                    ("".into(), Info("Create a key on your first device. On the next device, choose Join with a key and paste it.".into())),
-                    ("CARRIERS".into(), Choice(vec![
-                        (if b.sync_folder.is_empty() { "FOLDER · NONE".into() } else { format!("FOLDER · {}", crate::app::fit_cmd(&b.sync_folder, 28).to_uppercase()) }, Hit::SyncEdit(0), !b.sync_folder.is_empty()),
-                        (if b.sync_git.is_empty() { "GIT · NONE".into() } else { format!("GIT · {}", crate::app::fit_cmd(&b.sync_git, 28).to_uppercase()) }, Hit::SyncEdit(1), !b.sync_git.is_empty()),
-                    ])),
-                    ("".into(), Info("Choose a folder already synced by your system, a private Git repository, or both. Files are encrypted before they leave this device.".into())),
-                    ("SYNC CONTENTS".into(), Info("Settings, rules, layouts, folders, ports, memory and site preferences sync when a key and destination are configured.".into())),
-                    ("INCLUDE OPEN TABS".into(), Choice(vec![("ON".into(), Hit::SyncSession(true), b.sync_session), ("OFF".into(), Hit::SyncSession(false), !b.sync_session)])),
-                    ("".into(), Info("Cookies, caches, downloads and shell history are excluded. Open tabs sync only when Include open tabs is enabled.".into())),
-                    ("EVERY".into(), Choice(vec![
-                        ("ON DEMAND".into(), Hit::SyncEvery(0), b.sync_every_min == 0),
-                        ("5 MIN".into(), Hit::SyncEvery(5), b.sync_every_min == 5),
-                        ("10 MIN".into(), Hit::SyncEvery(10), b.sync_every_min == 10),
-                        ("30 MIN".into(), Hit::SyncEvery(30), b.sync_every_min == 30),
-                    ])),
-                    ("AT QUIT".into(), Choice(vec![("SYNC".into(), Hit::SyncAtQuit(!b.sync_at_quit), b.sync_at_quit)])),
-                    ("NOW".into(), Choice(vec![("SYNC NOW".into(), Hit::SyncNow, false)])),
-                    ("THE PHONE".into(), Choice(vec![("ON".into(), Hit::Phone(true), b.phone), ("OFF".into(), Hit::Phone(false), !b.phone)])),
+                    ("WHEN QUITTING".into(), Choice(vec![("SYNC ONE LAST TIME".into(), Hit::SyncAtQuit(true), b.sync_at_quit), ("DON'T".into(), Hit::SyncAtQuit(false), !b.sync_at_quit)])),
+                    ("".into(), Buttons(vec![("SYNC NOW".into(), icons::RELOAD, Hit::SyncNow), ("HOW SYNC WORKS".into(), icons::BOOK, Hit::MeWalk(0))])),
+                    ("YOUR PHONE".into(), Section),
+                    ("PHONE PAGE".into(), Choice(vec![("ON".into(), Hit::Phone(true), b.phone), ("OFF".into(), Hit::Phone(false), !b.phone)])),
                     ("".into(), match crate::phone::current() {
-                        Some(p) if b.phone => Buttons(vec![(format!("COPY · {}", p.url().to_uppercase()), icons::COPY, Hit::CopyPhoneUrl)]),
-                        _ => Info("this window as a page on your network, for the phone: what ran and failed while you were away, what is listening, hands to allow or deny, a line to ask · a token in the address, https with this session's own certificate, this network only".into()),
+                        Some(p) if b.phone => Buttons(vec![(format!("COPY LINK · {}", p.url()), icons::COPY, Hit::CopyPhoneUrl)]),
+                        _ => Info("A private page for your phone, on this network only: what ran or failed while you were away, what's listening, and a line to ask. The link carries a secret token.".into()),
                     }),
-                    // The phone will ask whether to trust the certificate,
-                    // because nothing signed it. This is what it should say.
                     ("".into(), match crate::phone::current() {
-                        Some(p) if b.phone => Info(format!("the phone will ask once about this certificate · sha-256 {}", p.fingerprint.to_lowercase())),
+                        Some(p) if b.phone => Info(format!("Your phone will ask once whether to trust this page. Its fingerprint should be sha-256 {}.", p.fingerprint.to_lowercase())),
                         _ => Info("".into()),
                     }),
                 ]
@@ -4332,6 +4361,19 @@ impl App {
                 if let Some(recovery) = crate::update_install::recovery() {
                     rows.push(("RECOVERY".into(),Info(format!("Return to {} and its saved profile. This version's profile and application will be kept separately. Project files will not be reverted. Running processes may be interrupted.", recovery.previous_version))));
                     if !status.busy { rows.push(("".into(),Buttons(vec![("RETURN TO PREVIOUS VERSION…".into(),icons::RELOAD,Hit::RecoverPrevious)]))); }
+                }
+                if let Some(place)=crate::install::placement() {
+                    let own=crate::install::wants_separate();
+                    let others=crate::install::other_profiles().len();
+                    rows.push(("PROFILE".into(),Section));
+                    rows.push(("THIS COPY USES".into(),Choice(vec![("THE SHARED PROFILE".into(),Hit::ProfileSeparate(false),!own),("A PROFILE OF ITS OWN".into(),Hit::ProfileSeparate(true),own)])));
+                    let mut says=if place.separate {"This copy keeps its own profile. ".to_string()} else {"Every copy of nus on this channel shares one profile: settings, sessions, sign-ins and pages. One copy uses it at a time; a newer version saves a recoverable copy before upgrading it. ".to_string()};
+                    if own!=place.separate {says.push_str("Your change applies when this copy restarts. ");}
+                    says.push_str(&format!("In {}", place.root.display()));
+                    if others>0 {says.push_str(&format!(" · {others} other profile{} in this channel", if others==1 {""} else {"s"}));}
+                    says.push('.');
+                    rows.push(("".into(),Info(says)));
+                    rows.push(("".into(),Buttons(vec![("SHOW PROFILES".into(),icons::FOLDER,Hit::ProfileFolder)])));
                 }
                 rows.extend(vec![
                     ("PROFILE COMPATIBILITY".into(),Info(crate::compatibility::summary())),
@@ -4500,7 +4542,7 @@ impl App {
             } else if row.contains(mx, my) {
                 scene.rect(Rect::new(r.x, y, nav_w, sh - self.px(m::HAIRLINE)), t.tint);
             }
-            let col = if sel { t.paper } else { ink };
+            let col = if sel { self.on_fill(ink) } else { ink };
             let base = y + (sh - self.px(m::LABEL_PX)) / 2.0 + self.px(m::LABEL_PX) - self.px(2.0);
             self.fonts.draw_icon(scene, *icon, isz, r.x + self.px(18.0), base - isz + self.px(2.0), col);
             self.fonts.draw(scene, Style { color: col, ..label }, r.x + self.px(18.0) + isz + self.px(10.0), base, name);
@@ -4516,7 +4558,32 @@ impl App {
 
         // Content, scrolling within its column.
         let cx = r.x + nav_w + if tiles { self.px(18.0) } else { self.px(40.0) };
-        let content = Rect::new(r.x + nav_w, top, r.w - nav_w, r.bottom() - top);
+        let mut content = Rect::new(r.x + nav_w, top, r.w - nav_w, r.bottom() - top);
+        // A live preview, drawn from the settings as they are this frame:
+        // beside the rows when there is room, else a band above them. It
+        // stays put while the rows scroll, so a change shows where it lands.
+        let avail = r.w - nav_w - if tiles { self.px(36.0) } else { self.px(80.0) };
+        // Too narrow to draw anything legible: the rows alone.
+        let live = crate::live::has_live(p.section) && avail >= self.px(360.0);
+        let live_gap = self.px(36.0);
+        let side_w = if live && avail >= self.px(560.0) + live_gap + self.px(300.0) { (avail * 0.42).clamp(self.px(300.0), self.px(520.0)) } else { 0.0 };
+        let maxw = if side_w > 0.0 { (avail - side_w - live_gap).min(self.px(700.0)) } else { avail.min(self.px(760.0)) };
+        let live_rect = if !live {
+            None
+        } else if side_w > 0.0 {
+            let h = self.live_height(p.section, side_w).min(content.h - self.px(56.0));
+            Some(Rect::new(cx + maxw + live_gap, top + self.px(28.0), side_w, h))
+        } else {
+            let h = self.live_height(p.section, maxw).min(content.h * 0.34).min(maxw * 0.5);
+            let band = Rect::new(cx, top + self.px(14.0), maxw, h);
+            content = Rect::new(content.x, band.bottom() + self.px(10.0), content.w, (content.bottom() - band.bottom() - self.px(10.0)).max(0.0));
+            scene.hline(content.x, content.y, content.w, self.px(m::HAIRLINE), t.tint);
+            Some(band)
+        };
+        let top = content.y;
+        let (mx, my) = self.mouse;
+        let mut live_focus: Option<Hit> = None;
+        let mut last_row_hit: Option<Hit> = None;
         let scroll = p.scroll.max(0.0);
         let content_hit_start = self.settings_hits.len();
         scene.layer(Some(content));
@@ -4524,14 +4591,16 @@ impl App {
         let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
         self.fonts.draw(scene, wm, cx, y + self.px(30.0), &SECTIONS[p.section].0.to_lowercase());
         y += self.px(58.0);
-        let maxw = (r.w - nav_w - if tiles { self.px(36.0) } else { self.px(80.0) }).min(self.px(760.0));
         let label_w = if tiles { self.px(140.0) } else { self.px(200.0) };
         let rows = self.rows_for(p.section);
+        let helped: Vec<bool> = (0..rows.len()).map(|i| matches!(rows.get(i + 1), Some((_, Control::Help(_))))).collect();
         for (row_index, (k, control)) in rows.into_iter().enumerate() {
+            let row_hits = self.settings_hits.len();
             // Full-width controls: caption above, the control across the column.
-            let stacked = tiles && matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..));
-            let full = stacked || matches!(control, Control::AppIcons | Control::Mercury | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_))
-                || matches!(control, Control::Info(_) | Control::SavedCommand(_));
+            let stacked = matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..) | Control::Stepper(..))
+                && (tiles || self.fonts.measure(label, &k) > label_w - self.px(14.0));
+            let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
+                || matches!(control, Control::Info(_) | Control::Help(_) | Control::SavedCommand(_));
             let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
             let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
             let card_w = self.px(if report_actions {220.0} else {168.0}).min((maxw - self.px(6.0)).max(self.px(60.0)));
@@ -4543,6 +4612,7 @@ impl App {
                 Control::SavedCommand(i) => self.saved_card_height(*i,maxw),
                 Control::AppIcons=>self.icon_choices_height(maxw)+cap_h+self.px(18.0),
                 Control::Mercury => self.mercury_settings_height(maxw) + cap_h + self.px(18.0),
+                Control::Intelligence => cap_h + self.px(124.0),
                 Control::FontProof | Control::PromptProof => self.px(226.0) + cap_h,
                 Control::Pics(cards) => cap_h + cards.len().div_ceil(per_row) as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0),
                 Control::Actions(items) => cap_h + items.len().div_ceil(per_row) as f32 * (self.px(94.0) + gap) + self.px(10.0),
@@ -4565,7 +4635,7 @@ impl App {
                 }
                 Control::Swatches(_) => self.px(12.0) * 2.0 + self.px(18.0) + self.px(m::HAIRLINE),
                 // Prose wraps; a row grows with its lines.
-                Control::Info(v) => {
+                Control::Info(v) | Control::Help(v) => {
                     let lines = crate::reader::wrap(&self.fonts, ui, v, text_w).len().max(1);
                     self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE) + (lines as f32 - 1.0) * self.px(m::UI_PX * 1.5)
                 }
@@ -4582,6 +4652,8 @@ impl App {
                 }
                 Control::Tabs(rows) => self.px(8.0) + rows.len() as f32 * self.px(26.0) + self.px(12.0),
                 Control::Caption => self.px(40.0),
+                Control::Section => self.px(64.0),
+                Control::Sources(items) => cap_h + self.px(30.0) + items.len() as f32 * self.px(32.0) + self.px(12.0),
                 Control::Keys(keys, note) => {
                     let kw: f32 = (keys.iter().map(|k| self.fonts.measure(strong, k) + self.px(16.0) + self.px(10.0)).sum::<f32>() + self.px(8.0)).max(self.px(236.0));
                     let lines = crate::reader::wrap(&self.fonts, dim, note, if tiles {maxw} else {(maxw - label_w - kw).max(self.px(80.0))}).len().max(1);
@@ -4589,7 +4661,9 @@ impl App {
                 }
                 _ => self.px(10.0) * 2.0 + self.px(m::UI_PX) + self.px(m::HAIRLINE),
             };
-            let rh = rh + if stacked || matches!(control, Control::Info(_)) { cap_h } else { 0.0 };
+            let rh = rh + if stacked || matches!(control, Control::Info(_) | Control::Help(_)) { cap_h } else { 0.0 };
+            // Help sits close under its setting.
+            let rh = if matches!(control, Control::Help(_)) { rh - self.px(8.0) } else { rh };
             if self.settings_target == Some((p.section,self.look_tab,row_index)) {
                 p.scroll=(y+scroll-top-self.px(16.0)).max(0.0);
                 self.settings_target=None;
@@ -4601,8 +4675,17 @@ impl App {
                 scene.vline(cx-self.px(8.0),y,rh,self.px(3.0),self.surface.signal);
                 self.dirty=true;
             }
-            let control_kind = if matches!(control, Control::Studio | Control::Strip(_) | Control::Caption) { 0 } else { 1 };
-            let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0) + if stacked || matches!(control, Control::Info(_)) { cap_h } else { 0.0 };
+            let control_kind = if matches!(control, Control::Studio | Control::Strip(_) | Control::Caption | Control::Section) { 0 } else { 1 };
+            let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0) + if stacked || matches!(control, Control::Info(_) | Control::Help(_)) { cap_h } else { 0.0 } - if matches!(control, Control::Help(_)) { self.px(8.0) } else { 0.0 };
+            if matches!(control, Control::Section) {
+                // A rule across the column, then the part's name in ink:
+                // the parts of the page read as parts, not one long list.
+                if y > top + self.px(8.0) { scene.rect(Rect::new(cx, y + self.px(18.0), maxw, self.px(m::HAIRLINE)), t.ink); }
+                let head = Style { color: t.ink, px: self.px(12.0), tracking: self.px(1.4), ..strong };
+                self.fonts.draw(scene, head, cx, y + self.px(50.0), &k);
+                y += rh;
+                continue;
+            }
             if matches!(control, Control::Caption) {
                 let cap = Style { color: t.dim, px: self.px(10.0), tracking: self.px(1.2), ..label };
                 self.fonts.draw(scene, cap, cx, y + self.px(30.0), &k);
@@ -4624,8 +4707,14 @@ impl App {
                 }
                 Control::AppIcons=>self.draw_icon_choices(scene,Rect::new(cx,y+cap_h,maxw,self.icon_choices_height(maxw))),
                 Control::Mercury => self.draw_mercury_settings(scene, Rect::new(cx, y+cap_h, maxw, self.mercury_settings_height(maxw))),
+                Control::Intelligence => {
+                    let w = maxw.min(self.px(520.0));
+                    self.draw_intel_ring(scene, Rect::new(cx, y + cap_h, w, self.px(72.0)));
+                    let line = self.fit(dim, &self.intel_sends(), maxw);
+                    self.fonts.draw(scene, dim, cx, y + cap_h + self.px(98.0), &line);
+                }
                 Control::FontProof | Control::PromptProof => {self.draw_type_proof(scene,Rect::new(cx,y+cap_h,maxw,self.px(206.0)),matches!(control,Control::PromptProof));}
-                Control::Caption => {}
+                Control::Caption | Control::Section => {}
                 Control::Pics(cards) => {
                     for (i, (name, caption, pic, hit, on)) in cards.into_iter().enumerate() {
                         let card = Rect::new(cx + (i % per_row) as f32 * (card_w + gap), y + cap_h + (i / per_row) as f32 * (card_h + self.px(50.0) + gap), card_w, card_h);
@@ -4658,6 +4747,69 @@ impl App {
                     let r = Rect::new(cx, y, maxw, self.px(180.0));
                     self.draw_studio(scene, r);
                 }
+                Control::Sources(items) => {
+                    use crate::settings::workspace::Hit as W;
+                    let top_y = y + cap_h;
+                    let head = Style { color: t.dim, px: self.px(9.5), tracking: self.px(1.0), ..label };
+                    let cols = [maxw * 0.40, maxw * 0.16, maxw * 0.16, maxw * 0.15, maxw * 0.13];
+                    let mut xs = [cx; 5];
+                    for i in 1..5 { xs[i] = xs[i - 1] + cols[i - 1]; }
+                    for (i, h) in ["SOURCE", "BEFORE TYPING", "WHILE TYPING", "HOW MANY", "ORDER"].iter().enumerate() {
+                        self.fonts.draw(scene, head, xs[i], top_y + self.px(18.0), h);
+                    }
+                    scene.hline(cx, top_y + self.px(26.0), maxw, self.px(m::HAIRLINE), ink);
+                    let n = items.len();
+                    for (k, (src, home, search, count)) in items.into_iter().enumerate() {
+                        let ry = top_y + self.px(30.0) + k as f32 * self.px(32.0);
+                        let mid = ry + self.px(16.0);
+                        let off = !home && !search;
+                        self.fonts.draw(scene, Style { color: if off { t.dim } else { ink }, ..ui }, xs[0], mid + self.px(4.0), &self.fit(ui, src.name(), cols[0] - self.px(8.0)));
+                        for (col, on, which) in [(1, home, 0u8), (2, search, 1u8)] {
+                            let b = Rect::new(xs[col], mid - self.px(8.0), self.px(16.0), self.px(16.0));
+                            if on { scene.rect(b, ink); self.fonts.draw_icon(scene, icons::CHECK, self.px(12.0), b.x + self.px(2.0), b.y + self.px(2.0), t.paper); } else { scene.outline(b, self.px(m::HAIRLINE), ink); }
+                            self.settings_hits.push((Rect::new(b.x - self.px(6.0), ry, cols[col] - self.px(4.0), self.px(32.0)), Hit::Workspace(W::Source(src, which))));
+                        }
+                        // − n +
+                        let bw = self.px(18.0);
+                        let minus = Rect::new(xs[3], mid - self.px(9.0), bw, self.px(18.0));
+                        let plus = Rect::new(xs[3] + bw + self.px(22.0), mid - self.px(9.0), bw, self.px(18.0));
+                        for (r, word, hit) in [(minus, "−", W::Count(src, -1)), (plus, "+", W::Count(src, 1))] {
+                            scene.outline(r, self.px(m::HAIRLINE), ink);
+                            let w = self.fonts.measure(ui, word);
+                            self.fonts.draw(scene, ui, r.x + (r.w - w) * 0.5, r.y + self.px(13.5), word);
+                            self.settings_hits.push((r, Hit::Workspace(hit)));
+                        }
+                        let num = count.to_string();
+                        let w = self.fonts.measure(strong, &num);
+                        self.fonts.draw(scene, strong, minus.right() + (self.px(22.0) - w) * 0.5, mid + self.px(4.0), &num);
+                        // ↑ ↓
+                        for (j, (icon, d)) in [(icons::CARET_DOWN, -1i8), (icons::CARET_DOWN, 1i8)].iter().enumerate() {
+                            let r = Rect::new(xs[4] + j as f32 * (bw + self.px(4.0)), mid - self.px(9.0), bw, self.px(18.0));
+                            let usable = (*d < 0 && k > 0) || (*d > 0 && k + 1 < n);
+                            scene.outline(r, self.px(m::HAIRLINE), if usable { ink } else { t.tint });
+                            let word = if *d < 0 { "↑" } else { "↓" };
+                            let _ = icon;
+                            let w = self.fonts.measure(ui, word);
+                            self.fonts.draw(scene, Style { color: if usable { ink } else { t.dim }, ..ui }, r.x + (r.w - w) * 0.5, r.y + self.px(13.5), word);
+                            if usable { self.settings_hits.push((r, Hit::Workspace(W::Move(src, *d)))); }
+                        }
+                        scene.hline(cx, ry + self.px(32.0), maxw, self.px(m::HAIRLINE), t.tint);
+                    }
+                }
+                Control::Stepper(value, minus, plus) => {
+                    let bw = self.px(22.0);
+                    let r1 = Rect::new(vx, base - self.px(15.0), bw, self.px(20.0));
+                    let vw = self.fonts.measure(strong, &value).max(self.px(24.0)) + self.px(16.0);
+                    let r2 = Rect::new(r1.right() + vw, r1.y, bw, r1.h);
+                    for (r, word, hit) in [(r1, "−", minus), (r2, "+", plus)] {
+                        scene.outline(r, self.px(m::HAIRLINE), ink);
+                        let w = self.fonts.measure(ui, word);
+                        self.fonts.draw(scene, ui, r.x + (r.w - w) * 0.5, r.y + self.px(14.5), word);
+                        self.settings_hits.push((r, hit));
+                    }
+                    let w = self.fonts.measure(strong, &value);
+                    self.fonts.draw(scene, strong, r1.right() + (vw - w) * 0.5, base, &value);
+                }
                 Control::Strip(items) => {
                     // Neobrutal tab strip: outlined chips, the current one filled with a hard shadow.
                     let mut x = cx;
@@ -4675,7 +4827,7 @@ impl App {
                         }
                         scene.rect(chip, if on { ink } else { t.paper });
                         scene.outline(chip, self.px(m::STRUCTURE), ink);
-                        let st = Style { color: if on { t.paper } else { ink }, ..strong };
+                        let st = Style { color: if on { self.on_fill(ink) } else { ink }, ..strong };
                         self.fonts.draw(scene, st, x + self.px(14.0), sy + ch / 2.0 + self.px(4.0), &text);
                         self.settings_hits.push((chip, hit));
                         x += w + self.px(10.0);
@@ -4755,6 +4907,14 @@ impl App {
                         ly += self.px(m::UI_PX * 1.5);
                     }
                 }
+                Control::Help(v) => {
+                    let st = Style { color: t.dim, ..ui };
+                    let mut ly = base;
+                    for line in crate::reader::wrap(&self.fonts, st, &v, text_w) {
+                        self.fonts.draw(scene, st, vx, ly, &line);
+                        ly += self.px(m::UI_PX * 1.5);
+                    }
+                }
                 Control::Keys(keys, note) => {
                     // Keycaps: outlined, a hard shadow, a + between; the note after.
                     let mut x = vx;
@@ -4801,7 +4961,7 @@ impl App {
                         self.fonts.draw(scene, dim, x + self.px(10.0), base - self.px(1.0), &name);
                     } else {
                         scene.rect(chip, ink);
-                        self.fonts.draw(scene, Style { color: t.paper, ..label }, x + self.px(10.0), base - self.px(1.0), &name);
+                        self.fonts.draw(scene, Style { color: self.on_fill(ink), ..label }, x + self.px(10.0), base - self.px(1.0), &name);
                         self.settings_hits.push((chip, Hit::Play(ci.unwrap_or(0))));
                     }
                     x += w + self.px(6.0);
@@ -4860,7 +5020,7 @@ impl App {
                         } else {
                             scene.outline(chip, self.px(m::HAIRLINE), ink);
                         }
-                        let st = Style { color: if on { t.paper } else { ink }, ..label };
+                        let st = Style { color: if on { self.on_fill(ink) } else { ink }, ..label };
                         self.fonts.draw(scene, st, x + self.px(10.0), base - self.px(1.0), &text);
                         self.settings_hits.push((chip, hit));
                         x += w + self.px(8.0);
@@ -4920,8 +5080,14 @@ impl App {
                     }
                 }
             }
-            if !matches!(control_kind, 0) {
+            if !matches!(control_kind, 0) && !helped[row_index] {
                 scene.hline(cx, y + rh - self.px(m::HAIRLINE), maxw, self.px(m::HAIRLINE), t.tint);
+            }
+            // The row under the pointer tells the preview what to point at;
+            // a note row belongs to the setting above it.
+            if let Some(&(_, h)) = self.settings_hits.get(row_hits) { last_row_hit = Some(h); }
+            if content.contains(mx, my) && Rect::new(cx - self.px(8.0), y, maxw + self.px(16.0), rh).contains(mx, my) {
+                live_focus = self.settings_hits.get(row_hits).map(|&(_, h)| h).or(last_row_hit);
             }
             y += rh;
         }
@@ -4938,6 +5104,11 @@ impl App {
             *hr = hr.intersect(&content);
         }
         self.settings_hits.retain(|(hr, _)| hr.w > 0.0 && hr.h > 0.0);
+        if let Some(lr) = live_rect {
+            scene.layer(Some(lr));
+            self.draw_live(scene, lr, p.section, live_focus);
+            scene.layer(None);
+        }
         if let Some((r,_))=self.settings_focus.and_then(|i|self.settings_hits.get(i)){scene.outline(*r,self.px(3.0),self.surface.signal);}
 
         // RULES: the file itself, as far as it fits.
@@ -5099,4 +5270,8 @@ impl App {
             ("CSV HEADER ROW".into(),toggle(p.csv_header,S::CsvHeader(true),S::CsvHeader(false))),
         ]);rows
     }
+}
+
+fn default_swipe_reach() -> u16 {
+    180
 }

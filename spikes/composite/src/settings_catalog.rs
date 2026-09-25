@@ -12,9 +12,9 @@ fn switch(hit: Hit) -> Option<(&'static str, Hit, Hit, bool)> {
         HdrName => "WINDOW NAMES", HdrCaret => "TAB TYPE MENU", HdrRailHover => "HIDE WINDOW RAIL UNTIL HOVER",
         HdrFlash => "PRESS FEEDBACK", Compact => "COMPACT SIDEBAR", Pin => "KEEP SIDEBAR VISIBLE",
         CloseAsks => "CONFIRM CLOSING BUSY TABS", ShellInt => "SHELL INTEGRATION", Block => "CONTENT BLOCKING",
-        Highlight => "COMMAND COLOURS", Predict => "COMMAND SUGGESTIONS", FormatOnSave => "FORMAT FILES ON SAVE",
+        Highlight => "COMMAND COLORS", Predict => "COMMAND SUGGESTIONS", FormatOnSave => "FORMAT FILES ON SAVE",
         CopyOnSelect => "COPY SELECTED TEXT", MiddlePaste => "PASTE WITH MIDDLE CLICK", PageSmooth => "SMOOTH PAGE SCROLLING",
-        PaneDivider => "RESIZE SPLIT PANES", Blocks => "COMMAND STATUS MARKERS", Journal => "SAVE COMMAND JOURNAL",
+        PaneDivider => "RESIZE SPLIT PANES", Blocks => "COMMAND STATUS MARKERS", Journal => "REMEMBER COMMANDS I RUN",
         PortsRemember => "REMEMBER PORT LABELS", ClickToSource => "OPEN SOURCE FROM A PAGE", Remember => "REMEMBER OPEN TABS",
         HandsSubmit => "CONFIRM FORM SUBMISSION", ProgressSidebar => "SIDEBAR PROGRESS", ProgressTaskbar => "DOCK / TASKBAR PROGRESS",
         SshIntegration => "SHELL INTEGRATION OVER SSH", Dedupe => "DUPLICATE PAGE NOTICE", SyncSession => "SYNC OPEN TABS",
@@ -81,6 +81,8 @@ fn description(hit: Hit) -> Option<String> {
         Hit::Side(Side::Left) => "Place tabs on the left edge.", Hit::Side(Side::Right) => "Place tabs on the right edge.",
         Hit::HoverFrom(HoverFrom::ScreenEdge) => "Reveal at the edge of the screen.", Hit::HoverFrom(HoverFrom::InsideWindow) => "Reveal only inside this window.",
         Hit::Fullscreen(Fullscreen::Hover) => "Reveal tabs near the edge.", Hit::Fullscreen(Fullscreen::Hidden) => "Keep tabs hidden in fullscreen.", Hit::Fullscreen(Fullscreen::Pinned) => "Keep tabs visible in fullscreen.",
+        Hit::SwipeLook(crate::settings::SwipeLook::Arrow) => "A disc with an arrow at the page edge.", Hit::SwipeLook(crate::settings::SwipeLook::Card) => "The arrow, and what the swipe will do.", Hit::SwipeLook(crate::settings::SwipeLook::Edge) => "A band that grows down the page edge.", Hit::SwipeLook(crate::settings::SwipeLook::Off) => "Swipe without an overlay.",
+        Hit::SwipeReach(120) => "Fire after a short swipe.", Hit::SwipeReach(180) => "Fire after a medium swipe.", Hit::SwipeReach(_) => "Fire only after a long swipe.",
         Hit::OpenedBy(OpenedBy::Behind) => "Keep working; announce new tabs.", Hit::OpenedBy(OpenedBy::Front) => "Switch to externally opened tabs.",
         Hit::Links(Links::Stack) => "Nest linked pages under this tab.", Hit::Links(Links::Split) => "Show linked pages beside this one.", Hit::Links(Links::NewTab) => "Open linked pages as separate tabs.",
         Hit::PromptUrl(PromptUrl::Split) => "Open typed URLs beside the shell.", Hit::PromptUrl(PromptUrl::NewTab) => "Open typed URLs in their own tabs.",
@@ -92,9 +94,9 @@ fn description(hit: Hit) -> Option<String> {
         Hit::LinkClick(LinkClick::Ask) => "Ask before opening terminal links.", Hit::LinkClick(LinkClick::Open) => "Open terminal links immediately.", Hit::LinkClick(LinkClick::HintsOnly) => "Open only through keyboard hints.",
         Hit::CutOffMode(CutOff::Chip) => "Offer to resume interrupted work.", Hit::CutOffMode(CutOff::RunAgain) => "Automatically rerun interrupted commands.", Hit::CutOffMode(CutOff::Off) => "Do not offer or rerun old commands.",
         Hit::KeepAlive(KeepAlive::On) => "New shells can survive quitting nus.", Hit::KeepAlive(KeepAlive::Off) => "New shells stop when nus quits.",
-        Hit::ShellColours(ShellColours::Chip) => "Offer program colours as a theme.", Hit::ShellColours(ShellColours::Always) => "Apply program colours to the app.", Hit::ShellColours(ShellColours::PaneOnly) => "Apply colours only in that terminal.",
+        Hit::ShellColours(ShellColours::Chip) => "Offer program colors as a theme.", Hit::ShellColours(ShellColours::Always) => "Apply program colors to the app.", Hit::ShellColours(ShellColours::PaneOnly) => "Apply colors only in that terminal.",
         Hit::Grade(Grade::Off) => "Keep the program's original contrast.", Hit::Grade(g) => return Some(format!("Adjust text to at least {}:1 contrast.",g.ratio())),
-        Hit::Truecolour(Truecolour::AsSent) => "Keep each program's own palette.", Hit::Truecolour(Truecolour::Snapped) => "Match colours to your theme palette.",
+        Hit::Truecolour(Truecolour::AsSent) => "Keep each program's own palette.", Hit::Truecolour(Truecolour::Snapped) => "Match colors to your theme palette.",
         Hit::Osc52(Osc52::Off) => "Deny program clipboard access.", Hit::Osc52(Osc52::Write) => "Programs may copy, but cannot read.", Hit::Osc52(Osc52::ReadWrite) => "Programs may copy and read clipboard.",
         Hit::WheelLines(n) => return Some(format!("Move {n} lines per wheel tick.")),
         Hit::ScrollEasing(crate::scrolling::Easing::Instant) => "Move straight to the new position.",
@@ -107,26 +109,27 @@ fn description(hit: Hit) -> Option<String> {
         Hit::HatchHotkey(_) => "Press this shortcut to show the hatch.",
         Hit::BarStyle(BarStyle::Radiance) => "A continuous bar with an HDR highlight on supported displays; holds when loading stalls.",
         Hit::BarStyle(BarStyle::Rule) => "A solid line grows with loading.", Hit::BarStyle(BarStyle::Comet) => "A bright head with a fading trail.", Hit::BarStyle(BarStyle::Carapace) => "Loading fills the window frame.",
-        Hit::BarColor(BarColor::Signal) => "Use the theme accent colour.", Hit::BarColor(BarColor::Tab) => "Use this tab's assigned colour.", Hit::BarColor(BarColor::Ink) => "Use the theme text colour.",
+        Hit::BarColor(BarColor::Signal) => "Use the theme accent color.", Hit::BarColor(BarColor::Tab) => "Use this tab's assigned color.", Hit::BarColor(BarColor::Ink) => "Use the theme text color.",
         Hit::StatusStyle(Status::Lamp) => "Show a small page-status indicator.", Hit::StatusStyle(Status::Both) => "Show an indicator and status text.", Hit::StatusStyle(Status::Word) => "Show status as text only.", Hit::StatusStyle(Status::None) => "Hide the page-status indicator.",
         Hit::SleepAfter(n) => return Some(if n == 0 { "Keep idle pages running.".into() } else { format!("Pause pages after {n} idle minutes.") }),
         Hit::ArchiveAfter(n) => return Some(if n == 0 { "Keep idle pages in the sidebar.".into() } else { format!("Close pages after {n} idle hours.") }),
         Hit::TidyEvery(TidyEvery::Off) => "Suggest groups only when asked.", Hit::TidyEvery(TidyEvery::Hourly) => "Suggest tab groups every hour.", Hit::TidyEvery(TidyEvery::Daily) => "Suggest tab groups once a day.",
         Hit::Dedupe(true) => "Offer to switch to an existing copy.", Hit::Dedupe(false) => "Open duplicates without a notice.",
         Hit::ShellInt(true) => "Track commands in new shells.", Hit::ShellInt(false) => "Start new shells without hooks.",
-        Hit::Highlight(true) => "Colour commands as you type.", Hit::Highlight(false) => "Use plain command text.",
+        Hit::Highlight(true) => "Color commands as you type.", Hit::Highlight(false) => "Use plain command text.",
         Hit::Predict(true) => "Suggest commands from history.", Hit::Predict(false) => "Do not suggest previous commands.",
         Hit::FormatOnSave(true) => "Run a formatter when saving files.", Hit::FormatOnSave(false) => "Save the file exactly as edited.",
         Hit::Blocks(true) => "Mark each command's status.", Hit::Blocks(false) => "Hide command status markers.",
         Hit::FoldOver(n) => return Some(if n == 0 { "Keep all command output expanded.".into() } else { format!("Fold output longer than {n} lines.") }),
-        Hit::Journal(true) => "Keep a local command journal.", Hit::Journal(false) => "Stop saving new journal entries.",
-        Hit::JournalKeep(n) => return Some(format!("Retain journal entries for {n} days.")),
+        Hit::Journal(true) => "Remembers each command you run, so you can find and rerun it later.", Hit::Journal(false) => "New commands aren't remembered. What's already saved expires on schedule.",
+        Hit::JournalKeep(n) => return Some(format!("Forget commands after {n} days.")),
         Hit::Replay(ReplayKeep::Days7) => "Record replay; keep seven days.", Hit::Replay(ReplayKeep::Day1) => "Record replay; keep one day.", Hit::Replay(ReplayKeep::Off) => "Stop recording new replay data.",
         Hit::CopyOnSelect(true) => "Copy terminal selections immediately.", Hit::CopyOnSelect(false) => "Copy only when you ask.",
         Hit::MiddlePaste(true) => "Middle-click pastes the clipboard.", Hit::MiddlePaste(false) => "Middle-click does not paste.",
         Hit::PageSmooth(true) => "Animate scrolling after restart.", Hit::PageSmooth(false) => "Jump directly after restart.",
         Hit::Block(true) => "Block known ads and trackers.", Hit::Block(false) => "Allow requests on the block list.",
         Hit::ClickToSource(true) => "Offer source links on local pages.", Hit::ClickToSource(false) => "Keep normal page clicks.",
+        Hit::Ledger(true) => "Show what assistants are doing under their tabs.", Hit::Ledger(false) => "Show assistants as a dot beside the tab.",
         Hit::ProgressSidebar(true) => "Show task progress beside tabs.", Hit::ProgressSidebar(false) => "Hide progress in the sidebar.",
         Hit::ProgressTaskbar(true) => "Show progress on the app icon.", Hit::ProgressTaskbar(false) => "Keep the app icon unchanged.",
         Hit::SshIntegration(true) => "Install hooks for remote commands.", Hit::SshIntegration(false) => "Leave remote shells unchanged.",
@@ -172,7 +175,7 @@ impl App {
                 ("COMMAND EDITING", vec!["COMMAND LINE","PROMPT LSP","EDITOR","BLOCKS","CLICK LINKS"]),
                 ("CLIPBOARD & SCROLLING",vec!["CLIPBOARD","OSC 52","SCROLL","WHEEL","SCROLLBACK"]),
                 ("HISTORY & REPLAY",vec!["JOURNAL","CUT OFF","REPLAY"]),
-                ("COLOURS & PROGRESS",vec!["SHELL COLOURS","PROGRAM COLOURS","TRUECOLOUR","PROGRESS"]),
+                ("COLORS & PROGRESS",vec!["SHELL COLORS","PROGRAM COLORS","TRUECOLOR","PROGRESS"]),
             ] {
                 ordered.push((heading.into(),Control::Caption));
                 for name in names {
@@ -184,7 +187,7 @@ impl App {
                         "PROMPT LSP"=>Some("Requires bash-language-server or PowerShell Editor Services. Install optional tools from the welcome page."),
                         "EDITOR"=>Some("Formatting needs a formatter for the file type. When none is installed, the file is saved unchanged."),
                         "REPLAY"=>Some("Records terminal output and a snapshot of the page beside it at command checkpoints. Changes apply now; turning it off leaves existing recordings available."),
-                        "JOURNAL"=>Some("Saves a local entry for each finished command. Turning it off stops new entries; retention controls how long entries are kept."),
+                        "JOURNAL"=>Some("Private to you: kept on this device, encrypted with a key in your system keychain, never synced or sent anywhere. For each finished command it saves the command line, the folder, when it ran, how long it took and whether it worked. It never saves output. It powers “Run again” suggestions, the log in the palette, and nus log. If you type secrets directly into commands (a password or token as an argument), they are saved too; turn this off or keep a shorter history."),
                         "SCROLLBACK"=>Some("Lines a new shell keeps behind it; shells already open keep what they started with. Restored with the session."),
                         _=>None,
                     };
@@ -193,13 +196,14 @@ impl App {
             }
             ordered
         } else {rows};
+        let live = crate::live::has_live(section);
         let mut out = Vec::new();
         for (title, control) in rows {
             let title = match (section, title.as_str()) {
                 (3, "HEADER") => "WINDOW HEADER", (3, "REVEAL") => "WHERE HOVER REVEALS THE SIDEBAR",
                 (3, "GRACE") => "DELAY BEFORE HIDING", (3, "FULLSCREEN") => "SIDEBAR IN FULLSCREEN",
                 (4, "OPENED BY OTHERS") => "TABS OPENED BY OTHER APPS", (4, "TIDY") => "SUGGEST TAB GROUPS",
-                (4, "DEDUPE") => "DUPLICATE PAGES", (5, "REPLAY") => "REPLAY RECORDING", (5,"OSC 52") => "PROGRAM CLIPBOARD ACCESS", (5,"PROMPT LSP") => "COMPLETIONS & DIAGNOSTICS", (5,"CUT OFF") => "INTERRUPTED COMMANDS", (5,"WHEEL") => "MOUSE WHEEL DISTANCE", (5,"SCROLL") => "SCROLL ANIMATION", (5,"SCROLLBACK") => "SCROLLBACK LINES", (5, "JOURNAL") => "COMMAND JOURNAL",
+                (4, "DEDUPE") => "DUPLICATE PAGES", (5, "REPLAY") => "REPLAY RECORDING", (5,"OSC 52") => "PROGRAM CLIPBOARD ACCESS", (5,"PROMPT LSP") => "COMPLETIONS & DIAGNOSTICS", (5,"CUT OFF") => "INTERRUPTED COMMANDS", (5,"WHEEL") => "MOUSE WHEEL DISTANCE", (5,"SCROLL") => "SCROLL ANIMATION", (5,"SCROLLBACK") => "SCROLLBACK LINES", (5, "JOURNAL") => "COMMAND HISTORY",
                 (7, "SHOW") => "VISIBLE PORT TYPES", (7, "KILL") => "CONFIRM STOPPING PROCESSES",
                 (9, "HANDS") => "ASSISTANT ACTION PERMISSIONS", (9, "CONTEXT") => "DEFAULT ASSISTANT CONTEXT",
                 (12, "EVERY") => "SYNC FREQUENCY", (12, "KEY") => "ENCRYPTION KEY", (12, "CARRIERS") => "SYNC DESTINATIONS",
@@ -218,6 +222,22 @@ impl App {
                     }
                     for group in groups {
                         let (name, hit, selected) = &group[0];
+                        if live {
+                            // Live pages: the choice stays one row of chips, and
+                            // a line under it says what the current one does.
+                            if let Some((label, yes, no, value)) = switch(*hit).filter(|_| !is_action(*hit) && group.len() == 1) {
+                                let current = if group.len() == 1 { *selected } else { group.iter().find(|o| o.1 == yes).map(|o| o.2).unwrap_or(!value) };
+                                out.push((label.into(), Control::Choice(vec![("ON".into(), yes, current), ("OFF".into(), no, !current)])));
+                                if let Some(d) = description(if current { yes } else { no }) { out.push((String::new(), Control::Help(d))); }
+                            } else {
+                                let row_title = match hit { Hit::JournalKeep(_) => "KEEP HISTORY FOR".into(), Hit::FoldOver(_) => "FOLD LONG OUTPUT".into(), _ => title.clone() };
+                                let picked = group.iter().find(|o| o.2).map(|o| o.1);
+                                let _ = name;
+                                out.push((row_title, Control::Choice(group)));
+                                if let Some(d) = picked.and_then(description) { out.push((String::new(), Control::Help(d))); }
+                            }
+                            continue;
+                        }
                         if is_action(*hit) {
                             out.push((title.clone(), Control::Actions(group.into_iter().map(|(n,h,_)| (n, description(h).unwrap_or_else(|| self.setting_label(h)), action_icon(h), h)).collect())));
                         } else if let Some((label, yes, no, value)) = switch(*hit) {
@@ -232,7 +252,7 @@ impl App {
                                 let h = Hit::PortsShow(k,v); ((if v { "SHOW" } else { "HIDE" }).into(), description(h).unwrap(), Pic::Setting(h), h, *selected == v)
                             }).collect())));
                         } else {
-                            let row_title = match hit { Hit::AskCtx(c)=>format!("INCLUDE {}", c.key().to_uppercase()), Hit::FoldOver(_)=>"FOLD LONG OUTPUT".into(), Hit::JournalKeep(_)=>"JOURNAL RETENTION".into(), _=>title.clone() };
+                            let row_title = match hit { Hit::AskCtx(c)=>format!("INCLUDE {}", c.key().to_uppercase()), Hit::FoldOver(_)=>"FOLD LONG OUTPUT".into(), Hit::JournalKeep(_)=>"KEEP HISTORY FOR".into(), _=>title.clone() };
                             let _ = name;
                             out.push((row_title, Control::Pics(group.into_iter().map(|(n,h,on)| {
                                 let caption = description(h).unwrap_or_else(|| self.setting_label(h));
@@ -242,6 +262,7 @@ impl App {
                         }
                     }
                 }
+                Control::Buttons(items) if live => out.push((title, Control::Buttons(items))),
                 Control::Buttons(items) => out.push((title, Control::Actions(items.into_iter().map(|(n,icon,h)| (n, description(h).unwrap_or_else(|| self.setting_label(h)), icon,h)).collect()))),
                 other => out.push((title, other)),
             }

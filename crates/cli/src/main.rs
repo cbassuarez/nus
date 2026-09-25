@@ -14,6 +14,8 @@
 //!   nus block [last|all] [--tab N]  a shell's blocks, command and output
 //!   nus ask <question…>             the assistant, beside this shell
 //!   nus raise                       bring the window up
+//!   nus hook claude|codex           an assistant's hook, reporting to its pane (hook.rs)
+//!   nus hook install claude|codex   add those hooks to the assistant's config
 //!   nus version
 //!
 //! It finds the running instance through `profile/instance` next to the
@@ -176,8 +178,14 @@ fn print_ls(v: &Value) {
 
 mod mcp;
 
+mod hook;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // An assistant's hook: quick, quiet, and always a success to the caller.
+    if args.first().map(String::as_str) == Some("hook") {
+        return hook::run(&args[1..]);
+    }
     // The MCP server: stdin to stdout until the assistant hangs up.
     if args.first().map(String::as_str) == Some("mcp") {
         mcp::serve(&|cmd, a| call(cmd, a));
@@ -445,6 +453,7 @@ const USAGE: &str = "usage: nus <command> [args] [--json]
   sync [now] · sync key · sync join <key> · sync status · sync folder <path> · sync git <remote>
   hold [ls|attach <id>|kill <id>] · log [--cwd D] [--limit N] · page [text|dom|console|network|screenshot|info] [--tab N]
   mcp · the MCP server on stdio: claude mcp add nus -- nus mcp
+  hook install claude|codex · hook uninstall claude|codex · the assistant tells its nus pane what it is doing
   a bare <file> or <url> opens it";
 
 #[cfg(test)]

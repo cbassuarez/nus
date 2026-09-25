@@ -64,6 +64,12 @@
 //!   homelook plate | line | art <key>   HOME: the prompt under the plate, the line alone, or an art behind it
 //!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
 //!   copyurl                    the focused page's url to the clipboard, with its toast
+//!   toastfixture icon|Words|detail|act   a toast, drawn for real (icon "problem" for one of those)
+//!   toastpress hover|chip|cell   the pointer on its chip, a press on the chip, or on its cell
+//!   asserttoast <text> | asserttoastgone   what the toast says, or that none is up
+//!   lsplog                     each language server's key and log lines, to stderr
+//!   awaitload <ms>             hold until the focused page stops loading (or ms pass); report it
+//!   cmdsel <from> <to> | assertcmd <text>   select characters of the command being typed; check the command line
 //!   link allow | deny          answer the link band on the focused shell
 //!   newtab                     open the configured start page in a new tab
 //!   startpage prompt|home|last|layout [url or layout name]   set the start page
@@ -374,6 +380,26 @@ impl App {
                 self.run(crate::app::Action::NewTerminal(p));
             }
             "shell" => self.shot_type(&format!("{rest}\r")),
+            // Finish Work: click the coffee; what the header shows; and what
+            // the OS itself lists (macOS: pmset -g assertions).
+            "finishwork" => self.crumb_action(crate::app::CrumbHit::FinishWork),
+            "assertfinish" => {
+                use crate::finish_work::Phase;
+                let phase = crate::finish_work::view().phase;
+                let got = match phase { Phase::Unavailable => "unavailable".to_string(), Phase::Ready(n) => format!("ready {n}"), Phase::Holding(n) => format!("holding {n}"), Phase::SafetyReleased(_) => "released".to_string() };
+                assert_eq!(got, rest.trim(), "finish work phase");
+                eprintln!("FINISH WORK CHECK PASSED {got}");
+            }
+            "assertfinishshown" => {
+                let shown = self.crumb_hits.iter().any(|(_, h)| *h == crate::app::CrumbHit::FinishWork);
+                assert_eq!(shown, rest.trim() == "yes", "finish work control shown");
+            }
+            "assertwake" => {
+                let out = std::process::Command::new("pmset").args(["-g", "assertions"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+                let held = out.contains("nus is finishing");
+                assert_eq!(held, rest.trim() == "on", "native wake assertion; pmset said:\n{out}");
+                eprintln!("WAKE CHECK PASSED {}", rest.trim());
+            }
             "line" => self.shot_type(rest),
             "erase" => {
                 let n: usize = rest.parse().unwrap_or(1);
@@ -705,6 +731,129 @@ impl App {
                 self.link_band_key(&k);
             }
             "newtab" => self.open_start_page(false),
+            // The Ledger, end to end: stand-ins named claude, codex and aider
+            // run in real shells. claude reports through the real `nus hook`
+            // ($NUS_CLI, $NUS_PANE, the instance socket), then waits for one
+            // raw keypress and writes down what it got; aider sends OSC 777.
+            "ledgerprep" => {
+                let h = |ev: &str| format!("printf '%s' '{ev}' | \"$NUS_CLI\" hook claude\n");
+                let mut claude = String::from("#!/bin/sh\n");
+                for ev in [
+                    r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#,
+                    r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#,
+                    r#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/w/crates/vt/src/term.rs"}}"#,
+                    r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/w/crates/vt/src/term.rs"}}"#,
+                    r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cargo test --workspace"}}"#,
+                    r#"{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash"}"#,
+                ] { claude.push_str(&h(ev)); }
+                claude.push_str("stty raw -echo; a=$(dd bs=1 count=1 2>/dev/null); stty sane\nprintf 'got:%s' \"$a\" > \"$(dirname \"$0\")/../answer.txt\"\nsleep 60\n");
+                let mut done = String::from("#!/bin/sh\n");
+                for ev in [
+                    r#"{"hook_event_name":"UserPromptSubmit"}"#,
+                    r#"{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/w/site/index.html"}}"#,
+                    r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/w/site/app.css"}}"#,
+                    r#"{"hook_event_name":"Stop"}"#,
+                ] { done.push_str(&h(ev)); }
+                done.push_str("sleep 60\n");
+                let aider = "#!/bin/sh\nsleep 1\nprintf '\\033]777;notify;aider;Add these files to the chat?\\007'\nsleep 60\n";
+                let codex = "#!/bin/sh\nsleep 60\n";
+                let _ = std::fs::create_dir_all("agents/done");
+                for (path, text) in [("agents/claude", claude.as_str()), ("agents/done/claude", done.as_str()), ("agents/codex", codex), ("agents/aider", aider)] {
+                    std::fs::write(path, text).unwrap();
+                    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap(); }
+                }
+                let home = self.active;
+                // Shells open in the home folder: absolute paths, and the
+                // answer lands beside the scripts.
+                let here = std::env::current_dir().unwrap();
+                for cmd in ["agents/claude", "agents/codex", "agents/done/claude", "agents/aider"] {
+                    self.new_tab(self.behavior.default_profile);
+                    if let Pane::Term(t) = &mut self.tabs[self.active].left {
+                        t.type_at_prompt = Some(format!("{}\r", here.join(cmd).display()));
+                    }
+                }
+                self.activate(home);
+                self.dirty = true;
+            },
+            "ledgercheck" => {
+                use crate::agent::{Answer, Phase};
+                let find = |app: &App, name: &str, phase: Phase| app.tabs.iter().position(|t| t.agent().is_some_and(|a| a.name == name && a.phase == phase));
+                let claude = find(self, "claude", Phase::Waiting).unwrap_or_else(|| panic!("claude is not waiting: {:?}", self.tabs.iter().map(|t| t.agent().map(|a| (a.name.clone(), a.phase))).collect::<Vec<_>>()));
+                let a = self.tabs[claude].agent().unwrap().clone();
+                assert!(a.hooked, "claude's state did not come from its hooks");
+                assert_eq!(a.session.as_deref(), Some("s1"));
+                assert_eq!(a.ask.as_ref().map(|k| (k.tool.as_str(), k.what.as_str())), Some(("Bash", "cargo test --workspace")));
+                assert_eq!(a.touched, vec!["/w/crates/vt/src/term.rs".to_string()]);
+                let panes: Vec<String> = self.tabs.iter().filter_map(|t| match &t.left { Pane::Term(p) => Some(format!("{:?} marks={:?} blocks={:?}", p.program, p.term.marks.iter().rev().take(4).map(|m| m.kind).collect::<Vec<_>>(), p.blocks().last().map(|b| (b.cmd.clone(), b.running)))), _ => None }).collect();
+                assert!(find(self, "codex", Phase::Working).is_some(), "codex is not working: {panes:#?}");
+                let done = find(self, "claude", Phase::Done).expect("the second claude is not done");
+                assert_eq!(self.tabs[done].agent().unwrap().touched.len(), 2);
+                let aider = find(self, "aider", Phase::Waiting).expect("aider's OSC 777 did not make it wait");
+                assert_eq!(self.tabs[aider].agent().unwrap().reason.as_deref(), Some("aider · Add these files to the chat?"));
+                assert_eq!(self.agent_counts(), (2, 1));
+                assert!(self.crumb_hits.iter().any(|(_, h)| *h == crate::app::CrumbHit::Agents), "the strip does not count assistants");
+                assert!(!self.side_hits.iter().any(|(_, h)| matches!(h, crate::app::SideHit::Answer(i, _) if *i == aider)), "aider has no answers nus knows");
+                let (r, _) = *self.side_hits.iter().find(|(_, h)| *h == crate::app::SideHit::Answer(claude, Answer::Allow)).expect("no ALLOW in claude's row");
+                self.mouse_moved(r.x + r.w * 0.5, r.y + r.h * 0.5);
+                self.mouse_button(MouseButton::Left, ElementState::Pressed);
+                self.mouse_button(MouseButton::Left, ElementState::Released);
+                assert_eq!(self.tabs[claude].agent().map(|a| a.phase), Some(Phase::Working), "ALLOW did not move claude on");
+            },
+            "ledgeranswer" => {
+                assert_eq!(std::fs::read_to_string("answer.txt").unwrap_or_default(), "got:1", "claude's prompt did not receive the allow key");
+            },
+            // Home with another tab open: the row clicked is the row taken.
+            // (Rows naming other tabs were missing while the frame drew.)
+            "homeclickprep" => {
+                let mut c=crate::prompt::Config::default();
+                for s in c.sources.iter_mut(){s.home=matches!(s.source,crate::prompt::Source::Sessions|crate::prompt::Source::Assistants);}
+                self.behavior.prompt=c;
+                self.new_tab(self.behavior.default_profile);
+                self.open_home();
+                self.dirty=true;
+            },
+            "homeclickcheck" => {
+                let Pane::Home(h)=&self.tabs[self.active].left else{panic!("home expected")};
+                let Some((drawn,rows))=h.shown.clone() else{panic!("home rows not gathered")};
+                assert!(drawn.is_empty());
+                assert!(rows.iter().any(|r|r.text.starts_with("Resume")),"drawn rows lack the other tab: {:?}",rows.iter().map(|r|&r.text).collect::<Vec<_>>());
+                let k=rows.iter().position(|r|r.text.contains("Claude")).expect("Claude row");
+                let (r,_)=*h.hits.iter().find(|(_,i)|*i==k).expect("Claude row drawn");
+                self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);
+                self.mouse_button(MouseButton::Left,ElementState::Pressed);
+                self.mouse_button(MouseButton::Left,ElementState::Released);
+                assert!(matches!(self.palette.as_ref().map(|(m,_)|m),Some(PaletteMode::Assistant(0))),"the Claude row did not open Claude's prompt");
+                self.palette=None;
+            },
+            // The nus button: down is home, down again is back; leaving home
+            // for anything else closes the loop.
+            "homelatchcheck" => {
+                use crate::app::CrumbHit;
+                self.new_tab(self.behavior.default_profile);
+                let from=self.tabs[self.active].id;
+                let before=self.tabs.len();
+                self.crumb_action(CrumbHit::Nus);
+                assert!(matches!(&self.tabs[self.active].left,Pane::Home(_)),"nus did not bring home up");
+                assert!(self.home_latch.is_some(),"nus did not latch");
+                self.crumb_action(CrumbHit::Nus);
+                assert_eq!(self.tabs[self.active].id,from,"nus again did not go back");
+                assert!(self.home_latch.is_none());
+                assert_eq!(self.tabs.len(),before,"the home made for the press stayed");
+                // Back (the mouse's) does the same.
+                self.crumb_action(CrumbHit::Nus);
+                assert!(self.home_latch_back());
+                assert_eq!(self.tabs[self.active].id,from);
+                // Going somewhere closes the loop: nus then opens home again.
+                self.crumb_action(CrumbHit::Nus);
+                let home=self.tabs[self.active].id;
+                let i=self.tabs.iter().position(|t|t.id==from).unwrap();
+                self.activate(i);
+                self.tend_home_latch();
+                assert!(self.home_latch.is_none(),"leaving home kept the latch");
+                self.crumb_action(CrumbHit::Nus);
+                assert_eq!(self.tabs[self.active].id,home,"nus did not return to the one home");
+                self.crumb_action(CrumbHit::Nus);
+            },
             "startpage" => {
                 use crate::settings::{Hit, Then};
                 let (kind, value) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -1038,6 +1187,24 @@ impl App {
                 self.save_prefs();
             }
             "assertappearance" => assert_eq!(if self.theme.mode==nus_render::Mode::Ink {"ink"} else {"paper"},rest),
+            // Hold until the focused page stops loading, or the timeout (ms)
+            // passes; then say how long, where it ended and what was blocked.
+            "awaitload" => {
+                static START: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+                let timeout = rest.trim().parse::<u64>().unwrap_or(30000);
+                let start = *START.lock().unwrap().get_or_insert_with(crate::clock::now);
+                let state = self.tabs.get(self.active).and_then(|t| match t.focused_ref() { Pane::Web(w) => { let s = w.tab.shared.borrow(); Some((s.loading, s.url.clone(), w.tab.blocked())) }, _ => None });
+                let (loading, url, blocked) = state.unwrap_or((true, String::new(), 0));
+                let ms = crate::clock::since(start).as_millis() as u64;
+                if loading && ms < timeout {
+                    let script = self.shot.as_mut().unwrap();
+                    script.next -= 1;
+                    script.until = Some(crate::clock::now() + Duration::from_millis(100));
+                } else {
+                    *START.lock().unwrap() = None;
+                    eprintln!("shot: load {} {ms}ms blocked={blocked} url={url}", if loading { "STUCK" } else { "done" });
+                }
+            }
             "settingseek" => {
                 if !self.settings_hits.iter().any(|(_,h)|format!("{h:?}").starts_with(rest)) {
                     let Pane::Settings(page)=&mut self.tabs[self.active].left else {panic!("not settings")};
@@ -1232,6 +1399,13 @@ impl App {
             "assertpromptfirst"=>{let Some((mode,input))=&self.palette else{panic!("palette not open")};let rows=self.palette_rows(*mode,input);assert!(rows.first().is_some_and(|r|r.text.contains(rest)),"unexpected route: {:?}",rows.iter().map(|r|&r.text).collect::<Vec<_>>());},
             "assertconnections"=>{assert!(self.assistants.pending.is_none(),"connection checks did not finish");for entry in &self.assistants.entries{assert!(entry.checked);assert!(entry.path.is_some());assert!(!entry.version.is_empty());}assert_eq!(self.assistants.entries[2].models,vec!["test-model:latest"],"connections: {:?}",self.assistants.entries);},
             "assertfonts"=>{let c=&self.behavior.typography;let Pane::Term(t)=&self.tabs[self.active].left else{panic!("not terminal")};assert!((t.grid.px-self.terminal_px()).abs()<0.01);let plain=self.fonts.metrics(self.f.term,self.terminal_px());assert!(t.grid.metrics.advance>=plain.advance+c.terminal_spacing*self.scale-0.01);assert!(t.grid.metrics.line_height>=plain.line_height);},
+            // The intelligence ring and dial, driven like a pointer would.
+            "intelturn"=>{let dx:f32=rest.parse().unwrap();let (r,_)=*self.intel.hits.iter().find(|(_,p)|matches!(p,crate::intelligence::Part::Ring{..})).expect("no ring drawn");let (x,y)=(r.x+r.w*0.5,r.y+r.h*0.5);assert!(self.intel_mouse(true,x,y));for i in 1..=12{self.intel_move(x+dx*self.scale*i as f32/12.0,y);std::thread::sleep(std::time::Duration::from_millis(16));}self.intel_mouse(false,x+dx*self.scale,y);},
+            "inteltap"=>{let (r,_)=*self.intel.hits.iter().find(|(_,p)|matches!(p,crate::intelligence::Part::Ring{..})).expect("no ring drawn");let x=if rest=="left"{r.x+r.w*0.2}else{r.x+r.w*0.8};assert!(self.intel_mouse(true,x,r.y+r.h*0.5));self.intel_mouse(false,x,r.y+r.h*0.5);},
+            "intelspin"=>{let deg:f32=rest.parse::<f32>().unwrap().to_radians();let Some(crate::intelligence::Part::Atom{cx,cy,m})=self.intel.hits.iter().map(|(_,p)|*p).find(|p|matches!(p,crate::intelligence::Part::Atom{..})) else{panic!("no atom drawn")};let (x,y)=(cx+deg.cos()*m*0.38,cy-deg.sin()*m*0.38);assert!(self.intel_mouse(true,x,y));self.intel_move(x,y);self.intel_mouse(false,x,y);},
+            "intelnucleus"=>{let Some(crate::intelligence::Part::Atom{cx,cy,..})=self.intel.hits.iter().map(|(_,p)|*p).find(|p|matches!(p,crate::intelligence::Part::Atom{..})) else{panic!("no atom drawn")};assert!(self.intel_mouse(true,cx,cy));self.intel_mouse(false,cx,cy);},
+            "assertintel"=>{let mut a=rest.split_whitespace();assert_eq!(self.intelligence().to_string(),a.next().unwrap(),"intelligence level");if let Some(m)=a.next(){let m=if m=="auto"{""}else{m};assert_eq!(self.behavior.assistants.providers[0].model,m,"claude model");}},
+            "assertcommand"=>{let (id,want)=rest.split_once(' ').unwrap();let c=self.assistant_command(id.parse().unwrap(),"hi").unwrap();assert!(c.contains(want),"command {c:?} lacks {want:?}");},
             "assistantdraft"=>{let (id,q)=rest.split_once(' ').unwrap_or((rest,""));self.draft_assistant(id.parse().unwrap(),q);},
             "reviewbounds"=>{assert!(matches!(self.palette,Some((PaletteMode::Assistant(_),_))));let size=self.window.inner_size();for r in self.palette_hits.iter().filter(|r|r.h>0.0){assert!(r.x>=0.0&&r.right()<=size.width as f32&&r.y>=0.0&&r.bottom()<=size.height as f32,"review row outside window: {r:?}");}if rest=="scrollable"{assert!(self.palette_scroll_max>0.0);}},
             "reviewscroll"=>{self.wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0,-rest.parse::<f64>().unwrap())));},
@@ -1315,8 +1489,26 @@ impl App {
             "updatereview" => {crate::updates::preview_warning();self.dirty=true;},
             "bundle"=>self.bundle_toggle(rest),
             "assertbundle"=>{let b=crate::bundles::list().into_iter().find(|b|b.id==rest).unwrap();assert_eq!(self.bundle_state(&b),crate::bundles::State::Installed);for entry in &b.entrypoints{let stem=std::path::Path::new(entry).file_stem().unwrap().to_str().unwrap();assert!(crate::bundles::resolve(stem).is_some());}},
-            "asserttoast"=>{let t=self.toast.as_ref().expect("toast expected");assert!(format!("{} {}",t.text,t.tail).contains(rest));},
-            "noticefixture"=>self.notice(rest),
+            "asserttoast"=>{let t=self.toast.as_ref().expect("toast expected");assert!(format!("{} {}",t.words,t.detail).contains(rest),"toast: {} {}",t.words,t.detail);},
+            "noticefixture"=>self.notice(nus_render::text::icons::CHECK,rest,""),
+            "toastfixture"=>{
+                // icon|Words|detail|act — icon: copy totab download ports palette check, or problem; act: tab download retry
+                let f:Vec<&str>=rest.splitn(4,'|').collect();let g=|i:usize|f.get(i).copied().unwrap_or("").trim().to_string();
+                use nus_render::text::icons;
+                let icon=match g(0).as_str(){"copy"=>icons::COPY,"totab"=>icons::TO_TAB,"download"=>icons::DOWNLOAD,"ports"=>icons::PORTS,"palette"=>icons::PALETTE,"history"=>icons::HISTORY,"search"=>icons::SEARCH,"folder"=>icons::FOLDER,"eyeslash"=>icons::EYE_SLASH,_=>icons::CHECK};
+                let act=match g(3).as_str(){"tab"=>Some(crate::toast::Act::GoTab(0)),"download"=>Some(crate::toast::Act::RevealDownload(0)),"retry"=>Some(crate::toast::Act::RetryInstall(String::new())),_=>None};
+                if g(0)=="problem"{self.toast_problem(g(1),g(2),act);}else{self.toast(icon,g(1),g(2),act);}
+            },
+            // The toast: the pointer over its chip (hover), a press on the
+            // chip (chip), or a press on its tone cell, which puts it away (cell).
+            "toastpress"=>{let t=self.toast.as_ref().expect("toast expected");let (r,cell)=(t.chip,t.rect);let (x,y)=if rest=="cell"{(cell.x+cell.h/2.0,cell.y+cell.h/2.0)}else{assert!(r.w>0.0,"no chip");(r.x+r.w/2.0,r.y+r.h/2.0)};self.mouse_moved(x,y);if rest!="hover"{self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);}},
+            "asserttoastgone"=>assert!(self.toast.is_none(),"toast still up"),
+            // Each running language server, by command@root, and what it logged.
+            "lsplog"=>{for (key,s) in &self.lsp.map{eprintln!("shot: lsp {key} ({} lines)",s.log.len());for l in &s.log{eprintln!("shot: lsp   {l}");}}},
+            // The command being typed: select characters [from, to) of it,
+            // or check what the shell holds there now.
+            "cmdsel"=>{let mut n=rest.split_whitespace().filter_map(|v|v.parse::<usize>().ok());let (from,to)=(n.next().unwrap_or(0),n.next().unwrap_or(1));if let Some(t)=self.focused_term(){let m=*t.term.marks.iter().rev().find(|m|m.kind==nus_vt::MarkKind::CommandStart).expect("a prompt with marks");t.sel=Some(crate::termui::Selection{anchor:(m.line,m.col+from),head:(m.line,m.col+to-1),zone:crate::termui::Zone::Cell,dragging:false});self.dirty=true;}},
+            "assertcmd"=>{let t=self.focused_term().expect("a shell");let m=*t.term.marks.iter().rev().find(|m|m.kind==nus_vt::MarkKind::CommandStart).expect("a prompt with marks");let cols=t.term.cols();let got=t.term.text_range((m.line,m.col),(m.line,cols-1));assert_eq!(got.trim_end(),rest.trim(),"the command line");},
             "assertloadidle"=>{let Pane::Web(w)=self.tabs[self.active].focused_ref()else{panic!("web")};assert!(!w.tab.shared.borrow().loading);assert!(w.load_fade.value()<=0.001);assert!(w.load_since.is_none());assert_eq!(w.load.target,0.0);},
             "iconsettings"=>{self.open_settings();self.look_tab=crate::settings::LOOK_APP_ICON;if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|t.focused()){p.section=crate::settings::SEC_LOOK;p.scroll=0.0;}self.dirty=true;},
             "iconchoose"=>{let choice=crate::app_icon::Choice::ALL.into_iter().find(|c|c.name()==rest).unwrap();let r=self.settings_hits.iter().find(|(_,h)|*h==crate::settings::Hit::AppIcon(choice)).expect("icon card visible").0;self.mouse_moved(r.x+r.w/2.0,r.y+r.h/2.0);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);assert_eq!(self.behavior.app_icon,choice);assert_eq!(crate::app_icon::selected(),choice);},
@@ -1351,7 +1543,9 @@ impl App {
             },
             "asserthdr" => assert_eq!(self.target.hdr(),rest=="enabled"),
             "hdrpixels" => { let peak=self.gpu.verify_hdr_signal().expect("native HDR pixels");eprintln!("HDR source readback: {peak:.3} x SDR white");self.dirty=true; },
-            "closeprofile" => self.close_me_card(),
+            // On a fresh install the card can only be finished, not closed:
+            // this walks it through with the defaults and Welcome follows.
+            "closeprofile" => if self.me_card.first { self.finish_first_walk_now() } else { self.close_me_card() },
             "welcome" => self.open_welcome(),
             "welcomedismiss" => self.dismiss_hints(),
             "phonecheck" => {
@@ -1424,6 +1618,109 @@ impl App {
             },
             "reader" => self.toggle_reader(),
             "split" => self.divide(),
+            // The pane director, on the active tab: `pane swap`, `pane solo right`,
+            // `pane both`, `pane totab right`, `pane kill left`, `pane split`,
+            // `pane join 1` (the active tab's right pane onto tab 1), `pane undo`.
+            "pane" => {
+                use crate::director::Op;
+                let tab=self.tabs[self.active].id;
+                let mut w=rest.split_whitespace();
+                let verb=w.next().unwrap_or("");
+                let right=w.next().map(|s|s=="right");
+                match verb {
+                    "undo"=>self.pane_undo(),
+                    "redo"=>self.pane_redo(),
+                    "swap"=>{self.direct(Op::Swap{tab});},
+                    "split"=>{self.direct(Op::Split{tab});},
+                    "solo"=>{self.direct(Op::Solo{tab,solo:true,right:right.unwrap_or(true)});},
+                    "both"=>{let r=self.tabs[self.active].focus_right;self.direct(Op::Solo{tab,solo:false,right:r});},
+                    "totab"=>{self.direct(Op::ToTab{tab,right:right.unwrap_or(true)});},
+                    "kill"=>{self.direct(Op::Kill{tab,right:right.unwrap_or(true)});},
+                    "width"=>{let v=rest.split_whitespace().nth(1).and_then(|v|v.parse().ok());self.direct(Op::SplitWidth{tab,w:v});},
+                    "join"=>{let to=rest.split_whitespace().nth(1).and_then(|v|v.parse::<usize>().ok()).and_then(|k|self.tabs.get(k)).map(|t|t.id).expect("pane join <tab index>");self.direct(Op::Join{from:tab,right:true,to,side_right:true});},
+                    other=>panic!("pane: unknown verb {other}"),
+                }
+                self.dirty=true;
+            }
+            // `tile 1 2 3`: those tabs selected and tiled with the first, as
+            // Ctrl+click and Ctrl+Shift+D would; a shown tiling grows.
+            "tile" => {
+                let idx:Vec<usize>=rest.split_whitespace().filter_map(|k|k.parse().ok()).collect();
+                if let Some(&first)=idx.first() { if !self.tiling_shown() { self.activate(first); } }
+                self.selected=idx.into_iter().collect();
+                self.tile_selected();
+            }
+            // `tileshape L`: the shown tiling's shape, as rows of tiles by
+            // their top edge: "L" is 1+2, "grid" 2+2, "row" all on one.
+            "asserttileshape" => {
+                let rects=self.tile_rects();
+                let mut tops:Vec<i32>=rects.iter().map(|(_,r)|r.y.round() as i32).collect();tops.sort();tops.dedup();
+                let full=rects.iter().filter(|(_,r)|(r.h-self.content_rect().h).abs()<1.0).count();
+                let shape=match (rects.len(),tops.len(),full) {(2,1,2)=>"row",(3,2,1)=>"L",(4,2,0)=>"grid",(n,_,_)=>if n==0{"none"}else{"other"}};
+                assert_eq!(shape,rest,"tile shape: have {shape} ({} tiles)",rects.len());
+                eprintln!("TILES OK {rest}");
+            }
+            // `droptab 2 0.9 0.5`: tab 2 dragged by its row and let go at that
+            // fraction of the content; `droppane right 0.5 0.95` the same for
+            // the active tab's right (or left) pane. The zone must exist.
+            "droptab" | "droppane" => {
+                let mut w=rest.split_whitespace();
+                let first=w.next().unwrap_or("");
+                let n:Vec<f32>=w.filter_map(|v|v.parse().ok()).collect();
+                let c=self.content_rect();
+                let (x,y)=(c.x+c.w*n[0],c.y+c.h*n[1]);
+                let what=if verb=="droptab" {crate::pane_mode::Dragging::Tab(first.parse().expect("droptab <tab index>"))} else {crate::pane_mode::Dragging::Pane{tab:self.active,right:first=="right"}};
+                let d=self.drop_at(x,y,what).unwrap_or_else(||panic!("{verb} {rest}: no drop zone at ({x},{y}); content {c:?}; slots {:?}",self.slots()));
+                eprintln!("DROP {} {:?}",d.words,d.zone);
+                self.apply_drop(what,d);
+            }
+            // `send new` | `send other`: the focused pane (or tab) to a new
+            // window, or to the first other window.
+            "send" => {
+                let dest=match rest {
+                    "new"=>crate::send::Dest::New,
+                    _=>crate::send::Dest::Window(self.other_windows().first().expect("send other: no other window").id),
+                };
+                self.send_focused(dest);
+            }
+            // `assertshell MOVED-7`: the focused shell's screen shows it.
+            "assertshell" => {
+                let text=match self.tabs[self.active].focused_ref() {crate::app::Pane::Term(t)=>t.term.grid().text(),_=>panic!("assertshell: not a shell")};
+                assert!(text.contains(rest),"assertshell: {rest:?} not on screen:\n{text}");
+                eprintln!("SHELL OK {rest}");
+            }
+            // `savelayout trio` / `openlayout trio`: profile/layouts/<name>.nus.luau,
+            // as the palette's SAVE LAYOUT and the saved list do it.
+            "savelayout" => self.run(crate::app::Action::SaveLayout(rest.into())),
+            "openlayout" => {
+                let path=std::env::current_dir().unwrap_or_default().join("profile/layouts").join(format!("{rest}.nus.luau"));
+                let text=std::fs::read_to_string(&path).unwrap_or_else(|e|panic!("openlayout: {}: {e}",path.display()));
+                eprintln!("LAYOUT FILE {rest}:\n{text}");
+                self.run(crate::app::Action::OpenLayout(path.display().to_string()));
+            }
+            // `assertlayout tabs=2 active=1 split=yes left=term right=web solo=no width=400`
+            "assertlayout" => {
+                let t=&self.tabs[self.active];
+                let kind=|p:&crate::app::Pane|match p{crate::app::Pane::Term(_)=>"term",crate::app::Pane::Web(_)=>"web",crate::app::Pane::Home(_)=>"home",crate::app::Pane::Hints(_)=>"welcome",crate::app::Pane::Settings(_)=>"settings",crate::app::Pane::Editor(_)=>"editor",crate::app::Pane::Ports(_)=>"ports",crate::app::Pane::Downloads(_)=>"downloads"};
+                for pair in rest.split_whitespace() {
+                    let (k,v)=pair.split_once('=').expect("assertlayout key=value");
+                    let have=match k {
+                        "tabs"=>self.tabs.iter().filter(|t|!t.hatch&&t.peek.is_none()).count().to_string(),
+                        "active"=>self.active.to_string(),
+                        "split"=>if t.right.is_some(){"yes".into()}else{"no".into()},
+                        "left"=>kind(&t.left).into(),
+                        "right"=>t.right.as_ref().map(kind).unwrap_or("none").into(),
+                        "solo"=>if t.solo{"yes".into()}else{"no".into()},
+                        "focus"=>if t.focus_right{"right".into()}else{"left".into()},
+                        "width"=>t.split_w.map(|w|format!("{w:.0}")).unwrap_or("default".into()),
+                        "tiled"=>self.tiled().len().to_string(),
+                        "mode"=>if self.pane_mode{"on".into()}else{"off".into()},
+                        other=>panic!("assertlayout: unknown key {other}"),
+                    };
+                    assert_eq!(have,v,"assertlayout {k}: have {have}, want {v}");
+                }
+                eprintln!("LAYOUT OK {rest}");
+            }
             "sidebar" => self.run(crate::app::Action::ToggleSidebar),
             "close" => {
                 self.palette = None;

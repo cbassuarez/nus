@@ -427,11 +427,13 @@ pub struct Sound {
     pub player: Option<Player>,
     pub prefs: SoundPrefs,
     last_hover: Instant,
+    /// The cue that played last and when, for the settings preview.
+    pub last: Option<(String, Instant)>,
 }
 
 impl Sound {
     pub fn new(prefs: SoundPrefs) -> Sound {
-        Sound { player: Player::open(), prefs, last_hover: crate::clock::now() }
+        Sound { player: Player::open(), prefs, last_hover: crate::clock::now(), last: None }
     }
 
     /// Play the cue for an event, after the rules have had their say.
@@ -458,6 +460,7 @@ impl Sound {
 
     /// Play a cue by name, regardless of events (the Sound page's ▷).
     pub fn cue(&mut self, name: &str) {
+        self.last = Some((name.to_string(), crate::clock::now()));
         let v = self.prefs.volume;
         if let Some(p) = self.player.as_mut() {
             p.play(name, v);

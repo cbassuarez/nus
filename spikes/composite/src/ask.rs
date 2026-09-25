@@ -410,7 +410,7 @@ impl App {
 
     /// Ctrl+Shift+?: open the panel (and focus its field), or close it.
     pub(crate) fn toggle_ask(&mut self) {
-        if crate::private::enabled() { self.notice("Assistants are unavailable in incognito windows."); return; }
+        if crate::private::enabled() { self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "assistants work in regular nus windows"); return; }
         let keys = self.behavior.ask_ctx.clone();
         if self.ask_term().is_none() {self.open_settings_at(crate::settings::SEC_ASSISTANTS,None);return;}
         let Some(t) = self.ask_term() else { return };
@@ -522,7 +522,7 @@ impl App {
         let Some(backend) = chosen(&self.behavior.ask_backend) else {
             let error=format!("{} is unavailable. Choose or reconnect it in Assistants; nus has not switched providers.",self.behavior.ask_backend);
             if let Some(ask)=self.ask_term().and_then(|t|t.ask.as_mut()){if let Some(turn)=ask.turns.last_mut(){turn.error=Some(error.clone());}}
-            self.notice(&error);return;
+            self.notice_problem("Assistant Unavailable", format!("{} · choose or reconnect it in Assistants; nus has not switched providers", self.behavior.ask_backend));return;
         };
         if let Some(p) = page {
             g.page = Some(p);
@@ -548,7 +548,7 @@ impl App {
         let mut sanitized=crate::secrets::scrub(&prompt);
         sanitized.findings=sanitized.findings.max(sanitized.text.matches(crate::secrets::MASK).count());
         let review=if sanitized.findings>0 {Some(RedactionReview{prompt:original,preview:sanitized.text.clone(),backend:backend.clone(),cwd:self.assistant_folder(),findings:sanitized.findings})}else{None};
-        if sanitized.findings>0 {self.notice(&format!("Redacted {} suspected secrets before sending to the assistant",sanitized.findings));}
+        if sanitized.findings>0 {self.notice(nus_render::text::icons::SHIELD,"Secrets Redacted",format!("{} suspected, before sending to the assistant",sanitized.findings));}
         let prompt=sanitized.text;
         let (tx, rx) = channel();
         let (stx, srx) = channel::<String>();
@@ -638,8 +638,9 @@ impl App {
                                 turn.error = Some("no answer in 90s".into());
                             }
                             ask.pending = None;
+                            changed = true;
                         }
-                        changed = true; // the lamp breathes
+                        // The lamp breathes on its own clock (draw_ask's want_beat).
                     }
                 }
             }
@@ -648,9 +649,9 @@ impl App {
             match self.art_from_answer(&md) {
                 Some(name) => {
                     self.art = None;
-                    self.toast(format!("ART · {name} · IN THE PICKER, AND UP"), None);
+                    self.toast(nus_render::text::icons::PALETTE, "Art Added", format!("{name} · in the picker, and up"), None);
                 }
-                None => self.toast("THE ANSWER HAD NO LUAU BLOCK · ASK AGAIN", None),
+                None => self.toast_problem("No Art Returned", "the answer had no luau block; ask again", None),
             }
             changed = true;
         }
@@ -716,7 +717,7 @@ impl App {
                         self.behavior.ask_backend = next.name.clone();
                         self.save_prefs();
                         let word = if is_local(next) { format!("local · {}", next.name.trim_start_matches("declared:")) } else { next.name.clone() };
-                        self.notice(&format!("ask · {word}"));
+                        self.notice(nus_render::text::icons::ASSISTANT, "Now Asking", word);
                     }
                 }
                 self.dirty = true;
@@ -737,7 +738,7 @@ impl App {
                 if run && needs_a_second_press(web, ask.armed, ti, bi) {
                     ask.armed = Some((ti, bi, crate::clock::now()));
                     ask.focus = false;
-                    self.notice("that answer used a page · press RUN again to run it");
+                    self.notice(nus_render::text::icons::ENTER, "Press Run Again", "that answer used a page");
                     self.dirty = true;
                     return true;
                 }
@@ -794,7 +795,7 @@ impl App {
             } else {
                 t.write_paste(&text);
                 if run {
-                    self.notice("many lines · read them, then press Enter");
+                    self.notice(nus_render::text::icons::ENTER, "Many Lines", "read them, then press Enter");
                 }
             }
             sound = Some("control.release");
@@ -979,7 +980,8 @@ impl App {
             y += self.px(6.0);
             if turn.blocks.is_empty() && turn.error.is_none() {
                 if pending && ti + 1 == n_turns {
-                    // Waiting: a breathing dot.
+                    // Waiting: a breathing dot, at fifteen frames a second.
+                    self.want_beat(66);
                     let k = 0.35 + 0.65 * (crate::clock::since(self.started).as_secs_f32() * 3.0).sin().abs();
                     let d = self.px(7.0);
                     scene.push(nus_render::Instance::rounded(Rect::new(pr.x + pad, y + self.px(4.0), d, d), d / 2.0, crate::app::fade(self.surface.signal, k)));

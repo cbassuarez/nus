@@ -444,21 +444,97 @@ fn startup_link() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup\nus.lnk"))
 }
 
-pub fn login_item_registered() -> bool {
-    cfg!(target_os = "windows") && startup_link().is_some_and(|p| p.exists())
+/// macOS: a per-user LaunchAgent that opens the bundle at login.
+fn launch_agent() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join("Library/LaunchAgents/dev.nus.app.login.plist"))
 }
 
-/// A shortcut in the Startup folder (Windows). Reversible; other OSes are v1.
-pub fn login_item(on: bool) -> Result<(), String> {
-    if !cfg!(target_os = "windows") {
-        return Err("login items need a LaunchAgent (macOS) or autostart .desktop (Linux) — v1".into());
+/// Linux: an XDG autostart entry.
+fn autostart_entry() -> Option<std::path::PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(config.join("autostart/nus.desktop"))
+}
+
+/// Where this platform keeps the login entry.
+fn login_entry() -> Option<std::path::PathBuf> {
+    if cfg!(target_os = "windows") { startup_link() } else if cfg!(target_os = "macos") { launch_agent() } else { autostart_entry() }
+}
+
+/// The LaunchAgent for `exe`. It opens the bundle, as Finder would, so the
+/// app settles into its own profile; a bare binary (a development build)
+/// runs as itself.
+fn launch_agent_plist(exe: &str) -> String {
+    let args: Vec<String> = match exe.find(".app/Contents/MacOS/") {
+        Some(i) => vec!["/usr/bin/open".into(), "-a".into(), exe[..i + 4].to_string()],
+        None => vec![exe.to_string()],
+    };
+    let args: String = args.iter().map(|a| format!("\n        <string>{}</string>", xml(a))).collect();
+    format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.nus.app.login</string>
+    <key>ProgramArguments</key>
+    <array>{args}
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+</dict>
+</plist>
+"#)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod login_tests {
+    #[test]
+    fn launch_agent_opens_the_bundle_and_is_a_valid_plist() {
+        let plist = super::launch_agent_plist("/Applications/nus & co.app/Contents/MacOS/nus");
+        assert!(plist.contains("<string>/Applications/nus &amp; co.app</string>"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.plist");
+        std::fs::write(&path, &plist).unwrap();
+        assert!(std::process::Command::new("plutil").arg("-lint").arg(&path).status().unwrap().success());
     }
-    let Some(link) = startup_link() else { return Err("no APPDATA".into()) };
+}
+
+pub fn login_item_registered() -> bool {
+    login_entry().is_some_and(|p| p.exists())
+}
+
+fn xml(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Start nus when you log in: a Startup shortcut (Windows), a LaunchAgent
+/// (macOS) or an autostart entry (Linux). Off removes it; nothing else changes.
+pub fn login_item(on: bool) -> Result<(), String> {
+    let Some(entry) = login_entry() else { return Err("Couldn't find your user folder.".into()) };
     if !on {
-        let _ = std::fs::remove_file(&link);
-        return Ok(());
+        if cfg!(target_os = "macos") {
+            let _ = std::process::Command::new("launchctl").arg("unload").arg(&entry).output();
+        }
+        return match std::fs::remove_file(&entry) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if let Some(dir) = entry.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+    if cfg!(target_os = "macos") {
+        let plist = launch_agent_plist(&exe.to_string_lossy());
+        return std::fs::write(&entry, plist).map_err(|e| e.to_string());
+    }
+    if !cfg!(target_os = "windows") {
+        let desktop = format!("[Desktop Entry]\nType=Application\nName=nus\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n", exe.display());
+        return std::fs::write(&entry, desktop).map_err(|e| e.to_string());
+    }
+    let link = entry;
     let script = format!(
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath = '{}'; $s.WorkingDirectory = '{}'; $s.Save()",
         link.display(),

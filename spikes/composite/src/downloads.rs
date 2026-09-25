@@ -48,6 +48,10 @@ pub struct Download {
     pub started: u64,
     #[serde(skip)]
     pub live: bool,
+    /// How the user started it (browser.rs decides, at the start); None for
+    /// anything a page began on its own. Never persisted.
+    #[serde(skip)]
+    pub origin: Option<crate::finish_work::Origin>,
 }
 impl Download {
     pub fn active(&self) -> bool {
@@ -134,6 +138,19 @@ pub fn list() -> Vec<Download> {
         .cloned()
         .collect()
 }
+/// Live downloads, for Finish Work: one per download that is actually
+/// moving. Paused, finished, cancelled and interrupted ones hold nothing.
+/// Only a download the user started carries an origin (browser.rs).
+pub fn finish_work_items() -> Vec<crate::finish_work::Work> {
+    crate::browser::DOWNLOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|d| d.active() && !d.paused)
+        .map(|d| crate::finish_work::Work { id: crate::finish_work::WorkId::Download(d.key), origin: d.origin })
+        .collect()
+}
+
 pub fn changed() {
     REVISION.fetch_add(1, Ordering::Relaxed);
 }
@@ -177,7 +194,7 @@ impl App {
     pub(crate) fn pick_download_dir(&mut self) {
         match crate::pick::folder(&self.window, "Where downloads go") {
             Ok(p) => self.download_ui.dir_pick = Some(p),
-            Err(e) => self.notice(&format!("downloads · {e}")),
+            Err(e) => self.notice_problem("Could Not Open Chooser", e.to_string()),
         }
     }
 
@@ -193,11 +210,11 @@ impl App {
                     let b = self.behavior.clone();
                     self.apply_behavior_statics(&b);
                     self.save_prefs();
-                    self.notice(&format!("downloads · {}", dir.display()));
+                    self.notice(nus_render::text::icons::FOLDER, "Downloads Folder Set", dir.display().to_string());
                     self.dirty = true;
                 }
                 Some(Ok(None)) => {}
-                Some(Err(e)) => self.notice(&format!("downloads · {e}")),
+                Some(Err(e)) => self.notice_problem("Could Not Set Folder", e.to_string()),
             }
         }
         // ASK WHERE TO SAVE: one dialog at a time, in the order they came.
@@ -213,7 +230,7 @@ impl App {
                     Ok(p) => self.download_ui.save_ask = Some((ask, p)),
                     Err(e) => {
                         // No dialog to be had: the folder it was going to.
-                        self.notice(&format!("downloads · {e} · saved to the folder"));
+                        self.notice(nus_render::text::icons::DOWNLOAD, "Saved To Downloads", format!("no save dialog · {e}"));
                         ask.callback.cont(Some(&ask.suggested.to_string_lossy().as_ref().into()), 0);
                     }
                 }
@@ -239,7 +256,7 @@ impl App {
                     // can be cancelled, so it starts and is dropped at once.
                     drop_when_seen(ask.key);
                     ask.callback.cont(Some(&ask.suggested.to_string_lossy().as_ref().into()), 0);
-                    self.notice("download · cancelled");
+                    self.notice(nus_render::text::icons::DOWNLOAD, "Download Cancelled", "");
                 }
             }
         }
@@ -248,7 +265,7 @@ impl App {
         for (key, name) in just_done {
             self.download_ui.finished.insert(key);
             match self.behavior.download_done {
-                crate::settings::DownloadDone::Notice => self.toast_with(Some(nus_render::text::icons::DOWNLOAD), "DOWNLOADED", name, Some(crate::toast::Act::RevealDownload(key))),
+                crate::settings::DownloadDone::Notice => self.toast(nus_render::text::icons::DOWNLOAD, "Downloaded", name, Some(crate::toast::Act::RevealDownload(key))),
                 crate::settings::DownloadDone::Reveal => self.download_action(Hit::Reveal(key)),
                 crate::settings::DownloadDone::Open => self.download_action(Hit::Open(key)),
                 crate::settings::DownloadDone::Quiet => {}
@@ -1356,7 +1373,7 @@ fn open_file(path: &Path) {
         let _ = std::process::Command::new("xdg-open").arg(path).spawn();
     }
 }
-fn reveal(path: &Path, file: bool) {
+pub(crate) fn reveal(path: &Path, file: bool) {
     #[cfg(target_os = "macos")]
     {
         let mut c = std::process::Command::new("open");

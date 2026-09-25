@@ -266,7 +266,7 @@ impl App {
                 cm.delete_cookies(None, None, None);
                 cm.flush_store(None);
             }
-            self.notice("cookies · cleared for every site");
+            self.notice(nus_render::text::icons::COOKIE, "Cookies Cleared", "for every site");
         } else {
             let page = self.tabs.iter().flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref())).find_map(|p| match p {
                 Pane::Web(w) => Some(w),
@@ -275,9 +275,9 @@ impl App {
             match page {
                 Some(w) => {
                     w.tab.devtools("Network.clearBrowserCache", serde_json::json!({}));
-                    self.notice("the cache · cleared; pages fetch fresh");
+                    self.notice(nus_render::text::icons::CHECK, "Cache Cleared", "pages fetch fresh");
                 }
-                None => self.notice("the cache · open a page first; it is cleared through one"),
+                None => self.notice(nus_render::text::icons::GLOBE, "Open A Page First", "the cache is cleared through one"),
             }
         }
         self.dirty = true;
@@ -324,7 +324,7 @@ impl App {
         let url = w.tab.shared.borrow().url.clone();
         let host = host_of(&url);
         let p = prefs(&host);
-        let blocked = w.tab.shared.borrow().blocked;
+        let blocked = w.tab.blocked();
         let r = self.site_panel_rect(w);
         scene.layer(None);
         scene.rect(Rect::new(r.x + self.px(4.0), r.y + self.px(4.0), r.w, r.h), crate::app::fade(ink, 0.6));

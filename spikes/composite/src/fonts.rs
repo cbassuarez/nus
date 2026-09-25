@@ -67,8 +67,8 @@ impl App {
         if role>2{return false;}
         if !name.is_empty(){
             let found=self.fonts.system_families().into_iter().find(|(n,_)|n.eq_ignore_ascii_case(name));
-            let Some((family,mono))=found else{self.notice("That font is not installed. Choose a family from the list.");return false;};
-            if role>0 && !mono {self.notice("Choose a fixed-width font for terminal and code columns.");return false;}
+            let Some((family,mono))=found else{self.notice(nus_render::text::icons::TEXT_AA,"Font Not Installed","choose a family from the list");return false;};
+            if role>0 && !mono {self.notice(nus_render::text::icons::TEXT_AA,"Choose A Fixed-Width Font","for terminal and code columns");return false;}
             self.behavior.typography.system[role as usize]=family;
         } else {self.behavior.typography.system[role as usize].clear();}
         self.apply_fonts();true

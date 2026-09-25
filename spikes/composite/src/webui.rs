@@ -73,6 +73,7 @@ impl App {
     /// panel, over a page.
     pub(crate) fn draw_web_overlays(&mut self, scene: &mut Scene, w: &mut WebPane) {
         self.draw_swipe(scene, w);
+        self.draw_overlay(scene, w);
         self.draw_site_panel(scene, w);
         let t = self.theme.clone();
         let ink = t.ink;
@@ -247,6 +248,7 @@ impl App {
                         let url = w.tab.shared.borrow().url.clone();
                         if !url.is_empty() && !url.starts_with("about:") {
                             w.asleep = Some(url);
+                            w.slept = Some(crate::clock::now());
                             w.tab.suspend();
                             // Keep the existing small-tab/replay preview unchanged.
                         }
@@ -279,12 +281,14 @@ impl App {
                     if let Some(url) = w.asleep.as_ref() {
                         let old=w.tab.shared.borrow();
                         let (x,y)=old.scroll_position;
+                        // Until it paints: how long it slept, and that it's waking.
+                        let waking=crate::interstitial::Page::sleep(url,w.slept.map(crate::clock::since).unwrap_or_default(),true);
                         let fresh=std::rc::Rc::new(std::cell::RefCell::new(crate::browser::Shared {
-                            scale:old.scale,size:old.size,viewer:old.viewer.clone(),restore_scroll:Some((x,y)),..Default::default()
+                            scale:old.scale,size:old.size,viewer:old.viewer.clone(),restore_scroll:Some((x,y)),overlay:Some(waking),..Default::default()
                         }));
                         drop(old);
                         if let Some(tab)=crate::browser::BrowserTab::create_in(url,fresh,self.device.clone(),self.bind_texture.clone(),&w.container) {
-                            w.tab=tab;w.asleep=None;w.seen_paints=0;
+                            w.tab=tab;w.asleep=None;w.seen_paints=0;w.woke=Some(crate::clock::now());
                         }
                     }
                 }

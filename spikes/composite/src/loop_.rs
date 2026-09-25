@@ -84,7 +84,7 @@ impl App {
         }
         let id = w.tab.eval_reply(&format!("({PROBE_JS})({lx}, {ly})"));
         self.loop_probe = Some((tab, right, id, crate::clock::now()));
-        self.notice("finding the source…");
+        self.notice(nus_render::text::icons::CURSOR, "Finding The Source…", "");
         true
     }
 
@@ -95,14 +95,14 @@ impl App {
         let Some(v) = reply else {
             if crate::clock::since(since).as_secs() > 5 {
                 self.loop_probe = None;
-                self.notice("the page did not answer");
+                self.notice(nus_render::text::icons::CURSOR, "No Answer", "the page did not answer");
             }
             return;
         };
         self.loop_probe = None;
         let v = v.pointer("/result/value").cloned().unwrap_or(Value::Null);
         if v.is_null() {
-            self.notice("nothing under the pointer");
+            self.notice(nus_render::text::icons::CURSOR, "Nothing Under The Pointer", "");
             return;
         }
         let root = self.loop_root(tab);
@@ -114,19 +114,19 @@ impl App {
         } else {
             let pathname = v.get("pathname").and_then(Value::as_str).unwrap_or("/");
             let Some(root) = root else {
-                self.notice("no project folder to look in · start the server from a shell here");
+                self.notice(nus_render::text::icons::FOLDER, "No Project Folder", "start the server from a shell here");
                 return;
             };
             match served_file(&root, pathname) {
                 Some(p) => (p, 1),
                 None => {
-                    self.notice(&format!("no file under {} for {pathname}", root.display()));
+                    self.notice(nus_render::text::icons::FOLDER, "No Source File", format!("under {} for {pathname}", root.display()));
                     return;
                 }
             }
         };
         if !path.is_file() {
-            self.notice(&format!("not here: {}", path.display()));
+            self.notice(nus_render::text::icons::FOLDER, "Not Here", path.display().to_string());
             return;
         }
         let how = v.get("how").and_then(Value::as_str).unwrap_or("").to_string();
@@ -141,7 +141,7 @@ impl App {
                 }
             }
         }
-        self.notice(&format!("{} · line {line} · {how}", path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()));
+        self.notice(nus_render::text::icons::CODE, "Found", format!("{} · line {line} · {how}", path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()));
         self.dirty = true;
     }
 

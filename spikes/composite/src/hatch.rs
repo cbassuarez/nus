@@ -130,7 +130,7 @@ impl App {
 
     /// The hotkey, or the chord: show it, or hide it if it's up.
     pub(crate) fn toggle_hatch(&mut self) {
-        if crate::private::enabled() { self.notice("The hatch is available in regular nus windows."); return; }
+        if crate::private::enabled() { self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "the hatch works in regular nus windows"); return; }
         if self.hatch.as_ref().is_some_and(|h| h.visible && !h.hiding) {
             self.hide_hatch();
         } else {
@@ -420,7 +420,13 @@ impl App {
         let Some(h) = self.hatch.as_mut() else { return };
         h.focused = f;
         if !f {h.mods=Default::default();}
-        if !f && autohide && !h.pinned && h.visible && !h.hiding && h.lip_drag.is_none() && h.frame_drag.is_none() {
+        // Summoned from another app, macOS activates nus and hands key status
+        // to the main window a moment after the hatch took it. That blur is
+        // the summons settling, not the user leaving: take focus back.
+        let settling = self.hatch_state.summoned.is_some_and(|t| crate::clock::since(t) < std::time::Duration::from_millis(700));
+        if !f && settling && h.visible && !h.hiding {
+            if crate::hatch_native::interactive() { h.window.focus_window(); }
+        } else if !f && autohide && !h.pinned && h.visible && !h.hiding && h.lip_drag.is_none() && h.frame_drag.is_none() {
             self.hide_hatch_inner(false);
         }
         self.dirty = true;
@@ -613,6 +619,36 @@ impl App {
     }
 
     /// The look or hotkey setting changed: re-place, re-register.
+    /// The recorder's key: Esc cancels, a lone modifier waits for the rest.
+    pub(crate) fn record_hotkey(&mut self, ev: &crate::app::KeyIn) {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let PhysicalKey::Code(code) = ev.physical_key else { return };
+        if matches!(code, KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::ShiftLeft | KeyCode::ShiftRight | KeyCode::AltLeft | KeyCode::AltRight | KeyCode::SuperLeft | KeyCode::SuperRight | KeyCode::CapsLock | KeyCode::Fn) {
+            return;
+        }
+        self.dirty = true;
+        if code == KeyCode::Escape {
+            self.hotkey_recording = false;
+            self.notice(nus_render::text::icons::KEYBOARD, "Hotkey Unchanged", "");
+            return;
+        }
+        match crate::hotkey::Chord::record(code, self.mods) {
+            Ok(chord) => {
+                self.hotkey_recording = false;
+                self.behavior.hatch_hotkey = chord;
+                self.hatch_settings_changed();
+                self.save_prefs();
+                let status = self.hotkey.as_ref().map(|k| k.status.clone()).unwrap_or_default();
+                if status.is_empty() {
+                    self.notice(nus_render::text::icons::KEYBOARD, "Hatch Hotkey Set", chord.label());
+                } else {
+                    self.notice(nus_render::text::icons::KEYBOARD, "Hatch Hotkey", format!("{} · {status}", chord.label()));
+                }
+            }
+            Err(why) => self.notice_problem("Could Not Set Hotkey", why),
+        }
+    }
+
     pub(crate) fn hatch_settings_changed(&mut self) {
         if let Some(h) = self.hatch.as_mut() {
             h.look = self.behavior.hatch_look;

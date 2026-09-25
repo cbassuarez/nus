@@ -78,7 +78,7 @@ impl App {
             HistoryHit::Playback=>{self.run(crate::app::Action::ShareReplay);return;},
             HistoryHit::CopyCommand|HistoryHit::CopyOutput=>{
                 let text=tl.records.get(tl.at).map(|v|field(v,if hit==HistoryHit::CopyCommand{"cmd"}else{"output"})).unwrap_or_default();
-                match arboard::Clipboard::new().and_then(|mut cb|cb.set_text(text)) {Ok(())=>self.notice(if hit==HistoryHit::CopyCommand{"Command copied"}else{"Output copied"}),Err(_)=>self.notice("Could not access the clipboard")};return;
+                match arboard::Clipboard::new().and_then(|mut cb|cb.set_text(text)) {Ok(())=>self.notice(nus_render::text::icons::COPY,"Copied",if hit==HistoryHit::CopyCommand{"the command"}else{"the output"}),Err(_)=>self.notice_problem("Could Not Use Clipboard","")};return;
             }
         }
         if tl.snapshot{tl.rebuild(&self.theme);self.timeline_apply();}

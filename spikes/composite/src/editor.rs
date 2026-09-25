@@ -788,9 +788,9 @@ impl App {
     /// Open a file in the editor: the focused editor pane, else the tab's
     /// other pane if it's one, else a new tab (or a split when `split`).
     pub(crate) fn open_file(&mut self, path: &Path, split: bool) {
-        if crate::private::enabled() { self.notice("Open local files in a regular nus window."); return; }
+        if crate::private::enabled() { self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "open local files in a regular nus window"); return; }
         if !path.is_file() {
-            self.notice(&format!("not a file · {}", path.display()));
+            self.notice(nus_render::text::icons::PENCIL, "Not A File", path.display().to_string());
             return;
         }
         if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".nus.luau")) {
@@ -820,7 +820,7 @@ impl App {
                 match e.open(path) {
                     Ok(i) => Some((active, right, i)),
                     Err(err) => {
-                        self.notice(&format!("{err}"));
+                        self.notice_problem("Could Not Open File", err.to_string());
                         None
                     }
                 }
@@ -835,7 +835,7 @@ impl App {
                         Some((active, true, i))
                     }
                     Err(err) => {
-                        self.notice(&format!("{err}"));
+                        self.notice_problem("Could Not Open File", err.to_string());
                         None
                     }
                 }
@@ -851,7 +851,7 @@ impl App {
                         Some((n, false, i))
                     }
                     Err(err) => {
-                        self.notice(&format!("{err}"));
+                        self.notice_problem("Could Not Open File", err.to_string());
                         None
                     }
                 }
@@ -860,16 +860,6 @@ impl App {
         if idx.is_some() {
             self.files_root_from(path);
             self.apply_term_resizes(false);
-        }
-        self.dirty = true;
-    }
-
-    /// A short line in the editor's status row.
-    pub(crate) fn notice(&mut self, s: &str) {
-        if let Some(e) = self.focused_editor() {
-            e.notice = Some((s.to_string(), crate::clock::now()));
-        } else {
-            self.toast_with(None, "nus", s, None);
         }
         self.dirty = true;
     }

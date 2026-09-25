@@ -90,7 +90,7 @@ impl App {
                 let context=if section==SEC_LOOK {format!("{name} · {}",LOOK_TABS[tab])} else {name.to_string()};
                 let rows=self.rows_for_at(section,tab);
                 for (index,(title,control)) in rows.iter().enumerate() {
-                    if matches!(control,Control::Studio|Control::Strip(_)|Control::Caption) {continue;}
+                    if matches!(control,Control::Studio|Control::Strip(_)|Control::Caption|Control::Section) {continue;}
                     let body=contents(control);
                     let title=if title.is_empty() {
                         if matches!(control,Control::Info(_)|Control::Proof(_)) {continue;}

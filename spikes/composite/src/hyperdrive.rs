@@ -336,10 +336,24 @@ impl App {
             self.dirty = true;
             return;
         }
+        // On a fresh install the pen draws the profile card rather than the
+        // window's edge (me.rs): the card is revealed first, inside the line
+        // the pen drew, and the workspace comes in behind it.
+        let target = (self.me_card.first && self.me_card.open && self.me_card.rect.w > 0.0).then_some(self.me_card.rect);
         // Until the pen reaches the shell, nothing exists outside the card.
         let reveal = phase(t, REVEAL, DURATION - REVEAL);
+        let split = REVEAL + (DURATION - REVEAL) * 0.45;
+        let (inside, behind) = (phase(t, REVEAL, split - REVEAL), phase(t, split, DURATION - split));
         if reveal == 0.0 {
             scene.clear();
+        } else if let Some(m) = target {
+            if behind == 0.0 {
+                scene.clip_existing(Rect::new(m.x, m.y, m.w, m.h * inside));
+            } else {
+                let band = h * behind;
+                let rest = Rect::new(m.x, m.y.max(band), m.w, (m.bottom() - m.y.max(band)).max(0.0));
+                scene.clip_existing_pair(Rect::new(0.0, 0.0, w, band), rest);
+            }
         } else {
             scene.clip_existing(Rect::new(0.0, 0.0, w, h * reveal));
         }
@@ -402,8 +416,8 @@ impl App {
                 );
             }
         }
-        let edge = Rect::new(s * 1.5, s * 1.5, w - s * 3.0, h - s * 3.0);
-        let radius = (self.px(self.surface.shell_radius) - s * 1.5).max(0.0);
+        let edge = target.unwrap_or(Rect::new(s * 1.5, s * 1.5, w - s * 3.0, h - s * 3.0));
+        let radius = if target.is_some() { 0.0 } else { (self.px(self.surface.shell_radius) - s * 1.5).max(0.0) };
         let start = border(edge, radius, 0.0);
         let pen = if t < ESCAPE {
             orbit(center, size, t)
@@ -424,6 +438,8 @@ impl App {
                 [edge.right(), edge.y],
                 phase(t, PAPER, REVEAL - PAPER),
             )
+        } else if target.is_some() {
+            if behind == 0.0 { [edge.right(), edge.y + edge.h * inside] } else { [w - s * 1.5, h * behind] }
         } else {
             [edge.right(), edge.y + edge.h * reveal]
         };
@@ -443,12 +459,17 @@ impl App {
             if reveal > 0.0 {
                 // The original UI is revealed behind a slightly irregular ink
                 // edge; all dimensions, typography and final colors are intact.
+                let (x0, span, at) = match target {
+                    Some(m) if behind == 0.0 => (m.x, m.w, m.y + m.h * inside),
+                    Some(_) => (0.0, w, h * behind),
+                    None => (0.0, w, h * reveal),
+                };
                 for i in 0..80 {
-                    let x = w * i as f32 / 80.0;
+                    let x = x0 + span * i as f32 / 80.0;
                     line(
                         scene,
-                        [x, h * reveal],
-                        [x + w / 80.0, h * reveal + s * (hash(i) - 0.5) * 2.0],
+                        [x, at],
+                        [x + span / 80.0, at + s * (hash(i) - 0.5) * 2.0],
                         s,
                         fade(ink, alpha * 0.38),
                     );

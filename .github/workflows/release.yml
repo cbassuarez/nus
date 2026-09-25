@@ -108,6 +108,8 @@ jobs:
           if [[ "$RUNNER_OS" == macOS ]]; then
             cargo build --locked --release -p nus-render --example icon
           fi
+      # Windows only stages here; sign-windows signs, verifies and packages it.
+      # Keeping OIDC in that one job means these runners can never sign.
       - name: Package and sign
         env:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
@@ -118,9 +120,12 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          WINDOWS_CERTIFICATE: ${{ (github.event_name == 'push' || inputs.publish) && secrets.WINDOWS_CERTIFICATE || '' }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: python scripts/package-release.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            python scripts/package-release.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET" --stage-only
+          else
+            python scripts/package-release.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
+          fi
       - name: Verify packaged executable and runtime loader
         env:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
@@ -129,20 +134,128 @@ jobs:
           if [[ "$RUNNER_OS" == macOS ]]; then
             dist/nus.app/Contents/MacOS/nus --version
           elif [[ "$RUNNER_OS" == Windows ]]; then
-            "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus.exe" --version
+            dist/windows-stage/nus.exe --version
           else
             "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --version
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: runner.os != 'Windows'
         with:
           name: release-${{ matrix.target }}
           path: dist/release/*
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
-  publish:
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: runner.os == 'Windows'
+        with:
+          name: windows-stage
+          path: dist/windows-stage/
+          if-no-files-found: error
+          retention-days: 1
+  sign-windows:
+    # The only job that can mint the OIDC token Azure Artifact Signing trusts.
+    # Every Windows package from this workflow is signed, published or not; if
+    # signing fails there is no Windows package.
     needs: [version, package]
-    if: github.event_name == 'push' || inputs.publish
+    if: needs.package.result == 'success' && contains(needs.version.outputs.targets, 'windows-x86_64')
+    runs-on: windows-2025
+    timeout-minutes: 30
+    environment:
+      name: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: windows-stage
+          path: dist/windows-stage
+      - name: Azure login
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # An exact allowlist: bundled CEF, Widevine and MSVC binaries are not ours to sign.
+      - name: Sign nus Windows executables
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: nus-signing
+          certificate-profile-name: nus-public
+          files: |
+            ${{ github.workspace }}\dist\windows-stage\nus.exe
+            ${{ github.workspace }}\dist\windows-stage\nus-hold.exe
+            ${{ github.workspace }}\dist\windows-stage\bin\nus.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify signatures and build installer
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: python scripts/package-release.py --tag "$RELEASE_TAG" --target windows-x86_64 --build-installer
+      - name: Sign nus Windows installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: nus-signing
+          certificate-profile-name: nus-public
+          files-folder: ${{ github.workspace }}\dist\windows-installer
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify every signature and finalize Windows package
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: python scripts/package-release.py --tag "$RELEASE_TAG" --target windows-x86_64 --finalize-staged
+      - name: Verify signed executable and runtime loader
+        run: dist/windows-stage/nus.exe --version
+      - name: Install, launch and uninstall silently
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/release/*-setup.exe | Select-Object -First 1
+          $channel = if ($setup.Name -like '*-preview.*') { 'preview' } else { 'release' }
+          $app = Join-Path $env:LOCALAPPDATA "Programs\nus\$channel"
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=path','/LOG=install.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log; throw "Installer exited $($p.ExitCode)" }
+          & "$app\nus.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed nus did not start its loader' }
+          $marker = Get-Content (Join-Path $env:LOCALAPPDATA "nus\installs\$channel\installed-location")
+          if ($marker.TrimEnd('\') -ne $app) { throw "Installed location not recorded: $marker" }
+          if (-not ((Get-ItemProperty HKCU:\Environment).Path -split ';' -contains "$app\bin")) { throw 'bin was not added to PATH' }
+          $uninstall = Get-ChildItem (Join-Path $env:LOCALAPPDATA "nus\uninstall\$channel\unins*.exe") | Select-Object -First 1
+          $p = Start-Process $uninstall.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Uninstaller exited $($p.ExitCode)" }
+          # The uninstaller finishes from a temporary copy; give it a moment.
+          for ($i = 0; $i -lt 30 -and (Test-Path $app); $i++) { Start-Sleep 1 }
+          if (Test-Path $app) { throw 'Uninstall left the application folder' }
+          if ((Get-ItemProperty HKCU:\Environment).Path -split ';' -contains "$app\bin") { throw 'Uninstall left bin on PATH' }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-windows-x86_64
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+  publish:
+    needs: [version, package, sign-windows]
+    # A preview without Windows skips sign-windows; that alone must not skip
+    # publication, but a requested Windows package must have been signed.
+    if: >-
+      !cancelled()
+      && (github.event_name == 'push' || inputs.publish)
+      && needs.package.result == 'success'
+      && (needs['sign-windows'].result == 'success'
+          || (needs['sign-windows'].result == 'skipped' && !contains(needs.version.outputs.targets, 'windows-x86_64')))
     runs-on: ubuntu-24.04
     permissions:
       contents: write

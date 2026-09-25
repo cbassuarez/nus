@@ -85,7 +85,7 @@ impl App {
                 None => {
                     self.lsp.failed.insert(key.clone(), missing.clone());
                     if !quiet {
-                        self.notice(&missing);
+                        self.notice_problem("Language Server Missing", missing.clone());
                     }
                     return None;
                 }
@@ -96,7 +96,7 @@ impl App {
                 None => {
                     self.lsp.failed.insert(key.clone(), missing.clone());
                     if !quiet {
-                        self.notice(&missing);
+                        self.notice_problem("Language Server Missing", missing.clone());
                     }
                     return None;
                 }
@@ -110,7 +110,7 @@ impl App {
             Err(e) => {
                 self.lsp.failed.insert(key.clone(), e.to_string());
                 if !quiet {
-                    self.notice(&format!("{}: {e}", server.command));
+                    self.notice_problem("Language Server Failed", format!("{} · {e}", server.command));
                 }
                 None
             }
@@ -235,7 +235,7 @@ impl App {
                     .as_ref()
                     .is_some_and(|c| c.document_formatting_provider.is_none())
                 {
-                    self.notice("this server does not format");
+                    self.notice(nus_render::text::icons::CODE, "No Formatter", "this server does not format");
                     return;
                 }
                 (
@@ -336,13 +336,13 @@ impl App {
                     b.save_pending = None;
                     Ok((path, b.uri.clone(), text))
                 }
-                Err(err) => Err(format!("could not save · {err}")),
+                Err(err) => Err(err.to_string()),
             }
         };
         match written {
             Ok((path, uri, text)) => {
-                self.notice(&format!(
-                    "saved · {}",
+                self.notice(nus_render::text::icons::CHECK, "Saved", format!(
+                    "{}",
                     path.file_name()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_default()
@@ -354,7 +354,7 @@ impl App {
                 }
                 self.play_event("toggle");
             }
-            Err(e) => self.notice(&e),
+            Err(e) => self.notice_problem("Could Not Save", e),
         }
     }
 
@@ -457,7 +457,7 @@ impl App {
                         }
                         // Remember why, so the status row can say so instead of retrying every open.
                         self.lsp.failed.insert(key.clone(), line.clone());
-                        self.notice(&line);
+                        self.notice_problem("Language Server Stopped", line.clone());
                         for tab in &mut self.tabs {
                             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                                 if let Pane::Editor(e) = p {
@@ -562,7 +562,7 @@ impl App {
                 match p {
                     Pending::Format { then_save: true, .. } => self.editor_write(),
                     Pending::PromptCompletion { .. } => {}
-                    _ => self.notice(&format!("server: {e}")),
+                    _ => self.notice_problem("Language Server Error", e.to_string()),
                 }
                 return;
             }
@@ -652,7 +652,7 @@ impl App {
                     None => None,
                 };
                 let Some((uri, range)) = loc else {
-                    self.notice("no definition found");
+                    self.notice(nus_render::text::icons::SEARCH, "No Definition Found", "");
                     return;
                 };
                 let Ok(path) = uri.to_file_path() else { return };
@@ -702,7 +702,7 @@ impl App {
                 if then_save {
                     self.editor_write();
                 } else {
-                    self.notice("formatted");
+                    self.notice(nus_render::text::icons::CHECK, "Formatted", "");
                 }
                 self.editor_synced();
             }

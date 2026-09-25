@@ -438,14 +438,14 @@ impl App {
             rec.flush();
         }
         let Some(path) = self.recorder.as_ref().and_then(|r| r.cast_path(stream_id(id,right))) else {
-            self.notice("nothing recorded for this tab yet");
+            self.notice(nus_render::text::icons::HISTORY, "Nothing Recorded Yet", "for this tab");
             return;
         };
         let Ok(text) = read_cast(&path) else { return };
         let (cols, rows, events) = parse_cast(&text);
         let marks: Vec<usize> = events.iter().enumerate().filter(|(_, e)| matches!(e, Ev::Mark(..))).map(|(k, _)| k).collect();
         if marks.is_empty() {
-            self.notice("no checkpoints yet · run a command first");
+            self.notice(nus_render::text::icons::HISTORY, "No Checkpoints Yet", "run a command first");
             return;
         }
         let at = marks.len() - 1;

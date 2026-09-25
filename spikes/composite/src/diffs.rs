@@ -161,6 +161,34 @@ pub enum Do {
 }
 
 impl Do {
+    /// What the toast says once it is done.
+    pub fn done(self) -> &'static str {
+        match self {
+            Do::Stage => "Staged",
+            Do::Revert => "Reverted",
+            Do::Unstage => "Unstaged",
+            Do::Apply => "Applied",
+        }
+    }
+    /// What takes it back: the index and the working tree each have
+    /// their pair, so an undo is the same `git apply`, the other way.
+    pub fn undo(self) -> Do {
+        match self {
+            Do::Stage => Do::Unstage,
+            Do::Unstage => Do::Stage,
+            Do::Revert => Do::Apply,
+            Do::Apply => Do::Revert,
+        }
+    }
+    /// The verb, for "Could Not …".
+    pub fn verb(self) -> &'static str {
+        match self {
+            Do::Stage => "Stage",
+            Do::Revert => "Revert",
+            Do::Unstage => "Unstage",
+            Do::Apply => "Apply",
+        }
+    }
     pub fn word(self) -> &'static str {
         match self {
             Do::Stage => "STAGE",
@@ -238,6 +266,44 @@ mod tests {
         assert_eq!(kind_of("cat fix.patch"), Kind::Patch);
         assert_eq!(kind_of("cd x; git --no-pager diff -- a.rs"), Kind::Worktree);
         assert_eq!(Do::for_kind(Kind::Worktree), &[Do::Stage, Do::Revert]);
+    }
+
+    #[test]
+    fn every_chip_has_its_undo() {
+        for d in [Do::Stage, Do::Unstage, Do::Revert, Do::Apply] {
+            assert_eq!(d.undo().undo(), d);
+        }
+    }
+
+    /// Stage then undo leaves the index as it was; revert then undo
+    /// leaves the file as it was. Real git, in a scratch repository.
+    #[test]
+    fn undo_takes_a_hunk_back() {
+        let git = |dir: &Path, args: &[&str]| std::process::Command::new("git").args(args).current_dir(dir).output();
+        let dir = std::env::temp_dir().join(format!("nus-undo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if git(&dir, &["init", "-q"]).is_err() {
+            return; // no git here
+        }
+        std::fs::write(dir.join("f.txt"), "a\n").unwrap();
+        git(&dir, &["add", "f.txt"]).unwrap();
+        git(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a"]).unwrap();
+        std::fs::write(dir.join("f.txt"), "b\n").unwrap();
+        let diff = String::from_utf8(git(&dir, &["diff"]).unwrap().stdout).unwrap();
+        let h = parse(&diff).remove(0);
+        let staged = |dir: &Path| !git(dir, &["diff", "--cached", "--quiet"]).unwrap().status.success();
+
+        run(&h, Do::Stage, &dir).unwrap();
+        assert!(staged(&dir));
+        run(&h, Do::Stage.undo(), &dir).unwrap();
+        assert!(!staged(&dir));
+
+        run(&h, Do::Revert, &dir).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "a\n");
+        run(&h, Do::Revert.undo(), &dir).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "b\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

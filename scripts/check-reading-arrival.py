@@ -16,7 +16,7 @@ def run(name,steps,prefs=None,fresh=False,clock=None):
  log=(d/'run.log').read_text()
  if r.returncode or 'panicked' in log:raise RuntimeError(f'{name}: {d}/run.log\n{log[-3000:]}')
  print('PASS',name,flush=True);return p
-p=run('arrival','assertpane welcome\nassertprofile open\nshot profile\ncloseprofile\nshot welcome\narrival 0.15\nshot arrival-mark\narrival 0.9\nshot arrival-warp\nwait 1800\nkey Escape\nwelcomedismiss\nassertpane home',fresh=True)
+p=run('arrival','assertpane home\nassertprofile open\nshot profile\ncloseprofile\nassertpane welcome\nshot welcome\narrival 0.15\nshot arrival-mark\narrival 0.9\nshot arrival-warp\nwait 1800\nkey Escape\nwelcomedismiss\nassertpane home',fresh=True)
 assert (p/'arrival-seen').exists()
 base=json.loads((p/'settings.json').read_text());base['behavior'].update(splash='None',then='Prompt',atlas='Planet',window_start='Last');base['window_rect']=[80,80,1400,1050]
 article=root/'article.html';article.write_text('<!doctype html><meta charset="utf-8"><title>A place to return to</title><article><h1>A place to return to</h1><p>By a reader</p>'+''.join(f'<h2>Chapter {i}</h2><p>'+('Reading should give a thought room to breathe. A page worth saving deserves a quiet place to return to, wherever your next day begins. '*7)+'</p>' for i in range(1,20))+'<pre>let thought = "keep this";\n  return thought;</pre></article>')

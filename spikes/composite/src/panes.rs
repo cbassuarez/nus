@@ -8,6 +8,7 @@
 //! resize. TABS · PANE CONTROLS: NEAR, or NEVER.
 
 use crate::app::{Caps, App, Pane, SideHit};
+use crate::director::Op;
 use nus_render::text::icons;
 use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene};
@@ -88,66 +89,33 @@ impl App {
     }
 
     pub(crate) fn swap_panes(&mut self) {
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        let Some(r) = tab.right.take() else { return };
-        let l = std::mem::replace(&mut tab.left, r);
-        tab.right = Some(l);
-        tab.focus_right = !tab.focus_right;
-        self.play_event("toggle");
-        self.layout();
-        self.save_session();
+        let Some(tab) = self.tabs.get(self.active).map(|t| t.id) else { return };
+        self.direct(Op::Swap { tab });
     }
 
     /// One pane alone in the tab; the other waits off screen. Again undoes.
     pub(crate) fn solo_pane(&mut self, right: bool) {
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        if tab.right.is_none() {
-            return;
-        }
-        if tab.solo && tab.focus_right == right {
-            tab.solo = false;
-        } else {
-            tab.solo = true;
-            tab.focus_right = right;
-        }
-        self.play_event("toggle");
-        self.layout();
+        let Some(t) = self.tabs.get(self.active) else { return };
+        let solo = !(t.solo && t.focus_right == right);
+        let right = if solo { right } else { t.focus_right };
+        self.direct(Op::Solo { tab: t.id, solo, right });
     }
 
     /// Close one pane of a split: the other keeps the tab.
     pub(crate) fn close_pane(&mut self, right: bool) {
-        let i = self.active;
-        let Some(tab) = self.tabs.get_mut(i) else { return };
-        if tab.right.is_none() {
-            return self.close_tabs(false);
-        }
-        if right {
-            tab.right = None;
-        } else if let Some(r) = tab.right.take() {
-            tab.left = r;
-        }
-        tab.focus_right = false;
-        tab.solo = false;
-        self.play_event("tab.close");
-        self.layout();
-        self.save_session();
+        let Some(tab) = self.tabs.get(self.active).map(|t| t.id) else { return };
+        self.direct(Op::Kill { tab, right });
     }
 
     /// A pane of the active tab leaves into a tab of its own, right after.
     pub(crate) fn detach_pane(&mut self, right: bool) {
-        let i = self.active;
-        let Some(pane) = self.take_pane(i, right) else { return };
-        let mut tab = self.make_tab(pane, None);
-        tab.parent = self.tabs[i].parent;
-        let at = self.subtree(i).last().copied().unwrap_or(i) + 1;
-        self.insert_tab_at(at, tab);
-        self.activate(at);
-        self.save_session();
+        let Some(tab) = self.tabs.get(self.active).map(|t| t.id) else { return };
+        self.direct(Op::ToTab { tab, right });
     }
 
     /// Take a pane out of tab `i`; the other pane keeps the tab. None
     /// when the tab isn't split (a lone pane stays where it is).
-    fn take_pane(&mut self, i: usize, right: bool) -> Option<Pane> {
+    pub(crate) fn take_pane(&mut self, i: usize, right: bool) -> Option<Pane> {
         let tab = self.tabs.get_mut(i)?;
         let r = tab.right.take()?;
         tab.focus_right = false;
@@ -181,17 +149,8 @@ impl App {
     /// Drop a dragged pane onto tab `target`: it becomes that tab's other
     /// pane when there's room. Same tab, or a full one: nothing moves.
     pub(crate) fn move_pane_to(&mut self, from: usize, right: bool, target: usize) {
-        if from == target || target >= self.tabs.len() || self.tabs[target].right.is_some() {
-            return;
-        }
-        let Some(pane) = self.take_pane(from, right) else { return };
-        let t = &mut self.tabs[target];
-        t.right = Some(pane);
-        t.focus_right = true;
-        self.play_event("tab.switch");
-        self.activate(target);
-        self.layout();
-        self.save_session();
+        let (Some(f), Some(t)) = (self.tabs.get(from).map(|t| t.id), self.tabs.get(target).map(|t| t.id)) else { return };
+        self.direct(Op::Join { from: f, right, to: t, side_right: true });
     }
 
     /// The corner's field: 0 far away, 1 at the cluster.
@@ -307,7 +266,17 @@ impl App {
         if (x - x0).abs() + (y - y0).abs() < self.px(6.0) {
             return; // a click on the handle, not a drag
         }
-        if self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
+        let what = crate::pane_mode::Dragging::Pane { tab: from, right };
+        if let Some(dest) = self.dropped_outside() {
+            // Out of the window: the pane becomes a tab and goes there.
+            self.activate(from);
+            if let Some(t) = self.tabs.get_mut(from) {
+                t.focus_right = right && t.right.is_some();
+            }
+            self.send_focused(dest);
+        } else if let Some(d) = self.drop_at(x, y, what) {
+            self.apply_drop(what, d);
+        } else if self.sidebar_visible() && self.sidebar_rect().contains(x, y) {
             let g = self.sidebar_geometry();
             if let Some(&(i, _, _)) = g.rows.iter().find(|&&(_, ry, rh)| y >= ry && y < ry + rh) {
                 self.move_pane_to(from, right, i);
@@ -326,6 +295,7 @@ impl App {
         if (mx - x0).abs() + (my - y0).abs() < self.px(6.0) {
             return;
         }
+        self.draw_drop(scene, crate::pane_mode::Dragging::Pane { tab: from, right });
         let t = self.theme.clone();
         let ink = t.ink;
         let title = self.tabs.get(from).map(|tab| {

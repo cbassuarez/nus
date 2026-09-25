@@ -205,6 +205,41 @@ impl ThemeEdit {
     }
 }
 
+/// The theme as it is drawn: its paper tinted by the surface, and every
+/// token read on that paper moved, along OKLCH lightness with hue and
+/// chroma kept, until it reads. A token that stays on its side of the paper
+/// moves the least it must to reach its floor (ink 7:1, dim 4.5:1, caret,
+/// selection and the colours 3:1). One whose paper crossed over it, dark
+/// ink on a page that went black, flips and keeps the contrast it had on
+/// its own paper, so it reads as white, not grey.
+pub fn legible(mut t: Theme, paper: Color) -> Theme {
+    use nus_render::oklch::{from_srgb, readable};
+    use nus_render::policy::contrast;
+    let own = t.paper;
+    t.paper = paper;
+    let (was, now) = (from_srgb(own).l, from_srgb(paper).l);
+    let keep = |c: Color, floor: f32| {
+        let l = from_srgb(c).l;
+        let crossed = (l - was).signum() != (l - now).signum();
+        let want = if crossed { contrast(c, own).clamp(floor, 15.0) } else { floor };
+        readable(c, paper, want)
+    };
+    t.ink = keep(t.ink, 7.0);
+    t.dim = keep(t.dim, 4.5);
+    t.caret = keep(t.caret, 3.0);
+    t.selection = keep(t.selection, 3.0);
+    let dark = nus_render::policy::luminance(paper) < 0.18;
+    // The washes are the ink at a whisper, so they follow it.
+    t.tint = Theme::with_alpha(t.ink, t.tint[3]);
+    t.hot = Theme::with_alpha(t.ink, t.hot[3]);
+    t.scrim = if dark { [0.0, 0.0, 0.0, 0.5] } else { Theme::with_alpha(paper, 0.55) };
+    // Colour 0 is as often a background as a foreground; the rest are read.
+    for i in 1..16 {
+        t.ansi[i] = to_rgb(keep(from_rgb(t.ansi[i]), 3.0));
+    }
+    t
+}
+
 // ── Import ───────────────────────────────────────────────────────────────
 
 /// A theme read from a file: whatever it named.
@@ -341,6 +376,22 @@ fn parse_base16(name: &str, text: &str) -> Option<Imported> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_black_page_keeps_its_words() {
+        use nus_render::oklch::from_srgb;
+        let t = legible(Theme::paper(), hex(0x000000));
+        assert!(contrast(t.ink, t.paper) >= 15.0, "ink flips to white on black");
+        assert!(from_srgb(t.ink).l > 0.85);
+        assert!(contrast(t.dim, t.paper) >= 4.5);
+        for i in 1..16 {
+            assert!(contrast(from_rgb(t.ansi[i]), t.paper) >= 3.0, "colour {i}");
+        }
+        // A gentle tint leaves a readable ink where it was.
+        let base = Theme::paper();
+        let t = legible(base.clone(), crate::surface::mix(base.paper, hex(0xe0d8c8), 0.3));
+        assert_eq!(t.ink, base.ink);
+    }
 
     #[test]
     fn contrast_grades() {

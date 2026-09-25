@@ -208,7 +208,7 @@ impl App {
     }
     fn library_message(&mut self, text: impl Into<String>) {
         self.library.status = text.into();
-        if self.library_home().is_none() { let text = self.library.status.clone(); self.notice(&text); }
+        if self.library_home().is_none() { let text = self.library.status.clone(); self.notice(nus_render::text::icons::BOOK, "Library", text); }
         self.dirty = true;
     }
     pub(crate) fn open_library(&mut self) {

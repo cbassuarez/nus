@@ -37,11 +37,12 @@ def run(name, steps, prefs=None, fresh=False, previous=None):
     print('PASS', name, flush=True)
     return profile
 
-first = run('first', 'assertpane welcome\nasserttabs 1\ncloseprofile\nwelcomebounds\nshot first-install', fresh=True)
-assert (first / 'onboarding-pending').exists()
-run('first', 'assertpane welcome\ncloseprofile\nwelcomedismiss\nassertpane home', fresh=True)
+# A fresh install: the profile walk first, over the prompt; Welcome after it.
+first = run('first', 'assertpane home\nasserttabs 1\nassertprofile open\ncloseprofile\nassertpane welcome\nasserttabs 1\nwelcomebounds\nshot first-install', fresh=True)
 assert not (first / 'onboarding-pending').exists()
-run('first', 'assertpane home\nasserttabs 1\nassertnoshells', fresh=True)
+assert (first / 'agreed').exists() and (first / 'me.json').exists()
+# Finished once, it never comes back in place of the start page.
+run('first', 'assertpane home\nasserttabs 1\nassertnoshells\nassertprofile closed', fresh=True)
 base = json.loads((first / 'settings.json').read_text())
 base['behavior'].update(splash='None', then='Prompt', atlas='Planet', window_start='Last')
 base['sidebar_pinned'] = True
@@ -52,15 +53,15 @@ old.mkdir()
 old_prefs = copy.deepcopy(base)
 old_prefs['sidebar']['pin_display'] = 'Preview'
 (old / 'settings.json').write_text(json.dumps(old_prefs))
-returned = run('return-defaults', 'assertpane welcome\nassertprofile open\ncloseprofile\nwelcomebounds\nshot redownload\nwelcomedismiss\nassertpane home', base, fresh=True, previous=old)
+returned = run('return-defaults', 'assertpane home\nassertprofile open\ncloseprofile\nassertpane welcome\nwelcomebounds\nshot redownload\nwelcomedismiss\nassertpane home', base, fresh=True, previous=old)
 assert json.loads((returned / 'settings.json').read_text())['sidebar']['pin_display'] == 'Icon'
 run('return-defaults', 'assertpane home\nasserttabs 1', fresh=True)
-imported = run('return-import', 'assertpane welcome\nassertprofile open\ncloseprofile\nwelcomeclick ImportSettings\nwait 200\nwelcomedismiss', base, fresh=True, previous=old)
+imported = run('return-import', 'assertpane home\nassertprofile open\ncloseprofile\nassertpane welcome\nwelcomeclick ImportSettings\nwait 200\nwelcomedismiss', base, fresh=True, previous=old)
 assert json.loads((imported / 'settings.json').read_text())['sidebar']['pin_display'] == 'Preview'
 
 narrow = copy.deepcopy(base)
 narrow['window_rect'] = [80, 80, 860, 1500]
-run('return-narrow', 'assertpane welcome\nassertprofile open\ncloseprofile\nwelcomebounds\nshot narrow-top\nwelcomescroll 360\nwait 200\nwelcomebounds\nshot narrow-pins', narrow, fresh=True, previous=old)
+run('return-narrow', 'assertpane home\nassertprofile open\ncloseprofile\nassertpane welcome\nwelcomebounds\nshot narrow-top\nwelcomescroll 360\nwait 200\nwelcomebounds\nshot narrow-pins', narrow, fresh=True, previous=old)
 
 palette = copy.deepcopy(base)
 palette['behavior']['then'] = 'Palette'

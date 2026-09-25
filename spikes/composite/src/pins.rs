@@ -44,12 +44,13 @@ impl Pin {
     }
     pub(crate) fn icon(&self) -> (&'static str, &'static str) {
         match self.target {
-            Target::Welcome => icons::HOME,
+            Target::Welcome => icons::ROCKET,
             Target::Library => icons::BOOK,
             Target::Downloads => icons::DOWNLOAD,
             Target::Ports => icons::PORTS,
             Target::Settings => icons::SETTINGS,
-            Target::Prompt | Target::Shell { .. } => icons::TERMINAL,
+            Target::Prompt => icons::HOME,
+            Target::Shell { .. } => icons::TERMINAL,
             Target::Page { .. } => icons::GLOBE,
             Target::File { .. } => icons::CODE,
         }
@@ -80,7 +81,7 @@ impl Act {
             Self::Down(i) => format!("Move {} down", name(i)),
             Self::Close(i) => format!("Close {}; keep pin", name(i)),
             Self::Edit => "Edit pinned tabs".into(),
-            Self::Add => "Pin current tab".into(),
+            Self::Add => "Pin this tab".into(),
             Self::ToggleDefault(i) => format!("Toggle default pin {}", i + 1),
         }
     }
@@ -151,6 +152,30 @@ impl App {
             .live
             .retain(|id, _| items.iter().any(|p| &p.id == id));
         self.pins.items = items;
+    }
+    /// Pin a page by address. Nothing loads until the pin is opened.
+    pub(crate) fn pin_url(&mut self, typed: &str) {
+        if crate::private::enabled() {
+            return;
+        }
+        let url = crate::links::normalize(typed.trim());
+        let url = if url.contains("://") { url } else { format!("https://{url}") };
+        let target = Target::Page { url: url.clone(), container: self.container.clone() };
+        let host = crate::links::host(&url);
+        if !self.pins.items.iter().any(|p| p.target == target) {
+            self.pins.items.push(Pin { id: format!("pin-{}", crate::remote::new_token()), title: if host.is_empty() { url.clone() } else { host.clone() }, target });
+            self.save_prefs();
+        }
+        self.notice(nus_render::text::icons::PIN, "Pinned", host);
+        self.layout();
+        self.dirty = true;
+    }
+
+    /// The active tab, when the PINNED header's pin button would pin it:
+    /// a tab with a pin target that isn't pinned yet.
+    pub(crate) fn pin_candidate(&self) -> Option<usize> {
+        let tab = self.tabs.get(self.active)?;
+        (!crate::private::enabled() && !tab.pinned && !tab.hatch && target(tab).is_some()).then_some(self.active)
     }
     pub(crate) fn pin_tab(&mut self, i: usize) {
         if crate::private::enabled() {
@@ -274,7 +299,19 @@ impl App {
                 }
             }
             Act::Add => {
-                self.pin_tab(self.active);
+                // Pins the tab you are on, straight away. Only when this tab
+                // is already pinned, or can't be, does the palette open at
+                // `pin ` to take an address instead.
+                if let Some(i) = self.pin_candidate() {
+                    let title = self.tabs[i].title();
+                    self.pin_tab(i);
+                    self.notice(icons::PIN, "Pinned", title);
+                    return;
+                }
+                self.open_palette(crate::app::PaletteMode::Go);
+                if let Some((_, input)) = self.palette.as_mut() {
+                    *input = "pin ".into();
+                }
                 return;
             }
             Act::ToggleDefault(k) => {
@@ -392,7 +429,33 @@ impl App {
     fn pin_columns(&self) -> usize {
         if self.pins.editing || self.sidebar_icons() { 1 }
         else if self.sidebar_rules.pin_display == Display::Preview { 2 }
-        else { ((self.list_rect().w / self.px(70.0)).floor() as usize).clamp(2, 5) }
+        else { ((self.list_rect().w / self.px(84.0)).floor() as usize).clamp(2, 4) }
+    }
+    /// A tile's name in at most two lines, broken at words; only what
+    /// still doesn't fit gets an ellipsis.
+    fn tile_title(&self, style: Style, title: &str, max_w: f32) -> Vec<String> {
+        if self.fonts.measure(style, title) <= max_w {
+            return vec![title.to_string()];
+        }
+        let words: Vec<&str> = title.split_whitespace().collect();
+        let mut first = String::new();
+        let mut used = 0;
+        for (i, w) in words.iter().enumerate() {
+            let next = if first.is_empty() { w.to_string() } else { format!("{first} {w}") };
+            if self.fonts.measure(style, &next) > max_w { break; }
+            first = next;
+            used = i + 1;
+        }
+        if used == 0 {
+            // One long word: break it where the width runs out.
+            let chars: Vec<char> = title.chars().collect();
+            let mut k = chars.len();
+            while k > 1 && self.fonts.measure(style, &chars[..k].iter().collect::<String>()) > max_w { k -= 1; }
+            let rest: String = chars[k..].iter().collect();
+            return vec![chars[..k].iter().collect(), self.fit(style, rest.trim(), max_w)];
+        }
+        let rest = words[used..].join(" ");
+        if rest.is_empty() { vec![first] } else { vec![first, self.fit(style, &rest, max_w)] }
     }
     fn pin_stride(&self) -> f32 {
         self.px(if self.pins.editing { 36.0 } else if self.sidebar_icons() { 44.0 } else { 80.0 })
@@ -489,7 +552,7 @@ impl App {
                     "Edit pinned tabs"
                 },
             ),
-            (1, Act::Add, icons::PLUS, "Pin the current tab"),
+            (1, Act::Add, icons::PIN, if self.pin_candidate().is_some() { "Pin this tab" } else { "Pin an address" }),
         ] {
             if compact && j == 1 {
                 continue;
@@ -589,10 +652,15 @@ impl App {
             self.side_hits.push((hit, SideHit::Pinned(Act::Open(k))));
             self.offer_tip(crate::app::hover_key(&format!("pin:{}", pin.id), 0), hit, pin.title.clone());
             if tiles && !compact {
+                // Two lines before an ellipsis: a tile's name reads whole.
                 let style = self.label();
-                let text = self.fit(style, &pin.title, rr.w - self.px(8.0));
-                let x = rr.x + (rr.w - self.fonts.measure(style, &text)) * 0.5;
-                self.fonts.draw(scene, Style { color, ..style }, x, rr.bottom() - self.px(8.0), &text);
+                let lines = self.tile_title(style, &pin.title, rr.w - self.px(8.0));
+                let lh = self.px(13.0);
+                for (n, line) in lines.iter().enumerate() {
+                    let x = rr.x + (rr.w - self.fonts.measure(style, line)) * 0.5;
+                    let y = rr.bottom() - self.px(8.0) - (lines.len() - 1 - n) as f32 * lh;
+                    self.fonts.draw(scene, Style { color, ..style }, x, y, line);
+                }
             } else if !compact {
                 let controls = if self.pins.editing {
                     self.px(76.0)

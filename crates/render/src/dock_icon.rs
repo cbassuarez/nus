@@ -75,6 +75,70 @@ pub fn render(size: u32, signal: Color, face: Face) -> Vec<u8> {
     Field::new(size, face).frame(signal)
 }
 
+/// The incognito mark: the regular letter and orbit, the orbit in ink
+/// instead of the Space's colour, and a slim ink bar across the letter's
+/// stems, the way a line is blacked out in print. The arch stays clear so
+/// the n still reads; light keylines keep the ink parts on dark desktops.
+pub fn redacted(size: u32) -> Vec<u8> {
+    let field = Field::new(size, Face::Newsreader);
+    let s = size as f32;
+    let ink = [0.02, 0.02, 0.025, 1.0];
+    let light = [0.93, 0.91, 0.86, 1.0];
+    // The rim reads as an edge from 48 px up; below that it is only mud,
+    // and the white letter, its keyline and the bar carry the mark alone.
+    let rim = size >= 48;
+    let key = (s * 0.016).round().max(1.0) as usize;
+    let (halo_back, halo_front) = if rim {
+        (
+            dilate(&field.back, size, key),
+            dilate(&field.front, size, key),
+        )
+    } else {
+        (vec![0.0; field.back.len()], vec![0.0; field.front.len()])
+    };
+    let [x0, y0, x1, y1] = field.bounds;
+    let h = (s * 0.1).round().max(2.0);
+    let cy = (y0 + (y1 - y0) * 0.58).round() + if (h as u32) % 2 == 1 { 0.5 } else { 0.0 };
+    let bar = [x0 - s * 0.03, cy - h / 2.0, x1 + s * 0.03, cy + h / 2.0];
+    let edge = if rim {
+        (s * 0.016).round().max(1.0)
+    } else {
+        0.0
+    };
+    let cover = |r: [f32; 4], x: f32, y: f32| {
+        let hx = (x - r[0]).min(r[2] - x).clamp(-0.5, 0.5) + 0.5;
+        let hy = (y - r[1]).min(r[3] - y).clamp(-0.5, 0.5) + 0.5;
+        hx * hy
+    };
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let i = (y * size + x) as usize;
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let mut c = field.under[i];
+            over(&mut c, light, halo_back[i]);
+            over(&mut c, ink, field.back[i]);
+            over(&mut c, field.letter[i], 1.0);
+            over(&mut c, light, halo_front[i]);
+            over(&mut c, ink, field.front[i]);
+            over(
+                &mut c,
+                light,
+                cover(
+                    [bar[0] - edge, bar[1] - edge, bar[2] + edge, bar[3] + edge],
+                    px,
+                    py,
+                ),
+            );
+            over(&mut c, ink, cover(bar, px, py));
+            for k in 0..4 {
+                out[i * 4 + k] = (c[k].clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+    }
+    out
+}
+
 /// A still Signal badge over the existing authored mark. Empty text is a dot.
 pub fn tray(size: u32, signal: Color, badge: Option<&str>) -> Vec<u8> {
     let mut rgba = render(size, signal, Face::Newsreader);
@@ -174,6 +238,8 @@ pub struct Field {
     letter: Vec<Color>,
     back: Vec<f32>,
     front: Vec<f32>,
+    /// The visible letter's box, [x0, y0, x1, y1] in pixels.
+    bounds: [f32; 4],
 }
 impl Field {
     pub fn new(size: u32, face: Face) -> Self {
@@ -237,6 +303,19 @@ impl Field {
                 }
             }
         }
+        let mut bounds = [s, s, 0.0f32, 0.0f32];
+        for y in 0..size {
+            for x in 0..size {
+                if glyph[(y * size + x) as usize] > 0.5 {
+                    bounds = [
+                        bounds[0].min(x as f32),
+                        bounds[1].min(y as f32),
+                        bounds[2].max(x as f32 + 1.0),
+                        bounds[3].max(y as f32 + 1.0),
+                    ];
+                }
+            }
+        }
         // A crisp edge remains visible even at 16 px; the softer shadow adds depth.
         let edge = dilate(&glyph, size, (s * 0.004).round().max(1.0) as usize);
         let orbit: Vec<_> = front.iter().zip(&back).map(|(a, b)| a.max(*b)).collect();
@@ -267,6 +346,7 @@ impl Field {
             letter,
             back,
             front,
+            bounds,
         }
     }
     pub fn frame(&self, signal: Color) -> Vec<u8> {
@@ -388,6 +468,36 @@ mod tests {
                     .any(|p| p[3] > 100 && p[0] < 20 && p[1] < 20 && p[2] < 20),
                 "contrast edge"
             );
+        }
+    }
+    #[test]
+    fn the_redacted_mark_is_monochrome_with_its_bar() {
+        for size in [16u32, 32, 48, 64, 128, 256, 512, 1024] {
+            let px = redacted(size);
+            let p = px.as_chunks::<4>().0;
+            // No Space colour anywhere: every opaque pixel is a grey.
+            assert!(
+                p.iter()
+                    .filter(|c| c[3] > 200)
+                    .all(|c| c[0].abs_diff(c[1]) < 24 && c[1].abs_diff(c[2]) < 24),
+                "{size}: tinted"
+            );
+            assert!(
+                p.iter().any(|c| c == &[255, 255, 255, 255]),
+                "{size}: no white letter"
+            );
+            // The bar: an opaque ink run across the middle of the letter.
+            let b = Field::new(size, Face::Newsreader).bounds;
+            let row = ((b[1] + (b[3] - b[1]) * 0.58) as u32).min(size - 1);
+            let inked = (0..size)
+                .filter(|&x| {
+                    let c = p[(row * size + x) as usize];
+                    c[3] > 240 && c[0] < 30
+                })
+                .count();
+            assert!(inked as f32 >= (b[2] - b[0]) * 0.8, "{size}: bar {inked}");
+            assert_eq!(px[3], 0);
+            assert_eq!(px[px.len() - 1], 0);
         }
     }
     #[test]

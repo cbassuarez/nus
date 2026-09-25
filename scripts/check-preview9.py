@@ -67,19 +67,19 @@ bundle bash-language-server
 asserttoast Installing bash-language-server
 awaitbundle bash-language-server
 assertbundle bash-language-server
-asserttoast bash-language-server installed
+asserttoast Installed bash-language-server
 shot installed-bash
 bundle taplo
 awaitbundle taplo
 assertbundle taplo
 assertbundle bash-language-server
-asserttoast taplo installed
+asserttoast Installed taplo
 bundle taplo
-asserttoast taplo removed
+asserttoast Removed taplo
 assertbundle bash-language-server
 bundle fixture-missing-manager
 wait 1200
-asserttoast fixture-missing-manager failed
+asserttoast Could Not Install fixture-missing-manager
 shot installation-error
 ''',{'SHELL':str(shell),'PATH':str(bin)+':/usr/bin:/bin:/usr/sbin:/sbin'},timeout=180)
   tool=root/'downloads/profile/tools/bash-language-server/bin/bash-language-server'

@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('release',Path(__file__).with_name('publish-release.py'))
@@ -100,6 +101,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_stable_requires_each_platforms_own_signature(self):
         self.tag='v0.0.1'
+        self.with_installer()
         signing={'linux-x86_64':'checksum','macos-arm64':'notarized','windows-x86_64':'authenticode'}
         for target in signing:
             path=self.root/f'{target}.json'
@@ -160,5 +162,152 @@ class ReleaseTests(unittest.TestCase):
             launcher=tar.extractfile(prefix+'nus').read().decode()
             self.assertIn('LD_LIBRARY_PATH',launcher)
             self.assertIn('exec "$dir/nus-desktop" "$@"',launcher)
+
+    def windows_payloads(self):
+        redist=self.root/'redist'
+        payloads={
+            'vendor/cef/libcef.dll':b'cef',
+            'vendor/cef/icudtl.dat':b'icu',
+            'vendor/cef/locales/en-US.pak':b'locale',
+            'spikes/composite/target/release/composite.exe':b'desktop',
+            'target/release/nus-hold.exe':b'hold',
+            'target/release/nus.exe':b'cli',
+            'redist/x64/Microsoft.VC145.CRT/vcruntime140.dll':b'crt',
+            'assets/fonts/OFL-test.txt':b'font license',
+            'assets/icons/LICENSE':b'icon license',
+            'LICENSE':b'license',
+            'inno/ISCC.exe':b'compiler',
+        }
+        for name,data in payloads.items():
+            path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
+        return {'VCToolsRedistDir':str(redist),'ISCC':str(self.root/'inno/ISCC.exe')}
+
+    def package(self,*mode,tag=None,run=None):
+        args=['package','--tag',tag or self.tag,'--target','windows-x86_64',*mode]
+        calls=[]
+        def verify(cmd,**kw):
+            calls.append(cmd)
+            if cmd[0].endswith('ISCC.exe'):
+                # Stand in for Inno Setup: an installer built from the stage.
+                define=lambda key: next(a.split('=',1)[1] for a in cmd if a.startswith(f'/D{key}='))
+                self.assertTrue((Path(define('SourceDir'))/'README.txt').is_file())
+                Path(define('OutputDir')).mkdir(parents=True,exist_ok=True)
+                (Path(define('OutputDir'))/(define('OutputName')+'.exe')).write_bytes(b'setup '+define('Channel').encode())
+            return (run or (lambda: subprocess.CompletedProcess(cmd,0)))()
+        with patch.object(sys,'argv',args),patch.object(release.package,'ROOT',self.root),patch.object(release.package.subprocess,'run',verify),patch('builtins.print'):
+            release.package.main()
+        return calls
+
+    def test_windows_stage_is_unsigned_payload_without_release_record(self):
+        with patch.dict('os.environ',self.windows_payloads()):
+            calls=self.package('--stage-only')
+        stage=self.root/'dist/windows-stage'
+        for name in ['nus.exe','nus-hold.exe','bin/nus.exe','libcef.dll','vcruntime140.dll','locales/en-US.pak','LICENSE']:
+            self.assertTrue((stage/name).is_file(),name)
+        # Metadata that claims a signature must not exist before signing.
+        self.assertFalse((stage/'README.txt').exists())
+        self.assertFalse((stage/'nus-package.json').exists())
+        self.assertEqual(list((self.root/'dist/release').iterdir()),[])
+        self.assertEqual(calls,[])
+
+    def test_windows_installer_is_built_only_from_verified_executables(self):
+        with patch.dict('os.environ',self.windows_payloads()):
+            self.package('--stage-only')
+            calls=self.package('--build-installer')
+        self.assertTrue(calls[0][3].endswith('verify-windows-release.ps1'))
+        self.assertNotIn('-Installer',calls[0])
+        self.assertTrue(calls[1][0].endswith('ISCC.exe'))
+        self.assertIn('/DChannel=preview',calls[1])
+        self.assertIn('/DNumericVersion=0.0.1',calls[1])
+        self.assertTrue((self.root/'dist/windows-installer/nus-0.0.1-preview.1-windows-x86_64-setup.exe').is_file())
+        self.assertEqual(list((self.root/'dist/release').iterdir()),[])
+
+    def test_windows_finalize_verifies_before_recording_authenticode(self):
+        with patch.dict('os.environ',self.windows_payloads()):
+            self.package('--stage-only')
+            self.package('--build-installer')
+            calls=self.package('--finalize-staged')
+        self.assertEqual(len(calls),1)
+        self.assertTrue(calls[0][3].endswith('verify-windows-release.ps1'))
+        self.assertTrue(calls[0][-1].endswith('-setup.exe'))
+        output=self.root/'dist/release'
+        record=json.loads((output/'windows-x86_64.json').read_text())
+        self.assertEqual(record['signing'],'authenticode')
+        archive=output/record['name']
+        self.assertEqual(record['sha256'],release.package.digest(archive))
+        self.assertIn(record['sha256'],(output/f'{archive.name}.sha256').read_text())
+        setup=output/record['installer']['name']
+        self.assertEqual(setup.name,'nus-0.0.1-preview.1-windows-x86_64-setup.exe')
+        self.assertEqual(record['installer']['sha256'],release.package.digest(setup))
+        self.assertIn(record['installer']['sha256'],(output/f'{setup.name}.sha256').read_text())
+        prefix='nus-0.0.1-preview.1-windows-x86_64/'
+        with zipfile.ZipFile(archive) as z:
+            names=set(z.namelist())
+            for name in ['nus.exe','nus-hold.exe','bin/nus.exe','libcef.dll','README.txt','nus-package.json']:
+                self.assertIn(prefix+name,names)
+            self.assertIn('Signing: authenticode',z.read(prefix+'README.txt').decode())
+            self.assertEqual(json.loads(z.read(prefix+'nus-package.json'))['signing'],'authenticode')
+
+    def test_windows_finalize_requires_the_signed_installer(self):
+        with patch.dict('os.environ',self.windows_payloads()):
+            self.package('--stage-only')
+        with self.assertRaisesRegex(FileNotFoundError,'setup.exe'): self.package('--finalize-staged')
+
+    def with_installer(self):
+        path=self.root/'windows-x86_64.json'
+        record=json.loads(path.read_text())
+        setup=self.root/'nus-0.0.1-preview.1-windows-x86_64-setup.exe'
+        setup.write_bytes(b'setup')
+        record.update(signing='authenticode',installer={'name':setup.name,'sha256':release.package.digest(setup),'size':setup.stat().st_size})
+        path.write_text(json.dumps(record))
+        return setup
+
+    def test_installer_is_published_beside_its_portable_package(self):
+        setup=self.with_installer()
+        calls=self.run_release()
+        self.assertIn(str(setup),calls[-2])
+        self.assertIn(setup.name,(self.root/'SHA256SUMS.txt').read_text())
+        manifest=json.loads((self.root/'release.json').read_text())
+        # The updater takes the first asset for its target: it must stay the ZIP.
+        windows=[e for e in manifest['assets'] if e['target']=='windows-x86_64']
+        self.assertEqual([e['name'] for e in windows],['nus-0.0.1-preview.1-windows-x86_64.zip'])
+        self.assertEqual(windows[0]['installer']['name'],setup.name)
+
+    def test_corrupt_installer_cannot_publish(self):
+        self.with_installer().write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError,'Invalid installer'): self.run_release()
+
+    def test_stable_windows_requires_installer(self):
+        self.tag='v0.0.1'
+        signing={'linux-x86_64':'checksum','macos-arm64':'notarized','windows-x86_64':'authenticode'}
+        for target in signing:
+            path=self.root/f'{target}.json'
+            record=json.loads(path.read_text())
+            record.update(version=self.tag,channel='stable',signing=signing[target])
+            path.write_text(json.dumps(record))
+        with self.assertRaisesRegex(ValueError,'requires its installer'): self.run_release()
+
+    def test_windows_failed_verification_writes_no_release(self):
+        with patch.dict('os.environ',self.windows_payloads()):
+            self.package('--stage-only')
+            self.package('--build-installer')
+        def fail(): raise subprocess.CalledProcessError(1,'pwsh')
+        with self.assertRaises(subprocess.CalledProcessError): self.package('--finalize-staged',run=fail)
+        self.assertEqual(list((self.root/'dist/release').iterdir()),[])
+
+    def test_windows_finalize_requires_staged_executables(self):
+        with self.assertRaisesRegex(FileNotFoundError,'incomplete'): self.package('--finalize-staged')
+
+    def test_windows_packaging_mode_is_explicit_and_stable_is_never_unsigned(self):
+        with patch('sys.stderr'):
+            with self.assertRaises(SystemExit): self.package()
+            with self.assertRaises(SystemExit): self.package('--unsigned-preview',tag='v0.0.1')
+
+    def test_windows_unsigned_preview_says_so(self):
+        with patch.dict('os.environ',self.windows_payloads()):
+            calls=self.package('--unsigned-preview')
+        self.assertEqual(calls,[])
+        record=json.loads((self.root/'dist/release/windows-x86_64.json').read_text())
+        self.assertEqual(record['signing'],'unsigned')
 
 if __name__=='__main__': unittest.main()

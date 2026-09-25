@@ -119,7 +119,7 @@ impl App {
         crate::store::write_json(&path(), &prefs)?;
         self.apply_prefs(prefs);
         self.rebuild_theme();
-        self.pointer_request = Some(self.cursor.pointer);
+        self.pointer_reset = true;
         self.hatch_settings_changed();
         self.save_prefs();
         self.layout();
@@ -213,7 +213,7 @@ impl App {
         let dropped = std::mem::take(&mut *SALVAGED.lock().unwrap());
         if !dropped.is_empty() {
             let shown: Vec<&str> = dropped.iter().map(|s| s.as_str()).take(4).collect();
-            self.notice(&format!("settings · {} kept as {} · the original is settings.unread", if dropped.len() > 4 { format!("{} and {} more", shown.join(", "), dropped.len() - 4) } else { shown.join(", ") }, "the default"));
+            self.notice_problem("Some Settings Not Read", format!("{} kept as {} · the original is settings.unread", if dropped.len() > 4 { format!("{} and {} more", shown.join(", "), dropped.len() - 4) } else { shown.join(", ") }, "the default"));
         }
     }
 
@@ -289,7 +289,7 @@ impl App {
             self.recorder = self.behavior.replay.days().and_then(crate::replay::Recorder::new);
         }
         self.rebuild_theme();
-        self.pointer_request = Some(self.cursor.pointer);
+        self.pointer_reset = true;
         self.hatch_settings_changed();
         self.layout();
         self.dirty = true;

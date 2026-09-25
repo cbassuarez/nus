@@ -83,12 +83,12 @@ impl App {
             return;
         }
         let Some(k) = key() else {
-            self.notice("sync · no key yet · nus sync key");
+            self.notice(nus_render::text::icons::LOCK_KEY, "No Sync Key Yet", "nus sync key");
             return;
         };
         let (folder, git) = self.sync_carriers();
         if folder.is_none() && git.is_none() {
-            self.notice("sync · no carrier · a folder or a git remote in settings");
+            self.notice(nus_render::text::icons::NETWORK, "No Sync Carrier", "a folder or a git remote in settings");
             return;
         }
         let profile = profile_dir();
@@ -133,13 +133,8 @@ impl App {
         self.sync.rx = None;
         self.sync.running_since = None;
         let pulled = !rep.pulled.is_empty();
-        let summary = if !rep.errors.is_empty() {
-            format!("sync · {}", rep.errors[0])
-        } else if pulled || !rep.pushed.is_empty() {
-            format!("sync · {} in · {} out{}", rep.pulled.len(), rep.pushed.len(), if rep.kept.is_empty() { String::new() } else { format!(" · {} kept as .lost", rep.kept.len()) })
-        } else {
-            "sync · up to date".into()
-        };
+        let problem = rep.errors.first().cloned();
+        let summary = format!("{} in · {} out{}", rep.pulled.len(), rep.pushed.len(), if rep.kept.is_empty() { String::new() } else { format!(" · {} kept as .lost", rep.kept.len()) });
         if pulled {
             // What arrived shows: prefs, rules, folders.
             self.apply_prefs(crate::prefs::Prefs::load());
@@ -149,7 +144,10 @@ impl App {
             self.layout();
         }
         if pulled || !rep.errors.is_empty() {
-            self.notice(&summary);
+            match problem {
+                Some(e) => self.notice_problem("Could Not Sync", e.to_string()),
+                None => self.notice(nus_render::text::icons::NETWORK, "Synced", summary),
+            }
         }
         self.sync.last = Some((crate::clock::now(), rep));
         self.dirty = true;

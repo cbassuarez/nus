@@ -85,6 +85,33 @@ startup must be completed and tested before publishing a Windows sandbox claim.
 Linux namespace/seccomp enforcement also requires native package validation.
 An enabled setting or command-line switch alone is not proof of enforcement.
 
+## Finish Work (keeping the computer awake)
+
+Keeping the machine awake is a capability that starts only from the user's own
+hand (`spikes/composite/src/finish_work.rs`, `finish_work_native.rs`):
+
+- It is engaged by clicking the header's coffee, and only protects work the
+  user started: a shell command they entered (or clicked something in nus to
+  run), and a download they started. The unit of shell work is the command
+  generation reported by shell integration (OSC 133), never a PID or CPU use.
+- A download qualifies only if nus saw the user's own input into that page just
+  before it began, the navigation carried Chromium's user gesture, or nus
+  started it for them (Save image). Timers, service workers, sockets and
+  background requests never qualify. Web pages have no API for any of this.
+- Commands a rule, an assistant or a restored session types into a shell do not
+  qualify.
+- One OS hold exists only while protected work remains: an IOKit
+  `PreventUserIdleSystemSleep` assertion (macOS), a `PowerSetRequest`
+  SystemRequired request (Windows), or a logind inhibitor file descriptor
+  (Linux). Each is released when its lease is dropped, and by the OS if nus
+  exits or crashes. Nothing is persisted; a restart never resumes a hold.
+- Battery (at or below 10% on battery), the OS's critical-battery flag and a
+  critical thermal state always release the hold; it does not re-engage on its
+  own. The display may sleep, and nothing overrides the OS's own protections.
+- Nothing is privileged. Windows power plans and Linux `logind.conf` are never
+  modified. On macOS, closing a MacBook's lid still sleeps it, and the UI says
+  so; a privileged closed-lid helper is deliberately not shipped.
+
 ## Verification and release requirements
 
 Unit checks cover authenticated encryption, wrong keys/context, corruption,

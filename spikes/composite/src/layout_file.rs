@@ -14,8 +14,15 @@
 //!     { page = "https://docs.rs/wgpu", name = "wgpu docs", pinned = true },
 //!   },
 //!   hatch = { shell = "pwsh" },
+//!   -- Tiled: tab 1 on the left, 3 over 4 on the right (tabs by number).
+//!   tiles = { row = { 1, { column = { 3, 4 } } }, ratio = 0.5 },
 //! }
 //! ```
+//!
+//! `tiles` is the tiling's tree (tiles.rs): a number is a tab of the list
+//! above (a `beside` tab stands for the tab it sits in), `row` puts two
+//! side by side and `column` one over the other, each with its own
+//! `ratio` (the first's share, 0.5 when left out).
 
 use std::path::{Path, PathBuf};
 
@@ -39,6 +46,62 @@ pub struct Layout {
     pub space: Option<String>,
     pub tabs: Vec<LayoutTab>,
     pub hatch: Option<LayoutTab>,
+    /// The tiling, over 1-based entries of `tabs`.
+    pub tiles: Option<crate::tiles::Node<usize>>,
+}
+
+/// `tiles` from Luau: a number, or `{ row|column = { a, b }, ratio = r }`.
+pub fn tiles_from_lua(v: &mlua::Value) -> Option<crate::tiles::Node<usize>> {
+    use crate::tiles::{Axis, Node};
+    match v {
+        mlua::Value::Integer(n) => usize::try_from(*n).ok().filter(|&n| n > 0).map(Node::Leaf),
+        mlua::Value::Number(n) if n.fract() == 0.0 && *n >= 1.0 => Some(Node::Leaf(*n as usize)),
+        mlua::Value::Table(t) => {
+            let (axis, pair) = if let Ok(p) = t.get::<mlua::Table>("row") {
+                (Axis::Row, p)
+            } else {
+                (Axis::Column, t.get::<mlua::Table>("column").ok()?)
+            };
+            let a = tiles_from_lua(&pair.get::<mlua::Value>(1).ok()?)?;
+            let b = tiles_from_lua(&pair.get::<mlua::Value>(2).ok()?)?;
+            let ratio = t.get::<f32>("ratio").unwrap_or(0.5).clamp(0.05, 0.95);
+            Some(Node::Split { axis, ratio, a: Box::new(a), b: Box::new(b) })
+        }
+        _ => None,
+    }
+}
+
+/// `tiles` for Luau, the same shape.
+pub fn tiles_to_lua(lua: &mlua::Lua, n: &crate::tiles::Node<usize>) -> mlua::Result<mlua::Value> {
+    use crate::tiles::{Axis, Node};
+    Ok(match n {
+        Node::Leaf(k) => mlua::Value::Integer(*k as i64),
+        Node::Split { axis, ratio, a, b } => {
+            let t = lua.create_table()?;
+            let pair = lua.create_table()?;
+            pair.set(1, tiles_to_lua(lua, a)?)?;
+            pair.set(2, tiles_to_lua(lua, b)?)?;
+            t.set(if *axis == Axis::Row { "row" } else { "column" }, pair)?;
+            t.set("ratio", *ratio)?;
+            mlua::Value::Table(t)
+        }
+    })
+}
+
+/// `tiles` as Luau source.
+fn render_tiles(n: &crate::tiles::Node<usize>) -> String {
+    use crate::tiles::{Axis, Node};
+    match n {
+        Node::Leaf(k) => k.to_string(),
+        Node::Split { axis, ratio, a, b } => {
+            let key = if *axis == Axis::Row { "row" } else { "column" };
+            if (ratio - 0.5).abs() < 0.005 {
+                format!("{{ {key} = {{ {}, {} }} }}", render_tiles(a), render_tiles(b))
+            } else {
+                format!("{{ {key} = {{ {}, {} }}, ratio = {:.2} }}", render_tiles(a), render_tiles(b), ratio)
+            }
+        }
+    }
 }
 
 /// Evaluate a layout file in a sandbox with `env` (HOME, USER, the file's
@@ -77,7 +140,8 @@ pub fn load(path: &Path) -> Result<Layout, String> {
         .map(|list| list.sequence_values::<mlua::Table>().filter_map(|r| r.ok()).map(tab_of).collect())
         .unwrap_or_default();
     let hatch = t.get::<mlua::Table>("hatch").ok().map(tab_of);
-    Ok(Layout { space: t.get("space").ok(), tabs, hatch })
+    let tiles = t.get::<mlua::Value>("tiles").ok().as_ref().and_then(tiles_from_lua);
+    Ok(Layout { space: t.get("space").ok(), tabs, hatch, tiles })
 }
 
 /// Write a layout as Luau.
@@ -129,6 +193,9 @@ pub fn render(l: &Layout) -> String {
         }
         out.push_str(&format!("  hatch = {{ {} }},\n", f.join(", ")));
     }
+    if let Some(t) = &l.tiles {
+        out.push_str(&format!("  tiles = {},\n", render_tiles(t)));
+    }
     out.push_str("}\n");
     out
 }
@@ -157,7 +224,7 @@ impl App {
         let l = match load(path) {
             Ok(l) => l,
             Err(e) => {
-                self.notice(&format!("layout · {e}"));
+                self.notice_problem("Could Not Read Layout", e.to_string());
                 return;
             }
         };
@@ -200,6 +267,17 @@ impl App {
         }
         if let Some(first) = made.iter().flatten().next() {
             self.activate(*first);
+        }
+        // The tiling, when every tab it names was made; one step of the history.
+        if let Some(root) = l.tiles.as_ref().and_then(|n| n.map(&|k| made.get(k.wrapping_sub(1)).copied().flatten().map(|i| self.tabs[i].id))) {
+            let t = crate::tiles::Tiling { root };
+            let distinct = { let mut ids = t.ids(); ids.sort(); ids.dedup(); ids.len() == t.ids().len() };
+            if t.ids().len() >= 2 && distinct {
+                if let Some(i) = self.tabs.iter().position(|tab| t.ids().first() == Some(&tab.id)) {
+                    self.activate(i);
+                }
+                self.direct(crate::director::Op::Tiling(Some(t)));
+            }
         }
         self.remember(crate::start::Saved::Layout { path: path.display().to_string() });
         self.apply_term_resizes(false);
@@ -247,6 +325,8 @@ impl App {
                 _ => LayoutTab::default(),
             }
         };
+        // Tab id → its entry's number, for the tiling.
+        let mut entry: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
         for t in self.tabs.iter().filter(|t| t.peek.is_none()) {
             if t.hatch {
                 hatch = Some(pane_of(&t.left));
@@ -259,6 +339,7 @@ impl App {
             l.name = t.name.clone();
             l.pinned = t.pinned;
             tabs.push(l);
+            entry.insert(t.id, tabs.len());
             if let Some(r) = &t.right {
                 let mut rt = pane_of(r);
                 if rt != LayoutTab::default() {
@@ -267,7 +348,8 @@ impl App {
                 }
             }
         }
-        Layout { space: Some(self.space_name.clone()), tabs, hatch }
+        let tiles = self.tiling.as_ref().and_then(|t| t.root.map(&|id| entry.get(&id).copied()));
+        Layout { space: Some(self.space_name.clone()), tabs, hatch, tiles }
     }
 
     /// SAVE LAYOUT: write the window under profile/layouts/<name>.nus.luau.
@@ -280,8 +362,8 @@ impl App {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(format!("{name}.nus.luau"));
         match std::fs::write(&path, render(&self.current_layout())) {
-            Ok(()) => self.notice(&format!("layout saved · {}", path.display())),
-            Err(e) => self.notice(&format!("layout · {e}")),
+            Ok(()) => self.notice(nus_render::text::icons::CHECK, "Layout Saved", path.display().to_string()),
+            Err(e) => self.notice_problem("Could Not Save Layout", e.to_string()),
         }
     }
 
@@ -321,6 +403,12 @@ mod tests {
                 LayoutTab { edit: Some("src/main.rs".into()), name: Some("main".into()), pinned: true, ..Default::default() },
             ],
             hatch: Some(LayoutTab { shell: Some("pwsh".into()), ..Default::default() }),
+            tiles: Some(crate::tiles::Node::Split {
+                axis: crate::tiles::Axis::Row,
+                ratio: 0.4,
+                a: Box::new(crate::tiles::Node::Leaf(1)),
+                b: Box::new(crate::tiles::Node::Leaf(3)),
+            }),
         };
         let src = render(&l);
         let dir = std::env::temp_dir().join(format!("nus-layout-{}", std::process::id()));
@@ -333,6 +421,12 @@ mod tests {
         std::fs::write(&p, "return { tabs = { { shell = \"bash\", cwd = env.here .. \"/x\" } } }").unwrap();
         let c = load(&p).unwrap();
         assert!(c.tabs[0].cwd.as_deref().unwrap().ends_with("/x"));
+        assert_eq!(c.tiles, None);
+        // Tiles written by hand: a row of 1 and a column of 2 over 3.
+        std::fs::write(&p, "return { tabs = { {shell=\"bash\"}, {page=\"https://a.b\"}, {page=\"https://c.d\"} }, tiles = { row = { 1, { column = { 2, 3 } } } } }").unwrap();
+        let t = load(&p).unwrap().tiles.unwrap();
+        assert_eq!(t.leaves(), vec![1, 2, 3]);
+        assert_eq!(t, crate::tiles::Node::template(&[1usize, 2, 3]).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

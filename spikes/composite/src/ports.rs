@@ -333,7 +333,7 @@ pub struct Board {
     pub remembered: Vec<Remembered>,
     pub ghosts: Vec<Row>,
     /// A new port's line beside the status icon: text, when, which.
-    pub toast: Option<(String, Instant, Key)>,
+    pub toast: Option<(Instant, Key)>,
     pub rise: crate::anim::Anim,
     pub probed: HashSet<u16>,
     /// Kill: pids with a graceful ask out, and when.
@@ -612,7 +612,7 @@ impl App {
         if self.board.rows.iter().any(|r| crate::clock::since(r.seen).as_millis() < 450) && (self.board.open || self.ports_page_open()) {
             self.dirty = true;
         }
-        if self.board.toast.as_ref().is_some_and(|(_, at, _)| crate::clock::since(at).as_secs_f32() > 6.0) {
+        if self.board.toast.as_ref().is_some_and(|(at, _)| crate::clock::since(at).as_secs_f32() > 6.0) {
             self.board.toast = None;
             self.dirty = true;
         }
@@ -850,7 +850,7 @@ impl App {
             }
             self.board.killing.remove(&r.pid);
             if r.watch && self.board.polls > 0 {
-                self.ports_toast(format!("{} · {} went away", r.port, r.title()), r.key.clone());
+                self.ports_toast(nus_render::text::icons::PORTS, format!("Port {} Closed", r.port), r.title(), None);
             }
             if self.board.expanded.as_ref() == Some(&r.key) {
                 self.board.expanded = None;
@@ -872,7 +872,7 @@ impl App {
             }
             if matches!(r.group, Group::Mine | Group::Others) && matches!(r.key, Key::Port { proto: Proto::Tcp, .. }) {
                 if self.behavior.ports_toast && !r.rule.hide {
-                    self.ports_toast(format!("{} · {} is up · {} opens it", r.port, r.title(), crate::app::key("O", true)), r.key.clone());
+                    self.ports_arrived(&r);
                 }
                 if let Some(how) = r.rule.open.clone() {
                     auto_open.push((k.clone(), how));
@@ -922,10 +922,17 @@ impl App {
         self.dirty = true;
     }
 
-    fn ports_toast(&mut self, text: String, key: Key) {
-        self.board.toast = Some((text, crate::clock::now(), key));
+    /// A port's news, on the slip at the foot of the content.
+    fn ports_toast(&mut self, icon: crate::toast::Icon, text: impl Into<String>, tail: impl Into<String>, act: Option<crate::toast::Act>) {
         self.play_event("toggle");
-        self.dirty = true;
+        self.toast(icon, text, tail, act);
+    }
+
+    /// A new port: the slip offers to open it, and while it shows the
+    /// ports icon glows and O opens it too.
+    fn ports_arrived(&mut self, r: &Row) {
+        self.board.toast = Some((crate::clock::now(), r.key.clone()));
+        self.ports_toast(nus_render::text::icons::PORTS, format!("New Port {}", r.port), r.title(), Some(crate::toast::Act::OpenPort(r.key.clone())));
     }
 
     pub(crate) fn open_board(&mut self) {
@@ -1010,7 +1017,7 @@ impl App {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     let _ = cb.set_text(r.url());
                 }
-                self.ports_toast(format!("{} · copied", r.url()), key.clone());
+                self.ports_toast(nus_render::text::icons::COPY, "Copied", r.url(), None);
             }
             Act::Jump => {
                 if let Some(i) = r.tab.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
@@ -1025,7 +1032,10 @@ impl App {
                     KillConfirm::System => r.group != Group::Mine,
                 };
                 if needs_ask && self.board.confirm.as_ref() != Some(key) {
+                    // The question is drawn in the open row; the hover ×
+                    // asks from a closed one, so open it or nothing shows.
                     self.board.confirm = Some(key.clone());
+                    self.board.expanded = Some(key.clone());
                     self.dirty = true;
                     return;
                 }
@@ -1040,12 +1050,13 @@ impl App {
                     match self.new_term_pane_at(false, profile, r.cwd.clone()) {
                         Ok(mut t) => {
                             t.type_at_prompt = Some(format!("{cmd}\r"));
+                            t.type_origin = Some(crate::finish_work::Origin::NusAction);
                             let tab = self.make_tab(Pane::Term(t), None);
                             self.tabs.push(tab);
                             self.close_board();
                             self.activate(self.tabs.len() - 1);
                         }
-                        Err(_) => self.ports_toast("Could not start a terminal".into(), key.clone()),
+                        Err(_) => self.toast_problem("Could Not Open Terminal", format!("for port {}", r.port), None),
                     }
                 }
             }
@@ -1064,11 +1075,12 @@ impl App {
                 let mut t = match self.new_term_pane_at(owner.is_some(), profile, r.cwd.clone()) {
                     Ok(t) => t,
                     Err(_) => {
-                        self.ports_toast("Could not start a tunnel terminal".into(), key.clone());
+                        self.toast_problem("Could Not Open Terminal", format!("for the tunnel to port {}", r.port), None);
                         return;
                     }
                 };
                 t.type_at_prompt = Some(format!("{cmd}\r"));
+                t.type_origin = Some(crate::finish_work::Origin::NusAction);
                 let i = if let Some(i) = owner {
                     self.tabs[i].right = Some(Pane::Term(t));
                     self.tabs[i].focus_right = true;
@@ -1115,11 +1127,11 @@ impl App {
         // Signal the selected process, never an unrelated foreground job in
         // its terminal. Unknown or stale process identity fails closed.
         let Some(identity) = r.identity else {
-            self.ports_toast("Could not verify this process; refresh and try again".into(), key.clone());
+            self.toast_problem("Could Not Verify Process", "refresh and try again", None);
             return;
         };
         if !nus_pty::ports::kill_identified(r.pid, identity, false) {
-            self.ports_toast("Process changed, exited, or could not be stopped".into(), key.clone());
+            self.toast_problem("Could Not Stop Process", "it changed or exited, or refused to stop", None);
             return;
         }
         self.board.killing.insert(r.pid, (crate::clock::now(), identity));

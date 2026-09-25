@@ -153,8 +153,20 @@ impl Store {
         let file = options.open(path)?;
         // Rust 1.89+: OS lock is released on close, even after a crash. Never
         // remove/recreate the lockfile (which would allow two different locks).
-        file.try_lock().map_err(|e| io::Error::other(format!("Library writer is busy or unavailable: {e}")))?;
-        Ok(file)
+        // A process started anywhere in nus (a shell, the ports scan's `ps`)
+        // is forked with a copy of this descriptor, and keeps the lock alive
+        // until its exec a moment later: wait that out instead of calling
+        // the library busy. Another writer holding it longer still fails.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(e) => return Err(io::Error::other(format!("Library writer is busy or unavailable: {e}"))),
+            }
+        }
     }
     pub fn read(&self, key: &str) -> io::Result<Entry> {
         let bytes = bounded(&self.path(key)?, MAX_RECORD)?;

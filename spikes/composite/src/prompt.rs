@@ -82,7 +82,7 @@ impl Route {
     pub const ALL: [Self; 4] = [Self::Automatic, Self::Shell, Self::Web, Self::Assistant];
     pub fn name(self) -> &'static str {
         match self {
-            Self::Automatic => "URL or shell",
+            Self::Automatic => "Search, URL or shell",
             Self::Shell => "Shell",
             Self::Web => "Web search",
             Self::Assistant => "Default assistant",
@@ -288,6 +288,16 @@ impl Config {
                 .eq(d.ordered().iter().map(|s| (s.source, s.home, s.search)))
     }
 }
+/// A line only a shell could mean: a path to run, a pipe or a chain, a
+/// flag, a variable. Plain words are never taken for a command, so a
+/// word that happens to name a program (`y`, `yes`, `open maps`) is a
+/// harmless search, not something run.
+pub fn shell_syntax(q: &str) -> bool {
+    let q = q.trim();
+    q.starts_with(['.', '/', '~', '$'])
+        || [" | ", "&&", "||", " > ", " >> ", " < ", ";", "`", "$(", "=", " -"].iter().any(|t| q.contains(t))
+}
+
 pub fn looks_like_url(q: &str) -> bool {
     q.contains("://")
         || q.starts_with("localhost")
@@ -297,6 +307,21 @@ pub fn looks_like_url(q: &str) -> bool {
             && !q.contains('/')
             && !q.contains('\\'))
 }
+/// An address worth pinning: a scheme, localhost, or a dotted host, with
+/// whatever path, query or fragment follows it (`github.com/me/repo`).
+/// Stricter `looks_like_url` refuses paths so a typed filename at the
+/// prompt is never taken for a site; after `pin ` there is no such doubt.
+pub fn pinnable(q: &str) -> bool {
+    if q.is_empty() || q.contains(char::is_whitespace) || q.contains('\\') {
+        return false;
+    }
+    if q.contains("://") || q.starts_with("localhost") {
+        return true;
+    }
+    let host = q.split(['/', '?', '#']).next().unwrap_or("");
+    host.contains('.') && !host.starts_with('.') && !host.ends_with('.')
+}
+
 fn row(text: String, action: Action) -> PaletteRow {
     let num = match &action {
         Action::AssistantDraft(..) | Action::AssistantStart(..) => "*",
@@ -337,11 +362,18 @@ impl App {
         if matches!(q.to_lowercase().as_str(), "saved commands" | "saved shortcuts" | "commands") {
             return Some(row("Saved commands · open your collection".into(), Action::SettingsAt(crate::settings::SEC_SAVED, None)));
         }
+        // The word for a shell opens one; it is never typed into it.
+        if is_new_shell(q) {
+            return Some(row("New shell · your default shell".into(), Action::NewTerminal(self.behavior.default_profile)));
+        }
         if q.eq_ignore_ascii_case("home") {
             return Some(row("Home · prompt and background".into(), Action::Home));
         }
         if q.eq_ignore_ascii_case("settings") {
             return Some(row("Open settings".into(), Action::SettingsAt(0, None)));
+        }
+        if let Some(url) = q.strip_prefix("pin ").map(str::trim).filter(|s| pinnable(s)) {
+            return Some(row(format!("Pin to sidebar · {url}"), Action::PinUrl(url.into())));
         }
         if let Some(url) = q
             .strip_prefix("home ")
@@ -411,7 +443,7 @@ impl App {
                 Action::AssistantDraft(id, q.into()),
             ));
         }
-        if route == Route::Web || (route == Route::Automatic && looks_like_url(q)) {
+        if route == Route::Web || (route == Route::Automatic && !shell_syntax(q)) {
             let (url, _) = self.url_or_search(q);
             return Some(row(
                 format!(
@@ -487,7 +519,8 @@ impl App {
         // Explicit routes are always usable, even if that suggestion source is hidden.
         let explicit = q.starts_with(['>', '?', '@'])
             || q.eq_ignore_ascii_case("home")
-            || q.eq_ignore_ascii_case("settings");
+            || q.eq_ignore_ascii_case("settings")
+            || is_new_shell(q);
         if explicit {
             if let Some(r) = self.prompt_action(q) {
                 out.push(r);
@@ -499,12 +532,15 @@ impl App {
         } else {
             self.palette_rows_raw(PaletteMode::Go, q)
         };
+        let saved_exact = (!empty && config.ordered().iter().any(|s| s.source == Source::Saved && s.search))
+            .then(|| config.saved.iter().enumerate().find(|(_, value)| config.saved_names.get(*value).unwrap_or(value).eq_ignore_ascii_case(q)))
+            .flatten()
+            .map(|(i, value)| PaletteRow { num: "saved".into(), text: config.saved_names.get(value).unwrap_or(value).clone(), action: Action::SavedUse(i, config.saved_run) });
         if !empty {
-            if config.ordered().iter().any(|s|s.source==Source::Saved&&s.search) {
-                if let Some((i,value))=config.saved.iter().enumerate().find(|(_,value)|config.saved_names.get(*value).unwrap_or(value).eq_ignore_ascii_case(q)) {
-                    out.push(PaletteRow{num:"saved".into(),text:config.saved_names.get(value).unwrap_or(value).clone(),action:Action::SavedUse(i,config.saved_run)});
-                }
+            if let Some(saved) = saved_exact.clone().filter(|_| !config.saved_run) {
+                out.push(saved);
             }
+            // nus's own verb, named exactly: harmless, so first.
             let exact = raw.iter().find(|r| {
                 r.text
                     .split(" · ")
@@ -514,6 +550,8 @@ impl App {
             if let Some(r) = exact {
                 out.push(r.clone());
             }
+            // Then the route: for plain words, a search. Nothing typed as
+            // words runs as a command on Enter.
             if let Some(r) = self.prompt_action(q) {
                 if !out.iter().any(|i| i.action == r.action) {
                     out.push(r);
@@ -523,6 +561,18 @@ impl App {
                 if !out.iter().any(|i| i.action == r.action) {
                     out.push(r);
                 }
+            }
+            // The shell stays one arrow away.
+            if self.behavior.prompt.route == Route::Automatic && !looks_like_url(q) && !std::path::Path::new(q).exists() {
+                let shell = row(format!("Run in a new terminal · {q}"), Action::PromptShell(q.into()));
+                if !out.iter().any(|i| i.action == shell.action) {
+                    out.push(shell);
+                }
+            }
+            // A saved command by name that would run waits below the search;
+            // one that only goes onto the line leads, above.
+            if let Some(saved) = saved_exact.filter(|_| config.saved_run) {
+                out.push(saved);
             }
         }
         for source in config
@@ -662,19 +712,30 @@ impl App {
             Ok(mut t) => {
                 if !command.is_empty() {
                     t.type_at_prompt = Some(format!("{command}\r"));
+                    t.type_origin = Some(crate::finish_work::Origin::NusAction);
                 }
                 let tab = self.make_tab(Pane::Term(t), None);
                 self.tabs.push(tab);
                 self.activate(self.tabs.len() - 1);
                 self.layout();
             }
-            Err(e) => self.notice(&format!("Could not open terminal: {e}")),
+            Err(e) => self.notice_problem("Could Not Open Terminal", e.to_string()),
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pins_take_paths() {
+        for ok in ["github.com/me/repo", "news.ycombinator.com/item?id=1", "localhost:3000/admin", "https://x.dev/a#b", "example.com"] {
+            assert!(pinnable(ok), "{ok}");
+        }
+        for no in ["", "hello", "two words.com", ".hidden/x", "C:\\x.y"] {
+            assert!(!pinnable(no), "{no}");
+        }
+    }
+
     #[test]
     fn presets_separate_home_from_search() {
         let c = Config::preset(Preset::Minimal);
@@ -720,4 +781,18 @@ mod tests {
         assert!(!looks_like_url("./script.sh"));
         assert!(!looks_like_url("cargo test"));
     }
+    #[test]
+    fn words_search_and_only_shell_syntax_runs() {
+        for words in ["y", "yes", "youtube", "open maps", "rust borrow checker", "what is 2+2"] {
+            assert!(!shell_syntax(words), "{words}");
+        }
+        for cmd in ["./build.sh", "~/bin/x", "/usr/bin/env", "ls -la", "cat a | grep b", "make && make install", "FOO=1 cargo run", "$EDITOR notes"] {
+            assert!(shell_syntax(cmd), "{cmd}");
+        }
+    }
+}
+
+/// `shell`, `new shell`, `terminal`, `new terminal`: a new shell, by name.
+pub(crate) fn is_new_shell(q: &str) -> bool {
+    matches!(q.trim().to_lowercase().as_str(), "shell" | "new shell" | "terminal" | "new terminal")
 }

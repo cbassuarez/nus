@@ -104,7 +104,7 @@ impl App {
     /// The splash draws the icon where the plate keeps it and hands over
     /// with it in place: THEN · THE PROMPT, HOME · THE PLATE, a splash on.
     pub(crate) fn plate_continues(&self) -> bool {
-        self.behavior.then == Then::Prompt && self.behavior.home_look == HomeLook::Plate && self.behavior.splash != SplashMode::None
+        self.behavior.then == Then::Prompt && self.behavior.home_look == HomeLook::Plate && self.behavior.splash != SplashMode::None && !self.restores_at_launch()
     }
 
     /// The motion register's stretch on the plate's (and the splash's) timings.

@@ -75,13 +75,26 @@ the ticket, and runs strict signature and Gatekeeper checks. Temporary keychains
 and credential files are removed on exit. The Developer ID team alone cannot
 authenticate to notarization; the API credential is also needed.
 
-Windows uses `WINDOWS_CERTIFICATE` (base64 PFX) and
-`WINDOWS_CERTIFICATE_PASSWORD`. The Windows SDK signs the GUI and CLI with
-SHA-256, timestamps them and verifies Authenticode before packaging. An Apple
-certificate cannot sign Windows applications.
+Windows is signed by Azure Artifact Signing, with no exportable key. The
+Windows matrix job builds and tests, then `package-release.py --stage-only`
+leaves the unsigned payload in `dist/windows-stage`. A separate `sign-windows`
+job, the only one with `id-token: write`, runs in the `windows-signing`
+environment (variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`) and signs exactly `nus.exe`, `nus-hold.exe` and
+`bin/nus.exe` with RFC 3161 timestamps; bundled CEF, Widevine and MSVC binaries
+are never signed as ours. `--build-installer` runs
+`verify-windows-release.ps1`, which requires a valid, timestamped signature on
+all three, then compiles `scripts/windows-installer.iss` with the runner's Inno
+Setup into `nus-<version>-windows-x86_64-setup.exe`; that is signed the same
+way. `--finalize-staged` verifies all four signatures (one signer) and only
+then writes `Signing: authenticode`, the ZIP, both hashes and the record. The
+job then installs silently, launches the installed copy, and uninstalls. Every Windows package from the Release workflow is signed,
+including build-only runs; if signing fails there is no Windows package. Local
+packaging can make an explicitly unsigned preview with `--unsigned-preview`,
+which stable tags refuse. An Apple certificate cannot sign Windows applications.
 
-Preview packaging is unsigned/ad-hoc unless the *complete* signing set for the
-platform is configured — all six Apple secrets, or both Windows secrets. A
+Mac preview packaging is ad-hoc unless the *complete* signing set is
+configured — all six Apple secrets. A
 partial set (a certificate without notarization keys, say) signs nothing and
 says so in the log; a stable release refuses in that case. The package record
 and the website identify the outcome accurately. Native install, media,
@@ -90,15 +103,33 @@ successful loader check is not a complete desktop acceptance test.
 
 ## Packages and storage
 
+The Windows installer is per-user and never asks for elevation. Each channel
+installs to one fixed folder, `%LOCALAPPDATA%\Programs\nus\<release|preview>`,
+and records it in `%LOCALAPPDATA%\nus\installs\<channel>\installed-location`.
+nus treats that folder as a single installation, so installer upgrades, in-app
+updates (which swap the folder in place and refresh the version shown in
+Installed apps) and reinstalls keep one profile; a portable ZIP elsewhere is
+still its own installation. An upgrade replaces the whole folder, the
+uninstaller lives outside it in `%LOCALAPPDATA%\nus\uninstall\<channel>`, and
+uninstalling keeps profiles. Adding `bin` to PATH is an optional task. The
+installer is recorded as `installer` on the Windows asset, not as a second
+asset, because updaters take the first asset for their target and must keep
+receiving the ZIP. Stable Windows releases require it.
+
 Mac ZIPs contain `nus.app`; Windows ZIPs include the redistributable runtime,
-all CEF resources and `bin/nus.exe`; Linux tarballs include `./nus`, the desktop
-binary, CEF, locales and `bin/nus`. Packaged apps keep profiles under
-`nus/installs/<channel>/<installation>/profile` in the platform's user-data
-directory (Application Support on macOS), never inside an installed executable.
-Development and release channels are separate. Replacing or redownloading an
-installation creates a fresh profile and offers previous settings in Welcome;
-regular launches retain the installation's profile. Moving a macOS app on the
-same volume retains its identity. Legacy `nus/profile` data is offered for
+all CEF resources and `bin/nus.exe`, and the Windows installer installs that
+same folder; Linux tarballs include `./nus`, the desktop
+binary, CEF, locales and `bin/nus`. Packaged apps keep one profile per channel,
+`nus/installs/<channel>/shared/profile` in the platform's user-data directory
+(Application Support on macOS), never inside an installed executable.
+Development and release channels are separate. Every copy of a channel —
+rebuilt, redownloaded, moved or updated — opens that shared profile; the first
+launch after upgrading moves the channel's most recently used profile into it
+when no nus holds it, and otherwise starts it fresh with an import offer. One
+copy uses the profile at a time (the profile lock), and a newer version saves a
+recovery generation before upgrading it. A copy can keep a profile of its own
+instead (Settings · Updates · Profile, listed in `installs/<channel>/separate`);
+Welcome shows once per version per channel. Legacy `nus/profile` data is offered for
 explicit settings import and is not overwritten. Browsing data is not imported.
 Source checkouts continue to use their local `profile` directory.
 Linux packages target glibc 2.35+ and need the desktop libraries listed in their
