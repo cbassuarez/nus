@@ -225,8 +225,17 @@ jobs:
           $setup = Get-ChildItem dist/release/*-setup.exe | Select-Object -First 1
           $channel = if ($setup.Name -like '*-preview.*') { 'preview' } else { 'release' }
           $app = Join-Path $env:LOCALAPPDATA "Programs\nus\$channel"
-          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=path','/LOG=install.log' -Wait -PassThru
+          $browser = if ($channel -eq 'preview') { 'nus-preview' } else { 'nus' }
+          $client = "HKCU:\Software\Clients\StartMenuInternet\$browser"
+          $registered = { (Get-ItemProperty HKCU:\Software\RegisteredApplications -ErrorAction SilentlyContinue).$browser }
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=path,browser','/LOG=install.log' -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content install.log; throw "Installer exited $($p.ExitCode)" }
+          if (-not (Test-Path "$client\Capabilities\URLAssociations")) { throw 'Browser was not registered' }
+          if ((& $registered) -ne "Software\Clients\StartMenuInternet\$browser\Capabilities") { throw 'Browser missing from RegisteredApplications' }
+          # Installing over it is an update: a task left out now is taken back out.
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=path','/LOG=update.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content update.log; throw "Update exited $($p.ExitCode)" }
+          if ((Test-Path $client) -or (& $registered)) { throw 'Update left the browser registration it was told to drop' }
           & "$app\nus.exe" --version
           if ($LASTEXITCODE -ne 0) { throw 'Installed nus did not start its loader' }
           $marker = Get-Content (Join-Path $env:LOCALAPPDATA "nus\installs\$channel\installed-location")
@@ -239,6 +248,7 @@ jobs:
           for ($i = 0; $i -lt 30 -and (Test-Path $app); $i++) { Start-Sleep 1 }
           if (Test-Path $app) { throw 'Uninstall left the application folder' }
           if ((Get-ItemProperty HKCU:\Environment).Path -split ';' -contains "$app\bin") { throw 'Uninstall left bin on PATH' }
+          if ((Test-Path $client) -or (Test-Path "HKCU:\Software\Classes\$browser.url") -or (& $registered)) { throw 'Uninstall left the browser registration' }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-windows-x86_64

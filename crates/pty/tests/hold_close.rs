@@ -2,6 +2,7 @@
 //! the same breath. Everything the shell started must go with it — the
 //! foreground job and one left in the background. Needs a built `nus-hold`
 //! and a credential store; skips quietly otherwise.
+#![cfg(unix)]
 
 use std::time::{Duration, Instant};
 
