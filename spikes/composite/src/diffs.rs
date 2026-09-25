@@ -286,6 +286,11 @@ mod tests {
         if git(&dir, &["init", "-q"]).is_err() {
             return; // no git here
         }
+        // The machine's git config must not decide the bytes: Windows
+        // runners check out with core.autocrlf=true (a\r\n), and a
+        // signing setup would stop the commit.
+        git(&dir, &["config", "core.autocrlf", "false"]).unwrap();
+        git(&dir, &["config", "commit.gpgsign", "false"]).unwrap();
         std::fs::write(dir.join("f.txt"), "a\n").unwrap();
         git(&dir, &["add", "f.txt"]).unwrap();
         git(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a"]).unwrap();
