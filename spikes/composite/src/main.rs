@@ -9,6 +9,8 @@ mod real_pics;
 mod git_complete;
 mod shells;
 mod selvedge;
+mod git_state;
+mod scm;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;

@@ -323,6 +323,8 @@ pub enum CardHit {
     CopyKey,
     /// Undo the forge: the token and the repo's name forgotten.
     ForgeForget,
+    /// A sign-in this machine already has (forge::found_here), by index.
+    ForgeFound(u8),
     /// The fine print's tabs: 0 privacy, 1 terms, 2 licenses.
     TermsTab(u8),
     /// Agree to the fine print and finish the first walk.
@@ -350,6 +352,8 @@ pub struct MeCard {
     pub key_mode: u8,
     /// The forge worker, while it runs; the word the key was made as.
     pub flow: Option<crate::forge::Flow>,
+    /// The look for sign-ins already here, for the forge on screen.
+    pub found: Option<crate::forge::Probe>,
     pub made_key: String,
     /// The host typed for a forge that is not GitHub.
     pub host: String,
@@ -384,6 +388,7 @@ impl Default for MeCard {
             forge: crate::forge::Kind::GitHub,
             key_mode: 0,
             flow: None,
+            found: None,
             made_key: String::new(),
             host: String::new(),
             first: false,
@@ -780,6 +785,15 @@ impl App {
                     self.me_card.input.clear();
                 }
             }
+            CardHit::ForgeFound(i) => {
+                let host = if self.me_card.step == Some(Step::ForgeToken) { self.me_card.host.clone() } else { self.me_card.forge.default_host().to_string() };
+                let hit = self.me_card.found.as_ref().filter(|p| p.host == host).and_then(|p| p.result()).and_then(|v| v.get(i as usize).cloned());
+                if let Some(f) = hit {
+                    self.me_card.flow = Some(crate::forge::start_token(self.me_card.forge, &host, &f.token));
+                    self.me_card.step = Some(Step::ForgeWait);
+                    self.me_card.input.clear();
+                }
+            }
             CardHit::ForgeToken => {
                 let input = self.me_card.input.trim().to_string();
                 self.me_card.host = if input.is_empty() { self.me_card.forge.default_host().to_string() } else { input };
@@ -966,6 +980,48 @@ impl App {
     }
 
     /// A chip button: ink outline, hard shadow when primary, the word.
+    fn me_found_any(&self, host: &str) -> bool {
+        self.me_card.found.as_ref().filter(|p| p.host == host).and_then(|p| p.result()).is_some_and(|v| !v.is_empty())
+    }
+
+    /// Sign-ins this machine already has for `host`, one row each with
+    /// CONTINUE AS; a quiet line while nus looks. Returns the y after.
+    fn me_found_rows(&mut self, scene: &mut Scene, bx: f32, mut y: f32, bw: f32, host: &str) -> f32 {
+        if self.me_card.found.as_ref().is_none_or(|p| p.host != host) {
+            self.me_card.found = Some(crate::forge::Probe::start(self.me_card.forge, host));
+        }
+        let Some(found) = self.me_card.found.as_ref().map(|p| p.result()) else { return y };
+        let t = self.theme.clone();
+        let strong = self.label_strong();
+        let dim = Style { color: t.dim, ..self.label() };
+        match found {
+            None => {
+                self.fonts.draw(scene, dim, bx, y + self.px(10.0), "LOOKING FOR A SIGN-IN ON THIS MACHINE…");
+                self.dirty = true;
+                y + self.px(24.0)
+            }
+            Some(v) if v.is_empty() => y,
+            Some(v) => {
+                for (i, f) in v.iter().take(2).enumerate() {
+                    let row = Rect::new(bx, y, bw, self.px(44.0));
+                    scene.outline(row, self.px(m::STRUCTURE), t.ink);
+                    let base = row.y + row.h * 0.5 + self.px(4.0);
+                    let who = f.user.to_uppercase();
+                    let mut x = bx + self.px(12.0);
+                    x += self.fonts.measure(strong, &who);
+                    self.fonts.draw(scene, strong, bx + self.px(12.0), base, &who);
+                    self.fonts.draw(scene, dim, x + self.px(8.0), base, &format!("SIGNED IN HERE · {}", f.source.to_uppercase()));
+                    let word = format!("CONTINUE AS {who}");
+                    let bw2 = self.fonts.measure(strong, &word) + self.px(24.0);
+                    self.me_button(scene, row.right() - bw2 - self.px(8.0), base, &word, i == 0, CardHit::ForgeFound(i as u8));
+                    y += row.h + self.px(8.0);
+                }
+                self.fonts.draw(scene, dim, bx, y + self.px(8.0), "NUS KEEPS ITS OWN COPY, IN THE VAULT · NOTHING IS USED UNTIL YOU CHOOSE");
+                y + self.px(22.0)
+            }
+        }
+    }
+
     pub(crate) fn me_button(&mut self, scene: &mut Scene, x: f32, base: f32, word: &str, primary: bool, hit: CardHit) -> f32 {
         let strong = self.label_strong();
         let t = self.theme.clone();
@@ -1060,8 +1116,8 @@ impl App {
             Some(Step::Face) => self.px(176.0),
             Some(Step::Sync) => self.px(196.0),
             Some(Step::Folder) => self.px(150.0),
-            Some(Step::Forge) => self.px(212.0),
-            Some(Step::ForgeToken) => self.px(150.0),
+            Some(Step::Forge) => self.px(if self.me_card.forge == crate::forge::Kind::GitHub { 268.0 } else { 212.0 }),
+            Some(Step::ForgeToken) => self.px(206.0),
             Some(Step::ForgeWait) => self.px(170.0),
             Some(Step::Key) => self.px(196.0),
             Some(Step::Terms) => self.px(300.0),
@@ -1468,6 +1524,7 @@ impl App {
                 }
                 y += self.px(m::LABEL_PX) + self.px(14.0) + self.px(14.0);
                 if picked == crate::forge::Kind::GitHub {
+                    y = self.me_found_rows(scene, bx, y, bw, picked.default_host());
                     let signin = crate::forge::client_id().is_some();
                     let words = if signin {
                         "SIGN IN FROM HERE: A CODE TO ENTER ON GITHUB.COM, THEN NUS MAKES NUS-PROFILE, PRIVATE · OR PASTE A TOKEN WITH REPO SCOPE"
@@ -1500,7 +1557,9 @@ impl App {
             }
             Some(Step::ForgeToken) => {
                 let kind = self.me_card.forge;
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), &format!("A {} TOKEN", kind.name().to_uppercase()));
+                let host = self.me_card.host.clone();
+                y = self.me_found_rows(scene, bx, y, bw, &host);
+                self.fonts.draw(scene, strong, bx, y + self.px(8.0), &format!("{}A {} TOKEN", if self.me_found_any(&host) { "OR " } else { "" }, kind.name().to_uppercase()));
                 y += self.px(22.0);
                 y = self.me_input(scene, bx, y, bw, "paste it · ctrl+v");
                 let hint = format!("{} · IT STAYS IN PROFILE/SYNC, NEVER IN A URL OR ON THE CARRIER", kind.token_hint()).to_uppercase();

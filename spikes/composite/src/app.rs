@@ -229,6 +229,8 @@ pub enum CrumbHit {
     Agents,
     /// Finish Work: the coffee, on laptops (finish_work.rs).
     FinishWork,
+    /// The repository chip: Source Control (scm.rs).
+    Git,
 }
 
 #[derive(Clone)]
@@ -1013,6 +1015,8 @@ pub struct App {
     pub lsp: crate::lsp_host::Servers,
     /// The ports board (airport control).
     pub board: crate::ports::Board,
+    /// Source Control, the sheet (scm.rs).
+    pub scm: crate::scm::Scm,
     pub files_root: Option<std::path::PathBuf>,
     pub files_listing: Option<crate::work::Task<(std::path::PathBuf, std::collections::HashSet<std::path::PathBuf>, Vec<crate::folders::Item>)>>,
     pub files_open: std::collections::HashSet<std::path::PathBuf>,
@@ -1390,6 +1394,7 @@ impl App {
             folders: Vec::new(),
             lsp: Default::default(),
             board: crate::ports::Board::new(),
+            scm: Default::default(),
             files_root: None,
             files_listing: None,
             files_open: Default::default(),
@@ -1886,7 +1891,7 @@ impl App {
     /// of nus's is over it; hide it otherwise.
     fn sync_webkit(&self) {
         let covered = self.palette.is_some() || self.start.is_some() || self.me_card.open || self.timeline.is_some()
-            || self.splash.is_some() || self.board.open || self.page_menu.is_some() || self.peeking().is_some();
+            || self.splash.is_some() || self.board.open || self.scm.open || self.page_menu.is_some() || self.peeking().is_some();
         let narrow = self.width_class() == Width::Narrow;
         for (k, tab) in self.tabs.iter().enumerate() {
             let narrow = narrow || tab.solo;
@@ -4111,7 +4116,21 @@ impl App {
             }
             segment(&mut self.crumb_hits, &mut x, ic + p8 + tw, CrumbHit::Tab);
             if let Some(host) = self.active_tunnel() {
-                self.draw_tunnel_tag(scene, &host, x, lbase);
+                x += self.draw_tunnel_tag(scene, &host, x, lbase) + self.px(10.0);
+            }
+            // The repository here: a chip that opens Source Control.
+            if let Some(g) = self.active_git() {
+                let word = match g.op { Some(op) => format!("{op} \u{b7} {}", g.short()), None => g.short() };
+                let st = if g.conflicts > 0 || g.op.is_some() { Style { color: self.surface.signal, ..label } } else { label };
+                let pad = self.px(7.0);
+                let w = self.fonts.measure(st, &word) + pad * 2.0;
+                let ch = self.px(m::LABEL_PX) + self.px(8.0);
+                let chip = Rect::new(x, lbase - ch + self.px(4.0), w, ch);
+                if chip.right() < strip.right() - self.px(320.0) {
+                    scene.outline(chip, self.px(m::HAIRLINE), st.color);
+                    self.fonts.draw(scene, st, x + pad, lbase, &word);
+                    self.crumb_hits.push((Rect::new(chip.x - self.px(4.0), strip.y, chip.w + self.px(8.0), strip.h), CrumbHit::Git));
+                }
             }
         }
         // Right side: status cluster, search, sidebar, window controls.
@@ -4632,6 +4651,7 @@ impl App {
         self.draw_layout_offer(&mut scene, w);
         self.draw_tidy(&mut scene, w, h);
         self.draw_board_overlay(&mut scene, w, h);
+        self.draw_scm(&mut scene, w, h);
         self.draw_start(&mut scene);
         self.draw_me_card(&mut scene);
         self.draw_download_overlay(&mut scene);
@@ -4785,7 +4805,7 @@ impl App {
 
     pub(crate) fn tooltip_blocked(&self) -> bool {
         !self.window_focused || self.pointer_hidden || self.palette.is_some()
-            || self.board.open || self.start.is_some() || self.me_card.open
+            || self.board.open || self.scm.open || self.start.is_some() || self.me_card.open
             || self.splash.is_some() || self.timeline.is_some() || self.page_menu.is_some()
             || self.dl_menu || self.look_menu || self.win_menu || self.kinds_menu
             || self.tab_menu.is_some() || self.sidebar_resize.is_some() || self.settings_drag.is_some()
@@ -5258,6 +5278,19 @@ impl App {
             };
             let st = if active { ui_strong } else { ui };
             let st = Style { color: if active { ink } else { Theme::with_alpha(ink, 0.82) }, ..st };
+            // The shell's repository, dim at the right: `main ↑2 ●3`. Only
+            // when the title keeps room to be read.
+            if let Pane::Term(tp) = tab.focused_ref() {
+                if let Some(g) = tp.git() {
+                    let word = g.short();
+                    let gw = self.fonts.measure(dim, &word);
+                    if right - x - gw - self.px(12.0) > self.px(72.0) {
+                        let gc = if g.conflicts > 0 || g.op.is_some() { self.surface.signal } else { t.dim };
+                        self.fonts.draw(scene, Style { color: gc, ..dim }, right - gw, base - self.px(1.0), &word);
+                        right -= gw + self.px(10.0);
+                    }
+                }
+            }
             let tab_id = tab.id;
             self.marquee(scene, st, x, base, right - x, &title, active || hovered, row_bg, hover_key("row", tab_id as usize));
             // The Ledger: the assistant's lines, under the title.
@@ -7725,6 +7758,9 @@ impl App {
         if self.tidy_key(ev) {
             return;
         }
+        if self.palette.is_none() && self.scm_key(ev) {
+            return;
+        }
         if self.palette.is_none() && !app && self.board_key(ev) {
             return;
         }
@@ -7897,6 +7933,11 @@ impl App {
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
                 Some(KeyCode::KeyF) => return self.search_open(),
+                // Source Control: ⌘⇧G · Ctrl+Shift+G.
+                Some(KeyCode::KeyG) if shift => {
+                    if self.scm.open { self.close_scm() } else { self.open_scm() }
+                    return;
+                }
                 Some(KeyCode::KeyO) => {
                     // While a new-port line shows, O opens that port; else hints.
                     if let Some((_, k)) = self.board.toast.clone() {
@@ -9388,6 +9429,7 @@ impl App {
             },
             CrumbHit::Sidebar => self.toggle_sidebar(),
             CrumbHit::Ports => self.open_board(),
+            CrumbHit::Git => self.open_scm(),
             CrumbHit::Assistant => self.open_settings_at(crate::settings::SEC_ASSISTANTS, None),
             CrumbHit::Pip => self.return_from_pip(),
             CrumbHit::Waiting => {
@@ -9717,6 +9759,9 @@ impl App {
         if self.tidy_mouse(button, state, x, y) {
             return;
         }
+        if self.scm_mouse(button, state, x, y) {
+            return;
+        }
         if self.board_mouse(button, state, x, y) {
             return;
         }
@@ -9959,6 +10004,9 @@ impl App {
         // Over the sidebar the wheel is the sidebar's: its list scrolls when
         // it overflows, and nothing under it moves.
         if self.sidebar_wheel(x, y, dy_px) {
+            return;
+        }
+        if self.scm_wheel(x, y, dy_px) {
             return;
         }
         if self.board_wheel(x, y, dy_px) {

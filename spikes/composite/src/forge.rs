@@ -319,6 +319,172 @@ pub fn device_poll(client_id: &str, device_code: &str) -> Poll {
     }
 }
 
+// ── Sign-ins already on this machine ──────────────────────────────────────
+
+/// A sign-in found here: the GitHub CLI's, or one git's credential helper
+/// keeps (the macOS keychain, Git Credential Manager, libsecret…).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    /// Where it came from, as the card says it: "gh", "git's keychain".
+    pub source: &'static str,
+    pub user: String,
+    pub token: String,
+}
+
+/// `https://github.com/` → `github.com`.
+pub fn host_name(host: &str) -> String {
+    let h = host.trim().trim_end_matches('/');
+    let h = h.split_once("://").map(|(_, r)| r).unwrap_or(h);
+    h.split('/').next().unwrap_or(h).to_string()
+}
+
+/// Run a program with `input` on stdin and nothing that could ask a person
+/// anything; its stdout, when it exits 0 within `secs`.
+fn quiet(program: &str, args: &[&str], input: &str, secs: u64) -> Option<String> {
+    use std::io::Write;
+    let mut c = std::process::Command::new(program);
+    c.args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = c.spawn().ok()?;
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(input.as_bytes());
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                let out = child.wait_with_output().ok()?;
+                return st.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned());
+            }
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(40)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// `gh auth status` names the account: "Logged in to github.com account seb
+/// (keyring)", or in older versions "Logged in to github.com as seb".
+fn gh_login(status: &str) -> Option<String> {
+    for line in status.lines() {
+        for key in [" account ", " as "] {
+            if let Some((_, rest)) = line.split_once(key) {
+                if line.contains("Logged in") {
+                    let w: String = rest.trim().chars().take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+                    if !w.is_empty() {
+                        return Some(w);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// What `git credential fill` answered: `username=` and `password=` lines.
+fn parse_credential(out: &str) -> Option<(String, String)> {
+    let mut user = String::new();
+    let mut pass = String::new();
+    for line in out.lines() {
+        if let Some(v) = line.strip_prefix("username=") {
+            user = v.to_string();
+        } else if let Some(v) = line.strip_prefix("password=") {
+            pass = v.to_string();
+        }
+    }
+    (!pass.is_empty()).then_some((user, pass))
+}
+
+fn from_gh(host: &str) -> Option<Found> {
+    let token = quiet("gh", &["auth", "token", "--hostname", host], "", 5)?.trim().to_string();
+    if token.is_empty() {
+        return None;
+    }
+    // gh prints its status on stderr in some versions; either is fine.
+    let status = std::process::Command::new("gh")
+        .args(["auth", "status", "--hostname", host])
+        .env("GH_PROMPT_DISABLED", "1")
+        .output()
+        .ok()
+        .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+        .unwrap_or_default();
+    Some(Found { source: "gh", user: gh_login(&status).unwrap_or_default(), token })
+}
+
+fn from_git(host: &str) -> Option<Found> {
+    let input = format!("protocol=https\nhost={host}\n\n");
+    let out = quiet("git", &["-c", "credential.interactive=false", "credential", "fill"], &input, 6)?;
+    let (user, token) = parse_credential(&out)?;
+    // x-access-token, oauth2, PersonalAccessToken: not a login.
+    let user = if matches!(user.as_str(), "x-access-token" | "oauth2" | "PersonalAccessToken" | "token") { String::new() } else { user };
+    Some(Found { source: "git's keychain", user, token })
+}
+
+/// Every sign-in for `host` this machine already has, each token once.
+pub fn found_here(kind: Kind, host: &str) -> Vec<Found> {
+    let h = host_name(host);
+    let mut v = Vec::new();
+    if kind == Kind::GitHub {
+        v.extend(from_gh(&h));
+    }
+    if let Some(g) = from_git(&h) {
+        if !v.iter().any(|f: &Found| f.token == g.token) {
+            v.push(g);
+        }
+    }
+    // Put a name to the nameless: ask the forge who the token is.
+    for f in v.iter_mut().filter(|f| f.user.is_empty()) {
+        if let Ok(u) = whoami(kind, host, &f.token) {
+            f.user = u;
+        }
+    }
+    v.retain(|f| !f.user.is_empty());
+    v
+}
+
+/// The look, on a worker; None until it's done.
+pub struct Probe {
+    pub host: String,
+    pub found: Arc<Mutex<Option<Vec<Found>>>>,
+}
+
+impl Probe {
+    pub fn start(kind: Kind, host: &str) -> Probe {
+        let found = Arc::new(Mutex::new(None));
+        let (f, h) = (found.clone(), host.to_string());
+        std::thread::Builder::new()
+            .name("forge-look".into())
+            .spawn(move || {
+                let v = found_here(kind, &h);
+                if let Ok(mut g) = f.lock() {
+                    *g = Some(v);
+                }
+            })
+            .ok();
+        Probe { host: host.to_string(), found }
+    }
+
+    pub fn result(&self) -> Option<Vec<Found>> {
+        self.found.lock().ok().and_then(|g| g.clone())
+    }
+}
+
 // ── The flow, on a worker ─────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -429,6 +595,17 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"x-access-token:ghp_abc"), "eC1hY2Nlc3MtdG9rZW46Z2hwX2FiYw==");
+    }
+
+    #[test]
+    fn found_signins_parse() {
+        assert_eq!(host_name("https://github.com/"), "github.com");
+        assert_eq!(host_name("code.example.dev/x"), "code.example.dev");
+        assert_eq!(gh_login("github.com\n  ✓ Logged in to github.com account seb (keyring)\n").as_deref(), Some("seb"));
+        assert_eq!(gh_login("✓ Logged in to github.com as ana-b (oauth_token)").as_deref(), Some("ana-b"));
+        assert_eq!(gh_login("You are not logged into any GitHub hosts."), None);
+        assert_eq!(parse_credential("protocol=https\nhost=github.com\nusername=seb\npassword=gho_x\n"), Some(("seb".into(), "gho_x".into())));
+        assert_eq!(parse_credential("protocol=https\nhost=github.com\n"), None);
     }
 
     #[test]
