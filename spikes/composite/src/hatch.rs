@@ -2,7 +2,7 @@
 //! window of this Space, summoned by a global hotkey onto the monitor
 //! under the pointer. What it shows is a real tab of this Space that
 //! lives up here instead of in the sidebar: HOIST any tab up
-//! (Ctrl+Shift+↑), LAND it down (Ctrl+Shift+↓). Two looks: the SHEET,
+//! (⌘⌥↑ / Ctrl+Shift+Alt+↑), LAND it down (Ctrl+Shift+↓). Two looks: the SHEET,
 //! 960 wide from the top edge with the Space's band as a lip you drag to
 //! resize; the CARD, centred, framed by the carapace. Autohide on focus
 //! loss unless pinned. Escape belongs to the live terminal.

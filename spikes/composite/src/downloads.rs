@@ -927,7 +927,6 @@ impl App {
         let pad = px(if r.w < px(500.0) { 20.0 } else { 32.0 });
         let width = (r.w - pad * 2.0).min(px(980.0)).max(1.0);
         let x = r.x + (r.w - width) * 0.5;
-        let ink = self.theme.ink;
         let muted = Style {
             color: self.theme.dim,
             ..self.label()

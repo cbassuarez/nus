@@ -293,7 +293,7 @@ impl App {
 
     /// The gutter lamps, fold rows, the selected block's wash, the filter.
     /// Drawn after the grid, before the prompt line.
-    pub(crate) fn draw_block_layer(&mut self, scene: &mut Scene, p: &mut TermPane, r: Rect, hh: f32) {
+    pub(crate) fn draw_block_layer(&mut self, scene: &mut Scene, p: &mut TermPane, r: Rect) {
         if !self.behavior.shell_integration {
             return;
         }

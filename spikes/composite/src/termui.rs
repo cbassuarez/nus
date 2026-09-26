@@ -504,7 +504,6 @@ impl App {
         let grid = p.term.grid();
         let rows = grid.rows();
         let cols = grid.cols();
-        let top = grid.abs_of_display(0);
         let label = self.label();
         let (mx, my) = self.mouse;
         self.draw_link_hover(scene, p, r);
@@ -690,7 +689,7 @@ impl App {
             let view = t.view().to_vec();
             let grid = t.term.grid();
             let mut items = Vec::new();
-            for (row, d) in view.iter().enumerate() {
+            for d in view.iter() {
                 let nus_vt::grid::Display::Line(line) = *d else { continue };
                 let Some(r) = grid.row_abs(line) else { continue };
                 let text = r.text();

@@ -1823,7 +1823,7 @@ impl App {
                 }
                 self.layout();
             }
-            "hover" | "click" | "rclick" | "altclick" | "srcclick" => {
+            "hover" | "rclick" | "altclick" | "srcclick" => {
                 let mut it = rest.split_whitespace().filter_map(|n| n.parse::<f32>().ok());
                 let (x, y) = (it.next().unwrap_or(0.0) * self.scale, it.next().unwrap_or(0.0) * self.scale);
                 if verb == "altclick" {

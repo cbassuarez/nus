@@ -666,7 +666,7 @@ window of the Space, summoned by a global hotkey — Ctrl+` by default;
 Win+` or Ctrl+Shift+Space — that works whether or not nus is in front,
 onto the monitor under the pointer (or the foreground window's, or the
 primary). What it shows is a real tab of the Space that lives up there
-instead of in the sidebar: HOIST the tab you're on (Ctrl+Shift+↑) and it
+instead of in the sidebar: HOIST the tab you're on (⌘⌥↑; Ctrl+Shift+Alt+↑ elsewhere) and it
 goes up, whatever was up comes down; LAND (Ctrl+Shift+↓) brings the
 hatch's tab down as a normal tab, focused. A hatch with nothing in it
 opens a fresh shell in the active shell's cwd. Blocks, marks, ports, ask,

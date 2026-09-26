@@ -205,6 +205,7 @@ pub fn backends() -> Vec<Backend> {
     v
 }
 
+#[cfg_attr(not(windows), allow(unused_variables))]
 fn no_window(c: &mut std::process::Command) {
     #[cfg(windows)]
     {

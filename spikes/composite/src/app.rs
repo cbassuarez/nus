@@ -3362,7 +3362,7 @@ impl App {
         self.scale = scale;
         let term_px = self.behavior.typography.terminal_size * scale * 96.0 / 72.0;
         for tab in &mut self.tabs {
-            for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
+            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Term(t) = p {
                     t.grid.set_font(&self.fonts, self.f.term, term_px * t.zoom as f32 / 100.0);
                     t.grid.set_spacing(&self.fonts,self.behavior.typography.terminal_line,self.behavior.typography.terminal_spacing*scale*t.zoom as f32/100.0);
@@ -4018,7 +4018,6 @@ impl App {
                 scene.hline(start, strip.bottom() - self.px(3.0), x - start, self.px(2.0), self.surface.signal);
             }
             self.crumb_hits.push((field, CrumbHit::Url));
-            x += self.px(18.0);
         } else {
             let tab = &self.tabs[self.active];
             // Split tabs read as "left | right"; the pane strips name each side.
@@ -5056,7 +5055,6 @@ impl App {
             let Some(row_clip) = g.clip(sb, y, h) else { continue };
             scene.layer(Some(g.list(sb)));
             let tab = &tabs[i];
-            let waiting = tab.waiting();
             let child = tab.parent.is_some();
             let depth = depths[k];
             let stack: Vec<usize> = (0..tabs.len()).filter(|&j| tabs[j].parent == Some(tab.id)).collect();
@@ -6441,7 +6439,7 @@ impl App {
                     self.draw_moving_cursor(scene, p, look);
                 }
                 self.draw_term_images(scene, p);
-                self.draw_block_layer(scene, p, r, hh);
+                self.draw_block_layer(scene, p, r);
                 self.draw_cutoff(scene, p, r);
                 self.draw_prompt_line(scene, p, pane_paper);
                 self.draw_blocks(scene, p, r, hh);
@@ -6868,7 +6866,7 @@ impl App {
                 }
                 if hit("hatch") || hit("quick") {
                     rows.push(row("::", format!("hatch · the quick terminal · {}", self.behavior.hatch_hotkey.label().to_lowercase()), Action::Hatch));
-                    rows.push(row("::", format!("hoist this tab into the hatch · {}", key("↑", true)), Action::Hoist));
+                    rows.push(row("::", format!("hoist this tab into the hatch · {}", if cfg!(target_os = "macos") { "⌘⌥↑" } else { "CTRL+SHIFT+ALT+↑" }), Action::Hoist));
                 }
                 for p in &self.ports {
                     let label = format!("port {} · {}", p.port, if p.process.is_empty() { "?" } else { &p.process });
@@ -7743,6 +7741,9 @@ impl App {
             }
             match code {
                 Some(KeyCode::Minus) if shift => return self.fold_all(),
+                // HOIST shares ↑ with walking prompts (⌘↑, the terminal
+                // convention), so it takes Alt as well: ⌘⌥↑ / Ctrl+Shift+Alt+↑.
+                Some(KeyCode::ArrowUp) if alt => return self.hoist(),
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
                 Some(KeyCode::KeyF) => return self.search_open(),
@@ -7762,7 +7763,6 @@ impl App {
                 Some(KeyCode::KeyV) => return self.paste_into_shell(),
                 Some(KeyCode::KeyT) => return self.open_start_page(false),
                 Some(KeyCode::KeyK) => return self.open_palette(PaletteMode::Go),
-                Some(KeyCode::ArrowUp) => return self.hoist(),
                 Some(KeyCode::KeyP) => {
                     if self.board.open {
                         self.close_board();
