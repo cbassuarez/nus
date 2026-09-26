@@ -348,10 +348,23 @@ fn category(a: &Action) -> Source {
 }
 impl App {
     pub(crate) fn palette_rows(&self, mode: PaletteMode, input: &str) -> Vec<PaletteRow> {
-        if mode == PaletteMode::Go {
-            self.prompt_rows(input)
-        } else {
-            self.palette_rows_raw(mode, input)
+        match mode {
+            PaletteMode::Go => self.prompt_rows(input),
+            // One prompt, not two: a new tab's palette leads with what a
+            // new tab is (shells, a page, open ports) and then has all of
+            // the prompt (saved commands, projects, sessions, assistants),
+            // with nothing listed twice.
+            PaletteMode::New => {
+                let mut rows = self.palette_rows_raw(PaletteMode::New, input);
+                for r in self.prompt_rows(input) {
+                    if !rows.iter().any(|x| x.action == r.action) {
+                        rows.push(r);
+                    }
+                }
+                rows.truncate(16);
+                rows
+            }
+            _ => self.palette_rows_raw(mode, input),
         }
     }
     pub(crate) fn prompt_action(&self, input: &str) -> Option<PaletteRow> {
