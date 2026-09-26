@@ -214,6 +214,7 @@ impl App {
         let mut run: Option<String> = None;
         let mut share: Option<u64> = None;
         let mut clip: Option<u64> = None;
+        let mut shell_menu: Option<(Option<u64>, Option<String>, String)> = None;
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             let Pane::Term(t) = p else { continue };
             // The application asked for the mouse: it gets presses in its
@@ -380,15 +381,18 @@ impl App {
                 }
                 acted = true;
             } else if pressed && button == MouseButton::Right {
-                // Right click: paste, or copy when something is selected (kitty's way).
-                if t.sel.is_some() {
-                    copy = Some(t.selection_text());
-                    t.sel = None;
-                } else {
-                    self.paste_request = true;
-                }
+                // Right click: the shell's menu — copy and paste, the link
+                // and the block under the pointer (page_menu.rs).
+                let block = t.term.block_at(line).filter(|(_, _, cmd, _)| !cmd.is_empty()).map(|(start, ..)| start);
+                let link = Self::link_at(t, line, col).map(|l| crate::links::normalize(&l.url));
+                let selection = if t.sel.is_some() { t.selection_text() } else { String::new() };
+                shell_menu = Some((block, link, selection));
                 acted = true;
             }
+        }
+        if let Some((block, link, selection)) = shell_menu {
+            self.open_shell_menu((x, y), block, link, selection);
+            return true;
         }
         if let Some(u) = open_url {
             self.open_url(&u, true);

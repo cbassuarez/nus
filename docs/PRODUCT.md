@@ -1761,3 +1761,41 @@ the first key, so there is no KEEP and nothing to lose on a crash.
 
 Not yet: margin notes on blocks and passages, a NOTE chip in Ask, quoting a
 page's selection, and a SETTINGS · NOTES section.
+
+## Menus, colours, your fonts, back and waking (2026-09-26)
+
+**A shell has a menu.** Right click in a shell (when the program in it
+hasn't asked for the mouse) opens the same context menu pages use — the
+theme's paper, ink and tint, keys, type-ahead, kept inside the window:
+COPY and PASTE; for the link under the pointer, OPEN BESIDE, IN A NEW TAB,
+COPY ADDRESS; for the block under it, COPY OUTPUT, RUN AGAIN, SHARE AS A
+PAGE, CLIP INTO THE NOTE; then FIND and SPLIT. It replaces right click's
+old paste-or-copy.
+
+**The tab's menu reaches past the sidebar.** It is drawn over the panes,
+as wide as its rows and colours need, and kept inside the window.
+
+**Tab colours are the theme's.** The menu offers the fifteen colours
+shells wear (the signal's family: five hues by three lightnesses, each
+drawn as the pane it makes with its signal), not eight fixed swatches. A
+picked colour is kept by its place in the family, so it follows paper and
+ink and the signal as shells do, and a page and a shell of the same pick
+match exactly. A colour set by hex (rules, remote control, older sessions)
+still works as before.
+
+**Your own fonts.** nus vendors its faces; nothing stops you using yours
+but your licence with the foundry. Installed fonts, and any .ttf, .otf or
+.ttc dropped into `profile/fonts`, are under INSTALLED for the interface,
+terminal and editor.
+
+**Back never closes a tab on a stale answer.** Chromium's `can_go_back`
+trails a navigation in flight and a single-page app's history, so nus
+counts a page's moves itself: back goes back whenever there may be
+somewhere to go, and closes only a tab opened onto its page (a link, a
+popup, the prompt) that has certainly not moved. A sideways wheel is a
+swipe only when the page had no room for it.
+
+**Waking is quicker.** A woken page shows at its first paint, not at the
+end of its load, and resting the pointer on a sleeping tab's row starts
+waking it before the click.
+
