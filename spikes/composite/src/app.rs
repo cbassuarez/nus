@@ -357,6 +357,8 @@ pub struct TermPane {
     pub lamp_hits: Vec<(Rect, u64)>,
     /// A diff block's hunk chips: (rect, block start, hunk index, what).
     pub hunk_hits: Vec<(Rect, u64, usize, crate::diffs::Do)>,
+    /// Chips on `git status` blocks (scm.rs).
+    pub git_hits: Vec<(Rect, crate::scm::BlockAct)>,
     /// Parsed diffs by block start: (the block's end line, the hunks).
     pub diff_cache: std::collections::HashMap<u64, (u64, Vec<crate::diffs::Hunk>)>,
     pub select_all_at: Option<Instant>,
@@ -1855,6 +1857,7 @@ impl App {
             block_filter: None,
             lamp_hits: Vec::new(),
             hunk_hits: Vec::new(),
+            git_hits: Vec::new(),
             diff_cache: std::collections::HashMap::new(),
             select_all_at: None,
             hover_block: 0,
@@ -9785,7 +9788,7 @@ impl App {
         if self.editor_mouse(button, state, x, y) {
             return;
         }
-        if pressed && button == MouseButton::Left && (self.hunk_click(x, y) || self.lamp_click(x, y) || self.cutoff_click(x, y)) {
+        if pressed && button == MouseButton::Left && (self.hunk_click(x, y) || self.git_block_click(x, y) || self.lamp_click(x, y) || self.cutoff_click(x, y)) {
             return;
         }
         if pressed && button == MouseButton::Left && self.colour_offer_click(x, y) {

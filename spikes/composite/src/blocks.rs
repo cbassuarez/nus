@@ -421,6 +421,44 @@ impl App {
                 self.fonts.draw(scene, dim, x - cwidth - self.px(4.0), base, &counts);
             }
         }
+        // `git status` in a block: STAGE or UNSTAGE on each file's line,
+        // STAGE ALL and COMMIT… on the first; the output stays as printed.
+        p.git_hits.clear();
+        if p.tunnel().is_none() {
+            for b in &diff_blocks {
+                let Some(short) = crate::scm::status_kind(&b.cmd) else { continue };
+                let text = p.block_output_text(b.start);
+                let files = crate::scm::status_lines(&text, short);
+                if files.is_empty() {
+                    continue;
+                }
+                let first = p.block_output_first(b.start).unwrap_or(b.output);
+                let mut chips: Vec<(usize, Vec<(&str, crate::scm::BlockAct)>)> = files
+                    .iter()
+                    .map(|(at, path, staged)| (*at, vec![if *staged { ("UNSTAGE", crate::scm::BlockAct::Unstage(path.clone())) } else { ("STAGE", crate::scm::BlockAct::Stage(path.clone())) }]))
+                    .collect();
+                if !short {
+                    chips.push((0, vec![("STAGE ALL", crate::scm::BlockAct::StageAll), ("COMMIT\u{2026}", crate::scm::BlockAct::Open)]));
+                }
+                for (at, row_chips) in chips {
+                    let abs = first + at as u64;
+                    let Some(row) = view.iter().position(|d| matches!(d, Display::Line(l) if *l == abs)) else { continue };
+                    let y = p.origin.1 + row as f32 * ch;
+                    let base = y + p.grid.metrics.baseline;
+                    let mut x = r.right() - self.px(18.0);
+                    for (word, act) in row_chips.into_iter().rev() {
+                        let w = self.fonts.measure(label, word) + self.px(14.0);
+                        let chip = Rect::new(x - w, y + (ch - self.px(m::LABEL_PX) - self.px(8.0)) / 2.0, w, self.px(m::LABEL_PX) + self.px(8.0));
+                        let hot = chip.contains(mx, my);
+                        scene.rect(chip, if hot { ink } else { paper });
+                        scene.outline(chip, self.px(m::HAIRLINE), ink);
+                        self.fonts.draw(scene, Style { color: if hot { paper } else { ink }, ..label }, chip.x + self.px(7.0), base - self.px(1.0), word);
+                        p.git_hits.push((chip, act));
+                        x -= w + self.px(6.0);
+                    }
+                }
+            }
+        }
         // Fold rows: one ruled line each, over the rows the fold occupies.
         for (row, d) in view.iter().enumerate() {
             let Display::Fold(s, e) = d else { continue };
@@ -498,6 +536,22 @@ impl App {
             }
         }
         false
+    }
+
+    /// A chip on a `git status` block.
+    pub(crate) fn git_block_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let mut job = None;
+        for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+            let Pane::Term(t) = p else { continue };
+            if let Some((_, act)) = t.git_hits.iter().find(|(r, _)| r.contains(x, y)) {
+                job = Some((act.clone(), t.cwd.clone().or_else(|| t.term.cwd.clone()).unwrap_or_default()));
+                break;
+            }
+        }
+        let Some((act, cwd)) = job else { return false };
+        self.status_block_act(act, cwd);
+        true
     }
 
     /// The toast's Undo: the hunk the other way, and a word on it.

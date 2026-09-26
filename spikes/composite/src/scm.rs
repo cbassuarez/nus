@@ -835,6 +835,106 @@ impl App {
     }
 }
 
+// ── git status, in the shell ───────────────────────────────────────────────
+
+/// What a chip on a `git status` block does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockAct {
+    Stage(String),
+    Unstage(String),
+    StageAll,
+    Open,
+}
+
+/// Is this command a `git status`, and in the short form?
+pub fn status_kind(cmd: &str) -> Option<bool> {
+    let w: Vec<&str> = cmd.split_whitespace().collect();
+    let i = w.iter().position(|x| *x == "git")?;
+    let rest = &w[i + 1..];
+    let sub = rest.iter().position(|x| !x.starts_with('-'))?;
+    (rest[sub] == "status").then(|| rest.iter().any(|x| matches!(*x, "-s" | "--short" | "--porcelain" | "-sb" | "-bs") || x.starts_with("--porcelain")))
+}
+
+/// The files in a `git status` block's output, by output line: the path
+/// and whether it's staged. Long form reads its sections; short form its
+/// XY columns (a file with both takes the unstaged side).
+pub fn status_lines(text: &str, short: bool) -> Vec<(usize, String, bool)> {
+    let mut v = Vec::new();
+    if short {
+        for (i, l) in text.lines().enumerate() {
+            if l.len() < 4 || l.starts_with("##") {
+                continue;
+            }
+            let (x, y) = (l.as_bytes()[0] as char, l.as_bytes()[1] as char);
+            if !(" MADRCU?!".contains(x) && " MADRCU?!".contains(y)) || l.as_bytes()[2] != b' ' {
+                continue;
+            }
+            let path = l[3..].rsplit(" -> ").next().unwrap_or(&l[3..]).trim_matches('"').to_string();
+            let staged = x != ' ' && x != '?' && y == ' ';
+            v.push((i, path, staged));
+        }
+        return v;
+    }
+    let mut section: Option<bool> = None;
+    for (i, l) in text.lines().enumerate() {
+        let t = l.trim();
+        if t.starts_with("Changes to be committed") {
+            section = Some(true);
+        } else if t.starts_with("Changes not staged") || t.starts_with("Untracked files") || t.starts_with("Unmerged paths") {
+            section = Some(false);
+        } else if t.is_empty() || !l.starts_with(char::is_whitespace) {
+            if !t.is_empty() {
+                section = None;
+            }
+        } else if let Some(staged) = section {
+            if t.starts_with('(') {
+                continue;
+            }
+            let path = match t.split_once(':') {
+                Some((kind, p)) if kind.chars().all(|c| c.is_ascii_lowercase() || c == ' ') => p.trim(),
+                _ => t,
+            };
+            let path = path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"').to_string();
+            if !path.is_empty() {
+                v.push((i, path, staged));
+            }
+        }
+    }
+    v
+}
+
+impl App {
+    /// A chip on a `git status` block: the real git, in the shell's folder.
+    pub(crate) fn status_block_act(&mut self, act: BlockAct, cwd: String) {
+        let (args, what): (Vec<String>, String) = match &act {
+            BlockAct::Stage(p) => (a(&["add", "--", p]), format!("staged {p}")),
+            BlockAct::Unstage(p) => (a(&["restore", "--staged", "--", p]), format!("unstaged {p}")),
+            BlockAct::StageAll => (a(&["add", "--all"]), "staged everything".into()),
+            BlockAct::Open => return self.open_scm(),
+        };
+        let mut c = std::process::Command::new("git");
+        c.args(&args).current_dir(&cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        match c.output() {
+            Ok(o) if o.status.success() => {
+                crate::git_state::touch(&cwd);
+                self.play_event("success");
+                self.toast(nus_render::text::icons::CHECK, "Done", format!("{what} · git status again to see it"), None);
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or("git said no").to_string();
+                self.toast_problem("Git Said No", err, None);
+            }
+            Err(e) => self.toast_problem("Git Didn't Start", e.to_string(), None),
+        }
+        self.dirty = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,6 +971,20 @@ mod tests {
         assert!(diff.iter().any(|l| l == "+two"), "{diff:?}");
         assert_eq!(crate::git_state::get(&d), None, "first ask starts a read");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_blocks_read_both_forms() {
+        assert_eq!(status_kind("git status"), Some(false));
+        assert_eq!(status_kind("git -C x status -sb"), Some(true));
+        assert_eq!(status_kind("git status --porcelain=v1"), Some(true));
+        assert_eq!(status_kind("git stash"), None);
+        let long = "On branch main\nChanges to be committed:\n  (use \"git restore --staged <file>...\" to unstage)\n        modified:   src/a.rs\n        renamed:    old.rs -> new.rs\n\nChanges not staged for commit:\n        modified:   src/b.rs\n\nUntracked files:\n  (use \"git add <file>...\")\n        notes.md\n\nno changes added\n";
+        let v = status_lines(long, false);
+        assert_eq!(v, vec![(3, "src/a.rs".into(), true), (4, "new.rs".into(), true), (7, "src/b.rs".into(), false), (11, "notes.md".into(), false)]);
+        let short = "## main...origin/main\nM  staged.rs\n M changed.rs\nMM both.rs\n?? new.md\n";
+        let v = status_lines(short, true);
+        assert_eq!(v, vec![(1, "staged.rs".into(), true), (2, "changed.rs".into(), false), (3, "both.rs".into(), false), (4, "new.md".into(), false)]);
     }
 
     #[test]
