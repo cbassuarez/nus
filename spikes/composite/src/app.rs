@@ -231,6 +231,8 @@ pub enum CrumbHit {
     FinishWork,
     /// The repository chip: Source Control (scm.rs).
     Git,
+    /// The branch's pull request (pr.rs): its page, in a tab.
+    Pr,
 }
 
 #[derive(Clone)]
@@ -4133,6 +4135,20 @@ impl App {
                     scene.outline(chip, self.px(m::HAIRLINE), st.color);
                     self.fonts.draw(scene, st, x + pad, lbase, &word);
                     self.crumb_hits.push((Rect::new(chip.x - self.px(4.0), strip.y, chip.w + self.px(8.0), strip.h), CrumbHit::Git));
+                }
+                // The branch's pull request and its checks, when GitHub is signed in.
+                if let Some(pr) = crate::pr::get(&g.root, &g.branch) {
+                    let x = chip.right() + self.px(8.0);
+                    let word = pr.word();
+                    let fill = if pr.failed > 0 { self.surface.signal } else { ink };
+                    let on = self.on_fill(fill);
+                    let w = self.fonts.measure(label, &word) + pad * 2.0;
+                    let pchip = Rect::new(x, chip.y, w, ch);
+                    if pchip.right() < strip.right() - self.px(320.0) {
+                        scene.rect(pchip, fill);
+                        self.fonts.draw(scene, Style { color: on, ..label }, x + pad, lbase, &word);
+                        self.crumb_hits.push((Rect::new(pchip.x - self.px(4.0), strip.y, pchip.w + self.px(8.0), strip.h), CrumbHit::Pr));
+                    }
                 }
             }
         }
@@ -9433,6 +9449,11 @@ impl App {
             CrumbHit::Sidebar => self.toggle_sidebar(),
             CrumbHit::Ports => self.open_board(),
             CrumbHit::Git => self.open_scm(),
+            CrumbHit::Pr => {
+                if let Some(pr) = self.active_git().and_then(|g| crate::pr::get(&g.root, &g.branch)) {
+                    self.open_url(&pr.url, true);
+                }
+            }
             CrumbHit::Assistant => self.open_settings_at(crate::settings::SEC_ASSISTANTS, None),
             CrumbHit::Pip => self.return_from_pip(),
             CrumbHit::Waiting => {

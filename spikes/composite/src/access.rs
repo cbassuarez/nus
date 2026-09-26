@@ -49,6 +49,7 @@ impl App {
             CrumbHit::Search => "search and commands".into(),
             CrumbHit::Sidebar => if self.sidebar { "unpin sidebar".into() } else { "pin sidebar".into() },
             CrumbHit::Ports => format!("{} local ports", self.ports.len()),
+            CrumbHit::Pr => self.active_git().and_then(|g| crate::pr::get(&g.root, &g.branch)).map(|p| format!("pull request {} · open it", p.word().to_lowercase())).unwrap_or_else(|| "pull request".into()),
             CrumbHit::Git => self.active_git().map(|g| format!("source control · {}", g.short())).unwrap_or_else(|| "source control".into()),
             CrumbHit::Assistant => "ask an assistant".into(),
             CrumbHit::Pip => "return from picture in picture".into(),

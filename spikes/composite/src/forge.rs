@@ -153,7 +153,7 @@ pub fn base64(data: &[u8]) -> String {
 // ── The web, through curl ────────────────────────────────────────────────
 
 /// One request: the status and the body.
-fn http(method: &str, url: &str, headers: &[String], body: Option<&str>) -> Result<(u16, String), String> {
+pub(crate) fn http(method: &str, url: &str, headers: &[String], body: Option<&str>) -> Result<(u16, String), String> {
     let mut c = std::process::Command::new("curl");
     c.args(["-sS", "-L", "-X", method, "-w", "\n%{http_code}", "-A", "nus", "--max-time", "30"]);
     for h in headers {
@@ -177,11 +177,11 @@ fn http(method: &str, url: &str, headers: &[String], body: Option<&str>) -> Resu
     Ok((code.trim().parse().unwrap_or(0), body.to_string()))
 }
 
-fn json(body: &str) -> serde_json::Value {
+pub(crate) fn json(body: &str) -> serde_json::Value {
     serde_json::from_str(body).unwrap_or(serde_json::Value::Null)
 }
 
-fn api_headers(kind: Kind, token: &str) -> Vec<String> {
+pub(crate) fn api_headers(kind: Kind, token: &str) -> Vec<String> {
     match kind {
         Kind::GitHub => vec![format!("Authorization: Bearer {token}"), "Accept: application/vnd.github+json".into(), "X-GitHub-Api-Version: 2022-11-28".into()],
         Kind::Forgejo | Kind::Gitea => vec![format!("Authorization: token {token}"), "Accept: application/json".into()],
