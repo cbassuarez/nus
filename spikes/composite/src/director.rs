@@ -23,6 +23,9 @@ const DEPTH: usize = 100;
 pub enum Op {
     /// A browser pane beside the tab's only pane, at the home search.
     Split { tab: u64 },
+    /// A shell beside the tab's only pane: the same profile, in the same
+    /// folder when that pane is a shell. How a terminal multiplexes.
+    SplitShell { tab: u64 },
     /// The tab's two panes change sides.
     Swap { tab: u64 },
     /// One pane alone (`solo`), the other waiting off screen; or both.
@@ -48,7 +51,7 @@ impl Op {
     /// A few words for the notice after an undo or redo.
     fn words(&self) -> &'static str {
         match self {
-            Op::Split { .. } => "split",
+            Op::Split { .. } | Op::SplitShell { .. } => "split",
             Op::Swap { .. } => "swap",
             Op::Solo { .. } => "solo",
             Op::Kill { .. } => "close",
@@ -162,6 +165,9 @@ impl App {
         let Some(t) = self.tabs.get(self.active) else { return rows };
         let tab = t.id;
         if t.right.is_none() {
+            if !crate::private::enabled() && hit("pane split shell terminal beside") {
+                rows.push(("pane split shell · a shell beside this pane, in the same folder".into(), Action::Pane(Op::SplitShell { tab })));
+            }
             if hit("pane split browser beside") {
                 rows.push(("pane split · a browser beside this pane".into(), Action::Pane(Op::Split { tab })));
             }
@@ -208,7 +214,13 @@ impl App {
             };
             let words = op.words();
             // Undoing a split closes the pane it opened; redoing opens one again.
-            let resplit = match op { Op::Kill { tab, right: true } if back => Some(Op::Split { tab }), _ => None };
+            let resplit = match op {
+                Op::Kill { tab, right: true } if back => {
+                    let shell = self.tab_at(tab).and_then(|i| self.tabs[i].right.as_ref()).is_some_and(|p| matches!(p, Pane::Term(_)));
+                    Some(if shell { Op::SplitShell { tab } } else { Op::Split { tab } })
+                }
+                _ => None,
+            };
             if let Some(inverse) = self.apply_op(op) {
                 if let Some(inverse) = inverse.or(resplit) {
                     let other = if back { &mut self.director.redo } else { &mut self.director.undo };
@@ -228,6 +240,27 @@ impl App {
     /// is no way back. Some(Some(inverse)): done, and this undoes it.
     fn apply_op(&mut self, op: Op) -> Option<Option<Op>> {
         let out = match op {
+            Op::SplitShell { tab } => {
+                let i = self.tab_at(tab)?;
+                if self.tabs[i].right.is_some() {
+                    return None;
+                }
+                let (profile, cwd) = match &self.tabs[i].left {
+                    Pane::Term(t) => (t.profile, t.cwd.clone()),
+                    _ => (self.behavior.default_profile, None),
+                };
+                let pane = match self.new_term_pane_at(true, profile, cwd) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.notice_problem("Could Not Split", e.to_string());
+                        return None;
+                    }
+                };
+                let t = &mut self.tabs[i];
+                t.right = Some(Pane::Term(pane));
+                t.focus_right = true;
+                Some(Op::Kill { tab, right: true })
+            }
             Op::Split { tab } => {
                 let i = self.tab_at(tab)?;
                 if self.tabs[i].right.is_some() {

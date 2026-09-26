@@ -4362,6 +4362,11 @@ impl App {
             // The pane controls, over each pane that's on screen.
             let solo = tab.solo;
             let narrow_now = narrow || solo;
+            if tab.right.is_none() && !tab.hatch {
+                // A lone pane offers its splits: shell or page.
+                let lr = tab.left.rect();
+                self.draw_pane_controls(&mut scene, lr, false, false);
+            }
             if tab.right.is_some() {
                 let lr = tab.left.rect();
                 let rr = tab.right.as_ref().map(|r| r.rect());
@@ -9055,7 +9060,10 @@ impl App {
 
     pub(crate) fn toggle_split(&mut self) {
         let Some(t) = self.tabs.get(self.active) else { return };
-        let op = if t.right.is_some() { crate::director::Op::Kill { tab: t.id, right: true } } else { crate::director::Op::Split { tab: t.id } };
+        // A shell splits into another shell (that's how a terminal
+        // multiplexes); anything else gets a page beside it.
+        let shell = matches!(t.left, Pane::Term(_)) && !crate::private::enabled();
+        let op = if t.right.is_some() { crate::director::Op::Kill { tab: t.id, right: true } } else if shell { crate::director::Op::SplitShell { tab: t.id } } else { crate::director::Op::Split { tab: t.id } };
         self.direct(op);
     }
 

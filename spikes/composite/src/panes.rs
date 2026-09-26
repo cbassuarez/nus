@@ -1,4 +1,5 @@
-//! Pane controls for a split tab. Nothing is drawn until the pointer
+//! Pane controls. A lone shell offers its splits (another shell, in the
+//! same folder, or a page) the same way. For a split tab: nothing is drawn until the pointer
 //! nears a pane's top-right corner; then five glyphs bloom out of it, one
 //! after another, on a proximity field (closer is clearer) — MOVE (drag
 //! onto a sidebar row to make it that tab's other pane, or onto NEW TAB),
@@ -46,6 +47,25 @@ pub enum PaneHit {
     Close(bool),
     /// The move handle: press and drag onto a sidebar row.
     Move(bool),
+    /// A lone pane: a shell beside it, or a page.
+    SplitShell,
+    SplitPage,
+}
+
+impl PaneHit {
+    /// What it does, for its tooltip.
+    fn tip(self, solo: bool) -> String {
+        let side = |r: bool| if r { "right" } else { "left" };
+        match self {
+            PaneHit::Move(_) => "Move · drag onto a tab in the sidebar, or onto NEW TAB".into(),
+            PaneHit::Swap => "Swap sides".into(),
+            PaneHit::Solo(r) => if solo { "Show both panes".into() } else { format!("Only the {} pane · the other waits", side(r)) },
+            PaneHit::ToTab(r) => format!("The {} pane into a tab of its own", side(r)),
+            PaneHit::Close(r) => format!("Close the {} pane · what runs there stops", side(r)),
+            PaneHit::SplitShell => "Split · a shell beside this one, in the same folder".into(),
+            PaneHit::SplitPage => "Split · a page beside this one".into(),
+        }
+    }
 }
 
 /// Minimum width of either side of a split, logical px.
@@ -154,24 +174,36 @@ impl App {
     }
 
     /// The corner's field: 0 far away, 1 at the cluster.
-    fn corner_field(&self, r: Rect) -> f32 {
+    fn corner_field(&self, r: Rect, n: f32) -> f32 {
         let (mx, my) = self.mouse;
         if !self.window_focused || !r.contains(mx, my) && dist(r, mx, my) > self.px(REACH) {
             return 0.0;
         }
         let cell = self.px(22.0);
         let cy = r.y + self.px(36.0) + self.px(4.0);
-        let bar = Rect::new(r.right() - self.px(6.0) - 5.0 * cell, cy, 5.0 * cell, cell);
+        let bar = Rect::new(r.right() - self.px(6.0) - n * cell, cy, n * cell, cell);
         field(dist(bar, mx, my), self.px(REACH))
     }
 
     /// The glyphs at a pane's top-right, on the field; hits into
     /// `self.pane_hits` once they're legible.
     pub(crate) fn draw_pane_controls(&mut self, scene: &mut Scene, r: Rect, right: bool, split: bool) {
-        if !split || self.behavior.pane_controls == Controls::Never || self.focus {
+        if self.behavior.pane_controls == Controls::Never || self.focus {
             return;
         }
-        let k = if self.pane_drag.is_some() { 1.0 } else { self.corner_field(r) };
+        // Alone, a pane offers its two splits: a shell (a terminal's
+        // multiplexing, with the cursor) and a page. Split, the five below.
+        let lone_shell = !split && !crate::private::enabled() && self.tabs.get(self.active).is_some_and(|t| matches!(t.left, Pane::Term(_)));
+        let lone: Vec<((&'static str, &'static str), PaneHit, crate::app::IconMotion)> = if split {
+            Vec::new()
+        } else if lone_shell {
+            vec![(icons::TERMINAL, PaneHit::SplitShell, crate::app::IconMotion::Pop), (icons::GLOBE, PaneHit::SplitPage, crate::app::IconMotion::Pop)]
+        } else {
+            // A lone page's corner is the site's own; it stays clear.
+            return;
+        };
+        let n = if split { 5.0 } else { lone.len() as f32 };
+        let k = if self.pane_drag.is_some() && split { 1.0 } else { self.corner_field(r, n) };
         if k <= 0.02 {
             return;
         }
@@ -179,7 +211,6 @@ impl App {
         let ink = t.ink;
         let isz = self.px(12.0);
         let cell = self.px(22.0);
-        let n = 5.0;
         let cy = r.y + self.px(36.0) + self.px(4.0);
         let cx0 = r.right() - self.px(6.0) - n * cell;
         // A soft paper wash under the glyphs so they read over anything,
@@ -187,17 +218,22 @@ impl App {
         let wash = Rect::new(cx0 - self.px(4.0), cy - self.px(2.0), n * cell + self.px(8.0), cell + self.px(4.0));
         scene.push(nus_render::Instance::rounded(wash, self.px(6.0), crate::app::fade(self.paper(), 0.82 * k)));
         let solo = self.tabs.get(self.active).is_some_and(|t| t.solo);
-        let items = [
-            (icons::ARROWS_OUT, PaneHit::Move(right), crate::app::IconMotion::Still),
-            (icons::SWAP, PaneHit::Swap, crate::app::IconMotion::Spin(180.0)),
-            (icons::SOLO, PaneHit::Solo(right), crate::app::IconMotion::Pop),
-            (icons::TO_TAB, PaneHit::ToTab(right), crate::app::IconMotion::Bob),
-            (icons::CLOSE, PaneHit::Close(right), crate::app::IconMotion::Spin(90.0)),
-        ];
+        let items = if split {
+            vec![
+                (icons::ARROWS_OUT, PaneHit::Move(right), crate::app::IconMotion::Still),
+                (icons::SWAP, PaneHit::Swap, crate::app::IconMotion::Spin(180.0)),
+                (icons::SOLO, PaneHit::Solo(right), crate::app::IconMotion::Pop),
+                (icons::TO_TAB, PaneHit::ToTab(right), crate::app::IconMotion::Bob),
+                (icons::CLOSE, PaneHit::Close(right), crate::app::IconMotion::Spin(90.0)),
+            ]
+        } else {
+            lone
+        };
+        let last = items.len().saturating_sub(1);
         for (i, (icon, hit, motion)) in items.into_iter().enumerate() {
             // Each glyph blooms a beat after the one nearer the corner: the
             // field is a little further along for the ones at the far end.
-            let stagger = 1.0 - (4 - i) as f32 * 0.12;
+            let stagger = 1.0 - (last - i) as f32 * 0.12;
             let ki = ((k - (1.0 - stagger)) / stagger).clamp(0.0, 1.0);
             if ki <= 0.01 {
                 continue;
@@ -209,6 +245,7 @@ impl App {
             self.icon_button(scene, icon, isz, c.x + (cell - isz) / 2.0, c.y + (cell - isz) / 2.0 + rise, color, c, crate::app::hover_key("pane", i + if right { 10 } else { 0 }), motion);
             if ki > 0.5 {
                 self.pane_hits.push((c, hit));
+                self.offer_tip(crate::app::hover_key("pane-tip", i + if right { 10 } else { 0 } + if split { 0 } else { 20 }), c, hit.tip(solo));
             }
         }
     }
@@ -234,8 +271,9 @@ impl App {
     /// Is the pointer anywhere a pane control might change? (Redraw then.)
     pub(crate) fn near_pane_controls(&self, x: f32, y: f32) -> bool {
         let Some(tab) = self.tabs.get(self.active) else { return false };
-        let Some(r) = tab.right.as_ref() else { return false };
         let reach = self.px(REACH) + self.px(40.0);
+        let corner = |p: Rect| Rect::new(p.right() - self.px(130.0), p.y, self.px(130.0), self.px(70.0));
+        let Some(r) = tab.right.as_ref() else { return matches!(tab.left, Pane::Term(_)) && dist(corner(tab.left.rect()), x, y) < reach };
         let rr = r.rect();
         let lr = tab.left.rect();
         let corner = |p: Rect| Rect::new(p.right() - self.px(130.0), p.y, self.px(130.0), self.px(70.0));
@@ -254,6 +292,18 @@ impl App {
             PaneHit::Move(r) => {
                 self.pane_drag = Some((self.active, r, x, y));
                 self.sidebar_hover = true;
+            }
+            PaneHit::SplitShell => {
+                if let Some(tab) = self.tabs.get(self.active).map(|t| t.id) {
+                    self.direct(Op::SplitShell { tab });
+                    self.layout();
+                }
+            }
+            PaneHit::SplitPage => {
+                if let Some(tab) = self.tabs.get(self.active).map(|t| t.id) {
+                    self.direct(Op::Split { tab });
+                    self.layout();
+                }
             }
         }
         self.dirty = true;
