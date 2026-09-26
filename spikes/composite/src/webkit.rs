@@ -147,9 +147,14 @@ mod imp {
 const area=v=>v.clientWidth*v.clientHeight;
 if(on){const v=vs.filter(v=>!v.paused&&!v.ended&&v.readyState>1).sort((a,b)=>area(b)-area(a))[0];
 if(!v)return 'no playing video';v.disablePictureInPicture=false;v.removeAttribute('disablepictureinpicture');
+window.__nusPip=v;if(!v.__nusLeave){v.__nusLeave=true;
+const mode=()=>{const inPip=v.webkitPresentationMode==='picture-in-picture'||document.pictureInPictureElement===v;
+if(inPip){v.__nusInPip=true;return}if(!v.__nusInPip)return;v.__nusInPip=false;
+if(window.__nusPip===v){window.__nusPip=null;v.pause()}};
+v.addEventListener('webkitpresentationmodechanged',mode);v.addEventListener('enterpictureinpicture',mode);v.addEventListener('leavepictureinpicture',mode)}
 if(v.webkitSupportsPresentationMode&&v.webkitSupportsPresentationMode('picture-in-picture')){v.webkitSetPresentationMode('picture-in-picture');return 'pip'}
 if(v.requestPictureInPicture){v.requestPictureInPicture().catch(e=>{});return 'requested'}return 'unsupported'}
-for(const v of vs){if(v.webkitPresentationMode==='picture-in-picture')v.webkitSetPresentationMode('inline')}
+window.__nusPip=null;for(const v of vs){if(v.webkitPresentationMode==='picture-in-picture')v.webkitSetPresentationMode('inline')}
 if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{});return 'inline'}"#;
 
     /// A WKWebView over one browser pane.
@@ -178,7 +183,17 @@ if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{})
                 let config = WKWebViewConfiguration::new(mtm);
                 let store = if private { WKWebsiteDataStore::nonPersistentDataStore(mtm) } else { WKWebsiteDataStore::defaultDataStore(mtm) };
                 config.setWebsiteDataStore(&store);
-                config.preferences().setElementFullscreenEnabled(true);
+                let prefs = config.preferences();
+                prefs.setElementFullscreenEnabled(true);
+                // Picture in picture is off for apps that embed WebKit (Safari
+                // turns it on for itself); the switch is WebKit SPI, so it is
+                // only flipped where this WebKit has it.
+                {
+                    use objc2::runtime::NSObjectProtocol;
+                    if prefs.respondsToSelector(objc2::sel!(_setAllowsPictureInPictureMediaPlayback:)) {
+                        let _: () = objc2::msg_send![&*prefs, _setAllowsPictureInPictureMediaPlayback: true];
+                    }
+                }
                 config.setApplicationNameForUserAgent(Some(&NSString::from_str(safari_name())));
                 let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
                 let view = WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), frame, &config);
