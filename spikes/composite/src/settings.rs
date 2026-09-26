@@ -1415,6 +1415,8 @@ enum Control {
     /// Picture cards: (name, caption, picture, hit, current). Each option
     /// drawn as what it does, so it's clear what you're clicking on.
     Pics(Vec<(String, String, Pic, Hit, bool)>),
+    /// Settings · Menu: the real drawer and tray icon, live.
+    DrawerPreview,
     /// Buttons that say what they do: (label, caption, icon, hit).
     Actions(Vec<(String, String, (&'static str, &'static str), Hit)>),
 }
@@ -3184,6 +3186,8 @@ impl App {
                     ("MENU BAR / TRAY ICON".into(),Choice(vec![("ON".into(),Hit::MenuEnabled(true),c.enabled),("OFF".into(),Hit::MenuEnabled(false),!c.enabled)])),
                     ("SIGNAL ICON".into(),Choice(vec![("DOT".into(),Hit::MenuSignal(SignalStyle::Dot),c.signal==SignalStyle::Dot),("COUNT".into(),Hit::MenuSignal(SignalStyle::Count),c.signal==SignalStyle::Count),("STATUS TEXT".into(),Hit::MenuSignal(SignalStyle::Text),c.signal==SignalStyle::Text)])),
                     ("".into(),Info("macOS can show a count or status beside the icon. Windows and Linux use an icon badge and tooltip. The orbit follows your theme.".into())),
+                    ("LIVE PREVIEW".into(),DrawerPreview),
+                    ("".into(),Info("This is the drawer itself, drawn here as it opens from the menu bar, with your work and downloads in it. Every change below shows at once.".into())),
                     ("".into(),Buttons(vec![("OPEN YOUR DRAWER".into(),icons::SQUARES,Hit::MenuPreview)])),
                 ];
                 for (i,s) in c.sections().iter().enumerate(){
@@ -4684,7 +4688,7 @@ impl App {
             // Full-width controls: caption above, the control across the column.
             let stacked = matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..) | Control::Stepper(..))
                 && (tiles || self.fonts.measure(label, &k) > label_w - self.px(14.0));
-            let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
+            let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::DrawerPreview | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
                 || matches!(control, Control::Info(_) | Control::Help(_) | Control::SavedCommand(_));
             let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
             let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
@@ -4697,6 +4701,7 @@ impl App {
                 Control::SavedCommand(i) => self.saved_card_height(*i,maxw),
                 Control::AppIcons=>self.icon_choices_height(maxw)+cap_h+self.px(18.0),
                 Control::Mercury => self.mercury_settings_height(maxw) + cap_h + self.px(18.0),
+                Control::DrawerPreview => self.drawer_preview_height() + cap_h,
                 Control::Intelligence => cap_h + self.px(124.0),
                 Control::FontProof | Control::PromptProof => self.px(226.0) + cap_h,
                 Control::Pics(cards) => cap_h + cards.len().div_ceil(per_row) as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0),
@@ -4792,6 +4797,7 @@ impl App {
                 }
                 Control::AppIcons=>self.draw_icon_choices(scene,Rect::new(cx,y+cap_h,maxw,self.icon_choices_height(maxw))),
                 Control::Mercury => self.draw_mercury_settings(scene, Rect::new(cx, y+cap_h, maxw, self.mercury_settings_height(maxw))),
+                Control::DrawerPreview => self.draw_drawer_preview(scene, Rect::new(cx, y+cap_h, maxw, self.drawer_preview_height())),
                 Control::Intelligence => {
                     let w = maxw.min(self.px(520.0));
                     self.draw_intel_ring(scene, Rect::new(cx, y + cap_h, w, self.px(72.0)));

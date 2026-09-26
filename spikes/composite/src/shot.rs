@@ -1121,11 +1121,11 @@ impl App {
                 let visible=self.menu_drawer.window.as_ref().is_some_and(|d|d.visible);assert_eq!(visible,rest!="hidden");
                 if visible{let d=self.menu_drawer.window.as_ref().unwrap();assert!(d.target.size.0<=d.monitor.2&&d.target.size.1<=d.monitor.3);let p=d.window.outer_position().unwrap();assert!(p.x>=d.monitor.0&&p.y>=d.monitor.1&&p.x+d.target.size.0 as i32<=d.monitor.0+d.monitor.2 as i32&&p.y+d.target.size.1 as i32<=d.monitor.1+d.monitor.3 as i32,"drawer escaped its display");}
             },
-            "menuprivacy"=>{let d=self.menu_drawer.window.as_ref().unwrap();assert!(!d.hits.iter().any(|(_,_,label,_)|label.contains(rest)),"private name in drawer accessibility labels");},
+            "menuprivacy"=>{let d=self.menu_drawer.window.as_ref().unwrap();assert!(!d.p.hits.iter().any(|(_,_,label,_)|label.contains(rest)),"private name in drawer accessibility labels");},
             "menuclick"=>{
-                self.menu_drawer_frame();let d=self.menu_drawer.window.as_mut().expect("drawer exists");let (r,_,_,content)=d.hits.iter().find(|(_,hit,_,_)|format!("{hit:?}").starts_with(rest)).cloned().expect("drawer action exists");
-                if content {d.scroll=(d.scroll+(r.y-d.viewport.y).max(0.0)).min(d.reach);}self.menu_drawer_frame();
-                let d=self.menu_drawer.window.as_mut().unwrap();let(r,_,_,_)=d.hits.iter().find(|(_,hit,_,_)|format!("{hit:?}").starts_with(rest)).unwrap();d.pos=(r.x+r.w/2.0,r.y+r.h/2.0);
+                self.menu_drawer_frame();let d=self.menu_drawer.window.as_mut().expect("drawer exists");let (r,_,_,content)=d.p.hits.iter().find(|(_,hit,_,_)|format!("{hit:?}").starts_with(rest)).cloned().expect("drawer action exists");
+                if content {d.p.scroll=(d.p.scroll+(r.y-d.p.viewport.y).max(0.0)).min(d.p.reach);}self.menu_drawer_frame();
+                let d=self.menu_drawer.window.as_mut().unwrap();let(r,_,_,_)=d.p.hits.iter().find(|(_,hit,_,_)|format!("{hit:?}").starts_with(rest)).unwrap();d.p.pos=(r.x+r.w/2.0,r.y+r.h/2.0);
                 self.menu_drawer_event(winit::event::WindowEvent::MouseInput{device_id:winit::event::DeviceId::dummy(),state:ElementState::Released,button:MouseButton::Left});
             },
             "menushot"=>{

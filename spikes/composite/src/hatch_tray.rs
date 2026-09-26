@@ -54,7 +54,7 @@ impl Tray {
     }
 }
 
-fn badge(state:Signal,style:SignalStyle,native_text:bool)->Option<String>{
+pub(crate) fn badge(state:Signal,style:SignalStyle,native_text:bool)->Option<String>{
     if native_text&&style!=SignalStyle::Dot{return None;}
     if state.attention>0{return Some("!".into());}
     if state.count()>0{return Some(if style==SignalStyle::Count{if state.count()>9{"9+".into()}else{state.count().to_string()}}else{String::new()});}

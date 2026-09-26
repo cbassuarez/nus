@@ -523,6 +523,37 @@ impl Gpu {
         (size, out)
     }
 
+    /// A texture a scene can be drawn into and then drawn from, like a
+    /// window's own: for showing one surface inside another.
+    pub fn offscreen_texture(&self, size: (u32, u32)) -> wgpu::Texture {
+        self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen"),
+            size: wgpu::Extent3d {
+                width: size.0.max(1),
+                height: size.1.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    }
+
+    /// Draw `scene` into a texture from `offscreen_texture`, now.
+    pub fn render_into(&mut self, texture: &wgpu::Texture, scene: &Scene, clear: [f32; 4]) {
+        self.upload_instances(scene);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let size = (texture.width(), texture.height());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.pass(&mut encoder, &view, size, scene, clear, 0.0);
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
     pub fn snapshot(&mut self, size: (u32, u32), scene: &Scene, clear: [f32; 4]) -> Vec<u8> {
         self.snapshot_pixels(size, scene, clear, false)
     }
