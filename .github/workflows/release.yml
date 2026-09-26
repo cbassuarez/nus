@@ -28,6 +28,9 @@ env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'
+  # nus's GitHub sign-in (forge.rs): the app's public client ID, built in.
+  # Set it under Settings › Secrets and variables › Actions › Variables.
+  NUS_GITHUB_CLIENT_ID: ${{ vars.NUS_GITHUB_CLIENT_ID }}
 
 jobs:
   version:
