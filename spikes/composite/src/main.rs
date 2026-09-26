@@ -133,6 +133,8 @@ mod forge;
 mod power;
 mod touch;
 mod news;
+mod notes;
+mod notes_ui;
 mod diffs;
 mod phone;
 mod private;

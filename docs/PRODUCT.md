@@ -1690,3 +1690,52 @@ panics under winit's pump-events loop if asked from one — and is modal while
 it is up, like every other app's open dialog. nus does not park a thread on
 it: the answer is asked for a frame at a time from `tick`, so there is no
 join and no ordering between the panel closing and the next frame.
+
+## Notes (built 2026-09-26)
+
+A note is a markdown file opened in the editor pane; there is no new pane
+kind. Two homes: **folder** notes in `<folder>/.nus/notes/`, plain text,
+the project's (nus writes `/.nus/` into `.git/info/exclude`, never
+`.gitignore`, the first time it makes one); **profile** notes in
+`profile/notes/`, sealed by the vault like `memory.md` and carried by sync.
+A private window makes and opens none.
+
+**Beside a shell it is a peer.** `note` in the palette: NEW NOTE HERE (the
+focused shell's folder), NEW PROFILE NOTE, NOTES (the whole tab), CLIP THIS
+BLOCK, ADD THE PAGE BESIDE, and the notes by name. A new note opens as the
+shell's split, the way a clicked path does. The strip names where it lives:
+`folder`, or `profile · sealed`.
+
+**Clip.** A pencil joins a block's chips (share · run again · copy ·
+clip). It puts the block into the note open in this tab — or, with none
+open, the folder's `inbox.md`, opened beside — as a fenced `nus-block`
+whose info line carries the command, exit, folder and minute (UTC). The
+last 60 lines of output go in, through the same secret scrubber as Ask;
+masked secrets are counted in the notice. The clip keeps its own text, so it
+outlives the journal and replay it came from. ADD THE PAGE BESIDE writes a
+link line.
+
+**As wide as a tab, it grows rails.** Past 1100 logical px the pane keeps
+an index on the left (this folder's notes, then the profile's, newest
+first, `+ New Note` and `Profile` at the foot) and, on the right, what the
+note POINTS AT (clipped blocks with their lamp, pages, `path:line` files —
+a click goes to the clip, opens the page beside, or opens the file at the
+line) and what POINTS HERE (other notes naming this one). Narrower, the
+same pane is just the note: the peer and the tab are one buffer.
+
+**What leaves.** Nothing on its own; there is no telemetry for notes or
+anything else. Profile notes reach a sync carrier sealed, when a key is
+set. Folder notes go wherever your own git push takes them.
+
+**The scratch sheet is the hatch.** No second sheet from the top edge:
+the hatch already carries any tab of the Space over everything, and a note
+is a tab. NOTE IN THE HATCH (palette) opens this folder's `inbox.md` — or
+the newest profile note when no folder is at hand — and HOISTs it; the tab
+that was up comes down, LAND brings the note down, the hotkey hides and
+shows it. At the sheet's 960px the note has no rails, so it is just text
+under the *quick* masthead. A tab already showing the inbox is the one
+that goes up, never a second buffer of the same file. It is on disk from
+the first key, so there is no KEEP and nothing to lose on a crash.
+
+Not yet: margin notes on blocks and passages, a NOTE chip in Ask, quoting a
+page's selection, and a SETTINGS · NOTES section.

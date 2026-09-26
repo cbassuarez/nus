@@ -93,6 +93,8 @@ pub enum Action {
     Hoist,
     BlockMarkdown(String),
     BlockGist(String),
+    /// Notes: new, the tab, clip a block, add a page, open one (notes_ui.rs).
+    Note(crate::notes_ui::NoteAct),
     /// A skill, with a subject typed after its name.
     Skill(usize, String),
     OpenLayout(String),
@@ -654,6 +656,7 @@ pub fn tip_for(key: u64) -> Option<&'static str> {
         ("compact-settings", 0, "settings"),
         ("blockchip", 0, "copy this block's output"),
         ("blockchip", 1, "run this command again"),
+        ("blockchip", 3, "clip this block into the note"),
         ("pane", 0, "move · drag onto a tab"),
         ("pane", 1, "swap the panes"),
         ("pane", 2, "solo this pane"),
@@ -7011,6 +7014,9 @@ impl App {
                 if q.is_empty() || hit("ports") || hit("board") {
                     rows.push(row("::", format!("ports · the board · {}", key("P", true)), Action::Board));
                 }
+                for (num, text, action) in self.note_rows(&q) {
+                    rows.push(row(num, text, action));
+                }
                 if let Some(pg) = self.focused_block_page() {
                     if q.is_empty() || hit("block") || hit("markdown") || hit("gist") {
                         rows.push(row("</>", "this block · copy as markdown".into(), Action::BlockMarkdown(pg.clone())));
@@ -7448,6 +7454,7 @@ impl App {
             Action::ReopenIn(n) => self.reopen_in(&n),
             Action::Chain(name) => self.run_chain(&name),
             Action::JournalPage => self.open_journal_page(),
+            Action::Note(act) => self.note_act(act),
             Action::Timeline => self.toggle_timeline(),
             Action::Home => self.open_home(),
             Action::Library => self.open_library(),
