@@ -407,6 +407,13 @@ pub struct Behavior {
     /// Closing a tab with a foreground process asks first.
     pub close_asks: bool,
     pub default_profile: usize,
+    /// The default shell by name: positions move as shells come and go (shells.rs).
+    pub default_shell_name: String,
+    /// Shells kept out of NEW TAB and the lists; quiet ones asked for back.
+    pub shells_hidden: Vec<String>,
+    pub shells_shown: Vec<String>,
+    /// When each shell or machine was last opened (seconds): recent machines first.
+    pub shells_used: std::collections::BTreeMap<String, u64>,
     pub follow_os_theme: bool,
     /// The Start modal at launch, and its chime.
     pub start_on_launch: bool,
@@ -892,6 +899,10 @@ impl Default for Behavior {
             prompt_url: PromptUrl::Split,
             close_asks: true,
             default_profile: 0,
+            default_shell_name: String::new(),
+            shells_hidden: Vec::new(),
+            shells_shown: Vec::new(),
+            shells_used: std::collections::BTreeMap::new(),
             follow_os_theme: true,
             start_on_launch: false,
             startup_sound: false,
@@ -1084,6 +1095,16 @@ pub enum Hit {
     Widevine,
     /// BROWSER · PASSWORDS: delete every saved sign-in.
     ForgetPasswords,
+    /// TERMINAL · SHELLS (shells.rs): open one, hide or show it, take one
+    /// of your own out, get a missing one, add yours, edit shells.json,
+    /// look for newly installed ones.
+    ShellOpen(usize),
+    ShellHide(usize),
+    ShellRemove(usize),
+    ShellGet(usize),
+    ShellAdd,
+    ShellEdit,
+    ShellRescan,
     /// PROMPT LSP: GET or REMOVE a prompt language server (index into LSP_TOOLS).
     LspTool(usize),
     StartOnLaunch(bool),
@@ -1421,6 +1442,8 @@ enum Control {
     DrawerPreview,
     /// Settings · Profile: where the profile lives, as a map (profile_orbit.rs).
     ProfileOrbit,
+    /// Settings · Terminal: every shell and machine, grouped (shells.rs).
+    ShellList,
     /// Buttons that say what they do: (label, caption, icon, hit).
     Actions(Vec<(String, String, (&'static str, &'static str), Hit)>),
 }
@@ -1590,7 +1613,7 @@ impl App {
         match hit {
             // A bundle's GET plays its own press.
             Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) | Hit::LspTool(_) => {}
-            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {
+            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove | Hit::ShellOpen(_) | Hit::ShellRemove(_) | Hit::ShellGet(_) | Hit::ShellAdd | Hit::ShellEdit | Hit::ShellRescan => {
                 self.play_event("control.press")
             }
             _ => self.play_event("toggle"),
@@ -1907,6 +1930,13 @@ impl App {
             Hit::Widevine => "fetch the Widevine module now".into(),
             Hit::LspTool(i) => self.lsp_tool_words(i).1,
             Hit::ForgetPasswords => "forget every saved password".into(),
+            Hit::ShellOpen(i) => format!("open {}", self.profiles.get(i).map(|p| p.name.as_str()).unwrap_or("shell")),
+            Hit::ShellHide(i) => format!("{} {}", if self.shell_hidden(i) { "show" } else { "hide" }, self.profiles.get(i).map(|p| p.name.as_str()).unwrap_or("shell")),
+            Hit::ShellRemove(i) => format!("remove {}", self.profiles.get(i).map(|p| p.name.as_str()).unwrap_or("shell")),
+            Hit::ShellGet(k) => self.shell_offers().get(k).map(|o| format!("get {}", o.shell)).unwrap_or_default(),
+            Hit::ShellAdd => "add your own shell".into(),
+            Hit::ShellEdit => "edit shells.json".into(),
+            Hit::ShellRescan => "look for new shells".into(),
             Hit::BarStyle(b) => format!("loading bar {}", b.name()),
             Hit::BarColor(c) => format!("bar color {:?}", c).to_lowercase(),
         }
@@ -2004,7 +2034,14 @@ impl App {
             Hit::Links(l) => self.behavior.links = l,
             Hit::PromptUrl(p) => self.behavior.prompt_url = p,
             Hit::CloseAsks(a) => self.behavior.close_asks = a,
-            Hit::DefaultProfile(i) => self.behavior.default_profile = i,
+            Hit::DefaultProfile(i) => self.set_default_shell(i),
+            Hit::ShellOpen(i) => self.new_tab(i),
+            Hit::ShellHide(i) => self.toggle_shell_hidden(i),
+            Hit::ShellRemove(i) => self.remove_custom_shell(i),
+            Hit::ShellGet(k) => self.get_shell(k),
+            Hit::ShellAdd => self.open_palette(crate::app::PaletteMode::ShellAdd),
+            Hit::ShellEdit => self.open_shells_file(),
+            Hit::ShellRescan => self.rescan_shells(),
             Hit::ReloadRules => {
                 self.rules.reload();
                 self.refresh_rules_folders();
@@ -3911,11 +3948,13 @@ impl App {
             5 => {
                 let mut v: Vec<(String, Control)> = vec![(
                     "DEFAULT SHELL".into(),
+                    // Shells on this machine and your own; every one (and each
+                    // machine) is in the SHELLS list below.
                     Choice(
-                        self.profiles
-                            .iter()
-                            .enumerate()
-                            .map(|(i, p)| (p.name.caps(), Hit::DefaultProfile(i), i == self.behavior.default_profile))
+                        self.shell_order(false)
+                            .into_iter()
+                            .filter(|&i| i == self.behavior.default_profile || self.shell_group(i) != crate::shells::Group::Machine)
+                            .filter_map(|i| self.profiles.get(i).map(|p| (p.name.caps(), Hit::DefaultProfile(i), i == self.behavior.default_profile)))
                             .collect(),
                     ),
                 )];
@@ -4071,13 +4110,8 @@ impl App {
                     "SHELL INTEGRATION".into(),
                     Choice(vec![("AUTO".into(), Hit::ShellInt(true), self.behavior.shell_integration), ("OFF".into(), Hit::ShellInt(false), !self.behavior.shell_integration)]),
                 ));
-                for (n, p) in self.profiles.iter().enumerate().take(6) {
-                    let kind = crate::shell::kind_of(&p.program);
-                    v.insert(2 + n, (p.name.caps(), Info(crate::shell::describe(kind).into())));
-                }
-                for p in &self.profiles {
-                    v.push((format!("PROFILE · {}", p.name.caps()), Info(format!("{} {}", p.program, p.args.join(" ")))));
-                }
+                // Every shell and machine, with what nus's integration does in each.
+                v.push(("SHELLS".into(), ShellList));
                 v.push((
                     "AVATAR".into(),
                     Buttons(vec![("CHOOSE A PICTURE".into(), icons::IMAGE, Hit::PickAvatar), ("RELOAD".into(), icons::RELOAD, Hit::ReloadAvatar), ("OPEN PROFILE FOLDER".into(), icons::FOLDER, Hit::OpenProfileDir)]),
@@ -4704,7 +4738,7 @@ impl App {
             // Full-width controls: caption above, the control across the column.
             let stacked = matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..) | Control::Stepper(..))
                 && (tiles || self.fonts.measure(label, &k) > label_w - self.px(14.0));
-            let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::DrawerPreview | Control::ProfileOrbit | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
+            let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::DrawerPreview | Control::ProfileOrbit | Control::ShellList | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
                 || matches!(control, Control::Info(_) | Control::Help(_) | Control::SavedCommand(_));
             let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
             let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
@@ -4719,6 +4753,7 @@ impl App {
                 Control::Mercury => self.mercury_settings_height(maxw) + cap_h + self.px(18.0),
                 Control::DrawerPreview => self.drawer_preview_height() + cap_h,
                 Control::ProfileOrbit => self.profile_orbit_height(maxw) + cap_h,
+                Control::ShellList => self.shell_list_height() + cap_h,
                 Control::Intelligence => cap_h + self.px(124.0),
                 Control::FontProof | Control::PromptProof => self.px(226.0) + cap_h,
                 Control::Pics(cards) => cap_h + cards.len().div_ceil(per_row) as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0),
@@ -4816,6 +4851,7 @@ impl App {
                 Control::Mercury => self.draw_mercury_settings(scene, Rect::new(cx, y+cap_h, maxw, self.mercury_settings_height(maxw))),
                 Control::DrawerPreview => self.draw_drawer_preview(scene, Rect::new(cx, y+cap_h, maxw, self.drawer_preview_height())),
                 Control::ProfileOrbit => self.draw_profile_orbit(scene, Rect::new(cx, y+cap_h, maxw, self.profile_orbit_height(maxw))),
+                Control::ShellList => self.draw_shell_list(scene, Rect::new(cx, y+cap_h, maxw, self.shell_list_height())),
                 Control::Intelligence => {
                     let w = maxw.min(self.px(520.0));
                     self.draw_intel_ring(scene, Rect::new(cx, y + cap_h, w, self.px(72.0)));

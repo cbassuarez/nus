@@ -131,7 +131,8 @@ impl App {
             row("", "Default browser", if default_browser { "nus is your default browser · links from other apps open in the little window".to_string() } else { "not yet · links from other apps would open here in a little window".to_string() }, if default_browser { None } else { Some(("MAKE DEFAULT", Act::DefaultBrowser)) }),
             row("", "Start on login", if login { "on · nus starts with the system".to_string() } else { "off".to_string() }, Some((if login { "TURN OFF" } else { "TURN ON" }, Act::LoginItem))),
         ];
-        for p in self.profiles.iter().take(4) {
+        let shown: Vec<nus_pty::Profile> = self.shell_order(false).into_iter().filter(|&i| self.shell_group(i) != crate::shells::Group::Machine).filter_map(|i| self.profiles.get(i).cloned()).collect();
+        for p in shown.iter().take(4) {
             let kind = crate::shell::kind_of(&p.program);
             let on = self.behavior.shell_integration && !matches!(kind, crate::shell::Kind::Other);
             start.push(row("", if on { "Shell integration" } else { "Shell integration · off" }, format!("{} · {}", p.name, crate::shell::describe(kind)), Some(("TERMINAL SETTINGS", Act::Settings(SEC_TERMINAL)))));

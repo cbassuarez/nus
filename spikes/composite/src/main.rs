@@ -7,6 +7,7 @@ mod passwords;
 mod profile_orbit;
 mod real_pics;
 mod git_complete;
+mod shells;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;

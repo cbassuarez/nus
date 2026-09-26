@@ -1,6 +1,7 @@
 //! nus-pty — shell profiles and PTY sessions on top of `portable-pty`
 //! (ConPTY on Windows, openpty elsewhere).
 
+pub mod discover;
 pub mod ports;
 mod ring;
 
@@ -41,7 +42,20 @@ impl Profile {
                 env: Vec::new(),
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        {
+            // $SHELL, else the user database: an app opened from the Dock
+            // or a launcher can start without $SHELL.
+            let shell = discover::login_shell();
+            Profile {
+                name: shell.rsplit('/').next().unwrap_or("sh").to_string(),
+                program: shell,
+                args: vec!["-l".into()],
+                cwd: None,
+                env: Vec::new(),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
             Profile {
@@ -361,8 +375,9 @@ impl Drop for Pty {
 }
 
 impl Profile {
-    /// Everything a new tab could run: the default shell, WSL distros
-    /// (Windows), and every concrete `Host` in ~/.ssh/config.
+    /// Everything a new tab could run: the login shell, WSL distros
+    /// (Windows), every concrete `Host` in ~/.ssh/config (and what it
+    /// includes), then the machine's other shells (discover.rs).
     pub fn discover() -> Vec<Profile> {
         let mut out = vec![Profile::default_shell()];
         #[cfg(windows)]
@@ -413,24 +428,17 @@ impl Profile {
                 }
             }
         }
-        if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-            let cfg = std::path::Path::new(&home).join(".ssh").join("config");
-            if let Ok(text) = std::fs::read_to_string(cfg) {
-                for line in text.lines() {
-                    let line = line.trim();
-                    if let Some(rest) = line
-                        .strip_prefix("Host ")
-                        .or_else(|| line.strip_prefix("host "))
-                    {
-                        for host in rest.split_whitespace() {
-                            if !host.contains(['*', '?', '!']) {
-                                out.push(Profile::ssh(host));
-                            }
-                        }
-                    }
-                }
+        // Every concrete Host in ~/.ssh/config and the files it includes.
+        for host in discover::ssh_config_hosts() {
+            let p = Profile::ssh(&host);
+            if !out.iter().any(|o| o.name == p.name) {
+                out.push(p);
             }
         }
+        // The rest of this machine's shells, after the entries above so a
+        // default chosen by position before this list grew still holds.
+        let more = discover::local_shells(&out);
+        out.extend(more);
         out
     }
 }

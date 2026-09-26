@@ -173,7 +173,7 @@ impl App {
             let mut source = rows;
             let mut ordered = Vec::new();
             for (heading,names) in [
-                ("SHELLS", vec!["DEFAULT SHELL","SHELL INTEGRATION","KEEP ALIVE","SSH"]),
+                ("SHELLS", vec!["DEFAULT SHELL","SHELLS","SHELL INTEGRATION","KEEP ALIVE","SSH"]),
                 ("COMMAND EDITING", vec!["COMMAND LINE","PROMPT LSP","LANGUAGE SERVERS","EDITOR","BLOCKS","CLICK LINKS"]),
                 ("CLIPBOARD & SCROLLING",vec!["CLIPBOARD","OSC 52","SCROLL","WHEEL","SCROLLBACK"]),
                 ("HISTORY & REPLAY",vec!["JOURNAL","CUT OFF","REPLAY"]),
@@ -188,6 +188,7 @@ impl App {
                 for name in names {
                     if let Some(i)=source.iter().position(|(label,_)|label==name) {ordered.push(source.remove(i));}
                     let note=match name {
+                        "SHELLS"=>Some("Everything nus found on this machine, grouped, with how much of nus's integration each gets (hover a badge). Hidden ones stay here and in the palette; OPEN starts one now."),
                         "SHELL INTEGRATION"=>Some("Applies to new shells. Tracks the current folder, commands and exit codes so command navigation and status markers can work."),
                         "KEEP ALIVE"=>Some("Applies to new shells. Requires the nus-hold helper; existing shells keep the behavior they started with."),
                         "SSH"=>Some("When enabled, new SSH sessions copy shell integration scripts to ~/.cache/nus on the remote machine."),

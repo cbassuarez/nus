@@ -139,6 +139,7 @@ impl App {
                 S::Kinds => "kinds of tab".into(),
                 S::Kind(k) => format!("new {} tab", self.profiles.get(k).map(|p| p.name.clone()).unwrap_or_default()),
                 S::KindPage => "new page".into(),
+                S::KindMore => "more shells and machines".into(),
                 S::WinFront(i) => format!("window {}", self.windows.get(i).map(|e| e.name.clone()).unwrap_or_default()),
                 S::Rename => "rename window".into(),
                 S::NewWindow | S::RailNew => "new window".into(),

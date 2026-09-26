@@ -57,6 +57,8 @@ pub enum PaletteMode {
     SavedName(usize),
     /// Name a tab; its icon (an emoji, or any short string).
     RenameTab(usize),
+    /// TERMINAL · SHELLS · ADD YOUR OWN: a program and its arguments.
+    ShellAdd,
     IconTab(usize),
     /// Pick a folder for tab i's page, or name a new one.
     Folder(usize),
@@ -70,6 +72,8 @@ pub enum Action {
     ReadingControl(crate::library::Hit),
     Application(crate::application_menu::Command),
     Preference(crate::assistants::Field, String),
+    /// Add a shell of your own (shells.rs).
+    ShellAdd(String),
     AssistantDraft(u8, String),
     AssistantStart(u8, String),
     PromptShell(String),
@@ -517,6 +521,8 @@ pub enum SideHit {
     /// A kind in the fan-out: a shell profile, or a page.
     Kind(usize),
     KindPage,
+    /// The shells and machines NEW TAB's fan-out didn't list.
+    KindMore,
     /// A window in the list (index into the registry list).
     WinFront(usize),
     Rename,
@@ -978,6 +984,8 @@ pub struct App {
     pub tile_drag: Option<crate::tiles::Grab>,
     /// The pointer is a resize arrow over a divider.
     pub resize_cursor: Option<crate::tiles::Divider>,
+    /// Names of the shells that came from profile/shells.json (shells.rs).
+    pub custom_shells: Vec<String>,
     /// Where the live preview marked what the pointed-at row governs, this frame (live.rs).
     pub live_mark: Option<Rect>,
     /// Sign-ins waiting on Save or Fill (passwords.rs).
@@ -1364,6 +1372,7 @@ impl App {
             send_request: None,
             tile_drag: None,
             resize_cursor: None,
+            custom_shells: Vec::new(),
             live_mark: None,
             passwords: Default::default(),
             peek_anim: Anim::at(0.0),
@@ -1541,6 +1550,8 @@ impl App {
         app.ordinal = ordinal;
         let prefs = crate::prefs::Prefs::load();
         app.behavior = prefs.behavior.clone().unwrap_or_default();
+        // Your own shells, and the default by name, before the first tab picks one.
+        app.load_shells();
         // A second window: one shell, no splash, no session restore, no name.
         let onboarded = App::onboarded();
         // Profiles welcomed before the ledger existed count for their version.
@@ -1721,6 +1732,7 @@ impl App {
         let (cw, ch) = grid.cell_size();
         term.cell_px = (cw as u16, ch as u16);
         let profile_index = profile;
+        self.note_shell_used(profile);
         let mut profile = self.profiles.get(profile).cloned().unwrap_or_else(nus_pty::Profile::default_shell);
         if let Some(c) = cwd.filter(|c| std::path::Path::new(c).is_dir()) {
             profile.cwd = Some(c);
@@ -4533,7 +4545,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name" };
+            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name", PaletteMode::ShellAdd => "shell" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -5465,6 +5477,11 @@ impl App {
                 self.close_menus();
                 self.open_palette(PaletteMode::New);
             }
+            SideHit::KindMore => {
+                // Every shell and machine, hidden ones too: type to narrow.
+                self.close_menus();
+                self.open_palette(PaletteMode::New);
+            }
             SideHit::WinFront(i) => {
                 self.close_menus();
                 if let Some(e) = self.windows.get(i).cloned() {
@@ -5842,7 +5859,9 @@ impl App {
 
         if self.kinds_menu || self.kinds_anim.active() {
             let k = self.kinds_anim.value();
-            let n = self.profiles.len() + 1;
+            // Shells and your own, the four machines used last, then MORE.
+            let (menu, more) = self.menu_shells();
+            let n = menu.len() + 1 + usize::from(more > 0);
             let h = n as f32 * row * k;
             let r = Rect::new(sb.x, top, sb.w, h);
             scene.layer(Some(r));
@@ -5867,7 +5886,8 @@ impl App {
                 }
                 y += row;
             }
-            for (i, p) in profiles.iter().enumerate() {
+            for i in menu.iter().copied() {
+                let Some(p) = profiles.get(i) else { continue };
                 let cell = Rect::new(sb.x, y, sb.w, row);
                 let hot = cell.contains(mx, my);
                 if hot {
@@ -5879,14 +5899,37 @@ impl App {
                 scene.rect(Rect::new(sb.x + self.px(12.0), y + ((row - sq) / 2.0).round(), sq, sq), color);
                 let st = if i == self.behavior.default_profile && !page_first { strong } else { label };
                 self.fonts.draw(scene, st, sb.x + self.px(30.0), y + self.px(19.0), &p.name.caps());
-                if i == self.behavior.default_profile && !page_first {
-                    let d = "DEFAULT";
-                    let dw = self.fonts.measure(label, d);
-                    self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - dw, y + self.px(19.0), d);
+                // What it is, on the right: the default, or where a machine is.
+                let tag = if i == self.behavior.default_profile && !page_first {
+                    "DEFAULT"
+                } else {
+                    match self.shell_group(i) {
+                        crate::shells::Group::Machine => if nus_pty::discover::base(&p.program) == "ssh" { "SSH" } else { "WSL" },
+                        crate::shells::Group::Yours => "YOURS",
+                        crate::shells::Group::Shell => "",
+                    }
+                };
+                if !tag.is_empty() {
+                    let dw = self.fonts.measure(label, tag);
+                    self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.right() - self.px(12.0) - dw, y + self.px(19.0), tag);
                 }
                 scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
                 if self.kinds_menu {
                     self.side_hits.push((cell, SideHit::Kind(i)));
+                }
+                y += row;
+            }
+            if more > 0 {
+                let cell = Rect::new(sb.x, y, sb.w, row);
+                if cell.contains(mx, my) {
+                    scene.rect(cell, t.tint);
+                }
+                let isz = self.px(12.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::SEARCH, isz, sb.x + self.px(11.0), y + ((row - isz) / 2.0).round(), t.dim);
+                self.fonts.draw(scene, Style { color: t.dim, ..label }, sb.x + self.px(30.0), y + self.px(19.0), &format!("{more} MORE…"));
+                scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
+                if self.kinds_menu {
+                    self.side_hits.push((cell, SideHit::KindMore));
                 }
                 y += row;
             }
@@ -7029,9 +7072,17 @@ impl App {
                         rows.extend(self.history_rows(input, true, 5));
                     }
                 }
-                for (i, p) in self.profiles.iter().enumerate() {
-                    if hit(&p.name) {
-                        rows.push(row(">", format!("terminal · {}", p.name), Action::NewTerminal(i)));
+                // Every shell and machine, hidden ones too, in the list's order.
+                for i in self.shell_order(true) {
+                    let Some(p) = self.profiles.get(i) else { continue };
+                    let kind = match self.shell_group(i) {
+                        crate::shells::Group::Shell => "shell",
+                        crate::shells::Group::Yours => "yours",
+                        crate::shells::Group::Machine => "machine",
+                    };
+                    if hit(&p.name) || hit(kind) {
+                        let src = self.shell_source(i);
+                        rows.push(row(">", format!("{kind} · {} · {src}", p.name), Action::NewTerminal(i)));
                     }
                 }
                 for p in &self.ports {
@@ -7112,6 +7163,20 @@ impl App {
                 }
             }
             PaletteMode::Settings => return self.search_settings(input),
+            PaletteMode::ShellAdd => {
+                let typed = input.trim();
+                if typed.is_empty() {
+                    rows.push(row("·", if cfg!(windows) { r"a program and its arguments · e.g. C:\tools\nu\nu.exe -l".into() } else { "a program and its arguments · e.g. /opt/homebrew/bin/xonsh --login".into() }, Action::Noop));
+                } else {
+                    let parts = crate::shells::split_command(typed);
+                    let prog = parts.first().cloned().unwrap_or_default();
+                    let found = std::path::Path::new(&prog).is_file() || crate::assistants::resolve(&prog, "").is_some();
+                    rows.push(row("+", format!("add shell · {} · {typed}", nus_pty::discover::base(&prog)), Action::ShellAdd(typed.to_string())));
+                    if !found {
+                        rows.push(row("!", format!("{prog} isn't a file here or on the PATH · it's added anyway, and fails until it is"), Action::Noop));
+                    }
+                }
+            }
             PaletteMode::Place => {
                 let parsed = crate::app::parse_place(&q);
                 if q.trim().is_empty() {
@@ -7330,6 +7395,7 @@ impl App {
             Action::SavedName(i, value) => self.saved_edit(i, true, value),
             Action::PromptPin(value) => {if !value.is_empty() && !self.behavior.prompt.saved.contains(&value) {self.behavior.prompt.saved.push(value);self.save_prefs();}},
             Action::Preference(field,value) => self.set_preference(field,&value),
+            Action::ShellAdd(typed) => self.add_custom_shell(&typed),
             Action::AssistantDraft(id,prompt) => self.draft_assistant(id,&prompt),
             Action::AssistantStart(id,prompt) => self.start_assistant(id,&prompt),
             Action::SetPlace(p) => {
@@ -9402,7 +9468,7 @@ impl App {
         }
         // A menu is up: a click elsewhere closes it.
         if pressed && (self.win_menu || self.kinds_menu || self.dl_menu || self.tab_menu.is_some()) {
-            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::Window | SideHit::Kinds | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_) | SideHit::TabFolder(_)));
+            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::KindMore | SideHit::Window | SideHit::Kinds | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_) | SideHit::TabFolder(_)));
             if !on_menu {
                 self.close_menus();
             }

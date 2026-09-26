@@ -171,6 +171,8 @@ impl App {
             }
         }
         crate::downloads::set_rename(self.behavior.download_rename);
+        // The default shell by name, in this window's list.
+        self.resolve_default_shell();
         // NUS_SHELL=<profile name> picks the shell new tabs run (a test hook).
         if let Ok(name) = std::env::var("NUS_SHELL") {
             if let Some(i) = self.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(&name)) {
