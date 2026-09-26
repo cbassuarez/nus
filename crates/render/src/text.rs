@@ -740,7 +740,7 @@ pub mod icons {
     icon!(IMAGE, "image");
     icon!(TEXT_AA, "text-aa");
     icon!(HAND_WAVING, "hand-waving");
-    // Git (drawn in the set's regular weight: 16 on 256, round ends).
+    // Git: Phosphor regular, from phosphor-icons/core.
     icon!(GIT_BRANCH, "git-branch");
     icon!(GIT_COMMIT, "git-commit");
     icon!(GIT_MERGE, "git-merge");
@@ -995,7 +995,7 @@ mod caps_tests {
 mod git_icon_tests {
     use super::icons::*;
 
-    /// The hand-drawn git glyphs parse and leave ink at the size the UI uses.
+    /// The git glyphs parse and leave ink at the size the UI uses.
     #[test]
     fn git_icons_render() {
         for (name, svg) in [GIT_BRANCH, GIT_COMMIT, GIT_MERGE, GIT_PR, GIT_DIFF, PUSH, PULL, FETCH, STASH, UNDO_COMMIT, CHECK_CIRCLE, X_CIRCLE, CIRCLE_DASHED, FILES] {
