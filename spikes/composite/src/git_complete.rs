@@ -72,7 +72,9 @@ pub struct Repo {
     pub aliases: Vec<String>,
 }
 
-static CACHE: LazyLock<Mutex<HashMap<String, (Instant, Option<Repo>)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Each folder's repository, when it was last read.
+type Cache = HashMap<String, (Instant, Option<Repo>)>;
+static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 const FRESH: Duration = Duration::from_secs(4);
 
 fn git(cwd: &str, args: &[&str]) -> Vec<String> {
@@ -212,7 +214,7 @@ pub fn spans(line: &str, cwd: Option<&str>) -> Vec<(usize, usize, Kind)> {
     let repo = cwd.and_then(|c| CACHE.lock().ok()?.get(c).and_then(|(_, r)| r.clone()));
     let mut i = 0;
     let mut seg_words: Vec<(usize, String)> = Vec::new();
-    let mut flush = |words: &mut Vec<(usize, String)>, out: &mut Vec<(usize, usize, Kind)>| {
+    let flush = |words: &mut Vec<(usize, String)>, out: &mut Vec<(usize, usize, Kind)>| {
         if words.first().map(|w| w.1.as_str()) == Some("git") {
             let mut sub_seen = false;
             for (start, w) in words.iter().skip(1) {
