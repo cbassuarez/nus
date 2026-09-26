@@ -851,7 +851,14 @@ pub fn status_kind(cmd: &str) -> Option<bool> {
     let w: Vec<&str> = cmd.split_whitespace().collect();
     let i = w.iter().position(|x| *x == "git")?;
     let rest = &w[i + 1..];
-    let sub = rest.iter().position(|x| !x.starts_with('-'))?;
+    // Global options first: `-C dir` and `-c k=v` take a word each.
+    let mut sub = 0;
+    while sub < rest.len() && rest[sub].starts_with('-') {
+        sub += if matches!(rest[sub], "-C" | "-c") { 2 } else { 1 };
+    }
+    if sub >= rest.len() {
+        return None;
+    }
     (rest[sub] == "status").then(|| rest.iter().any(|x| matches!(*x, "-s" | "--short" | "--porcelain" | "-sb" | "-bs") || x.starts_with("--porcelain")))
 }
 
