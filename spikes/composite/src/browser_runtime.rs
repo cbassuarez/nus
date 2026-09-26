@@ -119,7 +119,11 @@ pub fn ensure() -> bool {
         user_agent_product: format!("Chrome/{}", crate::chromium_version())
             .as_str()
             .into(),
-        log_severity: cef::LogSeverity::DISABLE,
+        // Chromium's log is off; NUS_CEF_LOG=<file> turns it on (verbose),
+        // for diagnosing what the browser will not say on screen, such as
+        // why a DRM module did not load.
+        log_severity: if cef_log().is_some() { cef::LogSeverity::VERBOSE } else { cef::LogSeverity::DISABLE },
+        log_file: cef_log().unwrap_or_default().as_str().into(),
         root_cache_path: profile.to_string_lossy().as_ref().into(),
         cache_path: if crate::private::enabled() {
             "".into()
@@ -147,4 +151,9 @@ pub fn ensure() -> bool {
         schedule(0);
     }
     ok
+}
+
+/// Where Chromium should write its log, when asked to (NUS_CEF_LOG).
+fn cef_log() -> Option<String> {
+    std::env::var("NUS_CEF_LOG").ok().filter(|p| !p.trim().is_empty())
 }
