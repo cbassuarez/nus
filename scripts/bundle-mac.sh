@@ -8,9 +8,10 @@
 # CEF on macOS runs only from a bundle: the Chromium Embedded Framework in
 # Contents/Frameworks, and one helper app per subprocess role
 # ("nus Helper", "nus Helper (GPU)", … — CEF finds them by name), each built
-# from the composite_helper binary. The bundle is signed ad hoc, which is what
-# Apple silicon needs to run it locally; it is not notarized, so on another
-# Mac it has to be opened with right-click → Open the first time.
+# from the composite_helper binary. The bundle is signed with your code-signing
+# identity when there is one (see NUS_SIGN_IDENTITY below), else ad hoc, which
+# is what Apple silicon needs to run it locally; it is not notarized, so on
+# another Mac it has to be opened with right-click → Open the first time.
 #
 # Run once before: scripts/fetch-cef.sh (vendor/cef).
 set -euo pipefail
@@ -122,13 +123,31 @@ for h in "$app/Contents/Frameworks/"*Helper*.app; do
 done
 rm -rf "$icons"
 
-echo "· signing (ad hoc)"
+# Signing identity. The keychain remembers "Always Allow" for an app by its
+# signature: an ad hoc one changes with every build, so each new build asks
+# again for nus's local-state key and Chromium's Safe Storage. A certificate
+# keeps the same identity from build to build, so it asks once, ever.
+#   NUS_SIGN_IDENTITY="Apple Development: …"  or any code-signing cert name
+# Otherwise the first Apple Development or Developer ID identity in your
+# keychain is used; with none, a self-signed one works too (Keychain Access ›
+# Certificate Assistant › Create a Certificate…, type Code Signing, named
+# e.g. "nus local", then NUS_SIGN_IDENTITY="nus local").
+sign="${NUS_SIGN_IDENTITY:-}"
+if [[ -z "$sign" ]]; then
+  sign=$(security find-identity -v -p codesigning 2>/dev/null | sed -nE 's/.*"((Apple Development|Developer ID Application): [^"]*)".*/\1/p' | head -1 || true)
+fi
+if [[ -n "$sign" ]]; then
+  echo "· signing as $sign"
+else
+  sign=-
+  echo "· signing (ad hoc: the keychain will ask again after each rebuild; see NUS_SIGN_IDENTITY above)"
+fi
 # Inside out: the framework, each helper, then the app.
-codesign --force --sign - "$app/Contents/Frameworks/Chromium Embedded Framework.framework" >/dev/null 2>&1
+codesign --force --sign "$sign" "$app/Contents/Frameworks/Chromium Embedded Framework.framework" >/dev/null 2>&1
 for h in "$app/Contents/Frameworks/"*Helper*.app; do
-  codesign --force --sign - "$h" >/dev/null 2>&1
+  codesign --force --sign "$sign" "$h" >/dev/null 2>&1
 done
-codesign --force --sign - "$app" >/dev/null 2>&1
+codesign --force --sign "$sign" "$app" >/dev/null 2>&1
 codesign --verify --deep --strict "$app"
 # Let Finder and Dock observe a bundle update, including an in-place rebuild.
 touch "$app"
