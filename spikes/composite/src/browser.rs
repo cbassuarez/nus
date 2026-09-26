@@ -20,6 +20,12 @@ pub struct Shared {
     pub nus_download_at: Option<std::time::Instant>,
     pub sleep_safe: bool,
     pub suspended: bool,
+    /// The first load has finished (redirects before it are one page).
+    pub settled: bool,
+    /// Main-frame address changes since then: links, back and forward,
+    /// and a single-page app's own history. Chromium's `can_go_back` is
+    /// a cached answer that trails these; this count does not.
+    pub moves: u32,
     pub restore_scroll: Option<(f64,f64)>,
     pub capture_guard: bool,
     pub scroll_position: (f64,f64),
@@ -139,6 +145,8 @@ pub struct Shared {
     pub(crate) print_asked: bool,
     /// Wheel the page had no room for since nus last looked (overscroll.rs).
     pub(crate) overscroll: f32,
+    /// Sideways wheel events the page had no room for, since nus last looked.
+    pub(crate) overscroll_side: u32,
     /// The page's JavaScript worlds by id, and the site each belongs to,
     /// as Chromium reports them: where a password report came from.
     pub(crate) contexts: std::collections::HashMap<i64, String>,
@@ -261,7 +269,7 @@ wrap_load_handler! {
     impl LoadHandler {
         fn on_loading_state_change(&self,_browser:Option<&mut Browser>,is_loading: ::std::os::raw::c_int,_back: ::std::os::raw::c_int,_forward: ::std::os::raw::c_int) {
             let mut s=self.shared.borrow_mut();s.loading=is_loading!=0;
-            if !s.loading {s.progress=1.0;}
+            if !s.loading {s.progress=1.0;s.settled=true;}
             s.paints+=1;
         }
         fn on_load_error(&self,browser:Option<&mut Browser>,frame:Option<&mut Frame>,error_code:Errorcode,_error_text:Option<&CefString>,failed_url:Option<&CefString>) {
@@ -1018,6 +1026,9 @@ wrap_display_handler! {
                 let mut s = self.d.shared.borrow_mut();
                 tracing::info!("address {} +{}ms", u, s.created.elapsed().as_millis());
                 let u = u.to_string();
+                if s.settled && u != s.url && !u.starts_with("about:") {
+                    s.moves += 1;
+                }
                 s.address(&u);
             }
             // A new page is on its way: draw it as soon as it paints, even
@@ -1274,6 +1285,11 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             if v.get("name").and_then(|n| n.as_str()) == Some("nusOverscroll") {
+                if v.get("payload").and_then(|p| p.as_str()).is_some_and(|p| p.starts_with('x')) {
+                    self.o.shared.borrow_mut().overscroll_side += 1;
+                    crate::browser_runtime::wake();
+                    return;
+                }
                 let dy = v.get("payload").and_then(|p| p.as_str()).and_then(|p| p.parse::<f32>().ok()).filter(|d| d.is_finite()).unwrap_or(0.0);
                 if dy != 0.0 {
                     let mut s = self.o.shared.borrow_mut();
@@ -2754,6 +2770,15 @@ impl BrowserTab {
     pub fn can_go_back(&self) -> bool {
         if let Some(n) = &self.shared.borrow().native { return n.can_go_back(); }
         self.browser.as_ref().is_some_and(|b|b.can_go_back()!=0)
+    }
+
+    /// There is somewhere back to go, or may be: Chromium says so, or the
+    /// page has moved since it first settled, or it is still on its way.
+    /// Only a page that is certainly on its first entry answers false.
+    pub fn may_go_back(&self) -> bool {
+        if self.can_go_back() { return true; }
+        let s = self.shared.borrow();
+        s.native.is_none() && (s.moves > 0 || s.loading || !s.settled)
     }
 
     pub fn can_go_forward(&self) -> bool {

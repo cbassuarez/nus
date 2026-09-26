@@ -6,7 +6,10 @@
 //!
 //! Back on a page with nowhere to go closes a tab that was opened onto
 //! that page — a link's new tab, a popup, one from the prompt — and
-//! returns to the tab before it, the way a browser does.
+//! returns to the tab before it, the way a browser does. Only then: a
+//! page that may have history (Chromium's answer trails navigations, so
+//! nus counts the page's moves itself) goes back, and a tab whose history
+//! was lost to sleep or a restart stays.
 
 use std::time::{Duration, Instant};
 
@@ -20,6 +23,10 @@ const LINGER: Duration = Duration::from_millis(320);
 
 /// Movement further apart than this is a new gesture.
 const GAP: Duration = Duration::from_millis(250);
+
+/// How long sideways wheel waits for the page's word that it had no room
+/// for it; unclaimed, it was the page's.
+pub const HOLD: Duration = Duration::from_millis(200);
 
 /// What a swipe that far would do, read when it moves (the tabs are not
 /// to hand while the page draws).
@@ -68,10 +75,33 @@ impl App {
         let pane = if right { tab.right.as_ref() } else { Some(&tab.left) };
         let Some(Pane::Web(w)) = pane else { return Dest::Nowhere };
         match back {
-            true if w.tab.can_go_back() => Dest::Back,
-            true if !right && tab.right.is_none() && !tab.pinned && !tab.hatch && self.tabs.len() > 1 => Dest::CloseTab,
+            true if w.tab.may_go_back() => Dest::Back,
+            true if tab.closes_on_back && !right && tab.right.is_none() && !tab.pinned && !tab.hatch && self.tabs.len() > 1 => Dest::CloseTab,
             false if w.tab.can_go_forward() => Dest::Forward,
             _ => Dest::Nowhere,
+        }
+    }
+
+    /// Sideways wheel the page had no room for becomes the swipe; the rest
+    /// was scrolled by the page and is forgotten.
+    pub(crate) fn tend_swipe(&mut self) {
+        let now = crate::clock::now();
+        let mut steps = Vec::new();
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        for (right, p) in std::iter::once((false, &mut tab.left)).chain(tab.right.as_mut().map(|p| (true, p))) {
+            let Pane::Web(w) = p else { continue };
+            let free = std::mem::take(&mut w.tab.shared.borrow_mut().overscroll_side);
+            match w.swipe_pending {
+                Some((sx, _)) if free > 0 => {
+                    w.swipe_pending = None;
+                    steps.push((right, sx));
+                }
+                Some((_, at)) if now.duration_since(at) >= HOLD => w.swipe_pending = None,
+                _ => {}
+            }
+        }
+        for (right, sx) in steps {
+            self.swipe_step(right, sx);
         }
     }
 
@@ -119,9 +149,13 @@ impl App {
         let pane = if right { tab.right.as_ref() } else { Some(&tab.left) };
         let Some(Pane::Web(w)) = pane else { return };
         if back {
-            if w.tab.can_go_back() {
+            // Chromium's own answer can trail a navigation that just
+            // happened (a link, a single-page app's history): go back
+            // whenever there may be somewhere to go, and close only a tab
+            // that was opened onto this page and has certainly not moved.
+            if w.tab.may_go_back() {
                 w.tab.back();
-            } else if !right && tab.right.is_none() && !tab.pinned && !tab.hatch && self.tabs.len() > 1 {
+            } else if tab.closes_on_back && !right && tab.right.is_none() && !tab.pinned && !tab.hatch && self.tabs.len() > 1 {
                 // The first page of a tab of its own: the tab goes, and the
                 // one before it comes back. Reopen-closed brings it again.
                 self.selected.clear();

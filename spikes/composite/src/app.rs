@@ -437,6 +437,9 @@ pub struct WebPane {
     pub bounce_y: f32,
     /// A sideways swipe in progress (swipe.rs).
     pub swipe: Option<crate::swipe::Swipe>,
+    /// Sideways wheel waiting on the page's word that it had no room for
+    /// it (overscroll.rs): only that becomes a swipe.
+    pub swipe_pending: Option<(f32, Instant)>,
     /// When it went to sleep, for the waking transcript.
     pub slept: Option<Instant>,
     /// When it was woken: a page back within a moment never shows the
@@ -722,6 +725,9 @@ pub struct Tab {
     /// Stack parent (a top-level tab's id). One level only: a child never
     /// has children; links from a child join the same stack.
     pub parent: Option<u64>,
+    /// Opened onto its page (a link, a popup, the prompt): back from that
+    /// first page closes it. Never for a restored or reopened tab.
+    pub closes_on_back: bool,
     pub left: Pane,
     pub right: Option<Pane>,
     pub focus_right: bool,
@@ -1955,6 +1961,7 @@ impl App {
             bounce: Default::default(),
             bounce_y: 0.0,
             swipe: None,
+            swipe_pending: None,
             load_since: None,
             load_reported: 0.0,
             devtools: None,
@@ -2336,6 +2343,7 @@ impl App {
             self.register_window();
         }
         self.tend_idle_tabs();
+        self.tend_swipe();
         self.welcome_tick();
         if self.paste_request {
             self.paste_request = false;
@@ -8327,7 +8335,7 @@ impl App {
         self.next_id += 1;
         let shell_slot = self.new_shell_slot(&left);
         let look = self.look_with(&left, None, shell_slot);
-        let mut tab = Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look, shell_slot };
+        let mut tab = Tab { id, parent: None, closes_on_back: false, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look, shell_slot };
         Self::fit_palette(&self.theme, &mut tab);
         tab
     }
@@ -8645,6 +8653,7 @@ impl App {
         let root = source;
         let mut tab = self.make_tab(Pane::Web(w), None);
         tab.parent = Some(self.tabs[root].id);
+        tab.closes_on_back = true;
         let parent_look = self.tabs[root].look.clone();
         tab.look = self.look_for(&tab.left, Some(&parent_look));
         self.collapsed.remove(&self.tabs[root].id);
@@ -8951,7 +8960,8 @@ impl App {
         }
         if new_tab {
             if let Some(w) = self.new_web_pane(url) {
-                let tab = self.make_tab(Pane::Web(w), None);
+                let mut tab = self.make_tab(Pane::Web(w), None);
+                tab.closes_on_back = true;
                 self.tabs.push(tab);
                 self.activate(self.tabs.len() - 1);
             }
@@ -10196,8 +10206,12 @@ impl App {
                 w.wheel_precise = matches!(delta, MouseScrollDelta::PixelDelta(_));
                 let (lx, ly) = ((x - w.page.x) / scale, (y - w.page.y) / scale);
                 w.tab.wheel(lx as i32, ly as i32, cef_flags, dx, dy);
+                // Held until the page says it had no room for it: a
+                // sideways scroller (a carousel, a wide table) keeps its wheel.
                 if sideways {
-                    self.swipe_step(right, sx);
+                    let now = crate::clock::now();
+                    let held = w.swipe_pending.filter(|(_, at)| now.duration_since(*at) < crate::swipe::HOLD).map(|(d, _)| d).unwrap_or(0.0);
+                    w.swipe_pending = Some((held + sx, now));
                 }
             }
         }

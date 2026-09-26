@@ -294,6 +294,11 @@ impl App {
     pub(crate) fn wake_tab(&mut self, i: usize) {
         if let Some(tab) = self.tabs.get_mut(i) {
             tab.last_active = crate::clock::now();
+            // Waking starts the page's history over: back must not take
+            // an empty history for a tab's first page and close it.
+            if matches!(&tab.left, Pane::Web(w) if w.asleep.is_some()) {
+                tab.closes_on_back = false;
+            }
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
                     if let Some(url) = w.asleep.as_ref() {
