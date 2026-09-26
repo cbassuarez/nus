@@ -366,6 +366,12 @@ impl App {
         });
         rows
     }
+    /// A reading item's saved copy as it is now (its hash), while the item
+    /// is in the list: notes check a citation against it.
+    pub(crate) fn reading_snapshot(&mut self, key: &str) -> Option<Option<String>> {
+        self.library.ensure();
+        self.library.store.read(key).ok().filter(|e| !e.deleted).map(|e| e.snapshot)
+    }
     pub(crate) fn read_saved(&mut self,key:&str) {
         self.read_saved_mode(key, true);
     }

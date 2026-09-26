@@ -1778,6 +1778,9 @@ join and no ordering between the panel closing and the next frame.
 
 ## Notes (built 2026-09-26)
 
+*Parts of this first pass (the inbox file, direct saves, stem names,
+backlinks by mention) were replaced by the second pass below.*
+
 A note is a markdown file opened in the editor pane; there is no new pane
 kind. Two homes: **folder** notes in `<folder>/.nus/notes/`, plain text,
 the project's (nus writes `/.nus/` into `.git/info/exclude`, never
@@ -1888,3 +1891,131 @@ Manager fills the stage beside the strip — minimise, or nothing), in the
 system's double-click time; on Windows maximise and restore; on Linux the
 desktop's `action-double-click-titlebar` (maximise by default). Fullscreen
 windows ignore it.
+
+## Notes, second pass: one note, found again (2026-09-26)
+
+Built from the notes implementation package (storage, sessions, capture,
+search, recall, reuse). Blueprint is the default look.
+
+**One note, one session.** However many places show a note (a split,
+another window, the hatch), they are views of one session, which holds
+the text, the undo and the saving. Each view keeps its own caret and
+scroll. Typing in one shows in the others, a capture lands once and moves
+nobody's caret, and Cmd+Z undoes the note's last step wherever you press
+it (notes_session.rs).
+
+**Saving is the note's, and "Saved" means saved.** Half a second after
+typing stops (or every two seconds while it doesn't), the session hands a
+snapshot to one writer thread. The strip says `saving…`, `saved`,
+`not saved · retry`, `conflict · review`, `read only` or `personal notes
+locked`, and only says saved once the store has committed. An answer for
+an older snapshot never marks newer text saved. Cmd+S saves now, and
+never runs format-on-save on a note.
+
+**Every write goes through one door** (notes_store.rs). A commit takes
+the home's lock and writes only if the note on disk still hashes to what
+the editor started from. The order is: the intent (both versions whole),
+then the head, a read-back check, and the intent retired. A crash at any
+step leaves either the finished note or the intent. At the next open, an
+unfinished draft comes back as unsaved text (`recovered draft`), and a
+note that moved on keeps every version. Nothing chooses by modification
+time. A note changed elsewhere is a conflict. Both versions are kept; in
+the palette, `note conflict` lets you keep yours, take theirs, or see
+theirs beside, and the version you don't pick is kept as a checkpoint.
+History keeps a checkpoint at most every five minutes, a hundred per note,
+thirty days, 256 MiB a home (Details shows the size). Trash is a revision
+plus a tombstone; `notes trash` restores.
+
+**Closing never discards.** Closing a note's last view (its strip ×, its
+tab, its window, quitting) saves it first. If that fails, the note stays
+open and a toast offers Retry or Save Copy (to Personal, since a read-only
+project is the likely cause). Letting go of changes is its own palette
+row, and even then the text is kept as a checkpoint and one undo away.
+
+**Two homes, each with an identity.** `.nus/notes/` in a project: plain
+Markdown, named `<title>--<id>.md`. `profile/notes/`: every file sealed by
+the vault before it touches disk, named by id only. Each home has its own
+id, so a copied project is a different home even with the same notes in
+it, while a moved project keeps its id. Only `.nus/notes/` goes into git's
+local exclude (an older `/.nus/` line is left alone). Projects with notes
+are remembered, sealed, for "All notes". Nothing crawls the disk.
+
+**A note has a header now.** A strict JSON object between `---` lines
+holds the note's id, revision, times, title, tags and sources; unknown
+members are kept. The body is written as you wrote it. A title is not a
+file name: `note title` sets it (empty uses the first line). Older notes
+without a header open, save and search as they are. `migrate this note`
+(or `notes migrate`, which counts first) makes them canonical, copy first,
+and keeps the original's exact bytes and a ledger.
+
+**Add to Note, from anywhere.** One command for a block (its chip, its
+menu), a shell selection (ADD SELECTION TO A NOTE…), a page or its
+selection (the page's menu), a file's selected lines, and a reading-list
+item (Make a note…). What is there is frozen the moment you ask. The
+palette then asks where: the note this project's captures went to last,
+the note open beside (only if it is in this project), a new note here or
+a new personal one (both unfiled until `keep as note`), or a recent note.
+What you type is why it matters, and you can leave it empty. The note
+gets the excerpt under a `<!-- nus:source … -->` marker, and the header
+gets a source record with the capture's hash. An excerpt edited later
+shows `edited excerpt` in the rails instead of passing for the original.
+Blocks keep their last 200 lines (64 KiB), a running block is labelled,
+secrets are masked and counted, and URLs lose their credentials. The
+receipt (Added To … · Open · Undo) leaves you in the work. Undo takes
+back only that capture, and only while it is as it landed. The same
+capture twice lands once.
+
+**Found again.** `notes <words>` searches every note in the project
+you're in, from an in-memory SQLite FTS5 index. It is never on disk, so a
+personal note's words are never written out in the clear, and it is
+rebuilt at start. It covers titles, bodies, tags and sources, and flags,
+paths and URLs match exactly (`--no-ff` is not `--ff-only`, and
+`src/a-b.rs` is not `src/a/b.rs`). `"quoted text"` matches as written.
+Filters: `in:<project>|personal|all`, `tag:`, `source:terminal|web|file|
+reading`, `before:`/`after:` (YYYY-MM-DD), `is:unfiled`. An unknown filter
+is said back, not ignored. Each hit gives the passage, the home and why it
+matched, and opens at the line. Locked personal notes lend nothing.
+
+**Links and backlinks.** `note link <words>` writes `[title](note:<id>)`
+at the caret, which survives renames of the title or the file. A link to
+a note in another home is written with that home's id. POINTS HERE lists
+only written links, never a name that happens to appear in the text.
+
+**Notes here.** A file with notes that cite it says `notes · 2` on its
+strip. `notes` in the palette lists the notes whose sources are exactly
+this file (in this project), this page (fragment and tracking parameters
+aside) or the last command in this shell, and says which.
+
+**Back to the source, and reuse.** `note` with a note open lists its
+sources. A file's lines are found again by their text: at the captured
+line, moved (it says where), in several places (one row each, never a
+guess), or gone. The file opens beside the note, not in its place. A page
+opens its original. A reading item opens the saved copy it pinned, and if
+that copy was refreshed or removed it says so, and the note keeps its
+quote. A command is inserted into the shell, never run: multiline text
+asks first, and a different folder is named. With Ask's editor chip on, a
+note sends its selected passage (else the whole note) under its title.
+`export this note` writes lossless Markdown (header and markers) or clean
+Markdown (captions instead of markers) where you choose.
+
+**Blueprint.** Notes have their own face in SETTINGS · FONTS · NOTES:
+Areal Mono Medium, 14 pt, 1.25 line, 0.25 px column spacing, set in a
+72-character column with margins (both adjustable). There are no line
+numbers, and code keeps the editor's face. Apply Blueprint sets these
+too.
+
+**Sync.** Older personal notes sync as before. Notes in the new format
+stay on this device until sync can carry their history and sources as a
+whole, so a device that only knows whole files never overwrites one.
+Sync no longer replaces a note it could not back up first, and a second
+conflict keeps its own `.lost` copy.
+
+Not yet, and to be verified natively: soft wrap and a Read view (the
+column is set, but long lines still scroll sideways); opening a
+reading-list citation whose item was deleted (it says so rather than
+opening a newer copy); moving the reading list's `note:` items into notes;
+versioned sync of the new format; composed (IME) input in the hatch; and
+every window, crash and screen-reader path in the running app. The logic
+is covered by unit tests of the model, store (crash injection at each
+commit step), sessions, capture, search and migration.
+

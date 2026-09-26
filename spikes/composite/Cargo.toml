@@ -35,6 +35,10 @@ tar = "0.4"
 flate2 = "1"
 url = "2.5"
 pulldown-cmark = "0.13"
+# Notes search: an in-memory FTS5 index (notes_index.rs); bundled so FTS5
+# is there whatever the system SQLite was built with.
+rusqlite = { version = "0.40", features = ["bundled"] }
+unicode-normalization = "0.1"
 csv = "1.3"
 serde = { version = "1", features = ["derive"] }
 png = "0.17"

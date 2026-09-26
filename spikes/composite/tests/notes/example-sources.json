@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "home_id": "personal-home",
+  "note_id": "2c557afcd3864f9c85f659ea18770ea1",
+  "sources": [
+    {
+      "id": "de8ef94567e44957a725fe912c8d43eb",
+      "kind": "web",
+      "label": "SQLite FTS5 reference",
+      "captured_at": "2026-09-26T18:01:00Z",
+      "url": "https://www.sqlite.org/fts5.html",
+      "title": "SQLite FTS5 Extension",
+      "browser_profile_id": "profile-work",
+      "browser_container_id": "research",
+      "quote": "An excerpt selected by the user belongs here.",
+      "context_before": "",
+      "context_after": "",
+      "reading_id": null
+    },
+    {
+      "id": "0e0293d6c033494ba11bf4068f1f989a",
+      "kind": "file",
+      "label": "Prompt read helper",
+      "captured_at": "2026-09-26T18:02:00Z",
+      "workspace_id": "nus",
+      "relative_path": "spikes/composite/src/prompt_code.rs",
+      "range": {"start_line": 40, "start_column": 1, "end_line": 42, "end_column": 1},
+      "coordinate_unit": "unicode_scalar_1_based",
+      "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "excerpt": "Captured code is stored here, independent of the live file.",
+      "device_path_hint": null
+    },
+    {
+      "id": "b8dd262c2e004eaa93568e42c5477d34",
+      "kind": "reading",
+      "label": "Saved article annotation",
+      "captured_at": "2026-09-26T18:03:00Z",
+      "library_id": "47a582414b6beea70e5213419b71bfc1",
+      "source_url": "https://example.com/article",
+      "snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "browser_profile_id": "profile-work",
+      "browser_container_id": "research",
+      "quote": "The saved quote belongs to this note even if its source is removed."
+    },
+    {
+      "id": "098b78d18cc3456cacdb497cc468f01f",
+      "kind": "note",
+      "label": "Related experiment",
+      "captured_at": "2026-09-26T18:04:00Z",
+      "target_note_id": "1c557afcd3864f9c85f659ea18770ea1",
+      "target_home_id": "personal-home",
+      "target_heading": "Results"
+    }
+  ],
+  "fixture_notice": "Source identities, hashes and quoted text are synthetic schema examples, not captures."
+}

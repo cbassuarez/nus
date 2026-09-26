@@ -62,6 +62,12 @@ pub enum PaletteMode {
     IconTab(usize),
     /// Pick a folder for tab i's page, or name a new one.
     Folder(usize),
+    /// Add to Note: where the pending capture goes; what is typed is why
+    /// it matters.
+    NoteCapture,
+    /// A note's title, or its tags, for the focused note.
+    NoteTitle,
+    NoteTags,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -250,6 +256,8 @@ pub struct Fonts {
     pub wordmark: FontId,
     pub term: FontId,
     pub editor: FontId,
+    /// A note's text (Typography's notes role).
+    pub notes: FontId,
     /// Newsreader, for the reader.
     pub serif: FontId,
 }
@@ -1254,6 +1262,11 @@ pub struct App {
     pub window_focused: bool,
     pub palette: Option<(PaletteMode, String)>,
     pub palette_sel: usize,
+    /// Add to Note: the capture frozen when asked, waiting for where it
+    /// goes (notes_ui.rs).
+    pub pending_capture: Option<crate::notes_capture::Draft>,
+    /// A note's export: its bytes, waiting on the save dialog.
+    pub note_export: Option<(Vec<u8>, crate::pick::Picker)>,
     pub profiles: Vec<nus_pty::Profile>,
     /// Tab indices, most recently used first.
     pub mru: Vec<usize>,
@@ -1345,6 +1358,7 @@ impl App {
                 wordmark,
                 term: term_font,
                 editor: term_font,
+                notes: term_font,
                 serif,
             },
             scene: Scene::new(),
@@ -1581,6 +1595,8 @@ impl App {
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
             palette_sel: 0,
+            pending_capture: None,
+            note_export: None,
             profiles: nus_pty::Profile::discover(),
             typed_once: false,
             mru: vec![0],
@@ -4753,7 +4769,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name", PaletteMode::ShellAdd => "shell" };
+            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name", PaletteMode::ShellAdd => "shell", PaletteMode::NoteCapture | PaletteMode::NoteTitle | PaletteMode::NoteTags => "note" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -7508,6 +7524,9 @@ impl App {
                     rows.push(row("+", "new folder · type a name".into(), Action::SaveToNewFolder(i, "SAVED".into())));
                 }
             }
+            PaletteMode::NoteCapture => return self.note_capture_rows(input),
+            PaletteMode::NoteTitle => return self.note_title_rows(input),
+            PaletteMode::NoteTags => return self.note_tags_rows(input),
             PaletteMode::IconTab(i) => {
                 if !q.is_empty() {
                     rows.push(row("→", format!("{q}  as the icon"), Action::IconTab(i, q.chars().take(2).collect())));
@@ -9392,6 +9411,20 @@ impl App {
             self.active = i;
             self.selected.clear();
             self.dirty = true;
+            if targets.is_empty() {
+                return;
+            }
+        }
+        // A note whose last view is in these tabs saves first; one that
+        // cannot be saved keeps its tab, and says why.
+        let may = self.notes_let_tabs_close(&targets);
+        if may.len() < targets.len() {
+            if let Some(&i) = targets.iter().find(|t| !may.contains(t)) {
+                self.active = i;
+            }
+            self.selected.clear();
+            self.dirty = true;
+            targets = may;
             if targets.is_empty() {
                 return;
             }

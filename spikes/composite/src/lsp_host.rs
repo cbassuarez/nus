@@ -296,6 +296,8 @@ impl App {
     /// Ctrl+S: format through the server when it can, then write.
     pub(crate) fn editor_save(&mut self) {
         if self.focused_editor().and_then(|e| e.buf()).is_some_and(|b| !b.ready()) { return; }
+        // A note saves through its session, never through format-on-save.
+        if self.save_note_now() { return; }
         let can_format = self.lsp_for_focused().and_then(|(key, uri)| {
             let s = self.lsp.map.get(&key)?;
             let caps = s.client.capabilities.lock().ok()?.clone()?;
@@ -331,6 +333,7 @@ impl App {
 
     /// Write the active buffer to disk.
     pub(crate) fn editor_write(&mut self) {
+        if self.save_note_now() { return; }
         let written = {
             let Some(e) = self.focused_editor() else {
                 return;

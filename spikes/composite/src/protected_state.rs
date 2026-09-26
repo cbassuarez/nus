@@ -114,7 +114,8 @@ pub fn is_private_path(path: &Path) -> bool {
     ) || ["journal", "replay", "hold"]
         .iter()
         .any(|dir| rel.starts_with(dir))
-        // Profile notes are sealed like memory.md (notes.rs); folder notes
-        // are the project's own files and stay plain.
-        || rel.parent() == Some(Path::new("notes")) && rel.extension().is_some_and(|e| e == "md")
+        // Personal notes are sealed like memory.md, and so is everything
+        // kept beside them (history, recovery, the index of imports); a
+        // project's notes are its own files and stay plain.
+        || rel.starts_with("notes")
 }

@@ -44,6 +44,12 @@ fn configure(
     behavior.typography.terminal_size = 14.0;
     behavior.typography.terminal_line = 1.25;
     behavior.typography.terminal_spacing = 0.25;
+    // Notes are set the same way.
+    behavior.typography.notes_family = FontFamily::ArealMono;
+    behavior.typography.notes_weight = Weight::Medium;
+    behavior.typography.notes_size = 14.0;
+    behavior.typography.notes_line = 1.25;
+    behavior.typography.notes_spacing = 0.25;
     behavior.shell_tint = ShellTint::None;
     behavior.highlight = true;
     behavior.blocks = true;

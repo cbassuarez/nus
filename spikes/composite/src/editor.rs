@@ -65,6 +65,20 @@ pub struct Buffer {
     pub in_lsp: bool,
     /// A save waits on the formatter's answer (sent at this instant).
     pub save_pending: Option<Instant>,
+    /// A note's view of its shared session (notes_session.rs): the text,
+    /// undo and saving are the session's, the caret and scroll this
+    /// buffer's own.
+    pub note: Option<crate::notes_session::View>,
+    /// The next change to a note may merge into the last undo step.
+    note_merge: bool,
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        if let Some(v) = &self.note {
+            crate::notes_session::detach(v);
+        }
+    }
 }
 
 impl Buffer {
@@ -79,6 +93,40 @@ impl Buffer {
         b.loading = Some(Task::start(move |cancel| work::load(&abs, cancel))
             .ok_or_else(|| anyhow::anyhow!("File workers are busy. Try opening the file again."))?);
         Ok(b)
+    }
+
+    /// A note, open through its session: ready at once, no language
+    /// server (its words are yours, not a project's).
+    pub fn for_note(path: &Path, view: crate::notes_session::View, text: Rope) -> Buffer {
+        let mut b = Buffer::empty();
+        b.path = Some(path.to_path_buf());
+        b.language = "markdown";
+        b.text = text;
+        b.note = Some(view);
+        b
+    }
+
+    /// Take what the note's session changed since this buffer looked: a
+    /// capture, another view's typing, an undo. The caret and scroll stay
+    /// with the text they were on. True when anything changed.
+    pub fn pull_note(&mut self) -> bool {
+        let Some(v) = self.note.as_mut() else { return false };
+        let Some((text, sp)) = crate::notes_session::pull(v) else { return false };
+        self.follow(text, sp);
+        true
+    }
+
+    fn follow(&mut self, text: Rope, sp: crate::notes_session::Splice) {
+        let top = self.text.line_to_char(self.scroll.min(self.text.len_lines().saturating_sub(1)));
+        self.text = text;
+        let n = self.text.len_chars();
+        self.cursor = sp.map(self.cursor).min(n);
+        self.anchor = self.anchor.map(|a| sp.map(a).min(n));
+        self.scroll = self.text.char_to_line(sp.map(top).min(n));
+        self.spans = None;
+        self.highlighting = None;
+        self.revision = self.revision.wrapping_add(1);
+        self.want_col = None;
     }
 
     pub fn ready(&self) -> bool { self.loading.is_none() && self.load_error.is_none() }
@@ -145,10 +193,15 @@ impl Buffer {
             opened_at: None,
             in_lsp: false,
             save_pending: None,
+            note: None,
+            note_merge: false,
         }
     }
 
     pub fn name(&self) -> String {
+        if let Some(v) = &self.note {
+            return v.title.clone();
+        }
         self.path
             .as_ref()
             .and_then(|p| p.file_name())
@@ -210,6 +263,12 @@ impl Buffer {
     /// within 400ms merge into one step.
     fn remember(&mut self, merge: bool) {
         let now = crate::clock::now();
+        if self.note.is_some() {
+            // A note's undo is its session's, shared by every view.
+            self.note_merge = merge;
+            self.last_edit = now;
+            return;
+        }
         if merge && !self.undo.is_empty() && now.duration_since(self.last_edit).as_millis() < 400 {
             self.last_edit = now;
             return;
@@ -232,9 +291,21 @@ impl Buffer {
         self.highlighting = None;
         self.revision = self.revision.wrapping_add(1);
         self.want_col = None;
+        let merge = std::mem::take(&mut self.note_merge);
+        if let Some(v) = self.note.as_mut() {
+            if let Some((text, sp)) = crate::notes_session::push(v, &self.text, merge) {
+                self.follow(text, sp);
+            }
+        }
     }
 
     pub fn undo(&mut self) {
+        if let Some(v) = &self.note {
+            if crate::notes_session::undo(v) {
+                self.pull_note();
+            }
+            return;
+        }
         if let Some(s) = self.undo.pop() {
             self.redo.push(Snap {
                 text: self.text.clone(),
@@ -249,6 +320,12 @@ impl Buffer {
     }
 
     pub fn redo(&mut self) {
+        if let Some(v) = &self.note {
+            if crate::notes_session::redo(v) {
+                self.pull_note();
+            }
+            return;
+        }
         if let Some(s) = self.redo.pop() {
             self.undo.push(Snap {
                 text: self.text.clone(),
@@ -635,7 +712,12 @@ impl EditorPane {
             self.active = i;
             return Ok(i);
         }
-        let b = Buffer::from_path(&abs)?;
+        let b = if crate::notes::place_of(&abs).is_some() {
+            let (view, text) = crate::notes_session::attach(&abs).map_err(|e| anyhow::anyhow!("{e}"))?;
+            Buffer::for_note(&abs, view, text)
+        } else {
+            Buffer::from_path(&abs)?
+        };
         self.buffers.push(b);
         self.active = self.buffers.len() - 1;
         self.find = None;
@@ -1437,6 +1519,23 @@ impl App {
         if pressed && button == MouseButton::Left && self.note_rails_mouse(x, y) {
             return true;
         }
+        // Closing a note's last view saves it first; a note that cannot be
+        // saved stays open.
+        if pressed && matches!(button, MouseButton::Left | MouseButton::Middle) {
+            let closing = self.tabs.get(self.active).and_then(|t| {
+                std::iter::once(&t.left).chain(t.right.as_ref()).find_map(|p| match p {
+                    Pane::Editor(e) if e.rect.contains(x, y) => e.strip_hits.iter().find(|(r, _, close)| r.contains(x, y) && (*close || button == MouseButton::Middle))
+                        .and_then(|(_, i, _)| e.buffers.get(*i)?.note.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(v) = closing {
+                if !self.note_may_close(&v) {
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let Some(tab) = self.tabs.get_mut(self.active) else {
@@ -1613,6 +1712,16 @@ impl App {
                     let was_loading = b.loading.is_some();
                     expired |= b.poll();
                     if was_loading && b.ready() { loaded.push((ti, right, bi)); }
+                    // A note follows its session: another view's typing, a
+                    // capture, whether it is saved yet.
+                    if b.note.is_some() {
+                        expired |= b.pull_note();
+                        let dirty = b.note.as_ref().is_some_and(|v| crate::notes_session::dirty(&v.key));
+                        if dirty != b.dirty {
+                            b.dirty = dirty;
+                            expired = true;
+                        }
+                    }
                 }
                 expired |= e.poll_search();
                 if let Some(((x, y), at)) = e.rest {
@@ -1646,6 +1755,8 @@ impl App {
             }
         }
         for (ti, right, bi) in loaded { self.lsp_open_buffer(ti, right, bi); }
+        expired |= crate::notes_session::tend();
+        self.tend_notes();
         if let Some((c, _)) = hover_req {
             self.editor_hover_at(c);
         }
@@ -1697,20 +1808,30 @@ impl App {
             color: t.dim,
             ..label
         };
-        let term_px = self.behavior.typography.editor_size * self.scale * 96.0 / 72.0 * e.zoom as f32 / 100.0;
+        // A note is set in its own face (Blueprint's, unless chosen), with
+        // no line numbers and a measure; code keeps the editor's.
+        let is_note = e.buf().is_some_and(|b| b.note.is_some());
+        let ty = &self.behavior.typography;
+        let (face, size, line_h, tracking) = if is_note {
+            (self.f.notes, ty.notes_size, ty.notes_line, ty.notes_spacing * self.scale * e.zoom as f32 / 100.0)
+        } else {
+            (self.f.editor, ty.editor_size, ty.editor_line, 0.0)
+        };
+        let measure = if is_note { ty.notes_measure } else { 0 };
+        let term_px = size * self.scale * 96.0 / 72.0 * e.zoom as f32 / 100.0;
         let mono = Style {
-            font: self.f.editor,
+            font: face,
             px: term_px,
             color: ink,
-            tracking: 0.0,
+            tracking,
         };
         let mono_dim = Style {
             color: t.dim,
             ..mono
         };
         let cw = self.fonts.measure(mono, "M").max(1.0);
-        let metrics = self.fonts.metrics(self.f.editor, term_px);
-        let ch = metrics.line_height.max(term_px * self.behavior.typography.editor_line);
+        let metrics = self.fonts.metrics(face, term_px);
+        let ch = metrics.line_height.max(term_px * line_h);
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
         let signal = self.surface.signal;
         let (mx, my) = self.mouse;
@@ -1808,9 +1929,9 @@ impl App {
         }
         // A note says where it lives: plain in the folder, or sealed.
         if let Some(word) = place {
-            let ww = self.fonts.measure(dim, word);
+            let ww = self.fonts.measure(dim, &word);
             if x + ww + pad * 2.0 < r.right() {
-                self.fonts.draw(scene, dim, r.right() - pad - ww, strip_base, word);
+                self.fonts.draw(scene, dim, r.right() - pad - ww, strip_base, &word);
             }
         }
         scene.hline(r.x, r.y + strip_h - hair, r.w, hair, ink);
@@ -1828,7 +1949,7 @@ impl App {
         };
 
         // Geometry.
-        let gutter_w = {
+        let gutter_w = if is_note { 0.0 } else {
             let digits = e.buffers[bi]
                 .text
                 .len_lines()
@@ -1843,7 +1964,15 @@ impl App {
         let rows = ((text_bottom - text_top) / ch).floor().max(1.0) as usize;
         e.rows = rows;
         e.cell = (cw, ch);
-        e.origin = (r.x + gutter_w + pad, text_top);
+        // A note's column sits in the middle once the pane is wider than
+        // its measure, with a margin of its own either way.
+        let left = if measure > 0 {
+            let column = cw * measure as f32;
+            r.x + ((r.w - column) / 2.0).max(px(24.0).min(r.w * 0.06))
+        } else {
+            r.x + gutter_w + pad
+        };
+        e.origin = (left, text_top);
         let (ox, oy) = e.origin;
         let baseline_off = metrics.ascent + (ch - (metrics.ascent + metrics.descent)) * 0.5;
 
@@ -1911,8 +2040,8 @@ impl App {
             if line == cur_line && focused {
                 scene.rect(Rect::new(r.x, ly, r.w, ch), wash);
             }
-            // Gutter number, a diagnostic mark beside it.
-            let num = format!("{:>w$}", line + 1, w = (gutter_w / cw) as usize - 2);
+            // Gutter number, a diagnostic mark beside it (not in a note).
+            let num = if is_note { String::new() } else { format!("{:>w$}", line + 1, w = (gutter_w / cw) as usize - 2) };
             let ns = if line == cur_line {
                 Style {
                     color: ink,
