@@ -109,6 +109,29 @@ pub enum Hit {
     Track,
 }
 
+/// Expanded touch targets may overlap. Prefer the nearest control's center
+/// instead of letting the first item steal the neighboring control's edge.
+fn control_at(hits: &[(Rect, Hit)], x: f32, y: f32) -> Option<Hit> {
+    hits.iter().filter(|(r, _)| r.contains(x, y)).min_by(|(a, _), (b, _)| {
+        let distance = |r: &Rect| (x - r.x - r.w * 0.5).powi(2) + (y - r.y - r.h * 0.5).powi(2);
+        distance(a).total_cmp(&distance(b))
+    }).map(|(_, hit)| *hit)
+}
+
+fn toggles_playback(key: &WKey) -> bool {
+    match key {
+        WKey::Named(NamedKey::Space) => true,
+        WKey::Character(c) => c.eq_ignore_ascii_case("k") || c.eq_ignore_ascii_case("m"),
+        _ => false,
+    }
+}
+
+fn control_order(hits: &[(Rect, Hit)]) -> Vec<Hit> {
+    [Hit::Play, Hit::Back, Hit::Forward, Hit::Mute, Hit::Track, Hit::Smaller,
+        Hit::Larger, Hit::Dock, Hit::ToTab, Hit::Close].into_iter()
+        .filter(|hit| hits.iter().any(|(_, drawn)| drawn == hit)).collect()
+}
+
 /// How long the controls stay up after the pointer leaves, and how long
 /// they take to go.
 const LINGER: Duration = Duration::from_millis(1200);
@@ -184,7 +207,7 @@ impl Pip {
 
     /// The control under `pos`, if any.
     pub fn hit_at(&self, x: f32, y: f32) -> Option<Hit> {
-        self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h)
+        control_at(&self.hits, x, y)
     }
 
     /// Where along the scrubber `x` falls, 0..1.
@@ -495,15 +518,22 @@ impl App {
             let pip = self.pip.as_ref().unwrap();
             pip.controls_alpha(video.as_ref().is_some_and(|v| v.paused), reduced)
         };
-        let hits = if alpha > 0.01 {
-            self.draw_pip_controls(&mut scene, picture, scale, alpha, video.as_ref())
-        } else {
-            Vec::new()
-        };
+        // Keep the geometry current even after the controls fade. AppKit can
+        // deliver pointer entry and a press before the next redraw; that first
+        // press must hit the control, not start dragging the window.
+        let hits = self.draw_pip_controls(&mut scene, picture, scale, alpha, video.as_ref());
+        let mut carapace = self.carapace_look(band, 0.0);
+        carapace.band = true;
+        carapace.grain_scale = (self.surface.texture_scale * scale).max(0.25);
         let pip = self.pip.as_mut().unwrap();
         pip.hits = hits;
+        if pip.key_focus.is_some_and(|hit| !pip.hits.iter().any(|(_, drawn)| *drawn == hit)) {
+            pip.key_focus = None;
+        }
         // Texture lives on the carapace only; the video stays clean.
-        if band > 0.0 {
+        if band > 0.0 && self.surface.material != crate::surface::Material::Plain {
+            scene.push(nus_render::Instance::carapace(Rect::new(0.0, 0.0, w, h), carapace));
+        } else if band > 0.0 {
             scene.rect(Rect::new(0.0, 0.0, w, band), self.surface.signal);
             if let (Some(kind), true) = (self.surface.texture_kind.shader_kind(), self.surface.texture > 0.0) {
                 scene.push(nus_render::Instance::texture_kind(Rect::new(0.0, 0.0, w, band), kind, [1.0, 1.0, 1.0, self.surface.texture], self.surface.texture_scale * scale, 0.0));
@@ -676,16 +706,28 @@ impl App {
         if !pip.focused {
             return;
         }
+        // App/system chords do not also operate the video beneath them.
+        if pip.mods.control_key() || pip.mods.super_key() || pip.mods.alt_key() { return; }
         if ev.logical_key==WKey::Named(NamedKey::Tab) {
-            let native=self.pip_native();
-            let order:Vec<Hit>=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Track,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close].into_iter().filter(|h|(!matches!(h,Hit::Track) || pip.track.is_some()) && !(native && *h==Hit::Dock)).collect();
+            let order=control_order(&pip.hits);
+            if order.is_empty() { return; }
             let back=pip.mods.shift_key();let n=order.len();
             let next=pip.key_focus.and_then(|h|order.iter().position(|v|*v==h)).map(|i|if back {(i+n-1)%n}else{(i+1)%n}).unwrap_or(if back{n-1}else{0});
             let p=self.pip.as_mut().unwrap();p.key_focus=Some(order[next]);p.window.request_redraw();return;
         }
-        if ev.logical_key==WKey::Named(NamedKey::Enter) || ev.logical_key==WKey::Named(NamedKey::Space) {
-            if let Some(hit)=pip.key_focus {self.pip_act(hit);return;}
+        if pip.key_focus == Some(Hit::Track) {
+            match &ev.logical_key {
+                WKey::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => { self.pip_act(Hit::Back); return; }
+                WKey::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => { self.pip_act(Hit::Forward); return; }
+                WKey::Named(NamedKey::Home) => { self.pip_seek_to(0.0); return; }
+                WKey::Named(NamedKey::End) => { self.pip_seek_to(1.0); return; }
+                _ => {}
+            }
         }
+        if ev.logical_key==WKey::Named(NamedKey::Enter) || ev.logical_key==WKey::Named(NamedKey::Space) {
+            if let Some(hit)=pip.key_focus {if !ev.repeat {self.pip_act(hit);}return;}
+        }
+        if ev.repeat && toggles_playback(&ev.logical_key) { return; }
         let (tab, right) = (pip.tab, pip.right);
         let back=format!("__nus.seek(-{})",self.behavior.pip_skip_seconds.clamp(1,120));
         let forward=format!("__nus.seek({})",self.behavior.pip_skip_seconds.clamp(1,120));
@@ -728,12 +770,12 @@ impl App {
                 let pos=p.window.outer_position().map(|p|(p.x as f64/scale,p.y as f64/scale)).unwrap_or((p.cur.x,p.cur.y));
                 p.press_origin=(pos.0+x as f64/scale,pos.1+y as f64/scale);
                 p.area=native::work_area(&p.window);
-                if edge!=(0,0) {
-                    if crate::hatch_native::wayland(){use winit::window::ResizeDirection as D;let direction=match edge{(-1,-1)=>D::NorthWest,(1,-1)=>D::NorthEast,(-1,1)=>D::SouthWest,(1,1)=>D::SouthEast,(-1,0)=>D::West,(1,0)=>D::East,(0,-1)=>D::North,_=>D::South};let _=p.window.drag_resize_window(direction);return;}
-                    p.gesture=Some((p.cur,p.press_origin,edge));p.pressed=true;return;}
                 if let Some(hit)=p.hit_at(x,y) {
                     p.press_hit=Some(hit);
                     if hit==Hit::Track {p.scrubbing=true;let f=p.track_fraction(x);self.pip_seek_to(f);}
+                } else if edge!=(0,0) {
+                    if crate::hatch_native::wayland(){use winit::window::ResizeDirection as D;let direction=match edge{(-1,-1)=>D::NorthWest,(1,-1)=>D::NorthEast,(-1,1)=>D::SouthWest,(1,1)=>D::SouthEast,(-1,0)=>D::West,(1,0)=>D::East,(0,-1)=>D::North,_=>D::South};let _=p.window.drag_resize_window(direction);return;}
+                    p.gesture=Some((p.cur,p.press_origin,edge));p.pressed=true;
                 } else {p.pressed=true;}
             }
             ElementState::Released=>{
@@ -797,7 +839,7 @@ impl App {
             return;
         }
         let edge=p.edge_at(x as f32,y as f32);
-        let cursor=match edge {(-1,-1)|(1,1)=>winit::window::CursorIcon::NwseResize,(1,-1)|(-1,1)=>winit::window::CursorIcon::NeswResize,(_,0) if edge.0!=0=>winit::window::CursorIcon::EwResize,(0,_) if edge.1!=0=>winit::window::CursorIcon::NsResize,_=>winit::window::CursorIcon::Default};
+        let cursor=if p.hit_at(x as f32,y as f32).is_some() {winit::window::CursorIcon::Pointer} else {match edge {(-1,-1)|(1,1)=>winit::window::CursorIcon::NwseResize,(1,-1)|(-1,1)=>winit::window::CursorIcon::NeswResize,(_,0) if edge.0!=0=>winit::window::CursorIcon::EwResize,(0,_) if edge.1!=0=>winit::window::CursorIcon::NsResize,_=>winit::window::CursorIcon::Default}};
         p.window.set_cursor(cursor);
         // The marks light under the pointer, so it has to redraw.
         p.window.request_redraw();
@@ -805,6 +847,8 @@ impl App {
 
     /// Seek to a fraction of the run time.
     fn pip_seek_to(&mut self, f: f32) {
+        if !f.is_finite() { return; }
+        let f = f.clamp(0.0, 1.0);
         let Some(pip) = self.pip.as_ref() else { return };
         let (tab, right) = (pip.tab, pip.right);
         if let Some(t) = self.web_tab(tab, right) {
@@ -914,10 +958,7 @@ impl App {
         use accesskit::{Action,Node,NodeId,Role,TreeInfo,TreeId,TreeUpdate};
         let mut nodes=Vec::new();let mut children=Vec::new();let mut focus=NodeId(1);
         if let Some(p)=&self.pip {
-            let native=self.pip_native();
-            for hit in [Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close,Hit::Track] {
-                if matches!(hit,Hit::Track) && p.track.is_none(){continue;}
-                if native && hit==Hit::Dock {continue;}
+            for hit in control_order(&p.hits) {
                 let id=NodeId(10+hit as u64);let mut n=Node::new(if hit==Hit::Track {Role::Slider}else{Role::Button});n.set_label(match hit {Hit::Back=>format!("Back {} seconds",self.behavior.pip_skip_seconds.clamp(1,120)),Hit::Forward=>format!("Forward {} seconds",self.behavior.pip_skip_seconds.clamp(1,120)),_=>hit.label().into()});n.add_action(Action::Focus);
                 if hit==Hit::Track {n.add_action(Action::Increment);n.add_action(Action::Decrement);n.add_action(Action::SetValue);n.set_min_numeric_value(0.0);n.set_max_numeric_value(100.0);if let Some(v)=self.pane_video(p.tab,p.right){n.set_numeric_value((v.t/v.dur*100.0).clamp(0.0,100.0));}}
                 else {n.add_action(Action::Click);}
@@ -931,6 +972,7 @@ impl App {
     pub(crate) fn pip_access_action(&mut self,req:accesskit::ActionRequest) {
         use accesskit::{Action,ActionData};
         let Some(hit)=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close,Hit::Track].into_iter().find(|h|10+*h as u64==req.target_node.0) else {return;};
+        if !self.pip.as_ref().is_some_and(|p| p.hits.iter().any(|(_, drawn)| *drawn == hit)) { return; }
         match req.action {
             Action::Click=>self.pip_act(hit),
             Action::Focus=>{if let Some(p)=&mut self.pip {p.key_focus=Some(hit);p.window.focus_window();p.window.request_redraw();}},
@@ -938,6 +980,43 @@ impl App {
             Action::Decrement if hit==Hit::Track=>self.pip_act(Hit::Back),
             Action::SetValue if hit==Hit::Track=>{if let Some(ActionData::NumericValue(v))=req.data{if v.is_finite(){self.pip_seek_to((v/100.0).clamp(0.0,1.0)as f32);}}},
             _=>{}
+        }
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_targets_choose_the_nearest_control() {
+        let mut hits = vec![
+            (Rect::new(0.0, 0.0, 35.0, 35.0), Hit::Close),
+            (Rect::new(31.0, 0.0, 35.0, 35.0), Hit::ToTab),
+        ];
+        assert_eq!(control_at(&hits, 34.0, 17.0), Some(Hit::ToTab));
+        hits.reverse();
+        assert_eq!(control_at(&hits, 32.0, 17.0), Some(Hit::Close));
+        assert_eq!(control_at(&hits, 100.0, 17.0), None);
+    }
+
+    #[test]
+    fn keyboard_and_accessibility_skip_controls_that_do_not_exist() {
+        let r = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let native_narrow = [(r, Hit::Close), (r, Hit::Play), (r, Hit::Mute), (r, Hit::ToTab)];
+        assert_eq!(control_order(&native_narrow), vec![Hit::Play, Hit::Mute, Hit::ToTab, Hit::Close]);
+        let seekable = [(r, Hit::Track), (r, Hit::Mute), (r, Hit::Play)];
+        assert_eq!(control_order(&seekable), vec![Hit::Play, Hit::Mute, Hit::Track]);
+        assert!(control_order(&[]).is_empty());
+    }
+
+    #[test]
+    fn held_toggle_keys_are_distinct_from_repeatable_transport() {
+        for key in [WKey::Named(NamedKey::Space), WKey::Character("k".into()), WKey::Character("M".into())] {
+            assert!(toggles_playback(&key));
+        }
+        for key in [WKey::Named(NamedKey::ArrowRight), WKey::Character("j".into()), WKey::Character(".".into())] {
+            assert!(!toggles_playback(&key));
         }
     }
 }

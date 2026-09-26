@@ -1443,8 +1443,10 @@ impl App {
         }
         y+=self.px(35.0);
         if let Some(f)=&self.board.filter {
-            let text=self.fit(mono,&format!("/ {f}_"),r.w-2.0*pad);
-            self.fonts.draw(scene,mono,r.x+pad,y+self.px(14.0),&text);y+=self.px(26.0);
+            let text=self.fit(mono,&format!("/ {f}"),r.w-2.0*pad-self.px(4.0));
+            let width=self.fonts.draw(scene,mono,r.x+pad,y+self.px(14.0),&text);
+            self.draw_line_caret(scene,r.x+pad+width,y+self.px(14.0),mono.px,1.0,self.last_key);
+            y+=self.px(26.0);
         }
         scene.hline(r.x+pad,y,r.w-2.0*pad,hair,dim.color);y+=self.px(7.0);
         let col_port=r.x+pad+self.px(16.0);
@@ -1552,7 +1554,7 @@ impl App {
                         _ => format!("{:>5}{}", row.port, if row.proto == Proto::Udp { "u" } else { " " }),
                     };
                     let name = match &rename {
-                        Some((rk, s)) if rk == k => format!("{s}_"),
+                        Some((rk, s)) if rk == k => s.clone(),
                         _ => row.title(),
                     };
                     let name_w = col_proc - col_name - cw;
@@ -1587,6 +1589,10 @@ impl App {
                     for field in 0..4 {
                         if widths[field]>0.0 {self.draw_flap_text(scene,if field<2{mono}else{mono_dim},Rect::new(xs[field],y+self.px(5.0),widths[field],row_h-self.px(10.0)),&change.before[field],&fields[field],cw,paper,elapsed-offset as f32*crate::split_flap::STAGGER);}
                         offset+=(widths[field]/cw).floor().max(0.0)as usize;
+                    }
+                    if editing {
+                        let caret_x = col_name + self.fonts.measure(mono, &name_fit.to_uppercase()).min(name_w - self.px(3.0));
+                        self.draw_line_caret(scene, caret_x, base, mono.px, 1.0, self.last_key);
                     }
                     let owner = match row.group {
                         Group::Mine => row.tab.and_then(|id| self.tabs.iter().position(|t| t.id == id)).map(|i| format!("tab {}", i + 1)).unwrap_or_else(|| "shell".into()),

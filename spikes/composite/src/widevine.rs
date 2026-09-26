@@ -6,6 +6,9 @@
 //! for it as soon as the browser is up, and Settings · Browser shows where
 //! it stands. Chromium's own settings pages do not exist in nus's
 //! off-screen pages, so `chrome://settings` is answered with nus's.
+//! A module being installed is not proof of provider compatibility: codecs,
+//! the service's client requirements, and its DRM policy also apply. On
+//! macOS our streaming-site route uses the system's WebKit instead.
 use cef::*;
 use std::sync::Mutex;
 

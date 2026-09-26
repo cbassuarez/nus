@@ -26,6 +26,8 @@ winit = "0.30"
 anyhow = "1"
 serde_json = "1"
 regex = "1"
+unicode-width = "0.2"
+unicode-segmentation = "1.13"
 semver = "1"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -92,7 +94,7 @@ tray-icon = { version = "0.24", default-features = false }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibilityProtocols", "NSAppearance", "NSButton", "NSControl", "NSEvent", "NSApplication", "NSImage", "NSGraphics", "NSScreen", "NSWindow", "NSView", "NSRunningApplication", "NSWorkspace", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSTrackingArea", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray", "NSDictionary", "NSHTTPCookie", "NSURLRequest", "NSObject"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray", "NSDictionary", "NSHTTPCookie", "NSURLRequest", "NSObject", "NSUUID"] }
 # Protected video through the system's WebKit and FairPlay (webkit.rs).
 objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKHTTPCookieStore", "WKPreferences", "WKNavigation", "WKUserContentController", "WKUserScript", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 

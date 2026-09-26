@@ -1015,18 +1015,20 @@ impl App {
                         self.fonts.measure(st, &visible),
                         px(24.0),
                     ),
-                    self.theme.tint,
+                    self.theme.selection,
                 );
             }
             self.fonts
                 .draw(scene, st, x + px(26.0), field.y + px(22.0), &visible);
+            if focused && self.download_ui.select_all && !query.is_empty() {
+                // Select-all has a single active edge at the selected range's end.
+                let edge = self.fonts.measure(st, &visible).min(area);
+                self.draw_selection_edge(scene, x + px(26.0) + edge, field.y + px(22.0), self.label().px, 1.0, self.last_key);
+            }
             if focused && !self.download_ui.select_all {
                 let before = &query[..self.download_ui.cursor.min(query.len())];
                 let caret = self.fonts.measure(self.label(), before).min(area);
-                scene.rect(
-                    Rect::new(x + px(26.0) + caret, field.y + px(6.0), px(1.0), px(18.0)),
-                    self.surface.signal,
-                );
+                self.draw_line_caret(scene, x + px(26.0) + caret, field.y + px(22.0), self.label().px, 1.0, self.last_key);
             }
             scene.hline(
                 x,

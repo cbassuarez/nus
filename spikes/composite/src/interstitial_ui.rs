@@ -310,7 +310,7 @@ impl App {
                 let vx = tx + lw + pw;
                 let vw = self.fonts.draw(scene, ui, vx, y, &shown);
                 if on {
-                    scene.rect(Rect::new(vx + vw + self.px(1.0), y - ui.px * 0.8, self.px(2.0), ui.px), ink);
+                    self.draw_line_caret(scene, vx + vw + self.px(1.0), y, ui.px, 1.0, self.last_key);
                 }
                 let rule = Rect::new(tx + lw, y + line_h * 0.28, width - lw, self.px(1.0));
                 scene.rect(rule, if on { ink } else { fade(ink, 0.25) });

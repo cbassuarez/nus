@@ -14,6 +14,7 @@ use nus_lsp::lsp_types::{CompletionItem, Diagnostic, DiagnosticSeverity, Url};
 use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 use ropey::Rope;
+use unicode_segmentation::UnicodeSegmentation;
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::{Key as WKey, NamedKey};
 
@@ -275,6 +276,44 @@ impl Buffer {
         self.changed();
     }
 
+    /// The next complete grapheme, only when the caret is on a boundary
+    /// and there is text before the line ending. This also drives the
+    /// replacement underline, so the mark agrees with the edit.
+    fn replacement_len(&self) -> Option<usize> {
+        if self.selection().is_some() { return None; }
+        let line = self.line_text(self.line_of(self.cursor));
+        let col = self.col_of(self.cursor);
+        let mut at = 0;
+        for grapheme in line.graphemes(true) {
+            let len = grapheme.chars().count();
+            if at == col { return Some(len); }
+            if at > col { break; }
+            at += len;
+        }
+        None
+    }
+
+    /// Typing in explicit Replace mode replaces graphemes, never a line
+    /// ending. Paste and completion keep their normal insertion contracts.
+    fn type_text(&mut self, text: &str, overwrite: bool) {
+        if !overwrite || self.selection().is_some() || self.replacement_len().is_none() {
+            self.insert(text, true);
+            return;
+        }
+        if !self.ready() { return; }
+        let line = self.line_of(self.cursor);
+        let end = self.text.line_to_char(line) + self.line_len(line);
+        let tail = self.text.slice(self.cursor..end).to_string();
+        let count = text.graphemes(true).count();
+        let remove = tail.graphemes(true).take(count).map(|g| g.chars().count()).sum::<usize>();
+        self.remember(true);
+        self.text.remove(self.cursor..self.cursor + remove);
+        self.text.insert(self.cursor, text);
+        self.cursor += text.chars().count();
+        self.anchor = None;
+        self.changed();
+    }
+
     /// Delete a range; the caret lands at its start.
     pub fn delete(&mut self, a: usize, b: usize) {
         if !self.ready() { return; }
@@ -481,7 +520,7 @@ pub enum Pending {
     Definition { uri: Url },
     Format { uri: Url, then_save: bool },
     /// A completion for a shell's prompt line.
-    PromptCompletion { uri: Url },
+    PromptCompletion { uri: Url, stamp: crate::prompt_code::PromptStamp },
 }
 
 pub struct Find {
@@ -509,6 +548,8 @@ pub struct HoverBox {
 }
 
 pub struct EditorPane {
+    /// Explicit Insert-key mode; it never changes the caret's pipe shape.
+    pub overwrite: bool,
     pub zoom: u32,
     pub rect: Rect,
     pub buffers: Vec<Buffer>,
@@ -524,6 +565,8 @@ pub struct EditorPane {
     pub cell: (f32, f32),
     pub rows: usize,
     pub strip_hits: Vec<(Rect, usize, bool)>,
+    /// The existing status word toggles Insert/Replace on keyboards without Insert.
+    pub mode_hit: Option<Rect>,
     pub dragging: bool,
     /// Pointer rest for hover: where and since when.
     pub rest: Option<((f32, f32), Instant)>,
@@ -541,6 +584,7 @@ pub struct EditorPane {
 impl EditorPane {
     pub fn new(rect: Rect) -> EditorPane {
         EditorPane {
+            overwrite: false,
             zoom: 100,
             rect,
             buffers: Vec::new(),
@@ -553,6 +597,7 @@ impl EditorPane {
             cell: (8.0, 16.0),
             rows: 1,
             strip_hits: Vec::new(),
+            mode_hit: None,
             dragging: false,
             rest: None,
             hover_sent_at: None,
@@ -1012,6 +1057,13 @@ impl App {
                     _ => {}
                 }
             }
+            if matches!(key, WKey::Named(NamedKey::Insert)) && !cmd && !alt && !shift {
+                e.overwrite = !e.overwrite;
+                e.completion = None;
+                self.dirty = true;
+                return true;
+            }
+            let overwrite = e.overwrite;
             let page_rows = e.rows.max(1) as i64;
             let Some(b) = e.buf_mut() else { return true };
             let n = b.len_chars();
@@ -1154,7 +1206,7 @@ impl App {
                         request = Some(("completion", Pending::Completion { uri }));
                     }
                 }
-                WKey::Named(NamedKey::Space) => b.insert(" ", true),
+                WKey::Named(NamedKey::Space) => b.type_text(" ", overwrite),
                 WKey::Named(NamedKey::F12) => {
                     moved = false;
                     goto_def = true;
@@ -1312,7 +1364,7 @@ impl App {
                         .filter(|t| !t.is_empty() && !t.chars().any(char::is_control))
                     {
                         if !ctrl && !alt {
-                            b.insert(t, true);
+                            b.type_text(t, overwrite);
                             // A trigger character asks the server as you type.
                             if let Some(uri) = b.uri.clone() {
                                 if t == "."
@@ -1402,6 +1454,13 @@ impl App {
             }
             hit_editor = true;
             let mut start_drag = false;
+            if button == MouseButton::Left && e.mode_hit.is_some_and(|r| r.contains(x, y)) {
+                e.overwrite = !e.overwrite;
+                e.completion = None;
+                e.hover = None;
+                self.dirty = true;
+                return true;
+            }
             // The strip: switch or close a buffer.
             if let Some((_, i, close)) = e
                 .strip_hits
@@ -1654,7 +1713,6 @@ impl App {
         let ch = metrics.line_height.max(term_px * self.behavior.typography.editor_line);
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
         let signal = self.surface.signal;
-        let caret = self.caret_color();
         let (mx, my) = self.mouse;
         let strip_h = self.header_h();
         let status_h = self.px(m::PANE_FOOTER);
@@ -1665,13 +1723,12 @@ impl App {
 
         let scale = self.scale;
         let px = |v: f32| (v * scale).round();
-        let fonts = &mut self.fonts;
-        let fit = |fonts: &nus_render::text::FontSystem,
+        let fit = |font_system: &nus_render::text::FontSystem,
                    style: Style,
                    text: &str,
                    max_w: f32|
          -> String {
-            if fonts.measure(style, text) <= max_w {
+            if font_system.measure(style, text) <= max_w {
                 return text.to_string();
             }
             let chars: Vec<char> = text.chars().collect();
@@ -1679,7 +1736,7 @@ impl App {
             while lo < hi {
                 let mid = (lo + hi).div_ceil(2);
                 let s: String = chars[..mid].iter().collect();
-                if fonts.measure(style, &format!("{s}…")) <= max_w {
+                if font_system.measure(style, &format!("{s}…")) <= max_w {
                     lo = mid;
                 } else {
                     hi = mid - 1;
@@ -1690,6 +1747,7 @@ impl App {
         };
         e.rect = outer;
         e.strip_hits.clear();
+        e.mode_hit = None;
         scene.rect(r, paper);
         scene.layer(Some(r));
 
@@ -1708,7 +1766,7 @@ impl App {
             } else {
                 dim
             };
-            let w = fonts.measure(st, &name);
+            let w = self.fonts.measure(st, &name);
             let cell = Rect::new(x - px(6.0), r.y, w + px(30.0), strip_h);
             let hot = cell.contains(mx, my);
             if active {
@@ -1719,12 +1777,12 @@ impl App {
             } else if hot {
                 scene.rect(cell, crate::surface::mix(paper, ink, 0.05));
             }
-            fonts.draw(scene, st, x, strip_base, &name);
+            self.fonts.draw(scene, st, x, strip_base, &name);
             // Dirty dot, or a close × when hot.
             let dx = x + w + px(8.0);
             let close_r = Rect::new(dx - px(4.0), r.y + px(8.0), px(14.0), px(14.0));
             if hot {
-                fonts.draw(
+                self.fonts.draw(
                     scene,
                     Style {
                         color: if close_r.contains(mx, my) {
@@ -1750,15 +1808,15 @@ impl App {
         }
         // A note says where it lives: plain in the folder, or sealed.
         if let Some(word) = place {
-            let ww = fonts.measure(dim, word);
+            let ww = self.fonts.measure(dim, word);
             if x + ww + pad * 2.0 < r.right() {
-                fonts.draw(scene, dim, r.right() - pad - ww, strip_base, word);
+                self.fonts.draw(scene, dim, r.right() - pad - ww, strip_base, word);
             }
         }
         scene.hline(r.x, r.y + strip_h - hair, r.w, hair, ink);
 
         let Some(bi) = (e.active < e.buffers.len()).then_some(e.active) else {
-            fonts.draw(
+            self.fonts.draw(
                 scene,
                 dim,
                 r.x + pad,
@@ -1863,7 +1921,7 @@ impl App {
             } else {
                 mono_dim
             };
-            fonts.draw(scene, ns, r.x + cw * 0.5, base, &num);
+            self.fonts.draw(scene, ns, r.x + cw * 0.5, base, &num);
             // Blame, faint, after the caret's line: saved files in a repository only.
             if line == cur_line && focused && !b.dirty && gmarks.is_some() {
                 if let Some(words) = b.path.as_deref().and_then(|p| crate::git_gutter::blame_line(p, line)) {
@@ -1872,7 +1930,7 @@ impl App {
                     if bx < r.right() - cw * 12.0 {
                         let faint = Style { color: crate::surface::mix(paper, ink, 0.4), ..mono_dim };
                         let fit: String = words.chars().take(((r.right() - bx) / cw) as usize).collect();
-                        fonts.draw(scene, faint, bx, base, &fit);
+                        self.fonts.draw(scene, faint, bx, base, &fit);
                     }
                 }
             }
@@ -1930,7 +1988,7 @@ impl App {
             let chars: Vec<char> = b.text.slice(visible_start..visible_end).chars().collect();
             let mut col = scroll_col;
             let mut draw_run = |scene: &mut Scene,
-                                fonts: &mut nus_render::text::FontSystem,
+                                font_system: &mut nus_render::text::FontSystem,
                                 from: usize,
                                 to: usize,
                                 color: nus_render::Color| {
@@ -1941,7 +1999,7 @@ impl App {
                 }
                 let run: String = chars[from..to.min(chars.len())].iter().collect();
                 let run = run.replace('\t', "    ");
-                fonts.draw(
+                font_system.draw(
                     scene,
                     Style { color, ..mono },
                     ox + from as f32 * cw,
@@ -1951,7 +2009,7 @@ impl App {
             };
             for &(a, l, class) in spans {
                 if a > col {
-                    draw_run(scene, fonts, col, a, ink);
+                    draw_run(scene, &mut self.fonts, col, a, ink);
                 }
                 let color = match class {
                     crate::predict::Tok::Command => ansi(4),
@@ -1962,10 +2020,10 @@ impl App {
                     crate::predict::Tok::Path => ansi(6),
                     crate::predict::Tok::Plain => ink,
                 };
-                draw_run(scene, fonts, a.max(col), a + l, color);
+                draw_run(scene, &mut self.fonts, a.max(col), a + l, color);
                 col = (a + l).max(col);
             }
-            draw_run(scene, fonts, col, scroll_col + chars.len(), ink);
+            draw_run(scene, &mut self.fonts, col, scroll_col + chars.len(), ink);
             // Diagnostics: a dotted underline.
             for &(a, z, sev, _, _) in &diags {
                 let (s0, s1) = (a.max(visible_start), z.min(visible_end.max(visible_start + 1)));
@@ -1982,7 +2040,15 @@ impl App {
             // The caret.
             if line == cur_line && focused && e.goto.is_none() && e.find.is_none() {
                 let cx = ox + b.col_of(b.cursor).saturating_sub(scroll_col) as f32 * cw;
-                scene.rect(Rect::new(cx - px(0.5), ly, px(2.0), ch), caret);
+                if sel.is_some() {
+                    self.draw_selection_edge(scene, cx, base, term_px, 1.0, self.last_key);
+                } else {
+                    let replacement_width = e.overwrite.then(|| b.replacement_len()).flatten().map(|n| {
+                        let next = b.text.slice(b.cursor..b.cursor + n).to_string().replace('\t', "    ");
+                        self.fonts.measure(mono, &next)
+                    });
+                    self.draw_text_caret(scene, cx, base, term_px, 1.0, self.last_key, replacement_width);
+                }
             }
         }
 
@@ -2030,15 +2096,16 @@ impl App {
                 s.push_str(" · ");
                 s.push_str(&e.status);
             }
+            s.push_str(if e.overwrite { " · REPLACE" } else { " · INSERT" });
             if let Some(g) = &e.goto {
-                s = format!("GO TO LINE {g}_");
+                s = format!("GO TO LINE {g}");
             }
             s
         };
-        let rw = fonts.measure(label, &right_text);
-        let left = fit(fonts, dim, &left, r.w - rw - 3.0 * pad);
-        fonts.draw(scene, dim, r.x + pad, base, &left);
-        fonts.draw(
+        let rw = self.fonts.measure(label, &right_text);
+        let left = fit(&self.fonts, dim, &left, r.w - rw - 3.0 * pad);
+        self.fonts.draw(scene, dim, r.x + pad, base, &left);
+        self.fonts.draw(
             scene,
             if e.goto.is_some() {
                 Style {
@@ -2053,6 +2120,19 @@ impl App {
             &right_text,
         );
 
+        if e.goto.is_some() {
+            self.draw_line_caret(scene, r.right() - pad + px(1.0), base, label.px, 1.0, self.last_key);
+        } else {
+            let mode = if e.overwrite { "REPLACE" } else { "INSERT" };
+            let width = self.fonts.measure(label, mode);
+            let hit = Rect::new(r.right() - pad - width - px(4.0), sy, width + px(8.0), status_h);
+            e.mode_hit = Some(hit);
+            if hit.contains(mx, my) {
+                scene.hline(hit.x + px(4.0), base + px(3.0), width, hair, signal);
+                self.tip_words(hit, if e.overwrite { "Insert between characters · click or press Insert" } else { "Replace next character · click or press Insert" });
+            }
+        }
+
         // Find bar above the status row.
         if let Some(f) = &e.find {
             let fy = sy - status_h;
@@ -2061,31 +2141,27 @@ impl App {
             let base = fy + px(17.0);
             let mut x = r.x + pad;
             let head = if f.with_replace { "REPLACE" } else { "FIND" };
-            x += fonts.draw(scene, strong, x, base, head) + pad;
-            let q = format!("{}{}", f.query, if !f.in_replace { "_" } else { "" });
-            x += fonts.draw(
+            x += self.fonts.draw(scene, strong, x, base, head) + pad;
+            let query_width = self.fonts.draw(
                 scene,
-                Style {
-                    color: if f.in_replace { t.dim } else { ink },
-                    ..mono
-                },
-                x,
-                base,
-                &q,
-            ) + pad * 2.0;
+                Style { color: if f.in_replace { t.dim } else { ink }, ..mono },
+                x, base, &f.query,
+            );
+            if !f.in_replace {
+                self.draw_line_caret(scene, x + query_width, base, mono.px, 1.0, self.last_key);
+            }
+            x += query_width + pad * 2.0;
             if f.with_replace {
-                x += fonts.draw(scene, dim, x, base, "WITH") + pad;
-                let rp = format!("{}{}", f.replace, if f.in_replace { "_" } else { "" });
-                x += fonts.draw(
+                x += self.fonts.draw(scene, dim, x, base, "WITH") + pad;
+                let replace_width = self.fonts.draw(
                     scene,
-                    Style {
-                        color: if f.in_replace { ink } else { t.dim },
-                        ..mono
-                    },
-                    x,
-                    base,
-                    &rp,
-                ) + pad * 2.0;
+                    Style { color: if f.in_replace { ink } else { t.dim }, ..mono },
+                    x, base, &f.replace,
+                );
+                if f.in_replace {
+                    self.draw_line_caret(scene, x + replace_width, base, mono.px, 1.0, self.last_key);
+                }
+                x += replace_width + pad * 2.0;
             }
             let count = if e.search.is_some() || e.search_needed {
                 "SEARCHING…".into()
@@ -2098,14 +2174,14 @@ impl App {
             } else {
                 format!("{} OF {}{}", f.current + 1, f.matches.len(), if f.truncated { "+" } else { "" })
             };
-            fonts.draw(scene, dim, x, base, &count);
+            self.fonts.draw(scene, dim, x, base, &count);
             let hint = if f.with_replace {
                 "ENTER REPLACES · CTRL+ENTER ALL · TAB SWITCHES · ESC"
             } else {
                 "ENTER NEXT · SHIFT+ENTER BACK · ESC"
             };
-            let hw = fonts.measure(dim, hint);
-            fonts.draw(scene, dim, r.right() - pad - hw, base, hint);
+            let hw = self.fonts.measure(dim, hint);
+            self.fonts.draw(scene, dim, r.right() - pad - hw, base, hint);
         }
 
         // Completion menu under the caret.
@@ -2123,10 +2199,10 @@ impl App {
                 .skip(c.scroll)
                 .take(shown)
                 .map(|i| {
-                    fonts.measure(mono, &i.label)
+                    self.fonts.measure(mono, &i.label)
                         + i.detail
                             .as_ref()
-                            .map(|d| fonts.measure(mono_dim, d) + pad)
+                            .map(|d| self.fonts.measure(mono_dim, d) + pad)
                             .unwrap_or(0.0)
                 })
                 .fold(0.0f32, f32::max)
@@ -2149,18 +2225,18 @@ impl App {
                     scene.rect(rr, fade(signal, 0.18));
                 }
                 let base = yy + baseline_off + px(2.0);
-                let lw = fonts.draw(
+                let lw = self.fonts.draw(
                     scene,
                     mono,
                     bx + pad,
                     base,
-                    &fit(fonts, mono, &item.label, bw - 2.0 * pad),
+                    &fit(&self.fonts, mono, &item.label, bw - 2.0 * pad),
                 );
                 if let Some(d) = &item.detail {
-                    let dd = fit(fonts, mono_dim, d, bw - 3.0 * pad - lw);
-                    let dw = fonts.measure(mono_dim, &dd);
+                    let dd = fit(&self.fonts, mono_dim, d, bw - 3.0 * pad - lw);
+                    let dw = self.fonts.measure(mono_dim, &dd);
                     if lw + dw + 3.0 * pad < bw {
-                        fonts.draw(scene, mono_dim, bx + bw - pad - dw, base, &dd);
+                        self.fonts.draw(scene, mono_dim, bx + bw - pad - dw, base, &dd);
                     }
                 }
                 yy += row_h;
@@ -2178,11 +2254,11 @@ impl App {
                     .text
                     .lines()
                     .take(14)
-                    .map(|l| fit(fonts, mono, l, r.w * 0.7))
+                    .map(|l| fit(&self.fonts, mono, l, r.w * 0.7))
                     .collect();
                 let wmax = lines
                     .iter()
-                    .map(|l| fonts.measure(mono, l))
+                    .map(|l| self.fonts.measure(mono, l))
                     .fold(0.0f32, f32::max);
                 let bw = wmax + 2.0 * pad;
                 let bh = lines.len() as f32 * ch + 2.0 * px(6.0);
@@ -2198,7 +2274,7 @@ impl App {
                 scene.outline(hr, hair, ink);
                 let mut yy = by + px(6.0) + baseline_off;
                 for l in &lines {
-                    fonts.draw(scene, mono, bx + pad, yy, l);
+                    self.fonts.draw(scene, mono, bx + pad, yy, l);
                     yy += ch;
                 }
             }
@@ -2255,6 +2331,52 @@ mod performance_tests {
         }
         assert!(same_file_path(&upper, &dir.path().join("./Module.rs")));
     }
+    #[test]
+    fn replace_mode_replaces_whole_graphemes_and_preserves_line_endings() {
+        let mut b = Buffer::empty();
+        b.text = Rope::from_str("e\u{301}👩‍💻!\r\nnext");
+        assert_eq!(b.replacement_len(), Some(2));
+        b.type_text("x", true);
+        assert_eq!(b.text.to_string(), "x👩‍💻!\r\nnext");
+        assert_eq!(b.replacement_len(), Some(3));
+        b.type_text("y", true);
+        assert_eq!(b.text.to_string(), "xy!\r\nnext");
+        b.cursor = 3;
+        assert_eq!(b.replacement_len(), None);
+        b.type_text("z", true);
+        assert_eq!(b.text.to_string(), "xy!z\r\nnext");
+    }
+
+    #[test]
+    fn replace_mode_respects_selection_and_undo() {
+        let mut b = Buffer::empty();
+        b.text = Rope::from_str("before after");
+        b.cursor = 6;
+        b.anchor = Some(0);
+        assert_eq!(b.replacement_len(), None);
+        b.type_text("new", true);
+        assert_eq!(b.text.to_string(), "new after");
+        b.undo();
+        assert_eq!(b.text.to_string(), "before after");
+        assert_eq!(b.selection(), Some((0, 6)));
+        b.anchor = None;
+        b.cursor = 0;
+        b.type_text("X", false);
+        assert_eq!(b.text.to_string(), "Xbefore after");
+    }
+
+    #[test]
+    fn replacement_mark_requires_a_complete_grapheme_boundary() {
+        let mut b = Buffer::empty();
+        b.text = Rope::from_str("e\u{301}x");
+        b.cursor = 1;
+        assert_eq!(b.replacement_len(), None);
+        b.cursor = 2;
+        assert_eq!(b.replacement_len(), Some(1));
+        b.cursor = 3;
+        assert_eq!(b.replacement_len(), None);
+    }
+
     fn settle(b: &mut Buffer) {
         let until = Instant::now() + std::time::Duration::from_secs(5);
         while b.loading.is_some() || b.highlighting.is_some() {

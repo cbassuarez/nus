@@ -580,13 +580,13 @@ impl App {
             }
         };
         match p {
-            Pending::PromptCompletion { uri } => {
+            Pending::PromptCompletion { uri, stamp } => {
                 let items: Vec<lt::CompletionItem> = match Client::parse::<lt::CompletionResponse>(result) {
                     Some(lt::CompletionResponse::Array(a)) => a,
                     Some(lt::CompletionResponse::List(l)) => l.items,
                     None => Vec::new(),
                 };
-                self.prompt_lsp_items(&uri, items);
+                self.prompt_lsp_items(&uri, &stamp, items);
             }
             Pending::Hover { uri, at } => {
                 let Some(h): Option<lt::Hover> = Client::parse(result) else {

@@ -1,8 +1,29 @@
-# Design — "Broadsheet"
+# Design — "Blueprint"
 
-Chosen 2026-09-16 from three directions (canvas: design/, page 2 keeps the
-record). Ink on paper, one monospace face, rules instead of boxes, and one
-color on screen: the active Space's.
+Blueprint is the default appearance, chosen 2026-09-26. It keeps the
+Broadsheet structure chosen 2026-09-16: rules instead of boxes, one monospace
+face, and the active Space's signal. New profiles start in Blueprint;
+existing profiles keep their saved choices. Other looks remain available
+while removing them is still under consideration.
+
+## Default appearance
+
+The canonical recipe is `spikes/composite/src/blueprint.rs`, used both by
+fresh-profile preferences and SETTINGS · TERMINAL · APPLY BLUEPRINT.
+
+| token | paper (light) | ink (dark) |
+|---|---|---|
+| paper | `#e6eef7` | `#0b2a4a` |
+| ink | `#0b2a4a` | `#dbe7f3` |
+| caret / selection color | `#137a8a` | `#2fb8d8` |
+| signal | `#2fb8d8` | `#2fb8d8` |
+
+Terminal: ABC Areal Mono Medium, 14 pt, line multiplier 1.25, tracking
+0.25 logical px. Underline cursor, 3 px, Glide, never blink. Shell tint
+None; syntax color and command lamps enabled. Stitch texture at 3%, pitch
+5, on panes, still. The palette is shared across the interface; existing
+UI/editor font roles and layout remain independent. Paper/ink follows the
+usual OS or user mode setting. Notes uses this same visual direction.
 
 ## Principles
 
@@ -14,7 +35,11 @@ color on screen: the active Space's.
 5. Chromeless by default: a 6px signal band and a 30px top strip are all the
    furniture; the sidebar slides in on ⌘⇧S.
 
-## Tokens
+## Legacy renderer base tokens
+
+These are the Broadsheet fallback values underneath saved theme overrides,
+retained for older/partial profiles. Fresh-profile colors are the Blueprint
+values above, not this fallback palette.
 
 | token      | paper (light)          | ink (dark)                 |
 |------------|------------------------|----------------------------|
@@ -59,7 +84,8 @@ a colour it hardcodes.
 
 ## Type
 
-- UI and terminal: IBM Plex Mono (bundled, OFL) by default. Regular 400, medium 500,
+- UI and legacy terminal fallback: IBM Plex Mono (bundled, OFL). Blueprint's
+  terminal default is ABC Areal Mono Medium as specified above. Regular 400, medium 500,
   semibold 600. Both are config keys: `font.terminal` and `font.ui`.
 - Wordmark only: Newsreader Italic 500 (bundled, OFL) — `nus`, `go`,
   `quick`, `paper`, `ink`.

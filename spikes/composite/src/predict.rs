@@ -2,13 +2,13 @@
 //! install in the shell. With prompt marks nus knows where the command
 //! begins; it colours the tokens (command, flags, strings, numbers) and
 //! offers the most recent history entry that continues what's typed as
-//! ghost text after the caret. Right or End at the end of the line
-//! accepts it. History persists per profile in profile/history.
+//! ghost text after the caret. Right or Ctrl+F accepts the full suggestion;
+//! Option+Right accepts the next shell token. History persists per profile in profile/history.
 
 use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 
-use crate::app::{fade, App, Pane, TermPane};
+use crate::app::{fade, App, TermPane};
 
 /// Token classes on the command line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,9 +63,15 @@ pub fn tokens(line: &str) -> Vec<(usize, usize, Tok)> {
                 Tok::Command
             } else if word.starts_with('-') && word.len() > 1 {
                 Tok::Flag
-            } else if word.chars().all(|c| c.is_ascii_digit() || c == '.') && word.chars().any(|c| c.is_ascii_digit()) {
+            } else if word.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && word.chars().any(|c| c.is_ascii_digit())
+            {
                 Tok::Num
-            } else if word.contains('/') || word.contains('\\') || word.starts_with('~') || word.starts_with('.') {
+            } else if word.contains('/')
+                || word.contains('\\')
+                || word.starts_with('~')
+                || word.starts_with('.')
+            {
                 Tok::Path
             } else {
                 Tok::Plain
@@ -78,18 +84,35 @@ pub fn tokens(line: &str) -> Vec<(usize, usize, Tok)> {
 }
 
 fn history_dir() -> std::path::PathBuf {
-    std::env::current_dir().unwrap_or_default().join("profile").join("history")
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join("profile")
+        .join("history")
 }
 
 fn history_file(profile: &str) -> std::path::PathBuf {
-    let safe: String = profile.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let safe: String = profile
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     history_dir().join(format!("{safe}.txt"))
 }
 
 /// The last 2000 commands run under this profile.
 pub fn load_history(profile: &str) -> Vec<String> {
     crate::storage::tail(&history_file(profile), crate::storage::HISTORY_FILE)
-        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).map(|l| l.to_string()).collect::<Vec<_>>())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+        })
         .map(|mut v| {
             if v.len() > 2000 {
                 v.drain(..v.len() - 2000);
@@ -104,65 +127,74 @@ pub fn append_history(profile: &str, cmd: &str) {
     if cmd.is_empty() || cmd.contains('\n') {
         return;
     }
-    let _ = crate::storage::append_line(&history_file(profile), cmd, crate::storage::HISTORY_FILE, crate::storage::HISTORY_LINES);
+    let _ = crate::storage::append_line(
+        &history_file(profile),
+        cmd,
+        crate::storage::HISTORY_FILE,
+        crate::storage::HISTORY_LINES,
+    );
 }
 
 impl TermPane {
-    /// What's typed at the prompt right now, from the B mark to the caret,
-    /// and where it starts (col), if the shell is at a prompt.
+    /// The prompt prefix in bytes; complete command and grid positions live
+    /// in PromptLine so callers do not confuse characters with columns.
     pub fn typed(&self) -> Option<(usize, String)> {
-        if !self.term.at_prompt() {
-            return None;
-        }
-        let b = self.term.marks.last().filter(|m| m.kind == nus_vt::MarkKind::CommandStart)?;
-        let grid = self.term.grid();
-        let cur = self.term.cursor();
-        if grid.abs_row(cur.row) != b.line || grid.display_offset != 0 {
-            return None;
-        }
-        let row = grid.row(cur.row);
-        let text: String = row.cells.iter().skip(b.col).take(cur.col.saturating_sub(b.col)).map(|c| c.ch).collect();
-        Some((b.col, text))
+        let line = self.prompt_line()?;
+        Some((line.start.1, line.prefix().to_string()))
     }
 
-    /// The history entry that continues what's typed, and the rest of it.
     pub fn prediction(&self) -> Option<String> {
-        let (_, typed) = self.typed()?;
-        let typed = typed.trim_start();
-        if typed.is_empty() {
+        let line = self.prompt_line()?;
+        if !line.at_end() || line.text.trim().is_empty() {
             return None;
         }
-        // Newest first: this pane's marks, then the file.
-        let from_marks = self.term.marks.iter().rev().filter(|m| m.kind == nus_vt::MarkKind::CommandStart).map(|m| self.term.command_text(m));
-        let hit = from_marks.chain(self.history.iter().rev().cloned()).find(|h| h.len() > typed.len() && h.starts_with(typed))?;
-        Some(hit[typed.len()..].to_string())
+        self.prompt_history_entries().find_map(|h| {
+            if !crate::prompt_code::safe_text(&h) {
+                return None;
+            }
+            h.strip_prefix(&line.text)
+                .filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
+                .map(str::to_string)
+        })
     }
 }
 
 impl App {
-    /// Colour the command line's tokens and draw the ghost prediction.
-    pub(crate) fn draw_prompt_line(&mut self, scene: &mut Scene, p: &TermPane, paper: nus_render::Color) {
-        if !self.behavior.shell_integration || (!self.behavior.highlight && !self.behavior.predict && self.behavior.prompt_lsp == crate::settings::PromptLsp::Off) {
+    pub(crate) fn draw_prompt_line(
+        &mut self,
+        scene: &mut Scene,
+        p: &TermPane,
+        paper: nus_render::Color,
+        focused: bool,
+    ) {
+        if !self.behavior.shell_integration {
             return;
         }
-        let Some((col0, typed)) = p.typed() else { return };
+        let Some(line) = p.prompt_line() else { return };
         let (cw, ch) = p.grid.cell_size();
-        let cur = p.term.cursor();
-        let y = p.origin.1 + cur.row as f32 * ch;
-        let base = y + p.grid.metrics.baseline;
-        let font = p.grid.font;
-        let px = p.grid.px;
-        let t = self.theme.clone();
-        let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
-        // The shell's own grammar (tree-sitter) colours the line; the regex
-        // tokens fill in flags and paths, and stand in for shells without one.
-        let lang = self.profiles.get(p.profile).map(|pr| crate::shell::kind_of(&pr.program)).map(|k| match k {
-            crate::shell::Kind::PowerShell => "powershell",
-            crate::shell::Kind::Bash | crate::shell::Kind::Zsh | crate::shell::Kind::Fish | crate::shell::Kind::Other => "bash",
-            _ => "",
-        }).unwrap_or("");
-        if self.behavior.highlight && !typed.trim().is_empty() {
-            let spans = if lang.is_empty() { tokens(&typed) } else { crate::syntax::command_line(lang, &typed) };
+        let theme = self.theme.clone();
+        let ansi = |i: usize| crate::theme_edit::from_rgb(theme.ansi[i]);
+        let lang = self
+            .profiles
+            .get(p.profile)
+            .map(|pr| crate::shell::kind_of(&pr.program))
+            .map(|kind| match kind {
+                crate::shell::Kind::PowerShell => "powershell",
+                crate::shell::Kind::Bash
+                | crate::shell::Kind::Zsh
+                | crate::shell::Kind::Fish
+                | crate::shell::Kind::Other => "bash",
+                _ => "",
+            })
+            .unwrap_or("");
+        if self.behavior.highlight && !line.text.trim().is_empty() {
+            let spans = if lang.is_empty() {
+                tokens(&line.text)
+            } else {
+                crate::syntax::command_line(lang, &line.text)
+            };
+            let mut colors = vec![None; line.cells.len()];
+            let mut underlines = vec![false; line.cells.len()];
             for (start, len, class) in spans {
                 let color = match class {
                     Tok::Command => ansi(4),
@@ -172,84 +204,59 @@ impl App {
                     Tok::Op => ansi(3),
                     Tok::Path | Tok::Plain => continue,
                 };
-                let text: String = typed.chars().skip(start).take(len).collect();
-                let x = p.origin.0 + (col0 + start) as f32 * cw;
-                // Paint over the ink glyphs: paper first, then the coloured run.
-                scene.rect(Rect::new(x, y, len as f32 * cw, ch), paper);
-                self.fonts.draw(scene, Style { font, px, color, tracking: 0.0 }, x, base, &text);
+                for color_at in colors.iter_mut().skip(start).take(len) {
+                    *color_at = Some(color);
+                }
             }
-            // Git's own words: the subcommand, refs, remotes, changed files.
-            for (start, len, kind) in crate::git_complete::spans(&typed, p.cwd.as_deref()) {
+            for (start, len, kind) in crate::git_complete::spans(&line.text, p.cwd.as_deref()) {
                 use crate::git_complete::Kind;
-                let text: String = typed.chars().skip(start).take(len).collect();
-                let x = p.origin.0 + (col0 + start) as f32 * cw;
                 let color = match kind {
                     Kind::Sub => ansi(5),
                     Kind::Ref => ansi(2),
                     Kind::Remote => ansi(3),
-                    Kind::File => t.ink,
+                    Kind::File => theme.ink,
                 };
-                scene.rect(Rect::new(x, y, len as f32 * cw, ch), paper);
-                self.fonts.draw(scene, Style { font, px, color, tracking: 0.0 }, x, base, &text);
-                if kind == Kind::File {
-                    scene.hline(x, y + ch - self.px(2.0), len as f32 * cw, self.px(1.0), fade(t.ink, 0.5));
+                for i in start..(start + len).min(colors.len()) {
+                    colors[i] = Some(color);
+                    underlines[i] = kind == Kind::File;
+                }
+            }
+            // Cell-by-cell placement follows wide glyphs, wraps, and the
+            // configured tracking instead of shaping a run at zero tracking.
+            for (i, cell) in line.cells.iter().enumerate() {
+                let Some(color) = colors[i] else { continue };
+                let x = p.origin.0 + cell.col as f32 * cw;
+                let y = p.origin.1 + cell.row as f32 * ch;
+                let glyph = line.text[cell.byte..].chars().next().unwrap().to_string();
+                scene.rect(Rect::new(x, y, cell.width as f32 * cw, ch), paper);
+                self.fonts.draw(
+                    scene,
+                    Style {
+                        font: p.grid.font,
+                        px: p.grid.px,
+                        color,
+                        tracking: 0.0,
+                    },
+                    x,
+                    y + p.grid.metrics.baseline,
+                    &glyph,
+                );
+                if underlines[i] {
+                    scene.hline(
+                        x,
+                        y + ch - self.px(2.0),
+                        cell.width as f32 * cw,
+                        self.px(1.0),
+                        fade(theme.ink, 0.5),
+                    );
                 }
             }
         }
-        let mut history_ghost = false;
-        if self.behavior.predict {
-            if let Some(rest) = p.prediction() {
-                let x = p.origin.0 + cur.col as f32 * cw;
-                let cols_left = p.term.cols().saturating_sub(cur.col);
-                let rest: String = rest.chars().take(cols_left).collect();
-                if !rest.is_empty() {
-                    self.fonts.draw(scene, Style { font, px, color: fade(t.ink, 0.38), tracking: 0.0 }, x, base, &rest);
-                    history_ghost = true;
-                }
-            }
-            // No history for it: what git can take next.
-            if !history_ghost {
-                if let Some(rest) = crate::git_complete::ghost(&typed, p.cwd.as_deref()) {
-                    let x = p.origin.0 + cur.col as f32 * cw;
-                    let rest: String = rest.chars().take(p.term.cols().saturating_sub(cur.col)).collect();
-                    self.fonts.draw(scene, Style { font, px, color: fade(t.ink, 0.38), tracking: 0.0 }, x, base, &rest);
-                    history_ghost = true;
-                }
-            }
+        if focused && !self.prompt_composing {
+            self.draw_prompt_ghost(scene, p, &line);
+            self.draw_prompt_lsp(scene, p, &line);
+            self.draw_prompt_code(scene, p, &line);
         }
-        // A git line is git's: the language server's guesses (a command
-        // name where git wants a subcommand, `pushd` for `push`) stay out.
-        let theirs = history_ghost || crate::git_complete::is_git(&typed);
-        self.draw_prompt_lsp(scene, p, col0, &typed, theirs);
-    }
-
-    /// Right or End at the end of the line accepts the prediction. Returns
-    /// true when it did (and the key must not reach the shell).
-    pub(crate) fn accept_prediction(&mut self, key: nus_vt::input::Key) -> bool {
-        if !self.behavior.predict || !self.behavior.shell_integration {
-            return false;
-        }
-        if !matches!(key, nus_vt::input::Key::Right | nus_vt::input::Key::End | nus_vt::input::Key::Tab) {
-            return false;
-        }
-        let Some(tab) = self.tabs.get_mut(self.active) else { return false };
-        let Pane::Term(t) = tab.focused() else { return false };
-        // History first, then git; Tab takes git's only (the shell keeps
-        // Tab for its own completion everywhere else).
-        let history = if matches!(key, nus_vt::input::Key::Tab) { None } else { t.prediction() };
-        let git = || t.typed().and_then(|(_, typed)| crate::git_complete::ghost(&typed, t.cwd.as_deref()));
-        let Some(rest) = history.or_else(git) else { return false };
-        // Only when the caret is at the end of what's typed.
-        let grid = t.term.grid();
-        let cur = t.term.cursor();
-        let row = grid.row(cur.row);
-        let tail: String = row.cells.iter().skip(cur.col).map(|c| c.ch).collect();
-        if !tail.trim().is_empty() {
-            return false;
-        }
-        let _ = t.pty.write(rest.as_bytes());
-        self.dirty = true;
-        true
     }
 }
 
@@ -261,6 +268,20 @@ mod tests {
     fn classes() {
         let t = tokens("git commit -m \"fix it\" --amend | wc -l 42 ./src");
         let classes: Vec<Tok> = t.iter().map(|x| x.2).collect();
-        assert_eq!(classes, vec![Tok::Command, Tok::Plain, Tok::Flag, Tok::Str, Tok::Flag, Tok::Op, Tok::Command, Tok::Flag, Tok::Num, Tok::Path]);
+        assert_eq!(
+            classes,
+            vec![
+                Tok::Command,
+                Tok::Plain,
+                Tok::Flag,
+                Tok::Str,
+                Tok::Flag,
+                Tok::Op,
+                Tok::Command,
+                Tok::Flag,
+                Tok::Num,
+                Tok::Path
+            ]
+        );
     }
 }

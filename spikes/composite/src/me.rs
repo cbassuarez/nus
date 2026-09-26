@@ -1058,10 +1058,10 @@ impl App {
         let base = y + self.px(22.0);
         if text.is_empty() {
             self.fonts.draw(scene, Style { color: t.dim, ..big }, x, base, hint);
-            scene.rect(Rect::new(x, base - self.px(16.0), self.px(10.0), self.px(20.0)), fade(t.ink, 0.35));
+            self.draw_line_caret(scene, x, base, big.px, 1.0, self.last_key);
         } else {
             let tw = self.fonts.draw(scene, big, x, base, &self.fit(big, &text, w - self.px(14.0)));
-            scene.rect(Rect::new(x + tw + self.px(2.0), base - self.px(16.0), self.px(10.0), self.px(20.0)), t.ink);
+            self.draw_line_caret(scene, x + tw + self.px(2.0), base, big.px, 1.0, self.last_key);
         }
         scene.hline(x, base + self.px(8.0), w, self.px(m::STRUCTURE), t.ink);
         base + self.px(8.0) + self.px(m::STRUCTURE)

@@ -44,6 +44,49 @@ impl Rect {
 
 pub type Color = [f32; 4];
 
+/// Pigment and light confined to a carapace's border. Material identifiers are
+/// 1 ink pool, 2 enamel, 3 interference, 4 single seam, 5 open corners,
+/// 6 overprint, and 7 edge light. Grain is an independent, static finish.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarapaceLook {
+    pub material: u32,
+    pub radius: f32,
+    pub width: f32,
+    pub signal: Color,
+    pub paper: Color,
+    /// Activity phase in turns. It has no effect when `energy` is zero.
+    pub phase: f32,
+    pub energy: f32,
+    /// Known completion fraction. `None` uses the phase for indeterminate
+    /// activity; a known value anchors the reaction independently of time.
+    pub progress: Option<f32>,
+    pub attention: bool,
+    pub band: bool,
+    /// Grain opacity, from zero to 0.3, masked by the material itself.
+    pub grain: f32,
+    /// Grain cell size in physical pixels.
+    pub grain_scale: f32,
+}
+
+impl Default for CarapaceLook {
+    fn default() -> Self {
+        Self {
+            material: 1,
+            radius: 10.0,
+            width: 6.0,
+            signal: [0.21, 0.40, 0.46, 1.0],
+            paper: [0.95, 0.94, 0.91, 1.0],
+            phase: 0.0,
+            energy: 0.0,
+            progress: None,
+            attention: false,
+            band: false,
+            grain: 0.0,
+            grain_scale: 1.0,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Instance {
@@ -63,6 +106,63 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// One material instance, preserving the ordinary 64-byte quad layout.
+    /// Both activity and grain are evaluated inside the material's coverage,
+    /// so holes, floating blots, and open spans remain genuinely transparent.
+    pub fn carapace(r: Rect, look: CarapaceLook) -> Instance {
+        let finite = |v: f32, fallback: f32| {
+            if v.is_finite() { v } else { fallback }
+        };
+        let color = |c: Color| c.map(|v| finite(v, 0.0).clamp(0.0, 1.0));
+        let short = finite(r.w.min(r.h), 0.0).max(0.0);
+        let energy = finite(look.energy, 0.0).clamp(0.0, 1.0);
+        let grain =
+            (finite(look.grain, 0.0).clamp(0.0, 0.3) * (255.0 / 0.3)).round() as u32;
+        let scale = (finite(look.grain_scale, 1.0).clamp(0.25, 256.0) * 64.0).round() as u32;
+        let mut i = Self::rect(r, color(look.signal));
+        i.kind = 22;
+        i.color2 = pack(color(look.paper));
+        i.uv = [
+            finite(look.radius, 0.0).clamp(0.0, short * 0.5),
+            finite(look.width, 0.0).clamp(0.0, short * 0.5),
+            energy,
+            look.progress
+                .filter(|v| v.is_finite())
+                .map_or(-1.0, |v| v.clamp(0.0, 1.0)),
+        ];
+        i.phase = if energy > 0.0 {
+            finite(look.phase, 0.0).rem_euclid(1.0)
+        } else {
+            0.0
+        };
+        i.extra = look.material.clamp(1, 7)
+            | (u32::from(look.attention) << 4)
+            | (u32::from(look.band) << 5)
+            | (grain << 8)
+            | (scale << 16);
+        i
+    }
+
+    /// A square caret with a restrained halo. The core remains exactly `r`;
+    /// only the instance bounds grow to contain the analytic falloff. `gain`
+    /// is a linear-light multiplier, bounded again by the display at draw time.
+    pub fn caret(r: Rect, color: Color, glow: f32, gain: f32) -> Instance {
+        // As the pipe widens into a cell, lower halo density continuously so
+        // its larger perimeter does not turn a quiet point into a bright box.
+        let density = ((r.h * 0.12) / r.w.max(1.0)).clamp(0.0, 1.0).sqrt();
+        let glow = if glow.is_finite() { glow.clamp(0.0, 1.0) * density } else { 0.0 };
+        let gain = if gain.is_finite() { gain.clamp(1.0, 3.0) } else { 1.0 };
+        let spread = (r.h / 12.0).clamp(0.75, 3.0);
+        let pad = if glow > 0.0 { (spread * 3.0).ceil() } else { 1.0 };
+        let mut i = Self::rect(r.inset(-pad), color.map(|v| {
+            if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+        }));
+        i.kind = 20;
+        i.uv = [pad, glow, 0.0, 0.0];
+        i.phase = gain;
+        i
+    }
+
     /// Encoded sRGB radiance may exceed 1.0. The HDR pipeline converts to
     /// extended linear light; an SDR target clips only the small highlight.
     pub fn loading_light(r: Rect, progress: f32, scale: f32, color: Color) -> Instance {
@@ -95,6 +195,14 @@ impl Instance {
             phase: 0.0,
             extra: 0,
         }
+    }
+    /// Recolor an existing glyph beneath a cell caret without reshaping it.
+    /// The shader blends in the target's color space with the core's opacity.
+    pub fn caret_ink(mut self, ink: Color, opacity: f32) -> Instance {
+        self.kind = 21;
+        self.color2 = pack(ink);
+        self.phase = opacity.clamp(0.0, 1.0);
+        self
     }
     pub fn textured(r: Rect, alpha: f32) -> Instance {
         Instance {
@@ -609,6 +717,23 @@ impl Scene {
         self.push(Instance::rect(r, color));
     }
 
+    /// Shared pipe/cell material. Selection fills and replacement indicators
+    /// remain ordinary SDR shapes; only the small active caret emits light.
+    pub fn caret(&mut self, r: Rect, color: Color, glow: f32, hdr_gain: f32) {
+        if r.w > 0.0 && r.h > 0.0 && color[3] > 0.0
+            && [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite())
+        {
+            self.push(Instance::caret(r, color, glow, hdr_gain));
+        }
+    }
+
+    /// A steady, unlit replacement rule; the caller supplies its exact bounds.
+    pub fn caret_replacement(&mut self, r: Rect, color: Color) {
+        if r.w > 0.0 && r.h > 0.0 && color[3] > 0.0 {
+            self.rect(r, color);
+        }
+    }
+
     pub fn hline(&mut self, x: f32, y: f32, w: f32, thickness: f32, color: Color) {
         self.rect(Rect::new(x, y, w, thickness), color);
     }
@@ -670,6 +795,40 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carapace_still_ignores_clock_and_rejects_nonfinite_controls() {
+        let r = Rect::new(4.0, 8.0, 300.0, 200.0);
+        let still = Instance::carapace(
+            r,
+            CarapaceLook {
+                phase: 0.75,
+                ..Default::default()
+            },
+        );
+        assert_eq!(std::mem::size_of::<Instance>(), 64);
+        assert_eq!(still.phase, 0.0);
+        assert_eq!(still.uv[3], -1.0);
+        let invalid = Instance::carapace(
+            r,
+            CarapaceLook {
+                radius: f32::NAN,
+                width: f32::INFINITY,
+                energy: f32::NAN,
+                phase: f32::INFINITY,
+                progress: Some(f32::NAN),
+                grain: f32::INFINITY,
+                grain_scale: f32::NAN,
+                signal: [f32::NAN, -1.0, 3.0, 1.0],
+                ..Default::default()
+            },
+        );
+        assert!(invalid.uv.into_iter().all(f32::is_finite));
+        assert!(invalid.color.into_iter().all(f32::is_finite));
+        assert!(invalid.phase.is_finite());
+        assert_eq!(invalid.color, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(invalid.uv[3], -1.0);
+    }
 
     #[test]
     fn a_pair_of_clips_keeps_both_regions_and_draws_nothing_twice() {

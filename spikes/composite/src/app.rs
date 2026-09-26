@@ -322,6 +322,10 @@ pub struct TermPane {
     pub mouse_last: Option<(usize, usize)>,
     /// The prompt line's language server, once tried.
     pub plsp: Option<crate::prompt_lsp::LineLsp>,
+    pub code_menu: Option<crate::prompt_code::CodeMenu>,
+    pub prompt_quiet: Option<crate::prompt_code::PromptStamp>,
+    pub prompt_edit_pending: Option<crate::prompt_code::PromptEdit>,
+    pub prompt_history: crate::prompt_history::HistoryState,
     pub plsp_tried: bool,
     /// The program running here ("claude", "nvim"), empty at a prompt;
     /// the mark count it was read at.
@@ -452,15 +456,18 @@ pub struct WebPane {
 
 impl WebPane {
     /// The page as a thumbnail (sidebar small tabs, pinned tiles), or None
-    /// while it plays video or streams: a film playing in a thumbnail
-    /// distracts, costs a frame a tick, and protected video is black there
-    /// anyway. Those show their favicon instead.
+    /// for streaming services and media documents. This also excludes stale
+    /// stills and the blank Chromium backing of a native WebKit page.
     pub fn preview_texture(&self) -> Option<Arc<wgpu::BindGroup>> {
         let s = self.tab.shared.borrow();
-        if s.video.is_some() || s.media.iter().any(|m| m.blob) {
+        if crate::web_preview::use_site_icon(&s) {
             return None;
         }
         self.still.clone().or_else(|| s.bind.clone())
+    }
+
+    pub(crate) fn favicon_rect(&self, bounds: Rect) -> Rect {
+        self.tab.shared.borrow().favicon.as_ref().map_or(bounds, |icon| crate::web_preview::icon_rect(bounds, icon.w, icon.h))
     }
 }
 
@@ -658,7 +665,8 @@ pub fn tip_for(key: u64) -> Option<&'static str> {
         ("compact-new", 0, "new tab"),
         ("compact-settings", 0, "settings"),
         ("blockchip", 0, "copy this block's output"),
-        ("blockchip", 1, "run this command again"),
+        ("blockchip", 1, "run again in this shell · empty prompt only"),
+        ("blockchip", 2, "share this block as a local page"),
         ("blockchip", 3, "clip this block into the note"),
         ("pane", 0, "move · drag onto a tab"),
         ("pane", 1, "swap the panes"),
@@ -1080,11 +1088,16 @@ pub struct App {
     pub look_scroll_max: f32,
     pub look_leave: Option<Instant>,
     pub tok_sel: crate::settings::TokSel,
-    /// Last keystroke into a shell, for blink-after-idle and pointer hiding.
+    /// Last editing interaction, shared by every native caret.
     pub last_key: Instant,
     pub pointer_hidden: bool,
     pub pointer_reset: bool,
-    pub blink_half: u64,
+    pub caret_deadline: std::cell::Cell<Option<Instant>>,
+    pub hatch_caret_deadline: std::cell::Cell<Option<Instant>>,
+    pub(crate) caret_enabled: std::cell::Cell<bool>,
+    pub(crate) caret_signal: std::cell::Cell<Option<nus_render::Color>>,
+    pub(crate) painting_hatch: bool,
+    pub(crate) caret_dragging: bool,
     /// A slow clock the last frame asked for, in ms (a breathing mark, a
     /// ticking count): App::tick redraws when it comes round, instead of
     /// the drawing asking for every frame. And the slot it last fired.
@@ -1190,6 +1203,7 @@ pub struct App {
     /// The sliding sidebar and its shadow, this frame (for WebKit's pages, which sit above nus's drawing).
     pub sidebar_over: Option<Rect>,
     pub shell_phase: f32,
+    pub(crate) carapace: crate::carapace::Carapace,
     pub pip: Option<crate::pip::Pip>,
     /// Picture in picture pinned over a shell instead (pip_dock.rs).
     pub docked: Option<crate::pip_dock::Docked>,
@@ -1262,6 +1276,8 @@ pub struct App {
     pub ports: Vec<nus_pty::ListeningPort>,
 
     pub mods: ModifiersState,
+    pub prompt_composing: bool,
+    pub prompt_accept_keys: std::collections::HashSet<PhysicalKey>,
     pub mouse: (f32, f32),
     pub mouse_down_in_web: bool,
     pub detected: Option<(usize, usize, String)>,
@@ -1453,7 +1469,12 @@ impl App {
             last_key: crate::clock::now(),
             pointer_hidden: false,
             pointer_reset: false,
-            blink_half: 0,
+            caret_deadline: std::cell::Cell::new(None),
+            hatch_caret_deadline: std::cell::Cell::new(None),
+            caret_enabled: std::cell::Cell::new(true),
+            caret_signal: std::cell::Cell::new(None),
+            painting_hatch: false,
+            caret_dragging: false,
             beat_want: None,
             beat_slot: 0,
             then_done: false,
@@ -1515,6 +1536,7 @@ impl App {
             sidebar_shift: 0.0,
             sidebar_over: None,
             shell_phase: 0.0,
+            carapace: Default::default(),
             pip: None,
             docked: None,
             pip_request: None,
@@ -1565,6 +1587,8 @@ impl App {
             skills_src_len: usize::MAX,
             ports: Vec::new(),
             mods: ModifiersState::empty(),
+            prompt_composing: false,
+            prompt_accept_keys: std::collections::HashSet::new(),
             mouse: (0.0, 0.0),
             mouse_down_in_web: false,
             detected: None,
@@ -1852,6 +1876,10 @@ impl App {
             mouse_held: None,
             mouse_last: None,
             plsp: None,
+            code_menu: None,
+            prompt_quiet: None,
+            prompt_edit_pending: None,
+            prompt_history: crate::prompt_history::HistoryState::default(),
             plsp_tried: false,
             program: String::new(),
             program_marks: usize::MAX,
@@ -2237,6 +2265,7 @@ impl App {
         self.poll_lsp();
         self.editor_tick();
         self.poll_files_folder();
+        self.prompt_assist_tick();
         self.prompt_lsp_tick();
         self.ports_tick();
         self.sync_taskbar_progress();
@@ -2340,11 +2369,13 @@ impl App {
             self.open_little(&u);
             self.dirty = true;
         }
+        self.carapace_tick();
         self.sync_anims();
         if self.anims_active() {
             self.dirty = true;
         }
-        if !self.motion.reduced() && self.surface.texture_motion && self.surface.texture > 0.0 && self.surface.texture_kind != crate::surface::TextureKind::None {
+        if !self.motion.reduced() && self.surface.texture_motion && self.surface.texture > 0.0 && self.surface.texture_kind != crate::surface::TextureKind::None
+            && (self.surface.material == crate::surface::Material::Plain || self.surface.texture_on != crate::surface::TextureOn::Carapace) {
             self.dirty = true;
         }
         if self.registered_tabs != usize::MAX && self.registered_tabs != self.tabs.len() {
@@ -2413,21 +2444,14 @@ impl App {
                 self.dirty = true;
             }
         }
-        // A blinking cursor wants a frame at each half period.
-        let blinking = match self.cursor.blink {
-            crate::settings::Blink::Never => false,
-            crate::settings::Blink::AfterIdle => crate::clock::since(self.last_key).as_secs_f32() > 2.0,
-            crate::settings::Blink::Always => true,
-        };
-        if blinking {
-            let period = self.cursor.period.max(100) as u128;
-            let half = (crate::clock::since(self.started).as_millis() / period) as u64;
-            if half != self.blink_half {
-                self.blink_half = half;
+        // Only a caret actually drawn in a focused surface asks for frames.
+        for deadline in [&self.caret_deadline, &self.hatch_caret_deadline] {
+            if deadline.get().is_some_and(|at| crate::clock::now() >= at) {
+                deadline.set(None);
                 self.dirty = true;
             }
         }
-        if self.surface.shell == Shell::Aurora && !self.motion.reduced() && self.surface.drift.abs() > f32::EPSILON {
+        if self.surface.material == crate::surface::Material::Plain && self.surface.shell == Shell::Aurora && !self.motion.reduced() && self.surface.drift.abs() > f32::EPSILON {
             // Drift is time based, independent of event-loop and monitor rate.
             self.shell_phase = (crate::clock::since(self.started).as_secs_f32() * self.surface.drift).rem_euclid(1.0);
             self.dirty = true;
@@ -2896,6 +2920,10 @@ impl App {
         }
         let risky = text.lines().count() > 1 || text.chars().any(|c| c.is_control() && c != '\t');
         let Some(t) = self.focused_term() else { return };
+        if t.prompt_history.paste(&text) { self.dirty = true; return; }
+        t.prompt_edit_pending = None;
+        t.code_menu = None;
+        t.line_ok = false;
         if risky {
             t.confirm_paste = Some(text);
             self.band_anim.replay(0.0, 1.0, self.motion.dur(base::BAND));
@@ -2939,13 +2967,37 @@ impl App {
         pol
     }
 
-    /// The caret's colour outside a shell (the editor, the prompt line):
-    /// the rule, resolved with the window's signal for the tab's own.
+    /// The same theme or signal token on every surface, including tab overrides.
     pub(crate) fn caret_color(&self) -> nus_render::Color {
         match self.cursor.color {
             crate::settings::CursorColor::Theme => self.theme.caret,
-            _ => self.surface.signal,
+            crate::settings::CursorColor::Signal => self.surface.signal,
+            crate::settings::CursorColor::Tab => self.caret_signal.get().unwrap_or(self.surface.signal),
         }
+    }
+
+    pub(crate) fn caret_frame_wait(&self) -> Option<std::time::Duration> {
+        [self.caret_deadline.get(), self.hatch_caret_deadline.get()]
+            .into_iter().flatten().map(|at| at.saturating_duration_since(crate::clock::now())).min()
+    }
+
+    /// Drawing registers the next visible change, so hidden fields never tick.
+    pub(crate) fn caret_sample(&self, since: Instant) -> crate::caret::Sample {
+        let sample = crate::caret::sample(self.cursor.blink, self.cursor.period,
+            crate::clock::since(since.max(self.last_key)), self.motion.reduced() || self.prompt_composing || self.caret_dragging);
+        if let Some(ms) = sample.next_ms {
+            let at = crate::clock::now() + std::time::Duration::from_millis(ms);
+            let deadline = if self.painting_hatch { &self.hatch_caret_deadline } else { &self.caret_deadline };
+            deadline.set(Some(deadline.get().map_or(at, |old| old.min(at))));
+        }
+        sample
+    }
+
+    /// A modal surface owns keyboard focus; its underlying panes do not blink.
+    fn pane_caret_available(&self) -> bool {
+        self.painting_hatch || (self.palette.is_none() && self.start.is_none()
+            && !self.me_card.open && !self.dl_menu && !self.board.open && !self.scm.open
+            && !self.tidy.open && self.splash.is_none() && self.timeline.is_none())
     }
 
     /// Ask for the next frame in `ms`, not now: slow marks (a breathing
@@ -2965,71 +3017,89 @@ impl App {
         0.35 + 0.45 * (0.5 + 0.5 * (crate::clock::since(self.started).as_secs_f32() * 2.2).sin())
     }
 
-    /// The caret of a line you type into outside a shell — the home line,
-    /// the palette — as CURSOR says: its shape (SHELL is the bar a prompt
-    /// shows), its color, its blink, its weight. `x` is where the next
-    /// character goes; `size` the text's px; `since` the last keystroke.
+    /// A native editing surface always uses a square pipe. Shape says where,
+    /// while the detached, steady rule says what replacement will affect.
     pub(crate) fn draw_line_caret(&self, scene: &mut Scene, x: f32, baseline: f32, size: f32, alpha: f32, since: Instant) {
-        use crate::settings::{Blink, CursorShapePref};
-        let blinking = match self.cursor.blink {
-            Blink::Never => false,
-            Blink::AfterIdle => crate::clock::since(since).as_secs_f32() > 2.0,
-            Blink::Always => true,
-        };
-        // App::tick asks for a frame when the blink phase changes.
-        if blinking && (crate::clock::since(self.started).as_millis() / self.cursor.period.max(100) as u128) % 2 == 1 {
-            return;
-        }
-        let color = fade(self.caret_color(), alpha);
-        let (top, h) = (baseline - size * 0.8, size * 0.98);
-        let weight = self.px(self.cursor.weight.clamp(1.0, 6.0));
-        let r = match self.cursor.shape {
-            CursorShapePref::Block => Rect::new(x, top, size * 0.56, h),
-            CursorShapePref::Underline => Rect::new(x, baseline + size * 0.14, size * 0.56, weight),
-            CursorShapePref::Beam | CursorShapePref::Shell => Rect::new(x, top, weight, h),
-        };
-        scene.rect(r, color);
+        self.draw_text_caret(scene, x, baseline, size, alpha, since, None);
     }
 
-    /// The cursor as the prefs want it, for one pane.
+    pub(crate) fn draw_selection_edge(&self, scene: &mut Scene, x: f32, baseline: f32, size: f32, alpha: f32, since: Instant) {
+        self.draw_line_caret(scene, x, baseline, size, alpha, since);
+    }
+
+    pub(crate) fn draw_line_caret_on(&self, scene: &mut Scene, x: f32, baseline: f32, size: f32, alpha: f32, since: Instant, background: nus_render::Color) {
+        self.draw_text_caret_on(scene, x, baseline, size, alpha, since, None, background);
+    }
+
+    pub(crate) fn draw_text_caret(&self, scene: &mut Scene, x: f32, baseline: f32, size: f32, alpha: f32, since: Instant, replacement_width: Option<f32>) {
+        self.draw_text_caret_on(scene, x, baseline, size, alpha, since, replacement_width, self.theme.paper);
+    }
+
+    fn draw_text_caret_on(&self, scene: &mut Scene, x: f32, baseline: f32, size: f32, alpha: f32, since: Instant, replacement_width: Option<f32>, background: nus_render::Color) {
+        if !self.caret_enabled.get() || (!self.window_focused && !self.painting_hatch) || alpha <= 0.0 { return; }
+        let color = nus_render::policy::ensure_contrast(self.caret_color(), background, 3.0);
+        let weight = self.px(self.cursor.weight.clamp(1.0, 6.0)).max(1.0);
+        let r = Rect::new(x.round(), (baseline - size * 0.8).round(), weight, (size * 0.98).round().max(1.0));
+        if scene.clip().is_some_and(|clip| { let shown = r.intersect(&clip); shown.w <= 0.0 || shown.h <= 0.0 }) { return; }
+        let opacity = self.caret_sample(since).opacity;
+        let glow = self.cursor.glow.clamp(0.0, 1.0) * if nus_render::policy::luminance(background) > 0.5 { 0.2 } else { 1.0 };
+        if opacity > 0.0 {
+            scene.caret(r, fade(color, alpha * opacity), glow, self.cursor.hdr_gain);
+        }
+        if !self.prompt_composing {
+            if let Some(width) = replacement_width.filter(|w| *w > 0.0) {
+                scene.caret_replacement(Rect::new(x.round(), (r.bottom() + self.px(2.0)).round(), width, self.px(1.0).max(1.0)), fade(color, alpha));
+            }
+        }
+    }
+
+    /// Shells default to cells; explicit terminal-program shapes remain authoritative.
     fn cursor_look(&self, p: &TermPane, focused: bool, tab_signal: Option<nus_render::Color>) -> nus_render::CursorLook {
-        use crate::settings::{Blink, CursorColor, CursorShapePref};
+        use crate::settings::{CursorColor, CursorShapePref};
         let shape = match self.cursor.shape {
-            // At a prompt the cursor is a bar: the line is text being edited.
-            CursorShapePref::Shell if p.term.at_prompt() && self.behavior.shell_integration => Some(nus_vt::CursorShape::Beam),
+            CursorShapePref::Shell if p.term.at_prompt() && self.behavior.shell_integration => Some(nus_vt::CursorShape::Block),
             CursorShapePref::Shell => None,
             CursorShapePref::Block => Some(nus_vt::CursorShape::Block),
             CursorShapePref::Beam => Some(nus_vt::CursorShape::Beam),
             CursorShapePref::Underline => Some(nus_vt::CursorShape::Underline),
         };
         let color = match self.cursor.color {
-            // The theme's caret, unless the program set one (OSC 12).
             CursorColor::Theme if p.term.palette.override_of(nus_vt::palette::CURSOR).is_some() => None,
             CursorColor::Theme => Some(self.theme.caret),
             CursorColor::Signal => Some(self.surface.signal),
             CursorColor::Tab => tab_signal.or(Some(self.surface.signal)),
         };
-        let idle = crate::clock::since(self.last_key).as_secs_f32();
-        let blinking = match self.cursor.blink {
-            Blink::Never => false,
-            Blink::AfterIdle => idle > 2.0,
-            Blink::Always => true,
-        };
-        let visible = if blinking && focused {
-            let period = self.cursor.period.max(100) as f32 / 1000.0;
-            ((crate::clock::since(self.started).as_secs_f32() / period) as u64) % 2 == 0
-        } else {
-            true
-        };
-        nus_render::CursorLook { shape, color, weight: self.px(self.cursor.weight), visible, hollow_unfocused: self.cursor.hollow_unfocused }
+        let visible = self.pane_caret_available() && p.sel.is_none() && p.search.is_none()
+            && !p.ask.as_ref().is_some_and(|ask| ask.focus) && !p.prompt_history.active() && p.confirm_close.is_none()
+            && p.confirm_paste.is_none() && p.block_filter.is_none() && p.hints.is_none() && p.link_ask.is_none() && !p.replay;
+        let live = visible && focused && shape.unwrap_or(p.term.cursor_style().shape) != nus_vt::CursorShape::Hidden && p.term.modes().contains(nus_vt::Modes::SHOW_CURSOR) && p.term.grid().display_offset == 0;
+        let opacity = if live { self.caret_sample(self.last_key).opacity } else { 1.0 };
+        nus_render::CursorLook {
+            shape, color, weight: self.px(self.cursor.weight), visible,
+            hollow_unfocused: self.cursor.hollow_unfocused, opacity,
+            glow: if live { self.cursor.glow } else { 0.0 },
+            hdr_gain: if live { self.cursor.hdr_gain } else { 1.0 },
+            // Shell readline/TUI replacement is not reliably observable. Never
+            // guess it from the program's shape or VT insert-character mode.
+            replacement: false, offset: (0.0, 0.0),
+        }
     }
 
-    /// The gliding / comet cursor, drawn by the app between cells.
-    fn draw_moving_cursor(&mut self, scene: &mut Scene, p: &mut TermPane, look: nus_render::CursorLook) {
+    /// Optional travel adds a quiet trail; the grid still owns the crisp
+    /// core and reversed glyphs, including while crossing cell boundaries.
+    fn draw_moving_cursor(&mut self, scene: &mut Scene, p: &mut TermPane, look: nus_render::CursorLook) -> (f32, f32) {
         use crate::settings::CursorMotion;
+        if !look.visible || p.term.grid().display_offset != 0 || !p.term.modes().contains(nus_vt::Modes::SHOW_CURSOR) || self.motion.reduced() {
+            p.trail.clear();
+            p.cur_x = Anim::at(p.term.cursor().col as f32);
+            p.cur_y = Anim::at(p.term.cursor().row as f32);
+            return (0.0, 0.0);
+        }
         let (cw, ch) = p.grid.cell_size();
         let cur = *p.term.cursor();
-        let (tx, ty) = (cur.col as f32, cur.row as f32);
+        let cursor_line = p.term.grid().abs_row(cur.row);
+        let Some(row) = p.view().iter().position(|d| matches!(d, nus_vt::grid::Display::Line(line) if *line == cursor_line)) else { return (0.0, 0.0) };
+        let (tx, ty) = (cur.col as f32, row as f32);
         let dur = self.motion.dur(60.0);
         if (p.cur_x.target() - tx).abs() > 0.01 || (p.cur_y.target() - ty).abs() > 0.01 {
             p.cur_x.go(tx, dur);
@@ -3043,7 +3113,11 @@ impl App {
         }
         let (x, y) = (p.cur_x.value(), p.cur_y.value());
         let gliding = p.cur_x.active() || p.cur_y.active();
-        let color = look.color.unwrap_or(self.theme.caret);
+        let color = look.color.unwrap_or_else(|| {
+            let rgb = p.term.palette.get(nus_vt::palette::CURSOR);
+            [rgb.r as f32 / 255.0, rgb.g as f32 / 255.0, rgb.b as f32 / 255.0, 1.0]
+        });
+        let color = fade(color, look.opacity);
         let shape = look.shape.unwrap_or(p.term.cursor_style().shape);
         let rect_at = |cx: f32, cy: f32| {
             let px = p.origin.0 + cx * cw;
@@ -3059,7 +3133,7 @@ impl App {
             p.trail.retain(|(_, _, t)| crate::clock::since(t).as_millis() < 240);
             for (cx, cy, t) in &p.trail {
                 let a = 1.0 - crate::clock::since(t).as_millis() as f32 / 240.0;
-                scene.rect(rect_at(*cx, *cy), Theme::with_alpha(color, 0.35 * a));
+                scene.rect(rect_at(*cx, *cy), fade(color, 0.35 * a));
             }
             if !p.trail.is_empty() {
                 self.dirty = true;
@@ -3081,15 +3155,12 @@ impl App {
             };
             let animating = p.smear.animate(&s, sh, pct, (cw, ch), self.motion.reduced());
             if animating {
-                p.smear.draw(scene, Theme::with_alpha(color, 0.95));
+                p.smear.draw(scene, fade(color, 0.22));
                 self.dirty = true;
             }
-            return;
         }
-        if gliding {
-            scene.rect(rect_at(x, y), Theme::with_alpha(color, 0.9));
-            self.dirty = true;
-        }
+        if gliding { self.dirty = true; }
+        ((x - tx) * cw, (y - ty) * ch)
     }
 
     /// Put a whole theme on: surface, both faces, cursor colour, bar, sounds.
@@ -3490,11 +3561,17 @@ impl App {
         let mut bell = false;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let hatch_focused = tab.hatch && !self.hatch_state.overview && self.hatch.as_ref().is_some_and(|h| h.visible && h.focused);
+            let carapace_right = tab.focus_right && tab.right.is_some();
             let looked_at = hatch_focused || (!self.hatch_state.main_hidden && !tab.hatch && i == self.active && self.window.has_focus());
             for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
                 if let Pane::Term(t) = p {
                     let out = t.pty.take_output();
                     if !out.is_empty() {
+                        // Prompt redraws and local echo are typing, not work output.
+                        if i == self.active && !tab.hatch && right == carapace_right
+                            && t.agent.as_ref().map_or(t.running_since.is_some(), |a| a.phase == crate::agent::Phase::Working) {
+                            self.carapace.output = self.carapace.output.wrapping_add(1);
+                        }
                         if let Some(rec) = self.recorder.as_mut() {
                             rec.output(crate::replay::stream_id(tab.id,right), t.term.cols(), t.term.rows(), &out);
                         }
@@ -3587,10 +3664,12 @@ impl App {
                                         t.work_completed = !finished.is_empty();
                                         t.work_command = finished.clone();
                                         // Remember the command for predictions.
-                                        if !finished.is_empty() && t.history.last() != Some(&finished) {
-                                            crate::predict::append_history(&t.profile_name, &finished);
-                                            t.history.push(finished.clone());
-                                            if t.history.len() > crate::storage::HISTORY_LINES { t.history.drain(..t.history.len() - crate::storage::HISTORY_LINES); }
+                                        if let Some(command) = block.as_ref().and_then(|b| crate::prompt_history::completed_command(&t.term, b.start)) {
+                                            if t.history.last() != Some(&command) {
+                                                crate::predict::append_history(&t.profile_name, &command);
+                                                t.history.push(command);
+                                                if t.history.len() > crate::storage::HISTORY_LINES { t.history.drain(..t.history.len() - crate::storage::HISTORY_LINES); }
+                                            }
                                         }
                                         // Replay: a checkpoint at the block's end (its still on the next draw).
                                         if self.recorder.is_some() {
@@ -3691,6 +3770,9 @@ impl App {
         let mut printed: Vec<Result<std::path::PathBuf, String>> = Vec::new();
         let mut fullscreens: Vec<(u64, bool)> = Vec::new();
         let mut webkit_began: Vec<(u64, bool)> = Vec::new();
+        // Each window tends its own pages. The last window created is not
+        // necessarily the window whose streaming page is being attached.
+        crate::webkit::set_host(&self.window);
         for (k, tab) in self.tabs.iter_mut().enumerate() {
             let id = tab.id;
             let shown = k == self.active;
@@ -4300,6 +4382,9 @@ impl App {
     fn build(&mut self) {
         self.intel.hits.clear();
         self.beat_want = None;
+        self.caret_deadline.set(None);
+        self.caret_enabled.set(true);
+        self.caret_signal.set(self.tabs.get(self.active).and_then(|t| t.look.signal));
         if let Some(mut scene)=self.arrival_scene() {
             self.draw_splash(&mut scene);
             self.scene=scene;
@@ -4344,19 +4429,23 @@ impl App {
         // Aurora breathes: the stroke swells and thins with the drift.
         let breath = 1.0 + self.surface.breath * 0.6 * (self.shell_phase * std::f32::consts::TAU * 2.0).sin();
         let sw_live = if self.surface.shell == Shell::Aurora { (sw * breath).max(1.0) } else { sw };
-        match self.surface.shell {
-            Shell::Band => {
-                if radius > 0.0 {
-                    scene.layer(Some(Rect::new(0.0, 0.0, w, sw)));
-                    scene.push(nus_render::Instance::rounded(win, radius, self.surface.signal));
-                    scene.layer(None);
-                } else {
-                    scene.rect(Rect::new(0.0, 0.0, w, sw), self.surface.signal);
+        if self.surface.material != crate::surface::Material::Plain {
+            scene.push(nus_render::Instance::carapace(win, self.carapace_look(sw, radius)));
+        } else {
+            match self.surface.shell {
+                Shell::Band => {
+                    if radius > 0.0 {
+                        scene.layer(Some(Rect::new(0.0, 0.0, w, sw)));
+                        scene.push(nus_render::Instance::rounded(win, radius, self.surface.signal));
+                        scene.layer(None);
+                    } else {
+                        scene.rect(Rect::new(0.0, 0.0, w, sw), self.surface.signal);
+                    }
                 }
+                Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, None, 0.0)),
+                Shell::Gradient => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &stops, angle, 0.0, false)),
+                Shell::Aurora => scene.push(nus_render::Instance::stroke_stops(win, radius, sw_live, &stops, angle, self.shell_phase, true)),
             }
-            Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, None, 0.0)),
-            Shell::Gradient => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &stops, angle, 0.0, false)),
-            Shell::Aurora => scene.push(nus_render::Instance::stroke_stops(win, radius, sw_live, &stops, angle, self.shell_phase, true)),
         }
         // Texture: on the carapace, the chrome, or the panes — never on a page or a video.
         if let Some(kind) = self.surface.texture_kind.shader_kind() {
@@ -4365,6 +4454,7 @@ impl App {
                 let pitch = self.px(self.surface.texture_scale);
                 let tm = if self.surface.texture_motion { crate::clock::since(self.started).as_secs_f32() % 3600.0 } else { 0.0 };
                 let rects: Vec<Rect> = match self.surface.texture_on {
+                    crate::surface::TextureOn::Carapace if self.surface.material != crate::surface::Material::Plain => Vec::new(),
                     crate::surface::TextureOn::Carapace => {
                         // A thin band needs a heavier hand: the texture follows the
                         // carapace's own rounded stroke and is drawn at triple strength.
@@ -6239,7 +6329,7 @@ impl App {
                 self.apply_setting(Hit::Theme(Some(!ink)), 0.0);
             }
             Quick::Texture => {
-                let all = crate::surface::TextureKind::ALL;
+                let all = crate::surface::TextureKind::OFFERED;
                 let i = all.iter().position(|&k| k == self.surface.texture_kind).map(|i| (i + 1) % all.len()).unwrap_or(0);
                 self.apply_setting(Hit::TexKind(all[i]), 0.0);
                 if self.surface.texture <= 0.0 {
@@ -6551,11 +6641,14 @@ impl App {
     }
 
     pub(crate) fn draw_pane(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides, split: bool) {
-        // Native page zoom changes content, not window controls or browser DPI.
-        let scale=self.scale;
+        let scale = self.scale;
+        let previous = self.caret_enabled.replace(focused && self.pane_caret_available());
+        let signal = self.caret_signal.replace(look.signal);
         if matches!(pane,Pane::Home(_)|Pane::Settings(_)|Pane::Hints(_)|Pane::Downloads(_)|Pane::Ports(_)) {self.scale*=self.ui_zoom as f32/100.0;}
         self.draw_pane_content(scene,pane,n,focused,look,split);
-        self.scale=scale;
+        self.scale = scale;
+        self.caret_enabled.set(previous);
+        self.caret_signal.set(signal);
     }
 
     fn draw_pane_content(&mut self, scene: &mut Scene, pane: &mut Pane, n: &str, focused: bool, look: &Overrides, split: bool) {
@@ -6656,12 +6749,9 @@ impl App {
                     scene.rect(clip, fade(*c, 0.08));
                 }
                 let pane_paper = look.bg.unwrap_or(self.paper());
-                let look = self.cursor_look(p, focused, look.signal);
-                let gliding = !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) && (p.cur_x.active() || p.cur_y.active() || p.smear.animating);
+                let keyboard_focus = focused && self.caret_enabled.get() && (self.window_focused || self.painting_hatch);
+                let look = self.cursor_look(p, keyboard_focus, look.signal);
                 let mut lk = look;
-                if gliding {
-                    lk.visible = false;
-                }
                 // The timeline: the scratch term stands in for the live one while drawing.
                 let swapped = p.replay && self.timeline.is_some();
                 if swapped {
@@ -6673,16 +6763,17 @@ impl App {
                 let view = p.view().to_vec();
                 p.tend_program();
                 p.grid.policy = self.pane_policy(&p.program, &p.cwd);
-                p.grid.draw_view(scene, &mut self.fonts, &p.term, p.origin, focused, lk, &view);
-                if look.visible && focused && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
-                    self.draw_moving_cursor(scene, p, look);
+                if look.visible && keyboard_focus && !matches!(self.cursor.motion, crate::settings::CursorMotion::Jump) {
+                    lk.offset = self.draw_moving_cursor(scene, p, look);
                 }
+                p.grid.draw_view(scene, &mut self.fonts, &p.term, p.origin, keyboard_focus, lk, &view);
                 self.draw_term_images(scene, p);
                 self.draw_block_layer(scene, p, r);
                 self.draw_cutoff(scene, p, r);
-                self.draw_prompt_line(scene, p, pane_paper);
+                self.draw_prompt_line(scene, p, pane_paper, focused);
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
+                if focused { self.draw_prompt_history(scene, p, pane_paper); }
                 self.draw_link_band(scene, p, r, hh);
                 if let Some(place) = &place {
                     let down = p.pty.exit_code().is_some();
@@ -7739,6 +7830,20 @@ impl App {
 
     pub fn key_in(&mut self, ev: &KeyIn) {
         let _key = crate::perf::scope("input_handler");
+        if ev.state == ElementState::Pressed {
+            self.last_key = crate::clock::now();
+            self.dirty = true;
+            if !self.mods.control_key() && !self.mods.super_key() && !self.mods.alt_key()
+                && (ev.text.as_ref().is_some_and(|text| !text.is_empty()) || matches!(ev.logical_key, WKey::Named(NamedKey::Backspace | NamedKey::Delete | NamedKey::Enter))) {
+                self.carapace.typed = self.carapace.typed.wrapping_add(1);
+            }
+        }
+        // Opening or accepting assistance takes one physical keystroke.
+        // Holding Enter must not insert a choice and then run it on repeat.
+        if self.prompt_accept_keys.contains(&ev.physical_key) {
+            if ev.state == ElementState::Released { self.prompt_accept_keys.remove(&ev.physical_key); }
+            return;
+        }
         let pressed = ev.state == ElementState::Pressed;
         let tip_was_visible = self.tooltips.visible();
         if pressed { self.dismiss_tip(); }
@@ -7850,9 +7955,14 @@ impl App {
         if self.term_mode_key(ev) {
             return;
         }
-        if self.prompt_lsp_key(ev) {
-            return;
-        }
+        // While history is searching, editing chords belong to its query,
+        // including the platform's standard Copy/Paste and Select All.
+        if !self.prompt_composing && self.palette.is_none()
+            && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Term(p) if p.prompt_history.active()))
+            && self.prompt_history_key(ev) {
+                if matches!(ev.logical_key, WKey::Named(NamedKey::Enter | NamedKey::Tab)) { self.prompt_accept_keys.insert(ev.physical_key); }
+                return;
+            }
         if self.palette.is_none() && self.blocks_key(ev) {
             return;
         }
@@ -8162,18 +8272,9 @@ impl App {
 
         // Route to the focused pane.
         if pressed {
-            self.last_key = crate::clock::now();
             if self.cursor.hide_while_typing && !self.pointer_hidden && matches!(self.tabs.get_mut(self.active).map(|t| t.focused()), Some(Pane::Term(_))) {
                 self.window.set_cursor_visible(false);
                 self.pointer_hidden = true;
-            }
-        }
-        // Right / End at the end of the line takes the prediction.
-        if pressed && !ctrl && !alt && !sup && !shift {
-            if let Some(k) = vt_key(&ev.logical_key) {
-                if self.accept_prediction(k) {
-                    return;
-                }
             }
         }
         let easing = self.behavior.scroll_easing;
@@ -8195,6 +8296,12 @@ impl App {
         // A hand waiting on the focused page: y/enter allows, n/esc denies, h allows the host; anything else takes over.
         if ev.state == ElementState::Pressed && self.hands_key(&ev.logical_key) {
             self.dirty = true;
+            return;
+        }
+        // Prompt helpers only run after app overlays and chords have had
+        // their keys. They never route into a browser or a running program.
+        if !self.prompt_composing && (self.prompt_history_key(ev) || self.prompt_code_key(ev)) {
+            if matches!(ev.logical_key, WKey::Named(NamedKey::Enter | NamedKey::Tab)) { self.prompt_accept_keys.insert(ev.physical_key); }
             return;
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
@@ -8858,6 +8965,7 @@ impl App {
 
     /// Make tab `i` active and record it as most recently used.
     pub fn activate(&mut self, i: usize) {
+        self.last_key = crate::clock::now();
         if i >= self.tabs.len() {
             return;
         }
@@ -9303,7 +9411,12 @@ impl App {
     }
 
     pub fn focus_changed(&mut self, focused: bool) {
+        self.caret_deadline.set(None);
+        self.caret_dragging = false;
+        if focused { self.last_key = crate::clock::now(); }
         if !focused {
+            self.prompt_composing = false;
+            self.prompt_accept_keys.clear();
             self.dismiss_tip();
             self.close_page_menu();
             self.page_menu_buttons.clear();
@@ -9552,7 +9665,8 @@ impl App {
     pub fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
         let (x, y) = self.mouse;
         let pressed = state == ElementState::Pressed;
-        if pressed { self.dismiss_tip(); }
+        if button == MouseButton::Left { self.caret_dragging = pressed; self.last_key = crate::clock::now(); }
+        if pressed { self.last_key = crate::clock::now(); self.dismiss_tip(); }
         if self.splash.as_ref().is_some_and(|s|s.arrival) {
             if pressed && button == MouseButton::Left {self.finish_arrival();self.splash=None;self.dirty=true;}
             return;
@@ -9609,6 +9723,9 @@ impl App {
             self.dirty = true;
             return;
         }
+
+        if pressed && button == MouseButton::Left && self.prompt_history_click(x, y) { return; }
+        if pressed && button == MouseButton::Left && self.prompt_code_click(x, y) { return; }
 
         // Top strip: window controls, else drag.
         if pressed && button == MouseButton::Left && strip.contains(x, y) && self.strip_shown() {
@@ -10794,33 +10911,11 @@ impl App {
         match pane {
             Pane::Web(w) => {
                 if let Some((_, b)) = w.favicon.as_ref() {
-                    scene.texture(Rect::new(x, y, size, size), b.clone(), None);
+                    scene.texture(w.favicon_rect(Rect::new(x, y, size, size)), b.clone(), clip);
                     scene.layer(clip);
                     return;
                 }
-                let host = crate::sites::host_of(&w.tab.shared.borrow().url);
-                let first = host.chars().find(|c| c.is_alphanumeric());
-                match first {
-                    Some(c) => {
-                        // The colour: one of the signal's family, by the host.
-                        let k = host.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize)) % 5;
-                        let fill = crate::surface::family(self.surface.signal)[k];
-                        let fill = [fill[0], fill[1], fill[2], 1.0];
-                        // The letter in whichever of paper and ink reads on the fill.
-                        let lum = 0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2];
-                        let (paper, ink) = (self.theme.paper, self.theme.ink);
-                        let plum = 0.2126 * paper[0] + 0.7152 * paper[1] + 0.0722 * paper[2];
-                        let letter = if (lum - plum).abs() > 0.35 { paper } else { ink };
-                        scene.push(nus_render::Instance::rounded(Rect::new(x, y, size, size), (size * 0.2).round().max(2.0), fill));
-                        let st = Style { font: self.f.strong, px: (size * 0.72).round(), color: letter, tracking: 0.0 };
-                        let ch = c.to_uppercase().to_string();
-                        let cw = self.fonts.measure(st, &ch);
-                        self.fonts.draw(scene, st, x + ((size - cw) / 2.0).round(), y + (size * 0.78).round(), &ch);
-                    }
-                    None => {
-                        self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, size, x, y, color);
-                    }
-                }
+                self.draw_site_monogram(scene, &w.tab.shared.borrow().url, Rect::new(x, y, size, size), color);
             }
             Pane::Term(_) => {
                 self.fonts.draw_icon(scene, nus_render::text::icons::TERMINAL, size, x, y, color);
@@ -10840,6 +10935,33 @@ impl App {
             Pane::Downloads(_) => {self.fonts.draw_icon(scene,nus_render::text::icons::DOWNLOAD,size,x,y,color);}
             Pane::Ports(_) => {
                 self.fonts.draw_icon(scene, nus_render::text::icons::PORTS, size, x, y, color);
+            }
+        }
+    }
+
+    pub(crate) fn draw_site_monogram(&mut self, scene: &mut Scene, address: &str, bounds: Rect, color: nus_render::Color) {
+        let (x, y, size) = (bounds.x, bounds.y, bounds.w.min(bounds.h));
+        let host = crate::sites::host_of(address);
+        let first = host.chars().find(|c| c.is_alphanumeric());
+        match first {
+            Some(c) => {
+                // The colour: one of the signal's family, by the host.
+                let k = host.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize)) % 5;
+                let fill = crate::surface::family(self.surface.signal)[k];
+                let fill = [fill[0], fill[1], fill[2], 1.0];
+                // The letter in whichever of paper and ink reads on the fill.
+                let lum = 0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2];
+                let (paper, ink) = (self.theme.paper, self.theme.ink);
+                let plum = 0.2126 * paper[0] + 0.7152 * paper[1] + 0.0722 * paper[2];
+                let letter = if (lum - plum).abs() > 0.35 { paper } else { ink };
+                scene.push(nus_render::Instance::rounded(Rect::new(x, y, size, size), (size * 0.2).round().max(2.0), fill));
+                let st = Style { font: self.f.strong, px: (size * 0.72).round(), color: letter, tracking: 0.0 };
+                let ch = c.to_uppercase().to_string();
+                let cw = self.fonts.measure(st, &ch);
+                self.fonts.draw(scene, st, x + ((size - cw) / 2.0).round(), y + (size * 0.78).round(), &ch);
+            }
+            None => {
+                self.fonts.draw_icon(scene, nus_render::text::icons::GLOBE, size, x, y, color);
             }
         }
     }

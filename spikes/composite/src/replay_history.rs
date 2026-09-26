@@ -140,6 +140,10 @@ impl App {
         scene.rect(search,fade(ink,0.04));scene.hline(search.x,search.bottom(),search.w,self.px(1.0),if tl.focus==Some(HistoryHit::Search){signal}else{fade(ink,0.25)});
         let words=if tl.query.is_empty(){"Search commands, folders, output…"}else{&tl.query};let fit=self.fit(label,words,search.w-pad);
         self.fonts.draw(scene,Style{color:if tl.query.is_empty(){dim}else{ink},..label},search.x+self.px(8.0),search.y+self.px(18.0),&fit);tl.hits.push((search,HistoryHit::Search));
+        if tl.focus==Some(HistoryHit::Search) {
+            let width=if tl.query.is_empty(){0.0}else{self.fonts.measure(label,&fit)};
+            self.draw_line_caret(scene,search.x+self.px(8.0)+width,search.y+self.px(18.0),label.px,1.0,self.last_key);
+        }
         let content=Rect::new(r.x,r.y+head_h,r.w,(r.h-head_h-foot_h).max(0.0));
         if !tl.snapshot && content.h>0.0 {
             let map_w=self.px(if r.w<self.px(500.0){76.0}else{150.0}).min(content.w*0.28);

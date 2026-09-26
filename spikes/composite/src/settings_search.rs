@@ -34,6 +34,10 @@ fn aliases(title:&str)->String {
         ("location","place latitude longitude timezone privacy gps city"),
         ("font","typeface typography lettering family"),("weight","font bold regular medium thickness"),
         ("radius","rounded rounding corners carapace window"),("footer","theme switcher picker slots grid favorites favourites"),
+        ("material","carapace frame surface ink blot enamel interference seam corners overprint edge light"),
+        ("reaction","carapace activity animation movement intensity still subtle expressive"),
+        ("respond to","carapace activity response sources work loading completion attention typing media"),
+        ("texture","grain noise surface carapace"),("frame","carapace band stroke perimeter border"),
         ("start page","new tab cmd t ctrl t launch default homepage"),("home address","homepage url website"),
         ("new window","cmd n ctrl n launch"),("reduce motion","animation accessibility movement"),
         ("replay","recording history timeline"),("phone","mobile remote access privacy"),
@@ -127,5 +131,10 @@ impl App {
         assert!(rank("zzzz","Your location","Set latitude and longitude","Startup").is_none());
         assert!(rank("font banana","Font","Family and weight","Look").is_none());
         assert!(rank("on","Location","Latitude longitude","Startup").is_none());
+    }
+    #[test] fn carapace_controls_match_material_and_activity_language() {
+        for (query,title) in [("ink blot","Material"),("grain","Texture"),("activity intensity","Reaction"),("typing response","Respond to"),("perimeter","Frame")] {
+            assert!(rank(query,title,"", "Look · Surface").is_some(), "{query} → {title}");
+        }
     }
 }

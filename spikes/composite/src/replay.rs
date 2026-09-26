@@ -403,18 +403,21 @@ impl App {
                 let info = self.tabs.get(p.tab_index).and_then(|t| if right { t.right.as_ref() } else { Some(&t.left) }).and_then(|pane| match pane {
                     Pane::Web(w) => {
                         let s = w.tab.shared.borrow();
-                        Some((w.page, s.url.clone(), s.title.clone()))
+                        Some((w.page, s.url.clone(), s.title.clone(), s.protected_video))
                     }
                     _ => None,
                 });
-                if let Some((r, url, title)) = info {
-                    let path = self.recorder.as_mut().map(|rec| rec.still_path(p.tab_id));
+                if let Some((r, url, title, protected)) = info {
+                    // DRM video stays off disk: the page is named, not pictured.
+                    let path = if protected { None } else { self.recorder.as_mut().map(|rec| rec.still_path(p.tab_id)) };
                     if let Some(path) = path {
                         let crop = (r.x.max(0.0) as u32, r.y.max(0.0) as u32, r.w.max(1.0) as u32, r.h.max(1.0) as u32);
                         if self.snapshot_png(clear, Some(crop), &path).is_ok() {
                             let rel = format!("blobs/{}", path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default());
                             p.payload["page"] = json!({ "url": url, "title": title, "png": rel });
                         }
+                    } else if protected {
+                        p.payload["page"] = json!({ "url": url, "title": title });
                     }
                 }
             }

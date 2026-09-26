@@ -289,7 +289,7 @@ impl App {
                             Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::Back |
                             Hit::AddArt | Hit::AskArt | Hit::OpenArtFolder | Hit::EditHomeUrl | Hit::SetLaunchTabs | Hit::ClearLaunchTabs => Node::new(Role::Button),
                             h if App::setting_is_action(h) => Node::new(Role::Button),
-                            Hit::AskCtx(_) | Hit::FooterTheme(_) => Node::new(Role::CheckBox),
+                            Hit::AskCtx(_) | Hit::FooterTheme(_) | Hit::ReactTo(..) => Node::new(Role::CheckBox),
                             _ => Node::new(Role::RadioButton),
                         };
                         c.set_label(label);

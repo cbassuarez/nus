@@ -58,12 +58,19 @@ pub struct Target {
     alpha_mode: wgpu::CompositeAlphaMode,
     color_space: wgpu::SurfaceColorSpace,
     hdr_white_scale: f32,
+    hdr_headroom: f32,
     hdr_checked: std::time::Instant,
 }
 
 impl Target {
     pub fn hdr(&self) -> bool {
         self.color_space.is_hdr()
+    }
+
+    /// Currently usable light above SDR white, not merely surface support.
+    /// Unknown headroom deliberately falls back to SDR brightness.
+    pub fn hdr_headroom(&self) -> f32 {
+        self.hdr_headroom
     }
 
     /// Whether the swapchain composites alpha, i.e. the window can be see-through.
@@ -109,7 +116,7 @@ impl Gpu {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::IMMEDIATES,
                 required_limits: wgpu::Limits {
-                    max_immediate_size: 16,
+                    max_immediate_size: 32,
                     ..wgpu::Limits::default()
                 },
                 ..Default::default()
@@ -162,7 +169,7 @@ impl Gpu {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("quad pl"),
             bind_group_layouts: &[Some(&bgl), Some(&points_bgl)],
-            immediate_size: 16,
+            immediate_size: 32,
         });
         let make_pipeline = |format| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -277,6 +284,7 @@ impl Gpu {
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             color_space: wgpu::SurfaceColorSpace::Auto,
             hdr_white_scale: 1.0,
+            hdr_headroom: 1.0,
             hdr_checked: std::time::Instant::now(),
         };
         target.select_color_space(&gpu.adapter);
@@ -318,6 +326,7 @@ impl Gpu {
             alpha_mode,
             color_space: wgpu::SurfaceColorSpace::Auto,
             hdr_white_scale: 1.0,
+            hdr_headroom: 1.0,
             hdr_checked: std::time::Instant::now(),
         };
         t.select_color_space(&self.adapter);
@@ -415,11 +424,9 @@ impl Gpu {
 
     /// Draw a scene into `target`. Returns false if the surface wasn't available.
     pub fn render(&mut self, target: &mut Target, scene: &Scene, clear: [f32; 4]) -> bool {
-        // scRGB uses an absolute 80-nit unit on Windows. Track the user's SDR
-        // white setting when moving displays, without polling OS APIs per frame.
-        if cfg!(target_os = "windows")
-            && target.hdr()
-            && target.hdr_checked.elapsed().as_secs_f32() > 1.0
+        // Track live headroom and Windows' SDR-white setting while moving
+        // displays or changing brightness, without polling OS APIs per frame.
+        if target.hdr() && target.hdr_checked.elapsed().as_secs_f32() > 1.0
         {
             target.update_white_scale(&self.adapter);
         }
@@ -459,6 +466,7 @@ impl Gpu {
             } else {
                 0.0
             },
+            target.hdr_headroom,
         );
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(frame);
@@ -550,7 +558,7 @@ impl Gpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        self.pass(&mut encoder, &view, size, scene, clear, 0.0);
+        self.pass(&mut encoder, &view, size, scene, clear, 0.0, 1.0);
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
@@ -564,8 +572,8 @@ impl Gpu {
         self.snapshot_pixels(size, scene, clear, true)
     }
 
-    /// Native capture regression: read the actual radiance shader's float16
-    /// output. PNG screenshots cannot establish that a highlight exceeds SDR.
+    /// Native capture regression: read the production Radiance and caret
+    /// shaders' float16 output. PNGs cannot establish above-SDR luminance.
     pub fn verify_hdr_signal(&mut self) -> Result<f32> {
         let size = (128, 24);
         let mut scene = Scene::new();
@@ -576,6 +584,8 @@ impl Gpu {
             [1.0; 4],
         ));
         scene.rect(crate::Rect::new(0.0, 20.0, 8.0, 4.0), [1.0; 4]);
+        scene.caret(crate::Rect::new(32.0, 20.0, 4.0, 4.0), [1.0; 4], 0.75, 3.0);
+        scene.caret(crate::Rect::new(48.0, 20.0, 4.0, 4.0), [1.0, 1.0, 1.0, 0.0], 0.75, 3.0);
         scene.finish();
         self.upload_instances(&scene);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -607,6 +617,7 @@ impl Gpu {
             &scene,
             [0.0, 0.0, 0.0, 1.0],
             1.0,
+            1.5,
         );
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -642,6 +653,17 @@ impl Gpu {
             data[(20 * stride) as usize],
             data[(20 * stride) as usize + 1],
         ]);
+        let red_at = |x: usize, y: usize| {
+            let offset = y * stride as usize + x * 8;
+            u16::from_le_bytes([data[offset], data[offset + 1]])
+        };
+        // The square corner is fully covered, requested 3x emission is capped
+        // at 1.5x live headroom, the halo stays below white, and blink-off is
+        // truly empty. Positive float16 bit patterns preserve numeric order.
+        let (caret, halo, off) = (red_at(32, 20), red_at(30, 22), red_at(50, 22));
+        if caret != 0x3e00 || !(1..0x3c00).contains(&halo) || off != 0 {
+            return Err(anyhow!("caret HDR cap/halo/blink mismatch: {caret:04x}/{halo:04x}/{off:04x}"));
+        }
         let peak = data
             .as_chunks::<8>()
             .0
@@ -702,7 +724,7 @@ impl Gpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        self.pass(&mut encoder, &view, size, scene, clear, 0.0);
+        self.pass(&mut encoder, &view, size, scene, clear, 0.0, 1.0);
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -789,6 +811,7 @@ impl Gpu {
     }
 
     /// One render pass of `scene` into `view`, cleared to `clear`.
+    #[allow(clippy::too_many_arguments)]
     fn pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -797,6 +820,7 @@ impl Gpu {
         scene: &Scene,
         clear: [f32; 4],
         hdr_scale: f32,
+        hdr_headroom: f32,
     ) {
         let hdr = hdr_scale > 0.0;
         let clear = if hdr {
@@ -836,7 +860,8 @@ impl Gpu {
             let (sw, sh) = size;
             pass.set_immediates(
                 0,
-                bytemuck::cast_slice(&[sw as f32, sh as f32, scene.corner_radius, hdr_scale]),
+                bytemuck::cast_slice(&[sw as f32, sh as f32, scene.corner_radius, hdr_scale,
+                    hdr_headroom, 0.0, 0.0, 0.0]),
             );
             pass.set_vertex_buffer(0, self.instances.slice(..));
             pass.set_bind_group(1, &self.points_bind, &[]);
@@ -871,10 +896,10 @@ impl Gpu {
 impl Target {
     fn update_white_scale(&mut self, adapter: &wgpu::Adapter) {
         self.hdr_checked = std::time::Instant::now();
+        let info = self.surface.display_hdr_info(adapter);
+        self.hdr_headroom = usable_headroom(info.tone_map_headroom());
         if cfg!(target_os = "windows") {
-            self.hdr_white_scale = self
-                .surface
-                .display_hdr_info(adapter)
+            self.hdr_white_scale = info
                 .luminance
                 .and_then(|l| l.sdr_white_nits)
                 .filter(|n| n.is_finite() && *n > 0.0)
@@ -934,6 +959,24 @@ fn srgb_linear(value: f32) -> f32 {
         value / 12.92
     } else {
         ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn usable_headroom(value: Option<f32>) -> f32 {
+    value.filter(|v| v.is_finite()).unwrap_or(1.0).clamp(1.0, 3.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usable_headroom;
+
+    #[test]
+    fn unknown_or_unusable_display_headroom_never_boosts_caret_light() {
+        for value in [None, Some(f32::NAN), Some(f32::INFINITY), Some(-1.0), Some(0.5)] {
+            assert_eq!(usable_headroom(value), 1.0);
+        }
+        assert_eq!(usable_headroom(Some(1.5)), 1.5);
+        assert_eq!(usable_headroom(Some(8.0)), 3.0);
     }
 }
 

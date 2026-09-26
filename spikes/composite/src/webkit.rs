@@ -1,9 +1,10 @@
-//! Protected video through the system's WebKit. Netflix, Prime and the
-//! rest play only under a DRM the browser is licensed for: Chromium's
-//! Widevine wants a VMP signature a custom build can't get for free, while
-//! WebKit's FairPlay ships with macOS. A page on one of these hosts is
-//! shown in a WKWebView laid over the pane, signed in with the pane's own
-//! cookies, and the Chromium page underneath goes to about:blank.
+//! Protected video through macOS's system WebKit and FairPlay stack.
+//! This avoids a separate playback engine or codec build for these pages;
+//! a site's acceptance of an embedded browser still needs playback testing.
+//! Installing a Widevine module in custom CEF is not evidence that a
+//! streaming service accepts that client. A page on one of these hosts is
+//! shown in a WKWebView laid over the pane, seeded with the pane's cookies,
+//! and the Chromium page underneath goes to about:blank.
 //!
 //! Its video is nus's like any other page's. The tracker Chromium's pages
 //! run (assets/video.js) runs in WebKit's page too and is asked what it
@@ -27,35 +28,55 @@ const HOSTS: &[&str] = &[
     "paramountplus.com",
 ];
 
+// Match actual store domains, never arbitrary `amazon.*` lookalikes.
+const AMAZON_HOSTS: &[&str] = &[
+    "amazon.com", "amazon.co.uk", "amazon.de", "amazon.co.jp", "amazon.fr",
+    "amazon.it", "amazon.es", "amazon.ca", "amazon.com.au", "amazon.in",
+    "amazon.com.br", "amazon.com.mx", "amazon.nl", "amazon.se", "amazon.pl",
+    "amazon.com.be", "amazon.ie", "amazon.com.tr", "amazon.ae", "amazon.sa",
+    "amazon.sg", "amazon.eg", "amazon.co.za",
+];
+
+fn under(host: &str, domain: &str) -> bool {
+    host == domain || host.strip_suffix(domain).is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+fn amazon_host(host: &str) -> Option<&'static str> {
+    AMAZON_HOSTS.iter().copied().find(|domain| under(host, domain))
+}
+
 /// Whether this address is a protected-video page WebKit should show.
 pub fn protected(url: &str) -> bool {
     if !cfg!(target_os = "macos") {
         return false;
     }
-    let host = host(url);
-    let under = |d: &str| host == d || host.ends_with(&format!(".{d}"));
+    let Ok(parsed) = url::Url::parse(url) else { return false };
+    let Some(host) = parsed.host_str() else { return false };
+    if !matches!(parsed.scheme(), "http" | "https") { return false; }
     // For checks: more hosts to treat as protected (plain http too), comma-separated.
     let also = std::env::var("NUS_WEBKIT_ALSO").unwrap_or_default();
-    if also.split(',').any(|d| !d.is_empty() && under(d)) {
+    if also.split(',').map(str::trim).any(|d| !d.is_empty() && under(host, &d.to_ascii_lowercase())) {
         return true;
     }
-    if !url.starts_with("https://") {
-        return false;
-    }
-    if HOSTS.iter().any(|d| under(d)) {
+    streaming_service(url)
+}
+
+/// Known streaming-service pages, regardless of the platform showing them.
+/// This identifies the page for its tab icon; only `protected` routes it.
+pub fn streaming_service(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else { return false };
+    let Some(host) = parsed.host_str() else { return false };
+    if parsed.scheme() != "https" { return false; }
+    if HOSTS.iter().any(|d| under(host, d)) {
         return true;
     }
     // Prime Video on amazon.<tld>: only its video pages.
-    let amazon = host == "amazon.com" || host.starts_with("amazon.") || host.starts_with("www.amazon.");
-    let path = url.splitn(4, '/').nth(3).unwrap_or("");
-    amazon && (path.starts_with("gp/video") || path.starts_with("Amazon-Video"))
+    amazon_host(host).is_some() && ["/gp/video", "/Amazon-Video", "/Instant-Video"].iter()
+        .any(|prefix| parsed.path() == *prefix || parsed.path().strip_prefix(prefix).is_some_and(|tail| tail.starts_with('/')))
 }
 
 fn host(url: &str) -> String {
-    let rest = url.split("://").nth(1).unwrap_or("");
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority.rsplit('@').next().unwrap_or("");
-    host.split(':').next().unwrap_or("").to_ascii_lowercase()
+    url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned)).unwrap_or_default()
 }
 
 /// The addresses whose cookies sign this page in: the page itself, and
@@ -63,18 +84,19 @@ fn host(url: &str) -> String {
 pub fn cookie_urls(url: &str) -> Vec<String> {
     let host = host(url);
     let mut urls = vec![url.to_string(), format!("https://{host}/")];
-    let apex = HOSTS.iter().find(|d| host == **d || host.ends_with(&format!(".{d}")));
+    let apex = HOSTS.iter().find(|d| under(&host, d));
     if let Some(d) = apex {
         urls.push(format!("https://{d}/"));
         urls.push(format!("https://www.{d}/"));
     }
-    if host.contains("amazon.") || host.ends_with("primevideo.com") {
-        let amazon = if host.contains("amazon.") { host.trim_start_matches("www.").to_string() } else { "amazon.com".into() };
+    if amazon_host(&host).is_some() || under(&host, "primevideo.com") {
+        let amazon = amazon_host(&host).unwrap_or("amazon.com");
         urls.push(format!("https://www.{amazon}/"));
         urls.push(format!("https://www.{amazon}/gp/video/"));
         urls.push("https://www.primevideo.com/".into());
     }
-    urls.dedup();
+    let mut seen = std::collections::HashSet::new();
+    urls.retain(|url| seen.insert(url.clone()));
     urls
 }
 
@@ -91,6 +113,7 @@ pub fn set_cookie_line(c: &serde_json::Value, now: f64) -> Option<(String, Strin
     }
     let session = c.get("session").and_then(|s| s.as_bool()).unwrap_or(true);
     let expires = c.get("expires").and_then(|e| e.as_f64()).unwrap_or(-1.0);
+    if !session && expires > 0.0 && expires <= now { return None; }
     if !session && expires > 0.0 {
         // Max-Age, not Expires: no comma in the line, no date to format.
         line.push_str(&format!("; Max-Age={}", (expires - now).max(1.0) as i64));
@@ -106,6 +129,13 @@ pub fn set_cookie_line(c: &serde_json::Value, now: f64) -> Option<(String, Strin
     }
     let url = format!("https://{}{}", domain.trim_start_matches('.'), path);
     Some((line, url))
+}
+
+/// Cookie replacement identity: names and paths are case-sensitive; a
+/// domain's leading dot and letter case do not distinguish its cookie jar.
+#[cfg(any(target_os = "macos", test))]
+fn cookie_key(name: &str, domain: &str, path: &str) -> (String, String, String) {
+    (name.into(), domain.trim_start_matches('.').to_ascii_lowercase(), path.into())
 }
 
 /// What WebKit's page runs before its own scripts: the tracker, keeping
@@ -124,10 +154,11 @@ const TRACKER: &str = concat!(
     r#"(()=>{const n=window.__nus;if(!n||n.__webkit)return;n.__webkit=true;
 const nf=()=>{try{const p=window.netflix.appContext.state.playerApp.getAPI().videoPlayer;const ids=p.getAllPlayerSessionIds();return p.getVideoPlayerBySessionId(ids.find(i=>i.startsWith('watch'))||ids[0])||null}catch(_){return null}};
 const seek=n.seek,seekTo=n.seekTo,step=n.step,toggle=n.toggle;
-n.toggle=()=>{const p=nf();if(!p)return toggle();if(p.isPaused())p.play();else p.pause()};
-n.seek=d=>{const p=nf();if(!p)return seek(d);if(Number.isFinite(d))p.seek(Math.max(0,p.getCurrentTime()+d*1000));n.report()};
-n.seekTo=f=>{const p=nf();if(!p)return seekTo(f);const d=p.getDuration();if(d>0&&Number.isFinite(f))p.seek(Math.max(0,Math.min(d,f*d)));n.report()};
-n.step=f=>{const p=nf();if(!p)return step(f);p.pause();p.seek(Math.max(0,p.getCurrentTime()+f*1000/30))};
+n.toggle=()=>{const p=nf();if(!p)return toggle();return n.command(()=>p.isPaused()?p.play():p.pause(),'play-failed')};
+const nfSeek=(p,t)=>{if(!Number.isFinite(t))throw new Error('Invalid position');const d=p.getDuration();return p.seek(Math.max(0,Number.isFinite(d)&&d>0?Math.min(d,t):t))};
+n.seek=d=>{const p=nf();if(!p)return seek(d);if(Number.isFinite(d))return n.command(()=>nfSeek(p,p.getCurrentTime()+d*1000),'seek-failed')};
+n.seekTo=f=>{const p=nf();if(!p)return seekTo(f);if(Number.isFinite(f))return n.command(()=>{const d=p.getDuration();if(!(Number.isFinite(d)&&d>0))throw new Error('No duration');return nfSeek(p,f*d)},'seek-failed')};
+n.step=f=>{const p=nf();if(!p)return step(f);if(Number.isFinite(f))return n.command(()=>{p.pause();return nfSeek(p,p.getCurrentTime()+f*1000/30)},'seek-failed')};
 const ask=()=>{window.__nusWantPip=1};
 const proto=HTMLVideoElement.prototype,mode=proto.webkitSetPresentationMode;
 proto.requestPictureInPicture=function(){ask();return Promise.reject(new DOMException('Picture in picture opens in nus','NotAllowedError'))};
@@ -137,10 +168,27 @@ if(mode&&v.webkitPresentationMode==='picture-in-picture'){mode.call(v,'inline');
 else if(document.pictureInPictureElement===v){document.exitPictureInPicture().catch(()=>{});ask()}};
 document.addEventListener('webkitpresentationmodechanged',back,true);
 document.addEventListener('enterpictureinpicture',back,true);
-const css='html.__nus-pip,html.__nus-pip body{background:#000!important;overflow:hidden!important}html.__nus-pip body *{visibility:hidden!important}html.__nus-pip video,html.__nus-pip .player-timedtext,html.__nus-pip .player-timedtext *,html.__nus-pip .atvwebplayersdk-captions-overlay,html.__nus-pip .atvwebplayersdk-captions-overlay *{visibility:visible!important}';
-window.__nusPip=on=>{const d=document.documentElement;if(!d)return;
-if(on&&!document.getElementById('__nus-pip-style')){const s=document.createElement('style');s.id='__nus-pip-style';s.textContent=css;(document.head||d).appendChild(s)}
-d.classList.toggle('__nus-pip',!!on);n.report()};
+const css='html.__nus-pip,html.__nus-pip body{background:#000!important;overflow:hidden!important}html.__nus-pip body *{visibility:hidden!important}html.__nus-pip .__nus-pip-branch{transform:none!important;filter:none!important;perspective:none!important;contain:none!important;clip:auto!important;clip-path:none!important;overflow:visible!important;opacity:1!important}html.__nus-pip .__nus-pip-video,html.__nus-pip .__nus-pip-frame{visibility:visible!important;position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;transform:none!important;object-fit:contain!important;object-position:center!important;background:#000!important}html.__nus-pip .player-timedtext,html.__nus-pip .player-timedtext *,html.__nus-pip .atvwebplayersdk-captions-overlay,html.__nus-pip .atvwebplayersdk-captions-overlay *{visibility:visible!important}';
+let isolated=null,marks=[];
+const mark=(node,name)=>{if(!node.classList.contains(name)){node.classList.add(name);marks.push([node,name])}};
+const restore=()=>{for(const [node,name]of marks)node.classList.remove(name);marks=[];isolated=null};
+window.__nusPip=on=>{
+ const v=on?n.selectedVideo():null;
+ if(on&&v===isolated&&v?.isConnected&&marks.every(([node,name])=>node.classList.contains(name)))return;
+ restore();if(!v)return;
+ let node=v,doc=v.ownerDocument;
+ mark(v,'__nus-pip-video');
+ while(doc){
+  const root=doc.documentElement;if(!root)break;
+  if(!doc.getElementById('__nus-pip-style')){const s=doc.createElement('style');s.id='__nus-pip-style';s.textContent=css;(doc.head||root).appendChild(s)}
+  mark(root,'__nus-pip');
+  for(let p=node.parentElement;p;p=p.parentElement)mark(p,'__nus-pip-branch');
+  let frame=null;try{frame=doc.defaultView?.frameElement}catch(_){}
+  if(!frame)break;
+  mark(frame,'__nus-pip-frame');node=frame;doc=frame.ownerDocument;
+ }
+ isolated=v;n.report();
+};
 })();"#,
 );
 
@@ -148,22 +196,57 @@ d.classList.toggle('__nus-pip',!!on);n.report()};
 /// page asked for picture in picture since (asking clears it).
 macro_rules! poll_js {
     () => {
-        "(()=>{const w=!!window.__nusWantPip;window.__nusWantPip=0;return JSON.stringify({r:window.__nusLast||'',pip:w})})()"
+        r#"(()=>{const w=!!window.__nusWantPip;window.__nusWantPip=0;
+const icons=[...document.querySelectorAll('link[rel]')].filter(e=>e.rel.split(/\s+/).some(r=>/^(icon|apple-touch-icon|apple-touch-icon-precomposed)$/i.test(r)));
+const raster=e=>!(/svg/i.test(e.type)||/\.svg(?:[?#]|$)/i.test(e.href));
+const icon=icons.find(e=>raster(e)&&e.rel.split(/\s+/).some(r=>/^icon$/i.test(r)))||icons.find(raster)||icons[0];
+return JSON.stringify({r:window.__nusLast||'',pip:w,url:location.href,document:String(performance.timeOrigin),icon:icon?.href||''})})()"#
     };
 }
 /// …and first, the page shows only its video while it is in nus's window
 /// and all of itself while it is home: a reload in between would lose it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const POLL_IN_PIP: &str = concat!("(()=>{const d=document.documentElement;if(d&&window.__nusPip&&!d.classList.contains('__nus-pip'))__nusPip(true)})();", poll_js!());
+const POLL_IN_PIP: &str = concat!("(()=>{if(window.__nusPip)__nusPip(true)})();", poll_js!());
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const POLL_AT_HOME: &str = concat!("(()=>{const d=document.documentElement;if(d&&window.__nusPip&&d.classList.contains('__nus-pip'))__nusPip(false)})();", poll_js!());
 
 /// `poll`'s answer: the tracker's report (as Chromium's binding would have
 /// had it) and whether the page asked for picture in picture.
-pub fn read_poll(answer: &str) -> Option<(String, bool)> {
+#[derive(Debug, PartialEq)]
+pub struct Poll {
+    pub report: String,
+    pub pip: bool,
+    pub icon: Option<PageIcon>,
+}
+
+/// The icon offered by the document itself, never a logo lookup service.
+#[derive(Debug, PartialEq)]
+pub struct PageIcon {
+    pub page: String,
+    pub document: String,
+    pub url: String,
+}
+
+pub fn read_poll(answer: &str) -> Option<Poll> {
     let v: serde_json::Value = serde_json::from_str(answer).ok()?;
     let report = v.get("r")?.as_str()?.to_string();
-    Some((report, v.get("pip").and_then(|p| p.as_bool()).unwrap_or(false)))
+    let icon = (|| {
+        let page = v.get("url")?.as_str()?;
+        let parsed = url::Url::parse(page).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() { return None; }
+        let document = v.get("document")?.as_str()?;
+        if document.is_empty() || document.len() > 128 { return None; }
+        let declared = v.get("icon").and_then(|i| i.as_str()).unwrap_or("");
+        // WebKit resolves the link against document.baseURI. Resolve again
+        // for older reports, and use the browser convention when absent.
+        let icon = parsed.join(if declared.is_empty() { "/favicon.ico" } else { declared }).ok()?;
+        if !matches!(icon.scheme(), "http" | "https" | "data") || !icon.username().is_empty() || icon.password().is_some() { return None; }
+        // A page-provided inline icon may be useful, but cannot allocate an
+        // unbounded URL before Chromium decodes it into a small bitmap.
+        if icon.as_str().len() > 256 * 1024 { return None; }
+        Some(PageIcon { page: page.into(), document: document.into(), url: icon.into() })
+    })();
+    Some(Poll { report, pip: v.get("pip").and_then(|p| p.as_bool()).unwrap_or(false), icon })
 }
 
 pub use imp::*;
@@ -175,7 +258,7 @@ mod imp {
     use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{NSResponder, NSTrackingArea, NSView};
     use objc2_foundation::{NSArray, NSDictionary, NSError, NSHTTPCookie, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
-    use objc2_web_kit::{WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore};
+    use objc2_web_kit::{WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::{Duration, Instant};
@@ -235,11 +318,13 @@ mod imp {
             }
             let root: Option<Retained<NSObject>> = msg_send![host, layer];
             let Some(root) = root else { return };
+            let _: () = msg_send![&*root, setOpaque: false];
             let Some(metal) = AnyClass::get(c"CAMetalLayer") else { return };
             let sublayers: Option<Retained<NSArray<NSObject>>> = msg_send![&*root, sublayers];
             for layer in sublayers.iter().flat_map(|a| a.iter()) {
                 if layer.isKindOfClass(metal) {
                     let _: () = msg_send![&*layer, setZPosition: 1.0f64];
+                    let _: () = msg_send![&*layer, setOpaque: false];
                 }
             }
         }
@@ -289,12 +374,12 @@ mod imp {
     impl NativePage {
         /// A page for `url`, signed in with `cookies` (DevTools' shape);
         /// it loads once they are all in WebKit's jar.
-        pub fn new(url: &str, cookies: &[serde_json::Value], private: bool) -> Option<Self> {
+        pub fn new(url: &str, cookies: &[serde_json::Value], private: bool, cache_path: &str) -> Option<Self> {
             let mtm = MainThreadMarker::new()?;
             let host = HOST.with(|h| h.borrow().clone())?;
             unsafe {
                 let config = WKWebViewConfiguration::new(mtm);
-                let store = if private { WKWebsiteDataStore::nonPersistentDataStore(mtm) } else { WKWebsiteDataStore::defaultDataStore(mtm) };
+                let store = crate::webkit_store::store(cache_path, private, mtm);
                 config.setWebsiteDataStore(&store);
                 let prefs = config.preferences();
                 prefs.setElementFullscreenEnabled(true);
@@ -308,7 +393,12 @@ mod imp {
                         let _: () = msg_send![&*prefs, _setAllowsPictureInPictureMediaPlayback: true];
                     }
                 }
-                let tracker = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(WKUserScript::alloc(mtm), &NSString::from_str(super::TRACKER), WKUserScriptInjectionTime::AtDocumentStart, true);
+                // EME request tracing changes a page API's identity, so keep
+                // it opt-in while ordinary media-state diagnostics stay on.
+                let source = if std::env::var("NUS_MEDIA_DIAGNOSTICS").as_deref() == Ok("1") {
+                    format!("window.__nusMediaDiagnostics=true;\n{}", super::TRACKER)
+                } else { super::TRACKER.to_string() };
+                let tracker = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(WKUserScript::alloc(mtm), &NSString::from_str(&source), WKUserScriptInjectionTime::AtDocumentStart, true);
                 config.userContentController().addUserScript(&tracker);
                 config.setApplicationNameForUserAgent(Some(&NSString::from_str(safari_name())));
                 let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
@@ -335,17 +425,35 @@ mod imp {
                 };
                 let jar = store.httpCookieStore();
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                let mut seeds = Vec::new();
                 for c in cookies {
                     let Some((line, at)) = super::set_cookie_line(c, now) else { continue };
                     let Some(at) = NSURL::URLWithString(&NSString::from_str(&at)) else { continue };
                     let fields = NSDictionary::from_slices(&[&*NSString::from_str("Set-Cookie")], &[&*NSString::from_str(&line)]);
                     for cookie in NSHTTPCookie::cookiesWithResponseHeaderFields_forURL(&fields, &at).iter() {
-                        page.pending.set(page.pending.get() + 1);
-                        let pending = page.pending.clone();
-                        let done = block2::RcBlock::new(move || pending.set(pending.get().saturating_sub(1)));
-                        jar.setCookie_completionHandler(&cookie, Some(&done));
+                        seeds.push(cookie);
                     }
                 }
+                // WebKit may hold a more recent sign-in than CEF. Seed only
+                // absent cookies, and keep the first navigation waiting for
+                // both this read and all asynchronous writes it schedules.
+                if seeds.is_empty() { return Some(page); }
+                page.pending.set(1);
+                let pending = page.pending.clone();
+                let write_jar = jar.clone();
+                let read = block2::RcBlock::new(move |existing: std::ptr::NonNull<NSArray<NSHTTPCookie>>| {
+                    let key = |c: &NSHTTPCookie| super::cookie_key(&c.name().to_string(), &c.domain().to_string(), &c.path().to_string());
+                    let mut present: std::collections::HashSet<_> = existing.as_ref().iter().map(|c| key(&c)).collect();
+                    for cookie in &seeds {
+                        if !present.insert(key(cookie)) { continue; }
+                        pending.set(pending.get() + 1);
+                        let writing = pending.clone();
+                        let done = block2::RcBlock::new(move || writing.set(writing.get().saturating_sub(1)));
+                        write_jar.setCookie_completionHandler(cookie, Some(&done));
+                    }
+                    pending.set(pending.get().saturating_sub(1));
+                });
+                jar.getAllCookies(&read);
                 Some(page)
             }
         }
@@ -438,8 +546,11 @@ mod imp {
             self.asking.set(true);
             self.asked.set(Some(Instant::now()));
             let (asking, answer) = (self.asking.clone(), self.answer.clone());
-            let done = block2::RcBlock::new(move |r: *mut AnyObject, _e: *mut NSError| {
+            let done = block2::RcBlock::new(move |r: *mut AnyObject, e: *mut NSError| {
                 asking.set(false);
+                if let Some(error) = unsafe { e.as_ref() } {
+                    tracing::debug!(domain=%error.domain(), code=error.code(), "WebKit media poll failed");
+                }
                 if let Some(s) = unsafe { r.as_ref() }.and_then(|r| r.downcast_ref::<NSString>()) {
                     *answer.borrow_mut() = Some(s.to_string());
                 }
@@ -453,8 +564,8 @@ mod imp {
             self.answer.borrow_mut().take()
         }
 
-        /// Run `js` in the page. WebKit runs an app's script as though you
-        /// had clicked, which play() asks for.
+        /// Run a native control's command in the page. The tracker reports
+        /// rejected media actions; evaluating script is not a DOM click.
         pub fn eval(&self, js: &str) {
             unsafe { self.view.evaluateJavaScript_completionHandler(&NSString::from_str(js), None) };
         }
@@ -483,7 +594,6 @@ mod imp {
             let shelter: Retained<Shelter> = unsafe { msg_send![Shelter::alloc(mtm), initWithFrame: host.bounds()] };
             shelter.setWantsLayer(true);
             host.addSubview(&shelter);
-            beneath(&shelter, &host);
             self.clip.removeFromSuperview();
             shelter.addSubview(&self.clip);
             self.clip.setHidden(false);
@@ -502,11 +612,24 @@ mod imp {
                 let Some((shelter, host)) = shelter.as_ref() else { return };
                 let b = host.bounds();
                 let inner = NSRect::new(NSPoint::new(0.0, 0.0), b.size);
-                let resized = shelter.frame() != b || self.view.frame() != inner;
+                let resized = shelter.frame() != b || self.clip.frame() != inner || self.view.frame() != inner;
                 if resized {
                     shelter.setFrame(b);
                     self.clip.setFrame(inner);
                     self.view.setFrame(inner);
+                }
+                // AppKit reconciles backing layers when WebKit is reparented
+                // or resized. Restore their order after those changes, even
+                // when the NSView rectangles happened to stay the same.
+                beneath(shelter, host);
+                // Reparenting a focused WKWebView can leave its content view
+                // as first responder in this window. Its hit-test shelter
+                // only handles the mouse; keys must reach winit's controls.
+                if let Some(window) = host.window() {
+                    let responder: &NSResponder = host;
+                    if !window.firstResponder().is_some_and(|current| std::ptr::eq(&*current, responder)) {
+                        window.makeFirstResponder(Some(responder));
+                    }
                 }
                 resized
             };
@@ -564,6 +687,12 @@ mod imp {
         pub fn loading(&self) -> bool {
             self.first.borrow().is_some() || unsafe { self.view.isLoading() }
         }
+        pub fn stage(&self) -> &'static str {
+            if self.pending.get() > 0 { "waiting for cookies" }
+            else if self.first.borrow().is_some() { "navigation queued" }
+            else if unsafe { self.view.isLoading() } { "loading" }
+            else { "ready" }
+        }
         pub fn can_go_back(&self) -> bool {
             unsafe { self.view.canGoBack() }
         }
@@ -605,7 +734,7 @@ mod imp {
     pub struct NativePage;
 
     impl NativePage {
-        pub fn new(_url: &str, _cookies: &[serde_json::Value], _private: bool) -> Option<Self> { None }
+        pub fn new(_url: &str, _cookies: &[serde_json::Value], _private: bool, _cache_path: &str) -> Option<Self> { None }
         pub fn tend(&self) {}
         pub fn load(&self, _url: &str) {}
         pub fn place(&self, _page: nus_render::Rect, _shown: nus_render::Rect) {}
@@ -620,6 +749,7 @@ mod imp {
         pub fn url(&self) -> String { String::new() }
         pub fn title(&self) -> String { String::new() }
         pub fn loading(&self) -> bool { false }
+        pub fn stage(&self) -> &'static str { "unavailable" }
         pub fn can_go_back(&self) -> bool { false }
         pub fn can_go_forward(&self) -> bool { false }
         pub fn back(&self) {}
@@ -633,6 +763,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cookie_seed_identity_preserves_native_sign_in() {
+        let mut native = std::collections::HashSet::from([cookie_key("session", ".example.com", "/")]);
+        assert!(!native.insert(cookie_key("session", "EXAMPLE.COM", "/")));
+        assert!(native.insert(cookie_key("session", "example.com", "/account")));
+        assert!(native.insert(cookie_key("other", "example.com", "/")));
+        assert!(native.insert(cookie_key("session", "other.example.com", "/")));
+    }
+
+    #[test]
     fn protected_hosts() {
         let on = cfg!(target_os = "macos");
         assert_eq!(protected("https://www.netflix.com/browse"), on);
@@ -642,6 +781,13 @@ mod tests {
         assert!(!protected("https://notnetflix.com/"));
         assert!(!protected("http://www.netflix.com/"));
         assert!(!protected("https://example.com/?u=netflix.com"));
+        assert_eq!(protected("HTTPS://WWW.NETFLIX.COM/browse"), on);
+        assert_eq!(protected("https://www.amazon.co.uk/gp/video"), on);
+        assert_eq!(protected("https://www.amazon.de/gp/video/detail/title"), on);
+        assert!(!protected("https://amazon.evil.example/gp/video"));
+        assert!(!protected("https://amazon.com.evil.example/gp/video"));
+        assert!(!protected("https://www.amazon.com/gp/videography"));
+        assert!(!protected("https://netflix.com@evil.example/browse"));
     }
 
     #[test]
@@ -652,16 +798,41 @@ mod tests {
         assert_eq!(url, "https://netflix.com/");
         let host_only = serde_json::json!({"name":"a","value":"b","domain":"www.netflix.com","path":"/","session":true});
         assert_eq!(set_cookie_line(&host_only, 0.0).unwrap().0, "a=b; Path=/");
+        assert!(set_cookie_line(&c, 2000.0).is_none(), "expired cookies must not revive a stale sign-in");
     }
 
     #[test]
     fn a_poll_answer_carries_the_report_and_the_ask() {
-        let (report, asked) = read_poll(r#"{"r":"{\"v\":null,\"top\":true}","pip":true}"#).unwrap();
-        assert_eq!(report, r#"{"v":null,"top":true}"#);
-        assert!(asked);
-        assert_eq!(read_poll(r#"{"r":"","pip":false}"#), Some((String::new(), false)));
+        let poll = read_poll(r#"{"r":"{\"v\":null,\"top\":true}","pip":true}"#).unwrap();
+        assert_eq!(poll.report, r#"{"v":null,"top":true}"#);
+        assert!(poll.pip);
+        assert_eq!(read_poll(r#"{"r":"","pip":false}"#), Some(Poll { report: String::new(), pip: false, icon: None }));
         assert_eq!(read_poll("not json"), None);
         assert_eq!(read_poll(r#"{"pip":true}"#), None);
+    }
+
+    #[test]
+    fn native_icons_come_from_the_document_or_its_origin() {
+        let parse = |page: &str, icon: &str| read_poll(&serde_json::json!({"r":"", "url":page, "document":"1234.5", "icon":icon}).to_string()).unwrap().icon;
+        let icon = parse("https://watch.example/title/1", "https://cdn.example/brand.png").unwrap();
+        assert_eq!(icon.page, "https://watch.example/title/1");
+        assert_eq!(icon.document, "1234.5");
+        assert_eq!(icon.url, "https://cdn.example/brand.png");
+        assert_eq!(parse("https://watch.example/title/1", "").unwrap().url, "https://watch.example/favicon.ico");
+        assert_eq!(parse("https://watch.example/title/1", "../icon.png").unwrap().url, "https://watch.example/icon.png");
+        assert!(parse("https://watch.example/", "javascript:alert(1)").is_none());
+        assert!(parse("https://watch.example/", "file:///tmp/icon.png").is_none());
+        assert!(parse("https://watch.example/", "https://user:password@example/icon.png").is_none());
+        assert!(parse("about:blank", "https://example/icon.png").is_none());
+    }
+
+    #[test]
+    fn streaming_identity_is_independent_of_native_playback() {
+        assert!(streaming_service("https://www.netflix.com/browse"));
+        assert!(streaming_service("https://www.amazon.co.uk/gp/video/detail/1"));
+        for url in ["http://netflix.com/", "https://notnetflix.com/", "https://netflix.com.evil.test/", "https://netflix.com@evil.test/", "https://example.com/?u=netflix.com", "https://amazon.evil.test/gp/video", "https://www.amazon.com/gp/videography", "https://www.amazon.com/dp/1"] {
+            assert!(!streaming_service(url), "{url}");
+        }
     }
 
     #[test]
@@ -676,5 +847,10 @@ mod tests {
     fn prime_signs_in_through_amazon() {
         let urls = cookie_urls("https://www.primevideo.com/detail/x");
         assert!(urls.iter().any(|u| u == "https://www.amazon.com/"));
+        let regional = cookie_urls("https://www.amazon.co.uk/gp/video/detail/x");
+        assert!(regional.iter().any(|u| u == "https://www.amazon.co.uk/"));
+        assert_eq!(regional.iter().collect::<std::collections::HashSet<_>>().len(), regional.len());
+        assert!(!cookie_urls("https://notprimevideo.com/").iter().any(|u| u == "https://www.amazon.com/"));
+        assert!(!cookie_urls("https://amazon.evil.example/gp/video").iter().any(|u| u == "https://www.primevideo.com/"));
     }
 }

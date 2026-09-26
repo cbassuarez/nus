@@ -1,6 +1,6 @@
 (() => {
   if (window.__nus) return;
-  const st = { best: null };
+  const st = { best: null, error: null, command: 0, eme: new Map() };
   let edited = false, lastReport = "";
   // Editing is sticky for this document. Re-scanning media on every input
   // adds page-sized work to typing and bulk form updates for no state change.
@@ -8,39 +8,91 @@
     if (edited) return;
     edited = true; report();
   }, { capture: true, once: true });
-  function pick() {
-    let best = null, area = 0;
-    for (const v of document.querySelectorAll('video')) {
+  function mediaElements() {
+    const media=[], docs=[document], seen=new Set();
+    while (docs.length && seen.size < 256) {
+      const doc=docs.pop(); if (seen.has(doc)) continue; seen.add(doc);
+      for (const el of doc.querySelectorAll('video,audio,iframe')) {
+        if (el.tagName === 'IFRAME') {
+          // Only browser-permitted same-origin access. No page messages or
+          // cross-origin content are trusted as transport commands.
+          try {if (el.contentDocument) docs.push(el.contentDocument);} catch (_) {}
+        } else media.push(el);
+      }
+    }
+    return media;
+  }
+  function pick(media=mediaElements()) {
+    let best = null, area = 0, playing = false;
+    for (const v of media) {
+      if (v.tagName !== 'VIDEO') continue;
       const r = v.getBoundingClientRect();
-      const a = r.width * r.height;
-      if (a > area && v.readyState > 0 && r.width > 80) { area = a; best = v; }
+      const a = r.width * r.height, active = !v.paused && !v.ended, style = getComputedStyle(v);
+      if (v.readyState <= 0 || r.width <= 80 || r.height <= 0 || style.visibility === 'hidden' || style.display === 'none') continue;
+      if (!best || (active && !playing) || (active === playing && (a > area || (a === area && v === st.best)))) {
+        area = a; best = v; playing = active;
+      }
     }
     return best;
   }
   function report() {
-    const v = pick(); st.best = v;
+    const elements=mediaElements(), v = pick(elements); st.best = v;
     let p = null;
     if (v) {
-      const r = pictureBounds(v);
-      p = { x: r.x, y: r.y, w: r.w, h: r.h, vw: innerWidth, vh: innerHeight,
+      const r = topBounds(pictureBounds(v),v.ownerDocument?.defaultView || window);
+      if (r) p = { x: r.x, y: r.y, w: r.w, h: r.h, vw: r.vw, vh: r.vh,
             dx: r.dx || 0, dy: r.dy || 0, dw: r.dw ?? 1, dh: r.dh ?? 1,
             videoWidth: v.videoWidth, videoHeight: v.videoHeight,
             paused: v.paused, ended: v.ended, muted: v.muted, t: v.currentTime, dur: Number.isFinite(v.duration) ? v.duration : 0 };
     }
     const media = [], seen = new Set();
     let playing = false;
-    for (const m of document.querySelectorAll('video,audio')) {
+    for (const m of elements) {
       if (!m.paused && !m.ended) playing = true;
       const src = m.currentSrc || m.src || '';
       if (!src || seen.has(src)) continue;
       seen.add(src);
       media.push({ k: m.tagName.toLowerCase(), src, w: m.videoWidth || 0, h: m.videoHeight || 0, blob: /^(blob:|mediasource:)/.test(src) });
     }
-    const payload = JSON.stringify({ v: p, media, playing, top: window === window.top, scrollX, scrollY,
+    // A video with MediaKeys can be showing decrypted frames (EME); nus
+    // keeps those pixels off disk.
+    let drm = false;
+    for (const m of elements) if (m.tagName === 'VIDEO' && m.mediaKeys) { drm = true; break; }
+    // A failed element can have no metadata and therefore no PiP candidate.
+    const diagnosticVideo=v || elements.find(m=>m.tagName==='VIDEO' && m.error) || elements.find(m=>m.tagName==='VIDEO');
+    const diagnostic=diagnosticVideo || st.eme.size ? {
+      mediaError:diagnosticVideo?.error?.code || 0, readyState:diagnosticVideo?.readyState ?? 0,
+      networkState:diagnosticVideo?.networkState ?? 0, eme:[...st.eme.values()].map(({keySystem,status,error})=>({keySystem,status,error}))
+    } : null;
+    const payload = JSON.stringify({ v: p, media, playing, drm, controlError: st.error, diagnostic, top: window === window.top, scrollX, scrollY,
       sleepSafe: !edited && !document.querySelector("input,textarea,select,[contenteditable],video,audio,iframe") });
     if (window.nusVideo && payload !== lastReport) {
       window.nusVideo(payload); lastReport = payload;
     }
+  }
+  // CEF samples the top page's texture. Frame-local coordinates would crop
+  // unrelated pixels; only expose a crop when the entire ancestor path can
+  // be mapped. Cross-origin frames still report playback/media/DRM state.
+  function topBounds(box, w) {
+    const r = {dx:0,dy:0,dw:1,dh:1,...box};
+    try {
+      while (w !== w.top) {
+        const f = w.frameElement; if (!f) return null;
+        const b = f.getBoundingClientRect(), sx = b.width / f.offsetWidth, sy = b.height / f.offsetHeight;
+        if (!(sx > 0 && sy > 0)) return null;
+        const left = b.left + f.clientLeft*sx, top = b.top + f.clientTop*sy;
+        const x = left+r.x*sx, y = top+r.y*sy, width = r.w*sx, height = r.h*sy;
+        const cx = Math.max(left,x), cy = Math.max(top,y);
+        const cw = Math.max(0,Math.min(left+f.clientWidth*sx,x+width)-cx);
+        const ch = Math.max(0,Math.min(top+f.clientHeight*sy,y+height)-cy);
+        if (!(width > 0 && height > 0 && cw > 0 && ch > 0)) return null;
+        r.dx += (cx-x)/width*r.dw; r.dy += (cy-y)/height*r.dh;
+        r.dw *= cw/width; r.dh *= ch/height;
+        r.x=cx; r.y=cy; r.w=cw; r.h=ch;
+        w=w.parent;
+      }
+      return {...r,vw:w.innerWidth || innerWidth,vh:w.innerHeight || innerHeight};
+    } catch (_) { return null; }
   }
   // Sample the picture, excluding CSS borders, padding and object-fit bars.
   // The intrinsic dimensions remain separate: a page's player box is not
@@ -79,37 +131,88 @@
     const cw=Math.max(0,Math.min(box.x+box.w,x+w)-cx),ch=Math.max(0,Math.min(box.y+box.h,y+h)-cy);
     return {x:cx,y:cy,w:cw,h:ch,dx:(cx-x)/w,dy:(cy-y)/h,dw:cw/w,dh:ch/h};
   }
-  const V = () => st.best?.isConnected ? st.best : (st.best = pick());
+  const V = () => {
+    const elements=mediaElements();
+    return st.best?.isConnected && st.best.readyState > 0 && elements.includes(st.best) ? st.best : (st.best=pick(elements));
+  };
+  function command(action, failure) {
+    const v=V(), id=++st.command; st.error=null;
+    if (!v) { st.error='unavailable'; report(); return; }
+    const failed = e => {
+      // A pause or newer command can reject an older pending play request.
+      if (id !== st.command || !v.isConnected) return;
+      st.error=failure === 'play-failed' && e?.name === 'NotAllowedError' ? 'play-blocked' : failure;
+      report();
+    };
+    try {
+      const result=action(v);
+      if (result?.then) result.then(() => {if(id === st.command) report();},failed);
+    } catch (e) { failed(e); }
+    report();
+  }
   // Browser-owned transport ignores page control visibility and PiP hints.
   // Clamp to the seekable range for DVR streams, including gaps in a range.
-  function seek(delta) {
-    const v=V(); if (!v || !Number.isFinite(delta)) return;
-    let target=(Number.isFinite(v.currentTime) ? v.currentTime : 0)+delta;
+  function seekTarget(v, target, direction) {
     const ranges=v.seekable;
     if (ranges?.length) {
       target=Math.max(ranges.start(0),Math.min(ranges.end(ranges.length-1),target));
       for(let i=0;i<ranges.length-1;i++) {
         if(target>ranges.end(i) && target<ranges.start(i+1)) {
-          target=delta<0 ? ranges.end(i) : ranges.start(i+1); break;
+          target=direction<0 ? ranges.end(i) : ranges.start(i+1); break;
         }
       }
     } else {
       target=Math.max(0,Number.isFinite(v.duration) ? Math.min(v.duration,target) : target);
     }
-    try {v.currentTime=target;} catch (_) { /* Metadata can change during a seek. */ }
-    report();
+    v.currentTime=target;
+  }
+  function seek(delta) {
+    if (!Number.isFinite(delta)) return;
+    command(v => seekTarget(v,(Number.isFinite(v.currentTime) ? v.currentTime : 0)+delta,delta),'seek-failed');
+  }
+  // Observe access requests only: an access grant does not establish that a
+  // license or stream will work. Never inspect configurations or license data.
+  function watchKeySystemAccess() {
+    if (window.__nusMediaDiagnostics !== true || typeof navigator === 'undefined') return;
+    const original=navigator.requestMediaKeySystemAccess, then=Promise.prototype.then;
+    if (typeof original !== 'function') return;
+    const errors=new Set(['NotSupportedError','SecurityError','NotAllowedError','InvalidStateError','TypeError','AbortError','QuotaExceededError']);
+    const request=function requestMediaKeySystemAccess(keySystem, supportedConfigurations) {
+      const key=typeof keySystem==='string' && /^[A-Za-z0-9.-]{1,80}$/.test(keySystem) ? keySystem : 'unknown';
+      const entry={keySystem:key,status:'requested',error:null};
+      if (!st.eme.has(key) && st.eme.size>=8) st.eme.delete(st.eme.keys().next().value);
+      st.eme.set(key,entry);
+      const settle=(status,error)=>{
+        if(st.eme.get(key)!==entry)return;
+        try {entry.status=status;entry.error=errors.has(error?.name) ? error.name : null;report();} catch(_) {}
+      };
+      let result;
+      try {result=Reflect.apply(original,this,arguments);}
+      catch(error){settle('denied',error);throw error;}
+      try {then.call(result,()=>settle('granted'),error=>settle('denied',error));} catch(_) {}
+      try {report();} catch(_) {}
+      return result;
+    };
+    try {Object.defineProperty(navigator,'requestMediaKeySystemAccess',{value:request,configurable:true,writable:true});} catch(_) {}
   }
   window.__nus = {
     report,
+    selectedVideo: V,
+    command,
     seek,
-    seekTo(f) { const v = V(); if (v && Number.isFinite(v.duration) && v.duration > 0 && Number.isFinite(f)) { v.currentTime = Math.max(0, Math.min(v.duration, f * v.duration)); report(); } },
-    toggle() { const v = V(); if (v) { if (v.paused) v.play()?.catch(() => {}); else v.pause(); } },
-    vol(d) { const v = V(); if (v) v.volume = Math.max(0, Math.min(1, v.volume + d)); },
-    mute() { const v = V(); if (v) v.muted = !v.muted; },
-    step(f) { const v = V(); if (v) { v.pause(); v.currentTime += f / 30; } },
+    seekTo(f) { if (Number.isFinite(f)) command(v => {
+      if (!(Number.isFinite(v.duration) && v.duration > 0)) return;
+      const target=Math.max(0,Math.min(1,f))*v.duration;
+      seekTarget(v,target,target-v.currentTime);
+    },'seek-failed'); },
+    toggle() { command(v => v.paused || v.ended ? v.play() : v.pause(),'play-failed'); },
+    vol(d) { if (Number.isFinite(d)) command(v => {v.volume=Math.max(0,Math.min(1,v.volume+d));},'volume-failed'); },
+    mute() { command(v => {v.muted=!v.muted;},'volume-failed'); },
+    step(f) { if (Number.isFinite(f)) command(v => {v.pause();seekTarget(v,v.currentTime+f/30,f);},'seek-failed'); },
     reveal() { const v = V(); if (v) v.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); report(); },
   };
-  for (const event of ['loadedmetadata','resize','durationchange','play','pause','seeked','emptied']) document.addEventListener(event,report,true);
+  watchKeySystemAccess();
+  for (const event of ['loadedmetadata','resize','durationchange','play','pause','seeked','emptied','ended','volumechange','error']) document.addEventListener(event,report,true);
   report();
   setInterval(report, 100);
 })();

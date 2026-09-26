@@ -160,7 +160,7 @@ impl App {
             x += self.fonts.draw(scene, inv_l, x, by, "FIND") + self.px(12.0);
             let q = if f.query.is_empty() { "…".to_string() } else { f.query.clone() };
             x += self.fonts.draw(scene, Style { font: self.f.ui, px: self.px(m::UI_PX), color: t.paper, tracking: 0.0 }, x, by, &q);
-            scene.rect(Rect::new(x + self.px(2.0), by - self.px(11.0), self.px(1.5), self.px(14.0)), t.paper);
+            self.draw_line_caret_on(scene, x + self.px(2.0), by, self.px(m::UI_PX), 1.0, self.last_key, ink);
             let found = w.tab.shared.borrow().find;
             let count = match found {
                 Some((n, _)) if n == 0 && !f.query.is_empty() => "NO MATCHES".to_string(),

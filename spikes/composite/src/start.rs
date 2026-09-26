@@ -727,9 +727,8 @@ impl App {
         let shown = if st.input.is_empty() { "type to filter · Enter opens · Esc starts fresh".to_string() } else { st.input.clone() };
         let st_in = if st.input.is_empty() { Style { color: t.dim, ..big_in } } else { big_in };
         let tw = self.fonts.draw(scene, st_in, r.x + self.px(18.0), base_y, &shown);
-        if !st.input.is_empty() {
-            scene.rect(Rect::new(r.x + self.px(18.0) + tw + self.px(2.0), base_y - self.px(14.0), self.px(9.0), self.px(18.0)), ink);
-        }
+        let caret_x = r.x + self.px(18.0) + if st.input.is_empty() { 0.0 } else { tw + self.px(2.0) };
+        self.draw_line_caret(scene, caret_x, base_y, big_in.px, 1.0, self.last_key);
         scene.hline(r.x, ly + line_h - self.px(2.0), r.w, self.px(2.0), ink);
 
         // Rows.

@@ -1115,6 +1115,8 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
+ "unicode-segmentation",
+ "unicode-width",
  "url",
  "wgpu",
  "windows-sys 0.61.2",

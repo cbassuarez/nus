@@ -29,6 +29,56 @@ pub struct Block {
     pub running: bool,
 }
 
+/// The owner of a command action. Absolute scrollback lines alone are
+/// not identities: the two shells in a split often have the same marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BlockTarget {
+    pub tab: u64,
+    pub right: bool,
+    pub start: u64,
+}
+
+impl BlockTarget {
+    fn pane<'a, T>(self, tab: u64, left: &'a T, right: Option<&'a T>) -> Option<&'a T> {
+        if self.tab != tab { return None; }
+        if self.right { right } else { Some(left) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlockAction { CopyOutput, RunAgain, Share, Clip }
+
+impl BlockAction {
+    pub(crate) fn from_chip(kind: usize) -> Option<Self> {
+        match kind {
+            0 => Some(Self::CopyOutput), 1 => Some(Self::RunAgain),
+            2 => Some(Self::Share), 3 => Some(Self::Clip), _ => None,
+        }
+    }
+}
+
+/// Check the entire live input extent, including text after a moved
+/// caret. This reads physical rows, so viewing old output is harmless.
+fn empty_rerun_prompt(term: &nus_vt::Term, typed: &str, pending: bool) -> bool {
+    if pending || !typed.is_empty() || term.modes().contains(nus_vt::Modes::ALT_SCREEN) {
+        return false;
+    }
+    let Some(mark) = term.marks.last().filter(|m| m.kind == MarkKind::CommandStart) else { return false; };
+    let grid = term.grid();
+    let cursor = term.cursor();
+    if (grid.abs_row(cursor.row), cursor.col) != (mark.line, mark.col) || cursor.wrap_next {
+        return false;
+    }
+    let Some(first) = mark.line.checked_sub(grid.abs_row(0)).and_then(|n| usize::try_from(n).ok()) else { return false; };
+    for row_no in first..grid.rows() {
+        let row = grid.row(row_no);
+        let from = if row_no == first { mark.col } else { 0 };
+        if row.cells.iter().skip(from).any(|c| c.ch != ' ' && c.ch != '\0') { return false; }
+        if !row.wrapped { return true; }
+    }
+    false
+}
+
 impl Block {
     pub fn lines(&self) -> u64 {
         self.end.saturating_sub(self.output)
@@ -486,8 +536,9 @@ impl App {
             let mut x = fr.x + self.px(18.0);
             self.fonts.draw_icon(scene, nus_render::text::icons::SEARCH, self.px(12.0), x, base - self.px(11.0), ink);
             x += self.px(18.0);
-            let shown = format!("{f}_");
-            x += self.fonts.draw(scene, Style { color: signal, ..mono }, x, base, &shown) + self.px(14.0);
+            x += self.fonts.draw(scene, Style { color: signal, ..mono }, x, base, f);
+            self.draw_line_caret(scene, x, base, mono.px, 1.0, self.last_key);
+            x += self.px(14.0);
             let n = blocks.iter().filter(|b| matches(b)).count();
             self.fonts.draw(scene, dim, x, base, &format!("{n} OF {} BLOCKS", blocks.len()));
             let hint = "ESC";
@@ -594,19 +645,64 @@ impl App {
         true
     }
 
-    /// The share page for a block: a reader-style page beside the shell.
-    pub(crate) fn share_block(&mut self, start: u64) {
-        let Some(tab) = self.tabs.get(self.active) else { return };
-        let Some(t) = (match &tab.left {
-            Pane::Term(t) => Some(t),
-            _ => match &tab.right {
-                Some(Pane::Term(t)) => Some(t),
-                _ => None,
-            },
-        }) else {
+    /// Pointer controls and the context menu use the same owner and gate.
+    pub(crate) fn block_action(&mut self, target: BlockTarget, action: BlockAction) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == target.tab) else { return; };
+        let tab = &self.tabs[i];
+        let Some(Pane::Term(t)) = target.pane(tab.id, &tab.left, tab.right.as_ref()) else { return; };
+        if !t.blocks().iter().any(|b| b.start == target.start) { return; }
+        self.activate(i);
+        self.tabs[i].focus_right = target.right;
+        match action {
+            BlockAction::CopyOutput => {
+                let tab = &self.tabs[i];
+                let Some(Pane::Term(t)) = target.pane(tab.id, &tab.left, tab.right.as_ref()) else { return; };
+                let text = t.block_output_text(target.start);
+                if !text.is_empty() {
+                    if let Ok(mut cb) = arboard::Clipboard::new() { let _ = cb.set_text(text); }
+                    self.play_event("toggle");
+                }
+            }
+            BlockAction::RunAgain => self.rerun_block(target),
+            BlockAction::Share => self.share_block(target),
+            BlockAction::Clip => self.clip_block(Some(target.start)),
+        }
+        self.dirty = true;
+    }
+
+    fn rerun_block(&mut self, target: BlockTarget) {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == target.tab) else { return; };
+        let pane = if target.right { tab.right.as_mut() } else { Some(&mut tab.left) };
+        let Some(Pane::Term(t)) = pane else { return; };
+        let Some(block) = t.blocks().into_iter().find(|b| b.start == target.start) else { return; };
+        if t.running_since.is_some() || !t.term.at_prompt() || t.armed.is_some() || t.type_at_prompt.is_some() {
+            self.notice(nus_render::text::icons::RELOAD, "Shell Is Busy", "wait for an empty prompt before running this command again");
             return;
-        };
-        let Some(b) = t.blocks().into_iter().find(|b| b.start == start) else { return };
+        }
+        let pending = !t.line_ok || t.prompt_edit_pending.is_some() || t.confirm_paste.is_some() || t.prompt_history.active();
+        if !empty_rerun_prompt(&t.term, &t.line, pending) {
+            self.notice(nus_render::text::icons::RELOAD, "Keep Your Draft", "clear the prompt before running this command again");
+            return;
+        }
+        let cmd = block.cmd;
+        if cmd.trim().is_empty() { return; }
+        match t.pty.write(format!("{cmd}\r").as_bytes()) {
+            Ok(_) => {
+                // A second click before the shell echoes its C mark is busy too.
+                t.armed = Some((crate::clock::now(), crate::finish_work::Origin::NusAction));
+                t.line.clear();
+                t.line_col = None;
+                t.line_ok = true;
+            }
+            Err(e) => self.notice_problem("Could Not Run Again", e.to_string()),
+        }
+    }
+
+    /// The share page for exactly this block: a local page beside its shell.
+    fn share_block(&mut self, target: BlockTarget) {
+        let Some(tab) = self.tabs.iter().find(|t| t.id == target.tab) else { return };
+        let Some(Pane::Term(t)) = target.pane(tab.id, &tab.left, tab.right.as_ref()) else { return };
+        let Some(b) = t.blocks().into_iter().find(|b| b.start == target.start) else { return };
         let output = t.block_output_text(b.start);
         let cwd = t.term.cwd.clone().unwrap_or_default();
         let page = crate::blockpage::BlockPage {
@@ -633,7 +729,61 @@ impl App {
 
 #[cfg(test)]
 mod program_tests {
-    use super::program_of;
+    use super::{program_of, BlockAction, BlockTarget, empty_rerun_prompt};
+
+    fn prompt(cols: usize, text: &str) -> nus_vt::Term {
+        let mut term = nus_vt::Term::new(cols, 6, 100);
+        term.advance(format!("\x1b]133;A\x07$ \x1b]133;B\x07{text}").as_bytes());
+        term
+    }
+
+    #[test]
+    fn block_actions_keep_the_captured_tab_and_pane() {
+        let target = BlockTarget { tab: 7, right: true, start: 0 };
+        assert_eq!(target.pane(7, &"left output", Some(&"right output")), Some(&"right output"));
+        assert_eq!(target.pane(8, &"other tab", Some(&"other right")), None);
+        assert_eq!(target.pane(7, &"left output", None), None);
+        assert_eq!(BlockTarget { right: false, ..target }.pane(7, &"left output", Some(&"right output")), Some(&"left output"));
+        assert_eq!(BlockAction::from_chip(3), Some(BlockAction::Clip));
+        assert_eq!(BlockAction::from_chip(2), Some(BlockAction::Share));
+        assert_eq!(BlockAction::from_chip(99), None);
+    }
+
+    #[test]
+    fn rerun_needs_a_known_empty_prompt_without_pending_input() {
+        let term = prompt(40, "");
+        assert!(empty_rerun_prompt(&term, "", false));
+        assert!(!empty_rerun_prompt(&term, "not echoed yet", false));
+        assert!(!empty_rerun_prompt(&term, "", true));
+        assert!(!empty_rerun_prompt(&nus_vt::Term::new(40, 6, 100), "", false));
+        let mut running = prompt(40, "sleep 20");
+        running.advance(b"\x1b]133;C\x07\r\n");
+        assert!(!empty_rerun_prompt(&running, "", false));
+        let mut alternate = prompt(40, "");
+        alternate.advance(b"\x1b[?1049h");
+        assert!(!empty_rerun_prompt(&alternate, "", false));
+    }
+
+    #[test]
+    fn rerun_preserves_a_draft_even_when_the_caret_is_at_its_start() {
+        let mut term = prompt(40, "echo keep this");
+        term.advance(b"\x1b[14D");
+        assert!(!empty_rerun_prompt(&term, "", false));
+        let mut wrapped = prompt(10, "abcdefghijklmno");
+        wrapped.advance(b"\x1b[1;3H");
+        assert!(!empty_rerun_prompt(&wrapped, "", false));
+        let space = prompt(40, " ");
+        assert!(!empty_rerun_prompt(&space, "", false));
+    }
+
+    #[test]
+    fn rerun_can_use_the_live_prompt_while_viewing_scrollback() {
+        let mut term = nus_vt::Term::new(40, 6, 100);
+        term.advance(b"old output\r\nold output\r\nold output\r\nold output\r\nold output\r\nold output\r\nold output\r\n\x1b]133;A\x07$ \x1b]133;B\x07");
+        term.grid_mut().scroll_display(3);
+        assert!(term.grid().display_offset > 0);
+        assert!(empty_rerun_prompt(&term, "", false));
+    }
 
     #[test]
     fn the_program_is_the_first_real_word() {

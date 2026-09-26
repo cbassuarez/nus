@@ -289,12 +289,24 @@ waiting dot, children under a rule. Footer is one row: avatar (drop a
 
 **Surface.** Ramps, not a colour: 2–4 stops, angle, loop, aurora drift and
 breath. Signal, tint, opacity (on window / chrome / panes — Windows DX12 is
-opaque, the row says so). Textures: grain, stipple, stitch, linen,
-halftone, scale, still or animated, placed on the **carapace** (masked to
-its rounded stroke, two-tone so it reads on any ramp, ×3 strength for a
-thin band), the chrome, or the panes — never on content or video. Shell:
+opaque, the row says so). Grain remains an independent finish, with scale
+and strength, placed on the **carapace**, chrome, or panes. Saved stipple,
+stitch, linen and halftone looks still load; new choices offer None or Grain.
+The original frame retains its animated texture option. Shell:
 band or frame, width, radius. Presets (Broadsheet, Midnight, Ledger,
 Darkroom) plus `profile/surfaces/*.json`; SAVE PRESET writes one.
+
+**Carapace materials.** LOOK → SURFACE offers Ink pool, Enamel, Interference,
+Single seam, Open corners, Overprint and Edge light alongside Plain. Ink is
+a continuous matte pool with an irregular outline and a few small floating
+blots at one end. Materials support a top band or a perimeter, and grain
+stays inside their silhouettes, including the empty stretches between corners.
+Still, Subtle and Expressive control reaction strength. Work, loading,
+completion and attention are enabled by default; typing and media are opt-in.
+Only focused work supplies continuous activity; background completions and
+requests for attention can signal once or hold an accent. Reported progress
+stays anchored, completion settles, and reduced motion removes travel.
+These choices survive settings reloads and saved themes.
 
 **Theme.** Paper / ink / page tokens per mode, ANSI 16 with a picker,
 families (Solarized, Gruvbox, Nord, from-signal), contrast grade and
@@ -396,7 +408,7 @@ real; links from other launches land in the window last used.
 and OSC 9;4 progress read in nus-vt at the point they occur; bundled
 scripts for PowerShell (-NoExit -EncodedCommand), bash (--rcfile), zsh
 (ZDOTDIR), fish (-C), cmd (PROMPT); nushell has it built in. AUTO / OFF
-under TERMINAL. It buys: a bar cursor at the prompt, new shells where
+under TERMINAL. It buys: a cell cursor at the prompt, new shells where
 the focused one is, the window's name and dateline from the cwd, jump
 between prompts, copy the last output, paste with a band when it's
 risky, DONE / FAILED badges and a ring when a long command ends
@@ -420,9 +432,30 @@ graphics and iTerm2 inline images draw in the shell; the Kitty keyboard
 protocol was already in.
 
 **The command line, lit and predicted.** Tokens colour as you type;
-the history entry that continues your line ghosts after the caret and
-Right / End accepts it. Terminal-side, nothing to install; history per
-profile in profile/history.
+history, Git context and fresh LSP completions can ghost after the caret.
+At the end of the line, Right / Ctrl+F accepts the visible suffix;
+Alt/Option+Right accepts its next shell token. Tab opens Code; Up/Down
+chooses, Tab / Enter inserts without running, and the next Enter runs.
+End keeps its native meaning. Ctrl+R searches history inline; Up/Down at
+the prompt recalls prefix matches and Down returns to the original draft.
+In search, Ctrl+O reveals a current-session command's original output;
+Esc returns to the draft. History persists per profile in profile/history.
+These helpers read a supported prompt's single logical line, including
+soft wraps; other terminal input stays with the shell. Shift+Enter pastes
+a newline when supported, or sends a distinct shifted key through the
+negotiated keyboard protocol; it never falls back to a plain Enter.
+
+**Blueprint is the default appearance.** A fresh profile starts in Blueprint,
+in paper or ink according to the existing OS/mode preference. SETTINGS ·
+TERMINAL · APPLY BLUEPRINT gives an existing profile the same appearance:
+Areal Mono Medium at 14 pt, 1.25 line height and 0.25
+tracking; a 3 px underline cursor, Glide, no blinking; shell colour None,
+syntax colour and command lamps on; Stitch texture at 3%, pitch 5, on
+panes. Its light/dark palette and cyan accent are shared with the
+interface; UI/editor fonts, layout and sounds stay as configured. Every
+setting remains individually adjustable; existing profiles change only
+when the preset is applied. Loading partial, empty or damaged saved settings
+does not treat them as a fresh profile or overwrite their appearance.
 
 **Browser table stakes.** Find in page, downloads (to ~/Downloads, a
 list in the footer, click reveals), permission asks as a band, `<select>`
@@ -567,7 +600,7 @@ opens there. A window's only tab, the quick terminal's, a peek and the
 floating player's stay. Moves between windows are not on the layout
 history; sending back is the way back.
 
-**The caret is Neovide's.** A port of its cursor renderer: four
+**The optional smear is Neovide's.** A port of its cursor renderer: four
 critically damped springs, the leading corners fast and the trailing
 ones slow, drawn as one quad. TRAIL is Neovide's trail_size.
 
@@ -622,9 +655,11 @@ The buffer is ropey; nothing hand-rolled where a crate is the real thing.
 
 **The prompt line has LSP too**, configurable: TERMINAL · PROMPT LSP:
 QUIET (default: dotted underline on a diagnostic, hover for the message,
-completions ride the ghost prediction and Tab accepts) · MENU (a small
-completion list under the caret) · OFF. bash-language-server or PowerShell
-Editor Services by shell.
+fresh completions join the ghost prediction) · MENU (completion choices
+under the caret) · OFF. Tab opens Code, and Tab / Enter inserts its
+selected choice without executing. Suggestions and edits belong to the
+current supported prompt line; stale replies cannot replace a newer
+draft. bash-language-server or PowerShell Editor Services by shell.
 
 **The ports board** (Ctrl+Shift+P; the status-cluster icon; palette
 `ports`; the PORTS folder header) is a centred overlay sheet, ~70% wide,
@@ -919,6 +954,34 @@ wash, the editor's, and both carets draw from them; the cursor rule's
 INK became THE THEME'S CARET (old prefs still read), SIGNAL and THE
 TAB'S OWN sit over it, and a program's OSC 12 still wins. The wash is
 always 22%; the token is the colour.
+
+**One caret across surfaces.** Shells and Hatch use a square cell; native
+text fields and the editor use a square pipe. Terminal programs keep
+their explicit cursor shapes, and CARET · TERMINAL SHAPE overrides only
+terminal surfaces. Cell inversion reuses the original shaped glyph,
+including its baseline, bearings and ligatures. Native browser content
+and DevTools keep their engine's own editing behavior.
+
+New profiles blink by default: a 1.2-second cycle with a long visible
+hold, short eased fades and a quiet dark interval. Typing, navigation,
+clicking and refocusing reveal it immediately. Sustained input keeps it
+visible; reduced motion and composition keep it steady. Only an active,
+visible caret requests animation frames. Unfocused terminal cells may
+retain a quiet outline, without glow or HDR light.
+
+The crisp core has a restrained local halo, with less energy for a cell
+than a pipe. Paper mode favors contrast. On HDR displays the small core
+requests 1.5× reference-white brightness, limited by current display
+headroom; text, selection and the replacement rule stay at normal light.
+Unknown headroom and SDR displays use ordinary brightness.
+
+Selection keeps the theme's quiet, square wash and gives its moving end
+the same pipe and rhythm. Shell selection remains copy-only. In the
+editor, Insert toggles REPLACE: the pipe stays a pipe, while a separate,
+steady underline marks the next grapheme. Selection and end-of-line hide
+that target mark; replacement never consumes a line ending. Paste and
+completion retain their normal editing semantics. Terminal replacement
+is not guessed from cursor shape or terminal insert-character mode.
 
 **Program colours.** claude, codex and every TUI bring colours picked
 against someone else's background, and land unreadable on ours.
@@ -1798,4 +1861,3 @@ swipe only when the page had no room for it.
 **Waking is quicker.** A woken page shows at its first paint, not at the
 end of its load, and resting the pointer on a sleeping tab's row starts
 waking it before the click.
-

@@ -254,22 +254,21 @@ impl App {
             },
             Source::Shell { block, link, selection } => {
                 let copy = |text: &str| if let Ok(mut cb) = arboard::Clipboard::new() { let _ = cb.set_text(text.to_string()); };
-                let term = self.tabs.iter().find(|t| t.id == menu.tab)
-                    .and_then(|t| if menu.right { t.right.as_ref() } else { Some(&t.left) })
-                    .and_then(|p| match p { Pane::Term(t) => Some(t), _ => None });
                 match id {
                     shell::COPY => copy(&selection),
                     shell::PASTE => self.paste_into_shell(),
                     shell::LINK_BESIDE => if let Some(url) = link { self.open_url(&url, false) },
                     shell::LINK_TAB => if let Some(url) = link { self.open_url(&url, true) },
                     shell::LINK_COPY => if let Some(url) = link { copy(&url) },
-                    shell::OUTPUT => if let (Some(start), Some(t)) = (block, term) { copy(&t.block_output_text(start)) },
-                    shell::RUN => if let (Some(start), Some(t)) = (block, term) {
-                        let cmd = t.block_cmd_text(start);
-                        if !cmd.trim().is_empty() { self.run_in_shell(cmd.trim()); }
+                    shell::OUTPUT | shell::RUN | shell::SHARE | shell::CLIP => if let Some(start) = block {
+                        let action = match id {
+                            shell::OUTPUT => crate::blocks::BlockAction::CopyOutput,
+                            shell::RUN => crate::blocks::BlockAction::RunAgain,
+                            shell::SHARE => crate::blocks::BlockAction::Share,
+                            _ => crate::blocks::BlockAction::Clip,
+                        };
+                        self.block_action(crate::blocks::BlockTarget { tab: menu.tab, right: menu.right, start }, action);
                     },
-                    shell::SHARE => if let Some(start) = block { self.share_block(start) },
-                    shell::CLIP => if let Some(start) = block { self.clip_block(Some(start)) },
                     shell::FIND => self.run(crate::app::Action::Application(crate::application_menu::Command::Find)),
                     shell::SPLIT => self.run(crate::app::Action::ToggleSplit),
                     _ => {}

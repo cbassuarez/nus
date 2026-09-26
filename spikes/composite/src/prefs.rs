@@ -46,10 +46,23 @@ fn path() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_default().join("profile").join("settings.json")
 }
 
+/// Only a genuinely absent settings file gets the new-profile appearance.
+/// Empty, damaged, inaccessible or partially saved files still use the
+/// existing reader and its legacy defaults. Do not rewrite a profile on load.
+fn read_preferences(path: &std::path::Path) -> crate::store::Read<Prefs> {
+    if std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
+        return crate::store::Read {
+            value: crate::blueprint::fresh_preferences(),
+            dropped: Vec::new(),
+        };
+    }
+    crate::store::read_json(path)
+}
+
 impl Prefs {
     /// The file, whole or salvaged (store.rs), brought up to this schema.
     pub fn load() -> Prefs {
-        let read = crate::store::read_json::<Prefs>(&path());
+        let read = read_preferences(&path());
         if !read.dropped.is_empty() {
             *SALVAGED.lock().unwrap() = read.dropped;
         }
@@ -313,6 +326,68 @@ fn merge_changes(before: &serde_json::Value, after: &serde_json::Value, latest: 
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn absent_settings_start_in_blueprint_without_writing_a_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profile/settings.json");
+        let read = read_preferences(&path);
+        assert!(read.dropped.is_empty());
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
+        let p = read.value;
+        assert_eq!(p.preset_name.as_deref(), Some("blueprint"));
+        assert!(p.theme_mode.is_none());
+        let b = p.behavior.unwrap();
+        assert!(b.follow_os_theme);
+        assert_eq!(b.term_font, crate::fonts::Family::ArealMono);
+        assert_eq!(b.term_weight, crate::fonts::Weight::Medium);
+        assert_eq!(b.typography.terminal_size, 14.0);
+        let cursor = p.cursor.unwrap();
+        assert_eq!(cursor.shape, crate::settings::CursorShapePref::Underline);
+        assert_eq!(cursor.blink, crate::settings::Blink::Never);
+        let surface = p.surface.unwrap();
+        let palette = p.theme.unwrap();
+        assert_eq!(palette.build(nus_render::Mode::Paper, surface.signal).paper, nus_render::theme::hex(0xe6eef7));
+        assert_eq!(palette.build(nus_render::Mode::Ink, surface.signal).paper, nus_render::theme::hex(0x0b2a4a));
+    }
+
+    #[test]
+    fn existing_partial_empty_and_damaged_settings_keep_their_previous_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for source in ["{}", "", "  \n", "broken json", r#"{"behavior":{"term_font":"Victor"},"preset_name":"my own"}"#] {
+            std::fs::write(&path, source).unwrap();
+            let read = read_preferences(&path);
+            assert!(read.value.theme.is_none());
+            assert!(read.value.surface.is_none());
+            assert!(read.value.cursor.is_none());
+            if source.contains("Victor") {
+                assert_eq!(read.value.preset_name.as_deref(), Some("my own"));
+                assert_eq!(read.value.behavior.unwrap().term_font, crate::fonts::Family::Victor);
+            } else {
+                assert!(read.value.preset_name.is_none());
+            }
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn unreadable_settings_location_is_not_a_new_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = read_preferences(dir.path());
+        assert!(read.value.preset_name.is_none());
+        assert!(read.value.theme.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_settings_symlink_does_not_reset_the_appearance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::os::unix::fs::symlink(dir.path().join("unavailable.json"), &path).unwrap();
+        assert!(read_preferences(&path).value.preset_name.is_none());
+    }
+
     #[test]
     fn a_stale_window_does_not_undo_settings() {
         let before = json!({"behavior":{"phone":false,"links":"Stack"},"window_rect":[0,0,800,600]});
