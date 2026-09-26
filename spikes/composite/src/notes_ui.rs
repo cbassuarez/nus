@@ -27,6 +27,8 @@ pub enum NoteAct {
     ClipBlock,
     /// The page beside, as a link line in the note.
     AddPage,
+    /// The folder's inbox up in the hatch: the scratch sheet is the hatch.
+    Hatch,
     Open(PathBuf),
 }
 
@@ -91,6 +93,7 @@ impl App {
             NoteAct::Tab => self.open_notes_tab(),
             NoteAct::ClipBlock => self.clip_block(None),
             NoteAct::AddPage => self.add_page_to_note(),
+            NoteAct::Hatch => self.note_in_hatch(),
             NoteAct::Open(p) => self.open_note(&p, false),
         }
     }
@@ -155,6 +158,48 @@ impl App {
             (None, None) => return self.new_note(true, true),
         };
         self.open_note(&path, true);
+    }
+
+    /// The folder's inbox as the hatch's tab. No sheet of its own: the
+    /// hatch already carries any tab over everything, so a note is HOISTed
+    /// like a shell would be, and LAND brings it down. A tab already
+    /// showing the inbox is the one that goes up, never a second buffer.
+    pub(crate) fn note_in_hatch(&mut self) {
+        let path = match self.notes_folder() {
+            Some(f) => {
+                let _ = notes::exclude_from_git(&f);
+                match notes::inbox(&f) {
+                    Ok(p) => p,
+                    Err(e) => return self.notice_problem("Could Not Make Note", e.to_string()),
+                }
+            }
+            None => match notes::list(&notes::profile_dir()).into_iter().next() {
+                Some(e) => e.path,
+                None => match notes::create(&notes::profile_dir(), "", "") {
+                    Ok(p) => p,
+                    Err(e) => return self.notice_problem("Could Not Make Note", e.to_string()),
+                },
+            },
+        };
+        // Buffers hold canonical paths without Windows' verbatim prefix.
+        let path = path.canonicalize().map(|p| PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\"))).unwrap_or(path);
+        let showing = |t: &crate::app::Tab| t.right.is_none() && matches!(&t.left, Pane::Editor(e) if e.buf().and_then(|b| b.path.as_deref()) == Some(path.as_path()));
+        match self.tabs.iter().position(showing) {
+            Some(i) if self.tabs[i].hatch => {
+                if !self.hatch.as_ref().is_some_and(|h| h.visible && !h.hiding) {
+                    self.toggle_hatch();
+                }
+                return;
+            }
+            Some(i) => self.activate(i),
+            None => {
+                self.open_note(&path, true);
+                if !self.tabs.get(self.active).is_some_and(showing) {
+                    return;
+                }
+            }
+        }
+        self.hoist();
     }
 
     /// The note open in this tab, as (right pane?, buffer index), when its
@@ -266,6 +311,7 @@ impl App {
         }
         rows.push(("✎", "new profile note · sealed, travels with sync".into(), Note(NoteAct::New { profile: true })));
         rows.push(("✎", "notes · the whole tab, with the index".into(), Note(NoteAct::Tab)));
+        rows.push(("✎", "note in the hatch · this folder's inbox, over everything".into(), Note(NoteAct::Hatch)));
         rows.push(("✎", "clip this block into the note".into(), Note(NoteAct::ClipBlock)));
         rows.push(("✎", "add the page beside to the note".into(), Note(NoteAct::AddPage)));
         if !q.starts_with("note") {

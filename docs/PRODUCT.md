@@ -1727,6 +1727,15 @@ same pane is just the note: the peer and the tab are one buffer.
 anything else. Profile notes reach a sync carrier sealed, when a key is
 set. Folder notes go wherever your own git push takes them.
 
-Not yet: the scratch sheet (a sheet from the top edge, in memory until
-kept), margin notes on blocks and passages, a NOTE chip in Ask, quoting a
+**The scratch sheet is the hatch.** No second sheet from the top edge:
+the hatch already carries any tab of the Space over everything, and a note
+is a tab. NOTE IN THE HATCH (palette) opens this folder's `inbox.md` — or
+the newest profile note when no folder is at hand — and HOISTs it; the tab
+that was up comes down, LAND brings the note down, the hotkey hides and
+shows it. At the sheet's 960px the note has no rails, so it is just text
+under the *quick* masthead. A tab already showing the inbox is the one
+that goes up, never a second buffer of the same file. It is on disk from
+the first key, so there is no KEEP and nothing to lose on a crash.
+
+Not yet: margin notes on blocks and passages, a NOTE chip in Ask, quoting a
 page's selection, and a SETTINGS · NOTES section.
