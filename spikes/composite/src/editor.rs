@@ -1846,6 +1846,18 @@ impl App {
                 mono_dim
             };
             fonts.draw(scene, ns, r.x + cw * 0.5, base, &num);
+            // Blame, faint, after the caret's line: saved files in a repository only.
+            if line == cur_line && focused && !b.dirty && gmarks.is_some() {
+                if let Some(words) = b.path.as_deref().and_then(|p| crate::git_gutter::blame_line(p, line)) {
+                    let end = len.saturating_sub(scroll_col) as f32;
+                    let bx = ox + (end + 3.0) * cw;
+                    if bx < r.right() - cw * 12.0 {
+                        let faint = Style { color: crate::surface::mix(paper, ink, 0.4), ..mono_dim };
+                        let fit: String = words.chars().take(((r.right() - bx) / cw) as usize).collect();
+                        fonts.draw(scene, faint, bx, base, &fit);
+                    }
+                }
+            }
             if let Some(mk) = gmarks.as_ref().and_then(|g| g.get(line).copied().flatten()) {
                 let bar = px(3.0);
                 match mk {

@@ -297,6 +297,7 @@ impl Scm {
                         }
                     }
                 }
+                crate::git_gutter::touch_all();
                 if let Ok(mut n) = note.lock() {
                     *n = Some(result);
                 }

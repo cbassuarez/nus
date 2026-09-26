@@ -199,13 +199,91 @@ pub fn for_buffer(path: &Path, rev: u64, text: &ropey::Rope) -> Option<Arc<Vec<O
     cache.get(path).map(|e| e.marks.clone())
 }
 
-/// Read HEAD again at the next draw: after a save, a commit, a switch.
-pub fn touch(path: &Path) {
+/// Read HEAD again at the next draw, for every file: after a commit, a
+/// switch, a pull.
+pub fn touch_all() {
     if let Ok(mut c) = CACHE.lock() {
-        if let Some(e) = c.get_mut(path) {
+        for e in c.values_mut() {
             e.read_at = Instant::now() - FRESH * 2;
         }
     }
+    if let Ok(mut b) = BLAMES.lock() {
+        b.clear();
+    }
+}
+
+// ── Blame for the line the caret is on ───────────────────────────────────
+
+/// `3 weeks ago`, from seconds.
+pub fn ago(secs: u64) -> String {
+    let (n, unit) = match secs {
+        s if s < 60 => return "just now".into(),
+        s if s < 3600 => (s / 60, "minute"),
+        s if s < 86_400 => (s / 3600, "hour"),
+        s if s < 86_400 * 14 => (s / 86_400, "day"),
+        s if s < 86_400 * 60 => (s / (86_400 * 7), "week"),
+        s if s < 86_400 * 365 => (s / (86_400 * 30), "month"),
+        s => (s / (86_400 * 365), "year"),
+    };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
+/// `ana · 3 weeks ago · drain on shutdown` from `git blame --porcelain`.
+pub fn blame_words(porcelain: &str, now: u64) -> Option<String> {
+    let mut author = None;
+    let mut time = None;
+    let mut summary = None;
+    let first = porcelain.lines().next()?;
+    let uncommitted = first.starts_with("0000000000000000000000000000000000000000");
+    for l in porcelain.lines() {
+        if let Some(v) = l.strip_prefix("author ") {
+            author = Some(v.to_string());
+        } else if let Some(v) = l.strip_prefix("author-time ") {
+            time = v.trim().parse::<u64>().ok();
+        } else if let Some(v) = l.strip_prefix("summary ") {
+            summary = Some(v.to_string());
+        }
+    }
+    if uncommitted {
+        return Some("you \u{b7} not committed yet".into());
+    }
+    Some(format!("{} \u{b7} {} \u{b7} {}", author?, ago(now.saturating_sub(time?)), summary.unwrap_or_default()))
+}
+
+type Blames = HashMap<(PathBuf, usize), (Instant, Option<String>)>;
+static BLAMES: LazyLock<Mutex<Blames>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Who last changed line `line` (from 0) of the saved file, as last read;
+/// a read starts on a thread when there's none or it's old.
+pub fn blame_line(path: &Path, line: usize) -> Option<String> {
+    let key = (path.to_path_buf(), line);
+    let mut c = BLAMES.lock().ok()?;
+    let stale = c.get(&key).is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(30));
+    if stale {
+        let prev = c.get(&key).and_then(|(_, w)| w.clone());
+        c.insert(key.clone(), (Instant::now(), prev));
+        if c.len() > 512 {
+            c.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(120));
+        }
+        std::thread::Builder::new()
+            .name("git-blame".into())
+            .spawn(move || {
+                let (p, l) = (&key.0, key.1);
+                let words = p.parent().and_then(|dir| {
+                    let name = p.file_name()?.to_string_lossy().into_owned();
+                    let range = format!("{},{}", l + 1, l + 1);
+                    let out = crate::git_state::git(&dir.to_string_lossy(), &["blame", "--porcelain", "-L", &range, "--", &name])?;
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    blame_words(&out, now)
+                });
+                if let Ok(mut c) = BLAMES.lock() {
+                    c.insert(key, (Instant::now(), words));
+                }
+                crate::browser_runtime::wake();
+            })
+            .ok();
+    }
+    c.get(&(path.to_path_buf(), line)).and_then(|(_, w)| w.clone())
 }
 
 #[cfg(test)]
@@ -224,6 +302,16 @@ mod tests {
         assert_eq!(m[4], Some(Mark::Added)); // y
         assert_eq!(m[5], None); // d
         assert_eq!(m[6], Some(Mark::Removed)); // e went, at the end
+    }
+
+    #[test]
+    fn blame_reads_porcelain() {
+        let out = "a81c2f0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 19 19 1\nauthor ana\nauthor-time 1000000\nsummary drain on shutdown\n\tdrain()\n";
+        assert_eq!(blame_words(out, 1000000 + 86_400 * 21).as_deref(), Some("ana \u{b7} 3 weeks ago \u{b7} drain on shutdown"));
+        let mine = "0000000000000000000000000000000000000000 3 3 1\nauthor Not Committed Yet\n";
+        assert_eq!(blame_words(mine, 5).as_deref(), Some("you \u{b7} not committed yet"));
+        assert_eq!(ago(30), "just now");
+        assert_eq!(ago(3600), "1 hour ago");
     }
 
     #[test]
