@@ -545,6 +545,8 @@ pub struct Behavior {
     /// Blocks: lamps in the gutter, and output longer than this folds itself (0 = never).
     #[serde(default = "default_true")]
     pub blocks: bool,
+    /// A note's formatting rail is folded to its tab (notes_format.rs).
+    pub notes_rail_folded: bool,
     #[serde(default)]
     pub fold_over: u32,
     /// The journal: one line per finished block, per folder, kept this many days.
@@ -968,6 +970,7 @@ impl Default for Behavior {
             format_on_save: true,
             prompt_lsp: PromptLsp::Quiet,
             blocks: true,
+            notes_rail_folded: false,
             fold_over: 0,
             journal: true,
             journal_keep: 30,

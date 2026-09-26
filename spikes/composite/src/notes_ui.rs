@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use nus_render::text::{icons, Style};
 use nus_render::{Rect, Scene};
 
-use crate::app::{Action, App, Caps, PaletteMode, PaletteRow, Pane};
+use crate::app::{fade, Action, App, Caps, PaletteMode, PaletteRow, Pane};
 use crate::editor::EditorPane;
 use crate::notes::{self, Place, Ref};
 use crate::notes_capture::{self as capture, Origin};
@@ -83,6 +83,8 @@ pub enum NoteAct {
     OpenOriginal(String),
     /// A reading source's saved copy: the exact one it pinned, or nothing.
     OpenReading(String, Option<String>),
+    /// Formatting on the focused note (the rail, the keys, the palette).
+    Format(crate::notes_format::Act),
 }
 
 /// Where a capture goes.
@@ -211,6 +213,7 @@ impl App {
             }
             NoteAct::OpenOriginal(url) => self.open_url(&url, false),
             NoteAct::OpenReading(id, pinned) => self.open_pinned_reading(&id, pinned.as_deref()),
+            NoteAct::Format(act) => self.note_format(act),
         }
         self.dirty = true;
     }
@@ -1003,6 +1006,15 @@ impl App {
                 rows.push(("·", d, Action::Noop));
             }
             rows.push(("✎", format!("title · {}", v.title), Note(NoteAct::Title)));
+            if q.starts_with("note format") || q.starts_with("notes format") {
+                let chord = if cfg!(target_os = "macos") { "⌘⌥" } else { "Ctrl+Alt+" };
+                for act in crate::notes_format::RAIL {
+                    let (name, key) = act.name();
+                    rows.push(("✎", format!("format · {name} · {chord}{key}"), Note(NoteAct::Format(act))));
+                }
+                return rows;
+            }
+            rows.push(("✎", "format… · bold, lists, headings · type: note format".into(), Action::Noop));
             rows.push(("✎", "tags · this note".into(), Note(NoteAct::Tags)));
             let doc = session::document(&v.key);
             if doc.as_ref().is_some_and(|d| !d.filed()) {
@@ -1532,4 +1544,276 @@ fn source_rows(d: &crate::notes_model::Document, project: Option<&Path>) -> Vec<
         }
     }
     rows
+}
+
+impl App {
+    /// Formatting on the focused note. The rail folds and unfolds itself.
+    pub(crate) fn note_format(&mut self, act: crate::notes_format::Act) {
+        use crate::notes_format::{Act, LineTool};
+        let Some(e) = self.focused_editor() else { return };
+        let Some(b) = e.buf_mut().filter(|b| b.note.is_some()) else { return };
+        b.ensure_md_kinds();
+        match act {
+            Act::Bold => b.format_inline("**"),
+            Act::Italic => b.format_inline("_"),
+            Act::Code => b.format_inline("`"),
+            Act::Mark => b.format_inline("=="),
+            Act::Link => b.format_link(),
+            Act::Heading(h) => b.format_lines(LineTool::Heading(h)),
+            Act::Bullet => b.format_lines(LineTool::Bullet),
+            Act::Number => b.format_lines(LineTool::Number),
+            Act::Check => b.format_lines(LineTool::Check),
+            Act::Quote => b.format_lines(LineTool::Quote),
+        }
+        e.reveal();
+        self.dirty = true;
+    }
+
+    /// The formatting keys, in a focused note only: ⌘⌥ (Ctrl+Alt) with a
+    /// letter or digit, and ⌘↵ (Ctrl+Enter) to tick a checklist item. The
+    /// app's own ⌘B, ⌘E, ⌘H and ⌘K stay the app's, and ⌥⌘H stays macOS's
+    /// Hide Others: highlight is ⌘⌥M.
+    pub(crate) fn note_format_key(&mut self, ev: &crate::app::KeyIn) -> bool {
+        use crate::notes_format::Act;
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        if ev.state != winit::event::ElementState::Pressed {
+            return false;
+        }
+        let cmd = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.control_key() };
+        let (alt, shift) = (self.mods.alt_key(), self.mods.shift_key());
+        let in_note = self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Editor(e) if e.buf().is_some_and(|b| b.note.is_some() && b.ready())));
+        if !in_note || !cmd || shift {
+            return false;
+        }
+        let PhysicalKey::Code(code) = ev.physical_key else { return false };
+        if !alt && code == KeyCode::Enter {
+            let Some(e) = self.focused_editor() else { return false };
+            let Some(b) = e.buf_mut() else { return false };
+            let line = b.line_of(b.cursor);
+            let ticked = b.toggle_checkbox(line);
+            self.dirty = true;
+            return ticked;
+        }
+        if !alt {
+            return false;
+        }
+        // AltGr is Ctrl+Alt off macOS: a key that typed a character there
+        // (`{` on a German 7) is typing, not formatting.
+        if !cfg!(target_os = "macos") && ev.text.as_ref().is_some_and(|t| !t.chars().all(|c| c.is_ascii_alphanumeric())) {
+            return false;
+        }
+        let act = match code {
+            KeyCode::KeyB => Act::Bold,
+            KeyCode::KeyI => Act::Italic,
+            KeyCode::KeyE => Act::Code,
+            KeyCode::KeyK => Act::Link,
+            KeyCode::KeyM => Act::Mark,
+            KeyCode::Digit1 => Act::Heading(1),
+            KeyCode::Digit2 => Act::Heading(2),
+            KeyCode::Digit3 => Act::Heading(3),
+            KeyCode::Digit7 => Act::Bullet,
+            KeyCode::Digit8 => Act::Number,
+            KeyCode::Digit9 => Act::Check,
+            KeyCode::Quote => Act::Quote,
+            _ => return false,
+        };
+        self.note_format(act);
+        true
+    }
+
+    /// A press on a note's formatting rail, or on a checklist box. True
+    /// when taken.
+    pub(crate) fn note_format_mouse(&mut self, x: f32, y: f32) -> bool {
+        let Some(tab) = self.tabs.get_mut(self.active) else { return false };
+        let mut hit = None;
+        for (right, p) in [(false, Some(&mut tab.left)), (true, tab.right.as_mut())] {
+            let Some(Pane::Editor(e)) = p else { continue };
+            if !e.rect.contains(x, y) {
+                continue;
+            }
+            if let Some((_, h)) = e.format_hits.iter().find(|(r, _)| r.contains(x, y)) {
+                hit = Some((right, Some(*h)));
+                break;
+            }
+            // A click on `[ ]` ticks it; anywhere else places the caret.
+            let Some((line, col)) = e.cell_at(x, y) else { continue };
+            let Some(b) = e.buf_mut().filter(|b| b.note.is_some()) else { continue };
+            b.ensure_md_kinds();
+            if b.md_kind(line) != crate::notes_format::LineKind::Text {
+                continue;
+            }
+            let lt = b.line_text(line);
+            let blk = crate::notes_format::block(&lt);
+            if matches!(blk.kind, crate::notes_format::BlockKind::Check { .. }) && (blk.indent + 2..blk.indent + 5).contains(&col) {
+                b.toggle_checkbox(line);
+                hit = Some((right, None));
+                break;
+            }
+        }
+        let Some((right, act)) = hit else { return false };
+        self.tabs[self.active].focus_right = right;
+        match act {
+            Some(crate::notes_ui::RailHit2::Act(a)) => self.note_format(a),
+            Some(crate::notes_ui::RailHit2::Fold) => {
+                self.behavior.notes_rail_folded = !self.behavior.notes_rail_folded;
+                self.save_prefs();
+            }
+            None => {}
+        }
+        self.dirty = true;
+        true
+    }
+}
+
+/// A press on the formatting rail: an action, or folding it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RailHit2 {
+    Act(crate::notes_format::Act),
+    Fold,
+}
+
+impl App {
+    /// One line of a note, styled from its Markdown: headings and bold in
+    /// the bold face, code and marks on a tint, links in the signal and
+    /// underlined, ticked items struck through, markers faint. Every
+    /// character keeps its cell, so the caret and the mouse stay exact.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_note_line(&mut self, scene: &mut Scene, b: &crate::editor::Buffer, line: usize, at: (f32, f32, f32), scroll_col: usize, columns: usize, cell: (f32, f32), mono: Style) {
+        use crate::notes_format::Style as S;
+        let (ox, ly, base) = at;
+        let (cw, ch) = cell;
+        let full = b.line_text(line);
+        let chars: Vec<char> = full.chars().collect();
+        let n = chars.len();
+        if scroll_col >= n {
+            return;
+        }
+        let mut per = vec![S::Plain; n];
+        for sp in crate::notes_format::styles(&full, b.md_kind(line)) {
+            for c in sp.start..(sp.start + sp.len).min(n) {
+                per[c] = sp.style;
+            }
+        }
+        let t = self.theme.clone();
+        let (ink, paper, signal) = (t.ink, t.paper, self.surface.signal);
+        let faint = crate::surface::mix(paper, ink, 0.42);
+        let px1 = self.px(1.0).max(1.0);
+        let end = n.min(scroll_col + columns);
+        let mut i = scroll_col;
+        while i < end {
+            let st = per[i];
+            let mut j = i + 1;
+            while j < end && per[j] == st {
+                j += 1;
+            }
+            // (colour, bold, tint behind, underline, strike)
+            let (color, bold, bg, under, strike) = match st {
+                S::Plain => (ink, false, None, false, false),
+                S::Marker | S::Url | S::Fence => (faint, false, None, false, false),
+                S::Heading(_) | S::Bold => (ink, true, None, false, false),
+                S::Italic => (signal, false, None, false, false),
+                S::Code => (ink, false, Some(fade(ink, 0.07)), false, false),
+                S::FenceBody => (ink, false, Some(fade(ink, 0.05)), false, false),
+                S::Link => (signal, false, None, true, false),
+                S::Mark => (ink, false, Some(fade(signal, 0.28)), false, false),
+                S::Quote => (crate::surface::mix(paper, ink, 0.72), false, None, false, false),
+                S::Bullet => (signal, false, None, false, false),
+                S::Box { .. } => (signal, true, None, false, false),
+                S::Done => (crate::surface::mix(paper, ink, 0.5), false, None, false, true),
+            };
+            let x = ox + (i - scroll_col) as f32 * cw;
+            let w = (j - i) as f32 * cw;
+            if let Some(bg) = bg {
+                scene.rect(Rect::new(x, ly, w, ch), bg);
+            }
+            let run: String = chars[i..j].iter().collect::<String>().replace('\t', "    ");
+            let style = Style { font: if bold { self.f.notes_bold } else { mono.font }, color, ..mono };
+            self.fonts.draw(scene, style, x, base, &run);
+            if under {
+                scene.rect(Rect::new(x, base + self.px(2.0), w, px1), color);
+            }
+            if strike {
+                scene.rect(Rect::new(x, ly + ch * 0.55, w, px1), color);
+            }
+            i = j;
+        }
+    }
+
+    /// The formatting rail in a note's margin (a column of buttons), or as
+    /// a row under the strip when the margin is too narrow. Folded, it is
+    /// one tab. A button lights when the caret's text already is that.
+    pub(crate) fn draw_format_rail(&mut self, scene: &mut Scene, e: &mut EditorPane, area: Rect, as_row: bool, folded: bool, active: &crate::notes_format::Active) {
+        use crate::notes_format::RAIL;
+        let t = self.theme.clone();
+        let (ink, paper) = (t.ink, t.paper);
+        let strong = self.label_strong();
+        let (mx, my) = self.mouse;
+        let hair = self.px(m::HAIRLINE);
+        let btn = self.px(34.0);
+        let draw = |app: &mut App, scene: &mut Scene, r: Rect, face: &str, lit: bool| {
+            if lit {
+                scene.rect(r, ink);
+            } else if r.contains(mx, my) {
+                scene.rect(r, crate::surface::mix(paper, ink, 0.08));
+            }
+            let st = Style { color: if lit { paper } else { ink }, ..strong };
+            let tw = app.fonts.measure(st, face);
+            app.fonts.draw(scene, st, (r.x + (r.w - tw) / 2.0).round(), (r.y + r.h * 0.64).round(), face);
+        };
+        if as_row {
+            scene.rect(area, paper);
+            scene.hline(area.x, area.bottom() - hair, area.w, hair, ink);
+            let pad = self.px(8.0);
+            if folded {
+                let tw = self.fonts.measure(strong, "▸ Aa");
+                let r = Rect::new(area.x + pad, area.y, tw + self.px(20.0), area.h);
+                draw(self, scene, r, "▸ Aa", false);
+                e.format_hits.push((r, RailHit2::Fold));
+                return;
+            }
+            let fold = Rect::new(area.right() - btn - pad, area.y, btn, area.h);
+            let mut x = area.x + pad;
+            for act in RAIL {
+                let face = act.face();
+                let w = (self.fonts.measure(strong, face) + self.px(18.0)).max(btn);
+                // What does not fit is still in the palette (`note format`).
+                if x + w > fold.x - pad {
+                    break;
+                }
+                let r = Rect::new(x, area.y, w, area.h);
+                draw(self, scene, r, face, act.lit(active));
+                e.format_hits.push((r, RailHit2::Act(act)));
+                x += w;
+            }
+            draw(self, scene, fold, "◂", false);
+            e.format_hits.push((fold, RailHit2::Fold));
+            return;
+        }
+        // In the margin: a ruled column; folded, one tab.
+        if folded {
+            let r = Rect::new(area.x, area.y, area.w, btn);
+            scene.rect(r, paper);
+            scene.outline(r, hair, ink);
+            draw(self, scene, r, "▸", false);
+            e.format_hits.push((r, RailHit2::Fold));
+            return;
+        }
+        scene.rect(area, paper);
+        scene.outline(area, hair, ink);
+        let mut y = area.y;
+        for (i, act) in RAIL.into_iter().enumerate() {
+            // A rule between the inline tools and the line tools.
+            if i == 5 || i == 8 {
+                scene.hline(area.x, y, area.w, hair, crate::surface::mix(paper, ink, 0.3));
+            }
+            let r = Rect::new(area.x, y, area.w, btn);
+            draw(self, scene, r, act.face(), act.lit(active));
+            e.format_hits.push((r, RailHit2::Act(act)));
+            y += btn;
+        }
+        scene.hline(area.x, y, area.w, hair, ink);
+        let r = Rect::new(area.x, y, area.w, btn);
+        draw(self, scene, r, "◂", false);
+        e.format_hits.push((r, RailHit2::Fold));
+    }
 }

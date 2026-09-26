@@ -141,6 +141,7 @@ mod news;
 mod notes;
 mod notes_anchor;
 mod notes_capture;
+mod notes_format;
 mod notes_import;
 mod notes_index;
 mod notes_model;

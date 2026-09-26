@@ -118,6 +118,7 @@ impl App {
         self.f.term=self.font_face(self.behavior.term_font,self.behavior.term_weight,&config.system[1]);
         self.f.editor=self.font_face(config.editor_family,config.editor_weight,&config.system[2]);
         self.f.notes=self.font_face(config.notes_family,config.notes_weight,"");
+        self.f.notes_bold=self.font_face(config.notes_family,Weight::Bold,"");
         let px=self.terminal_px();
         for tab in &mut self.tabs {for pane in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {if let crate::app::Pane::Term(t)=pane {
             t.grid.set_font(&self.fonts,self.f.term,px*t.zoom as f32/100.0);
