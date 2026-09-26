@@ -173,7 +173,7 @@ impl App {
             let mut ordered = Vec::new();
             for (heading,names) in [
                 ("SHELLS", vec!["DEFAULT SHELL","SHELL INTEGRATION","KEEP ALIVE","SSH"]),
-                ("COMMAND EDITING", vec!["COMMAND LINE","PROMPT LSP","EDITOR","BLOCKS","CLICK LINKS"]),
+                ("COMMAND EDITING", vec!["COMMAND LINE","PROMPT LSP","LANGUAGE SERVERS","EDITOR","BLOCKS","CLICK LINKS"]),
                 ("CLIPBOARD & SCROLLING",vec!["CLIPBOARD","OSC 52","SCROLL","WHEEL","SCROLLBACK"]),
                 ("HISTORY & REPLAY",vec!["JOURNAL","CUT OFF","REPLAY"]),
                 ("COLORS & PROGRESS",vec!["SHELL COLORS","PROGRAM COLORS","TRUECOLOR","PROGRESS"]),
@@ -185,7 +185,8 @@ impl App {
                         "SHELL INTEGRATION"=>Some("Applies to new shells. Tracks the current folder, commands and exit codes so command navigation and status markers can work."),
                         "KEEP ALIVE"=>Some("Applies to new shells. Requires the nus-hold helper; existing shells keep the behavior they started with."),
                         "SSH"=>Some("When enabled, new SSH sessions copy shell integration scripts to ~/.cache/nus on the remote machine."),
-                        "PROMPT LSP"=>Some("Requires bash-language-server or PowerShell Editor Services. Install optional tools from the welcome page."),
+                        "PROMPT LSP"=>Some("A language server reads the command line as you type: Quiet underlines a problem and ghosts a completion (Tab accepts); Menu lists completions under the caret. It needs the server for your shell, below."),
+                        "LANGUAGE SERVERS"=>Some("bash-language-server reads bash and zsh; PowerShell Editor Services reads PowerShell. GET installs one into this profile (a folder under profile/tools you can delete); shells pick it up without restarting."),
                         "EDITOR"=>Some("Formatting needs a formatter for the file type. When none is installed, the file is saved unchanged."),
                         "REPLAY"=>Some("Records terminal output and a snapshot of the page beside it at command checkpoints. Changes apply now; turning it off leaves existing recordings available."),
                         "JOURNAL"=>Some("Private to you: kept on this device, encrypted with a key in your system keychain, never synced or sent anywhere. For each finished command it saves the command line, the folder, when it ran, how long it took and whether it worked. It never saves output. It powers “Run again” suggestions, the log in the palette, and nus log. If you type secrets directly into commands (a password or token as an argument), they are saved too; turn this off or keep a shorter history."),

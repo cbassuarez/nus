@@ -77,7 +77,7 @@ impl App {
         if self.lsp.failed.contains_key(&key) {
             return None;
         }
-        let missing = format!("{} not installed · GET it on the welcome page", server.command);
+        let missing = format!("{} not installed", server.command);
         let (bin, args): (PathBuf, Vec<String>) = if server.command == "powershell-editor-services" {
             // A script, not a binary: Start-EditorServices.ps1 through pwsh.
             match pses_launch() {
@@ -85,7 +85,7 @@ impl App {
                 None => {
                     self.lsp.failed.insert(key.clone(), missing.clone());
                     if !quiet {
-                        self.notice_problem("Language Server Missing", missing.clone());
+                        self.missing_server(server.command, &missing);
                     }
                     return None;
                 }
@@ -96,7 +96,7 @@ impl App {
                 None => {
                     self.lsp.failed.insert(key.clone(), missing.clone());
                     if !quiet {
-                        self.notice_problem("Language Server Missing", missing.clone());
+                        self.missing_server(server.command, &missing);
                     }
                     return None;
                 }
@@ -114,6 +114,15 @@ impl App {
                 }
                 None
             }
+        }
+    }
+
+    /// A server that isn't there: a GET chip when nus can install it.
+    fn missing_server(&mut self, command: &str, missing: &str) {
+        if crate::bundles::list().iter().any(|b| b.id == command) {
+            self.toast_problem("Language Server Missing", missing, Some(crate::toast::Act::Install(command.to_string())));
+        } else {
+            self.notice_problem("Language Server Missing", missing);
         }
     }
 

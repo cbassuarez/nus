@@ -1035,6 +1035,9 @@ pub enum Slider {
     Light,
 }
 
+/// The prompt line's language servers: bundle id, the shells it reads.
+pub(crate) const LSP_TOOLS: [(&str, &str); 2] = [("bash-language-server", "BASH & ZSH"), ("powershell-editor-services", "POWERSHELL")];
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
     AppIcon(crate::app_icon::Choice),
@@ -1079,6 +1082,8 @@ pub enum Hit {
     MakeDefault,
     Unregister,
     Widevine,
+    /// PROMPT LSP: GET or REMOVE a prompt language server (index into LSP_TOOLS).
+    LspTool(usize),
     StartOnLaunch(bool),
     StartupSound(bool),
     ReloadAvatar,
@@ -1577,7 +1582,8 @@ impl App {
         self.settings_focus=None;
         let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) else { return true };
         match hit {
-            Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) => {}
+            // A bundle's GET plays its own press.
+            Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) | Hit::LspTool(_) => {}
             Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {
                 self.play_event("control.press")
             }
@@ -1617,6 +1623,49 @@ impl App {
             Hit::StartupLayout(i) => b.then == Then::Layout && crate::layout_file::saved().get(i).is_some_and(|(name, _)| *name == b.then_layout || (b.then_layout.is_empty() && i == 0)),
             _ => return None,
         })
+    }
+
+    /// PROMPT LSP's servers for the shells this profile has (both when
+    /// none of them has one), each as a button that GETs or REMOVEs it.
+    fn lsp_tool_buttons(&self) -> Vec<(String, (&'static str, &'static str), Hit)> {
+        let kinds: Vec<_> = self.profiles.iter().map(|p| crate::shell::kind_of(&p.program)).collect();
+        let wanted = |i: usize| match i {
+            0 => kinds.iter().any(|k| matches!(k, crate::shell::Kind::Bash | crate::shell::Kind::Zsh)),
+            _ => kinds.contains(&crate::shell::Kind::PowerShell),
+        };
+        let mut picked: Vec<usize> = (0..LSP_TOOLS.len()).filter(|&i| wanted(i)).collect();
+        if picked.is_empty() {
+            picked = (0..LSP_TOOLS.len()).collect();
+        }
+        picked
+            .into_iter()
+            .map(|i| {
+                let (label, _, icon) = self.lsp_tool_state(i);
+                (label, icon, Hit::LspTool(i))
+            })
+            .collect()
+    }
+
+    /// A prompt server's button words and the line under them.
+    fn lsp_tool_words(&self, i: usize) -> (String, String) {
+        let (label, line, _) = self.lsp_tool_state(i);
+        (label, line)
+    }
+
+    fn lsp_tool_state(&self, i: usize) -> (String, String, (&'static str, &'static str)) {
+        use crate::bundles::State;
+        let Some(&(id, shells)) = LSP_TOOLS.get(i) else { return (String::new(), String::new(), icons::WARNING) };
+        let Some(b) = crate::bundles::list().into_iter().find(|b| b.id == id) else {
+            return (format!("{} · UNAVAILABLE", shells), format!("{id} is not in this build's tool list"), icons::WARNING);
+        };
+        match self.bundle_state(&b) {
+            State::Absent => (format!("GET · {shells}"), format!("{} · about {} MB into profile/tools/{id}", b.name, b.size_mb), icons::DOWNLOAD),
+            State::Fetching => (format!("FETCHING · {shells}"), format!("{} · installing, you can keep working", b.name), icons::DOWNLOAD),
+            State::Installed => (format!("REMOVE · {shells}"), format!("{} · installed in this profile", b.name), icons::CHECK),
+            State::External => (format!("READY · {shells}"), format!("{} · on this machine, managed outside nus", b.name), icons::CHECK),
+            State::Failed(e) => (format!("TRY AGAIN · {shells}"), format!("{} · failed: {e}", b.name), icons::WARNING),
+            State::Soon | State::NoPlatform => (format!("UNAVAILABLE · {shells}"), format!("{} · not offered for this platform yet", b.name), icons::WARNING),
+        }
     }
 
     pub(crate) fn setting_label(&self, hit: Hit) -> String {
@@ -1850,6 +1899,7 @@ impl App {
             Hit::MakeDefault => "make nus the default browser".into(),
             Hit::Unregister => "unregister nus as a browser".into(),
             Hit::Widevine => "fetch the Widevine module now".into(),
+            Hit::LspTool(i) => self.lsp_tool_words(i).1,
             Hit::BarStyle(b) => format!("loading bar {}", b.name()),
             Hit::BarColor(c) => format!("bar color {:?}", c).to_lowercase(),
         }
@@ -1970,6 +2020,11 @@ impl App {
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
                     s.drill = false;
                     s.scroll = 0.0;
+                }
+            }
+            Hit::LspTool(i) => {
+                if let Some((id, _)) = LSP_TOOLS.get(i) {
+                    self.bundle_toggle(id);
                 }
             }
             Hit::Widevine => {
@@ -3845,7 +3900,7 @@ impl App {
                         ("OFF".into(), Hit::PromptLsp(PromptLsp::Off), pl == PromptLsp::Off),
                     ]),
                 ));
-                v.insert(4, ("".into(), Info("bash-language-server or PowerShell Editor Services (GET them on the welcome page) read the line as you type: quiet underlines a problem and ghosts a completion, Tab accepts; menu lists them under the caret".into())));
+                v.insert(4, ("LANGUAGE SERVERS".into(), Buttons(self.lsp_tool_buttons())));
                 v.insert(5, (
                     "EDITOR".into(),
                     Choice(vec![("FORMAT ON SAVE".into(), Hit::FormatOnSave(!self.behavior.format_on_save), self.behavior.format_on_save)]),

@@ -32,6 +32,8 @@ pub enum Act {
     OpenPort(crate::ports::Key),
     /// Try installing this tool (by bundle id) again.
     RetryInstall(String),
+    /// Install this tool (by bundle id), from a notice that it is missing.
+    Install(String),
     /// Show this file in its folder.
     RevealPath(std::path::PathBuf),
     /// Hand an address to the app that owns its scheme (mailto:, zoommtg:).
@@ -50,6 +52,7 @@ impl Act {
             Act::RevealDownload(_) => ("Show In Folder", String::new()),
             Act::OpenPort(_) => ("Open", crate::app::key("O", true)),
             Act::RetryInstall(_) => ("Retry", String::new()),
+            Act::Install(_) => ("Get", String::new()),
             Act::UndoHunk(..) => ("Undo", String::new()),
             Act::LeaveWebKit(..) => ("Open In Chromium", String::new()),
             Act::OpenExternal(_) => ("Open", String::new()),
@@ -256,7 +259,7 @@ impl App {
                 self.board.toast = None;
                 self.ports_act(&key, crate::ports::Act::Open);
             }
-            Some(Act::RetryInstall(id)) => self.bundle_toggle(&id),
+            Some(Act::RetryInstall(id) | Act::Install(id)) => self.bundle_toggle(&id),
             Some(Act::UndoHunk(hunk, what, cwd)) => self.undo_hunk(hunk, what, cwd),
             Some(Act::OpenExternal(url)) => crate::app::open_with_os(std::path::Path::new(&url)),
             Some(Act::RevealPath(path)) => crate::downloads::reveal(&path, true),
