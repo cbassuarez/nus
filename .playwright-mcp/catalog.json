@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "records": [
+    {
+      "id": "be7d6746858c1b81",
+      "source_sha256": "be7d6746858c1b818069ac5871b92af9acfc196768889c59005259a435111478",
+      "status": "complete",
+      "product": "NUS",
+      "scenario": "startup",
+      "recorded_at": "2026-09-22T04:04:46.526577+00:00",
+      "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+      "version": "nus 0.0.1 (4740af3)",
+      "binary_sha256": "8a115cd9ae5dbaaf340207968943e31fd39874a42317407ca56eaa12b7109586",
+      "requested_runs": 10,
+      "completed_runs": 10,
+      "warmup_runs": 1,
+      "failed_attempts": 0,
+      "unattempted_runs": 0,
+      "execution": "Application-owned scenario; not human task timing",
+      "cache_policy": "Fresh onboarded profiles; OS/filesystem caches not evicted",
+      "hardware": "Hardware model, power and thermal state not recorded by this source",
+      "metrics": [
+        {
+          "id": "startup_first_present",
+          "label": "Main entry to first presentation call",
+          "unit": "ms",
+          "direction": "lower",
+          "boundary": "Rust main entry \u2192 application present-call return; not display scanout",
+          "observations": [
+            {
+              "run": 1,
+              "value": 1616.914708
+            },
+            {
+              "run": 2,
+              "value": 276.21012499999995
+            },
+            {
+              "run": 3,
+              "value": 280.328959
+            },
+            {
+              "run": 4,
+              "value": 270.945916
+            },
+            {
+              "run": 5,
+              "value": 290.24025
+            },
+            {
+              "run": 6,
+              "value": 273.343708
+            },
+            {
+              "run": 7,
+              "value": 277.334708
+            },
+            {
+              "run": 8,
+              "value": 263.379959
+            },
+            {
+              "run": 9,
+              "value": 271.58408299999996
+            },
+            {
+              "run": 10,
+              "value": 284.26291599999996
+            }
+          ]
+        },
+        {
+          "id": "tree_rss_mib",
+          "label": "Whole process tree RSS",
+          "unit": "MiB",
+          "direction": "lower",
+          "boundary": "Point-in-time summed resident pages, including shared-page double counting; not private footprint",
+          "observations": [
+            {
+              "run": 1,
+              "value": 389.78125
+            },
+            {
+              "run": 2,
+              "value": 388.609375
+            },
+            {
+              "run": 3,
+              "value": 394.03125
+            },
+            {
+              "run": 4,
+              "value": 391.03125
+            },
+            {
+              "run": 5,
+              "value": 389.375
+            },
+            {
+              "run": 6,
+              "value": 386.296875
+            },
+            {
+              "run": 7,
+              "value": 391.09375
+            },
+            {
+              "run": 8,
+              "value": 391.421875
+            },
+            {
+              "run": 9,
+              "value": 387.5
+            },
+            {
+              "run": 10,
+              "value": 384.5625
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+[     464ms] [WARNING]   WARN  [Statsig] The user does not have the required id_type "userID" for Dynamic config "openai_curated_plugin_admin" @ https://platform.openai.com/static/index-BqwfBUHV.js:58
+[     466ms] [WARNING]   WARN  [Statsig] The user does not have the required id_type "userID" for Gate "managed-agents-ui" @ https://platform.openai.com/static/index-BqwfBUHV.js:58
+[     473ms] [LOG] %c
+           .d88888b.             
+         .8P"     "9bd888b.      
+        .8P     .d8P””'`”988.   
+     .8888   .d8P"    ,     98.  
+   .8P" 88   88"   .d98b.    88  
+  .8P   88   88.d8P".  "98b. 88
+  88    88   88”   `"8b.    "98.  
+  88.   88   89      88"8b.   88 
+   88    "98.89      88  88   "88
+    “8b.    “98b.  .d8B  88    88
+    88 "98b.   8d8P" BB  88   d8"
+    88    d98bP88   .8P  88 .d8" 
+    "8b         .d8P"    888"   
+     "88b..   .d8P"     d8"      
+       "9888P98b.     .d8"       
+               "988888P 
+
+
+  Solve impossible problems
+  openai.com/careers
+ font-family:monospace;  @ https://platform.openai.com/static/index-BqwfBUHV.js:58

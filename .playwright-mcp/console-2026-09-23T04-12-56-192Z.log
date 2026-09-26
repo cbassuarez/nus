@@ -1,0 +1,2 @@
+[  342752ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8000/docs/assets/icon/nus-paper.svg:0
+[  517948ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8000/docs/measurements/assets/icon/nus-paper.svg:0

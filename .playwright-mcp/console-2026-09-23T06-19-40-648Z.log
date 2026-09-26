@@ -1,0 +1,663 @@
+[     520ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/http://web.archive.org/screenshot/https://platform.openai.com/login:0
+[     723ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client&sv=3.32.6&t=1787097296496&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1:0
+[     724ms] [ERROR]  ERROR  [Statsig] A networking error occurred during POST request to https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client&sv=3.32.6&t=1787097296496&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1. NetworkError: NetworkError: https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client&sv=3.32.6&t=1787097296496&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1 <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Wayback Machine</title>
+    <script>
+    /*
+    @licstart  The following is the entire license notice for the JavaScript code in this page.
+
+    Copyright (C) 2020 Internet Archive
+
+    The JavaScript code in this page is free software: you can
+    redistribute it and/or modify it under the terms of the GNU Affero
+    General Public License as published by the Free Software
+    Foundation, either version 3 of the License, or (at your option)
+    any later version.  The code is distributed WITHOUT ANY WARRANTY;
+    without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE.  See the GNU GPL for more details.
+
+    As additional permission under GNU AGPL version 3 section 7, you
+    may distribute non-source (e.g., minimized or compacted) forms of
+    that code without the copy of the GNU AGPL normally required by
+    section 4, provided you include this license notice and a URL
+    through which recipients can access the Corresponding Source.
+
+    @licend  The above is the entire license notice for the JavaScript code in this page.
+    */
+    </script>    <script type="text/javascript">
+      window.webComponentLoaderConfig = {
+      baseUrl: 'https://archive.org',
+      version: '29e56e87'
+      }
+    </script>
+    <!-- is_embedded: True; context: <wayback.replay.core.ReplayContext object at 0x7f624e5d7a10> -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/styles.css?v=Zb1uSJFF" />
+    <script type="text/javascript" src="https://web-static.archive.org/_static/js/ui.js?v=7LYlZ-C2" charset="utf-8"></script>
+    <base target="_top">
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/web.css">
+<script type="text/javascript">
+if (window!=window.top) {
+  $(document).ready(function(){ document.body.classList.add('wb_embedded') });
+}
+</script>
+  </head>
+  <body class="navia wb_embedded">
+  <div class="container">
+    <div class="row" style="margin-top: 30px">
+      <div class="col-md-4 col-sm-4 col-xs-4 text-right">
+	<div id="donation-link" class="web_message">
+  <a href="http://archive.org/donate/?origin=wbwww-CalndrDonateButton" data-event-click-tracking="Wayback|DonateButton" class="beta_button">DONATE</a>
+</div>
+
+      </div>
+      <div class="col-md-4 col-sm-4 col-xs-4 text-center">
+	<div class="search-toolbar-logo-container">
+	  <a href="/"><div class="search-toolbar-logo" alt="logo: Internet Archive's Wayback Machine"></div></a>
+	</div>
+      </div>
+    </div>
+    <div id="errorBorder">
+      <div id="positionHome">
+	<div id="searchHome">
+	  <form name="form1" method="get" action="/web/submit">
+      <input class="form-control" type="text" name="url" value="https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&amp;st=javascript-client&amp;sv=3.32.6&amp;t=1787097296496&amp;sid=49e94df0-2963-453e-93f9-2d343a4d9729&amp;se=1" size="40" onfocus="javascript:this.focus();this.select();" >
+	    <button class="btn btn-default" type="submit" name="type" value="replay">Latest</button>
+	    <button class="btn btn-default" type="submit" name="type" value="urlquery">Show All</button>
+	  </form>
+	</div>
+<div id="error">
+    <div class="error-text">The Wayback Machine has not archived that URL.</div>
+    <div class="error-help error-help-proceed">
+      <p>Click here to search for all archived pages under
+        <a href="https://web.archive.org/web/*/https://ab.chatgpt.com/v1/*">https://ab.chatgpt.com/v1/</a>.
+      </p>
+    </div></div>
+      </div>
+    </div>
+  </div>
+    <noscript>
+      <div class="no-script-message">
+        The Wayback Machine requires your browser to support JavaScript, please email <a href="mailto:info@archive.org">info@archive.org</a><br/>if you have any questions about this.
+      </div>
+    </noscript>
+    <footer>
+      <div id="footerHome">
+        <p>
+          The Wayback Machine is an initiative of the
+          <a href="//archive.org/">Internet Archive</a>,
+          a 501(c)(3) non-profit, building a digital library of
+          Internet sites and other cultural artifacts in digital form.
+          <br/>Other <a href="//archive.org/projects/">projects</a> include
+          <a href="https://openlibrary.org/">Open Library</a> &amp;
+          <a href="https://archive-it.org">archive-it.org</a>.
+        </p>
+        <p>
+          Your use of the Wayback Machine is subject to the Internet Archive's
+          <a href="//archive.org/about/terms.php">Terms of Use</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html> NetworkError: NetworkError: https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client&sv=3.32.6&t=1787097296496&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1 <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Wayback Machine</title>
+    <script>
+    /*
+    @licstart  The following is the entire license notice for the JavaScript code in this page.
+
+    Copyright (C) 2020 Internet Archive
+
+    The JavaScript code in this page is free software: you can
+    redistribute it and/or modify it under the terms of the GNU Affero
+    General Public License as published by the Free Software
+    Foundation, either version 3 of the License, or (at your option)
+    any later version.  The code is distributed WITHOUT ANY WARRANTY;
+    without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE.  See the GNU GPL for more details.
+
+    As additional permission under GNU AGPL version 3 section 7, you
+    may distribute non-source (e.g., minimized or compacted) forms of
+    that code without the copy of the GNU AGPL normally required by
+    section 4, provided you include this license notice and a URL
+    through which recipients can access the Corresponding Source.
+
+    @licend  The above is the entire license notice for the JavaScript code in this page.
+    */
+    </script>    <script type="text/javascript">
+      window.webComponentLoaderConfig = {
+      baseUrl: 'https://archive.org',
+      version: '29e56e87'
+      }
+    </script>
+    <!-- is_embedded: True; context: <wayback.replay.core.ReplayContext object at 0x7f624e5d7a10> -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/styles.css?v=Zb1uSJFF" />
+    <script type="text/javascript" src="https://web-static.archive.org/_static/js/ui.js?v=7LYlZ-C2" charset="utf-8"></script>
+    <base target="_top">
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/web.css">
+<script type="text/javascript">
+if (window!=window.top) {
+  $(document).ready(function(){ document.body.classList.add('wb_embedded') });
+}
+</script>
+  </head>
+  <body class="navia wb_embedded">
+  <div class="container">
+    <div class="row" style="margin-top: 30px">
+      <div class="col-md-4 col-sm-4 col-xs-4 text-right">
+	<div id="donation-link" class="web_message">
+  <a href="http://archive.org/donate/?origin=wbwww-CalndrDonateButton" data-event-click-tracking="Wayback|DonateButton" class="beta_button">DONATE</a>
+</div>
+
+      </div>
+      <div class="col-md-4 col-sm-4 col-xs-4 text-center">
+	<div class="search-toolbar-logo-container">
+	  <a href="/"><div class="search-toolbar-logo" alt="logo: Internet Archive's Wayback Machine"></div></a>
+	</div>
+      </div>
+    </div>
+    <div id="errorBorder">
+      <div id="positionHome">
+	<div id="searchHome">
+	  <form name="form1" method="get" action="/web/submit">
+      <input class="form-control" type="text" name="url" value="https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&amp;st=javascript-client&amp;sv=3.32.6&amp;t=1787097296496&amp;sid=49e94df0-2963-453e-93f9-2d343a4d9729&amp;se=1" size="40" onfocus="javascript:this.focus();this.select();" >
+	    <button class="btn btn-default" type="submit" name="type" value="replay">Latest</button>
+	    <button class="btn btn-default" type="submit" name="type" value="urlquery">Show All</button>
+	  </form>
+	</div>
+<div id="error">
+    <div class="error-text">The Wayback Machine has not archived that URL.</div>
+    <div class="error-help error-help-proceed">
+      <p>Click here to search for all archived pages under
+        <a href="https://web.archive.org/web/*/https://ab.chatgpt.com/v1/*">https://ab.chatgpt.com/v1/</a>.
+      </p>
+    </div></div>
+      </div>
+    </div>
+  </div>
+    <noscript>
+      <div class="no-script-message">
+        The Wayback Machine requires your browser to support JavaScript, please email <a href="mailto:info@archive.org">info@archive.org</a><br/>if you have any questions about this.
+      </div>
+    </noscript>
+    <footer>
+      <div id="footerHome">
+        <p>
+          The Wayback Machine is an initiative of the
+          <a href="//archive.org/">Internet Archive</a>,
+          a 501(c)(3) non-profit, building a digital library of
+          Internet sites and other cultural artifacts in digital form.
+          <br/>Other <a href="//archive.org/projects/">projects</a> include
+          <a href="https://openlibrary.org/">Open Library</a> &amp;
+          <a href="https://archive-it.org">archive-it.org</a>.
+        </p>
+        <p>
+          Your use of the Wayback Machine is subject to the Internet Archive's
+          <a href="//archive.org/about/terms.php">Terms of Use</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
+    at r.<anonymous> (https://web.archive.org/web/20260818235456jm_/https://platform.openai.com/static/index-Boq8puvw.js:49:179824)
+    at Generator.next (<anonymous>)
+    at Ae (https://web.archive.org/web/20260818235456jm_/https://platform.openai.com/static/index-Boq8puvw.js:49:176724) @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     742ms] [LOG] %c
+           .d88888b.             
+         .8P"     "9bd888b.      
+        .8P     .d8P””'`”988.   
+     .8888   .d8P"    ,     98.  
+   .8P" 88   88"   .d98b.    88  
+  .8P   88   88.d8P".  "98b. 88
+  88    88   88”   `"8b.    "98.  
+  88.   88   89      88"8b.   88 
+   88    "98.89      88  88   "88
+    “8b.    “98b.  .d8B  88    88
+    88 "98b.   8d8P" BB  88   d8"
+    88    d98bP88   .8P  88 .d8" 
+    "8b         .d8P"    888"   
+     "88b..   .d8P"     d8"      
+       "9888P98b.     .d8"       
+               "988888P 
+
+
+  Solve impossible problems
+  openai.com/careers
+ font-family:monospace;  @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     745ms] [WARNING]   WARN  [Statsig] SDK initialization has not completed. Reason: Loading:Unrecognized @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     745ms] [WARNING]   WARN  [Statsig] SDK initialization has not completed. Reason: Loading:Unrecognized @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     746ms] [WARNING]   WARN  [Statsig] SDK initialization has not completed. Reason: Loading:Unrecognized @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     746ms] [WARNING]   WARN  [Statsig] SDK initialization has not completed. Reason: Loading:Unrecognized @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     829ms] [ERROR] Failed to load resource: net::ERR_HTTP2_SERVER_REFUSED_STREAM @ https://web.archive.org/web/20260818211154im_/https://cdn.openai.com/common/fonts/openai-sans/v2/OpenAISans-Regular.woff2:0
+[     877ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/https://chatgpt.com/ces/v1/telemetry/intake?ddforward=%2Fapi%2Fv2%2Flogs%3Fddsource%3Dbrowser%26ddtags%3Dsdk_version%253A5.23.3%252Capi%253Axhr%252Cenv%253Aprod%252Cservice%253Aonboard%26dd-api-key%3Dpub65a8cdad695cd20d151bdacdc5e4153f%26dd-evp-origin-version%3D5.23.3%26dd-evp-origin%3Dbrowser%26dd-request-id%3De35071b8-77bb-4b97-b703-dd5f4a6d78e4:0
+[     930ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/https://ab.chatgpt.com/v1/rgstr?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296737&sid=49e94df0-2963-453e-93f9-2d343a4d9729&ec=7:0
+[     930ms] [ERROR]  ERROR  [Statsig] A networking error occurred during POST request to https://ab.chatgpt.com/v1/rgstr?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296737&sid=49e94df0-2963-453e-93f9-2d343a4d9729&ec=7. NetworkError: NetworkError: https://ab.chatgpt.com/v1/rgstr?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296737&sid=49e94df0-2963-453e-93f9-2d343a4d9729&ec=7 <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Wayback Machine</title>
+    <script>
+    /*
+    @licstart  The following is the entire license notice for the JavaScript code in this page.
+
+    Copyright (C) 2020 Internet Archive
+
+    The JavaScript code in this page is free software: you can
+    redistribute it and/or modify it under the terms of the GNU Affero
+    General Public License as published by the Free Software
+    Foundation, either version 3 of the License, or (at your option)
+    any later version.  The code is distributed WITHOUT ANY WARRANTY;
+    without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE.  See the GNU GPL for more details.
+
+    As additional permission under GNU AGPL version 3 section 7, you
+    may distribute non-source (e.g., minimized or compacted) forms of
+    that code without the copy of the GNU AGPL normally required by
+    section 4, provided you include this license notice and a URL
+    through which recipients can access the Corresponding Source.
+
+    @licend  The above is the entire license notice for the JavaScript code in this page.
+    */
+    </script>    <script type="text/javascript">
+      window.webComponentLoaderConfig = {
+      baseUrl: 'https://archive.org',
+      version: '29e56e87'
+      }
+    </script>
+    <!-- is_embedded: True; context: <wayback.replay.core.ReplayContext object at 0x7f624e5d75f0> -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/styles.css?v=Zb1uSJFF" />
+    <script type="text/javascript" src="https://web-static.archive.org/_static/js/ui.js?v=7LYlZ-C2" charset="utf-8"></script>
+    <base target="_top">
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/web.css">
+<script type="text/javascript">
+if (window!=window.top) {
+  $(document).ready(function(){ document.body.classList.add('wb_embedded') });
+}
+</script>
+  </head>
+  <body class="navia wb_embedded">
+  <div class="container">
+    <div class="row" style="margin-top: 30px">
+      <div class="col-md-4 col-sm-4 col-xs-4 text-right">
+	<div id="donation-link" class="web_message">
+  <a href="http://archive.org/donate/?origin=wbwww-CalndrDonateButton" data-event-click-tracking="Wayback|DonateButton" class="beta_button">DONATE</a>
+</div>
+
+      </div>
+      <div class="col-md-4 col-sm-4 col-xs-4 text-center">
+	<div class="search-toolbar-logo-container">
+	  <a href="/"><div class="search-toolbar-logo" alt="logo: Internet Archive's Wayback Machine"></div></a>
+	</div>
+      </div>
+    </div>
+    <div id="errorBorder">
+      <div id="positionHome">
+	<div id="searchHome">
+	  <form name="form1" method="get" action="/web/submit">
+      <input class="form-control" type="text" name="url" value="https://ab.chatgpt.com/v1/rgstr?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&amp;st=javascript-client-react&amp;sv=3.32.6&amp;t=1787097296737&amp;sid=49e94df0-2963-453e-93f9-2d343a4d9729&amp;ec=7" size="40" onfocus="javascript:this.focus();this.select();" >
+	    <button class="btn btn-default" type="submit" name="type" value="replay">Latest</button>
+	    <button class="btn btn-default" type="submit" name="type" value="urlquery">Show All</button>
+	  </form>
+	</div>
+<div id="error">
+    <div class="error-text">The Wayback Machine has not archived that URL.</div>
+    <div class="error-help error-help-proceed">
+      <p>Click here to search for all archived pages under
+        <a href="https://web.archive.org/web/*/https://ab.chatgpt.com/v1/*">https://ab.chatgpt.com/v1/</a>.
+      </p>
+    </div></div>
+      </div>
+    </div>
+  </div>
+    <noscript>
+      <div class="no-script-message">
+        The Wayback Machine requires your browser to support JavaScript, please email <a href="mailto:info@archive.org">info@archive.org</a><br/>if you have any questions about this.
+      </div>
+    </noscript>
+    <footer>
+      <div id="footerHome">
+        <p>
+          The Wayback Machine is an initiative of the
+          <a href="//archive.org/">Internet Archive</a>,
+          a 501(c)(3) non-profit, building a digital library of
+          Internet sites and other cultural artifacts in digital form.
+          <br/>Other <a href="//archive.org/projects/">projects</a> include
+          <a href="https://openlibrary.org/">Open Library</a> &amp;
+          <a href="https://archive-it.org">archive-it.org</a>.
+        </p>
+        <p>
+          Your use of the Wayback Machine is subject to the Internet Archive's
+          <a href="//archive.org/about/terms.php">Terms of Use</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html> NetworkError: NetworkError: https://ab.chatgpt.com/v1/rgstr?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296737&sid=49e94df0-2963-453e-93f9-2d343a4d9729&ec=7 <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Wayback Machine</title>
+    <script>
+    /*
+    @licstart  The following is the entire license notice for the JavaScript code in this page.
+
+    Copyright (C) 2020 Internet Archive
+
+    The JavaScript code in this page is free software: you can
+    redistribute it and/or modify it under the terms of the GNU Affero
+    General Public License as published by the Free Software
+    Foundation, either version 3 of the License, or (at your option)
+    any later version.  The code is distributed WITHOUT ANY WARRANTY;
+    without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE.  See the GNU GPL for more details.
+
+    As additional permission under GNU AGPL version 3 section 7, you
+    may distribute non-source (e.g., minimized or compacted) forms of
+    that code without the copy of the GNU AGPL normally required by
+    section 4, provided you include this license notice and a URL
+    through which recipients can access the Corresponding Source.
+
+    @licend  The above is the entire license notice for the JavaScript code in this page.
+    */
+    </script>    <script type="text/javascript">
+      window.webComponentLoaderConfig = {
+      baseUrl: 'https://archive.org',
+      version: '29e56e87'
+      }
+    </script>
+    <!-- is_embedded: True; context: <wayback.replay.core.ReplayContext object at 0x7f624e5d75f0> -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/styles.css?v=Zb1uSJFF" />
+    <script type="text/javascript" src="https://web-static.archive.org/_static/js/ui.js?v=7LYlZ-C2" charset="utf-8"></script>
+    <base target="_top">
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/web.css">
+<script type="text/javascript">
+if (window!=window.top) {
+  $(document).ready(function(){ document.body.classList.add('wb_embedded') });
+}
+</script>
+  </head>
+  <body class="navia wb_embedded">
+  <div class="container">
+    <div class="row" style="margin-top: 30px">
+      <div class="col-md-4 col-sm-4 col-xs-4 text-right">
+	<div id="donation-link" class="web_message">
+  <a href="http://archive.org/donate/?origin=wbwww-CalndrDonateButton" data-event-click-tracking="Wayback|DonateButton" class="beta_button">DONATE</a>
+</div>
+
+      </div>
+      <div class="col-md-4 col-sm-4 col-xs-4 text-center">
+	<div class="search-toolbar-logo-container">
+	  <a href="/"><div class="search-toolbar-logo" alt="logo: Internet Archive's Wayback Machine"></div></a>
+	</div>
+      </div>
+    </div>
+    <div id="errorBorder">
+      <div id="positionHome">
+	<div id="searchHome">
+	  <form name="form1" method="get" action="/web/submit">
+      <input class="form-control" type="text" name="url" value="https://ab.chatgpt.com/v1/rgstr?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&amp;st=javascript-client-react&amp;sv=3.32.6&amp;t=1787097296737&amp;sid=49e94df0-2963-453e-93f9-2d343a4d9729&amp;ec=7" size="40" onfocus="javascript:this.focus();this.select();" >
+	    <button class="btn btn-default" type="submit" name="type" value="replay">Latest</button>
+	    <button class="btn btn-default" type="submit" name="type" value="urlquery">Show All</button>
+	  </form>
+	</div>
+<div id="error">
+    <div class="error-text">The Wayback Machine has not archived that URL.</div>
+    <div class="error-help error-help-proceed">
+      <p>Click here to search for all archived pages under
+        <a href="https://web.archive.org/web/*/https://ab.chatgpt.com/v1/*">https://ab.chatgpt.com/v1/</a>.
+      </p>
+    </div></div>
+      </div>
+    </div>
+  </div>
+    <noscript>
+      <div class="no-script-message">
+        The Wayback Machine requires your browser to support JavaScript, please email <a href="mailto:info@archive.org">info@archive.org</a><br/>if you have any questions about this.
+      </div>
+    </noscript>
+    <footer>
+      <div id="footerHome">
+        <p>
+          The Wayback Machine is an initiative of the
+          <a href="//archive.org/">Internet Archive</a>,
+          a 501(c)(3) non-profit, building a digital library of
+          Internet sites and other cultural artifacts in digital form.
+          <br/>Other <a href="//archive.org/projects/">projects</a> include
+          <a href="https://openlibrary.org/">Open Library</a> &amp;
+          <a href="https://archive-it.org">archive-it.org</a>.
+        </p>
+        <p>
+          Your use of the Wayback Machine is subject to the Internet Archive's
+          <a href="//archive.org/about/terms.php">Terms of Use</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
+    at r.<anonymous> (https://web.archive.org/web/20260818235456jm_/https://platform.openai.com/static/index-Boq8puvw.js:49:179824)
+    at Generator.next (<anonymous>)
+    at Ae (https://web.archive.org/web/20260818235456jm_/https://platform.openai.com/static/index-Boq8puvw.js:49:176724) @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     932ms] [WARNING]   WARN  [Statsig] manual flush failed after 0 attempt(s). 7 event(s) will be dropped. Non-retryable error: 404 @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     932ms] [WARNING]   WARN  [Statsig] Caught error in statsig::log_event_failed {error: Error: non-retryable error
+    at o.logEventRequestFailure (https://web.archive.org/web/20260818235…} @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[     995ms] [ERROR] Failed to load resource: net::ERR_HTTP2_SERVER_REFUSED_STREAM @ https://web.archive.org/web/20260818235456/https://ab.chatgpt.com/v1/sdk_exception:0
+[    1018ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296738&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1:0
+[    1019ms] [ERROR]  ERROR  [Statsig] A networking error occurred during POST request to https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296738&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1. NetworkError: NetworkError: https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296738&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1 <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Wayback Machine</title>
+    <script>
+    /*
+    @licstart  The following is the entire license notice for the JavaScript code in this page.
+
+    Copyright (C) 2020 Internet Archive
+
+    The JavaScript code in this page is free software: you can
+    redistribute it and/or modify it under the terms of the GNU Affero
+    General Public License as published by the Free Software
+    Foundation, either version 3 of the License, or (at your option)
+    any later version.  The code is distributed WITHOUT ANY WARRANTY;
+    without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE.  See the GNU GPL for more details.
+
+    As additional permission under GNU AGPL version 3 section 7, you
+    may distribute non-source (e.g., minimized or compacted) forms of
+    that code without the copy of the GNU AGPL normally required by
+    section 4, provided you include this license notice and a URL
+    through which recipients can access the Corresponding Source.
+
+    @licend  The above is the entire license notice for the JavaScript code in this page.
+    */
+    </script>    <script type="text/javascript">
+      window.webComponentLoaderConfig = {
+      baseUrl: 'https://archive.org',
+      version: '29e56e87'
+      }
+    </script>
+    <!-- is_embedded: True; context: <wayback.replay.core.ReplayContext object at 0x7f47aa99ec50> -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/styles.css?v=Zb1uSJFF" />
+    <script type="text/javascript" src="https://web-static.archive.org/_static/js/ui.js?v=7LYlZ-C2" charset="utf-8"></script>
+    <base target="_top">
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/web.css">
+<script type="text/javascript">
+if (window!=window.top) {
+  $(document).ready(function(){ document.body.classList.add('wb_embedded') });
+}
+</script>
+  </head>
+  <body class="navia wb_embedded">
+  <div class="container">
+    <div class="row" style="margin-top: 30px">
+      <div class="col-md-4 col-sm-4 col-xs-4 text-right">
+	<div id="donation-link" class="web_message">
+  <a href="http://archive.org/donate/?origin=wbwww-CalndrDonateButton" data-event-click-tracking="Wayback|DonateButton" class="beta_button">DONATE</a>
+</div>
+
+      </div>
+      <div class="col-md-4 col-sm-4 col-xs-4 text-center">
+	<div class="search-toolbar-logo-container">
+	  <a href="/"><div class="search-toolbar-logo" alt="logo: Internet Archive's Wayback Machine"></div></a>
+	</div>
+      </div>
+    </div>
+    <div id="errorBorder">
+      <div id="positionHome">
+	<div id="searchHome">
+	  <form name="form1" method="get" action="/web/submit">
+      <input class="form-control" type="text" name="url" value="https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&amp;st=javascript-client-react&amp;sv=3.32.6&amp;t=1787097296738&amp;sid=49e94df0-2963-453e-93f9-2d343a4d9729&amp;se=1" size="40" onfocus="javascript:this.focus();this.select();" >
+	    <button class="btn btn-default" type="submit" name="type" value="replay">Latest</button>
+	    <button class="btn btn-default" type="submit" name="type" value="urlquery">Show All</button>
+	  </form>
+	</div>
+<div id="error">
+    <div class="error-text">The Wayback Machine has not archived that URL.</div>
+    <div class="error-help error-help-proceed">
+      <p>Click here to search for all archived pages under
+        <a href="https://web.archive.org/web/*/https://ab.chatgpt.com/v1/*">https://ab.chatgpt.com/v1/</a>.
+      </p>
+    </div></div>
+      </div>
+    </div>
+  </div>
+    <noscript>
+      <div class="no-script-message">
+        The Wayback Machine requires your browser to support JavaScript, please email <a href="mailto:info@archive.org">info@archive.org</a><br/>if you have any questions about this.
+      </div>
+    </noscript>
+    <footer>
+      <div id="footerHome">
+        <p>
+          The Wayback Machine is an initiative of the
+          <a href="//archive.org/">Internet Archive</a>,
+          a 501(c)(3) non-profit, building a digital library of
+          Internet sites and other cultural artifacts in digital form.
+          <br/>Other <a href="//archive.org/projects/">projects</a> include
+          <a href="https://openlibrary.org/">Open Library</a> &amp;
+          <a href="https://archive-it.org">archive-it.org</a>.
+        </p>
+        <p>
+          Your use of the Wayback Machine is subject to the Internet Archive's
+          <a href="//archive.org/about/terms.php">Terms of Use</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html> NetworkError: NetworkError: https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&st=javascript-client-react&sv=3.32.6&t=1787097296738&sid=49e94df0-2963-453e-93f9-2d343a4d9729&se=1 <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Wayback Machine</title>
+    <script>
+    /*
+    @licstart  The following is the entire license notice for the JavaScript code in this page.
+
+    Copyright (C) 2020 Internet Archive
+
+    The JavaScript code in this page is free software: you can
+    redistribute it and/or modify it under the terms of the GNU Affero
+    General Public License as published by the Free Software
+    Foundation, either version 3 of the License, or (at your option)
+    any later version.  The code is distributed WITHOUT ANY WARRANTY;
+    without even the implied warranty of MERCHANTABILITY or FITNESS
+    FOR A PARTICULAR PURPOSE.  See the GNU GPL for more details.
+
+    As additional permission under GNU AGPL version 3 section 7, you
+    may distribute non-source (e.g., minimized or compacted) forms of
+    that code without the copy of the GNU AGPL normally required by
+    section 4, provided you include this license notice and a URL
+    through which recipients can access the Corresponding Source.
+
+    @licend  The above is the entire license notice for the JavaScript code in this page.
+    */
+    </script>    <script type="text/javascript">
+      window.webComponentLoaderConfig = {
+      baseUrl: 'https://archive.org',
+      version: '29e56e87'
+      }
+    </script>
+    <!-- is_embedded: True; context: <wayback.replay.core.ReplayContext object at 0x7f47aa99ec50> -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/styles.css?v=Zb1uSJFF" />
+    <script type="text/javascript" src="https://web-static.archive.org/_static/js/ui.js?v=7LYlZ-C2" charset="utf-8"></script>
+    <base target="_top">
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/web.css">
+<script type="text/javascript">
+if (window!=window.top) {
+  $(document).ready(function(){ document.body.classList.add('wb_embedded') });
+}
+</script>
+  </head>
+  <body class="navia wb_embedded">
+  <div class="container">
+    <div class="row" style="margin-top: 30px">
+      <div class="col-md-4 col-sm-4 col-xs-4 text-right">
+	<div id="donation-link" class="web_message">
+  <a href="http://archive.org/donate/?origin=wbwww-CalndrDonateButton" data-event-click-tracking="Wayback|DonateButton" class="beta_button">DONATE</a>
+</div>
+
+      </div>
+      <div class="col-md-4 col-sm-4 col-xs-4 text-center">
+	<div class="search-toolbar-logo-container">
+	  <a href="/"><div class="search-toolbar-logo" alt="logo: Internet Archive's Wayback Machine"></div></a>
+	</div>
+      </div>
+    </div>
+    <div id="errorBorder">
+      <div id="positionHome">
+	<div id="searchHome">
+	  <form name="form1" method="get" action="/web/submit">
+      <input class="form-control" type="text" name="url" value="https://ab.chatgpt.com/v1/initialize?k=client-szGQzTeJi9S7McyQgmiuvyuQQaPxU3Ed9SDREVVOlPI&amp;st=javascript-client-react&amp;sv=3.32.6&amp;t=1787097296738&amp;sid=49e94df0-2963-453e-93f9-2d343a4d9729&amp;se=1" size="40" onfocus="javascript:this.focus();this.select();" >
+	    <button class="btn btn-default" type="submit" name="type" value="replay">Latest</button>
+	    <button class="btn btn-default" type="submit" name="type" value="urlquery">Show All</button>
+	  </form>
+	</div>
+<div id="error">
+    <div class="error-text">The Wayback Machine has not archived that URL.</div>
+    <div class="error-help error-help-proceed">
+      <p>Click here to search for all archived pages under
+        <a href="https://web.archive.org/web/*/https://ab.chatgpt.com/v1/*">https://ab.chatgpt.com/v1/</a>.
+      </p>
+    </div></div>
+      </div>
+    </div>
+  </div>
+    <noscript>
+      <div class="no-script-message">
+        The Wayback Machine requires your browser to support JavaScript, please email <a href="mailto:info@archive.org">info@archive.org</a><br/>if you have any questions about this.
+      </div>
+    </noscript>
+    <footer>
+      <div id="footerHome">
+        <p>
+          The Wayback Machine is an initiative of the
+          <a href="//archive.org/">Internet Archive</a>,
+          a 501(c)(3) non-profit, building a digital library of
+          Internet sites and other cultural artifacts in digital form.
+          <br/>Other <a href="//archive.org/projects/">projects</a> include
+          <a href="https://openlibrary.org/">Open Library</a> &amp;
+          <a href="https://archive-it.org">archive-it.org</a>.
+        </p>
+        <p>
+          Your use of the Wayback Machine is subject to the Internet Archive's
+          <a href="//archive.org/about/terms.php">Terms of Use</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
+    at r.<anonymous> (https://web.archive.org/web/20260818235456jm_/https://platform.openai.com/static/index-Boq8puvw.js:49:179824)
+    at Generator.next (<anonymous>)
+    at Ae (https://web.archive.org/web/20260818235456jm_/https://platform.openai.com/static/index-Boq8puvw.js:49:176724) @ https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK:20
+[    1039ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/https://chatgpt.com/ces/v1/telemetry/intake?ddforward=%2Fapi%2Fv2%2Flogs%3Fddsource%3Dbrowser%26ddtags%3Dsdk_version%253A5.23.3%252Capi%253Axhr%252Cenv%253Aprod%252Cservice%253Aonboard%26dd-api-key%3Dpub65a8cdad695cd20d151bdacdc5e4153f%26dd-evp-origin-version%3D5.23.3%26dd-evp-origin%3Dbrowser%26dd-request-id%3Dde783643-b577-4235-80be-2f848a8ca83e:0
+[    1123ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/https://chatgpt.com/ces/v1/telemetry/intake?ddforward=%2Fapi%2Fv2%2Flogs%3Fddsource%3Dbrowser%26ddtags%3Dsdk_version%253A5.23.3%252Capi%253Afetch%252Cenv%253Aprod%252Cservice%253Aonboard%26dd-api-key%3Dpub65a8cdad695cd20d151bdacdc5e4153f%26dd-evp-origin-version%3D5.23.3%26dd-evp-origin%3Dbrowser%26dd-request-id%3D92d01e86-648f-4ced-9e8b-f506dac4373f:0
+[    1154ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://web.archive.org/web/20260818235456/https://chatgpt.com/ces/v1/telemetry/intake?ddforward=%2Fapi%2Fv2%2Flogs%3Fddsource%3Dbrowser%26ddtags%3Dsdk_version%253A5.23.3%252Capi%253Axhr%252Cenv%253Aprod%252Cservice%253Aonboard%26dd-api-key%3Dpub65a8cdad695cd20d151bdacdc5e4153f%26dd-evp-origin-version%3D5.23.3%26dd-evp-origin%3Dbrowser%26dd-request-id%3Df0571d8d-caac-4110-960d-02f8e13ac7c4:0

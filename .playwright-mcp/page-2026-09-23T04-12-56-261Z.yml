@@ -1,0 +1,177 @@
+- generic [active] [ref=f50e1]:
+  - link "Skip to content" [ref=f50e2] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=f50e5]:
+    - generic [ref=f50e6]:
+      - link "nus — home" [ref=f50e7] [cursor=pointer]:
+        - /url: ../
+        - generic [ref=f50e12]: nus
+      - navigation "Primary" [ref=f50e13]:
+        - link "Panels" [ref=f50e14] [cursor=pointer]:
+          - /url: ../panels/
+        - link "Docs" [ref=f50e18] [cursor=pointer]:
+          - /url: ../docs/
+        - link "Download" [ref=f50e22] [cursor=pointer]:
+          - /url: ../download/
+        - link "About" [ref=f50e26] [cursor=pointer]:
+          - /url: ../about/
+        - link "Source" [ref=f50e30] [cursor=pointer]:
+          - /url: https://github.com/cbassuarez/nus
+      - generic [ref=f50e34]:
+        - group "Signal colour" [ref=f50e35]:
+          - button "Signal colour red" [pressed] [ref=f50e36] [cursor=pointer]
+          - button "Signal colour blue" [ref=f50e37] [cursor=pointer]
+          - button "Signal colour gold" [ref=f50e38] [cursor=pointer]
+          - button "Signal colour green" [ref=f50e39] [cursor=pointer]
+          - button "Signal colour violet" [ref=f50e40] [cursor=pointer]
+          - button "Signal colour teal" [ref=f50e41] [cursor=pointer]
+        - button "Mute site sounds" [pressed] [ref=f50e42] [cursor=pointer]
+        - button "Switch to paper" [ref=f50e46] [cursor=pointer]
+  - main [ref=f50e50]:
+    - article [ref=f50e51]:
+      - generic [ref=f50e52]:
+        - paragraph [ref=f50e53]: Performance / measured behavior
+        - heading [level=1] [ref=f50e54]:
+          - text: The whole
+          - emphasis [ref=f50e55]: working session.
+        - paragraph [ref=f50e56]: Measurements with their methods, observations and limits. Each report stays attached to the application that was measured.
+        - generic [ref=f50e57]:
+          - generic [ref=f50e58]: NUS reference measurements
+          - generic [ref=f50e59]: 1 recorded report
+      - generic [ref=f50e60]:
+        - generic [ref=f50e61]:
+          - heading "NUS / startup" [level=2] [ref=f50e62]
+          - generic [ref=f50e63]: 2026-09-22 · complete
+        - paragraph [ref=f50e64]: macOS-15.6-arm64-arm-64bit-Mach-O · nus 0.0.1 (4740af3)
+        - paragraph [ref=f50e65]: 10/10 measured runs · 1 warmups · 0 failed attempts · 0 unattempted
+        - generic [ref=f50e66]:
+          - generic [ref=f50e67]:
+            - heading "Main entry to first presentation call" [level=3] [ref=f50e68]
+            - paragraph [ref=f50e69]: Median · ms · lower is better
+            - generic [ref=f50e70]: 276.77 ms
+            - 'img "Main entry to first presentation call: median 276.77 ms, observed range 263.38 to 1,616.91. All observations are listed below." [ref=f50e71]':
+              - 'generic "Run 1: 1,616.91 ms" [ref=f50e74]'
+              - 'generic "Run 2: 276.21 ms" [ref=f50e75]'
+              - 'generic "Run 3: 280.33 ms" [ref=f50e76]'
+              - 'generic "Run 4: 270.95 ms" [ref=f50e77]'
+              - 'generic "Run 5: 290.24 ms" [ref=f50e78]'
+              - 'generic "Run 6: 273.34 ms" [ref=f50e79]'
+              - 'generic "Run 7: 277.33 ms" [ref=f50e80]'
+              - 'generic "Run 8: 263.38 ms" [ref=f50e81]'
+              - 'generic "Run 9: 271.58 ms" [ref=f50e82]'
+              - 'generic "Run 10: 284.26 ms" [ref=f50e83]'
+            - generic [ref=f50e84]:
+              - generic [ref=f50e85]: "0"
+              - generic [ref=f50e86]: 1,616.91 ms
+            - paragraph [ref=f50e87]: Range 263.38–1,616.91 ms · n=10 · missing=0
+            - paragraph [ref=f50e88]: "Median interval: 270.95–290.24 ms · ≥95% coverage"
+            - paragraph [ref=f50e89]: Rust main entry → application present-call return; not display scanout
+            - group [ref=f50e90]:
+              - generic "Every observation" [ref=f50e91] [cursor=pointer]
+          - generic [ref=f50e92]:
+            - heading "Whole process tree RSS" [level=3] [ref=f50e93]
+            - paragraph [ref=f50e94]: Median · MiB · lower is better
+            - generic [ref=f50e95]: 389.58 MiB
+            - 'img "Whole process tree RSS: median 389.58 MiB, observed range 384.56 to 394.03. All observations are listed below." [ref=f50e96]':
+              - 'generic "Run 1: 389.78 MiB" [ref=f50e99]'
+              - 'generic "Run 2: 388.61 MiB" [ref=f50e100]'
+              - 'generic "Run 3: 394.03 MiB" [ref=f50e101]'
+              - 'generic "Run 4: 391.03 MiB" [ref=f50e102]'
+              - 'generic "Run 5: 389.38 MiB" [ref=f50e103]'
+              - 'generic "Run 6: 386.3 MiB" [ref=f50e104]'
+              - 'generic "Run 7: 391.09 MiB" [ref=f50e105]'
+              - 'generic "Run 8: 391.42 MiB" [ref=f50e106]'
+              - 'generic "Run 9: 387.5 MiB" [ref=f50e107]'
+              - 'generic "Run 10: 384.56 MiB" [ref=f50e108]'
+            - generic [ref=f50e109]:
+              - generic [ref=f50e110]: "0"
+              - generic [ref=f50e111]: 394.03 MiB
+            - paragraph [ref=f50e112]: Range 384.56–394.03 MiB · n=10 · missing=0
+            - paragraph [ref=f50e113]: "Median interval: 386.3–391.42 MiB · ≥95% coverage"
+            - paragraph [ref=f50e114]: Point-in-time summed resident pages, including shared-page double counting; not private footprint
+            - group [ref=f50e115]:
+              - generic "Every observation" [ref=f50e116] [cursor=pointer]
+        - group [ref=f50e117]:
+          - generic "Method & evidence" [ref=f50e118] [cursor=pointer]
+      - generic [ref=f50e119]:
+        - heading "What remains unmeasured" [level=2] [ref=f50e120]
+        - generic [ref=f50e121]:
+          - generic [ref=f50e122]:
+            - heading "Unified workflows" [level=3] [ref=f50e123]
+            - paragraph [ref=f50e124]: Edit and verify, port-conflict recovery, and project switching under load require completed native runs.
+          - generic [ref=f50e125]:
+            - heading "Comparisons" [level=3] [ref=f50e126]
+            - paragraph [ref=f50e127]: No competitor measurements are published here. Future comparisons will use equivalent tasks and declared configurations.
+          - generic [ref=f50e128]:
+            - heading "Physical latency" [level=3] [ref=f50e129]
+            - paragraph [ref=f50e130]: Submission counters do not measure keyboard-to-screen latency. External display measurements remain separate.
+      - generic [ref=f50e131]:
+        - heading "Correctness has its own evidence." [level=2] [ref=f50e132]
+        - paragraph [ref=f50e133]: Formal verification applies to named invariants under explicit assumptions. A proof of retained output does not prove the whole application correct or establish its speed.
+        - paragraph [ref=f50e134]:
+          - link "Benchmark and verification protocol ↗" [ref=f50e135] [cursor=pointer]:
+            - /url: https://github.com/cbassuarez/nus/blob/main/docs/BENCHMARK_AND_VERIFICATION_PLAN.md
+      - generic [ref=f50e136]:
+        - link "Download public observations · JSON" [ref=f50e137] [cursor=pointer]:
+          - /url: ../assets/benchmarks/catalog.json
+        - link "Earlier measurements and targets →" [ref=f50e138] [cursor=pointer]:
+          - /url: ../docs/measurements/
+  - contentinfo [ref=f50e140]:
+    - generic [ref=f50e141]:
+      - generic [ref=f50e142]:
+        - link "nus" [ref=f50e143] [cursor=pointer]:
+          - /url: ../
+        - paragraph [ref=f50e144]: A terminal with room for the rest.Independent software, in progress.
+      - generic [ref=f50e145]:
+        - heading "Project" [level=4] [ref=f50e146]
+        - list [ref=f50e147]:
+          - listitem [ref=f50e148]:
+            - link "Download" [ref=f50e149] [cursor=pointer]:
+              - /url: ../download/
+          - listitem [ref=f50e150]:
+            - link "Source" [ref=f50e151] [cursor=pointer]:
+              - /url: https://github.com/cbassuarez/nus
+          - listitem [ref=f50e152]:
+            - link "Releases" [ref=f50e153] [cursor=pointer]:
+              - /url: https://github.com/cbassuarez/nus/releases
+          - listitem [ref=f50e154]:
+            - link "Issues" [ref=f50e155] [cursor=pointer]:
+              - /url: https://github.com/cbassuarez/nus/issues
+      - generic [ref=f50e156]:
+        - heading "Docs" [level=4] [ref=f50e157]
+        - list [ref=f50e158]:
+          - listitem [ref=f50e159]:
+            - link "Panels" [ref=f50e160] [cursor=pointer]:
+              - /url: ../panels/
+          - listitem [ref=f50e161]:
+            - link "Architecture" [ref=f50e162] [cursor=pointer]:
+              - /url: ../docs/architecture/
+          - listitem [ref=f50e163]:
+            - link "Design" [ref=f50e164] [cursor=pointer]:
+              - /url: ../docs/design/
+          - listitem [ref=f50e165]:
+            - link "Product" [ref=f50e166] [cursor=pointer]:
+              - /url: ../docs/product/
+          - listitem [ref=f50e167]:
+            - link "Measurements" [ref=f50e168] [cursor=pointer]:
+              - /url: ../docs/measurements/
+          - listitem [ref=f50e169]:
+            - link "Benchmarks" [ref=f50e170] [cursor=pointer]:
+              - /url: ../benchmarks/
+      - generic [ref=f50e171]:
+        - heading "More" [level=4] [ref=f50e172]
+        - list [ref=f50e173]:
+          - listitem [ref=f50e174]:
+            - link "About" [ref=f50e175] [cursor=pointer]:
+              - /url: ../about/
+          - listitem [ref=f50e176]:
+            - link "Dependencies" [ref=f50e177] [cursor=pointer]:
+              - /url: ../docs/dependencies/
+          - listitem [ref=f50e178]:
+            - link "Licence" [ref=f50e179] [cursor=pointer]:
+              - /url: https://github.com/cbassuarez/nus/blob/main/LICENSE
+    - generic [ref=f50e181]:
+      - generic [ref=f50e182]: © 2026 Sebastian Suarez-Solis
+      - generic [ref=f50e183]: MIT
+      - generic [ref=f50e184]: Set in IBM Plex Mono & Newsreader
+  - status [ref=f50e185]
