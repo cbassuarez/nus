@@ -178,6 +178,23 @@ impl App {
                 scene.rect(Rect::new(x, y, len as f32 * cw, ch), paper);
                 self.fonts.draw(scene, Style { font, px, color, tracking: 0.0 }, x, base, &text);
             }
+            // Git's own words: the subcommand, refs, remotes, changed files.
+            for (start, len, kind) in crate::git_complete::spans(&typed, p.cwd.as_deref()) {
+                use crate::git_complete::Kind;
+                let text: String = typed.chars().skip(start).take(len).collect();
+                let x = p.origin.0 + (col0 + start) as f32 * cw;
+                let color = match kind {
+                    Kind::Sub => ansi(5),
+                    Kind::Ref => ansi(2),
+                    Kind::Remote => ansi(3),
+                    Kind::File => t.ink,
+                };
+                scene.rect(Rect::new(x, y, len as f32 * cw, ch), paper);
+                self.fonts.draw(scene, Style { font, px, color, tracking: 0.0 }, x, base, &text);
+                if kind == Kind::File {
+                    scene.hline(x, y + ch - self.px(2.0), len as f32 * cw, self.px(1.0), fade(t.ink, 0.5));
+                }
+            }
         }
         let mut history_ghost = false;
         if self.behavior.predict {
@@ -190,8 +207,20 @@ impl App {
                     history_ghost = true;
                 }
             }
+            // No history for it: what git can take next.
+            if !history_ghost {
+                if let Some(rest) = crate::git_complete::ghost(&typed, p.cwd.as_deref()) {
+                    let x = p.origin.0 + cur.col as f32 * cw;
+                    let rest: String = rest.chars().take(p.term.cols().saturating_sub(cur.col)).collect();
+                    self.fonts.draw(scene, Style { font, px, color: fade(t.ink, 0.38), tracking: 0.0 }, x, base, &rest);
+                    history_ghost = true;
+                }
+            }
         }
-        self.draw_prompt_lsp(scene, p, col0, &typed, history_ghost);
+        // A git line is git's: the language server's guesses (a command
+        // name where git wants a subcommand, `pushd` for `push`) stay out.
+        let theirs = history_ghost || crate::git_complete::is_git(&typed);
+        self.draw_prompt_lsp(scene, p, col0, &typed, theirs);
     }
 
     /// Right or End at the end of the line accepts the prediction. Returns
@@ -200,12 +229,16 @@ impl App {
         if !self.behavior.predict || !self.behavior.shell_integration {
             return false;
         }
-        if !matches!(key, nus_vt::input::Key::Right | nus_vt::input::Key::End) {
+        if !matches!(key, nus_vt::input::Key::Right | nus_vt::input::Key::End | nus_vt::input::Key::Tab) {
             return false;
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let Pane::Term(t) = tab.focused() else { return false };
-        let Some(rest) = t.prediction() else { return false };
+        // History first, then git; Tab takes git's only (the shell keeps
+        // Tab for its own completion everywhere else).
+        let history = if matches!(key, nus_vt::input::Key::Tab) { None } else { t.prediction() };
+        let git = || t.typed().and_then(|(_, typed)| crate::git_complete::ghost(&typed, t.cwd.as_deref()));
+        let Some(rest) = history.or_else(git) else { return false };
         // Only when the caret is at the end of what's typed.
         let grid = t.term.grid();
         let cur = t.term.cursor();

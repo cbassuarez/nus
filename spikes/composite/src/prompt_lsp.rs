@@ -36,6 +36,20 @@ pub struct LineLsp {
 }
 
 /// The trailing word being completed: letters, digits, `_`, `-`, `.`, `/`.
+/// Whether the word at the end of `text` is one the language server should
+/// complete: the command position, a path, or a `$variable`.
+pub fn lsp_wants(text: &str) -> bool {
+    if crate::git_complete::is_git(text) || text.ends_with(char::is_whitespace) {
+        return false;
+    }
+    let word = word_at_end(text);
+    let before = text[..text.len() - word.len()].chars().last();
+    if before == Some('$') || word.contains('/') || word.contains('\\') || word.starts_with('.') || word.starts_with('~') {
+        return true;
+    }
+    matches!(crate::predict::tokens(text).last(), Some((_, _, crate::predict::Tok::Command)))
+}
+
 pub fn word_at_end(text: &str) -> String {
     text.chars()
         .rev()
@@ -108,7 +122,14 @@ impl App {
             l.sent = text.clone();
             l.dirty = false;
             l.word = word_at_end(&text);
-            if !l.word.is_empty() {
+            // Ask only where a shell's language server knows the answer: a
+            // command name where one goes, a path, a variable. Arguments to
+            // a program (git's `push`) aren't command names.
+            if !lsp_wants(&text) {
+                l.ghost = None;
+                l.items.clear();
+                l.menu = false;
+            } else if !l.word.is_empty() {
                 let pos = Position::new(0, text.encode_utf16().count() as u32);
                 let id = s.client.completion(l.uri.clone(), pos, None);
                 self.lsp.pending.insert((l.key.clone(), id), Pending::PromptCompletion { uri: l.uri.clone() });
@@ -262,7 +283,11 @@ impl App {
                 }
             }
         }
-        if matches!(key, WKey::Named(NamedKey::Tab)) {
+        // Tab takes the server's ghost only where it was asked for: never on
+        // a git line (git's own completer has that; see predict.rs).
+        let wanted = t.typed().is_some_and(|(_, typed)| lsp_wants(&typed));
+        let Some(l) = t.plsp.as_mut() else { return false };
+        if matches!(key, WKey::Named(NamedKey::Tab)) && wanted {
             if let Some(g) = l.ghost.take() {
                 let _ = t.pty.write(g.as_bytes());
                 l.items.clear();

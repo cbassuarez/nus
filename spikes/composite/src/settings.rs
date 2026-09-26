@@ -3925,7 +3925,7 @@ impl App {
                     "COMMAND LINE".into(),
                     Choice(vec![("HIGHLIGHT".into(), Hit::Highlight(!self.behavior.highlight), self.behavior.highlight), ("PREDICT".into(), Hit::Predict(!self.behavior.predict), self.behavior.predict)]),
                 ));
-                v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens colored as you type; the history entry that continues your line ghosts after the caret, Right or End accepts".into())));
+                v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens colored as you type; the history entry that continues your line ghosts after the caret, Right or End accepts · git knows its own: subcommands and aliases, branches, remotes, changed files and common flags, colored and completed (Tab accepts)".into())));
                 let pl = self.behavior.prompt_lsp;
                 v.insert(3, (
                     "PROMPT LSP".into(),
