@@ -880,6 +880,7 @@ pub struct App {
     /// Palette row rects from the last frame (clicks, AccessKit).
     pub palette_hits: Vec<Rect>,
     pub intel: crate::intelligence::Dial,
+    pub page_dialog: crate::page_dialog::State,
     pub palette_scroll: f32,
     pub palette_scroll_max: f32,
     pub palette_reveal: bool,
@@ -1074,6 +1075,9 @@ pub struct App {
     pub toast_anim: Anim,
     /// A toast that arrived while a problem was up, waiting for it to go.
     pub toast_held: Option<crate::toast::Toast>,
+    /// A page has the whole screen: which tab, and how the window, focus
+    /// mode and the tab's split were before, to put back after.
+    pub page_fullscreen: Option<(u64, bool, bool, bool)>,
     /// The nus button, held down over home (home.rs).
     pub home_latch: Option<crate::home::Latch>,
     /// NUS_SHOT: the app photographing itself (a test hook, see shot.rs).
@@ -1280,6 +1284,7 @@ impl App {
             access_map: std::collections::HashMap::new(),
             palette_hits: Vec::new(),
             intel: Default::default(),
+            page_dialog: Default::default(),
             palette_scroll: 0.0,
             palette_scroll_max: 0.0,
             palette_reveal: true,
@@ -1406,6 +1411,7 @@ impl App {
             toast: None,
             toast_anim: Anim::at(0.0),
             toast_held: None,
+            page_fullscreen: None,
             home_latch: None,
             page_menu: None,
             art: None,
@@ -1824,7 +1830,12 @@ impl App {
         }));
         if let Ok(mut config)=shared.borrow().viewer.write(){*config=self.viewer_config();}
         let tab = BrowserTab::create_in(url, shared, self.device.clone(), self.bind_texture.clone(), container)?;
-        Some(WebPane {
+        Some(self.pane_for(tab, container))
+    }
+
+    /// A pane around a page that already has its browser.
+    pub(crate) fn pane_for(&self, tab: BrowserTab, container: &str) -> WebPane {
+        WebPane {
             tab,
             container: container.to_string(),
             page: Rect::new(0.0, 0.0, 1.0, 1.0),
@@ -1855,7 +1866,7 @@ impl App {
             devtools: None,
             dt_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             focus_devtools: false,
-        })
+        }
     }
 
     // --- layout ----------------------------------------------------------
@@ -3541,12 +3552,30 @@ impl App {
         }
         crate::interstitial::set_colors(crate::interstitial::Colors { paper: self.theme.paper, ink: self.theme.ink, dim: self.theme.dim, signal: self.surface.signal, dark: self.theme.mode == nus_render::theme::Mode::Ink });
         let mut interstitial_acts: Vec<(u64, bool, String)> = Vec::new();
+        let mut externals: Vec<String> = Vec::new();
+        let mut printed: Vec<Result<std::path::PathBuf, String>> = Vec::new();
+        let mut fullscreens: Vec<(u64, bool)> = Vec::new();
         for (k, tab) in self.tabs.iter_mut().enumerate() {
             let id = tab.id;
             let shown = k == self.active;
             for (right, p) in std::iter::once((false, &mut tab.left)).chain(tab.right.as_mut().map(|p| (true, p))) {
                 if let Pane::Web(w) = p {
                     interstitial_acts.extend(w.tab.tend_interstitial().into_iter().map(|v| (id, right, v)));
+                    if let Some(url) = w.tab.shared.borrow_mut().external.take() {
+                        externals.push(url);
+                    }
+                    if let Some(on) = w.tab.shared.borrow_mut().page_fullscreen.take() {
+                        fullscreens.push((id, on));
+                    }
+                    // `window.print()`: the page, as a PDF, where downloads go.
+                    let asked = std::mem::take(&mut w.tab.shared.borrow_mut().print_asked);
+                    if asked && w.tab.shared.borrow().print_msg.is_none() {
+                        let id = w.tab.devtools("Page.printToPDF", serde_json::json!({ "printBackground": true }));
+                        w.tab.shared.borrow_mut().print_msg = Some(id);
+                    }
+                    if let Some(outcome) = w.tab.shared.borrow_mut().print_saved.take() {
+                        printed.push(outcome);
+                    }
                     if shown && w.asleep.is_none() && w.devtools.is_none() {
                         w.tab.watch();
                     }
@@ -3561,6 +3590,57 @@ impl App {
         }
         for (id, right, verb) in interstitial_acts {
             self.interstitial_act(id, right, &verb);
+            changed = true;
+        }
+        // A page's fullscreen: the screen, with nus's chrome and the other
+        // half of a split out of the way; all of it back when it's over.
+        for (id, on) in fullscreens {
+            if on && self.page_fullscreen.is_none() {
+                if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                    self.page_fullscreen = Some((id, self.fullscreen, self.focus, self.tabs[i].solo));
+                    self.activate(i);
+                    self.tabs[i].solo = self.tabs[i].right.is_some();
+                    self.focus = true;
+                    if !self.fullscreen { self.toggle_fullscreen(); }
+                    self.layout();
+                }
+            } else if !on {
+                if let Some((was_id, window, focus, solo)) = self.page_fullscreen.take() {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == was_id) { t.solo = solo; }
+                    self.focus = focus;
+                    if self.fullscreen != window { self.toggle_fullscreen(); }
+                    self.layout();
+                }
+            }
+            changed = true;
+        }
+        // Its tab closed while it had the screen: put everything back.
+        if let Some((id, window, focus, _)) = self.page_fullscreen {
+            if !self.tabs.iter().any(|t| t.id == id) {
+                self.page_fullscreen = None;
+                self.focus = focus;
+                if self.fullscreen != window { self.toggle_fullscreen(); }
+                self.layout();
+                changed = true;
+            }
+        }
+        for outcome in printed {
+            match outcome {
+                Ok(path) => {
+                    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    self.toast(nus_render::text::icons::DOWNLOAD, "Saved As PDF", name, Some(crate::toast::Act::RevealPath(path)));
+                }
+                Err(why) => self.toast_problem("Could Not Print", why, None),
+            }
+            changed = true;
+        }
+        // A page tried to open another app: it stays, and nus asks first —
+        // what a page names is not always what you'd want launched.
+        for url in externals {
+            let scheme = url.split(':').next().unwrap_or("").to_string();
+            let detail = if scheme.eq_ignore_ascii_case("mailto") { url.trim_start_matches("mailto:").split('?').next().unwrap_or("").to_string() } else { format!("{scheme}: · {}", crate::app::fit_cmd(&url, 48)) };
+            let words = if scheme.eq_ignore_ascii_case("mailto") { "Write An Email" } else { "Open In Another App" };
+            self.toast(nus_render::text::icons::OPEN_EXTERNAL, words, detail, Some(crate::toast::Act::OpenExternal(url)));
             changed = true;
         }
         if detected != self.detected {
@@ -4282,6 +4362,8 @@ impl App {
             self.draw_drop(&mut scene, crate::pane_mode::Dragging::Tab(i));
         }
         if self.sidebar_visible() && (self.look_menu||self.look_anim.active()) {self.draw_look_menu(&mut scene,self.list_rect());}
+        // A page's question: the strip turns and the sheet hangs from it.
+        self.draw_page_dialog(&mut scene);
         // Palette.
         if let Some((mode, input)) = self.palette.clone() {
             // The palette is modal: nothing under it takes the atom's drags.
@@ -7317,12 +7399,25 @@ impl App {
         let tip_was_visible = self.tooltips.visible();
         if pressed { self.dismiss_tip(); }
         if self.page_menu_key(ev) { return; }
+        // Esc leaves a page's fullscreen, as in any browser; the page is told.
+        if pressed && self.mods.is_empty() && matches!(ev.logical_key, WKey::Named(NamedKey::Escape)) {
+            if let Some((id, ..)) = self.page_fullscreen {
+                if let Some(t) = self.tabs.iter().find(|t| t.id == id) {
+                    for p in std::iter::once(&t.left).chain(t.right.as_ref()) {
+                        if let Pane::Web(w) = p { w.tab.exit_fullscreen(); }
+                    }
+                }
+                return;
+            }
+        }
         if pressed && tip_was_visible && matches!(ev.logical_key, WKey::Named(NamedKey::Escape)) {
             self.page_menu_keys.insert(ev.physical_key);
             return;
         }
         if self.library_context_key(ev) { return; }
-        if self.palette.is_none() && self.mods.is_empty() && self.overlay_key(ev) { return; }
+        // An overlay takes its keys; a dialog's also takes Shift (typing)
+        // and ⌘↵ / ⌘V, and lets every other chord through.
+        if self.palette.is_none() && self.overlay_key(ev) { return; }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
@@ -8256,9 +8351,13 @@ impl App {
 
     /// Open `url` as a page in the stack of tab `source`.
     pub(crate) fn open_in_stack(&mut self, source: usize, url: &str) {
-        // A page opened from a page nests under it: the tree grows with depth.
-        let root = source;
         let Some(w) = self.new_web_pane(url) else { return };
+        self.place_in_stack(source, w);
+    }
+
+    /// A page opened from a page nests under it: the tree grows with depth.
+    pub(crate) fn place_in_stack(&mut self, source: usize, w: WebPane) {
+        let root = source;
         let mut tab = self.make_tab(Pane::Web(w), None);
         tab.parent = Some(self.tabs[root].id);
         let parent_look = self.tabs[root].look.clone();
@@ -8284,8 +8383,92 @@ impl App {
         self.activate(at);
     }
 
+    /// Windows pages opened (`window.open`, `target=_blank`) that Chromium
+    /// has made: each becomes a pane where a link from that page would
+    /// go, still joined to its opener.
+    fn adopt_popups(&mut self) {
+        let mut ready: Vec<(usize, crate::browser::SharedRef, String)> = Vec::new();
+        for (i, tab) in self.tabs.iter().enumerate() {
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Web(w) = p {
+                    let container = w.container.clone();
+                    let mut s = w.tab.shared.borrow_mut();
+                    let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut s.opened).into_iter().partition(|c| c.borrow().adopted.is_some());
+                    s.opened = later;
+                    ready.extend(now.into_iter().map(|c| (i, c, container.clone())));
+                }
+            }
+        }
+        for (i, shared, container) in ready {
+            let viewer = {
+                let mut c = shared.borrow_mut();
+                c.scale = self.scale;
+                c.viewer.clone()
+            };
+            if let Ok(mut config) = viewer.write() { *config = self.viewer_config(); }
+            let Some(tab) = crate::browser::BrowserTab::adopt(shared) else { continue };
+            let w = self.pane_for(tab, &container);
+            match self.behavior.links {
+                crate::settings::Links::Split if self.tabs.get(i).is_some_and(|t| t.right.is_none()) => {
+                    self.tabs[i].right = Some(Pane::Web(w));
+                    self.tabs[i].focus_right = true;
+                    self.activate(i);
+                }
+                crate::settings::Links::NewTab => {
+                    let tab = self.make_tab(Pane::Web(w), None);
+                    self.tabs.push(tab);
+                    self.activate(self.tabs.len() - 1);
+                }
+                _ => self.place_in_stack(i, w),
+            }
+            self.layout();
+            self.dirty = true;
+        }
+    }
+
+    /// Pages Chromium closed on their own account — a popup that closed
+    /// itself, a page you chose to leave, a new tab that turned out to be
+    /// a download — go, and their pane with them.
+    fn take_away_gone_pages(&mut self) {
+        let mut gone: Vec<(u64, bool)> = Vec::new();
+        for tab in &self.tabs {
+            for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
+                if let Pane::Web(w) = p {
+                    let mut s = w.tab.shared.borrow_mut();
+                    if s.gone || s.download_only {
+                        s.download_only = false;
+                        gone.push((tab.id, right));
+                    }
+                }
+            }
+        }
+        for (id, right) in gone {
+            let Some(i) = self.tabs.iter().position(|t| t.id == id) else { continue };
+            let tab = &mut self.tabs[i];
+            if right {
+                tab.right = None;
+                tab.focus_right = false;
+            } else if let Some(r) = tab.right.take() {
+                tab.left = r;
+                tab.focus_right = false;
+            } else if self.tabs.len() > 1 {
+                self.selected.clear();
+                self.active = i;
+                self.close_tabs(true);
+                continue;
+            } else {
+                // The last tab: the prompt takes its place.
+                self.tabs[i].left = Pane::Home(crate::home::HomePane::new());
+            }
+            self.layout();
+            self.dirty = true;
+        }
+    }
+
     /// Pages that asked for a new window since the last frame.
     pub(crate) fn drain_popups(&mut self) {
+        self.adopt_popups();
+        self.take_away_gone_pages();
         let mut opens = Vec::new();
         for (i, tab) in self.tabs.iter().enumerate() {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
@@ -8471,6 +8654,13 @@ impl App {
     }
 
     pub(crate) fn open_url(&mut self, url: &str, new_tab: bool) {
+        // Chromium's own settings pages do not exist in nus's pages (they
+        // load forever); protected content and the rest live in nus's.
+        if crate::widevine::is_chrome_settings(url) {
+            self.open_settings_at(crate::settings::SEC_BROWSER, None);
+            self.notice(nus_render::text::icons::GLOBE, "Browser Settings", "chrome://settings lives here in nus · protected content is under PROTECTED CONTENT");
+            return;
+        }
         if new_tab {
             if let Some(w) = self.new_web_pane(url) {
                 let tab = self.make_tab(Pane::Web(w), None);
@@ -8638,6 +8828,31 @@ impl App {
             }
             // Never close the last tab; keep one.
             targets.retain(|&t| t != self.active);
+            if targets.is_empty() {
+                return;
+            }
+        }
+        // A page with unsaved work gets its say (`beforeunload`): its tab
+        // stays, with the leave-page question up, until you answer. Pages
+        // with nothing to say start closing here.
+        let mut held = None;
+        targets.retain(|&i| {
+            let Some(tab) = self.tabs.get(i) else { return true };
+            let mut ok = true;
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Web(w) = p {
+                    if !w.tab.shared.borrow().gone && !w.tab.ask_to_close() {
+                        ok = false;
+                    }
+                }
+            }
+            if !ok { held = Some(i); }
+            ok
+        });
+        if let Some(i) = held {
+            self.active = i;
+            self.selected.clear();
+            self.dirty = true;
             if targets.is_empty() {
                 return;
             }
@@ -8894,7 +9109,8 @@ impl App {
         if let Some(tab) = self.tabs.get(self.active) {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                 if let Pane::Web(w) = p {
-                    if w.page.contains(x, y) || self.mouse_down_in_web {
+                    // A page with a question up doesn't see the pointer either.
+                    if (w.page.contains(x, y) || self.mouse_down_in_web) && w.tab.shared.borrow().dialog.is_none() {
                         let (lx, ly) = ((x - w.page.x) / self.scale, (y - w.page.y) / self.scale);
                         w.tab.mouse_move(lx as i32, ly as i32, flags, false);
                     }
@@ -8968,6 +9184,8 @@ impl App {
             return;
         }
         if pressed && self.behavior.pip_policy.click_app {self.close_pip();}
+        // A page's question stands: its sheet answers, its page takes nothing.
+        if self.palette.is_none() && self.page_dialog_mouse(pressed && button == MouseButton::Left, x, y) { self.dirty = true; return; }
         if self.page_menu_mouse(button, state) { return; }
         if self.timeline_mouse(button,state,x,y){return;}
         // The mouse's own back and forward buttons, on the page under them.
@@ -9482,6 +9700,7 @@ impl App {
             MouseScrollDelta::PixelDelta(p) => p.y as f32,
         };
         if self.timeline_wheel(x,y,dy_px){return;}
+        if self.page_dialog_blocks(x, y) { return; }
         if self.me_wheel(x, y, dy_px) { return; }
         if self.palette.is_some() {
             let (at, max) = (self.palette_scroll, self.palette_scroll_max);

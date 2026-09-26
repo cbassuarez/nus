@@ -24,6 +24,8 @@ pub enum Target {
     Replay(crate::replay::HistoryHit),
     Mercury(crate::me::CardHit),
     Import(crate::me::CardHit),
+    /// A page dialog's command, by index.
+    PageDialog(usize),
     None,
 }
 
@@ -389,6 +391,40 @@ impl App {
             if let Some(v)=tl.records.get(tl.at){let id=fresh(&mut map,Target::None);let mut n=Node::new(Role::Document);n.set_label("Recorded command output");n.set_value(v["output"].as_str().unwrap_or(""));nodes.push((id,n));kids.push(id);}
             let mut n=Node::new(Role::Group);n.set_label("Session history and map");n.set_children(kids);nodes.push((NodeId(7),n));root_kids.push(NodeId(7));
         }
+        // A page's question or a site's sign-in: a modal alert dialog. A
+        // secret field is a password input with no value, ever.
+        if let Some((title, says, fields, acts)) = self.page_dialog_access() {
+            let mut kids = Vec::new();
+            if !says.is_empty() {
+                let id = fresh(&mut map, Target::None);
+                let mut n = Node::new(Role::Label);
+                n.set_label(says);
+                nodes.push((id, n));
+                kids.push(id);
+            }
+            for (label, secret, value) in fields {
+                let id = fresh(&mut map, Target::None);
+                let mut n = Node::new(if secret { Role::PasswordInput } else { Role::TextInput });
+                n.set_label(label);
+                if !secret { n.set_value(value); }
+                nodes.push((id, n));
+                kids.push(id);
+            }
+            for (i, label) in acts.into_iter().enumerate() {
+                let id = fresh(&mut map, Target::PageDialog(i));
+                let mut n = Node::new(Role::Button);
+                n.set_label(label);
+                n.add_action(Action::Click);
+                nodes.push((id, n));
+                kids.push(id);
+            }
+            let mut group = Node::new(Role::AlertDialog);
+            group.set_label(title);
+            group.set_modal();
+            group.set_children(kids);
+            nodes.push((NodeId(8), group));
+            root_kids.push(NodeId(8));
+        }
         let mut root = Node::new(Role::Window);
         root.set_label("nus");
         root.set_children(root_kids);
@@ -402,6 +438,10 @@ impl App {
 
     /// A screen reader (or automation) activated a node.
     pub fn access_action(&mut self, req: ActionRequest) {
+        if let Some(Target::PageDialog(i)) = self.access_map.get(&req.target_node.0).copied() {
+            if req.action == Action::Click { self.page_dialog_access_act(i); }
+            return;
+        }
         if let Some(Target::Import(hit))=self.access_map.get(&req.target_node.0).copied() {
             match req.action {Action::Click=>self.me_hit(hit),Action::Focus=>{if let crate::me::CardHit::ImportSource(i)=hit{self.me_card.import.source=i;}self.me_card.import.focus=usize::from(hit==crate::me::CardHit::ImportOpen);self.dirty=true;},_=>{}}
             return;

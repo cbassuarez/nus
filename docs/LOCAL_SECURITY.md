@@ -127,3 +127,37 @@ References: [RustCrypto AEAD](https://docs.rs/chacha20poly1305/latest/chacha20po
 [Chromium site isolation](https://www.chromium.org/developers/design-documents/site-isolation/).
 
 See [the verification record](UPDATES_SECURITY_VERIFICATION.md) for executed checks and unverified platform boundaries.
+
+## Page dialogs and sign-in
+
+A page's `alert`, `confirm`, `prompt` and leave-page questions, and a site's
+HTTP sign-in, are nus's own sheet (`page_dialog.rs`), held to what Chromium's
+dialogs guarantee:
+
+- **Drawn where a page can't draw.** The top strip turns (a signal label and
+  who asks) with a signal rule across the window, and the sheet hangs from
+  that rule. Nothing of it lives only inside the page's rect, which a page
+  could fake pixel for pixel.
+- **Chromium names who asks.** The registrable domain comes first (`acme.dev`
+  for `intranet.acme.dev`), then the full origin; a frame is named for
+  itself, and a frame with no origin is "an unnamed frame", never the page.
+  The page's words are quoted, dim, capped at 300 characters and six lines,
+  with control and bidi-override characters removed.
+- **Only nus gets the input.** While a question stands, `BrowserTab` drops
+  every key, click, wheel and pointer move to that page. Enter and clicks are
+  held for 500 ms after the sheet appears (Esc, the safe answer, is not). A
+  password field turns on macOS secure input while it has the caret.
+- **The password stays in the sheet.** It is typed into a buffer that can't
+  be cloned and is zeroed when dropped, not into the page state the overlay
+  copies each frame; it joins the answer only for the handoff to Chromium and
+  is wiped after. It is drawn as dots, described to screen readers as a
+  password field with no value, and `scripts/check-page-dialogs.py` fails if
+  it reaches the log. Sign-ins given are held in memory for the origin that
+  asked and sent only to it; nothing is written to disk.
+- **No spam, no focus theft.** One question per tab; a background tab's waits
+  (the strip lists it) and never activates. From the third question a page
+  can be told to stop asking until it loads a new page; Chromium then
+  suppresses its questions.
+
+File pickers, passkeys (WebAuthn), client certificates and payment sheets stay
+the system's own UI.

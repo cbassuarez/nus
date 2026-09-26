@@ -1078,6 +1078,7 @@ pub enum Hit {
     Back,
     MakeDefault,
     Unregister,
+    Widevine,
     StartOnLaunch(bool),
     StartupSound(bool),
     ReloadAvatar,
@@ -1577,7 +1578,7 @@ impl App {
         let Some(&(_, hit)) = self.settings_hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)) else { return true };
         match hit {
             Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) => {}
-            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {
+            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove => {
                 self.play_event("control.press")
             }
             _ => self.play_event("toggle"),
@@ -1848,6 +1849,7 @@ impl App {
             Hit::StartupSound(b) => if b { "startup sound on".into() } else { "startup sound off".into() },
             Hit::MakeDefault => "make nus the default browser".into(),
             Hit::Unregister => "unregister nus as a browser".into(),
+            Hit::Widevine => "fetch the Widevine module now".into(),
             Hit::BarStyle(b) => format!("loading bar {}", b.name()),
             Hit::BarColor(c) => format!("bar color {:?}", c).to_lowercase(),
         }
@@ -1969,6 +1971,11 @@ impl App {
                     s.drill = false;
                     s.scroll = 0.0;
                 }
+            }
+            Hit::Widevine => {
+                crate::browser_runtime::ensure();
+                crate::widevine::fetch();
+                self.notice(icons::DOWNLOAD, "Widevine", "asked Chromium for the protected-content module");
             }
             Hit::MakeDefault => match crate::little::register() {
                 Ok(()) => self.register_note = "registered · pick nus in Windows Settings".into(),
@@ -4066,6 +4073,9 @@ impl App {
                         format!("{} · how eagerly it follows real progress", self.load_bar.chase),
                     ),
                 ),
+                ("PROTECTED CONTENT".into(), Info(crate::widevine::status())),
+                ("".into(), Buttons(vec![("FETCH NOW".into(), icons::DOWNLOAD, Hit::Widevine)])),
+                ("".into(), Info("Widevine plays DRM video (Netflix, Prime Video, Disney+). Chromium downloads it into your profile once, then keeps it current; FETCH NOW asks for it straight away.".into())),
                 (
                     "DEFAULT BROWSER".into(),
                     Buttons(vec![("MAKE DEFAULT".into(), icons::GLOBE, Hit::MakeDefault), ("UNREGISTER".into(), icons::CLOSE, Hit::Unregister)]),

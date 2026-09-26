@@ -108,6 +108,94 @@ pub struct Shared {
     pub(crate) debug: Option<crate::interstitial::Internal>,
     /// Asking the network whether it wants a sign-in (a captive portal).
     pub(crate) portal: Option<Arc<std::sync::Mutex<Option<Option<String>>>>>,
+    /// The page's own question (alert, confirm, prompt, leave-page) or a
+    /// site's sign-in, waiting on the overlay's answer.
+    pub(crate) dialog: Option<Dialog>,
+    /// An address for another app (mailto:, zoommtg:, …) the page tried to
+    /// open: not a page nus can show, so the app offers to hand it on.
+    pub external: Option<String>,
+    /// Makes the page for a window this page opens (`window.open`,
+    /// `target=_blank`): its own client, so Chromium can keep the two
+    /// joined (`window.opener`, `postMessage`, the popup closing itself).
+    pub(crate) popup_factory: Option<StdRc<dyn Fn() -> (Client, SharedRef)>>,
+    /// Windows this page opened, waiting for a tab of their own.
+    pub(crate) opened: Vec<SharedRef>,
+    /// This page's browser, when Chromium made it (a popup) rather than nus.
+    pub(crate) adopted: Option<Browser>,
+    /// Chromium closed this page on its own account: the page closed
+    /// itself, or you chose to leave it. The app takes its pane away.
+    pub gone: bool,
+    /// nus is closing or sleeping this page itself; its close is expected.
+    pub(crate) letting_go: bool,
+    /// The page has shown a document of its own (not only a download).
+    pub(crate) committed: bool,
+    /// Made by Chromium for a popup, waiting for its browser.
+    pub(crate) created_by_chromium: bool,
+    /// The page called `window.print()`: there is no print dialog for a
+    /// page drawn offscreen, so it is saved as a PDF instead.
+    pub(crate) print_asked: bool,
+    pub(crate) print_msg: Option<i32>,
+    /// Where that PDF went, or why it didn't.
+    pub print_saved: Option<Result<std::path::PathBuf, String>>,
+    /// The page asked to go fullscreen (true) or to come back (false).
+    pub page_fullscreen: Option<bool>,
+    /// Its only navigation became a download, now finished: the tab has
+    /// nothing to show.
+    pub download_only: bool,
+    /// …and that download is still going.
+    pub(crate) download_waiting: bool,
+}
+
+/// What a `Kind::Dialog` overlay answers.
+pub(crate) enum Dialog {
+    Js(JsdialogCallback),
+    /// A site answered 401: the sign-in it wants, for this origin.
+    Basic(String),
+}
+
+/// Sign-ins you gave, by origin (`https://host:port`), as the header sent
+/// with every request to that origin and no other. Read on Chromium's IO
+/// thread, so it lives here and not in `Shared`. Memory only: a sign-in
+/// lasts as long as nus runs, as the browser's own would.
+static SIGNINS: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+pub fn origin_of(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    matches!(u.scheme(), "http" | "https").then(|| u.origin().ascii_serialization())
+}
+
+fn signin_for(url: &str) -> Option<String> {
+    let origin = origin_of(url)?;
+    SIGNINS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(&origin).cloned()
+}
+
+fn remember_signin(origin: String, header: Option<String>) {
+    let mut map = SIGNINS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = map.get_or_insert_with(Default::default);
+    match header {
+        Some(h) => { map.insert(origin, h); }
+        None => { map.remove(&origin); }
+    }
+}
+
+/// `user:pass` as HTTP Basic sends it.
+fn basic(user: &str, pass: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = format!("{user}:{pass}").into_bytes();
+    let mut out = String::from("Basic ");
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            if k <= c.len() { out.push(T[(n >> (18 - 6 * k) & 63) as usize] as char); } else { out.push('='); }
+        }
+    }
+    out
+}
+
+/// Schemes a tab shows itself; any other address belongs to another app.
+pub fn web_scheme(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+    matches!(scheme.as_str(), "http" | "https" | "file" | "data" | "blob" | "about" | "chrome" | "chrome-error" | "devtools" | "javascript" | "filesystem" | "nus" | "chrome-extension")
 }
 
 impl Shared {
@@ -163,6 +251,19 @@ wrap_load_handler! {
             // In place of Chromium's error document: nus's transcript.
             let dest=s.failed_url.clone().unwrap_or_else(||url.to_string());
             let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_secs() as i64).unwrap_or(0);
+            // The site wants a sign-in (a 401 Chromium had no answer to):
+            // ask for it, over the page, instead of calling it unreachable.
+            if code==-338 && s.dialog.is_none() {
+                if let Some(origin)=origin_of(&dest) {
+                    let rejected=signin_for(&dest).is_some();
+                    remember_signin(origin.clone(),None);
+                    let host=crate::interstitial::host(&dest);
+                    let mut p=crate::interstitial::Page::signin(&dest,&host,"",false);
+                    if rejected {p.log.insert(1,"  that username and password weren't accepted".into());}
+                    s.overlay=Some(p);s.dialog=Some(Dialog::Basic(origin));s.paints+=1;
+                    return;
+                }
+            }
             s.interstitial=Some(crate::interstitial::for_error(&dest,code,can_back,now,crate::interstitial::built()));
             s.inject=true;
             if crate::interstitial::portal_suspect(code) {
@@ -174,6 +275,10 @@ wrap_load_handler! {
                     crate::browser_runtime::wake();
                 });
             }
+        }
+        fn on_load_start(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,_transition_type:TransitionType) {
+            // A document of its own: this tab is more than a download.
+            if frame.is_some_and(|f|f.is_main()!=0) { self.shared.borrow_mut().committed=true; }
         }
         fn on_load_end(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,_status: ::std::os::raw::c_int) {
             let Some(frame)=frame.filter(|f|f.is_main()!=0) else {return};
@@ -302,6 +407,33 @@ fn refused(list: &std::collections::HashSet<String>, host: &str, page: &str) -> 
     let Some(entry) = listed(list, host) else { return false };
     // First party: the page itself is under the same entry.
     !(page == entry || page.ends_with(&format!(".{entry}")))
+}
+
+#[cfg(test)]
+mod print_tests {
+    #[test]
+    fn devtools_base64_decodes() {
+        assert_eq!(super::decode64("JVBERi0xLjQ="), b"%PDF-1.4");
+        assert_eq!(super::decode64("YTpi"), b"a:b");
+    }
+}
+
+#[cfg(test)]
+mod signin_tests {
+    use super::{basic, origin_of};
+
+    #[test]
+    fn a_sign_in_is_basic_and_bound_to_its_origin() {
+        // RFC 7617's own example.
+        assert_eq!(basic("Aladdin", "open sesame"), "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+        assert_eq!(basic("a", "b"), "Basic YTpi");
+        assert_eq!(origin_of("http://127.0.0.1:47920/auth?x=1"), Some("http://127.0.0.1:47920".into()));
+        assert_eq!(origin_of("https://intranet.example/a"), Some("https://intranet.example".into()));
+        // Another port, another scheme: another origin, no header.
+        assert_ne!(origin_of("http://127.0.0.1:47921/"), origin_of("http://127.0.0.1:47920/"));
+        assert_ne!(origin_of("https://intranet.example/"), origin_of("http://intranet.example/"));
+        assert_eq!(origin_of("mailto:a@b.c"), None);
+    }
 }
 
 #[cfg(test)]
@@ -499,6 +631,45 @@ wrap_client! {
 }
 
 pub type SharedRef = StdRc<RefCell<Shared>>;
+
+/// Injected into every document: `window.print()` asks nus, which saves
+/// the page as a PDF (a page drawn offscreen has no print dialog).
+const PRINT_JS: &str = "(()=>{try{const p=function(){try{nusPrint('')}catch(e){}};Object.defineProperty(window,'print',{value:p,writable:true,configurable:true})}catch(e){}})()";
+
+/// Base64 as DevTools sends binary.
+fn decode64(s: &str) -> Vec<u8> {
+    let val = |c: u8| match c { b'A'..=b'Z' => Some(c - b'A'), b'a'..=b'z' => Some(c - b'a' + 26), b'0'..=b'9' => Some(c - b'0' + 52), b'+' => Some(62), b'/' => Some(63), _ => None };
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0);
+    for v in s.bytes().filter_map(val) {
+        acc = acc << 6 | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    out
+}
+
+/// `<title>.pdf` in the downloads folder, never over a file already there.
+fn save_pdf(title: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    if !bytes.starts_with(b"%PDF") {
+        return Err("the PDF came back empty".into());
+    }
+    let dir = downloads_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem: String = title.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { ' ' } else { c }).collect::<String>().trim().chars().take(80).collect();
+    let stem = if stem.is_empty() { "page".to_string() } else { stem };
+    let mut path = dir.join(format!("{stem}.pdf"));
+    let mut n = 1;
+    while path.exists() {
+        n += 1;
+        path = dir.join(format!("{stem} ({n}).pdf"));
+    }
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path)
+}
 
 /// Injected into every document: tracks the largest playing <video>, reports
 /// it through the `nusVideo` binding, and exposes transport on `__nus`.
@@ -709,6 +880,13 @@ wrap_display_handler! {
     }
 
     impl DisplayHandler {
+        /// The page went fullscreen (a video's button, the Fullscreen API)
+        /// or came back: the app gives it the whole screen, or takes it back.
+        fn on_fullscreen_mode_change(&self, _browser: Option<&mut Browser>, fullscreen: ::std::os::raw::c_int) {
+            let mut s = self.d.shared.borrow_mut();
+            s.page_fullscreen = Some(fullscreen != 0);
+            s.paints += 1;
+        }
         fn on_title_change(&self, _browser: Option<&mut Browser>, title: Option<&CefString>) {
             if let Some(t) = title {
                 self.d.shared.borrow_mut().title = t.to_string();
@@ -830,6 +1008,26 @@ wrap_dev_tools_message_observer! {
         fn on_dev_tools_method_result(&self, _browser: Option<&mut Browser>, message_id: ::std::os::raw::c_int, success: ::std::os::raw::c_int, result: Option<&[u8]>) {
             tracing::debug!("cdp result id={message_id} ok={success} {}", result.map(|r| String::from_utf8_lossy(r).chars().take(160).collect::<String>()).unwrap_or_default());
             {
+                // The page's print, as a PDF: written straight to disk here,
+                // since a PDF is usually larger than a reply may be kept.
+                let mut s = self.o.shared.borrow_mut();
+                if s.print_msg == Some(message_id) {
+                    s.print_msg = None;
+                    let title = s.title.clone();
+                    let outcome = if success == 0 {
+                        Err("the page couldn't be turned into a PDF".to_string())
+                    } else {
+                        result.and_then(|r| serde_json::from_slice::<serde_json::Value>(r).ok())
+                            .and_then(|v| v.get("data").and_then(|d| d.as_str()).map(decode64))
+                            .ok_or_else(|| "the PDF didn't arrive".to_string())
+                            .and_then(|bytes| save_pdf(&title, &bytes))
+                    };
+                    s.print_saved = Some(outcome);
+                    s.paints += 1;
+                    return;
+                }
+            }
+            {
                 // The watch's question, answered: the page is alive.
                 let mut s = self.o.shared.borrow_mut();
                 if s.ping.is_some_and(|(id, _)| id == message_id) {
@@ -920,6 +1118,13 @@ wrap_dev_tools_message_observer! {
                     s.paints += 1;
                     crate::browser_runtime::wake();
                 }
+                return;
+            }
+            if v.get("name").and_then(|n| n.as_str()) == Some("nusPrint") {
+                let mut s = self.o.shared.borrow_mut();
+                s.print_asked = true;
+                s.paints += 1;
+                crate::browser_runtime::wake();
                 return;
             }
             if v.get("name").and_then(|n| n.as_str()) != Some("nusVideo") {
@@ -1104,12 +1309,21 @@ wrap_life_span_handler! {
 
     impl LifeSpanHandler {
         fn on_after_created(&self, browser: Option<&mut Browser>) {
-            if let Some(b) = browser { LIVE_BROWSERS.with(|v| { v.borrow_mut().insert(b.identifier()); }); }
+            if let Some(b) = browser {
+                LIVE_BROWSERS.with(|v| { v.borrow_mut().insert(b.identifier()); });
+                // A popup Chromium made: the app adopts it into a tab.
+                if let Ok(mut s) = self.d.shared.try_borrow_mut() {
+                    if s.adopted.is_none() && s.created_by_chromium { s.adopted = Some(b.clone()); s.paints += 1; }
+                }
+            }
         }
         fn on_before_close(&self, browser: Option<&mut Browser>) {
             if let Some(b) = browser {
                 LIVE_BROWSERS.with(|v| { v.borrow_mut().remove(&b.identifier()); });
                 if let Some(counts) = BLOCKED.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { counts.remove(&b.identifier()); }
+            }
+            if let Ok(mut s) = self.d.shared.try_borrow_mut() {
+                if !s.letting_go && !s.suspended { s.gone = true; s.paints += 1; }
             }
         }
 
@@ -1131,6 +1345,24 @@ wrap_life_span_handler! {
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
             let _ = browser;
+            let factory = self.d.shared.borrow().popup_factory.clone();
+            // A real window, joined to its opener: sign-in and payment popups
+            // talk back through `window.opener` and close themselves.
+            if let (Some(factory), Some(client_out), Some(info)) = (factory, _client, _window_info) {
+                let (client, child) = factory();
+                {
+                    let mut c = child.borrow_mut();
+                    c.created_by_chromium = true;
+                    if let Some(url) = target_url { c.url = url.to_string(); c.requested_url = url.to_string(); c.loading = true; }
+                }
+                *client_out = Some(client);
+                info.windowless_rendering_enabled = 1;
+                info.shared_texture_enabled = 1;
+                info.external_begin_frame_enabled = 1;
+                if let Some(settings) = _settings { settings.windowless_frame_rate = 60; }
+                self.d.shared.borrow_mut().opened.push(child);
+                return 0;
+            }
             if let Some(url) = target_url {
                 self.d.shared.borrow_mut().popup = Some(url.to_string());
             }
@@ -1263,6 +1495,11 @@ wrap_download_handler! {
                 s.paints+=1;
                 return 1;
             }
+            // A tab that never showed a page of its own (a link opened in a
+            // new tab that turned out to be a file): nothing to keep it for.
+            // It stays until the file is done: closing the page now would
+            // cancel the download it started.
+            {let mut s=self.display.shared.borrow_mut();if !s.committed && s.url.starts_with("http") {s.download_waiting=true;}}
             let title=self.display.shared.borrow().title.clone();
             let origin=download_origin(&self.display.shared.borrow());
             let name=crate::downloads::filename(&original,&title,crate::downloads::rename_mode());
@@ -1309,8 +1546,13 @@ wrap_download_handler! {
                     d.name = std::path::Path::new(&p).file_name().unwrap_or_default().to_string_lossy().into();
                     d.path = p;
                 }
+                let finished = d.done || d.cancelled || d.interrupted;
                 if before!=(d.done,d.cancelled,d.interrupted,d.paused){crate::downloads::save(&list);}
                 crate::downloads::changed();
+                if finished {
+                    let mut s=self.display.shared.borrow_mut();
+                    if s.download_waiting && !s.committed {s.download_waiting=false;s.download_only=true;}
+                }
             }
             self.display.shared.borrow_mut().paints += 1;
         }
@@ -1423,6 +1665,10 @@ wrap_resource_request_handler! {
                 req.set_header_by_name(Some(&"Sec-GPC".into()), Some(&"1".into()), 1);
                 req.set_header_by_name(Some(&"DNT".into()), Some(&"1".into()), 1);
             }
+            // A sign-in you gave this origin goes with each of its requests.
+            if let Some(h) = signin_for(&CefString::from(&req.url()).to_string()) {
+                req.set_header_by_name(Some(&"Authorization".into()), Some(&h.as_str().into()), 1);
+            }
             // Never block the navigation itself, only what the page pulls in.
             if self.navigation {
                 return ReturnValue::CONTINUE;
@@ -1474,6 +1720,16 @@ wrap_request_handler! {
     impl RequestHandler {
         fn on_before_browse(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,request:Option<&mut Request>,_gesture: ::std::os::raw::c_int,_redirect: ::std::os::raw::c_int)->::std::os::raw::c_int {
             if _gesture != 0 { self.display.shared.borrow_mut().nav_gesture_at = Some(crate::clock::now()); }
+            // An address for another app: the page stays; the app asks first.
+            if let Some(url)=request.as_ref().map(|r|CefString::from(&r.url()).to_string()) {
+                if !web_scheme(&url) {
+                    if _gesture != 0 || frame.as_ref().is_some_and(|f|f.is_main()!=0) {
+                        let mut s=self.display.shared.borrow_mut();
+                        s.external=Some(url);s.paints+=1;
+                    }
+                    return 1;
+                }
+            }
             if frame.is_some_and(|f|f.is_main()!=0) {if let Some(request)=request {let url=CefString::from(&request.url()).to_string();if !url.starts_with("chrome-error:"){
                 if crate::interstitial::dangerous(&url) {
                     let can_back=_browser.is_some_and(|b|b.can_go_back()!=0);
@@ -1482,6 +1738,8 @@ wrap_request_handler! {
                     s.inject=true;s.blank=true;s.url=url;s.loading=false;s.paints+=1;
                     return 1;
                 }
+                // A new page starts over: its questions are counted afresh.
+                if let Some(b)=_browser.as_ref() {crate::page_dialog::reset(b.identifier());}
                 self.display.shared.borrow_mut().navigation(&url);
             }}}
             0
@@ -1556,9 +1814,13 @@ wrap_client! {
         permission: PermissionHandler,
         request: RequestHandler,
         menu: ContextMenuHandler,
+        dialog: JsdialogHandler,
     }
 
     impl Client {
+        fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+            Some(self.dialog.clone())
+        }
         fn render_handler(&self) -> Option<RenderHandler> {
             Some(self.render.clone())
         }
@@ -1587,6 +1849,91 @@ wrap_client! {
     }
 }
 
+wrap_jsdialog_handler! {
+    pub struct DialogBuilder {
+        d: Display,
+    }
+
+    impl JsdialogHandler {
+        fn on_jsdialog(&self, browser: Option<&mut Browser>, origin_url: Option<&CefString>, dialog_type: JsdialogType, message_text: Option<&CefString>, default_prompt_text: Option<&CefString>, callback: Option<&mut JsdialogCallback>, suppress_message: Option<&mut ::std::os::raw::c_int>) -> ::std::os::raw::c_int {
+            let Some(cb) = callback else { return 0 };
+            // A page told to stop asking: Chromium drops the question (and
+            // counts it against the page), the way its own dialogs do.
+            if let Some(b) = browser.as_ref() {
+                if !crate::page_dialog::may_ask(b.identifier()) {
+                    if let Some(s) = suppress_message { *s = 1; }
+                    return 0;
+                }
+            }
+            // Who asks is the asking frame's own origin, from Chromium; never
+            // the top page's, so an iframe can't borrow its name.
+            let url = origin_url.map(|u| u.to_string()).filter(|u| !u.is_empty()).unwrap_or_else(|| "this page".into());
+            let message = message_text.map(|m| m.to_string()).unwrap_or_default();
+            let message = if message.chars().count() > 300 { format!("{}…", message.chars().take(300).collect::<String>()) } else { message };
+            let page = match cef::sys::cef_jsdialog_type_t::from(dialog_type) {
+                cef::sys::cef_jsdialog_type_t::JSDIALOGTYPE_CONFIRM => crate::interstitial::Page::confirm(&url, &message),
+                cef::sys::cef_jsdialog_type_t::JSDIALOGTYPE_PROMPT => crate::interstitial::Page::prompt(&url, &message, &default_prompt_text.map(|d| d.to_string()).unwrap_or_default()),
+                _ => crate::interstitial::Page::alert(&url, &message),
+            };
+            let mut s = self.d.shared.borrow_mut();
+            // One question at a time; a second while one is up is refused.
+            if s.dialog.is_some() { return 0; }
+            s.dialog = Some(Dialog::Js(cb.clone()));
+            s.overlay = Some(page);
+            s.paints += 1;
+            1
+        }
+        fn on_before_unload_dialog(&self, browser: Option<&mut Browser>, _message_text: Option<&CefString>, is_reload: ::std::os::raw::c_int, callback: Option<&mut JsdialogCallback>) -> ::std::os::raw::c_int {
+            let Some(cb) = callback else { return 0 };
+            // Told to stop asking: leaving goes ahead without the question.
+            if browser.as_ref().is_some_and(|b| !crate::page_dialog::may_ask(b.identifier())) {
+                cb.cont(1, None);
+                return 1;
+            }
+            let mut s = self.d.shared.borrow_mut();
+            if s.dialog.is_some() { return 0; }
+            let url = s.url.clone();
+            s.dialog = Some(Dialog::Js(cb.clone()));
+            s.overlay = Some(crate::interstitial::Page::leave(&url, is_reload != 0));
+            s.paints += 1;
+            1
+        }
+        fn on_reset_dialog_state(&self, _browser: Option<&mut Browser>) {
+            let mut s = self.d.shared.borrow_mut();
+            s.dialog = None;
+            if s.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Dialog) { s.overlay = None; s.paints += 1; }
+        }
+    }
+}
+
+/// The handlers a page's browser answers to, all bound to its `Shared`.
+fn make_client(shared: &SharedRef, device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, container: &str) -> Client {
+    let osr = Osr { shared: shared.clone(), device, bind_texture };
+    ClientBuilder::new(
+        RenderBuilder::new(osr),
+        DisplayBuilder::new(Display { shared: shared.clone() }),
+        LoadBuilder::new(shared.clone()),
+        LifeBuilder::new(Display { shared: shared.clone() }),
+        FindBuilder::new(Display { shared: shared.clone() }),
+        DownloadBuilder::new(Display { shared: shared.clone() }, container.to_string()),
+        PermissionBuilder::new(Display { shared: shared.clone() }),
+        RequestBuilder::new(Display { shared: shared.clone() }, shared.borrow().viewer.clone()),
+        MenuBuilder::new(Display { shared: shared.clone() }),
+        DialogBuilder::new(Display { shared: shared.clone() }),
+    )
+}
+
+/// Makes the page (and its client) for a window a page opens. The new
+/// page can open windows of its own the same way.
+fn popup_factory(device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, container: String) -> StdRc<dyn Fn() -> (Client, SharedRef)> {
+    StdRc::new(move || {
+        let shared: SharedRef = StdRc::new(RefCell::new(Shared { size: (100.0, 100.0), scale: 1.0, ..Default::default() }));
+        let client = make_client(&shared, device.clone(), bind_texture.clone(), &container);
+        shared.borrow_mut().popup_factory = Some(popup_factory(device.clone(), bind_texture.clone(), container.clone()));
+        (client, shared)
+    })
+}
+
 thread_local! { static LIVE_BROWSERS: RefCell<std::collections::HashSet<i32>> = RefCell::new(Default::default()); }
 pub fn live_count() -> usize { LIVE_BROWSERS.with(|b| b.borrow().len()) }
 
@@ -1603,6 +1950,7 @@ impl Drop for BrowserTab {
         if let Some(menu) = menu { menu.callback.cancel(); }
         // Releasing the Rust wrapper does not close a CEF browser. Without
         // this, closed/sleeping tabs keep renderers, timers and GPU surfaces.
+        if let Ok(mut s) = self.shared.try_borrow_mut() { s.letting_go = true; }
         if let Some(host) = self.browser.as_ref().and_then(|b|b.host()) { host.close_dev_tools(); host.close_browser(1); }
     }
 }
@@ -1622,6 +1970,7 @@ impl BrowserTab {
     }
     pub fn suspend(&mut self) {
         self._observer.take();
+        self.shared.borrow_mut().letting_go=true;
         if let Some(browser)=self.browser.take() {if let Some(host)=browser.host(){host.close_browser(1);}}
         let mut s=self.shared.borrow_mut();
         if let Some(menu)=s.menu.take(){menu.callback.cancel();}
@@ -1668,24 +2017,9 @@ impl BrowserTab {
             windowless_frame_rate: 60,
             ..Default::default()
         };
-        let osr = Osr {
-            shared: shared.clone(),
-            device,
-            bind_texture,
-        };
-        let mut client = ClientBuilder::new(
-            RenderBuilder::new(osr),
-            DisplayBuilder::new(Display {
-                shared: shared.clone(),
-            }),
-            LoadBuilder::new(shared.clone()),
-            LifeBuilder::new(Display { shared: shared.clone() }),
-            FindBuilder::new(Display { shared: shared.clone() }),
-            DownloadBuilder::new(Display { shared: shared.clone() },container.to_string()),
-            PermissionBuilder::new(Display { shared: shared.clone() }),
-            RequestBuilder::new(Display { shared: shared.clone() },shared.borrow().viewer.clone()),
-            MenuBuilder::new(Display { shared: shared.clone() }),
-        );
+        let mut client = make_client(&shared, device.clone(), bind_texture.clone(), container);
+        let factory = popup_factory(device, bind_texture, container.to_string());
+        shared.borrow_mut().popup_factory = Some(factory);
         // The container's context: the global one for PERSONAL, else its own
         // cookie jar and cache under profile/containers.
         let mut context = crate::containers::context(container)?;
@@ -1703,6 +2037,16 @@ impl BrowserTab {
             Some(&mut context),
         )?;
         if !crate::private::enabled() { tracing::info!("create_browser_sync {url} took {}ms", crate::clock::since(t0).as_millis()); }
+        let tab = BrowserTab::attach(browser, shared);
+        if internal.is_some() {
+            if let Some(original) = original_url { tab.shared.borrow_mut().url = original; }
+        }
+        Some(tab)
+    }
+
+    /// A browser (made by nus or by Chromium for a popup), wired up as
+    /// every page is: the DevTools channel and the scripts nus injects.
+    fn attach(browser: Browser, shared: SharedRef) -> BrowserTab {
         let mut observer = ObserverBuilder::new(Observer { shared: shared.clone() });
         let registration = browser.host().and_then(|h| h.add_dev_tools_message_observer(Some(&mut observer)));
         let tab = BrowserTab { browser: Some(browser), shared, _observer: registration };
@@ -1711,18 +2055,38 @@ impl BrowserTab {
         tab.devtools("Network.enable", serde_json::json!({}));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusVideo" }));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusInterstitial" }));
+        tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusPrint" }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
+        tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": PRINT_JS }));
+        tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": PRINT_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));
         let id = tab.devtools("Target.getTargetInfo", serde_json::json!({}));
         tab.shared.borrow_mut().target_msg = id;
-        if internal.is_some() {
-            if let Some(original) = original_url { tab.shared.borrow_mut().url = original; }
-        }
-        Some(tab)
+        tab
+    }
+
+    /// A popup's page, once Chromium has made its browser.
+    pub fn adopt(shared: SharedRef) -> Option<BrowserTab> {
+        let browser = shared.borrow_mut().adopted.take()?;
+        Some(BrowserTab::attach(browser, shared))
+    }
+
+    /// Close as a person would: the page's `beforeunload` gets its say.
+    /// True when it's closing now; false when the page asked to stay open
+    /// until you answer (its leave-page question is up).
+    pub fn ask_to_close(&self) -> bool {
+        let Some(h) = self.host() else { return true };
+        self.shared.borrow_mut().letting_go = false;
+        h.try_close_browser() != 0
     }
 
     pub fn host(&self) -> Option<BrowserHost> {
         self.browser.as_ref().and_then(|b|b.host())
+    }
+
+    /// Leave the page's fullscreen, as Esc does in any browser.
+    pub fn exit_fullscreen(&self) {
+        if let Some(h) = self.host() { h.exit_fullscreen(1); }
     }
 
     /// Find in page; `next` continues the same search.
@@ -1885,6 +2249,40 @@ impl BrowserTab {
         std::mem::take(&mut self.shared.borrow_mut().interstitial_acts)
     }
 
+    /// The overlay's answer to the page's question (or a sign-in): yes or
+    /// no, and what was typed. The overlay goes either way.
+    pub fn answer_dialog(&self, yes: bool, fields: &[crate::interstitial::Field]) {
+        let dialog = {
+            let mut s = self.shared.borrow_mut();
+            if s.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Dialog) { s.overlay = None; }
+            s.paints += 1;
+            s.dialog.take()
+        };
+        // No borrow held: answering can call straight back into the handlers.
+        match dialog {
+            Some(Dialog::Js(cb)) => {
+                let text = fields.first().map(|f| CefString::from(f.value.as_str()));
+                cb.cont(yes as i32, text.as_ref());
+            }
+            Some(Dialog::Basic(origin)) if yes => {
+                let user = fields.first().map(|f| f.value.as_str()).unwrap_or("");
+                let pass = fields.get(1).map(|f| f.value.as_str()).unwrap_or("");
+                remember_signin(origin, Some(basic(user, pass)));
+                self.reload();
+            }
+            Some(Dialog::Basic(_)) => {
+                // No sign-in: the page says why it has nothing to show.
+                let can_back = self.can_go_back();
+                let mut s = self.shared.borrow_mut();
+                let url = s.failed_url.clone().unwrap_or_else(|| s.url.clone());
+                s.interstitial = Some(crate::interstitial::Page::unreachable(&url, "ERR_INVALID_AUTH_CREDENTIALS", can_back));
+                s.inject = true;
+                s.paints += 1;
+            }
+            None => {}
+        }
+    }
+
     /// The hung renderer: keep waiting, or end it.
     pub fn answer_hung(&self, wait: bool) {
         let cb = {
@@ -2002,6 +2400,9 @@ impl BrowserTab {
     }
 
     pub fn mouse_move(&self, x: i32, y: i32, mods: u32, leave: bool) {
+        // While the page's question (or a sign-in) stands, the page gets
+        // nothing from you: every key, click, wheel and move stops here.
+        if self.shared.borrow().dialog.is_some() { return; }
         if let Some(h) = self.host() {
             let ev = MouseEvent {
                 x,
@@ -2013,6 +2414,9 @@ impl BrowserTab {
     }
 
     pub fn mouse_click(&self, x: i32, y: i32, mods: u32, button: MouseButtonType, up: bool, count: i32) {
+        // While the page's question (or a sign-in) stands, the page gets
+        // nothing from you: every key, click, wheel and move stops here.
+        if self.shared.borrow().dialog.is_some() { return; }
         if !up {
             self.shared.borrow_mut().gesture_at = Some(crate::clock::now());
         }
@@ -2027,6 +2431,9 @@ impl BrowserTab {
     }
 
     pub fn wheel(&self, x: i32, y: i32, mods: u32, dx: i32, dy: i32) {
+        // While the page's question (or a sign-in) stands, the page gets
+        // nothing from you: every key, click, wheel and move stops here.
+        if self.shared.borrow().dialog.is_some() { return; }
         if let Some(h) = self.host() {
             let ev = MouseEvent {
                 x,
@@ -2038,6 +2445,9 @@ impl BrowserTab {
     }
 
     pub fn key(&self, ev: &KeyEvent) {
+        // While the page's question (or a sign-in) stands, the page gets
+        // nothing from you: every key, click, wheel and move stops here.
+        if self.shared.borrow().dialog.is_some() { return; }
         self.shared.borrow_mut().gesture_at = Some(crate::clock::now());
         if let Some(h) = self.host() {
             h.send_key_event(Some(ev));

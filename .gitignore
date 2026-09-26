@@ -5,6 +5,7 @@
 *.pdb
 .DS_Store
 /.env
+/output
 /spikes/*/Cargo.lock
 !/spikes/composite/Cargo.lock
 /spikes/vt-render/lig.rs

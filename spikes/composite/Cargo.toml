@@ -68,6 +68,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12", "ring"] }
 ring = "0.17.14"
 rcgen = { version = "0.14.10", default-features = false, features = ["ring"] }
+psl = "2"
 
 [target.'cfg(not(windows))'.dependencies]
 global-hotkey = "0.8"

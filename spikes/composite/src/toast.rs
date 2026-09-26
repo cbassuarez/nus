@@ -32,6 +32,10 @@ pub enum Act {
     OpenPort(crate::ports::Key),
     /// Try installing this tool (by bundle id) again.
     RetryInstall(String),
+    /// Show this file in its folder.
+    RevealPath(std::path::PathBuf),
+    /// Hand an address to the app that owns its scheme (mailto:, zoommtg:).
+    OpenExternal(String),
     /// Take back what a hunk's chip just did, in that folder.
     UndoHunk(crate::diffs::Hunk, crate::diffs::Do, std::path::PathBuf),
 }
@@ -45,6 +49,8 @@ impl Act {
             Act::OpenPort(_) => ("Open", crate::app::key("O", true)),
             Act::RetryInstall(_) => ("Retry", String::new()),
             Act::UndoHunk(..) => ("Undo", String::new()),
+            Act::OpenExternal(_) => ("Open", String::new()),
+            Act::RevealPath(_) => ("Show In Folder", String::new()),
         }
     }
 }
@@ -249,6 +255,8 @@ impl App {
             }
             Some(Act::RetryInstall(id)) => self.bundle_toggle(&id),
             Some(Act::UndoHunk(hunk, what, cwd)) => self.undo_hunk(hunk, what, cwd),
+            Some(Act::OpenExternal(url)) => crate::app::open_with_os(std::path::Path::new(&url)),
+            Some(Act::RevealPath(path)) => crate::downloads::reveal(&path, true),
             None => {}
         }
         self.show_held();

@@ -65,6 +65,9 @@ impl App {
                 w.tab.load(&page.url);
             }
             "wait" | "stop" => w.tab.answer_hung(verb == "wait"),
+            // The page's own question, or a sign-in: answered, and gone.
+            "ok" | "leave" | "reload" | "signin" if page.kind == Kind::Dialog => w.tab.answer_dialog(true, &page.fields),
+            "cancel" | "stay" if page.kind == Kind::Dialog => w.tab.answer_dialog(false, &page.fields),
             "dismiss" | "wake" => clear_overlay(w),
             "keep" => {
                 crate::interstitial::allow(format!("file:{}", page.url));
@@ -120,25 +123,81 @@ impl App {
     }
 
     /// Keys while an overlay stands over the focused page: ↑ ↓ move, ↵
-    /// runs, Esc goes back to the page when that's one of the commands.
+    /// runs, ⌘↵ runs the command marked so, Esc goes back to the page (or
+    /// answers no). An overlay that asks for words takes typing; Tab moves
+    /// between its lines.
     pub(crate) fn overlay_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key, NamedKey};
+        if let Some(taken) = self.page_dialog_key(ev) {
+            return taken;
+        }
         if ev.state != winit::event::ElementState::Pressed {
             return false;
         }
+        let chord = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.control_key() };
+        let back = self.mods.shift_key();
+        let mods = self.mods;
         let Some(tab) = self.tabs.get(self.active) else { return false };
         let (id, right) = (tab.id, tab.focus_right && tab.right.is_some());
         let Some(w) = self.web_pane_by_id(id, right) else { return false };
         let Some(page) = w.tab.shared.borrow().overlay.clone() else { return false };
         let n = page.acts.len().max(1);
-        if !matches!(ev.logical_key, Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp | NamedKey::Enter | NamedKey::Escape)) {
+        let dialog = page.kind == Kind::Dialog;
+        let other_mods = mods.alt_key() || (mods.control_key() && cfg!(target_os = "macos"));
+        // Only a dialog answers to modifiers, and only these; the rest pass.
+        if (!mods.is_empty() && !dialog) || other_mods {
             return false;
+        }
+        let paste = chord && matches!(&ev.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v"));
+        if chord && !paste && !matches!(ev.logical_key, Key::Named(NamedKey::Enter)) {
+            return false;
+        }
+        if paste && !page.fields.is_empty() {
+            let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+            let text: String = text.lines().next().unwrap_or("").to_string();
+            let mut s = w.tab.shared.borrow_mut();
+            if let Some(o) = s.overlay.as_mut() {
+                let k = o.field.min(o.fields.len() - 1);
+                o.fields[k].value.push_str(&text);
+            }
+            s.paints += 1;
+            drop(s);
+            self.dirty = true;
+            return true;
+        }
+        if !page.fields.is_empty() && !chord {
+            let edited = {
+                let mut s = w.tab.shared.borrow_mut();
+                let Some(o) = s.overlay.as_mut() else { return false };
+                let k = o.field.min(o.fields.len() - 1);
+                let changed = match &ev.logical_key {
+                    Key::Named(NamedKey::Backspace) => { o.fields[k].value.pop(); true }
+                    Key::Named(NamedKey::Tab) => { o.field = (k + if back { o.fields.len() - 1 } else { 1 }) % o.fields.len(); true }
+                    Key::Named(NamedKey::Enter | NamedKey::Escape | NamedKey::ArrowUp | NamedKey::ArrowDown) => false,
+                    _ => match ev.text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
+                        Some(t) => { o.fields[k].value.push_str(t); true }
+                        None => false,
+                    },
+                };
+                if changed { s.paints += 1; }
+                changed
+            };
+            if edited {
+                self.dirty = true;
+                return true;
+            }
+        }
+        if !matches!(ev.logical_key, Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp | NamedKey::Enter | NamedKey::Escape)) {
+            // While a page's question stands, its keys are the dialog's:
+            // nothing typed reaches the page underneath.
+            return dialog && mods.is_empty();
         }
         let verb = match &ev.logical_key {
             Key::Named(NamedKey::ArrowDown) => { w.overlay_sel = (w.overlay_sel + 1) % n; None }
             Key::Named(NamedKey::ArrowUp) => { w.overlay_sel = (w.overlay_sel + n - 1) % n; None }
+            Key::Named(NamedKey::Enter) if chord => page.acts.iter().find(|a| a.key == "⌘↵").map(|a| a.verb.clone()),
             Key::Named(NamedKey::Enter) => page.acts.get(w.overlay_sel.min(n - 1)).map(|a| a.verb.clone()),
-            Key::Named(NamedKey::Escape) => page.acts.iter().find(|a| a.verb == "dismiss").map(|a| a.verb.clone()),
+            Key::Named(NamedKey::Escape) => page.acts.iter().find(|a| a.key == "Esc" || matches!(a.verb.as_str(), "dismiss" | "cancel" | "stay")).map(|a| a.verb.clone()),
             _ => None,
         };
         if let Some(v) = verb {
@@ -172,6 +231,12 @@ impl App {
     pub(crate) fn draw_overlay(&mut self, scene: &mut Scene, w: &mut WebPane) {
         w.overlay_hits.clear();
         let Some(page) = w.tab.shared.borrow().overlay.clone() else { return };
+        // A page's question or a sign-in: only the page held faint here; the
+        // sheet hangs from the strip (page_dialog.rs), where a page can't draw.
+        if page.kind == Kind::Dialog {
+            self.draw_dialog_scrim(scene, w);
+            return;
+        }
         if page.kind == Kind::Sleep && page.acts.is_empty() {
             // Waking: how long it slept, while the page comes back — once
             // it's clear the page won't be back in a blink.
@@ -228,6 +293,26 @@ impl App {
         for w in crate::reader::wrap(&self.fonts, ui, &page.body, width.min(self.px(68.0 * 8.4))) {
             self.fonts.draw(scene, ui, tx, y, &w);
             y += line_h;
+        }
+        // Lines to type on: the label, then what's there, a caret on the one
+        // being typed into. A secret one shows a dot a character.
+        if !page.fields.is_empty() {
+            y += line_h * 0.8;
+            let lw = page.fields.iter().map(|f| self.fonts.measure(ui, &f.label)).fold(0.0, f32::max) + self.px(18.0);
+            for (k, f) in page.fields.iter().enumerate() {
+                let on = k == page.field.min(page.fields.len() - 1);
+                self.fonts.draw(scene, Style { color: t.dim, ..ui }, tx, y, &f.label);
+                let shown = if f.secret { "•".repeat(f.value.chars().count()) } else { f.value.clone() };
+                let pw = self.fonts.draw(scene, prompt, tx + lw, y, "»") + self.fonts.measure(ui, " ");
+                let vx = tx + lw + pw;
+                let vw = self.fonts.draw(scene, ui, vx, y, &shown);
+                if on {
+                    scene.rect(Rect::new(vx + vw + self.px(1.0), y - ui.px * 0.8, self.px(2.0), ui.px), ink);
+                }
+                let rule = Rect::new(tx + lw, y + line_h * 0.28, width - lw, self.px(1.0));
+                scene.rect(rule, if on { ink } else { fade(ink, 0.25) });
+                y += line_h * 1.3;
+            }
         }
         if !page.acts.is_empty() {
             y += line_h * 0.8;

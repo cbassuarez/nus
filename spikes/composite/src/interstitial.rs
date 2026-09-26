@@ -40,10 +40,12 @@ pub enum Kind {
     Sleep,
     Permission,
     File,
+    /// A page's own question: alert, confirm, prompt, leave-page, sign-in.
+    Dialog,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [Kind::Cert, Kind::Malware, Kind::Clock, Kind::Oom, Kind::Crash, Kind::Permission, Kind::File, Kind::Resubmit, Kind::Sleep, Kind::Portal, Kind::Unreachable, Kind::Hung, Kind::Index];
+    pub const ALL: [Kind; 14] = [Kind::Cert, Kind::Malware, Kind::Clock, Kind::Oom, Kind::Crash, Kind::Permission, Kind::File, Kind::Resubmit, Kind::Sleep, Kind::Portal, Kind::Unreachable, Kind::Hung, Kind::Dialog, Kind::Index];
     pub fn slug(self) -> &'static str {
         match self {
             Kind::Cert => "cert",
@@ -59,6 +61,7 @@ impl Kind {
             Kind::Sleep => "sleep",
             Kind::Permission => "permission",
             Kind::File => "file",
+            Kind::Dialog => "dialog",
         }
     }
     pub fn from_slug(s: &str) -> Option<Kind> {
@@ -66,7 +69,7 @@ impl Kind {
     }
     /// Drawn by nus over the page rather than in place of it.
     pub fn native(self) -> bool {
-        matches!(self, Kind::Hung | Kind::Sleep | Kind::Permission | Kind::File)
+        matches!(self, Kind::Hung | Kind::Sleep | Kind::Permission | Kind::File | Kind::Dialog)
     }
 }
 
@@ -94,6 +97,15 @@ fn risky(verb: &str, label: &str) -> Act {
     Act { verb: verb.into(), label: label.into(), key: "", unsafe_: true }
 }
 
+/// A line to type into, on an overlay that asks for words (a prompt, a
+/// sign-in). A secret one shows dots.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Field {
+    pub label: String,
+    pub value: String,
+    pub secret: bool,
+}
+
 /// A page, ready to show either way.
 #[derive(Clone, Debug)]
 pub struct Page {
@@ -110,6 +122,9 @@ pub struct Page {
     pub acts: Vec<Act>,
     /// Proves a command came from this document and not from a site.
     pub token: String,
+    /// What the overlay asks you to type, and which line has the caret.
+    pub fields: Vec<Field>,
+    pub field: usize,
 }
 
 impl Page {
@@ -121,7 +136,7 @@ impl Page {
                 a.key = "";
             }
         }
-        Page { kind, sev, url: url.into(), command: format!("open {url}"), log, head, body, acts, token: crate::remote::new_token() }
+        Page { kind, sev, url: url.into(), command: format!("open {url}"), log, head, body, acts, token: crate::remote::new_token(), fields: Vec::new(), field: 0 }
     }
 
     /// The safe way out: back, or when there is nowhere to go back to,
@@ -204,6 +219,12 @@ impl Page {
             "ERR_CONNECTION_REFUSED" => (format!("✕ nothing is listening at {host}"), format!("{host} refused to connect"), if is_local(url) { "If this is your server, check that it's running and on this port.".into() } else { "The site may be down, or a firewall is blocking it.".into() }),
             "ERR_CONNECTION_TIMED_OUT" | "ERR_TIMED_OUT" => (format!("✕ {host} took too long to answer"), format!("{host} took too long to respond"), "The site may be busy or down. Try again in a moment.".into()),
             "ERR_BLOCKED_BY_CLIENT" => (format!("✕ blocked by content blocking · {host}"), format!("{host} was blocked"), "It's on nus's list of ad and tracking hosts. You can turn blocking off for a site in its panel (the gear in the address row).".into()),
+            "ERR_TOO_MANY_REDIRECTS" => (format!("✕ {host} kept sending the page elsewhere"), format!("{host} redirected too many times"), "The site sends the request round in a loop and never arrives. Clearing this site's cookies often fixes it.".into()),
+            "ERR_EMPTY_RESPONSE" => (format!("✕ {host} answered with nothing"), format!("{host} sent an empty response"), "The server closed the connection without sending a page. Try again in a moment.".into()),
+            "ERR_INVALID_AUTH_CREDENTIALS" => (format!("✕ {host} didn't accept the sign-in"), format!("{host} didn't accept the sign-in"), "The username or password wasn't accepted. Try again to enter them again.".into()),
+            "ERR_INVALID_RESPONSE" => (format!("✕ {host} sent something that isn't a page"), format!("{host} sent an invalid response"), "The server's answer couldn't be read. It may be misconfigured.".into()),
+            "ERR_NETWORK_CHANGED" => ("✕ your network changed".into(), "Your network changed".into(), "The connection dropped while switching networks. Try again.".into()),
+            "ERR_CONNECTION_RESET" | "ERR_CONNECTION_CLOSED" => (format!("✕ {host} dropped the connection"), format!("{host} closed the connection"), "The connection was cut before the page arrived. Try again in a moment.".into()),
             _ => (format!("✕ couldn't load {host}"), format!("{host} can't be reached"), "The connection failed before the page arrived.".into()),
         };
         Page::new(Kind::Unreachable, Sev::Problem, url,
@@ -252,6 +273,70 @@ impl Page {
         p
     }
 
+    /// A page's `alert()`: what it says, and a way on.
+    pub fn alert(url: &str, message: &str) -> Page {
+        let host = host(url);
+        let mut p = Page::new(Kind::Dialog, Sev::Rest, url, vec![format!("· {host} says")], String::new(), message.into(), vec![act("ok", "OK", "↵")]);
+        p.command = format!("alert · {host}");
+        p
+    }
+
+    /// A page's `confirm()`. Cancel is the safe answer, so it takes ↵;
+    /// saying yes is a deliberate ⌘↵.
+    pub fn confirm(url: &str, message: &str) -> Page {
+        let host = host(url);
+        let mut p = Page::new(Kind::Dialog, Sev::Rest, url, vec![format!("· {host} asks")], String::new(), message.into(), vec![act("cancel", "Cancel", "↵"), act("ok", "OK", "⌘↵")]);
+        p.command = format!("confirm · {host}");
+        p
+    }
+
+    /// A page's `prompt()`: the question, a line to answer on.
+    pub fn prompt(url: &str, message: &str, default: &str) -> Page {
+        let host = host(url);
+        let mut p = Page::new(Kind::Dialog, Sev::Rest, url, vec![format!("· {host} asks")], String::new(), message.into(), vec![act("ok", "OK", "↵"), act("cancel", "Cancel", "Esc")]);
+        p.command = format!("prompt · {host}");
+        p.fields = vec![Field { label: "answer".into(), value: default.into(), secret: false }];
+        p
+    }
+
+    /// Leaving (or reloading) a page that says it holds unsaved work.
+    pub fn leave(url: &str, reload: bool) -> Page {
+        let host = host(url);
+        let (verb, what) = if reload { ("reload", "Reload") } else { ("leave", "Leave") };
+        let mut p = Page::new(Kind::Dialog, Sev::Problem, url,
+            vec![format!("✕ {host} has changes that may not be saved")],
+            format!("{what} this page?"),
+            "Changes you made may not be saved.".into(),
+            vec![act("stay", "Stay on the page", "↵"), act(verb, what, "⌘↵")]);
+        p.command = format!("{verb} {url}");
+        p
+    }
+
+    /// A site (or a proxy) wants a username and password. Over plain HTTP
+    /// they travel readable, and the page says so.
+    pub fn signin(url: &str, host_name: &str, realm: &str, proxy: bool) -> Page {
+        let plain = url.starts_with("http:");
+        let who = if proxy { format!("the proxy {host_name}") } else { host_name.to_string() };
+        let mut log = vec![format!("✕ {who} wants a sign-in")];
+        if !realm.is_empty() {
+            log.push(format!("  realm   {realm}"));
+        }
+        let body = if plain {
+            format!("Your username and password go only to {who}, but this connection isn't private, so anyone on the network can read them.")
+        } else {
+            format!("Your username and password go only to {who}.")
+        };
+        let mut p = Page::new(Kind::Dialog, if plain { Sev::Danger } else { Sev::Problem }, url, log,
+            format!("Sign in to {who}"), body,
+            vec![act("signin", "Sign in", "↵"), act("cancel", "Cancel", "Esc")]);
+        p.command = format!("sign in · {host_name}");
+        p.fields = vec![
+            Field { label: "username".into(), value: String::new(), secret: false },
+            Field { label: "password".into(), value: String::new(), secret: true },
+        ];
+        p
+    }
+
     /// `nus://interstitials`: every page, and the commands that cause the real thing.
     pub fn index() -> Page {
         let mut acts: Vec<Act> = Kind::ALL.iter().filter(|k| **k != Kind::Index).map(|k| act(&format!("open:nus://interstitial/{}", k.slug()), &format!("the {} page", k.slug()), "")).collect();
@@ -283,6 +368,7 @@ impl Page {
             Kind::Sleep => Page::sleep("https://docs.rs/tokio/latest/tokio/", std::time::Duration::from_secs(14 * 60), false),
             Kind::Permission => Page::permission("https://meet.example.com/abc-defg", "microphone"),
             Kind::File => Page::file("https://files.example.net/invoice.pdf.exe", "invoice.pdf.exe", "a program named like a document"),
+            Kind::Dialog => Page::confirm("https://mail.example.com/", "Delete 3 conversations?"),
         }
     }
 
@@ -520,6 +606,12 @@ pub fn error_name(code: i32) -> String {
         -100 => "ERR_CONNECTION_CLOSED".into(),
         -109 => "ERR_ADDRESS_UNREACHABLE".into(),
         -20 => "ERR_BLOCKED_BY_CLIENT".into(),
+        -21 => "ERR_NETWORK_CHANGED".into(),
+        -310 => "ERR_TOO_MANY_REDIRECTS".into(),
+        -324 => "ERR_EMPTY_RESPONSE".into(),
+        -338 => "ERR_INVALID_AUTH_CREDENTIALS".into(),
+        -320 => "ERR_INVALID_RESPONSE".into(),
+        -137 => "ERR_NAME_RESOLUTION_FAILED".into(),
         -400 => "ERR_CACHE_MISS".into(),
         -107 => "ERR_SSL_PROTOCOL_ERROR".into(),
         -200 => "NET::ERR_CERT_COMMON_NAME_INVALID".into(),

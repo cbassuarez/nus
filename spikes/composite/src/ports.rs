@@ -871,7 +871,8 @@ impl App {
                 probe_now.push(r.port);
             }
             if matches!(r.group, Group::Mine | Group::Others) && matches!(r.key, Key::Port { proto: Proto::Tcp, .. }) {
-                if self.behavior.ports_toast && !r.rule.hide {
+                // nus's own ports (its instance port, the phone) are not news.
+                if self.behavior.ports_toast && !r.rule.hide && r.pid != me {
                     self.ports_arrived(&r);
                 }
                 if let Some(how) = r.rule.open.clone() {

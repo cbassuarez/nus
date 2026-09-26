@@ -68,6 +68,7 @@
 //!   toastpress hover|chip|cell   the pointer on its chip, a press on the chip, or on its cell
 //!   asserttoast <text> | asserttoastgone   what the toast says, or that none is up
 //!   lsplog                     each language server's key and log lines, to stderr
+//!   pagestate <label>          the focused page's url, title, loading, overlays and the toast, to stderr
 //!   awaitload <ms>             hold until the focused page stops loading (or ms pass); report it
 //!   cmdsel <from> <to> | assertcmd <text>   select characters of the command being typed; check the command line
 //!   link allow | deny          answer the link band on the focused shell
@@ -183,6 +184,7 @@ impl App {
         match verb {
             "awaitbundle"=>{assert!(!self.jobs.failed.contains_key(rest),"tool failed: {:?}",self.jobs.failed.get(rest));!self.jobs.running.iter().any(|id|id==rest)},
             "awaitfile" => std::path::Path::new(rest).is_file(),
+            "awaitdialog" => { self.dirty = true; self.page_dialog_access().is_some() },
             "awaitpage" => {
                 let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };
                 let s = w.tab.shared.borrow();
@@ -256,7 +258,7 @@ impl App {
             eprintln!("shot: {step}");
         }
         match verb {
-            "awaitbundle" | "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" => {},
+            "awaitbundle" | "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" | "awaitdialog" => {},
             "benchbegin" => {
                 assert!(crate::perf::enabled() && !crate::clock::recording(), "benchmark requires real-clock NUS_PERF");
                 let s = self.shot.as_mut().unwrap();
@@ -1205,6 +1207,16 @@ impl App {
                     eprintln!("shot: load {} {ms}ms blocked={blocked} url={url}", if loading { "STUCK" } else { "done" });
                 }
             }
+            // The focused page as nus holds it: for scripts that probe behavior.
+            "pagestate" => {
+                let tabs = self.tabs.len();
+                let line = match self.tabs.get(self.active).map(|t| t.focused_ref()) {
+                    Some(Pane::Web(w)) => { let s = w.tab.shared.borrow(); format!("tabs={tabs} loading={} url={} title={:?} interstitial={:?} overlay={:?} toast={:?}", s.loading, s.url, s.title.chars().take(80).collect::<String>(), s.interstitial.as_ref().map(|p| p.kind), s.overlay.as_ref().map(|p| p.kind), self.toast.as_ref().map(|t| format!("{} {}", t.words, t.detail))) }
+                    Some(p) => format!("tabs={tabs} pane={} toast={:?}", match p { Pane::Term(_) => "term", Pane::Home(_) => "home", Pane::Settings(_) => "settings", Pane::Editor(_) => "editor", _ => "other" }, self.toast.as_ref().map(|t| format!("{} {}", t.words, t.detail))),
+                    None => format!("tabs={tabs} none"),
+                };
+                eprintln!("shot: state {rest} {line}");
+            }
             "settingseek" => {
                 if !self.settings_hits.iter().any(|(_,h)|format!("{h:?}").starts_with(rest)) {
                     let Pane::Settings(page)=&mut self.tabs[self.active].left else {panic!("not settings")};
@@ -1406,6 +1418,12 @@ impl App {
             "intelnucleus"=>{let Some(crate::intelligence::Part::Atom{cx,cy,..})=self.intel.hits.iter().map(|(_,p)|*p).find(|p|matches!(p,crate::intelligence::Part::Atom{..})) else{panic!("no atom drawn")};assert!(self.intel_mouse(true,cx,cy));self.intel_mouse(false,cx,cy);},
             "assertintel"=>{let mut a=rest.split_whitespace();assert_eq!(self.intelligence().to_string(),a.next().unwrap(),"intelligence level");if let Some(m)=a.next(){let m=if m=="auto"{""}else{m};assert_eq!(self.behavior.assistants.providers[0].model,m,"claude model");}},
             "assertcommand"=>{let (id,want)=rest.split_once(' ').unwrap();let c=self.assistant_command(id.parse().unwrap(),"hi").unwrap();assert!(c.contains(want),"command {c:?} lacks {want:?}");},
+            // Page dialogs (page_dialog.rs), driven through the real pointer and keys.
+            "assertdialog"=>{let (title,..)=self.page_dialog_access().expect("no page dialog is up");assert!(title.contains(rest),"dialog title {title:?} lacks {rest:?}");},
+            "assertnodialog"=>{assert!(self.page_dialog_access().is_none(),"a page dialog is still up");},
+            "dialogclick"=>{let (x,y)=self.page_dialog_target(rest).unwrap_or_else(||panic!("no sheet target {rest}"));self.mouse_moved(x,y);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);},
+            "assertdialogheld"=>{let (_,_,held,_)=self.page_dialog_probe().expect("no page dialog");assert_eq!(held.to_string(),rest,"hold");},
+            "assertsecret"=>{let (leaked,held,_,secure)=self.page_dialog_probe().expect("no page dialog");assert_eq!(leaked,0,"the password is in the cloned page");assert_eq!(held.to_string(),rest,"secret length");if cfg!(target_os="macos"){assert!(secure||!self.window_focused,"secure input is off on a focused password field");}},
             "assistantdraft"=>{let (id,q)=rest.split_once(' ').unwrap_or((rest,""));self.draft_assistant(id.parse().unwrap(),q);},
             "reviewbounds"=>{assert!(matches!(self.palette,Some((PaletteMode::Assistant(_),_))));let size=self.window.inner_size();for r in self.palette_hits.iter().filter(|r|r.h>0.0){assert!(r.x>=0.0&&r.right()<=size.width as f32&&r.y>=0.0&&r.bottom()<=size.height as f32,"review row outside window: {r:?}");}if rest=="scrollable"{assert!(self.palette_scroll_max>0.0);}},
             "reviewscroll"=>{self.wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0,-rest.parse::<f64>().unwrap())));},
@@ -2279,11 +2297,14 @@ impl App {
             }
         };
         let Some((logical, code)) = parts else { return };
-        // Typed text only when nothing is held: ⌘S is a chord, not an "s".
-        let text = match (&logical, mods.is_empty()) {
-            (WKey::Character(c), true) => Some(c.clone()),
-            (WKey::Named(NamedKey::Space), true) => Some(SmolStr::new(" ")),
-            _ => None,
+        // Typed text only when nothing is held, or only Shift, which types
+        // the capital as a real keyboard does: ⌘S is a chord, not an "s".
+        let shift_only = mods == ModifiersState::SHIFT;
+        let (logical, text) = match (&logical, mods.is_empty(), shift_only) {
+            (WKey::Character(c), true, _) => (logical.clone(), Some(c.clone())),
+            (WKey::Character(c), _, true) => { let up = SmolStr::new(c.to_uppercase()); (WKey::Character(up.clone()), Some(up)) }
+            (WKey::Named(NamedKey::Space), true, _) => (logical.clone(), Some(SmolStr::new(" "))),
+            _ => (logical.clone(), None),
         };
         let was = self.mods;
         self.mods = mods;
