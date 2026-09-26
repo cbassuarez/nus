@@ -2916,6 +2916,9 @@ impl App {
             h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
         }
         let a = h.alpha.value();
+        if h.alpha.active() {
+            self.dirty = true;
+        }
         let lift = self.px(3.0) * a;
         let off = self.px(5.0) + lift;
         let card = Rect::new(r.x - lift, r.y - lift, r.w, r.h);
@@ -4821,15 +4824,24 @@ impl App {
                         let x = cx + (i % per_row) as f32 * (card_w + gap);
                         let cy = y + cap_h + (i / per_row) as f32 * (self.px(94.0) + gap);
                         let rest = Rect::new(x, cy + self.px(6.0), card_w, self.px(40.0));
-                        let hot = rest.contains(mx, my);
-                        scene.rect(Rect::new(rest.x + self.px(3.0), rest.y + self.px(3.0), rest.w, rest.h), ink);
-                        // Hover presses the card halfway into its shadow. The tint is
-                        // translucent, so paper goes under it or the shadow shows through.
-                        let push = if hot { self.px(1.5) } else { 0.0 };
-                        let button = Rect::new(rest.x + push, rest.y + push, rest.w, rest.h);
+                        // Hover lifts the button off its shadow, as the tiles and cards do.
+                        let hot = rest.contains(mx, my) && scene.clip().is_none_or(|clip| clip.contains(mx, my));
+                        let dur = self.motion.dur(120.0);
+                        let h = self.hovers.entry(hover_key(&format!("action:{hit:?}"), 0)).or_insert_with(|| Hover { alpha: Anim::at(0.0), pulse: Anim::at(1.0), hot: false, since: crate::clock::now() });
+                        if hot != h.hot {
+                            h.hot = hot;
+                            h.alpha.go(if hot { 1.0 } else { 0.0 }, dur);
+                        }
+                        let a = h.alpha.value();
+                        if h.alpha.active() {
+                            self.dirty = true;
+                        }
+                        let lift = self.px(2.0) * a;
+                        let off = self.px(3.0) + lift;
+                        let button = Rect::new(rest.x - lift, rest.y - lift, rest.w, rest.h);
                         let x = button.x;
+                        scene.rect(Rect::new(button.x + off, button.y + off, button.w, button.h), ink);
                         scene.rect(button, t.paper);
-                        if hot { scene.rect(button, t.tint); }
                         scene.outline(button, self.px(m::STRUCTURE), ink);
                         self.fonts.draw_icon(scene, icon, self.px(16.0), x + self.px(10.0), button.y + self.px(12.0), ink);
                         let name = self.fit(label, &name, card_w - self.px(42.0));
