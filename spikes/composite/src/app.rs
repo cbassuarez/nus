@@ -8920,10 +8920,6 @@ impl App {
     /// with a foreground process asks first.
     pub(crate) fn close_tabs(&mut self, force: bool) {
         self.close_timeline();
-        if self.tabs.len()==1 && self.pins.owns(self.tabs[0].id) && !crate::private::enabled() {
-            // Closing the last live pinned page leaves its pin and an empty prompt.
-            let tab=self.make_tab(Pane::Home(crate::home::HomePane::new()),None);self.tabs.push(tab);
-        }
         let force = force || !self.behavior.close_asks;
         let mut targets: Vec<usize> = if self.selected.is_empty() {
             vec![self.active]

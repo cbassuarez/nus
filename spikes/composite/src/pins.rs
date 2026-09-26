@@ -1,5 +1,7 @@
-//! Persistent, on-demand tabs. A pin owns its starting destination; closing
-//! the live page leaves the pin in place. Nothing is loaded merely by pinning.
+//! Persistent launchers. A pin keeps a destination and spawns an ordinary
+//! tab for it (or brings back the one it spawned): the tab stays in the tab
+//! list like any other, so a shell keeps its PTY, its children and its
+//! stack. Closing the tab leaves the pin. Nothing loads merely by pinning.
 use crate::app::{App, Pane, SideHit, Tab};
 use nus_render::{text::icons, Rect, Scene, Style};
 use serde::{Deserialize, Serialize};
@@ -175,7 +177,7 @@ impl App {
     /// a tab with a pin target that isn't pinned yet.
     pub(crate) fn pin_candidate(&self) -> Option<usize> {
         let tab = self.tabs.get(self.active)?;
-        (!crate::private::enabled() && !tab.pinned && !tab.hatch && target(tab).is_some()).then_some(self.active)
+        (!crate::private::enabled() && !tab.pinned && !tab.hatch && !self.pins.owns(tab.id) && target(tab).is_some()).then_some(self.active)
     }
     pub(crate) fn pin_tab(&mut self, i: usize) {
         if crate::private::enabled() {
@@ -218,7 +220,8 @@ impl App {
                 }
             }
         }
-        self.tabs[i].pinned = true;
+        // The tab stays a tab: the pin only remembers it (see the module note).
+        self.tabs[i].pinned = false;
         self.save_prefs();
         self.save_session();
         self.layout();
@@ -245,7 +248,8 @@ impl App {
                 .iter_mut()
                 .find(|t| !self.pins.owns(t.id) && (!matches!(pin.target, Target::Shell { .. }) || t.pinned) && target(t).as_ref() == Some(&pin.target))
             {
-                tab.pinned = true;
+                // Pins made by older builds held their tab; it goes back in the list.
+                tab.pinned = false;
                 self.pins.live.insert(pin.id.clone(), tab.id);
             }
         }
@@ -416,8 +420,7 @@ impl App {
                         Target::File { path } => self.open_file(std::path::Path::new(path), false),
                     }
                 }
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.pinned = true;
+                if let Some(tab) = self.tabs.get(self.active) {
                     self.pins.live.insert(pin.id, tab.id);
                 }
             }
