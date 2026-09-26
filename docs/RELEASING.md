@@ -88,7 +88,7 @@ all three, then compiles `scripts/windows-installer.iss` with the runner's Inno
 Setup into `nus-<version>-windows-x86_64-setup.exe`; that is signed the same
 way. `--finalize-staged` verifies all four signatures (one signer) and only
 then writes `Signing: authenticode`, the ZIP, both hashes and the record. The
-job then installs silently, launches the installed copy, and uninstalls. Every Windows package from the Release workflow is signed,
+job then installs silently, updates over it, launches the installed copy, and uninstalls. Every Windows package from the Release workflow is signed,
 including build-only runs; if signing fails there is no Windows package. Local
 packaging can make an explicitly unsigned preview with `--unsigned-preview`,
 which stable tags refuse. An Apple certificate cannot sign Windows applications.
@@ -111,7 +111,19 @@ updates (which swap the folder in place and refresh the version shown in
 Installed apps) and reinstalls keep one profile; a portable ZIP elsewhere is
 still its own installation. An upgrade replaces the whole folder, the
 uninstaller lives outside it in `%LOCALAPPDATA%\nus\uninstall\<channel>`, and
-uninstalling keeps profiles. Adding `bin` to PATH is an optional task. The
+uninstalling keeps profiles unless the person chooses *Remove them too* (a
+silent uninstall always keeps them).
+
+Setup is one Broadsheet sheet (`scripts/windows-installer.iss`; wordmark
+bitmaps from `scripts/installer-art.py`): where it installs, then what it adds
+to Windows — `path` (`bin` on PATH, on by default), `browser` (listed in
+Default apps for http/https, off) and `desktopicon` (off). Those are also the
+`/TASKS=` names. An update shows the same sheet with the last choices folded
+into one line, and a task left out on an update is taken back out. If nus is
+running, Setup asks once, asks its windows to close, then stops what is left,
+held shells included; Restart Manager remains the fallback. The release job
+installs with `path,browser`, updates with `path` alone, and uninstalls,
+checking PATH and the browser registration at each step. The
 installer is recorded as `installer` on the Windows asset, not as a second
 asset, because updaters take the first asset for their target and must keep
 receiving the ZIP. Stable Windows releases require it.

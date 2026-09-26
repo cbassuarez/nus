@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "composite"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3007,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "nus-compat"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "semver",
  "serde",
@@ -3017,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "nus-lsp"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "lsp-types",
@@ -3029,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "nus-pty"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "libc",
@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "nus-render"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3062,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "nus-sync"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3076,7 +3076,7 @@ dependencies = [
 
 [[package]]
 name = "nus-vault"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "chacha20poly1305",
  "getrandom 0.4.3",
@@ -3087,7 +3087,7 @@ dependencies = [
 
 [[package]]
 name = "nus-vt"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bitflags 2.13.2",
  "png 0.17.16",
