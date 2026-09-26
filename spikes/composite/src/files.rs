@@ -39,7 +39,17 @@ pub struct Node {
 /// Folders that are shown but not walked into on their own.
 const HEAVY: &[&str] = &["node_modules", "target", ".git", "dist", "build", "__pycache__", ".venv", "venv", ".next", ".cache", "vendor"];
 
+/// What the FILES page shows inside a repository (git_side.rs).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum View {
+    #[default]
+    Tree = 0,
+    Changes = 1,
+    History = 2,
+}
+
 pub struct Tree {
+    pub view: View,
     pub root: Option<PathBuf>,
     /// Folders held open, by path.
     pub open: HashSet<PathBuf>,
@@ -58,7 +68,7 @@ pub struct Tree {
 
 impl Default for Tree {
     fn default() -> Self {
-        Tree { root: None, open: HashSet::new(), rows: Vec::new(), pending: None, refreshed: crate::clock::now(), scroll: 0.0, rect: Rect::new(0.0, 0.0, 0.0, 0.0), preview: None, last_click: None, hover: None }
+        Tree { view: View::Tree, root: None, open: HashSet::new(), rows: Vec::new(), pending: None, refreshed: crate::clock::now(), scroll: 0.0, rect: Rect::new(0.0, 0.0, 0.0, 0.0), preview: None, last_click: None, hover: None }
     }
 }
 
@@ -312,6 +322,27 @@ impl App {
             }
         }
         scene.hline(sb.x, top + head_h - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), t.tint);
+        // In a repository: the branch line, the view switch, and each
+        // file's letter (git_side.rs).
+        let side = if icons_only { None } else { root.as_ref().and_then(|r| crate::git_side::get(r)) };
+        if side.is_none() {
+            self.tree.view = View::Tree;
+        }
+        let head_h = head_h + match &side {
+            Some(s) => self.draw_git_side_head(scene, sb, top + head_h, s),
+            None => 0.0,
+        };
+        if let (Some(s), View::Changes | View::History) = (&side, self.tree.view) {
+            let list = Rect::new(sb.x, top + head_h, sb.w, (bottom - top - head_h).max(0.0));
+            scene.layer(Some(list));
+            if self.tree.view == View::Changes {
+                self.draw_git_changes(scene, list, s);
+            } else {
+                self.draw_git_history(scene, list, s);
+            }
+            scene.layer(None);
+            return;
+        }
         // The rows.
         let list = Rect::new(sb.x, top + head_h, sb.w, (bottom - top - head_h).max(0.0));
         let total = self.tree.rows.len() as f32 * row_h;
@@ -356,9 +387,23 @@ impl App {
                 self.fonts.draw_icon(scene, if open { icons::CARET_DOWN } else { icons::CARET_RIGHT }, csz, x, b - csz + self.px(1.0), col);
             }
             let tx = x + csz + self.px(6.0);
+            // The file's letter at the row's end; a dot on a folder holding changes.
+            let tree_root = root.as_deref().unwrap_or(Path::new(""));
+            let mark = side.as_ref().and_then(|s| s.mark_for(tree_root, &n.path));
+            let changed_dir = n.dir && side.as_ref().is_some_and(|s| s.holds_change(tree_root, &n.path));
+            let room = if mark.is_some() || changed_dir { self.px(22.0) } else { 0.0 };
+            let col = match mark { Some(mk) if !n.dim => crate::git_side::mark_color(self, mk), _ => col };
             let st = Style { color: col, ..ui };
-            let shown = self.fit(st, &n.name, sb.right() - tx - self.px(10.0));
+            let shown = self.fit(st, &n.name, sb.right() - tx - self.px(10.0) - room);
             self.fonts.draw(scene, st, tx, b, &shown);
+            if let Some(mk) = mark {
+                let letter = mk.to_string();
+                let lw = self.fonts.measure(label, &letter);
+                self.fonts.draw(scene, Style { color: col, ..self.label_strong() }, sb.right() - self.px(m::ROW_PAD_X) - lw, b, &letter);
+            } else if changed_dir {
+                let d = self.px(5.0);
+                scene.rect(Rect::new(sb.right() - self.px(m::ROW_PAD_X) - d, y + (row_h - d) / 2.0, d, d), t.dim);
+            }
             self.side_hits.push((rr, SideHit::FileRow(k)));
             y += row_h;
         }

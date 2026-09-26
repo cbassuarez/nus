@@ -543,6 +543,12 @@ pub enum SideHit {
     FilesUp,
     /// A row of the tree.
     FileRow(usize),
+    /// FILES in a repository: the branch line (Source Control), the view
+    /// switch, a changed file, a commit (git_side.rs).
+    GitScm,
+    FilesView(u8),
+    ChangeRow(usize),
+    CommitRow(usize),
     /// A square on the rail.
     Rail(usize),
     /// The look chip in the footer: opens the hot swapper.
@@ -4131,25 +4137,36 @@ impl App {
                 let word = match g.op { Some(op) => format!("{op} \u{b7} {}", g.short()), None => g.short() };
                 let st = if g.conflicts > 0 || g.op.is_some() { Style { color: self.surface.signal, ..label } } else { label };
                 let pad = self.px(7.0);
-                let w = self.fonts.measure(st, &word) + pad * 2.0;
+                let gsz = self.px(12.0);
+                let w = self.fonts.measure(st, &word) + pad * 2.0 + gsz + self.px(5.0);
                 let ch = self.px(m::LABEL_PX) + self.px(8.0);
                 let chip = Rect::new(x, lbase - ch + self.px(4.0), w, ch);
                 if chip.right() < strip.right() - self.px(320.0) {
                     scene.outline(chip, self.px(m::HAIRLINE), st.color);
-                    self.fonts.draw(scene, st, x + pad, lbase, &word);
+                    let gi = if g.op == Some("MERGING") { nus_render::text::icons::GIT_MERGE } else { nus_render::text::icons::GIT_BRANCH };
+                    self.fonts.draw_icon(scene, gi, gsz, x + pad, chip.y + (ch - gsz) * 0.5, st.color);
+                    self.fonts.draw(scene, st, x + pad + gsz + self.px(5.0), lbase, &word);
                     self.crumb_hits.push((Rect::new(chip.x - self.px(4.0), strip.y, chip.w + self.px(8.0), strip.h), CrumbHit::Git));
                 }
                 // The branch's pull request and its checks, when GitHub is signed in.
                 if let Some(pr) = crate::pr::get(&g.root, &g.branch) {
                     let x = chip.right() + self.px(8.0);
-                    let word = pr.word();
+                    let word = pr.chip();
                     let fill = if pr.failed > 0 { self.surface.signal } else { ink };
                     let on = self.on_fill(fill);
-                    let w = self.fonts.measure(label, &word) + pad * 2.0;
+                    let icons_w = gsz + self.px(5.0) + if pr.icon().is_some() { gsz + self.px(5.0) } else { 0.0 };
+                    let w = self.fonts.measure(label, &word) + pad * 2.0 + icons_w;
                     let pchip = Rect::new(x, chip.y, w, ch);
                     if pchip.right() < strip.right() - self.px(320.0) {
                         scene.rect(pchip, fill);
-                        self.fonts.draw(scene, Style { color: on, ..label }, x + pad, lbase, &word);
+                        let mut ix = x + pad;
+                        self.fonts.draw_icon(scene, nus_render::text::icons::GIT_PR, gsz, ix, chip.y + (ch - gsz) * 0.5, on);
+                        ix += gsz + self.px(5.0);
+                        if let Some(ci) = pr.icon() {
+                            self.fonts.draw_icon(scene, ci, gsz, ix, chip.y + (ch - gsz) * 0.5, on);
+                            ix += gsz + self.px(5.0);
+                        }
+                        self.fonts.draw(scene, Style { color: on, ..label }, ix, lbase, &word);
                         self.crumb_hits.push((Rect::new(pchip.x - self.px(4.0), strip.y, pchip.w + self.px(8.0), strip.h), CrumbHit::Pr));
                     }
                 }
@@ -5305,10 +5322,12 @@ impl App {
             if let Pane::Term(tp) = tab.focused_ref() {
                 if let Some(g) = tp.git() {
                     let word = g.short();
-                    let gw = self.fonts.measure(dim, &word);
+                    let gsz = self.px(11.0);
+                    let gw = self.fonts.measure(dim, &word) + gsz + self.px(4.0);
                     if right - x - gw - self.px(12.0) > self.px(72.0) {
                         let gc = if g.conflicts > 0 || g.op.is_some() { self.surface.signal } else { t.dim };
-                        self.fonts.draw(scene, Style { color: gc, ..dim }, right - gw, base - self.px(1.0), &word);
+                        self.fonts.draw_icon(scene, nus_render::text::icons::GIT_BRANCH, gsz, right - gw, y + (row_h - gsz) / 2.0, gc);
+                        self.fonts.draw(scene, Style { color: gc, ..dim }, right - gw + gsz + self.px(4.0), base - self.px(1.0), &word);
                         right -= gw + self.px(10.0);
                     }
                 }
@@ -5601,6 +5620,14 @@ impl App {
                 }
             }
             SideHit::FileRow(k) => self.tree_click(k),
+            SideHit::GitScm => self.open_scm_at(self.tree.root.clone()),
+            SideHit::FilesView(v) => {
+                self.tree.view = match v { 1 => crate::files::View::Changes, 2 => crate::files::View::History, _ => crate::files::View::Tree };
+                self.tree.scroll = 0.0;
+                self.play_event("toggle");
+            }
+            SideHit::ChangeRow(k) => self.open_change(k),
+            SideHit::CommitRow(k) => self.show_commit(k),
             SideHit::Closed => {
                 self.open_palette(PaletteMode::Go);
                 if let Some((_, input)) = self.palette.as_mut() {

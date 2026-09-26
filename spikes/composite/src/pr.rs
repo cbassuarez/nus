@@ -12,12 +12,46 @@ pub struct Pr {
     pub number: u64,
     pub url: String,
     pub draft: bool,
+    /// Where it merges: `main`.
+    pub base: String,
     pub passed: u32,
     pub failed: u32,
     pub running: u32,
 }
 
 impl Pr {
+    /// The checks as a glyph: all passed, one failed, some running, none.
+    pub fn icon(&self) -> Option<(&'static str, &'static str)> {
+        use nus_render::text::icons;
+        let total = self.passed + self.failed + self.running;
+        if total == 0 {
+            None
+        } else if self.failed > 0 {
+            Some(icons::X_CIRCLE)
+        } else if self.running > 0 {
+            Some(icons::CIRCLE_DASHED)
+        } else {
+            Some(icons::CHECK_CIRCLE)
+        }
+    }
+
+    /// The chip's words beside its glyphs: `#412 → main · 6/6`.
+    pub fn chip(&self) -> String {
+        let total = self.passed + self.failed + self.running;
+        let draft = if self.draft { " DRAFT" } else { "" };
+        let checks = if total == 0 {
+            String::new()
+        } else if self.failed > 0 {
+            format!(" \u{b7} {} FAILING", self.failed)
+        } else if self.running > 0 {
+            format!(" \u{b7} {} RUNNING", self.running)
+        } else {
+            format!(" \u{b7} {}/{}", self.passed, total)
+        };
+        let base = if self.base.is_empty() { String::new() } else { format!(" \u{2192} {}", self.base) };
+        format!("#{}{draft}{base}{checks}", self.number)
+    }
+
     /// `PR #412 ✓ 6/6`, `PR #412 ✕ 1 FAILING`, `PR #412 ◌ 2 RUNNING`.
     pub fn word(&self) -> String {
         let total = self.passed + self.failed + self.running;
@@ -83,6 +117,7 @@ fn look(root: &str, branch: &str) -> Option<Pr> {
         number: p["number"].as_u64()?,
         url: p["html_url"].as_str()?.to_string(),
         draft: p["draft"].as_bool().unwrap_or(false),
+        base: p["base"]["ref"].as_str().unwrap_or_default().to_string(),
         ..Default::default()
     };
     let checks = format!("https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100");
@@ -142,5 +177,8 @@ mod tests {
         assert_eq!(pr.word(), "PR #412 \u{2713} 6/6");
         let pr = Pr { number: 412, passed: 5, failed: 1, ..Default::default() };
         assert_eq!(pr.word(), "PR #412 \u{2715} 1 FAILING");
+        let pr = Pr { number: 412, base: "main".into(), passed: 6, ..Default::default() };
+        assert_eq!(pr.chip(), "#412 \u{2192} main \u{b7} 6/6");
+        assert_eq!(pr.icon(), Some(nus_render::text::icons::CHECK_CIRCLE));
     }
 }

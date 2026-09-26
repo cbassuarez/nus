@@ -740,6 +740,21 @@ pub mod icons {
     icon!(IMAGE, "image");
     icon!(TEXT_AA, "text-aa");
     icon!(HAND_WAVING, "hand-waving");
+    // Git (drawn in the set's regular weight: 16 on 256, round ends).
+    icon!(GIT_BRANCH, "git-branch");
+    icon!(GIT_COMMIT, "git-commit");
+    icon!(GIT_MERGE, "git-merge");
+    icon!(GIT_PR, "git-pull-request");
+    icon!(GIT_DIFF, "git-diff");
+    icon!(PUSH, "arrow-up");
+    icon!(PULL, "arrow-down");
+    icon!(FETCH, "arrow-line-down");
+    icon!(STASH, "archive");
+    icon!(UNDO_COMMIT, "arrow-u-up-left");
+    icon!(CHECK_CIRCLE, "check-circle");
+    icon!(X_CIRCLE, "x-circle");
+    icon!(CIRCLE_DASHED, "circle-dashed");
+    icon!(FILES, "files");
 }
 
 impl FontSystem {
@@ -973,5 +988,22 @@ mod caps_tests {
         assert_eq!(caps("std - Rust"), "std - Rust");
         assert_eq!(caps("×"), "×");
         assert_eq!(caps("POWERSHELL  70×34"), "Powershell  70×34");
+    }
+}
+
+#[cfg(test)]
+mod git_icon_tests {
+    use super::icons::*;
+
+    /// The hand-drawn git glyphs parse and leave ink at the size the UI uses.
+    #[test]
+    fn git_icons_render() {
+        for (name, svg) in [GIT_BRANCH, GIT_COMMIT, GIT_MERGE, GIT_PR, GIT_DIFF, PUSH, PULL, FETCH, STASH, UNDO_COMMIT, CHECK_CIRCLE, X_CIRCLE, CIRCLE_DASHED, FILES] {
+            let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let mut pm = resvg::tiny_skia::Pixmap::new(26, 26).unwrap();
+            resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(26.0 / 256.0, 26.0 / 256.0), &mut pm.as_mut());
+            let inked = pm.pixels().iter().filter(|p| p.alpha() > 128).count();
+            assert!(inked > 20, "{name} drew almost nothing ({inked})");
+        }
     }
 }

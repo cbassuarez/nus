@@ -331,12 +331,22 @@ impl App {
         }
     }
 
+    /// Source Control for a folder that isn't the focused one (the FILES page).
+    pub(crate) fn open_scm_at(&mut self, folder: Option<std::path::PathBuf>) {
+        let Some(f) = folder else { return self.open_scm() };
+        self.scm_open_in(f.to_string_lossy().into_owned());
+    }
+
     pub(crate) fn open_scm(&mut self) {
         let Some(cwd) = self.scm_folder() else {
             self.toast(nus_render::text::icons::WARNING, "No Repository Here", "focus a shell or a file inside one", None);
             return;
         };
-        if self.active_git().is_none() && git(&cwd, &["rev-parse", "--git-dir"]).is_none() {
+        self.scm_open_in(cwd);
+    }
+
+    fn scm_open_in(&mut self, cwd: String) {
+        if git(&cwd, &["rev-parse", "--git-dir"]).is_none() {
             self.toast(nus_render::text::icons::WARNING, "No Repository Here", "this folder isn't in a git repository", None);
             return;
         }
@@ -565,11 +575,35 @@ impl App {
     }
 
     /// A word button; returns its width. Primary: filled.
+    /// The glyph a Source Control action wears.
+    fn scm_icon(hit: Hit) -> Option<(&'static str, &'static str)> {
+        use nus_render::text::icons;
+        Some(match hit {
+            Hit::Branches | Hit::Switch(_) => icons::GIT_BRANCH,
+            Hit::Push | Hit::CommitPush => icons::PUSH,
+            Hit::Pull => icons::PULL,
+            Hit::Fetch => icons::FETCH,
+            Hit::Commit => icons::GIT_COMMIT,
+            Hit::Stash | Hit::StashPop => icons::STASH,
+            Hit::UndoCommit => icons::UNDO_COMMIT,
+            Hit::Continue => icons::GIT_MERGE,
+            Hit::Close | Hit::Abort => icons::CLOSE,
+            _ => return None,
+        })
+    }
+
+    /// A button's width, glyph included, for laying out from the right.
+    fn scm_button_w(&self, word: &str, hit: Hit) -> f32 {
+        let st = self.label_strong();
+        let icon = if Self::scm_icon(hit).is_some() { self.px(12.0) + self.px(6.0) } else { 0.0 };
+        self.fonts.measure(st, word) + self.px(18.0) + icon
+    }
+
     fn scm_button(&mut self, scene: &mut Scene, x: f32, y: f32, word: &str, primary: bool, hit: Hit) -> f32 {
         let t = self.theme.clone();
         let st = self.label_strong();
         let h = self.px(26.0);
-        let w = self.fonts.measure(st, word) + self.px(18.0);
+        let w = self.scm_button_w(word, hit);
         let r = Rect::new(x, y, w, h);
         let hot = r.contains(self.mouse.0, self.mouse.1);
         if primary {
@@ -579,7 +613,13 @@ impl App {
         }
         scene.outline(r, self.px(m::HAIRLINE), t.ink);
         let color = if primary { self.on_fill(t.ink) } else { t.ink };
-        self.fonts.draw(scene, Style { color, ..st }, x + self.px(9.0), y + h * 0.5 + st.px * 0.36, word);
+        let mut tx = x + self.px(9.0);
+        if let Some(icon) = Self::scm_icon(hit) {
+            let isz = self.px(12.0);
+            self.fonts.draw_icon(scene, icon, isz, tx, y + (h - isz) * 0.5, color);
+            tx += isz + self.px(6.0);
+        }
+        self.fonts.draw(scene, Style { color, ..st }, tx, y + h * 0.5 + st.px * 0.36, word);
         self.scm.hits.push((r, hit));
         w
     }
@@ -624,17 +664,23 @@ impl App {
         let hy = r.y + self.px(14.0);
         let title = Style { px: self.px(16.0), ..strong };
         let mut x = r.x + pad;
+        let tsz = self.px(18.0);
+        self.fonts.draw_icon(scene, nus_render::text::icons::GIT_DIFF, tsz, x, hy + self.px(3.0), self.surface.signal);
+        x += tsz + self.px(10.0);
         x += self.fonts.draw(scene, title, x, hy + self.px(15.0), "SOURCE CONTROL") + self.px(14.0);
         if let Some(s) = &snap {
             let repo = std::path::Path::new(&s.state.root).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             x += self.fonts.draw(scene, dim, x, hy + self.px(14.0), &repo) + self.px(12.0);
             let word = format!("{} \u{25be}", s.state.branch);
             x += self.scm_button(scene, x, hy, &word, false, Hit::Branches) + self.px(8.0);
-            if let Some(up) = &s.state.upstream {
-                self.fonts.draw(scene, dim, x, hy + self.px(14.0), &format!("\u{2192} {up}"));
-            }
+            // The flow: this branch → its upstream, and how far apart they are.
+            let flow = match &s.state.upstream {
+                Some(up) => format!("\u{2192} {up}{}{}", if s.state.ahead > 0 { format!("  \u{2191}{} to push", s.state.ahead) } else { String::new() }, if s.state.behind > 0 { format!("  \u{2193}{} to pull", s.state.behind) } else { String::new() }),
+                None => "\u{2192} no upstream yet · PUSH sets origin".into(),
+            };
+            self.fonts.draw(scene, dim, x, hy + self.px(14.0), &flow);
             let mut rx = r.right() - pad;
-            let close_w = self.fonts.measure(strong, "CLOSE") + self.px(18.0);
+            let close_w = self.scm_button_w("CLOSE", Hit::Close);
             rx -= close_w;
             self.scm_button(scene, rx, hy, "CLOSE", false, Hit::Close);
             for (word, hit, primary) in [
@@ -642,7 +688,7 @@ impl App {
                 (if s.state.behind > 0 { format!("PULL \u{2193}{}", s.state.behind) } else { "PULL".into() }, Hit::Pull, s.state.behind > 0),
                 ("FETCH".into(), Hit::Fetch, false),
             ] {
-                let ww = self.fonts.measure(strong, &word) + self.px(18.0);
+                let ww = self.scm_button_w(&word, hit);
                 rx -= ww + self.px(8.0);
                 self.scm_button(scene, rx, hy, &word, primary, hit);
             }
@@ -732,7 +778,15 @@ impl App {
             if group != Some(f.group) {
                 group = Some(f.group);
                 let n = s.files.iter().filter(|g| g.group == f.group).count();
-                self.fonts.draw(scene, dim, left.x + pad, y + self.px(16.0), &format!("{} · {n}", f.group.word()));
+                let gi = match f.group {
+                    Group::Conflict => nus_render::text::icons::WARNING,
+                    Group::Staged => nus_render::text::icons::CHECK_CIRCLE,
+                    Group::Changed => nus_render::text::icons::GIT_DIFF,
+                    Group::Untracked => nus_render::text::icons::PLUS,
+                };
+                let gsz = self.px(11.0);
+                self.fonts.draw_icon(scene, gi, gsz, left.x + pad, y + self.px(7.0), if f.group == Group::Conflict { self.surface.signal } else { t.dim });
+                self.fonts.draw(scene, dim, left.x + pad + gsz + self.px(6.0), y + self.px(16.0), &format!("{} · {n}", f.group.word()));
                 let (word, hit) = if f.group == Group::Staged { ("UNSTAGE ALL", Hit::UnstageAll) } else { ("STAGE ALL", Hit::StageAll) };
                 if f.group != Group::Conflict {
                     let ww = self.fonts.measure(label, word);
@@ -838,9 +892,17 @@ impl App {
         scene.hline(right.x, hy2, right.w, self.px(m::HAIRLINE), ink);
         self.fonts.draw(scene, dim, right.x + pad, hy2 + self.px(18.0), "HISTORY");
         let mut yy = hy2 + self.px(24.0);
-        for c in s.log.iter().take(6) {
+        let shown = s.log.len().min(6);
+        for (k, c) in s.log.iter().take(6).enumerate() {
             let base = yy + self.px(12.0);
-            let hw = self.fonts.draw(scene, Style { color: t.dim, ..mono }, right.x + pad, base, &c[0]);
+            // A line of commits: a node each, joined, like the log's graph.
+            let isz = self.px(12.0);
+            let gx = right.x + pad;
+            if k + 1 < shown {
+                scene.rect(Rect::new(gx + isz * 0.5 - self.px(0.75), yy + self.px(6.0) + isz * 0.5, self.px(1.5), self.px(18.0)), t.dim);
+            }
+            self.fonts.draw_icon(scene, nus_render::text::icons::GIT_COMMIT, isz, gx, yy + self.px(2.0), if k == 0 { ink } else { t.dim });
+            let hw = self.fonts.draw(scene, Style { color: t.dim, ..mono }, gx + isz + self.px(8.0), base, &c[0]) + isz + self.px(8.0);
             let tail = format!("{} · {}", c[2], c[3]);
             let tw = self.fonts.measure(dim, &tail);
             self.fonts.draw(scene, dim, right.right() - pad - tw, base, &tail);
@@ -884,7 +946,9 @@ impl App {
                 }
                 let st = if current { strong } else { label };
                 let word = if current { format!("{b} · here") } else { b.clone() };
-                self.fonts.draw(scene, st, rr.x + self.px(12.0), rr.y + self.px(17.0), &word);
+                let isz = self.px(12.0);
+                self.fonts.draw_icon(scene, nus_render::text::icons::GIT_BRANCH, isz, rr.x + self.px(12.0), rr.y + (rr.h - isz) * 0.5, if current { self.surface.signal } else { t.dim });
+                self.fonts.draw(scene, st, rr.x + self.px(12.0) + isz + self.px(8.0), rr.y + self.px(17.0), &word);
                 if !current {
                     self.scm.hits.push((rr, Hit::Switch(k)));
                 }

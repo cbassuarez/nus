@@ -13,6 +13,7 @@ mod git_state;
 mod scm;
 mod git_gutter;
 mod pr;
+mod git_side;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;
