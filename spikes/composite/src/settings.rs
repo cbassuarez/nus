@@ -1419,6 +1419,8 @@ enum Control {
     Pics(Vec<(String, String, Pic, Hit, bool)>),
     /// Settings · Menu: the real drawer and tray icon, live.
     DrawerPreview,
+    /// Settings · Profile: where the profile lives, as a map (profile_orbit.rs).
+    ProfileOrbit,
     /// Buttons that say what they do: (label, caption, icon, hit).
     Actions(Vec<(String, String, (&'static str, &'static str), Hit)>),
 }
@@ -4348,23 +4350,22 @@ impl App {
                     None => (crate::me::os_user(), "the initial".to_string(), "not yet".to_string(), "not set up".to_string()),
                 };
                 let mut v: Vec<(String, Control)> = vec![
-                    ("".into(), Info("Your name, picture and device name. Your profile is stored locally; no online account is required.".into())),
+                    ("".into(), ProfileOrbit),
+                    ("".into(), Info("Everything nus keeps is one folder on this device; there is no account. Click anything on the map to change it: your face, this device's name, the folder, your key, where it syncs.".into())),
                 ];
                 if self.me.is_none() {
                     v.push(("".into(), Buttons(vec![("SET UP THE PROFILE".into(), icons::USER, Hit::MeCard)])));
                 }
                 v.extend(vec![
+                    ("YOU".into(), Section),
                     ("NAME".into(), Choice(vec![(name.caps(), Hit::MeEdit(0), true)])),
-                    ("PROFILE PICTURE".into(), Buttons(vec![("CHOOSE A PICTURE".into(), icons::IMAGE, Hit::PickAvatar), ("INITIAL OR EMOJI".into(), icons::USER, Hit::MeEdit(1))])),
-                    ("".into(), Info(format!("Current picture: {face}. Choose a picture from anywhere on this machine, or pick an initial or emoji in the profile editor."))),
-                    ("".into(), Info("the face is the avatar in the footer; a picture is squared off from the middle and kept as profile/avatar.png, drawn at 22px".into())),
+                    ("FACE".into(), Buttons(vec![("CHOOSE A PICTURE".into(), icons::IMAGE, Hit::PickAvatar), ("INITIAL OR EMOJI".into(), icons::USER, Hit::MeEdit(1))])),
+                    ("".into(), Info(format!("Now: {face}. A picture is squared off from the middle and kept as profile/avatar.png; it's your avatar in the footer."))),
                     ("DEVICE".into(), Choice(vec![(device.caps(), Hit::MeEdit(2), true)])),
-                    ("".into(), Info("The device name identifies changes made by this machine when you sync.".into())),
                     ("SINCE".into(), Info(format!("{since} · {days}"))),
-                    ("IMPORT FROM".into(), Buttons(vec![("BROWSERS, TERMINALS & EDITORS".into(), icons::DOWNLOAD, Hit::MeWalk(2))])),
-                    ("SYNC".into(), Info(self.sync_status())),
-                    ("".into(), Buttons(vec![("HOW IT LIVES".into(), icons::BROADCAST, Hit::MeWalk(0)), ("SYNC SETTINGS".into(), icons::SLIDERS, Hit::Section(SEC_SYNC))])),
-                    ("PRIVATE".into(), Info("Profile data is stored in a folder on this device. Sync is optional. Opening the folder lets you inspect or back up your files.".into())),
+                    ("THE FOLDER".into(), Section),
+                    ("BRING THINGS IN".into(), Buttons(vec![("FROM BROWSERS, TERMINALS & EDITORS".into(), icons::DOWNLOAD, Hit::MeWalk(2))])),
+                    ("KEEP IT IN STEP".into(), Buttons(vec![("HOW IT LIVES".into(), icons::BROADCAST, Hit::MeWalk(0)), ("SYNC SETTINGS".into(), icons::SLIDERS, Hit::Section(SEC_SYNC))])),
                     ("".into(), Buttons(vec![("OPEN THE PROFILE FOLDER".into(), icons::FOLDER, Hit::MeFolder), ("START OVER".into(), icons::WARNING, Hit::MeForget)])),
                 ]);
                 v
@@ -4696,7 +4697,7 @@ impl App {
             // Full-width controls: caption above, the control across the column.
             let stacked = matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..) | Control::Stepper(..))
                 && (tiles || self.fonts.measure(label, &k) > label_w - self.px(14.0));
-            let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::DrawerPreview | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
+            let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::DrawerPreview | Control::ProfileOrbit | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
                 || matches!(control, Control::Info(_) | Control::Help(_) | Control::SavedCommand(_));
             let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
             let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
@@ -4710,6 +4711,7 @@ impl App {
                 Control::AppIcons=>self.icon_choices_height(maxw)+cap_h+self.px(18.0),
                 Control::Mercury => self.mercury_settings_height(maxw) + cap_h + self.px(18.0),
                 Control::DrawerPreview => self.drawer_preview_height() + cap_h,
+                Control::ProfileOrbit => self.profile_orbit_height(maxw) + cap_h,
                 Control::Intelligence => cap_h + self.px(124.0),
                 Control::FontProof | Control::PromptProof => self.px(226.0) + cap_h,
                 Control::Pics(cards) => cap_h + cards.len().div_ceil(per_row) as f32 * (card_h + self.px(50.0) + gap) + self.px(10.0),
@@ -4806,6 +4808,7 @@ impl App {
                 Control::AppIcons=>self.draw_icon_choices(scene,Rect::new(cx,y+cap_h,maxw,self.icon_choices_height(maxw))),
                 Control::Mercury => self.draw_mercury_settings(scene, Rect::new(cx, y+cap_h, maxw, self.mercury_settings_height(maxw))),
                 Control::DrawerPreview => self.draw_drawer_preview(scene, Rect::new(cx, y+cap_h, maxw, self.drawer_preview_height())),
+                Control::ProfileOrbit => self.draw_profile_orbit(scene, Rect::new(cx, y+cap_h, maxw, self.profile_orbit_height(maxw))),
                 Control::Intelligence => {
                     let w = maxw.min(self.px(520.0));
                     self.draw_intel_ring(scene, Rect::new(cx, y + cap_h, w, self.px(72.0)));
