@@ -1,7 +1,7 @@
-//! Persistent launchers. A pin keeps a destination and spawns an ordinary
-//! tab for it (or brings back the one it spawned): the tab stays in the tab
-//! list like any other, so a shell keeps its PTY, its children and its
-//! stack. Closing the tab leaves the pin. Nothing loads merely by pinning.
+//! Spawners. A pin keeps a destination, and each click spawns a new,
+//! ordinary tab for it. The pin never owns, tracks or brings back a tab:
+//! what it spawned is a tab like any other, so a shell keeps its PTY, its
+//! children and its stack. Nothing loads merely by pinning.
 use crate::app::{App, Pane, SideHit, Tab};
 use nus_render::{text::icons, Rect, Scene, Style};
 use serde::{Deserialize, Serialize};
@@ -177,7 +177,9 @@ impl App {
     /// a tab with a pin target that isn't pinned yet.
     pub(crate) fn pin_candidate(&self) -> Option<usize> {
         let tab = self.tabs.get(self.active)?;
-        (!crate::private::enabled() && !tab.pinned && !tab.hatch && !self.pins.owns(tab.id) && target(tab).is_some()).then_some(self.active)
+        let t = target(tab)?;
+        let known = !matches!(t, Target::Shell { .. }) && self.pins.items.iter().any(|p| p.target == t);
+        (!crate::private::enabled() && !tab.pinned && !tab.hatch && !known).then_some(self.active)
     }
     pub(crate) fn pin_tab(&mut self, i: usize) {
         if crate::private::enabled() {
@@ -186,16 +188,6 @@ impl App {
         let Some(tab) = self.tabs.get(i) else {
             return;
         };
-        let id = tab.id;
-        if let Some(k) = self
-            .pins
-            .items
-            .iter()
-            .position(|p| self.pins.live.get(&p.id) == Some(&id))
-        {
-            self.pin_action(Act::Remove(k));
-            return;
-        }
         let Some(target) = target(tab) else {
             self.tabs[i].pinned = !self.tabs[i].pinned;
             self.layout();
@@ -203,24 +195,14 @@ impl App {
             return;
         };
         let title = tab.title();
-        let k = if let Some(k) = self.pins.items.iter().position(|p| !matches!(target, Target::Shell { .. }) && p.target == target) {
-            k
-        } else {
+        // A spawner for this tab's destination; the tab itself stays its own.
+        if matches!(target, Target::Shell { .. }) || !self.pins.items.iter().any(|p| p.target == target) {
             self.pins.items.push(Pin {
                 id: format!("pin-{}", crate::remote::new_token()),
                 title,
                 target,
             });
-            self.pins.items.len() - 1
-        };
-        if let Some(old) = self.pins.live.insert(self.pins.items[k].id.clone(), id) {
-            if old != id {
-                if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == old) {
-                    tab.pinned = false;
-                }
-            }
         }
-        // The tab stays a tab: the pin only remembers it (see the module note).
         self.tabs[i].pinned = false;
         self.save_prefs();
         self.save_session();
@@ -232,27 +214,8 @@ impl App {
         if crate::private::enabled() {
             return;
         }
-        // Bind built-in pins to a page already visible at launch without
-        // opening any other page or waking a saved website.
-        for pin in &self.pins.items {
-            if self
-                .pins
-                .live
-                .get(&pin.id)
-                .is_some_and(|id| self.tabs.iter().any(|t| &t.id == id))
-            {
-                continue;
-            }
-            if let Some(tab) = self
-                .tabs
-                .iter_mut()
-                .find(|t| !self.pins.owns(t.id) && (!matches!(pin.target, Target::Shell { .. }) || t.pinned) && target(t).as_ref() == Some(&pin.target))
-            {
-                // Pins made by older builds held their tab; it goes back in the list.
-                tab.pinned = false;
-                self.pins.live.insert(pin.id.clone(), tab.id);
-            }
-        }
+        // Pins spawn; they never adopt a tab. Tabs an older build had pinned
+        // become spawners for their destination and go back in the list.
         let pending: Vec<_> = self
             .tabs
             .iter()
@@ -366,23 +329,8 @@ impl App {
                 let Some(pin) = self.pins.items.get(k).cloned() else {
                     return;
                 };
-                if let Some(i) = self
-                    .pins
-                    .live
-                    .get(&pin.id)
-                    .and_then(|id| self.tabs.iter().position(|t| &t.id == id))
                 {
-                    self.activate(i);
-                    return;
-                }
-                // Reuse an already open matching page, including first-launch Welcome.
-                if let Some(i) = self
-                    .tabs
-                    .iter()
-                    .position(|t| !matches!(pin.target, Target::Shell { .. }) && target(t).as_ref() == Some(&pin.target))
-                {
-                    self.activate(i);
-                } else {
+                    // Always a new tab: a pin spawns, it never brings one back.
                     match &pin.target {
                         Target::Welcome => self.open_welcome(),
                         Target::Library => self.open_library(),
@@ -419,9 +367,6 @@ impl App {
                         }
                         Target::File { path } => self.open_file(std::path::Path::new(path), false),
                     }
-                }
-                if let Some(tab) = self.tabs.get(self.active) {
-                    self.pins.live.insert(pin.id, tab.id);
                 }
             }
         }
