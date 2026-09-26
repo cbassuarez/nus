@@ -32,6 +32,9 @@ pub struct Shared {
     pub viewer: crate::file_viewer::Shared,
     pub edit_source: Option<std::path::PathBuf>,
     pub save_reading: bool,
+    /// ADD TO NOTE from the page's menu: the page's address and the words
+    /// selected when the menu opened (notes_ui.rs).
+    pub note_capture: Option<(String, String)>,
     /// Latest imported paint, bound for the quad pipeline.
     pub bind: Option<Arc<wgpu::BindGroup>>,
     pub paint_size: (u32, u32),
@@ -1622,6 +1625,7 @@ wrap_context_menu_handler! {
                 items.push((29001,"EDIT SOURCE".into(),true));
             }
             if !crate::private::enabled(){items.push((29002,"SAVE TO READING LIST".into(),true));}
+            if !crate::private::enabled(){items.push((29003,if selected {"ADD SELECTION TO A NOTE…".into()} else {"ADD THIS PAGE TO A NOTE…".into()},true));}
 
             let mut sh = self.display.shared.borrow_mut();
             if let Some(old) = sh.menu.take() {
@@ -1660,6 +1664,7 @@ wrap_context_menu_handler! {
                 CMD_PIP => sh.said = Some(("PIP".into(), String::new())),
                 29001 => sh.edit_source=url::Url::parse(&page).ok().and_then(|u|u.to_file_path().ok()).filter(|p|crate::file_viewer::Kind::of(p).is_some()),
                 29002 => sh.save_reading=true,
+                29003 => sh.note_capture = Some((page.clone(), s(p.selection_text()))),
                 CMD_NOTHING => {}
                 _ => return 0,
             }

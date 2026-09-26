@@ -139,6 +139,14 @@ mod power;
 mod touch;
 mod news;
 mod notes;
+mod notes_anchor;
+mod notes_capture;
+mod notes_import;
+mod notes_index;
+mod notes_model;
+mod notes_query;
+mod notes_session;
+mod notes_store;
 mod notes_ui;
 mod window_resize;
 mod diffs;
@@ -229,6 +237,21 @@ struct Host {
 }
 
 impl Host {
+    /// Quitting waits for every note to be saved. One that cannot be (a
+    /// full disk, a read-only folder, a conflict) holds the quit, and the
+    /// window you were in says which and offers Retry and Save Copy.
+    fn notes_hold_quit(&mut self) -> bool {
+        let left = notes_session::flush_all();
+        let Some((key, title, status)) = left.into_iter().next() else { return false };
+        let i = self.focused.and_then(|id| self.app_index(id)).unwrap_or(0);
+        if let Some(a) = self.apps.get_mut(i) {
+            a.note_unsaved(&key, &title, status);
+            a.dirty = true;
+            a.window.request_redraw();
+        }
+        true
+    }
+
     fn app_index(&self, id: WindowId) -> Option<usize> {
         if let Some(i)=self.apps.iter().position(|a|a.menu_drawer.window.as_ref().is_some_and(|d|d.window.id()==id)){return Some(i);}
         self.apps.iter().position(|a| a.window.id() == id || a.little.as_ref().is_some_and(|l| l.window.id() == id) || a.pip.as_ref().is_some_and(|p| p.window.id() == id) || a.hatch.as_ref().is_some_and(|h| h.window.id() == id) || a.hatch_state.badge.as_ref().is_some_and(|b| b.window.id()==id) || a.hatch_state.shade.as_ref().is_some_and(|b| b.window.id()==id))
@@ -472,6 +495,8 @@ impl ApplicationHandler<UserEvent> for Host {
         // AppKit's native Quit can terminate inside the event pump, before
         // main reaches its normal shutdown path.
         self.dock.prepare_quit();
+        // So can unsaved notes' last chance: save what the disk takes.
+        let _ = notes_session::flush_all();
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -492,7 +517,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 menu.activate_for_check(command);
             }
             UserEvent::ApplicationCommand(command) => {
-                if command == application_menu::Command::Quit { _el.exit(); return; }
+                if command == application_menu::Command::Quit { if !self.notes_hold_quit() { _el.exit(); } return; }
                 if self.apps.is_empty() { self.spawn_window(_el, None); }
                 let i=self.focused.and_then(|id|self.app_index(id)).unwrap_or(0);
                 if let Some(a)=self.apps.get_mut(i) {
@@ -509,7 +534,7 @@ impl ApplicationHandler<UserEvent> for Host {
                     if action==1 {a.window.set_minimized(true);} else {a.toggle_fullscreen();}
                 }
             }
-            UserEvent::HatchQuit => _el.exit(),
+            UserEvent::HatchQuit => if !self.notes_hold_quit() { _el.exit() },
             UserEvent::MenuDrawer(anchor) => {
                 let anchor=anchor.or_else(||self.tray.as_ref().and_then(|t|t.anchor()));
                 let i=self.apps.iter().position(|a|a.menu_drawer.window.as_ref().is_some_and(|d|d.visible)).or_else(||self.focused.and_then(|id|self.apps.iter().position(|a|a.window.id()==id))).unwrap_or(0);
@@ -873,7 +898,13 @@ impl ApplicationHandler<UserEvent> for Host {
                     a.save_session();
                     return;
                 }
+                // Its notes saved first: one that cannot be keeps the
+                // window, with a word why (notes_ui.rs).
+                if !a.notes_let_window_close() {
+                    return;
+                }
                 if self.apps.len() == 1 {
+                    if self.notes_hold_quit() { return; }
                     event_loop.exit();
                 } else {
                     let a = self.apps.remove(i);
@@ -1223,6 +1254,11 @@ fn main() -> ExitCode {
         }
     };
     host.dock.prepare_quit();
+    // Notes unsaved when the loop ended some other way: saved now, as far
+    // as the disk allows.
+    for (_, title, status) in notes_session::flush_all() {
+        tracing::warn!("notes: {title} was not saved at quit: {status:?}");
+    }
     // The quit shows at once: the saving, syncing and Chromium's close
     // below can take seconds, and a window still up looks like a quit that
     // didn't happen.

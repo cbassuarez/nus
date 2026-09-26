@@ -46,6 +46,10 @@ pub enum Hit {
     TypeLine(u8, i8),
     Tracking(i8),
     ResetType,
+    NotesFont(Family),
+    NotesWeight(Weight),
+    NotesTracking(i8),
+    NotesMeasure(i8),
 }
 fn hit(h: Hit) -> super::Hit {
     super::Hit::Workspace(h)
@@ -144,12 +148,12 @@ pub fn label(h: Hit) -> String {
         Hit::EditorWeight(w) => format!("Editor weight · {}", w.name()),
         Hit::TypeSize(r, k) => format!(
             "{} text {}",
-            ["Interface", "Terminal", "Editor"][r as usize],
+            ["Interface", "Terminal", "Editor", "Notes"][r as usize],
             if k < 0 { "smaller" } else { "larger" }
         ),
         Hit::TypeLine(r, k) => format!(
             "{} lines {}",
-            if r == 1 { "Terminal" } else { "Editor" },
+            match r { 1 => "Terminal", 3 => "Notes", _ => "Editor" },
             if k < 0 { "tighter" } else { "looser" }
         ),
         Hit::Tracking(k) => format!(
@@ -157,6 +161,10 @@ pub fn label(h: Hit) -> String {
             if k < 0 { "tighter" } else { "wider" }
         ),
         Hit::ResetType => "Reset typography".into(),
+        Hit::NotesFont(f) => format!("Notes font · {}", f.name()),
+        Hit::NotesWeight(w) => format!("Notes weight · {}", w.name()),
+        Hit::NotesTracking(k) => format!("Notes letters {}", if k < 0 { "tighter" } else { "wider" }),
+        Hit::NotesMeasure(k) => format!("Notes lines {}", if k < 0 { "shorter" } else { "longer" }),
     }
 }
 impl App {
@@ -315,17 +323,37 @@ impl App {
                 match role {
                     0 => c.ui_scale += (delta as f32) * 0.05,
                     1 => c.terminal_size += delta as f32,
+                    3 => c.notes_size += delta as f32,
                     _ => c.editor_size += delta as f32,
                 };
                 self.apply_fonts();
             }
             Hit::TypeLine(role, delta) => {
                 let c = &mut self.behavior.typography;
-                if role == 1 {
-                    c.terminal_line += delta as f32 * 0.05;
-                } else {
-                    c.editor_line += delta as f32 * 0.05;
+                match role {
+                    1 => c.terminal_line += delta as f32 * 0.05,
+                    3 => c.notes_line += delta as f32 * 0.05,
+                    _ => c.editor_line += delta as f32 * 0.05,
                 }
+                self.apply_fonts();
+            }
+            Hit::NotesFont(f) => {
+                self.behavior.typography.notes_family = f;
+                self.apply_fonts();
+            }
+            Hit::NotesWeight(w) => {
+                self.behavior.typography.notes_weight = w;
+                self.apply_fonts();
+            }
+            Hit::NotesTracking(delta) => {
+                self.behavior.typography.notes_spacing += delta as f32 * 0.25;
+                self.apply_fonts();
+            }
+            Hit::NotesMeasure(delta) => {
+                let c = &mut self.behavior.typography;
+                // Steps of eight characters; below 40 is as wide as the pane.
+                let next = if c.notes_measure == 0 { if delta < 0 { 0 } else { 40 } } else { (c.notes_measure as i32 + delta as i32 * 8).max(0) as u16 };
+                c.notes_measure = if next < 40 { 0 } else { next };
                 self.apply_fonts();
             }
             Hit::Tracking(delta) => {
@@ -714,6 +742,24 @@ impl App {
                 ));
             }
         }
+        // Notes: Blueprint's face unless you choose another; code keeps the
+        // editor's.
+        rows.push(("NOTES".into(), Control::Caption));
+        rows.push((
+            "FAMILY".into(),
+            Control::Strip(Family::MONO.to_vec().into_iter().map(|f| (f.name().into(), hit(Hit::NotesFont(f)), c.notes_family == f)).collect()),
+        ));
+        rows.push((
+            "WEIGHT".into(),
+            Control::Strip(Weight::ALL.into_iter().map(|w| (w.name().into(), hit(Hit::NotesWeight(w)), w == c.notes_weight)).collect()),
+        ));
+        rows.push((format!("SIZE · {} PT", c.notes_size), buttons(vec![("−", Hit::TypeSize(3, -1)), ("+", Hit::TypeSize(3, 1))])));
+        rows.push((format!("LINE SPACING · {:.2}×", c.notes_line), buttons(vec![("−", Hit::TypeLine(3, -1)), ("+", Hit::TypeLine(3, 1))])));
+        rows.push((format!("COLUMN SPACING · {:.2} PX", c.notes_spacing), buttons(vec![("−", Hit::NotesTracking(-1)), ("+", Hit::NotesTracking(1))])));
+        rows.push((
+            if c.notes_measure == 0 { "LINE LENGTH · THE PANE'S WIDTH".into() } else { format!("LINE LENGTH · {} CHARACTERS", c.notes_measure) },
+            buttons(vec![("−", Hit::NotesMeasure(-1)), ("+", Hit::NotesMeasure(1))]),
+        ));
         rows.push(info("Bundled weights are real font files. Installed fonts use the closest available weight; install additional weights through your operating system. Missing characters use system fallback fonts."));
         rows.push((
             String::new(),
@@ -764,6 +810,12 @@ impl App {
                 "fn main() { println!(\"hello, nus\"); }",
                 self.theme.ink,
             ),
+            (
+                self.f.notes,
+                self.behavior.typography.notes_size * self.scale * 96.0 / 72.0,
+                "Notes · Keep a thought. Bring the source with it.",
+                self.theme.ink,
+            ),
         ];
         for (font, px, text, color) in examples {
             let st = Style {
@@ -774,7 +826,8 @@ impl App {
             };
             let text = self.fit(st, text, width);
             self.fonts.draw(scene, st, x, y, &text);
-            y += self.px(46.0);
+            // Four roles and the glyph line, inside the proof's 206 px.
+            y += self.px(38.0);
         }
         let st = Style {
             font: self.f.term,

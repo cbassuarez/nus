@@ -241,8 +241,20 @@ impl App {
                         n
                     }
                     Pane::Editor(e) => {
-                        let mut n = Node::new(Role::Document);
-                        n.set_label(format!("editor · {}", e.title()));
+                        // A note is multiline text you can read, with its
+                        // save state in the name (a screen reader says it).
+                        let note = e.buf().and_then(|b| b.note.as_ref().map(|v| (v, b)));
+                        let mut n = Node::new(if note.is_some() { Role::MultilineTextInput } else { Role::Document });
+                        match note {
+                            Some((v, b)) => {
+                                let status = crate::notes_session::status(&v.key).map(|s| s.word()).unwrap_or_default();
+                                n.set_label(format!("note · {} · {status}", v.title));
+                                if b.text.len_bytes() <= 256 * 1024 {
+                                    n.set_value(b.text.to_string());
+                                }
+                            }
+                            None => n.set_label(format!("editor · {}", e.title())),
+                        }
                         n.set_bounds(bounds(e.rect));
                         n
                     }

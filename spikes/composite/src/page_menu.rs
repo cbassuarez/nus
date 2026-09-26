@@ -40,6 +40,7 @@ mod shell {
     pub const RUN: i32 = 21;
     pub const SHARE: i32 = 22;
     pub const CLIP: i32 = 23;
+    pub const NOTE_SELECTION: i32 = 24;
     pub const FIND: i32 = 30;
     pub const SPLIT: i32 = 31;
 }
@@ -136,7 +137,11 @@ impl App {
             items.push((shell::OUTPUT, "COPY THIS BLOCK'S OUTPUT".into(), true));
             items.push((shell::RUN, "RUN THIS COMMAND AGAIN".into(), true));
             items.push((shell::SHARE, "SHARE THIS BLOCK AS A PAGE".into(), true));
-            items.push((shell::CLIP, "CLIP THIS BLOCK INTO THE NOTE".into(), true));
+            items.push((shell::CLIP, "ADD THIS BLOCK TO A NOTE…".into(), true));
+        }
+        if !selection.trim().is_empty() && !crate::private::enabled() {
+            items.push((-4, String::new(), false));
+            items.push((shell::NOTE_SELECTION, "ADD SELECTION TO A NOTE…".into(), true));
         }
         items.push((-3, String::new(), false));
         items.push((shell::FIND, "FIND".into(), true));
@@ -161,6 +166,7 @@ impl App {
         let mut edits=Vec::new();
         let mut saves=Vec::new();
         let mut said = Vec::new();
+        let mut notes = Vec::new();
         let mut menu: Option<PageMenu> = None;
         for tab in &self.tabs {
             for (right, pane) in [(false, &tab.left)].into_iter().chain(tab.right.as_ref().map(|p| (true, p))) {
@@ -169,6 +175,9 @@ impl App {
                 opens.append(&mut shared.opens);
                 if let Some(path)=shared.edit_source.take(){edits.push(path);}
                 if std::mem::take(&mut shared.save_reading){saves.push((tab.id,right));}
+                if let Some((url, quote)) = shared.note_capture.take() {
+                    notes.push((tab.id, right, url, shared.title.clone(), quote, w.container.clone()));
+                }
                 if let Some(word) = shared.said.take() { said.push(word); }
                 if let Some(req) = shared.menu.take() {
                     if Some(tab.id) != active || w.reader.is_some() {
@@ -185,6 +194,13 @@ impl App {
         for path in edits {self.open_file(&path,true);}
         for (id,right) in saves {if let Some(i)=self.tabs.iter().position(|t|t.id==id){self.tabs[i].focus_right=right;self.activate(i);self.save_reading();}}
         for (url, beside) in opens { self.open_url(&url, !beside); }
+        for (id, right, url, title, quote, container) in notes {
+            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                self.tabs[i].focus_right = right;
+                self.activate(i);
+                self.capture_page_selection(url, title, quote, container);
+            }
+        }
         for (words, detail) in said {
             if words == "PIP" { self.run(crate::app::Action::Pip); }
             else { self.toast(nus_render::text::icons::COPY, words, detail, None); }
@@ -269,6 +285,7 @@ impl App {
                         };
                         self.block_action(crate::blocks::BlockTarget { tab: menu.tab, right: menu.right, start }, action);
                     },
+                    shell::NOTE_SELECTION => self.note_act(crate::notes_ui::NoteAct::CaptureShellSelection(selection)),
                     shell::FIND => self.run(crate::app::Action::Application(crate::application_menu::Command::Find)),
                     shell::SPLIT => self.run(crate::app::Action::ToggleSplit),
                     _ => {}

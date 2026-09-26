@@ -665,7 +665,7 @@ impl App {
             }
             BlockAction::RunAgain => self.rerun_block(target),
             BlockAction::Share => self.share_block(target),
-            BlockAction::Clip => self.clip_block(Some(target.start)),
+            BlockAction::Clip => self.capture_block(Some(target.start)),
         }
         self.dirty = true;
     }

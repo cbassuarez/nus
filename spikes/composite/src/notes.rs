@@ -1,21 +1,17 @@
-//! Notes: markdown files beside the work, opened in the editor pane. Two
-//! homes. FOLDER notes live in `<folder>/.nus/notes/`, plain text, the
-//! project's business (kept out of git by `.git/info/exclude` unless you
-//! commit them). PROFILE notes live in `profile/notes/`, sealed by the
-//! vault like memory.md and carried by sync. A note is always a file any
-//! editor can read; nothing here is an index or a database.
+//! Notes: Markdown files beside the work, opened in the editor pane. Two
+//! homes. A PROJECT's notes live in `<project>/.nus/notes/`, plain text,
+//! the project's business (kept out of git by its local exclude file
+//! unless you choose otherwise). PERSONAL notes live in `profile/notes/`,
+//! sealed by the vault. A note is always a file any editor can read; the
+//! search index is built from them and never replaces them.
 //!
-//! A CLIP is a finished block quoted into a note with its own text, so it
-//! outlives the journal and replay it came from; a page comes in as a link.
-//! Clips pass the same secret scrubber Ask uses before they are written.
-//! Nothing in this module talks to the network.
+//! This module names the places and reads what a note points at; what a
+//! note is lives in notes_model.rs, where it is kept in notes_store.rs,
+//! and who is editing it in notes_session.rs. Nothing here talks to the
+//! network.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Lines of block output a clip keeps, from the end (Ask's block chip
-/// keeps the same number).
-pub const CLIP_LINES: usize = 60;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Place {
@@ -27,13 +23,9 @@ impl Place {
     pub fn label(self) -> &'static str {
         match self {
             Place::Folder => "folder",
-            Place::Profile => "profile · sealed",
+            Place::Profile => "personal",
         }
     }
-}
-
-pub fn folder_dir(folder: &Path) -> PathBuf {
-    folder.join(".nus").join("notes")
 }
 
 pub fn profile_dir() -> PathBuf {
@@ -62,35 +54,6 @@ pub fn folder_of(path: &Path) -> Option<PathBuf> {
     (place_of(path) == Some(Place::Folder)).then(|| path.parent()?.parent()?.parent().map(Path::to_path_buf)).flatten()
 }
 
-/// Keep `.nus/` out of the repository the folder is in, the way git keeps
-/// local ignores: a line in `.git/info/exclude`, never `.gitignore`. A
-/// folder outside git, or a worktree whose `.git` is a file, is left alone.
-pub fn exclude_from_git(folder: &Path) -> std::io::Result<()> {
-    let Some(root) = folder.ancestors().find(|a| a.join(".git").is_dir()) else { return Ok(()) };
-    let rel = folder.strip_prefix(root).unwrap_or(Path::new(""));
-    let mut line = String::from("/");
-    for c in rel.components() {
-        line.push_str(&c.as_os_str().to_string_lossy());
-        line.push('/');
-    }
-    line.push_str(".nus/");
-    let info = root.join(".git").join("info");
-    let exclude = info.join("exclude");
-    let old = std::fs::read_to_string(&exclude).unwrap_or_default();
-    if old.lines().any(|l| l.trim() == line) {
-        return Ok(());
-    }
-    std::fs::create_dir_all(&info)?;
-    let mut text = old;
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str("# nus notes (Settings · Notes)\n");
-    text.push_str(&line);
-    text.push('\n');
-    std::fs::write(exclude, text)
-}
-
 /// A file name for a new note: the title's words, else the minute.
 pub fn file_name(title: &str, secs: u64) -> String {
     let mut slug = String::new();
@@ -113,128 +76,6 @@ pub fn file_name(title: &str, secs: u64) -> String {
     }
 }
 
-/// A fresh note's first lines.
-pub fn template(title: &str, space: &str, secs: u64) -> String {
-    let title = if title.trim().is_empty() { "untitled" } else { title.trim() };
-    let mut s = String::from("---\n");
-    if !space.is_empty() {
-        s.push_str(&format!("space: {space}\n"));
-    }
-    s.push_str(&format!("made: {}\n---\n# {title}\n\n", stamp(secs)));
-    s
-}
-
-/// Make a new note in `dir`, never over an existing one. Profile notes go
-/// through the vault; folder notes are plain files.
-pub fn create(dir: &Path, title: &str, space: &str) -> std::io::Result<PathBuf> {
-    let secs = now();
-    std::fs::create_dir_all(dir)?;
-    let name = file_name(title, secs);
-    let stem = name.trim_end_matches(".md").to_string();
-    let mut path = dir.join(&name);
-    let mut n = 2;
-    while path.exists() {
-        path = dir.join(format!("{stem}-{n}.md"));
-        n += 1;
-    }
-    let body = template(title, space, secs);
-    if place_of(&path) == Some(Place::Profile) {
-        crate::protected_state::write(&path, body.as_bytes())?;
-    } else {
-        std::fs::write(&path, body)?;
-    }
-    Ok(path)
-}
-
-/// Write a note whole: through the vault for a profile note, plain for a
-/// folder note.
-pub fn save(path: &Path, text: &str) -> std::io::Result<()> {
-    if place_of(path) == Some(Place::Profile) {
-        crate::protected_state::write(path, text.as_bytes())
-    } else {
-        std::fs::write(path, text)
-    }
-}
-
-/// Add to the end of a note on disk (one that no editor has open).
-pub fn append(path: &Path, text: &str) -> std::io::Result<()> {
-    if place_of(path) == Some(Place::Profile) {
-        crate::protected_state::update(path, |old| {
-            let mut v = old.to_vec();
-            v.extend_from_slice(text.as_bytes());
-            Ok(v)
-        })
-    } else {
-        use std::io::Write;
-        std::fs::OpenOptions::new().append(true).create(true).open(path)?.write_all(text.as_bytes())
-    }
-}
-
-/// The folder's inbox: where a clip goes when no note is open beside it.
-pub fn inbox(folder: &Path) -> std::io::Result<PathBuf> {
-    let dir = folder_dir(folder);
-    let path = dir.join("inbox.md");
-    if !path.is_file() {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(&path, template("inbox", "", now()))?;
-    }
-    Ok(path)
-}
-
-/// A link to a page, as a line in a note.
-pub fn link_line(title: &str, url: &str) -> String {
-    let name = if title.trim().is_empty() { url } else { title.trim() };
-    format!("\n- [{}]({url})\n", name.replace(['[', ']'], ""))
-}
-
-/// A block, as a clip: a fenced `nus-block` whose info line says what ran,
-/// where, how it ended and when; the last CLIP_LINES of its output inside,
-/// scrubbed. Returns the text and how many secrets were masked.
-pub fn clip_block(cmd: &str, output: &str, cwd: &str, exit: Option<i32>, secs: u64) -> (String, usize) {
-    let lines: Vec<&str> = output.trim_end_matches('\n').lines().collect();
-    let from = lines.len().saturating_sub(CLIP_LINES);
-    let mut body = String::new();
-    if from > 0 {
-        body.push_str(&format!("… {from} earlier lines\n"));
-    }
-    body.push_str(&lines[from..].join("\n"));
-    let scrubbed = crate::secrets::scrub(&body);
-    let cmd_clean = crate::secrets::scrub(cmd.trim());
-    let fence = fence_for(&scrubbed.text);
-    let mut info = format!("nus-block cmd=\"{}\"", attr(&cmd_clean.text));
-    if let Some(code) = exit {
-        info.push_str(&format!(" exit={code}"));
-    }
-    if !cwd.is_empty() {
-        info.push_str(&format!(" cwd=\"{}\"", attr(&home_short(cwd))));
-    }
-    info.push_str(&format!(" at=\"{}\"", stamp(secs)));
-    let text = format!("\n{fence}{info}\n{}\n{fence}\n", scrubbed.text.trim_end());
-    (text, scrubbed.findings + cmd_clean.findings)
-}
-
-/// A fence long enough that nothing inside closes it.
-fn fence_for(body: &str) -> String {
-    let mut longest = 0;
-    for l in body.lines() {
-        let n = l.trim_start().chars().take_while(|c| *c == '`').count();
-        longest = longest.max(n);
-    }
-    "`".repeat(longest.max(2) + 1)
-}
-
-fn attr(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
-}
-
-fn home_short(p: &str) -> String {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
-    match p.strip_prefix(&home) {
-        Some(rest) if !home.is_empty() => format!("~{rest}"),
-        _ => p.to_string(),
-    }
-}
-
 /// What a note points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ref {
@@ -243,6 +84,9 @@ pub enum Ref {
     Page { url: String, line: usize },
     /// A path, and a line in it when one was written (`term.rs:812`).
     File { path: String, at: Option<u32>, line: usize },
+    /// A written link to another note: `[words](note:<id>)`, or
+    /// `note:<home>/<id>` in another home.
+    Note { note_id: String, home_id: Option<String>, label: String, line: usize },
 }
 
 fn info_value(info: &str, key: &str) -> Option<String> {
@@ -292,6 +136,9 @@ pub fn refs(text: &str) -> Vec<Ref> {
             continue;
         }
         for word in l.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '[' | ']' | '"' | '\'' | '`')) {
+            if word.starts_with("note:") {
+                continue;
+            }
             let w = word.trim_end_matches(['.', ',', ';', '—']);
             if w.starts_with("https://") || w.starts_with("http://") {
                 if !out.iter().any(|r| matches!(r, Ref::Page { url, .. } if url == w)) {
@@ -304,6 +151,10 @@ pub fn refs(text: &str) -> Vec<Ref> {
             }
         }
     }
+    for l in crate::notes_model::note_links(text) {
+        out.push(Ref::Note { note_id: l.note_id, home_id: l.home_id, label: l.label, line: l.line });
+    }
+    out.sort_by_key(|r| match r { Ref::Block { line, .. } | Ref::Page { line, .. } | Ref::File { line, .. } | Ref::Note { line, .. } => *line });
     out
 }
 
@@ -323,60 +174,8 @@ fn file_ref(w: &str, line: usize) -> Option<Ref> {
     ok.then(|| Ref::File { path: path.to_string(), at, line })
 }
 
-/// One row of the index.
-#[derive(Clone, Debug)]
-pub struct Entry {
-    pub path: PathBuf,
-    pub name: String,
-    pub modified: u64,
-}
-
-/// The notes in a directory, newest first.
-pub fn list(dir: &Path) -> Vec<Entry> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut v: Vec<Entry> = rd
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
-        .map(|e| {
-            let modified = e.metadata().and_then(|m| m.modified()).ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-            let path = e.path();
-            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            Entry { path, name, modified }
-        })
-        .collect();
-    v.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)));
-    v
-}
-
-/// Notes that mention `name` (its stem), with the first line that does.
-pub fn backlinks(entries: &[Entry], name: &str, not: &Path) -> Vec<(PathBuf, usize)> {
-    if name.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for e in entries.iter().filter(|e| e.path != not) {
-        let text = if place_of(&e.path) == Some(Place::Profile) {
-            crate::protected_state::read_text(&e.path).unwrap_or_default()
-        } else {
-            std::fs::read_to_string(&e.path).unwrap_or_default()
-        };
-        if let Some(i) = text.lines().position(|l| l.contains(name)) {
-            out.push((e.path.clone(), i + 1));
-        }
-    }
-    out
-}
-
 pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
-/// `2026-09-26T14:02Z`: minutes are enough for a note, and UTC says so.
-pub fn stamp(secs: u64) -> String {
-    let (y, mo, d, h, mi) = civil(secs);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}Z")
 }
 
 /// A short age for the index: `14:02`, `tue`, `sep 20`.
@@ -393,7 +192,7 @@ pub fn when(secs: u64, now: u64) -> String {
     }
 }
 
-fn civil(secs: u64) -> (i64, u32, u32, u32, u32) {
+pub(crate) fn civil(secs: u64) -> (i64, u32, u32, u32, u32) {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     let z = days + 719_468;
@@ -413,13 +212,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stamps_are_utc_minutes() {
-        assert_eq!(stamp(0), "1970-01-01T00:00Z");
-        // 2026-09-26 14:02 UTC
-        assert_eq!(stamp(1_790_431_320), "2026-09-26T14:02Z");
-    }
-
-    #[test]
     fn names_come_from_the_title_or_the_minute() {
         assert_eq!(file_name("Resize loses the cursor line!", 0), "resize-loses-the-cursor-line.md");
         assert_eq!(file_name("  ", 1_790_431_320), "note-2026-09-26-1402.md");
@@ -430,8 +222,8 @@ mod tests {
     fn profile_notes_are_sealed_and_folder_notes_are_not() {
         let profile = std::env::current_dir().unwrap().join("profile");
         assert!(crate::protected_state::is_private_path(&profile.join("notes/ideas.md")));
-        assert!(!crate::protected_state::is_private_path(&profile.join("notes/ideas.txt")));
-        assert!(!crate::protected_state::is_private_path(&profile.join("notes/sub/ideas.md")));
+        assert!(crate::protected_state::is_private_path(&profile.join("notes/.state/recovery/a.json")));
+        assert!(!crate::protected_state::is_private_path(&profile.join("notesy.md")));
         assert!(!crate::protected_state::is_private_path(Path::new("/w/proj/.nus/notes/a.md")));
     }
 
@@ -445,23 +237,11 @@ mod tests {
     }
 
     #[test]
-    fn a_block_clip_keeps_its_tail_and_masks_secrets() {
-        let out: String = (0..100).map(|i| format!("line {i}\n")).collect::<String>() + "token=ghp_abcdefghijklmnopqrstuvwxyz0123\n";
-        let (text, found) = clip_block("cargo test", &out, "/w", Some(101), 0);
-        assert!(found >= 1);
-        assert!(text.contains("[!SECRET!]"));
-        assert!(!text.contains("ghp_"));
-        assert!(text.contains("… 41 earlier lines"));
-        assert!(!text.contains("line 40\n"));
-        assert!(text.contains("line 99"));
-        assert!(text.contains("```nus-block cmd=\"cargo test\" exit=101 cwd=\"/w\" at=\"1970-01-01T00:00Z\""));
-    }
-
-    #[test]
-    fn a_fence_outgrows_the_backticks_inside() {
-        let (text, _) = clip_block("cat README.md", "```rust\nfn main() {}\n```", "", Some(0), 0);
-        assert!(text.contains("\n````nus-block"));
-        assert!(text.trim_end().ends_with("````"));
+    fn refs_include_written_note_links() {
+        let id = "1c557afcd3864f9c85f659ea18770ea1";
+        let r = refs(&format!("see [the fix](note:{id})\nhttps://x.org\n"));
+        assert_eq!(r[0], Ref::Note { note_id: id.into(), home_id: None, label: "the fix".into(), line: 0 });
+        assert_eq!(r[1], Ref::Page { url: "https://x.org".into(), line: 1 });
     }
 
     #[test]
@@ -473,30 +253,5 @@ mod tests {
         assert_eq!(r[2], Ref::Block { cmd: "cargo test -p \"vt\"".into(), exit: Some(101), line: 3 });
         assert_eq!(r[3], Ref::File { path: "./README.md".into(), at: None, line: 7 });
         assert_eq!(r.len(), 4);
-    }
-
-    #[test]
-    fn git_exclude_is_written_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path();
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(repo.join("sub")).unwrap();
-        exclude_from_git(&repo.join("sub")).unwrap();
-        exclude_from_git(&repo.join("sub")).unwrap();
-        exclude_from_git(repo).unwrap();
-        let text = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
-        assert_eq!(text.matches("/sub/.nus/").count(), 1);
-        assert_eq!(text.lines().filter(|l| *l == "/.nus/").count(), 1);
-    }
-
-    #[test]
-    fn create_never_overwrites() {
-        let dir = tempfile::tempdir().unwrap();
-        let notes = folder_dir(dir.path());
-        let a = create(&notes, "same", "").unwrap();
-        let b = create(&notes, "same", "").unwrap();
-        assert_ne!(a, b);
-        assert!(b.ends_with("same-2.md"));
-        assert!(std::fs::read_to_string(&a).unwrap().contains("# same"));
     }
 }

@@ -7,6 +7,8 @@ use winit::{event::ElementState, keyboard::{Key, NamedKey}};
 pub enum MenuAction {
     Add,
     Edit,
+    /// Its annotation (or just the item) into a note, as a reading source.
+    MakeNote,
     OpenSaved,
     Original,
     CopySource,
@@ -67,6 +69,9 @@ impl App {
         rows.push((Some(MenuAction::CopySource),
             if e.source.starts_with("http:") || e.source.starts_with("https:") { "Copy link" } else { "Copy source" }.into(), true));
         rows.push((Some(MenuAction::Edit), "Edit title, link and notes…".into(), true));
+        if !crate::private::enabled() {
+            rows.push((Some(MenuAction::MakeNote), "Make a note…".into(), true));
+        }
         rows.push((Some(MenuAction::Add), "Add item…".into(), true));
         rows.push((None, String::new(), false));
         rows.push((Some(MenuAction::Finished(!e.finished)),
@@ -137,6 +142,11 @@ impl App {
             MenuAction::OpenSaved => self.read_saved_mode(id, false),
             MenuAction::Original => self.open_reading_source(&e),
             MenuAction::CopySource => self.library_copy(e.source),
+            MenuAction::MakeNote => {
+                let annotation = e.extra.get("user_notes").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let container = e.container.clone().unwrap_or_else(|| crate::containers::PERSONAL.to_string());
+                self.begin_capture(crate::notes_capture::Origin::Reading { library_id: e.id.clone(), source_url: e.source.clone(), title: e.title.clone(), snapshot: e.snapshot.clone(), annotation, container });
+            }
             MenuAction::Finished(value) | MenuAction::Archived(value) => {
                 let (finished, archived) = if matches!(action, MenuAction::Finished(_)) {
                     (Some(value), None)
