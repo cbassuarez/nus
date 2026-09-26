@@ -1004,6 +1004,78 @@ impl App {
                 self.tend_idle_tabs();
             }
             "activatetab" => self.activate(rest.parse().unwrap()),
+            // A real AppKit click (through NSApp's sendEvent:) in the middle
+            // of the native DevTools window: what a person's click does.
+            // Real AppKit input (through NSApp's sendEvent:) in the native
+            // DevTools window: `click fx fy`, `key c [cmd]`, or `close`.
+            "assertcefapp" => {
+                #[cfg(target_os = "macos")]
+                assert!(crate::cef_app_mac::installed(), "NSApp lacks CefAppProtocol");
+            }
+            "nativedevtools" => {
+                #[cfg(target_os = "macos")]
+                unsafe {
+                    use objc2::{class, msg_send, runtime::AnyObject};
+                    let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                    let windows: *mut AnyObject = msg_send![app, windows];
+                    let n: usize = msg_send![windows, count];
+                    let mut target: *mut AnyObject = std::ptr::null_mut();
+                    for i in 0..n {
+                        let w: *mut AnyObject = msg_send![windows, objectAtIndex: i];
+                        let title: *mut AnyObject = msg_send![w, title];
+                        let utf8: *const std::os::raw::c_char = msg_send![title, UTF8String];
+                        let t = if utf8.is_null() { String::new() } else { std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned() };
+                        if t.contains("DevTools") || t.contains("Developer Tools") {
+                            target = w;
+                        }
+                    }
+                    assert!(!target.is_null(), "no native DevTools window");
+                    let _: () = msg_send![target, makeKeyAndOrderFront: std::ptr::null_mut::<AnyObject>()];
+                    let num: isize = msg_send![target, windowNumber];
+                    let view: *mut AnyObject = msg_send![target, contentView];
+                    let frame: objc2_foundation::NSRect = msg_send![view, frame];
+                    let args: Vec<&str> = rest.split_whitespace().collect();
+                    match args.first().copied() {
+                        Some("click") => {
+                            let fx: f64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.5);
+                            let fy: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.5);
+                            // AppKit's y runs up from the bottom.
+                            let at = objc2_foundation::NSPoint::new(frame.size.width * fx, frame.size.height * (1.0 - fy));
+                            for kind in [1usize, 2usize] {
+                                let ev: *mut AnyObject = msg_send![class!(NSEvent), mouseEventWithType: kind, location: at, modifierFlags: 0usize, timestamp: 0.0f64, windowNumber: num, context: std::ptr::null_mut::<AnyObject>(), eventNumber: 0isize, clickCount: 1isize, pressure: 1.0f32];
+                                let _: () = msg_send![app, postEvent: ev, atStart: false];
+                            }
+                        }
+                        Some("key") => {
+                            let c = args.get(1).copied().unwrap_or("a");
+                            let cmd = args.get(2) == Some(&"cmd");
+                            let chars = objc2_foundation::NSString::from_str(c);
+                            let code: u16 = match c { "c" => 8, "a" => 0, "v" => 9, "\\e" => 53, _ => 0 };
+                            for kind in [10usize, 11usize] {
+                                let ev: *mut AnyObject = msg_send![class!(NSEvent), keyEventWithType: kind, location: objc2_foundation::NSPoint::new(0.0, 0.0), modifierFlags: if cmd { 1usize << 20 } else { 0 }, timestamp: 0.0f64, windowNumber: num, context: std::ptr::null_mut::<AnyObject>(), characters: &*chars, charactersIgnoringModifiers: &*chars, isARepeat: false, keyCode: code];
+                                let _: () = msg_send![app, postEvent: ev, atStart: false];
+                            }
+                        }
+                        Some("close") => {
+                            let _: () = msg_send![target, performClose: std::ptr::null_mut::<AnyObject>()];
+                        }
+                        other => panic!("nativedevtools: {other:?}"),
+                    }
+                }
+            }
+            // A left click at window pixels, or (clickdt) at a fraction of
+            // the focused page's DevTools panel.
+            "click" | "clickdt" => {
+                let f: Vec<f32> = rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+                let (x, y) = if verb == "clickdt" {
+                    let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { panic!("clickdt needs a page") };
+                    let r = w.dt_rect;
+                    (r.x + r.w * f[0], r.y + r.h * f[1])
+                } else { (f[0], f[1]) };
+                self.mouse_moved(x, y);
+                self.mouse_button(winit::event::MouseButton::Left, winit::event::ElementState::Pressed);
+                self.mouse_button(winit::event::MouseButton::Left, winit::event::ElementState::Released);
+            }
             "assertsleep" => {
                 let (i,asleep)=rest.split_once(' ').unwrap();
                 let Pane::Web(w)=&self.tabs[i.parse::<usize>().unwrap()].left else {panic!("expected page")};
@@ -1211,7 +1283,7 @@ impl App {
             "pagestate" => {
                 let tabs = self.tabs.len();
                 let line = match self.tabs.get(self.active).map(|t| t.focused_ref()) {
-                    Some(Pane::Web(w)) => { let s = w.tab.shared.borrow(); format!("tabs={tabs} loading={} url={} title={:?} interstitial={:?} overlay={:?} toast={:?}", s.loading, s.url, s.title.chars().take(80).collect::<String>(), s.interstitial.as_ref().map(|p| p.kind), s.overlay.as_ref().map(|p| p.kind), self.toast.as_ref().map(|t| format!("{} {}", t.words, t.detail))) }
+                    Some(Pane::Web(w)) => { let s = w.tab.shared.borrow(); format!("tabs={tabs} webkit={} loading={} url={} title={:?} interstitial={:?} overlay={:?} toast={:?}", s.native.is_some(), s.loading, s.url, s.title.chars().take(80).collect::<String>(), s.interstitial.as_ref().map(|p| p.kind), s.overlay.as_ref().map(|p| p.kind), self.toast.as_ref().map(|t| format!("{} {}", t.words, t.detail))) }
                     Some(p) => format!("tabs={tabs} pane={} toast={:?}", match p { Pane::Term(_) => "term", Pane::Home(_) => "home", Pane::Settings(_) => "settings", Pane::Editor(_) => "editor", _ => "other" }, self.toast.as_ref().map(|t| format!("{} {}", t.words, t.detail))),
                     None => format!("tabs={tabs} none"),
                 };

@@ -242,7 +242,7 @@ impl App {
         let s = src.shared.borrow();
         let (bind, video) = (s.bind.clone(), s.video.clone());
         drop(s);
-        let aspect = video.as_ref().and_then(|v| (v.video_width > 0 && v.video_height > 0).then(|| v.video_width as f32 / v.video_height as f32)).unwrap_or(16.0 / 9.0);
+        let aspect = video.as_ref().and_then(|v| (v.video_width > 0.0 && v.video_height > 0.0).then(|| (v.video_width / v.video_height) as f32)).unwrap_or(16.0 / 9.0);
         let margin = self.px(12.0);
         let w = (area.w * width).clamp(self.px(160.0), (area.w - margin * 2.0).max(self.px(80.0)));
         let h = (w / aspect).min(area.h - margin * 2.0);

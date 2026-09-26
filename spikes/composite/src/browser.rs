@@ -139,6 +139,15 @@ pub struct Shared {
     pub print_saved: Option<Result<std::path::PathBuf, String>>,
     /// The page asked to go fullscreen (true) or to come back (false).
     pub page_fullscreen: Option<bool>,
+    /// The page, shown by the system's WebKit for its protected video
+    /// (webkit.rs); the Chromium page underneath is about:blank meanwhile.
+    pub native: Option<crate::webkit::NativePage>,
+    /// The cookie read that comes before it: (message id, the address).
+    pub native_ask: Option<(i32, String)>,
+    /// The host you took back from WebKit: stays in Chromium until you leave it.
+    pub native_declined: String,
+    /// WebKit just took the page over (the app says so once).
+    pub native_began: bool,
     /// Its only navigation became a download, now finished: the tab has
     /// nothing to show.
     pub download_only: bool,
@@ -1950,7 +1959,7 @@ impl Drop for BrowserTab {
         if let Some(menu) = menu { menu.callback.cancel(); }
         // Releasing the Rust wrapper does not close a CEF browser. Without
         // this, closed/sleeping tabs keep renderers, timers and GPU surfaces.
-        if let Ok(mut s) = self.shared.try_borrow_mut() { s.letting_go = true; }
+        if let Ok(mut s) = self.shared.try_borrow_mut() { s.letting_go = true; s.native = None; }
         if let Some(host) = self.browser.as_ref().and_then(|b|b.host()) { host.close_dev_tools(); host.close_browser(1); }
     }
 }
@@ -1969,6 +1978,8 @@ impl BrowserTab {
             && !self.can_go_back() && !self.can_go_forward() && !self.has_devtools()
     }
     pub fn suspend(&mut self) {
+        // WebKit's page goes too; waking loads the address in Chromium, which hands it back.
+        self.shared.borrow_mut().native = None;
         self._observer.take();
         self.shared.borrow_mut().letting_go=true;
         if let Some(browser)=self.browser.take() {if let Some(host)=browser.host(){host.close_browser(1);}}
@@ -2170,7 +2181,7 @@ impl BrowserTab {
         let info = WindowInfo {
             window_name: "nus Developer Tools".into(),
             #[cfg(target_os = "macos")]
-            hidden: i32::from(std::env::var_os("NUS_SHOT").is_some()),
+            hidden: i32::from(std::env::var_os("NUS_SHOT").is_some() && std::env::var_os("NUS_SHOT_DEVTOOLS").is_none()),
             bounds: cef::Rect { x: 100, y: 100, width: 1000, height: 700 },
             runtime_style: RuntimeStyle::CHROME,
             ..Default::default()
@@ -2184,6 +2195,9 @@ impl BrowserTab {
     pub fn close_devtools(&self) { if let Some(host) = self.host() { host.close_dev_tools(); } }
 
     pub fn load(&self, url: &str) {
+        if self.native_load(url) {
+            return;
+        }
         if let Some(internal) = crate::interstitial::internal(url) {
             return self.internal(url, internal);
         }
@@ -2192,6 +2206,93 @@ impl BrowserTab {
             f.load_url(Some(&url.into()));
         }
         self.nudge();
+    }
+
+    /// While WebKit shows the page: a protected address goes there too;
+    /// any other ends WebKit's turn and goes to Chromium as usual.
+    fn native_load(&self, url: &str) -> bool {
+        let mut s = self.shared.borrow_mut();
+        s.native_ask = None;
+        if s.native.is_none() {
+            return false;
+        }
+        if crate::webkit::protected(url) {
+            if let Some(n) = &s.native { n.load(url); }
+            s.url = url.to_string();
+            s.requested_url = url.to_string();
+            return true;
+        }
+        s.native = None;
+        false
+    }
+
+    /// Hand a protected page to WebKit, once its cookies are read; keep
+    /// WebKit's address and title on the tab while it has the page.
+    pub fn tend_native(&self) {
+        let url = self.shared.borrow().url.clone();
+        let host = host_of_url(&url);
+        let (has, ask, declined) = {
+            let s = self.shared.borrow();
+            (s.native.is_some(), s.native_ask.clone(), s.native_declined.clone())
+        };
+        if has {
+            let mut s = self.shared.borrow_mut();
+            let Some(n) = s.native.as_ref() else { return };
+            n.tend();
+            let (u, t, l) = (n.url(), n.title(), n.loading());
+            if !u.is_empty() && u != "about:blank" {
+                s.url = u.clone();
+                s.requested_url = u;
+            }
+            if !t.is_empty() {
+                s.title = t;
+            }
+            s.loading = l;
+            s.progress = if l { 0.5 } else { 1.0 };
+            return;
+        }
+        if !declined.is_empty() && host != declined {
+            self.shared.borrow_mut().native_declined.clear();
+        }
+        match ask {
+            None if crate::webkit::protected(&url) && host != declined && self.browser.is_some() => {
+                let id = self.devtools("Network.getCookies", serde_json::json!({ "urls": crate::webkit::cookie_urls(&url) }));
+                self.shared.borrow_mut().native_ask = Some((id, url));
+            }
+            Some((id, asked)) => {
+                if !crate::webkit::protected(&url) {
+                    self.shared.borrow_mut().native_ask = None;
+                    return;
+                }
+                let Some(reply) = self.take_reply(id) else { return };
+                let cookies = reply.get("cookies").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                let Some(page) = crate::webkit::NativePage::new(&asked, &cookies, crate::private::enabled()) else {
+                    self.shared.borrow_mut().native_declined = host;
+                    return;
+                };
+                if let Some(f) = self.browser.as_ref().and_then(|b| b.main_frame()) {
+                    f.load_url(Some(&"about:blank".into()));
+                }
+                let mut s = self.shared.borrow_mut();
+                s.native = Some(page);
+                s.native_ask = None;
+                s.native_began = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Take the page back from WebKit into Chromium (and keep it there
+    /// while you stay on this host).
+    pub fn leave_native(&self) {
+        let url = {
+            let mut s = self.shared.borrow_mut();
+            let Some(n) = s.native.take() else { return };
+            let url = n.url();
+            s.native_declined = host_of_url(&url);
+            url
+        };
+        self.load(&url);
     }
 
     /// A `nus://` address in a page that is already open.
@@ -2461,20 +2562,24 @@ impl BrowserTab {
     }
 
     pub fn back(&self) {
+        if let Some(n) = &self.shared.borrow().native { return n.back(); }
         if let Some(b)=&self.browser { b.go_back(); }
         self.nudge();
     }
 
     pub fn forward(&self) {
+        if let Some(n) = &self.shared.borrow().native { return n.forward(); }
         if let Some(b)=&self.browser { b.go_forward(); }
         self.nudge();
     }
 
     pub fn can_go_back(&self) -> bool {
+        if let Some(n) = &self.shared.borrow().native { return n.can_go_back(); }
         self.browser.as_ref().is_some_and(|b|b.can_go_back()!=0)
     }
 
     pub fn can_go_forward(&self) -> bool {
+        if let Some(n) = &self.shared.borrow().native { return n.can_go_forward(); }
         self.browser.as_ref().is_some_and(|b|b.can_go_forward()!=0)
     }
 
@@ -2490,6 +2595,7 @@ impl BrowserTab {
     }
 
     pub fn reload(&self) {
+        if let Some(n) = &self.shared.borrow().native { return n.reload(); }
         if let Some(b)=&self.browser { b.reload(); }
         self.nudge();
     }

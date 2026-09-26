@@ -123,6 +123,8 @@ pub enum Action {
     ShellRadius(f32),
     Start,
     Pip,
+    /// Pin the playing video to this tab's shell (pip_dock.rs).
+    DockVideo,
     RenameWindow(String),
     NewWindow,
     NewPrivateWindow,
@@ -1129,8 +1131,12 @@ pub struct App {
     pub row_anims: std::collections::HashMap<u64, Anim>,
     /// Transient x offset applied to sidebar_rect while the slide-in draws.
     pub sidebar_shift: f32,
+    /// The sliding sidebar and its shadow, this frame (for WebKit's pages, which sit above nus's drawing).
+    pub sidebar_over: Option<Rect>,
     pub shell_phase: f32,
     pub pip: Option<crate::pip::Pip>,
+    /// Picture in picture pinned over a shell instead (pip_dock.rs).
+    pub docked: Option<crate::pip_dock::Docked>,
     pub pip_request: Option<(usize, bool)>,
     pub viewer_config_seen: Option<crate::file_viewer::Config>,
     pub pip_away_pending: Option<Instant>,
@@ -1215,6 +1221,7 @@ pub struct App {
 impl App {
     pub fn new(window: Arc<Window>, proxy: EventLoopProxy<UserEvent>, secondary: bool, ordinal: usize, born_in: Option<String>) -> anyhow::Result<App> {
         let traffic_lights = crate::macos::TrafficLights::new(&window, &proxy);
+        crate::webkit::set_host(&window);
         let (gpu, target) = Gpu::new(window.clone())?;
         let scale = window.scale_factor() as f32;
         let mut fonts = FontSystem::new();
@@ -1445,8 +1452,10 @@ impl App {
             crumb_anim: Anim::at(1.0),
             row_anims: std::collections::HashMap::new(),
             sidebar_shift: 0.0,
+            sidebar_over: None,
             shell_phase: 0.0,
             pip: None,
+            docked: None,
             pip_request: None,
             viewer_config_seen: None,
             pip_away_pending: None,
@@ -1834,6 +1843,37 @@ impl App {
     }
 
     /// A pane around a page that already has its browser.
+    /// WebKit's pages (webkit.rs) are native views over the window: lay
+    /// each over its pane's page when that page is on screen and nothing
+    /// of nus's is over it; hide it otherwise.
+    fn sync_webkit(&self) {
+        let covered = self.palette.is_some() || self.start.is_some() || self.me_card.open || self.timeline.is_some()
+            || self.splash.is_some() || self.board.open || self.page_menu.is_some() || self.peeking().is_some();
+        let narrow = self.width_class() == Width::Narrow;
+        for (k, tab) in self.tabs.iter().enumerate() {
+            let narrow = narrow || tab.solo;
+            let split = tab.right.is_some();
+            for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
+                let Pane::Web(w) = p else { continue };
+                let s = w.tab.shared.borrow();
+                let Some(n) = &s.native else { continue };
+                let hidden_half = narrow && split && right != tab.focus_right;
+                let on = k == self.active && !covered && !hidden_half && w.asleep.is_none() && s.overlay.is_none() && w.page.w > 1.0;
+                if on {
+                    // What of the page nus's own drawing isn't over: the
+                    // sliding sidebar takes a strip off one side.
+                    let mut shown = w.page;
+                    if let Some(sb) = self.sidebar_over {
+                        let (l, r) = (shown.x.max(if sb.x <= shown.x { sb.right() } else { shown.x }), shown.right().min(if sb.right() >= shown.right() { sb.x } else { shown.right() }));
+                        shown = Rect::new(l, shown.y, (r - l).max(0.0), shown.h);
+                    }
+                    n.place(w.page, shown);
+                }
+                n.show(on);
+            }
+        }
+    }
+
     pub(crate) fn pane_for(&self, tab: BrowserTab, container: &str) -> WebPane {
         WebPane {
             tab,
@@ -3555,6 +3595,7 @@ impl App {
         let mut externals: Vec<String> = Vec::new();
         let mut printed: Vec<Result<std::path::PathBuf, String>> = Vec::new();
         let mut fullscreens: Vec<(u64, bool)> = Vec::new();
+        let mut webkit_began: Vec<(u64, bool)> = Vec::new();
         for (k, tab) in self.tabs.iter_mut().enumerate() {
             let id = tab.id;
             let shown = k == self.active;
@@ -3566,6 +3607,11 @@ impl App {
                     }
                     if let Some(on) = w.tab.shared.borrow_mut().page_fullscreen.take() {
                         fullscreens.push((id, on));
+                    }
+                    w.tab.tend_native();
+                    if std::mem::take(&mut w.tab.shared.borrow_mut().native_began) {
+                        webkit_began.push((id, right));
+                        changed = true;
                     }
                     // `window.print()`: the page, as a PDF, where downloads go.
                     let asked = std::mem::take(&mut w.tab.shared.borrow_mut().print_asked);
@@ -3592,6 +3638,7 @@ impl App {
             self.interstitial_act(id, right, &verb);
             changed = true;
         }
+        self.tend_docked();
         // A page's fullscreen: the screen, with nus's chrome and the other
         // half of a split out of the way; all of it back when it's over.
         for (id, on) in fullscreens {
@@ -3623,6 +3670,9 @@ impl App {
                 self.layout();
                 changed = true;
             }
+        }
+        for (id, right) in webkit_began {
+            self.toast(nus_render::text::icons::GLOBE, "Protected Video", "shown by WebKit", Some(crate::toast::Act::LeaveWebKit(id, right)));
         }
         for outcome in printed {
             match outcome {
@@ -3724,7 +3774,7 @@ impl App {
         let visible=main.into_iter().chain(hatch).any(|i| self.tabs.get(i).is_some_and(|tab| {
             std::iter::once(&tab.left).chain(tab.right.as_ref()).any(|pane|matches!(pane,Pane::Web(w) if w.asleep.is_none()))
         }));
-        (visible || self.pip.is_some() || self.little.is_some()).then(|| {
+        (visible || self.pip.is_some() || self.little.is_some() || self.docked.is_some()).then(|| {
             std::time::Duration::from_millis(16).saturating_sub(crate::clock::since(self.last_begin_frame))
         })
     }
@@ -3742,6 +3792,16 @@ impl App {
                         if let Some(d) = &w.devtools {
                             d.begin_frame();
                         }
+                    }
+                }
+            }
+        }
+        // The video pinned over a shell plays in a tab that isn't shown.
+        if let Some(src) = self.docked.as_ref().filter(|d| !d.parked).map(|d| d.src_tab) {
+            if let Some(tab) = self.tabs.iter().find(|t| t.id == src) {
+                for pane in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                    if let Pane::Web(w) = pane {
+                        w.tab.begin_frame();
                     }
                 }
             }
@@ -3773,6 +3833,7 @@ impl App {
         let arrival_frame = self.arriving();
         self.build();
         self.sync_traffic_lights();
+        self.sync_webkit();
         self.scene.finish();
         for (x, y, w, h, data) in self.fonts.uploads.drain(..) {
             self.gpu.upload_glyph(x, y, w, h, &data);
@@ -4336,6 +4397,7 @@ impl App {
 
         // Hover-revealed sidebar slides over the content.
         let slide = self.sidebar_anim.value();
+        self.sidebar_over = None;
         if slide > 0.001 && !self.sidebar_pinned() {
             let sb = self.sidebar_rect();
             // Whole device pixels: glyphs snap to the pixel grid, so a
@@ -4343,6 +4405,8 @@ impl App {
             let off = ((1.0 - slide) * (sb.w + self.px(12.0))).round();
             let sb = if self.sidebar_right() { Rect::new(sb.x + off, sb.y, sb.w, sb.h) } else { Rect::new(sb.x - off, sb.y, sb.w, sb.h) };
             let shadow = if self.sidebar_right() { -self.px(8.0) } else { self.px(8.0) };
+            let edge = self.px(m::STRUCTURE).ceil();
+            self.sidebar_over = Some(if self.sidebar_right() { Rect::new(sb.x + shadow - edge, sb.y, sb.w - shadow + edge, sb.h) } else { Rect::new(sb.x, sb.y, sb.w + shadow + edge, sb.h) });
             scene.layer(None);
             scene.rect(Rect::new(sb.x + shadow, sb.y, sb.w, sb.h), Theme::with_alpha(ink, 0.18 * slide));
             scene.rect(sb, self.paper());
@@ -4356,6 +4420,7 @@ impl App {
 
         self.draw_compact_tip(&mut scene);
         self.draw_focus_hint(&mut scene);
+        self.draw_docked(&mut scene);
         self.draw_pane_drag(&mut scene);
         self.draw_pane_mode(&mut scene);
         if let Some((i, _, _)) = self.drag {
@@ -6811,7 +6876,7 @@ impl App {
                         rows.push(row("::", format!("{label} → open localhost:{} in the split", p.port), Action::OpenInPane(format!("http://localhost:{}/", p.port))));
                     }
                 }
-                let actions: [(String, Action); 21] = [
+                let actions: [(String, Action); 22] = [
                     (format!("new terminal tab · {}", key("T", true)), Action::NewTerminal(self.behavior.default_profile)),
                     (format!("new browser tab · {} then a URL", key("T", true)), Action::NewBrowser(String::new())),
                     (format!("split with a browser · {}", key("D", true)), Action::ToggleSplit),
@@ -6836,6 +6901,7 @@ impl App {
                     (format!("corner radius {} → +2", self.surface.shell_radius), Action::ShellRadius(2.0)),
                     (format!("corner radius {} → −2", self.surface.shell_radius), Action::ShellRadius(-2.0)),
                     ("picture in picture · this tab's video".into(), Action::Pip),
+                    (format!("pin video to this shell · {}", if cfg!(target_os = "macos") { "⌘⌥K plays or pauses" } else { "Ctrl+Alt+K plays or pauses" }), Action::DockVideo),
                 ];
                 for (label, a) in actions {
                     if hit(&label) {
@@ -7355,6 +7421,7 @@ impl App {
                     self.request_pip(tab, right);
                 }
             }
+            Action::DockVideo => self.dock_any(),
             Action::ShellRadius(d) => {
                 self.surface.shell_radius = (self.surface.shell_radius + d).clamp(0.0, 24.0);
                 self.layout();
@@ -7418,6 +7485,7 @@ impl App {
         // An overlay takes its keys; a dialog's also takes Shift (typing)
         // and ⌘↵ / ⌘V, and lets every other chord through.
         if self.palette.is_none() && self.overlay_key(ev) { return; }
+        if self.dock_key(ev) { return; }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
@@ -8521,7 +8589,17 @@ impl App {
             }
         }
         let together = self.is_tiled(prev) && self.is_tiled(i);
-        if prev != i && self.pip.is_none() && !together && self.behavior.pip_policy.leave_tab {
+        // A video pinned to a shell is already watched; leaving its tab
+        // doesn't need a floating window as well.
+        let docked_src = self.docked.as_ref().is_some_and(|d| self.tabs.get(prev).is_some_and(|t| t.id == d.src_tab));
+        // WebKit's pages (webkit.rs) play in the system's picture in picture.
+        if prev != i && !together && self.behavior.pip_policy.leave_tab {
+            self.webkit_pip(prev, true);
+        }
+        if prev != i && self.behavior.pip_policy.focus_tab {
+            self.webkit_pip(i, false);
+        }
+        if prev != i && self.pip.is_none() && !together && !docked_src && self.behavior.pip_policy.leave_tab {
             if let Some(right) = self.playing_video(prev) {
                 self.request_pip(prev, right);
             }
@@ -8953,7 +9031,7 @@ impl App {
             self.pip_away_pending = None;
             // A queued automatic request must not arrive after focus returned.
             self.pip_request = None;
-            if self.behavior.pip_policy.focus_app { self.close_pip(); }
+            if self.behavior.pip_policy.focus_app { self.close_pip(); self.webkit_pip(self.active, false); }
         }
         self.dirty = true;
     }
@@ -9061,6 +9139,7 @@ impl App {
         self.term_drag(x, y);
         self.editor_motion(x, y);
         self.home_drag(x);
+        self.dock_moved();
         if let Some((i, off, y0)) = self.drag_armed {
             let x0 = self.row_host.map(|h| h.1).unwrap_or(x);
             if (y - y0).abs() > self.px(4.0) || (x - x0).abs() > self.px(12.0) {
@@ -9504,6 +9583,10 @@ impl App {
         }
         if !pressed && button == MouseButton::Left {
             self.home_release();
+            self.dock_release();
+        }
+        if pressed && button == MouseButton::Left && self.palette.is_none() && self.dock_press(x, y) {
+            return;
         }
         if self.editor_mouse(button, state, x, y) {
             return;

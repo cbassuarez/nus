@@ -225,7 +225,7 @@ impl App {
         }
         self.last_tend = crate::clock::now();
         let sleep_after = self.behavior.sleep_after_min;
-        let media_window = self.pip.is_some() || self.little.is_some();
+        let media_window = self.pip.is_some() || self.little.is_some() || self.docked.is_some();
         let archive_after = self.behavior.archive_after_h;
         let mut archive: Vec<usize> = Vec::new();
         let kept: Vec<String> = self.folders.iter().filter(|f| f.kind == crate::folders::Kind::Plain).flat_map(|f| f.items.iter().map(|i| i.url.clone())).collect();

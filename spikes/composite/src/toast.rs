@@ -38,6 +38,8 @@ pub enum Act {
     OpenExternal(String),
     /// Take back what a hunk's chip just did, in that folder.
     UndoHunk(crate::diffs::Hunk, crate::diffs::Do, std::path::PathBuf),
+    /// Take a page back from WebKit into Chromium: (tab id, right half).
+    LeaveWebKit(u64, bool),
 }
 
 impl Act {
@@ -49,6 +51,7 @@ impl Act {
             Act::OpenPort(_) => ("Open", crate::app::key("O", true)),
             Act::RetryInstall(_) => ("Retry", String::new()),
             Act::UndoHunk(..) => ("Undo", String::new()),
+            Act::LeaveWebKit(..) => ("Open In Chromium", String::new()),
             Act::OpenExternal(_) => ("Open", String::new()),
             Act::RevealPath(_) => ("Show In Folder", String::new()),
         }
@@ -257,6 +260,14 @@ impl App {
             Some(Act::UndoHunk(hunk, what, cwd)) => self.undo_hunk(hunk, what, cwd),
             Some(Act::OpenExternal(url)) => crate::app::open_with_os(std::path::Path::new(&url)),
             Some(Act::RevealPath(path)) => crate::downloads::reveal(&path, true),
+            Some(Act::LeaveWebKit(id, right)) => {
+                if let Some(t) = self.tabs.iter().find(|t| t.id == id) {
+                    let p = if right { t.right.as_ref() } else { Some(&t.left) };
+                    if let Some(crate::app::Pane::Web(w)) = p {
+                        w.tab.leave_native();
+                    }
+                }
+            }
             None => {}
         }
         self.show_held();

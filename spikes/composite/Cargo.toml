@@ -92,7 +92,9 @@ tray-icon = { version = "0.24", default-features = false }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibilityProtocols", "NSAppearance", "NSButton", "NSControl", "NSEvent", "NSApplication", "NSImage", "NSGraphics", "NSScreen", "NSWindow", "NSView", "NSRunningApplication", "NSWorkspace", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray", "NSDictionary", "NSHTTPCookie", "NSURLRequest", "NSObject"] }
+# Protected video through the system's WebKit and FairPlay (webkit.rs).
+objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKHTTPCookieStore", "WKPreferences", "WKNavigation", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation", "Win32_System_Power", "Win32_System_SystemInformation"] }

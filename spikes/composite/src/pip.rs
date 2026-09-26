@@ -97,6 +97,8 @@ pub enum Hit {
     Close,
     Smaller,
     Larger,
+    /// Pin it over this tab's shell instead (pip_dock.rs).
+    Dock,
     /// The scrubber: seek to where it was pressed, and follow the drag.
     Track,
 }
@@ -255,9 +257,27 @@ impl App {
         if !self.behavior.pip_policy.leave_app || self.window_focused && !minimized || child_focused || self.pip.is_some() {
             self.pip_away_pending=None;return;
         }
-        if let Some(right)=self.playing_video(self.active) {
+        if self.webkit_pip(self.active,true) {
+            self.pip_away_pending=None;
+        } else if let Some(right)=self.playing_video(self.active) {
             self.request_pip(self.active,right);self.pip_away_pending=None;
         } else if elapsed>3.0 {self.pip_away_pending=None;}
+    }
+
+    /// Tab `tab`'s WebKit pages: their playing video to the system's
+    /// picture in picture (on), or back into the page. True if it has any.
+    pub(crate) fn webkit_pip(&self, tab: usize, on: bool) -> bool {
+        let Some(t) = self.tabs.get(tab) else { return false };
+        let mut any = false;
+        for p in std::iter::once(&t.left).chain(t.right.as_ref()) {
+            if let crate::app::Pane::Web(w) = p {
+                if let Some(n) = &w.tab.shared.borrow().native {
+                    n.pip(on);
+                    any = true;
+                }
+            }
+        }
+        any
     }
 
     pub fn request_pip(&mut self, tab: usize, right: bool) {
@@ -508,6 +528,10 @@ impl App {
         mark(self,scene,icons::PLUS,isz,rx+isz/2.0,top,Hit::Larger,&mut hits);
         rx -= isz + px(16.0);
         mark(self,scene,icons::MINUS,isz,rx+isz/2.0,top,Hit::Smaller,&mut hits);
+        if !narrow {
+            rx -= isz + px(20.0);
+            mark(self,scene,icons::TERMINAL,isz,rx+isz/2.0,top,Hit::Dock,&mut hits);
+        }
 
         // Middle: ten back, play or pause, ten on.
         let paused = v.map(|v| v.paused).unwrap_or(true);
@@ -593,7 +617,7 @@ impl App {
             return;
         }
         if ev.logical_key==WKey::Named(NamedKey::Tab) {
-            let order:Vec<Hit>=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Track,Hit::Smaller,Hit::Larger,Hit::ToTab,Hit::Close].into_iter().filter(|h|!matches!(h,Hit::Track) || pip.track.is_some()).collect();
+            let order:Vec<Hit>=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Track,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close].into_iter().filter(|h|!matches!(h,Hit::Track) || pip.track.is_some()).collect();
             let back=pip.mods.shift_key();let n=order.len();
             let next=pip.key_focus.and_then(|h|order.iter().position(|v|*v==h)).map(|i|if back {(i+n-1)%n}else{(i+1)%n}).unwrap_or(if back{n-1}else{0});
             let p=self.pip.as_mut().unwrap();p.key_focus=Some(order[next]);p.window.request_redraw();return;
@@ -652,7 +676,11 @@ impl App {
                 } else {p.pressed=true;}
             }
             ElementState::Released=>{
+                let dragged=p.dragging;
                 p.pressed=false;p.dragging=false;p.gesture=None;
+                // Let go over one of the main window's shells: pinned there.
+                if dragged && self.pip_dropped() {return;}
+                let Some(p)=self.pip.as_mut() else {return;};
                 if let Some(hit)=p.press_hit.take() {
                     let scrubbed=std::mem::take(&mut p.scrubbing);
                     if !scrubbed && p.hit_at(p.pos.0,p.pos.1)==Some(hit) {self.pip_act(hit);}
@@ -741,6 +769,7 @@ impl App {
             Hit::Close => return self.close_pip(),
             Hit::Smaller => return self.pip_zoom(1.0/1.12),
             Hit::Larger => return self.pip_zoom(1.12),
+            Hit::Dock => { self.dock_from_pip(); return; }
             // Handled on the press, and followed by the drag.
             Hit::Track => return,
         };
@@ -813,7 +842,7 @@ impl App {
 
 impl Hit {
     fn label(self)-> &'static str {match self {
-        Self::Play=>"Play or pause",Self::Back=>"Back ten seconds",Self::Forward=>"Forward ten seconds",Self::Mute=>"Mute or unmute",Self::ToTab=>"Return to tab",Self::Close=>"Close picture in picture",Self::Smaller=>"Make smaller",Self::Larger=>"Make larger",Self::Track=>"Playback position",
+        Self::Play=>"Play or pause",Self::Back=>"Back ten seconds",Self::Forward=>"Forward ten seconds",Self::Mute=>"Mute or unmute",Self::ToTab=>"Return to tab",Self::Close=>"Close picture in picture",Self::Smaller=>"Make smaller",Self::Larger=>"Make larger",Self::Dock=>"Pin to this tab's shell",Self::Track=>"Playback position",
     }}
 }
 impl App {
@@ -821,7 +850,7 @@ impl App {
         use accesskit::{Action,Node,NodeId,Role,TreeInfo,TreeId,TreeUpdate};
         let mut nodes=Vec::new();let mut children=Vec::new();let mut focus=NodeId(1);
         if let Some(p)=&self.pip {
-            for hit in [Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::ToTab,Hit::Close,Hit::Track] {
+            for hit in [Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close,Hit::Track] {
                 if matches!(hit,Hit::Track) && p.track.is_none(){continue;}
                 let id=NodeId(10+hit as u64);let mut n=Node::new(if hit==Hit::Track {Role::Slider}else{Role::Button});n.set_label(match hit {Hit::Back=>format!("Back {} seconds",self.behavior.pip_skip_seconds.clamp(1,120)),Hit::Forward=>format!("Forward {} seconds",self.behavior.pip_skip_seconds.clamp(1,120)),_=>hit.label().into()});n.add_action(Action::Focus);
                 if hit==Hit::Track {n.add_action(Action::Increment);n.add_action(Action::Decrement);n.add_action(Action::SetValue);n.set_min_numeric_value(0.0);n.set_max_numeric_value(100.0);if let Some(v)=self.pane_video(p.tab,p.right){n.set_numeric_value((v.t/v.dur*100.0).clamp(0.0,100.0));}}
@@ -835,7 +864,7 @@ impl App {
     }
     pub(crate) fn pip_access_action(&mut self,req:accesskit::ActionRequest) {
         use accesskit::{Action,ActionData};
-        let Some(hit)=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::ToTab,Hit::Close,Hit::Track].into_iter().find(|h|10+*h as u64==req.target_node.0) else {return;};
+        let Some(hit)=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close,Hit::Track].into_iter().find(|h|10+*h as u64==req.target_node.0) else {return;};
         match req.action {
             Action::Click=>self.pip_act(hit),
             Action::Focus=>{if let Some(p)=&mut self.pip {p.key_focus=Some(hit);p.window.focus_window();p.window.request_redraw();}},

@@ -4,6 +4,9 @@
 mod access;
 mod interstitial;
 mod interstitial_ui;
+mod pip_dock;
+#[cfg(target_os = "macos")]
+mod cef_app_mac;
 mod agent;
 mod ledger;
 mod director;
@@ -123,6 +126,7 @@ mod diffs;
 mod phone;
 mod private;
 mod widevine;
+mod webkit;
 mod security;
 mod secrets;
 mod protected_state;
@@ -1029,6 +1033,10 @@ fn main() -> ExitCode {
     perf::startup(perf::StartupMark::CefDeferred);
 
     let mut event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+    // CEF's windows (native DevTools) ask NSApp about -sendEvent:; winit's
+    // application class has to answer before CEF starts (cef_app_mac.rs).
+    #[cfg(target_os = "macos")]
+    cef_app_mac::install();
     perf::startup(perf::StartupMark::EventLoopReady);
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
