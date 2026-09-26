@@ -7517,6 +7517,14 @@ impl App {
             if pressed { self.record_hotkey(ev); }
             return;
         }
+        // Quit: ⌘Q on macOS reaches the menu first and lands here only when
+        // something in the window (a page, WebKit) had it; Ctrl+Shift+Q
+        // elsewhere, where the native menu leaves Ctrl chords to the shell.
+        let quit_chord = if cfg!(target_os = "macos") { sup && !ctrl && !alt && !shift } else { ctrl && shift && !alt && !sup };
+        if pressed && !ev.repeat && quit_chord && ev.physical_key == PhysicalKey::Code(KeyCode::KeyQ) {
+            let _ = self.proxy.send_event(crate::UserEvent::HatchQuit);
+            return;
+        }
         if pressed && ev.physical_key == PhysicalKey::Code(KeyCode::KeyN) && (if cfg!(target_os="macos") {sup} else {ctrl}) && shift {
             return self.run(Action::NewPrivateWindow);
         }

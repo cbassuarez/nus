@@ -1153,6 +1153,16 @@ fn main() -> ExitCode {
         }
     };
     host.dock.prepare_quit();
+    // The quit shows at once: the saving, syncing and Chromium's close
+    // below can take seconds, and a window still up looks like a quit that
+    // didn't happen.
+    for a in host.apps.iter_mut() {
+        a.window.set_visible(false);
+        if let Some(h) = a.hatch.as_ref() { h.window.set_visible(false); }
+        if let Some(d) = a.menu_drawer.window.as_ref() { d.window.set_visible(false); }
+        if let Some(p) = a.pip.as_ref() { p.window.set_visible(false); }
+        if let Some(s) = a.hatch_state.shade.as_ref() { s.window.set_visible(false); }
+    }
     // Every window's tabs go in the file: the first window's session carries the rest.
     let others: Vec<start::Session> = host.apps.iter().skip(1).map(|a| a.session_snapshot()).collect();
     if let Some(a) = host.apps.first_mut() {
