@@ -21,3 +21,4 @@ __pycache__/
 # Local editor recovery files
 *.swp
 *.swo
+.playwright-mcp/
