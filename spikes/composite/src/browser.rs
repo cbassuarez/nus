@@ -134,6 +134,8 @@ pub struct Shared {
     /// The page called `window.print()`: there is no print dialog for a
     /// page drawn offscreen, so it is saved as a PDF instead.
     pub(crate) print_asked: bool,
+    /// Wheel the page had no room for since nus last looked (overscroll.rs).
+    pub(crate) overscroll: f32,
     pub(crate) print_msg: Option<i32>,
     /// Where that PDF went, or why it didn't.
     pub print_saved: Option<Result<std::path::PathBuf, String>>,
@@ -1129,6 +1131,16 @@ wrap_dev_tools_message_observer! {
                 }
                 return;
             }
+            if v.get("name").and_then(|n| n.as_str()) == Some("nusOverscroll") {
+                let dy = v.get("payload").and_then(|p| p.as_str()).and_then(|p| p.parse::<f32>().ok()).filter(|d| d.is_finite()).unwrap_or(0.0);
+                if dy != 0.0 {
+                    let mut s = self.o.shared.borrow_mut();
+                    s.overscroll += dy.clamp(-2000.0, 2000.0);
+                    s.paints += 1;
+                    crate::browser_runtime::wake();
+                }
+                return;
+            }
             if v.get("name").and_then(|n| n.as_str()) == Some("nusPrint") {
                 let mut s = self.o.shared.borrow_mut();
                 s.print_asked = true;
@@ -2067,10 +2079,13 @@ impl BrowserTab {
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusVideo" }));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusInterstitial" }));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusPrint" }));
+        tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusOverscroll" }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": PRINT_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": PRINT_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));
+        tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::overscroll::JS }));
+        tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::overscroll::JS }));
         let id = tab.devtools("Target.getTargetInfo", serde_json::json!({}));
         tab.shared.borrow_mut().target_msg = id;
         tab

@@ -417,6 +417,12 @@ pub struct WebPane {
     pub asleep: Option<String>,
     /// Wheel fractions not yet handed to the page (scrolling.rs).
     pub wheel_carry: (f32, f32),
+    /// The last wheel came from a trackpad (precise deltas): only those
+    /// stretch the page at its end, as on macOS.
+    pub wheel_precise: bool,
+    /// The page pulled past its end (overscroll.rs), and where it's drawn.
+    pub bounce: crate::overscroll::Bounce,
+    pub bounce_y: f32,
     /// A sideways swipe in progress (swipe.rs).
     pub swipe: Option<crate::swipe::Swipe>,
     /// When it went to sleep, for the waking transcript.
@@ -1900,6 +1906,9 @@ impl App {
             overlay_sel: 0,
             overlay_hits: Vec::new(),
             wheel_carry: (0.0, 0.0),
+            wheel_precise: false,
+            bounce: Default::default(),
+            bounce_y: 0.0,
             swipe: None,
             load_since: None,
             load_reported: 0.0,
@@ -2416,10 +2425,21 @@ impl App {
         // Loading bars chase progress; on arrival they fade out.
         let chase = self.load_bar.chase;
         let out = self.motion.dur(base::LOAD_OUT);
+        let (reduced, scale) = (self.motion.reduced(), self.scale);
         let mut ready_cue = false;
         for tab in self.tabs.iter_mut() {
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
+                    // Past the page's end: stretch, then spring back.
+                    let pulled = std::mem::take(&mut w.tab.shared.borrow_mut().overscroll);
+                    if reduced || w.reader.is_some() {
+                        w.bounce.stop();
+                    } else if pulled != 0.0 && w.wheel_precise {
+                        w.bounce.push(pulled);
+                    }
+                    let (y, moving) = w.bounce.step(w.page.h / scale * 0.18);
+                    w.bounce_y = y * scale;
+                    self.dirty |= moving;
                     let (loading, progress) = {
                         let s = w.tab.shared.borrow();
                         (s.loading, s.progress as f32)
@@ -6540,7 +6560,9 @@ impl App {
                     let paper = self.paper();
                     reader.draw(scene, &mut self.fonts, &rf, p.page, self.scale, ink, t.dim, paper, self.surface.signal);
                 } else if let Some(bind) = bind {
-                    scene.texture(p.page, bind, Some(p.page));
+                    // Stretched past its end, the page moves and the pane shows behind it.
+                    let drawn = Rect::new(p.page.x, p.page.y - p.bounce_y, p.page.w, p.page.h);
+                    scene.texture(drawn, bind, Some(p.page));
                     scene.layer(None);
                     if p.still.is_some() {
                         // Then, not now: a wash of paper over the still.
@@ -9972,6 +9994,7 @@ impl App {
                 let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
                 let Some(Pane::Web(w)) = pane else { return };
                 w.wheel_carry = carry;
+                w.wheel_precise = matches!(delta, MouseScrollDelta::PixelDelta(_));
                 let (lx, ly) = ((x - w.page.x) / scale, (y - w.page.y) / scale);
                 w.tab.wheel(lx as i32, ly as i32, cef_flags, dx, dy);
                 if sideways {
