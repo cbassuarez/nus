@@ -2019,3 +2019,57 @@ every window, crash and screen-reader path in the running app. The logic
 is covered by unit tests of the model, store (crash injection at each
 commit step), sessions, capture, search and migration.
 
+
+## Formatting a note: the margin rail (2026-09-26)
+
+Option K3 from the canvas, with the part of J that works on today's
+editor (notes_format.rs).
+
+**What you see.** A note's Markdown is styled where it stands, and every
+character keeps its cell, so the caret and the mouse stay exact.
+- Headings and `**bold**` use the notes face's bold.
+- `_italic_` is in the signal colour.
+- `` `code` `` and fenced code sit on a faint tint. Nothing inside code
+  is formatting.
+- `==marks==` get a highlighter.
+- Links are the signal colour, underlined, with the address faint.
+- Quotes are dimmed.
+- List markers and checkboxes are in the signal colour; ticked items are
+  struck through.
+- The markers themselves (`#`, `**`, backticks, `>`) stay, faint.
+
+**The rail.** A column of buttons in the empty margin left of the
+72-character column: B, I, code, link, highlight, H1–H3, bullets,
+numbers, checklist, quote. A button lights when the caret's text already
+has that formatting; pressing it again takes the formatting off.
+- ◂ folds the rail to one tab and ▸ unfolds it. The choice is remembered
+  in your preferences. The text never moves when the rail opens or folds,
+  because the rail lives in the margin.
+- When the margin is too narrow or the pane too short (a split, 320 px),
+  the rail becomes a row under the strip. That row folds to `▸ Aa`.
+- Whatever doesn't fit is in the palette under `note format`.
+
+**Keys, in a focused note only.** ⌘⌥ (Ctrl+Alt elsewhere) with:
+- B bold, I italic, E code, K link, M highlight
+- 1–3 headings
+- 7 bullets, 8 numbers, 9 checklist
+- ' quote
+
+⌘↵ ticks the checklist item the caret is on. The app keeps ⌘B, ⌘E, ⌘H and
+⌘K, and ⌥⌘H stays macOS's Hide Others. Off macOS, a Ctrl+Alt key that
+types a character (AltGr) is left as typing.
+
+**Lists write themselves.**
+- ↵ continues a bullet, number, checkbox or quote, and ↵ on an empty item
+  ends it.
+- Numbers below count on from the new item.
+- Tab and ⇧Tab indent a list item by two spaces; outside a list, Tab is
+  the editor's own.
+- A click on `[ ]` ticks it.
+
+Each change is a single splice of the note's own Markdown, so one undo
+takes it back, and nothing you didn't touch is rewritten.
+
+Not yet (waiting on the writing-surface layout): hiding markers, heading
+sizes (a heading is bold, not larger, on the fixed cell grid), soft wrap,
+rich paste and the selection bar.

@@ -256,8 +256,9 @@ pub struct Fonts {
     pub wordmark: FontId,
     pub term: FontId,
     pub editor: FontId,
-    /// A note's text (Typography's notes role).
+    /// A note's text (Typography's notes role), and its bold.
     pub notes: FontId,
+    pub notes_bold: FontId,
     /// Newsreader, for the reader.
     pub serif: FontId,
 }
@@ -1359,6 +1360,7 @@ impl App {
                 term: term_font,
                 editor: term_font,
                 notes: term_font,
+                notes_bold: term_font,
                 serif,
             },
             scene: Scene::new(),
@@ -8068,6 +8070,10 @@ impl App {
         // Command is also the application's shortcut modifier on macOS.
         let editor_chord = (if cfg!(target_os="macos") { sup } else { ctrl }) && !alt
             && matches!(ev.logical_key.to_text().map(str::to_ascii_lowercase).as_deref(), Some("a" | "c" | "x" | "v" | "z" | "y" | "s" | "f"));
+        // A note's formatting keys come before the app's chords.
+        if self.palette.is_none() && self.note_format_key(ev) {
+            return;
+        }
         if self.palette.is_none() && (!app || editor_chord) && self.editor_key(ev) {
             return;
         }
