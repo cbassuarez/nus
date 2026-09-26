@@ -234,6 +234,12 @@ impl App {
                     }
                     for group in groups {
                         let (name, hit, selected) = &group[0];
+                        // Options the real renderers can draw are chosen by
+                        // picture, on live pages too (real_pics.rs).
+                        if live && !is_action(*hit) && group.iter().all(|o| crate::real_pics::real(o.1)) {
+                            out.push((title.clone(), Control::Pics(group.into_iter().map(|(n,h,on)| (n, description(h).unwrap_or_else(|| self.setting_label(h)), Pic::Setting(h), h, on)).collect())));
+                            continue;
+                        }
                         if live {
                             // Live pages: the choice stays one row of chips, and
                             // a line under it says what the current one does.

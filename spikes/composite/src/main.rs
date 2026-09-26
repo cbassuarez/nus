@@ -5,6 +5,7 @@ mod access;
 mod overscroll;
 mod passwords;
 mod profile_orbit;
+mod real_pics;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;

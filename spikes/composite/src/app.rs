@@ -978,6 +978,8 @@ pub struct App {
     pub tile_drag: Option<crate::tiles::Grab>,
     /// The pointer is a resize arrow over a divider.
     pub resize_cursor: Option<crate::tiles::Divider>,
+    /// Where the live preview marked what the pointed-at row governs, this frame (live.rs).
+    pub live_mark: Option<Rect>,
     /// Sign-ins waiting on Save or Fill (passwords.rs).
     pub passwords: crate::passwords::Offers,
     pub peek_anim: Anim,
@@ -1362,6 +1364,7 @@ impl App {
             send_request: None,
             tile_drag: None,
             resize_cursor: None,
+            live_mark: None,
             passwords: Default::default(),
             peek_anim: Anim::at(0.0),
             compact_tip: None,
@@ -3322,16 +3325,25 @@ impl App {
             BarColor::Tab => tab_signal.unwrap_or(self.surface.signal),
             BarColor::Ink => self.theme.ink,
         };
-        let col = |a: f32| [base_color[0], base_color[1], base_color[2], base_color[3] * a * alpha];
         let th = self.px(self.load_bar.thickness);
-        match self.load_bar.style {
+        self.paint_load_bar(scene, page, v, self.load_bar.style, base_color, alpha, th, true);
+    }
+
+    /// One loading bar at `v` along `page`'s top, in `style`: the page's own
+    /// bar and Settings' picture of each style both draw through here.
+    /// `window`: Carapace runs along the window's edge (else the page's).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_load_bar(&self, scene: &mut Scene, page: Rect, v: f32, style: BarStyle, base_color: nus_render::Color, alpha: f32, th: f32, window: bool) {
+        let col = |a: f32| [base_color[0], base_color[1], base_color[2], base_color[3] * a * alpha];
+        match style {
             BarStyle::Radiance => {
                 let r = page;
-                scene.layer(Some(page));
-                let scale = self.px(self.load_bar.thickness * 0.5).max(0.5);
+                let prev = scene.clip();
+                scene.layer(Some(prev.map_or(page, |c| c.intersect(&page))));
+                let scale = self.px(th / self.scale.max(0.1) * 0.5).max(0.5);
                 scene.push(nus_render::Instance::loading_light(
                     Rect::new(r.x, r.y-self.px(7.0), r.w, self.px(16.0)), v, scale, col(1.0)));
-                scene.layer(None);
+                scene.layer(prev);
             }
             BarStyle::Rule => scene.rect(Rect::new(page.x, page.y, page.w * v, th), col(1.0)),
             BarStyle::Comet => {
@@ -3349,10 +3361,14 @@ impl App {
             }
             BarStyle::Carapace => {
                 let sw = self.px(self.surface.shell_width).max(th);
-                let win_w = self.target.size.0 as f32;
-                let fill = [1.0, 1.0, 1.0, 0.55 * alpha];
-                scene.layer(None);
-                scene.rect(Rect::new(0.0, 0.0, win_w * v, sw), fill);
+                if window {
+                    let win_w = self.target.size.0 as f32;
+                    let fill = [1.0, 1.0, 1.0, 0.55 * alpha];
+                    scene.layer(None);
+                    scene.rect(Rect::new(0.0, 0.0, win_w * v, sw), fill);
+                } else {
+                    scene.rect(Rect::new(page.x, page.y, page.w * v, sw), col(0.55));
+                }
             }
         }
     }

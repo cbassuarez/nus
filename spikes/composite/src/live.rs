@@ -18,12 +18,13 @@ pub const TABS: usize = 4;
 pub const TERMINAL: usize = 5;
 pub const HATCH: usize = 8;
 pub const SYNC: usize = 12;
+pub const BROWSER: usize = crate::settings::SEC_BROWSER;
 pub const PROMPT: usize = 16;
 pub const ASSISTANTS: usize = crate::settings::SEC_ASSISTANTS;
 
 /// Pages that carry a live preview (and compact rows beside it).
 pub fn has_live(section: usize) -> bool {
-    matches!(section, SOUND | START | SIDEBAR | TABS | TERMINAL | HATCH | SYNC | PROMPT | ASSISTANTS)
+    matches!(section, SOUND | START | SIDEBAR | TABS | TERMINAL | BROWSER | HATCH | SYNC | PROMPT | ASSISTANTS)
 }
 
 impl App {
@@ -37,6 +38,7 @@ impl App {
             TERMINAL => 0.62,
             HATCH => 0.8,
             SYNC => 0.8,
+            BROWSER => 0.72,
             PROMPT => 1.0,
             ASSISTANTS => 0.9,
             _ => 0.8,
@@ -65,8 +67,38 @@ impl App {
             TERMINAL => self.live_terminal(scene, body, focus),
             HATCH => self.live_hatch(scene, body, focus),
             SYNC => self.live_sync(scene, body, focus),
+            BROWSER => self.live_browser(scene, body, focus),
             PROMPT => self.live_prompt(scene, body, focus),
             _ => {}
+        }
+    }
+
+    /// A signal line from a settings row to the part of the preview it
+    /// governs: out of the row's edge, one bend, into the mark.
+    pub(crate) fn draw_leader(&mut self, scene: &mut Scene, row: Rect, mark: Rect, preview: Rect) {
+        let sig = self.surface.signal;
+        let w = self.px(1.5);
+        let dot = self.px(6.0);
+        if preview.x >= row.right() {
+            // Beside: right from the row, down or up, right into the mark.
+            let (y0, y1) = (row.y + row.h / 2.0, mark.y + mark.h / 2.0);
+            let x0 = row.right();
+            let x1 = mark.x;
+            let bend = (preview.x - self.px(14.0)).max(x0 + self.px(6.0));
+            scene.rect(Rect::new(x0 - dot / 2.0, y0 - dot / 2.0, dot, dot), sig);
+            scene.hline(x0, y0 - w / 2.0, bend - x0, w, sig);
+            scene.vline(bend - w / 2.0, y0.min(y1), (y1 - y0).abs() + w, w, sig);
+            scene.hline(bend, y1 - w / 2.0, (x1 - bend).max(0.0), w, sig);
+        } else {
+            // Above: up from the row, across, up into the mark.
+            let (x0, x1) = (row.x + self.px(18.0), mark.x + mark.w / 2.0);
+            let y0 = row.y;
+            let y1 = mark.bottom();
+            let bend = preview.bottom() + self.px(6.0);
+            scene.rect(Rect::new(x0 - dot / 2.0, y0 - dot / 2.0, dot, dot), sig);
+            scene.vline(x0 - w / 2.0, bend, (y0 - bend).max(0.0), w, sig);
+            scene.hline(x0.min(x1), bend - w / 2.0, (x1 - x0).abs() + w, w, sig);
+            scene.vline(x1 - w / 2.0, y1, (bend - y1).max(0.0), w, sig);
         }
     }
 
@@ -93,6 +125,8 @@ impl App {
         }
         let pad = self.px(2.0);
         let m = Rect::new(r.x - pad, r.y - pad, r.w + pad * 2.0, r.h + pad * 2.0);
+        // The first mark is the one the leader line goes to.
+        self.live_mark.get_or_insert(m);
         scene.rect(m, fade(self.surface.signal, 0.12));
         scene.outline(m, self.px(1.5), self.surface.signal);
     }
@@ -706,87 +740,155 @@ impl App {
         let cap_h = self.px(40.0);
         let win = Rect::new(body.x, body.y, body.w, body.h - cap_h);
         let inner = self.lv_window(scene, win);
-        let px = self.px(10.0);
-        let term = Style { font: self.f.term, px, color: ink, tracking: 0.0 };
-        let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
-        let lh = self.px(14.0);
+        // The real thing: nus's own terminal renderer, a real grid, fed a
+        // short script through the real parser, in your theme and your
+        // terminal font, through the same colour policy as your panes.
         let gutter = if b.blocks { self.px(12.0) } else { self.px(6.0) };
-        let x0 = inner.x + gutter;
-        let mut y = inner.y + self.px(14.0);
-        let lamp = |app: &mut App, scene: &mut Scene, y: f32, ok: bool| {
+        let mut grid = nus_render::GridRenderer::new(&self.fonts, self.f.term, self.px(10.5));
+        let (cw, ch) = grid.cell_size();
+        let area = Rect::new(inner.x + gutter, inner.y + self.px(6.0), inner.w - gutter - self.px(6.0), inner.h - self.px(10.0));
+        let (cols, rows) = grid.grid_size(area);
+        let mut term = nus_vt::Term::new(cols, rows, 0);
+        self.theme.apply(&mut term.palette);
+        // A colour a program might pick for a note, too close to this
+        // theme's paper to read: what PROGRAM COLORS is for.
+        let faint = crate::theme_edit::to_rgb(crate::surface::mix(t.paper, t.ink, 0.16));
+        let hl = |code: &str, text: &str| if b.highlight { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() };
+        let prompt = "\x1b[34m~/nus ❯\x1b[0m ";
+        let mut script = String::new();
+        script += &format!("{prompt}{}{}\r\n", hl("32", "ls"), hl("33", " -la"));
+        script += "\x1b[38;2;242;107;166msrc/  \x1b[38;2;89;204;242mCargo.toml  \x1b[38;2;250;199;64mREADME.md\x1b[0m\r\n";
+        script += &format!("\x1b[38;2;{};{};{}m# note: a program's own grey, chosen on another background\x1b[0m\r\n", faint.r, faint.g, faint.b);
+        script += &format!("{prompt}{}\r\n", hl("32", "cargo build"));
+        let folded = b.fold_over > 0;
+        if !folded {
+            script += "   Compiling crate-0 v0.1.0\r\n   Compiling crate-1 v0.1.0\r\n";
+        } else {
+            script += "\r\n";
+        }
+        script += "\x1b[31merror: see https://doc.rust-lang.org\x1b[0m\r\n";
+        script += &format!("{prompt}{}{}", hl("32", "git "), hl("33", "st"));
+        term.advance(script.as_bytes());
+        grid.policy = nus_render::Policy { min_contrast: b.grade.ratio(), snap: b.truecolour == Truecolour::Snapped, ansi: None, remap: Vec::new() };
+        let origin = (area.x, area.y);
+        grid.draw_with(scene, &mut self.fonts, &term, origin, true, nus_render::grid::CursorLook { color: Some(t.caret), ..Default::default() });
+        let row = |i: usize| Rect::new(area.x, origin.1 + i as f32 * ch, area.w, ch);
+        let span = |i: usize, c0: usize, n: usize| Rect::new(area.x + c0 as f32 * cw, origin.1 + i as f32 * ch, n as f32 * cw, ch);
+        // What nus lays over a pane, drawn over the real grid the same way.
+        let lamp = |app: &mut App, scene: &mut Scene, i: usize, ok: bool| {
             if b.blocks {
-                let d = Rect::new(inner.x + app.px(4.0), y - app.px(7.0), app.px(5.0), app.px(5.0));
-                scene.push(nus_render::Instance::rounded(d, d.w * 0.5, if ok { ansi(2) } else { ansi(1) }));
+                let d = Rect::new(inner.x + app.px(4.0), origin.1 + i as f32 * ch + ch * 0.5 - app.px(2.5), app.px(5.0), app.px(5.0));
+                let c = crate::theme_edit::from_rgb(t.ansi[if ok { 2 } else { 1 }]);
+                scene.push(nus_render::Instance::rounded(d, d.w * 0.5, c));
             }
         };
-        // A finished command with output.
-        lamp(self, scene, y, true);
-        let mut x = x0;
-        x += self.fonts.draw(scene, Style { color: ansi(4), ..term }, x, y, "~/nus ❯ ");
-        let cmd_color = |i: usize| if b.highlight { ansi(i) } else { ink };
-        x += self.fonts.draw(scene, Style { color: cmd_color(2), ..term }, x, y, "ls");
-        self.fonts.draw(scene, Style { color: cmd_color(3), ..term }, x, y, " -la");
-        self.lv_mark(scene, Rect::new(x0, y - lh * 0.8, inner.w * 0.5, lh), matches!(focus, Some(Hit::Highlight(_))));
-        y += lh;
-        // Output a program colored with its own truecolor choices.
-        let own = [[0.95, 0.42, 0.65, 1.0], [0.35, 0.8, 0.95, 1.0], [0.98, 0.78, 0.25, 1.0]];
-        let snapped = [ansi(5), ansi(6), ansi(3)];
-        let mut x = x0;
-        for (i, word) in ["src/  ", "Cargo.toml  ", "README.md"].iter().enumerate() {
-            let c = if b.truecolour == Truecolour::Snapped { snapped[i] } else { own[i] };
-            x += self.fonts.draw(scene, Style { color: c, ..term }, x, y, word);
-        }
-        self.lv_mark(scene, Rect::new(x0, y - lh * 0.8, x - x0, lh), matches!(focus, Some(Hit::Truecolour(_) | Hit::Grade(_) | Hit::ShellColours(_))));
-        y += lh;
-        // A long output, folded or not.
-        lamp(self, scene, y, false);
-        let mut x = x0;
-        x += self.fonts.draw(scene, Style { color: ansi(4), ..term }, x, y, "~/nus ❯ ");
-        self.fonts.draw(scene, Style { color: cmd_color(2), ..term }, x, y, "cargo build");
-        y += lh;
-        if b.fold_over > 0 {
+        lamp(self, scene, 0, true);
+        lamp(self, scene, 3, false);
+        lamp(self, scene, if folded { 6 } else { 7 }, true);
+        if folded {
             let chip = format!("▸ {} lines folded · click to open", 240.max(b.fold_over + 1));
-            self.fonts.draw(scene, Style { color: t.dim, ..term }, x0, y, &chip);
-            self.lv_mark(scene, Rect::new(x0, y - lh * 0.8, inner.w - gutter - self.px(6.0), lh), matches!(focus, Some(Hit::FoldOver(_))));
-            y += lh;
-        } else {
-            for i in 0..2 {
-                self.fonts.draw(scene, Style { color: t.dim, ..term }, x0, y, &format!("   Compiling crate-{i} v0.1.0"));
-                y += lh;
-            }
+            let st = Style { font: self.f.term, px: self.px(10.5), color: t.dim, tracking: 0.0 };
+            self.fonts.draw(scene, st, area.x, origin.1 + 4.0 * ch + ch * 0.78, &chip);
         }
-        self.fonts.draw(scene, Style { color: ansi(1), ..term }, x0, y, "error: see https://doc.rust-lang.org");
-        let url_x = x0 + self.fonts.measure(term, "error: see ");
-        let url_w = self.fonts.measure(term, "https://doc.rust-lang.org");
+        let err = if folded { 5 } else { 6 };
+        let url_c0 = "error: see ".chars().count();
+        let url_n = "https://doc.rust-lang.org".chars().count();
         if b.link_click != LinkClick::HintsOnly {
-            scene.hline(url_x, y + self.px(2.0), url_w, self.px(1.0), ansi(1));
+            let u = span(err, url_c0, url_n);
+            scene.hline(u.x, u.bottom() - self.px(2.0), u.w, self.px(1.0), crate::theme_edit::from_rgb(t.ansi[1]));
         }
-        self.lv_mark(scene, Rect::new(url_x, y - lh * 0.8, url_w, lh), matches!(focus, Some(Hit::LinkClick(_))));
-        y += lh;
-        // The live line: predictions ghost after the caret.
-        lamp(self, scene, y, true);
-        let mut x = x0;
-        x += self.fonts.draw(scene, Style { color: ansi(4), ..term }, x, y, "~/nus ❯ ");
-        x += self.fonts.draw(scene, Style { color: cmd_color(2), ..term }, x, y, "git ");
-        x += self.fonts.draw(scene, Style { color: cmd_color(3), ..term }, x, y, "st");
-        scene.rect(Rect::new(x, y - px, self.px(1.5), px * 1.2), t.caret);
+        let last = if folded { 6 } else { 7 };
+        let caret_c = "~/nus ❯ git st".chars().count();
         if b.predict {
-            self.fonts.draw(scene, Style { color: fade(ink, 0.35), ..term }, x + self.px(2.0), y, "atus --short");
+            let st = Style { font: self.f.term, px: self.px(10.5), color: fade(ink, 0.35), tracking: 0.0 };
+            let g = span(last, caret_c + 1, 12);
+            self.fonts.draw(scene, st, g.x, g.y + ch * 0.78, "atus --short");
         }
-        self.lv_mark(scene, Rect::new(x - self.px(2.0), y - lh * 0.8, inner.right() - x - self.px(4.0), lh), matches!(focus, Some(Hit::Predict(_) | Hit::PromptLsp(_))));
+        // The part each row governs.
+        self.lv_mark(scene, span(0, 8, 6), matches!(focus, Some(Hit::Highlight(_))));
+        self.lv_mark(scene, row(1), matches!(focus, Some(Hit::Truecolour(_))));
+        self.lv_mark(scene, row(2), matches!(focus, Some(Hit::Grade(_) | Hit::ShellColours(_))));
+        if folded {
+            self.lv_mark(scene, row(4), matches!(focus, Some(Hit::FoldOver(_))));
+        }
+        self.lv_mark(scene, span(err, url_c0, url_n), matches!(focus, Some(Hit::LinkClick(_))));
+        self.lv_mark(scene, span(last, caret_c, 14), matches!(focus, Some(Hit::Predict(_) | Hit::PromptLsp(_))));
         if b.copy_on_select && matches!(focus, Some(Hit::CopyOnSelect(_))) {
-            scene.rect(Rect::new(x0, y - lh * 0.8 - lh * 3.0, self.px(60.0), lh), t.selection);
+            scene.rect(span(1, 0, 10), fade(t.selection, 0.8));
         }
         self.lv_mark(scene, Rect::new(inner.x, inner.y, gutter, inner.h), matches!(focus, Some(Hit::Blocks(_))));
         let words = match focus {
             Some(Hit::Journal(_) | Hit::JournalKeep(_)) => if b.journal { format!("Every finished command is remembered for {} days, encrypted, on this device only.", b.journal_keep) } else { "Commands you run are not remembered.".into() },
+            Some(Hit::Grade(_)) => format!("The grey note on the third line: {}.", if b.grade.ratio() > 0.0 { format!("moved toward ink until it reaches {}:1", b.grade.ratio()) } else { "left as the program sent it".into() }),
             _ => format!(
-                "{} · {} · {}",
+                "the real terminal · {} · {} · {}",
                 if b.highlight { "commands colored as you type" } else { "plain command text" },
                 if b.predict { "suggestions from history" } else { "no suggestions" },
                 if b.truecolour == Truecolour::Snapped { "program colors match your theme" } else { "programs keep their colors" }
             ),
         };
+        self.lv_caption(scene, body.x, win.bottom() + self.px(2.0), body.w, &words);
+    }
+
+    // ── Browser ──────────────────────────────────────────────────────────
+
+    /// A page as nus shows one, with the parts drawn by the code that
+    /// draws them for real: the loading bar in your style (playing), and
+    /// the scrollbar with your choice.
+    fn live_browser(&mut self, scene: &mut Scene, body: Rect, focus: Option<Hit>) {
+        let t = self.theme.clone();
+        let cap_h = self.px(40.0);
+        let win = Rect::new(body.x, body.y, body.w, body.h - cap_h);
+        let inner = self.lv_window(scene, win);
+        // The address field, with where a search goes.
+        let field = Rect::new(inner.x + self.px(8.0), inner.y + self.px(6.0), inner.w - self.px(16.0), self.px(18.0));
+        scene.outline(field, self.px(1.0), t.ink);
+        let small = self.lv_small();
+        let engine = self.behavior.prompt.engine.name().to_lowercase();
+        self.lv_text(scene, small, field.x + self.px(6.0), field.y + self.px(13.0), &format!("search with {engine}"), field.w - self.px(12.0));
+        let page = Rect::new(inner.x, field.bottom() + self.px(6.0), inner.w, inner.bottom() - field.bottom() - self.px(6.0));
+        scene.rect(page, t.page);
+        self.lv_lines(scene, Rect::new(page.x + self.px(10.0), page.y + self.px(14.0), page.w - self.px(40.0), page.h - self.px(20.0)), 7, fade(t.ink, 0.22));
+        // The real loading bar, in your style and colour, playing.
+        let v = if self.motion.reduced() { 0.62 } else {
+            self.dirty = true;
+            (crate::clock::since(self.started).as_secs_f32() * 0.25).fract()
+        };
+        let base = match self.load_bar.color {
+            crate::anim::BarColor::Signal | crate::anim::BarColor::Tab => self.surface.signal,
+            crate::anim::BarColor::Ink => t.ink,
+        };
+        let th = self.px(self.load_bar.thickness);
+        self.paint_load_bar(scene, page, v, self.load_bar.style, base, 1.0, th, false);
+        self.lv_mark(scene, Rect::new(page.x, page.y, page.w, self.px(6.0)), matches!(focus, Some(Hit::BarStyle(_) | Hit::BarColor(_))));
+        // The real scrollbar, as your choice draws it.
+        let track = match self.thumb_style_for(self.behavior.scrollbars) {
+            Some((w, always)) => {
+                let track = Rect::new(page.right() - w - self.px(3.0), page.y + self.px(10.0), w, page.h - self.px(20.0));
+                if always {
+                    scene.rect(track, fade(t.dim, 0.12));
+                }
+                scene.rect(Rect::new(track.x, track.y + track.h * 0.18, track.w, track.h * 0.34), fade(t.dim, 0.6));
+                track
+            }
+            None => Rect::new(page.right() - self.px(8.0), page.y + self.px(10.0), self.px(5.0), page.h - self.px(20.0)),
+        };
+        self.lv_mark(scene, track, matches!(focus, Some(Hit::Scrollbars(_))));
+        self.lv_mark(scene, Rect::new(page.x + self.px(8.0), page.y + self.px(10.0), page.w - self.px(40.0), page.h * 0.6), matches!(focus, Some(Hit::PageSmooth(_) | Hit::WheelPx(_))));
+        // A picture in picture, bottom right.
+        let pip = Rect::new(page.right() - page.w * 0.34 - self.px(14.0), page.bottom() - page.h * 0.34 - self.px(8.0), page.w * 0.34, page.h * 0.34);
+        scene.rect(pip, t.ink);
+        scene.outline(pip, self.px(1.0), t.ink);
+        if self.behavior.pip_progress {
+            scene.rect(Rect::new(pip.x, pip.bottom() - self.px(2.0), pip.w * 0.4, self.px(2.0)), self.surface.signal);
+        }
+        self.lv_mark(scene, pip, matches!(focus, Some(Hit::PipBand(_) | Hit::PipPolicy(..) | Hit::PipProgress(_))));
+        let words = format!(
+            "the real loading bar ({}) and scrollbar ({}) · {}",
+            self.load_bar.style.name(),
+            self.behavior.scrollbars.name(),
+            if self.behavior.page_smooth_scroll { "smooth scrolling" } else { "instant scrolling" }
+        );
         self.lv_caption(scene, body.x, win.bottom() + self.px(2.0), body.w, &words);
     }
 

@@ -242,7 +242,11 @@ impl App {
     /// BROWSER · SCROLLBARS for nus's own lists: the thumb's width and
     /// whether it stays up when still, or None when they are hidden.
     pub(crate) fn thumb_style(&self) -> Option<(f32, bool)> {
-        match self.behavior.scrollbars {
+        self.thumb_style_for(self.behavior.scrollbars)
+    }
+
+    pub(crate) fn thumb_style_for(&self, s: crate::settings::Scrollbars) -> Option<(f32, bool)> {
+        match s {
             crate::settings::Scrollbars::Overlay => Some((self.px(2.0), false)),
             crate::settings::Scrollbars::Classic => Some((self.px(5.0), true)),
             crate::settings::Scrollbars::Hidden => None,

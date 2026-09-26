@@ -2715,6 +2715,12 @@ impl App {
     /// The drawing inside a picture card: windows, pages, shells and the
     /// icon, at a size where the shape is the whole message.
     pub(crate) fn draw_pic(&mut self, scene: &mut Scene, r: Rect, pic: Pic) {
+        // Drawn by the real thing where it can be (real_pics.rs).
+        if let Pic::Setting(h) = pic {
+            if self.draw_real_pic(scene, r, h) {
+                return;
+            }
+        }
         let t = self.theme.clone();
         let ink = t.ink;
         let sig = self.surface.signal;
@@ -4681,6 +4687,7 @@ impl App {
         let top = content.y;
         let (mx, my) = self.mouse;
         let mut live_focus: Option<Hit> = None;
+        let mut focus_row: Option<Rect> = None;
         let mut last_row_hit: Option<Hit> = None;
         let scroll = p.scroll.max(0.0);
         let content_hit_start = self.settings_hits.len();
@@ -5205,6 +5212,7 @@ impl App {
             if let Some(&(_, h)) = self.settings_hits.get(row_hits) { last_row_hit = Some(h); }
             if content.contains(mx, my) && Rect::new(cx - self.px(8.0), y, maxw + self.px(16.0), rh).contains(mx, my) {
                 live_focus = self.settings_hits.get(row_hits).map(|&(_, h)| h).or(last_row_hit);
+                focus_row = Some(Rect::new(cx - self.px(8.0), y, maxw + self.px(16.0), rh).intersect(&content));
             }
             y += rh;
         }
@@ -5222,9 +5230,14 @@ impl App {
         }
         self.settings_hits.retain(|(hr, _)| hr.w > 0.0 && hr.h > 0.0);
         if let Some(lr) = live_rect {
+            self.live_mark = None;
             scene.layer(Some(lr));
             self.draw_live(scene, lr, p.section, live_focus);
             scene.layer(None);
+            // The leader: from the row you point at to what it changes.
+            if let (Some(row), Some(mark)) = (focus_row.filter(|r| r.h > 0.0), self.live_mark.take()) {
+                self.draw_leader(scene, row, mark, lr);
+            }
         }
         if let Some((r,_))=self.settings_focus.and_then(|i|self.settings_hits.get(i)){scene.outline(*r,self.px(3.0),self.surface.signal);}
 
