@@ -8809,13 +8809,6 @@ impl App {
         // A video pinned to a shell is already watched; leaving its tab
         // doesn't need a floating window as well.
         let docked_src = self.docked.as_ref().is_some_and(|d| self.tabs.get(prev).is_some_and(|t| t.id == d.src_tab));
-        // WebKit's pages (webkit.rs) play in the system's picture in picture.
-        if prev != i && !together && self.behavior.pip_policy.leave_tab {
-            self.webkit_pip(prev, true);
-        }
-        if prev != i && self.behavior.pip_policy.focus_tab {
-            self.webkit_pip(i, false);
-        }
         if prev != i && self.pip.is_none() && !together && !docked_src && self.behavior.pip_policy.leave_tab {
             if let Some(right) = self.playing_video(prev) {
                 self.request_pip(prev, right);
@@ -9247,7 +9240,7 @@ impl App {
             self.pip_away_pending = None;
             // A queued automatic request must not arrive after focus returned.
             self.pip_request = None;
-            if self.behavior.pip_policy.focus_app { self.close_pip(); self.webkit_pip(self.active, false); }
+            if self.behavior.pip_policy.focus_app { self.close_pip(); }
         }
         self.dirty = true;
     }

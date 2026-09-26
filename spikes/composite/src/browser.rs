@@ -40,6 +40,9 @@ pub struct Shared {
     pub paints: u64,
     /// The page's dominant <video>, reported by the injected tracker.
     pub video: Option<Video>,
+    /// Something on the page (any <video> or <audio>) is playing, as the
+    /// top document's tracker last said.
+    pub media_playing: bool,
     pub next_msg: i32,
     /// CDP target id of this page (for the DevTools frontend URL).
     pub target_id: Option<String>,
@@ -155,6 +158,11 @@ pub struct Shared {
     pub native_declined: String,
     /// WebKit just took the page over (the app says so once).
     pub native_began: bool,
+    /// WebKit's page as its own tracker reports it (webkit.rs polls it):
+    /// the Chromium fields above describe the about:blank underneath.
+    pub native_video: Option<Video>,
+    pub native_playing: bool,
+    pub native_sleep_safe: bool,
     /// Its only navigation became a download, now finished: the tab has
     /// nothing to show.
     pub download_only: bool,
@@ -610,6 +618,96 @@ pub struct Video {
     pub muted: bool,
     pub t: f64,
     pub dur: f64,
+}
+
+/// What the page's tracker (assets/video.js) says: from Chromium's
+/// binding, or fetched from WebKit's page (webkit.rs).
+#[derive(Debug, Default, PartialEq)]
+pub struct Report {
+    pub video: Option<Video>,
+    pub media: Vec<Media>,
+    /// Said by the top document (frames report too).
+    pub top: bool,
+    pub sleep_safe: bool,
+    pub scroll: (f64, f64),
+    /// Any <video> or <audio> on the page is playing.
+    pub playing: bool,
+}
+
+pub fn read_report(payload: &str) -> Report {
+    let report = serde_json::from_str::<serde_json::Value>(payload).unwrap_or(serde_json::Value::Null);
+    let media: Vec<Media> = report
+        .get("media")
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    Some(Media {
+                        kind: m.get("k")?.as_str()?.to_string(),
+                        src: m.get("src")?.as_str()?.to_string(),
+                        w: m.get("w").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                        h: m.get("h").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                        blob: m.get("blob").and_then(|x| x.as_bool()).unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let video = report.get("v").cloned().and_then(|p| {
+        let f = |k: &str| p.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let b = |k: &str| p.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+        if p.is_null() {
+            return None;
+        }
+        Some(Video {
+            x: f("x") as f32,
+            y: f("y") as f32,
+            w: f("w") as f32,
+            h: f("h") as f32,
+            vw: f("vw") as f32,
+            vh: f("vh") as f32,
+            video_width: f("videoWidth"),
+            video_height: f("videoHeight"),
+            picture: [f("dx") as f32,f("dy") as f32,f("dw") as f32,f("dh") as f32],
+            paused: b("paused"),
+            ended: b("ended"),
+            muted: b("muted"),
+            t: f("t"),
+            dur: f("dur"),
+        })
+    });
+    let flag = |k: &str| report.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    Report {
+        playing: flag("playing") || video.as_ref().is_some_and(|v| !v.paused && !v.ended),
+        video,
+        media,
+        top: flag("top"),
+        sleep_safe: flag("sleepSafe"),
+        scroll: (report.get("scrollX").and_then(|v| v.as_f64()).unwrap_or(0.0), report.get("scrollY").and_then(|v| v.as_f64()).unwrap_or(0.0)),
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::{read_report, Report};
+
+    #[test]
+    fn the_tracker_report_says_what_plays_where() {
+        let r = read_report(r#"{"v":{"x":0,"y":0,"w":640,"h":360,"vw":1280,"vh":720,"videoWidth":1920,"videoHeight":1080,"paused":false,"ended":false,"muted":true,"t":12.5,"dur":3600},"media":[{"k":"video","src":"blob:x","w":1920,"h":1080,"blob":true}],"playing":false,"top":true,"scrollX":0,"scrollY":40,"sleepSafe":false}"#);
+        assert!(r.top);
+        // A playing video counts even where the page-wide flag says otherwise.
+        assert!(r.playing);
+        assert!(!r.sleep_safe);
+        assert_eq!(r.scroll, (0.0, 40.0));
+        let v = r.video.unwrap();
+        assert_eq!((v.video_width, v.video_height, v.t, v.dur, v.muted), (1920.0, 1080.0, 12.5, 3600.0, true));
+        assert_eq!(r.media.len(), 1);
+        // Sound alone is playing too.
+        let audio = read_report(r#"{"v":null,"media":[],"playing":true,"top":false,"sleepSafe":true}"#);
+        assert!(audio.playing && audio.video.is_none() && !audio.top && audio.sleep_safe);
+        // Nothing said yet: nothing plays, and it is not known to be safe to sleep.
+        assert_eq!(read_report(""), Report::default());
+    }
 }
 
 fn debug_port(value: Option<&str>, private: bool) -> Option<u16> {
@@ -1196,55 +1294,16 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             let payload = v.get("payload").and_then(|p| p.as_str()).unwrap_or("null");
-            let report = serde_json::from_str::<serde_json::Value>(payload).unwrap_or(serde_json::Value::Null);
-            let media: Vec<Media> = report
-                .get("media")
-                .and_then(|m| m.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|m| {
-                            Some(Media {
-                                kind: m.get("k")?.as_str()?.to_string(),
-                                src: m.get("src")?.as_str()?.to_string(),
-                                w: m.get("w").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-                                h: m.get("h").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-                                blob: m.get("blob").and_then(|x| x.as_bool()).unwrap_or(false),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let video = report.get("v").cloned().and_then(|p| {
-                let f = |k: &str| p.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
-                let b = |k: &str| p.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
-                if p.is_null() {
-                    return None;
-                }
-                Some(Video {
-                    x: f("x") as f32,
-                    y: f("y") as f32,
-                    w: f("w") as f32,
-                    h: f("h") as f32,
-                    vw: f("vw") as f32,
-                    vh: f("vh") as f32,
-                    video_width: f("videoWidth"),
-                    video_height: f("videoHeight"),
-                    picture: [f("dx") as f32,f("dy") as f32,f("dw") as f32,f("dh") as f32],
-                    paused: b("paused"),
-                    ended: b("ended"),
-                    muted: b("muted"),
-                    t: f("t"),
-                    dur: f("dur"),
-                })
-            });
+            let report = read_report(payload);
             let mut s = self.o.shared.borrow_mut();
-            if report.get("top").and_then(|v|v.as_bool()) == Some(true) {
-            s.sleep_safe=report.get("sleepSafe").and_then(|v|v.as_bool()).unwrap_or(false);
-            s.scroll_position=(report.get("scrollX").and_then(|v|v.as_f64()).unwrap_or(0.0),report.get("scrollY").and_then(|v|v.as_f64()).unwrap_or(0.0));
+            if report.top {
+                s.sleep_safe = report.sleep_safe;
+                s.scroll_position = report.scroll;
+                s.media_playing = report.playing;
             }
-            s.video = video;
-            if s.media != media {
-                s.media = media;
+            s.video = report.video;
+            if s.media != report.media {
+                s.media = report.media;
                 s.paints += 1;
             }
         }
@@ -2030,7 +2089,9 @@ impl BrowserTab {
     }
     pub fn can_suspend(&self) -> bool {
         let s=self.shared.borrow();
-        self.browser.is_some() && s.sleep_safe && !s.capture_guard && !s.loading && s.permission.is_none()
+        // WebKit's page says for itself: the Chromium page under it is blank.
+        let safe = if s.native.is_some() { s.native_sleep_safe } else { s.sleep_safe };
+        self.browser.is_some() && safe && !s.capture_guard && !s.loading && s.permission.is_none()
             && !self.can_go_back() && !self.can_go_forward() && !self.has_devtools()
     }
     pub fn suspend(&mut self) {
@@ -2240,7 +2301,47 @@ impl BrowserTab {
     }
 
     pub fn video(&self) -> Option<Video> {
-        self.shared.borrow().video.clone()
+        let s = self.shared.borrow();
+        if s.native.is_some() { s.native_video.clone() } else { s.video.clone() }
+    }
+
+    /// Something on the page is playing: its video, or any <video> or
+    /// <audio> the tracker saw, in WebKit's page when it has one.
+    pub fn playing(&self) -> bool {
+        let s = self.shared.borrow();
+        let video = |v: &Option<Video>| v.as_ref().is_some_and(|v| !v.paused && !v.ended);
+        if s.native.is_some() { s.native_playing || video(&s.native_video) } else { s.media_playing || video(&s.video) }
+    }
+
+    /// Transport for the page's video (`__nus` in assets/video.js): in
+    /// WebKit's page when it has one, else Chromium's, as a user gesture.
+    pub fn media(&self, expr: &str) {
+        if let Some(n) = &self.shared.borrow().native {
+            n.eval(expr);
+            return;
+        }
+        self.eval(expr);
+    }
+
+    /// WebKit's page: fetch what its tracker last said (a few times a
+    /// second; the answer lands on a later tick) and keep it. True when
+    /// the page asked for picture in picture itself.
+    pub fn tend_native_media(&self) -> bool {
+        let (payload, asked) = {
+            let s = self.shared.borrow();
+            let Some(n) = &s.native else { return false };
+            n.poll();
+            match n.take_report().and_then(|a| crate::webkit::read_poll(&a)) {
+                Some(answer) => answer,
+                None => return false,
+            }
+        };
+        let report = read_report(&payload);
+        let mut s = self.shared.borrow_mut();
+        s.native_playing = report.playing;
+        s.native_sleep_safe = report.sleep_safe;
+        s.native_video = report.video;
+        asked
     }
 
     /// Save a file the page is showing, through the page's own session

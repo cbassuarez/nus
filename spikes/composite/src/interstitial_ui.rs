@@ -102,9 +102,10 @@ impl App {
     /// Every idle page but this tab's, asleep now (the out-of-memory page).
     pub(crate) fn sleep_idle_tabs(&mut self) -> usize {
         let media_window = self.pip.is_some() || self.little.is_some() || self.docked.is_some();
+        let working: Vec<bool> = (0..self.tabs.len()).map(|i| self.tab_working(i)).collect();
         let mut n = 0;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            if i == self.active || tab.pinned || media_window {
+            if i == self.active || tab.pinned || media_window || working[i] {
                 continue;
             }
             if let Pane::Web(w) = &mut tab.left {

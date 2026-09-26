@@ -28,13 +28,15 @@
             paused: v.paused, ended: v.ended, muted: v.muted, t: v.currentTime, dur: Number.isFinite(v.duration) ? v.duration : 0 };
     }
     const media = [], seen = new Set();
+    let playing = false;
     for (const m of document.querySelectorAll('video,audio')) {
+      if (!m.paused && !m.ended) playing = true;
       const src = m.currentSrc || m.src || '';
       if (!src || seen.has(src)) continue;
       seen.add(src);
       media.push({ k: m.tagName.toLowerCase(), src, w: m.videoWidth || 0, h: m.videoHeight || 0, blob: /^(blob:|mediasource:)/.test(src) });
     }
-    const payload = JSON.stringify({ v: p, media, top: window === window.top, scrollX, scrollY,
+    const payload = JSON.stringify({ v: p, media, playing, top: window === window.top, scrollX, scrollY,
       sleepSafe: !edited && !document.querySelector("input,textarea,select,[contenteditable],video,audio,iframe") });
     if (window.nusVideo && payload !== lastReport) {
       window.nusVideo(payload); lastReport = payload;

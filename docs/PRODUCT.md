@@ -867,6 +867,28 @@ focus. Drag any edge or corner to resize with the aspect ratio preserved;
 scroll and pinch amounts scale proportionally, without corner snapping or a
 competing resize animation. The renderer checks the actual drawable size.
 
+**WebKit's pages in PiP (2026-09-26).** A protected service shown by the
+system's WebKit (Netflix, Prime and the rest; `webkit.rs`) has the same PiP as
+any page: nus's window, nus's controls, keys and policies, never the system's
+picture in picture. Its picture can't be lent as a texture — FairPlay won't —
+so the WKWebView itself moves into the window, under the GPU layer (a cleared,
+transparent scene over it) and sized to the window, with only its video (and
+the captions Netflix and Prime draw themselves) left visible. It takes no
+clicks and none of the pointer: the window's drag, resize and controls are
+nus's, and returning, closing, replacing the source or losing the tab puts the
+page back in its pane. The tracker (`assets/video.js`) runs in WebKit's page
+too, asked what it saw four times a second, which gives the controls their
+time and ratio and the transport its target; Netflix seeks go through its own
+player, which stops with an error when `currentTime` is set under it. The
+page's own picture-in-picture button asks for nus's. Pinning to a shell stays
+Chromium-only: a protected picture can't be drawn over a shell.
+
+**Working pages don't sleep.** A tab whose page plays video or sound (as the
+tracker reports it, in Chromium or WebKit), or whose video is up in PiP or
+pinned to a shell, is working: it neither sleeps nor archives, and its idle
+time starts when the playing stops. WebKit's page answers for itself whether
+it is safe to sleep; the about:blank Chromium keeps under it no longer does.
+
 PiP uses a floating window. macOS uses NSFloatingWindowLevel, stays visible on
 deactivation, joins Spaces as a fullscreen auxiliary, and reads NSScreen's
 visibleFrame for Dock/menu-bar exclusion. Windows reads the monitor work area;

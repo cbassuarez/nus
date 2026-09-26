@@ -4,6 +4,15 @@
 //! WebKit's FairPlay ships with macOS. A page on one of these hosts is
 //! shown in a WKWebView laid over the pane, signed in with the pane's own
 //! cookies, and the Chromium page underneath goes to about:blank.
+//!
+//! Its video is nus's like any other page's. The tracker Chromium's pages
+//! run (assets/video.js) runs in WebKit's page too and is asked what it
+//! saw a few times a second, so the tab knows it is playing and picture in
+//! picture has the time, the ratio and the transport. The picture itself
+//! can't be lent as a texture — that is what the DRM is for — so for
+//! picture in picture the view goes into nus's window, under nus's
+//! controls, and comes back after. The system's own picture in picture is
+//! not used: a page that asks for it is given nus's.
 
 /// Hosts whose video is protected, and where WebKit takes over.
 const HOSTS: &[&str] = &[
@@ -99,30 +108,141 @@ pub fn set_cookie_line(c: &serde_json::Value, now: f64) -> Option<(String, Strin
     Some((line, url))
 }
 
+/// What WebKit's page runs before its own scripts: the tracker, keeping
+/// its report in `__nusLast` for `poll` (Chromium's pages post theirs to a
+/// binding instead), then what WebKit's pages need besides. Netflix's
+/// player stops with an error when `currentTime` is set under it, so its
+/// seeks (milliseconds), and its play and pause, go through its own API. A request for picture in
+/// picture, by the page's own button or WebKit's menu, is handed to nus,
+/// and `__nusPip` shows only the video, and the captions the services
+/// draw themselves, while the page is in nus's window.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const TRACKER: &str = concat!(
+    "window.nusVideo=window.nusVideo||(p=>{window.__nusLast=p});\n",
+    include_str!("../assets/video.js"),
+    "\n",
+    r#"(()=>{const n=window.__nus;if(!n||n.__webkit)return;n.__webkit=true;
+const nf=()=>{try{const p=window.netflix.appContext.state.playerApp.getAPI().videoPlayer;const ids=p.getAllPlayerSessionIds();return p.getVideoPlayerBySessionId(ids.find(i=>i.startsWith('watch'))||ids[0])||null}catch(_){return null}};
+const seek=n.seek,seekTo=n.seekTo,step=n.step,toggle=n.toggle;
+n.toggle=()=>{const p=nf();if(!p)return toggle();if(p.isPaused())p.play();else p.pause()};
+n.seek=d=>{const p=nf();if(!p)return seek(d);if(Number.isFinite(d))p.seek(Math.max(0,p.getCurrentTime()+d*1000));n.report()};
+n.seekTo=f=>{const p=nf();if(!p)return seekTo(f);const d=p.getDuration();if(d>0&&Number.isFinite(f))p.seek(Math.max(0,Math.min(d,f*d)));n.report()};
+n.step=f=>{const p=nf();if(!p)return step(f);p.pause();p.seek(Math.max(0,p.getCurrentTime()+f*1000/30))};
+const ask=()=>{window.__nusWantPip=1};
+const proto=HTMLVideoElement.prototype,mode=proto.webkitSetPresentationMode;
+proto.requestPictureInPicture=function(){ask();return Promise.reject(new DOMException('Picture in picture opens in nus','NotAllowedError'))};
+if(mode)proto.webkitSetPresentationMode=function(m){if(m==='picture-in-picture'){ask();return}return mode.call(this,m)};
+const back=e=>{const v=e.target;if(!(v instanceof HTMLVideoElement))return;
+if(mode&&v.webkitPresentationMode==='picture-in-picture'){mode.call(v,'inline');ask()}
+else if(document.pictureInPictureElement===v){document.exitPictureInPicture().catch(()=>{});ask()}};
+document.addEventListener('webkitpresentationmodechanged',back,true);
+document.addEventListener('enterpictureinpicture',back,true);
+const css='html.__nus-pip,html.__nus-pip body{background:#000!important;overflow:hidden!important}html.__nus-pip body *{visibility:hidden!important}html.__nus-pip video,html.__nus-pip .player-timedtext,html.__nus-pip .player-timedtext *,html.__nus-pip .atvwebplayersdk-captions-overlay,html.__nus-pip .atvwebplayersdk-captions-overlay *{visibility:visible!important}';
+window.__nusPip=on=>{const d=document.documentElement;if(!d)return;
+if(on&&!document.getElementById('__nus-pip-style')){const s=document.createElement('style');s.id='__nus-pip-style';s.textContent=css;(document.head||d).appendChild(s)}
+d.classList.toggle('__nus-pip',!!on);n.report()};
+})();"#,
+);
+
+/// What `poll` asks the page: the tracker's last report, and whether the
+/// page asked for picture in picture since (asking clears it).
+macro_rules! poll_js {
+    () => {
+        "(()=>{const w=!!window.__nusWantPip;window.__nusWantPip=0;return JSON.stringify({r:window.__nusLast||'',pip:w})})()"
+    };
+}
+/// …and first, the page shows only its video while it is in nus's window
+/// and all of itself while it is home: a reload in between would lose it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const POLL_IN_PIP: &str = concat!("(()=>{const d=document.documentElement;if(d&&window.__nusPip&&!d.classList.contains('__nus-pip'))__nusPip(true)})();", poll_js!());
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const POLL_AT_HOME: &str = concat!("(()=>{const d=document.documentElement;if(d&&window.__nusPip&&d.classList.contains('__nus-pip'))__nusPip(false)})();", poll_js!());
+
+/// `poll`'s answer: the tracker's report (as Chromium's binding would have
+/// had it) and whether the page asked for picture in picture.
+pub fn read_poll(answer: &str) -> Option<(String, bool)> {
+    let v: serde_json::Value = serde_json::from_str(answer).ok()?;
+    let report = v.get("r")?.as_str()?.to_string();
+    Some((report, v.get("pip").and_then(|p| p.as_bool()).unwrap_or(false)))
+}
+
 pub use imp::*;
 
 #[cfg(target_os = "macos")]
 mod imp {
     use objc2::rc::Retained;
-    use objc2::{MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::NSView;
-    use objc2_foundation::{NSDictionary, NSHTTPCookie, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
-    use objc2_web_kit::{WKWebView, WKWebViewConfiguration, WKWebsiteDataStore};
+    use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol};
+    use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSResponder, NSTrackingArea, NSView};
+    use objc2_foundation::{NSArray, NSDictionary, NSError, NSHTTPCookie, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
+    use objc2_web_kit::{WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
 
     thread_local! {
         /// The main window's content view: WebKit pages are its subviews.
         static HOST: RefCell<Option<Retained<NSView>>> = const { RefCell::new(None) };
     }
 
+    /// How often the tracker is asked what it saw, and how long an answer
+    /// may take before it is asked again.
+    const POLL: Duration = Duration::from_millis(250);
+    const POLL_LATE: Duration = Duration::from_secs(2);
+
+    define_class!(
+        // SAFETY: NSView asks nothing of a subclass but the main thread; this
+        // one adds no instance variables and no Drop.
+        #[unsafe(super(NSView, NSResponder, NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "NusPipShelter"]
+        struct Shelter;
+
+        impl Shelter {
+            /// Nothing under here takes a click or a wheel: over the
+            /// picture they are the window's, for its controls and its drag.
+            #[unsafe(method(hitTest:))]
+            fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+                std::ptr::null_mut()
+            }
+        }
+    );
+
+    /// A winit window's content view.
+    fn view_of(window: &winit::window::Window) -> Option<Retained<NSView>> {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let handle = window.window_handle().ok()?;
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return None };
+        let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
+        Some(objc2::Message::retain(view))
+    }
+
     /// Remember the window WebKit pages go in.
     pub fn set_host(window: &winit::window::Window) {
-        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let Ok(handle) = window.window_handle() else { return };
-        let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return };
-        let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
-        HOST.with(|h| *h.borrow_mut() = Some(objc2::Message::retain(view)));
+        if let Some(view) = view_of(window) {
+            HOST.with(|h| *h.borrow_mut() = Some(view));
+        }
+    }
+
+    /// Put `view` under nus's drawing in `host`: the GPU's layer is a
+    /// sibling of the view's in `host`'s layer (raw-window-metal adds it
+    /// there), and order among siblings is their z position.
+    fn beneath(view: &NSView, host: &NSView) {
+        unsafe {
+            let own: Option<Retained<NSObject>> = msg_send![view, layer];
+            if let Some(layer) = own {
+                let _: () = msg_send![&*layer, setZPosition: -1.0f64];
+            }
+            let root: Option<Retained<NSObject>> = msg_send![host, layer];
+            let Some(root) = root else { return };
+            let Some(metal) = AnyClass::get(c"CAMetalLayer") else { return };
+            let sublayers: Option<Retained<NSArray<NSObject>>> = msg_send![&*root, sublayers];
+            for layer in sublayers.iter().flat_map(|a| a.iter()) {
+                if layer.isKindOfClass(metal) {
+                    let _: () = msg_send![&*layer, setZPosition: 1.0f64];
+                }
+            }
+        }
     }
 
     /// "Version/18.6 Safari/605.1.15": without it the services take
@@ -141,36 +261,29 @@ mod imp {
         })
     }
 
-    /// The biggest playing video to picture in picture, or back. The
-    /// services mark theirs disablePictureInPicture; that's lifted first.
-    const PIP_JS: &str = r#"(on)=>{const vs=[...document.querySelectorAll('video')];
-const area=v=>v.clientWidth*v.clientHeight;
-if(on){const v=vs.filter(v=>!v.paused&&!v.ended&&v.readyState>1).sort((a,b)=>area(b)-area(a))[0];
-if(!v)return 'no playing video';v.disablePictureInPicture=false;v.removeAttribute('disablepictureinpicture');
-window.__nusPip=v;if(!v.__nusLeave){v.__nusLeave=true;
-const mode=()=>{const inPip=v.webkitPresentationMode==='picture-in-picture'||document.pictureInPictureElement===v;
-if(inPip){v.__nusInPip=true;return}if(!v.__nusInPip)return;v.__nusInPip=false;
-if(window.__nusPip===v){window.__nusPip=null;v.pause()}};
-v.addEventListener('webkitpresentationmodechanged',mode);v.addEventListener('enterpictureinpicture',mode);v.addEventListener('leavepictureinpicture',mode)}
-if(v.webkitSupportsPresentationMode&&v.webkitSupportsPresentationMode('picture-in-picture')){v.webkitSetPresentationMode('picture-in-picture');return 'pip'}
-if(v.requestPictureInPicture){v.requestPictureInPicture().catch(e=>{});return 'requested'}return 'unsupported'}
-window.__nusPip=null;for(const v of vs){if(v.webkitPresentationMode==='picture-in-picture')v.webkitSetPresentationMode('inline')}
-if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{});return 'inline'}"#;
-
     /// A WKWebView over one browser pane.
     pub struct NativePage {
         view: Retained<WKWebView>,
         /// The view's parent: as big as the part of the page nus's own
         /// drawing isn't over (a sliding sidebar), clipping the rest away.
         clip: Retained<NSView>,
+        /// The window view it belongs in (and comes back to after picture
+        /// in picture).
+        home: Retained<NSView>,
         /// Cookies still being written before the first load.
         pending: Rc<Cell<usize>>,
         first: RefCell<Option<String>>,
         shown: Cell<bool>,
-        /// Its video was sent to picture in picture: out of sight, the view
-        /// is clipped to nothing rather than hidden, so WebKit still takes
-        /// the page as on screen and the video carries on in the window.
-        pip: Cell<bool>,
+        /// The tracker's latest answer, until `take_report`; whether a
+        /// question is out, and when it went.
+        answer: Rc<RefCell<Option<String>>>,
+        asking: Rc<Cell<bool>>,
+        asked: Cell<Option<Instant>>,
+        /// In nus's picture in picture: the view that holds the page there,
+        /// and that window's view, held so the page can always come home.
+        shelter: RefCell<Option<(Retained<Shelter>, Retained<NSView>)>>,
+        /// WebKit's own pointer tracking, off while it is in that window.
+        tracking: RefCell<Vec<(Retained<NSView>, Retained<NSTrackingArea>)>>,
     }
 
     impl NativePage {
@@ -186,14 +299,17 @@ if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{})
                 let prefs = config.preferences();
                 prefs.setElementFullscreenEnabled(true);
                 // Picture in picture is off for apps that embed WebKit (Safari
-                // turns it on for itself); the switch is WebKit SPI, so it is
-                // only flipped where this WebKit has it.
+                // turns it on for itself). On, the page offers its button,
+                // and the tracker hands what it asks for to nus's own. The
+                // switch is WebKit SPI, so it is only flipped where this
+                // WebKit has it.
                 {
-                    use objc2::runtime::NSObjectProtocol;
                     if prefs.respondsToSelector(objc2::sel!(_setAllowsPictureInPictureMediaPlayback:)) {
-                        let _: () = objc2::msg_send![&*prefs, _setAllowsPictureInPictureMediaPlayback: true];
+                        let _: () = msg_send![&*prefs, _setAllowsPictureInPictureMediaPlayback: true];
                     }
                 }
+                let tracker = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(WKUserScript::alloc(mtm), &NSString::from_str(super::TRACKER), WKUserScriptInjectionTime::AtDocumentStart, true);
+                config.userContentController().addUserScript(&tracker);
                 config.setApplicationNameForUserAgent(Some(&NSString::from_str(safari_name())));
                 let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
                 let view = WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), frame, &config);
@@ -204,7 +320,19 @@ if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{})
                 clip.setHidden(true);
                 clip.addSubview(&view);
                 host.addSubview(&clip);
-                let page = NativePage { view, clip, pending: Rc::new(Cell::new(0)), first: RefCell::new(Some(url.to_string())), shown: Cell::new(false), pip: Cell::new(false) };
+                let page = NativePage {
+                    view,
+                    clip,
+                    home: host,
+                    pending: Rc::new(Cell::new(0)),
+                    first: RefCell::new(Some(url.to_string())),
+                    shown: Cell::new(false),
+                    answer: Rc::new(RefCell::new(None)),
+                    asking: Rc::new(Cell::new(false)),
+                    asked: Cell::new(None),
+                    shelter: RefCell::new(None),
+                    tracking: RefCell::new(Vec::new()),
+                };
                 let jar = store.httpCookieStore();
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
                 for c in cookies {
@@ -246,11 +374,14 @@ if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{})
 
         /// The window's view, while the page is in it: WebKit's element
         /// fullscreen moves the view into a window of its own, and there
-        /// the size and showing are WebKit's, not the pane's.
+        /// the size and showing are WebKit's, not the pane's; in picture
+        /// in picture they are that window's.
         fn at_home(&self) -> Option<Retained<NSView>> {
-            let host = HOST.with(|h| h.borrow().clone())?;
+            if self.shelter.borrow().is_some() {
+                return None;
+            }
             let parent = unsafe { self.view.superview() }?;
-            (Retained::as_ptr(&parent) == Retained::as_ptr(&self.clip)).then_some(host)
+            (Retained::as_ptr(&parent) == Retained::as_ptr(&self.clip)).then(|| self.home.clone())
         }
 
         /// Lay the page over `page`, showing only `shown` of it (physical
@@ -281,40 +412,147 @@ if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{})
         }
 
         pub fn show(&self, on: bool) {
-            if self.at_home().is_none() {
-                return;
-            }
+            let Some(home) = self.at_home() else { return };
             if self.shown.get() != on {
                 self.shown.set(on);
-                if !on && self.pip.get() {
-                    let f = self.clip.frame();
-                    self.clip.setFrame(NSRect::new(f.origin, NSSize::new(0.0, 0.0)));
-                } else {
-                    self.clip.setHidden(!on);
-                }
+                self.clip.setHidden(!on);
                 if !on {
                     // Out of sight: give the keyboard back to the window.
-                    if let (Some(w), Some(host)) = (self.view.window(), HOST.with(|h| h.borrow().clone())) {
-                        w.makeFirstResponder(Some(&host));
+                    if let Some(w) = self.view.window() {
+                        w.makeFirstResponder(Some(&home));
                     }
                 }
             }
         }
 
-        /// Send the playing video to the system's picture in picture (on),
-        /// or bring it back into the page (off). WebKit runs the app's
-        /// script as though you had clicked, which PiP asks for.
-        pub fn pip(&self, on: bool) {
-            if !on && !self.pip.get() {
+        /// Ask the tracker what it saw, a few times a second; the answer
+        /// arrives on a later tick, for `take_report`.
+        pub fn poll(&self) {
+            if self.first.borrow().is_some() {
                 return;
             }
-            self.pip.set(on);
-            let js = format!("({PIP_JS})({on})");
-            let done = block2::RcBlock::new(|r: *mut objc2::runtime::AnyObject, _e: *mut objc2_foundation::NSError| {
-                let said = unsafe { r.as_ref() }.and_then(|r| r.downcast_ref::<NSString>()).map(|s| s.to_string()).unwrap_or_default();
-                tracing::info!("webkit pip: {said}");
+            let since = self.asked.get().map(|t| t.elapsed());
+            if since.is_some_and(|d| d < POLL || (self.asking.get() && d < POLL_LATE)) {
+                return;
+            }
+            self.asking.set(true);
+            self.asked.set(Some(Instant::now()));
+            let (asking, answer) = (self.asking.clone(), self.answer.clone());
+            let done = block2::RcBlock::new(move |r: *mut AnyObject, _e: *mut NSError| {
+                asking.set(false);
+                if let Some(s) = unsafe { r.as_ref() }.and_then(|r| r.downcast_ref::<NSString>()) {
+                    *answer.borrow_mut() = Some(s.to_string());
+                }
             });
-            unsafe { self.view.evaluateJavaScript_completionHandler(&NSString::from_str(&js), Some(&done)) };
+            let js = if self.in_pip() { super::POLL_IN_PIP } else { super::POLL_AT_HOME };
+            unsafe { self.view.evaluateJavaScript_completionHandler(&NSString::from_str(js), Some(&done)) };
+        }
+
+        /// The tracker's latest answer (`read_poll` reads it), once.
+        pub fn take_report(&self) -> Option<String> {
+            self.answer.borrow_mut().take()
+        }
+
+        /// Run `js` in the page. WebKit runs an app's script as though you
+        /// had clicked, which play() asks for.
+        pub fn eval(&self, js: &str) {
+            unsafe { self.view.evaluateJavaScript_completionHandler(&NSString::from_str(js), None) };
+        }
+
+        pub fn in_pip(&self) -> bool {
+            self.shelter.borrow().is_some()
+        }
+
+        /// Into nus's picture-in-picture `window`: the page fills the
+        /// window's view beneath nus's drawing with only its video showing,
+        /// and neither clicks nor the pointer reach it. False when it can't
+        /// go (WebKit's own fullscreen has it).
+        pub fn enter_pip(&self, window: &winit::window::Window) -> bool {
+            if self.in_pip() {
+                return true;
+            }
+            let Some(mtm) = MainThreadMarker::new() else { return false };
+            let Some(host) = view_of(window) else { return false };
+            if self.at_home().is_none() {
+                return false;
+            }
+            // The keyboard stays with the window the page leaves.
+            if let Some(w) = self.home.window() {
+                w.makeFirstResponder(Some(&self.home));
+            }
+            let shelter: Retained<Shelter> = unsafe { msg_send![Shelter::alloc(mtm), initWithFrame: host.bounds()] };
+            shelter.setWantsLayer(true);
+            host.addSubview(&shelter);
+            beneath(&shelter, &host);
+            self.clip.removeFromSuperview();
+            shelter.addSubview(&self.clip);
+            self.clip.setHidden(false);
+            self.shown.set(false);
+            *self.shelter.borrow_mut() = Some((shelter, host));
+            self.fit_pip();
+            self.quiet(true);
+            self.eval("window.__nusPip&&__nusPip(true)");
+            true
+        }
+
+        /// Keep the page as big as the picture-in-picture window.
+        pub fn fit_pip(&self) {
+            let resized = {
+                let shelter = self.shelter.borrow();
+                let Some((shelter, host)) = shelter.as_ref() else { return };
+                let b = host.bounds();
+                let inner = NSRect::new(NSPoint::new(0.0, 0.0), b.size);
+                let resized = shelter.frame() != b || self.view.frame() != inner;
+                if resized {
+                    shelter.setFrame(b);
+                    self.clip.setFrame(inner);
+                    self.view.setFrame(inner);
+                }
+                resized
+            };
+            // A new size can bring WebKit's tracking back.
+            if resized {
+                self.quiet(true);
+            }
+        }
+
+        /// Back into the window it came from; `place` and `show` have it again.
+        pub fn leave_pip(&self) {
+            let Some((shelter, _host)) = self.shelter.borrow_mut().take() else { return };
+            self.eval("window.__nusPip&&__nusPip(false)");
+            self.clip.removeFromSuperview();
+            self.clip.setHidden(true);
+            self.shown.set(false);
+            self.home.addSubview(&self.clip);
+            shelter.removeFromSuperview();
+            self.quiet(false);
+        }
+
+        /// WebKit follows the pointer with tracking areas of its own, which
+        /// reach it whoever takes the clicks: in nus's window they come off
+        /// (none of the page's hover controls, none of its cursors over
+        /// nus's) and go back after, each once.
+        fn quiet(&self, on: bool) {
+            let mut kept = self.tracking.borrow_mut();
+            if on {
+                let mut views: Vec<Retained<NSView>> = vec![Retained::into_super(self.view.clone())];
+                while let Some(v) = views.pop() {
+                    for area in v.trackingAreas().iter() {
+                        v.removeTrackingArea(&area);
+                        if !kept.iter().any(|(_, a)| Retained::as_ptr(a) == Retained::as_ptr(&area)) {
+                            kept.push((v.clone(), area));
+                        }
+                    }
+                    views.extend(v.subviews().iter());
+                }
+            } else {
+                for (v, area) in kept.drain(..) {
+                    let there = v.trackingAreas().iter().any(|a| Retained::as_ptr(&a) == Retained::as_ptr(&area));
+                    if !there {
+                        v.addTrackingArea(&area);
+                    }
+                }
+            }
         }
 
         pub fn url(&self) -> String {
@@ -352,6 +590,10 @@ if(document.pictureInPictureElement)document.exitPictureInPicture().catch(e=>{})
             self.show(false);
             self.view.removeFromSuperview();
             self.clip.removeFromSuperview();
+            if let Some((shelter, _)) = self.shelter.borrow_mut().take() {
+                shelter.removeFromSuperview();
+            }
+            self.tracking.borrow_mut().clear();
         }
     }
 }
@@ -368,7 +610,13 @@ mod imp {
         pub fn load(&self, _url: &str) {}
         pub fn place(&self, _page: nus_render::Rect, _shown: nus_render::Rect) {}
         pub fn show(&self, _on: bool) {}
-        pub fn pip(&self, _on: bool) {}
+        pub fn poll(&self) {}
+        pub fn take_report(&self) -> Option<String> { None }
+        pub fn eval(&self, _js: &str) {}
+        pub fn in_pip(&self) -> bool { false }
+        pub fn enter_pip(&self, _window: &winit::window::Window) -> bool { false }
+        pub fn fit_pip(&self) {}
+        pub fn leave_pip(&self) {}
         pub fn url(&self) -> String { String::new() }
         pub fn title(&self) -> String { String::new() }
         pub fn loading(&self) -> bool { false }
@@ -404,6 +652,24 @@ mod tests {
         assert_eq!(url, "https://netflix.com/");
         let host_only = serde_json::json!({"name":"a","value":"b","domain":"www.netflix.com","path":"/","session":true});
         assert_eq!(set_cookie_line(&host_only, 0.0).unwrap().0, "a=b; Path=/");
+    }
+
+    #[test]
+    fn a_poll_answer_carries_the_report_and_the_ask() {
+        let (report, asked) = read_poll(r#"{"r":"{\"v\":null,\"top\":true}","pip":true}"#).unwrap();
+        assert_eq!(report, r#"{"v":null,"top":true}"#);
+        assert!(asked);
+        assert_eq!(read_poll(r#"{"r":"","pip":false}"#), Some((String::new(), false)));
+        assert_eq!(read_poll("not json"), None);
+        assert_eq!(read_poll(r#"{"pip":true}"#), None);
+    }
+
+    #[test]
+    fn the_tracker_runs_in_webkit_with_its_own_ends() {
+        assert!(TRACKER.starts_with("window.nusVideo=window.nusVideo||"));
+        assert!(TRACKER.contains("window.__nus = {"));
+        assert!(TRACKER.contains("window.__nusPip="));
+        assert!(!TRACKER.contains("webkitSetPresentationMode('picture-in-picture')"));
     }
 
     #[test]
