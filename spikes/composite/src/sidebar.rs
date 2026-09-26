@@ -54,7 +54,7 @@ impl App {
         match self.sidebar_rules.small_tabs{
             SmallTabs::Favicons=>false,
             SmallTabs::Icons=>{let icon=match pane{Pane::Web(_)=>icons::GLOBE,Pane::Term(_)|Pane::Home(_)=>icons::TERMINAL,Pane::Settings(_)=>icons::SETTINGS,Pane::Hints(_)=>icons::HOME,Pane::Editor(_)=>icons::CODE,Pane::Ports(_)=>icons::PORTS,Pane::Downloads(_)=>icons::DOWNLOAD};self.fonts.draw_icon(scene,icon,size,x,y,color);true},
-            SmallTabs::Preview=>{if let Pane::Web(w)=pane{if let Some(bind)=w.still.clone().or_else(||w.tab.shared.borrow().bind.clone()){
+            SmallTabs::Preview=>{if let Pane::Web(w)=pane{if let Some(bind)=w.preview_texture(){
                 let width=(self.sidebar_w()-self.px(12.0)).min(self.px(72.0));let h=(width*0.62).round();let r=Rect::new((x+size*0.5-width*0.5).round(),(y+size*0.5-h*0.5).round(),width,h);scene.texture(r,bind,None);scene.layer(None);scene.outline(r,self.px(1.0),color);return true;
             }}false}
         }

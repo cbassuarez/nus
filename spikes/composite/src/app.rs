@@ -435,6 +435,20 @@ pub struct WebPane {
     pub overlay_hits: Vec<(Rect, String)>,
 }
 
+impl WebPane {
+    /// The page as a thumbnail (sidebar small tabs, pinned tiles), or None
+    /// while it plays video or streams: a film playing in a thumbnail
+    /// distracts, costs a frame a tick, and protected video is black there
+    /// anyway. Those show their favicon instead.
+    pub fn preview_texture(&self) -> Option<Arc<wgpu::BindGroup>> {
+        let s = self.tab.shared.borrow();
+        if s.video.is_some() || s.media.iter().any(|m| m.blob) {
+            return None;
+        }
+        self.still.clone().or_else(|| s.bind.clone())
+    }
+}
+
 pub const DT_PANELS: [(&str, (&str, &str)); 3] = [("console", nus_render::text::icons::CONSOLE), ("network", nus_render::text::icons::NETWORK), ("elements", nus_render::text::icons::CODE)];
 
 pub struct SettingsPane {

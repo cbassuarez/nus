@@ -633,7 +633,7 @@ impl App {
             // previews do. Pinning alone never opens or wakes a web page.
             let preview = if tiles && !compact && self.sidebar_rules.pin_display == Display::Preview {
                 live.and_then(|i| match &self.tabs[i].left {
-                    Pane::Web(w) => w.tab.shared.borrow().bind.clone().or_else(|| w.still.clone()),
+                    Pane::Web(w) => w.preview_texture(),
                     _ => None,
                 })
             } else { None };
