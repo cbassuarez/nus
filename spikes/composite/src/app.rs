@@ -255,6 +255,8 @@ pub struct Fonts {
 }
 
 pub struct TermPane {
+    /// The size the shell was last told (SIGWINCH); the grid may be ahead.
+    pub pty_dims: (u16, u16),
     pub zoom: u32,
     pub term: Term,
     pub pty: nus_pty::Pty,
@@ -1286,6 +1288,14 @@ pub struct App {
     /// for a moment; winit emits a burst of sizes on creation and conhost
     /// scrambles its buffer if it sees every one of them.
     pub resize_due: Option<Instant>,
+    /// A resize the system is running (window_resize.rs): frames are drawn
+    /// in its events until the loop comes back to nus.
+    pub live_resizing: bool,
+    /// When shells were last told their new size: during a drag, at most
+    /// every PTY_EVERY, so a prompt isn't redrawn at every pixel.
+    pub pty_told: Option<Instant>,
+    /// The last press on the top strip, for its double click.
+    pub strip_press: Option<(Instant, (f32, f32))>,
     pub last_begin_frame: Instant,
     pub frames: u64,
 }
@@ -1594,6 +1604,9 @@ impl App {
             detected: None,
             dirty: true,
             resize_due: None,
+            live_resizing: false,
+            pty_told: None,
+            strip_press: None,
             last_begin_frame: crate::clock::now(),
             frames: 0,
         };
@@ -1837,6 +1850,7 @@ impl App {
             })?
         };
         Ok(TermPane {
+            pty_dims: (cols as u16, rows as u16),
             zoom: 100,
             term,
             pty,
@@ -2235,7 +2249,34 @@ impl App {
         self.target.resize(&self.gpu.device, w, h);
         self.remember_window();
         self.layout();
-        self.resize_due = Some(crate::clock::now() + std::time::Duration::from_millis(80));
+        // The grid follows the window at once; the shells hear of it at
+        // most every PTY_EVERY and once more when it settles.
+        self.resize_due = Some(crate::clock::now());
+    }
+
+    /// A whole frame now, inside the resize event: while the system runs a
+    /// live resize nus's own loop doesn't turn, so Chromium is pumped, the
+    /// shells reflowed and the window drawn here, at the size it has.
+    pub fn live_resize_frame(&mut self) {
+        if !self.live_resizing {
+            self.live_resizing = true;
+            if crate::window_resize::in_live_resize(&self.window) {
+                crate::window_resize::present_in_transaction(&self.window, true);
+            }
+        }
+        crate::browser_runtime::pump();
+        self.apply_term_resizes(true);
+        self.dirty = true;
+        self.redraw();
+    }
+
+    /// The system let go of the window: presenting goes back to its own
+    /// pace, and the shells hear the final size.
+    pub fn end_live_resize(&mut self) {
+        self.live_resizing = false;
+        crate::window_resize::present_in_transaction(&self.window, false);
+        self.pty_told = None;
+        self.apply_term_resizes(true);
     }
 
     /// Time-based housekeeping, once per loop iteration.
@@ -3498,6 +3539,10 @@ impl App {
         let pad_x = self.px(18.0);
         let pad_y = self.px(16.0);
         let mut changed = false;
+        const PTY_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+        let now = crate::clock::now();
+        let tell = self.pty_told.is_none_or(|t| now.duration_since(t) >= PTY_EVERY);
+        let (mut untold, mut told) = (false, false);
         for tab in &mut self.tabs {
             for (right,p) in std::iter::once((false,&mut tab.left)).chain(tab.right.as_mut().map(|p|(true,p))) {
                 if let Pane::Term(t) = p {
@@ -3511,12 +3556,27 @@ impl App {
                         if let Some(rec) = self.recorder.as_mut() {
                             rec.resize(crate::replay::stream_id(tab.id,right), cols, rows);
                         }
-                        let (cw, ch) = t.grid.cell_size();
-                        let _ = t.pty.resize(cols as u16, rows as u16, (cw as u16, ch as u16));
                         changed = true;
+                    }
+                    if t.pty_dims != (cols as u16, rows as u16) {
+                        if tell {
+                            let (cw, ch) = t.grid.cell_size();
+                            let _ = t.pty.resize(cols as u16, rows as u16, (cw as u16, ch as u16));
+                            t.pty_dims = (cols as u16, rows as u16);
+                            told = true;
+                        } else {
+                            untold = true;
+                        }
                     }
                 }
             }
+        }
+        if told {
+            self.pty_told = Some(now);
+        }
+        // Someone is still to hear their size: again when it's time.
+        if untold {
+            self.resize_due = Some(self.pty_told.map_or(now, |t| t + PTY_EVERY));
         }
         if changed {
             self.dirty = true;
@@ -6810,6 +6870,9 @@ impl App {
                 let r = p.rect;
                 let s = p.tab.shared.borrow();
                 let (url, bind, loading) = (s.url.clone(), p.still.clone().or_else(|| s.bind.clone()), s.loading);
+                // The live paint's own size: while the page catches up with a
+                // new pane size it is drawn as painted, never stretched.
+                let painted = if p.still.is_none() { s.paint_size } else { (0, 0) };
                 let media_n = s.media.iter().filter(|mm| !mm.blob).count();
                 let media_any = !s.media.is_empty();
                 drop(s);
@@ -6881,7 +6944,11 @@ impl App {
                     reader.draw(scene, &mut self.fonts, &rf, p.page, self.scale, ink, t.dim, paper, self.surface.signal);
                 } else if let Some(bind) = bind {
                     // Stretched past its end, the page moves and the pane shows behind it.
-                    let drawn = Rect::new(p.page.x, p.page.y - p.bounce_y, p.page.w, p.page.h);
+                    // A paint from before a resize keeps its pixels, top left, with the
+                    // page's own paper around it until the new one comes.
+                    let (w, h) = if painted.0 > 0 && painted.1 > 0 { (painted.0 as f32, painted.1 as f32) } else { (p.page.w, p.page.h) };
+                    let (w, h) = if (w - p.page.w).abs() <= 1.0 && (h - p.page.h).abs() <= 1.0 { (p.page.w, p.page.h) } else { (w, h) };
+                    let drawn = Rect::new(p.page.x, p.page.y - p.bounce_y, w, h);
                     scene.texture(drawn, bind, Some(p.page));
                     scene.layer(None);
                     if p.still.is_some() {
@@ -9623,6 +9690,23 @@ impl App {
     }
 
     /// What a header icon does; shared by the mouse and AccessKit.
+    /// The strip's double click, as the system's title bar does it: zoom
+    /// (maximise), minimise or nothing, by the system's own setting. On
+    /// macOS the zoom is AppKit's, which fills the space the system allows
+    /// — under Stage Manager, the stage beside the strip.
+    pub(crate) fn strip_double_click(&mut self) {
+        use crate::window_resize::{strip_action, zoom, StripAction};
+        if self.window.fullscreen().is_some() {
+            return;
+        }
+        match strip_action() {
+            StripAction::Zoom => zoom(&self.window),
+            StripAction::Minimize => self.window.set_minimized(true),
+            StripAction::Nothing => {}
+        }
+        self.dirty = true;
+    }
+
     pub(crate) fn crumb_action(&mut self, hit: CrumbHit) {
         match hit {
             CrumbHit::Close => {let _=self.proxy.send_event(UserEvent::WindowControl(self.window.id(),0));},
@@ -9733,7 +9817,20 @@ impl App {
             match hit {
                 Some(h) => self.crumb_action(h),
                 None => {
-                    let _ = self.window.drag_window();
+                    // A second press in the system's double-click time, near
+                    // the first: what the system's own title bar would do.
+                    let now = crate::clock::now();
+                    let twice = self.strip_press.is_some_and(|(at, (px, py))| {
+                        now.duration_since(at) <= crate::window_resize::double_click_interval()
+                            && (x - px).abs() <= self.px(4.0) && (y - py).abs() <= self.px(4.0)
+                    });
+                    if twice {
+                        self.strip_press = None;
+                        self.strip_double_click();
+                    } else {
+                        self.strip_press = Some((now, (x, y)));
+                        let _ = self.window.drag_window();
+                    }
                 }
             }
             return;

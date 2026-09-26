@@ -94,7 +94,7 @@ tray-icon = { version = "0.24", default-features = false }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibilityProtocols", "NSAppearance", "NSButton", "NSControl", "NSEvent", "NSApplication", "NSImage", "NSGraphics", "NSScreen", "NSWindow", "NSView", "NSRunningApplication", "NSWorkspace", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSTrackingArea", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray", "NSDictionary", "NSHTTPCookie", "NSURLRequest", "NSObject", "NSUUID"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray", "NSDictionary", "NSHTTPCookie", "NSURLRequest", "NSObject", "NSUUID", "NSUserDefaults"] }
 # Protected video through the system's WebKit and FairPlay (webkit.rs).
 objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKHTTPCookieStore", "WKPreferences", "WKNavigation", "WKUserContentController", "WKUserScript", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 

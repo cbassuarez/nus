@@ -1861,3 +1861,30 @@ swipe only when the page had no room for it.
 **Waking is quicker.** A woken page shows at its first paint, not at the
 end of its load, and resting the pointer on a sleeping tab's row starts
 waking it before the click.
+
+## Resizing, and the strip's double click (2026-09-26)
+
+**Live resize draws every frame.** While you drag an edge the system holds
+the event loop (AppKit's live resize, Windows' sizing loop), so nus's own
+turn — Chromium's pump, the shells' reflow, the redraw — used to wait for
+the release: laggy while dragging, then a settle. Now the frame is drawn in
+the resize event itself, and in Chromium's wake-ups while the resize lasts.
+On macOS the GPU layer presents inside Core Animation's transaction for the
+length of the resize, so the picture moves with the edge, not a frame
+behind it.
+
+**Shells reflow at once; programs hear of it calmly.** The grid follows
+the window every frame; the shell is told its new size (SIGWINCH) at most
+every 50 ms while dragging and once more when the drag ends, so a prompt
+isn't redrawn at every pixel.
+
+**Pages are never stretched.** Until Chromium paints at the new size, the
+last paint is drawn at its own pixels, top left, with the page's paper
+around it — the way browsers resize.
+
+**Double click the strip** and nus does what the system's title bar does:
+on macOS the choice in Desktop & Dock (zoom — AppKit's, which under Stage
+Manager fills the stage beside the strip — minimise, or nothing), in the
+system's double-click time; on Windows maximise and restore; on Linux the
+desktop's `action-double-click-titlebar` (maximise by default). Fullscreen
+windows ignore it.

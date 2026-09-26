@@ -140,6 +140,7 @@ mod touch;
 mod news;
 mod notes;
 mod notes_ui;
+mod window_resize;
 mod diffs;
 mod phone;
 mod private;
@@ -560,7 +561,13 @@ impl ApplicationHandler<UserEvent> for Host {
                     }}
                 }}}
             },
-            UserEvent::BrowserWork => {},
+            // Chromium has work. Mid-resize the system holds the loop, so
+            // the page's new paint is drawn from here or not until you let go.
+            UserEvent::BrowserWork => {
+                for a in self.apps.iter_mut().filter(|a| a.live_resizing) {
+                    a.live_resize_frame();
+                }
+            }
             UserEvent::Wake => {
                 for a in self.apps.iter_mut() {
                     a.dirty = true;
@@ -877,7 +884,10 @@ impl ApplicationHandler<UserEvent> for Host {
                     }
                 }
             }
-            WindowEvent::Resized(s) => a.resize(s.width, s.height),
+            WindowEvent::Resized(s) => {
+                a.resize(s.width, s.height);
+                a.live_resize_frame();
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => a.set_scale(scale_factor as f32),
             WindowEvent::Moved(p) => a.window_moved(p.x, p.y),
             WindowEvent::ThemeChanged(t) => {
@@ -1114,6 +1124,10 @@ fn main() -> ExitCode {
         let wait=browser_runtime::wait(maintenance).max(Duration::from_millis(1));
         event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now()+wait));
         let status = event_loop.pump_app_events(Some(wait), &mut host);
+        // The loop is ours again: any resize the system was running is over.
+        for a in host.apps.iter_mut().filter(|a| a.live_resizing) {
+            a.end_live_resize();
+        }
         if let PumpStatus::Exit(code) = status {
             host.release_finish_work();
             break code;
