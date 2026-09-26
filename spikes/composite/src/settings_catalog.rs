@@ -179,6 +179,11 @@ impl App {
                 ("COLORS & PROGRESS",vec!["SHELL COLORS","PROGRAM COLORS","TRUECOLOR","PROGRESS"]),
             ] {
                 ordered.push((heading.into(),Control::Caption));
+                let intro=match heading {
+                    "COLORS & PROGRESS"=>Some("Programs don't know your theme, and a long command can't tell you how far along it is. nus reads what they send the terminal and makes it fit: colors a script sets, colors a program hardcodes, and the progress a command reports."),
+                    _=>None,
+                };
+                if let Some(intro)=intro {ordered.push(("".into(),Control::Info(intro.into())));}
                 for name in names {
                     if let Some(i)=source.iter().position(|(label,_)|label==name) {ordered.push(source.remove(i));}
                     let note=match name {
@@ -190,6 +195,10 @@ impl App {
                         "EDITOR"=>Some("Formatting needs a formatter for the file type. When none is installed, the file is saved unchanged."),
                         "REPLAY"=>Some("Records terminal output and a snapshot of the page beside it at command checkpoints. Changes apply now; turning it off leaves existing recordings available."),
                         "JOURNAL"=>Some("Private to you: kept on this device, encrypted with a key in your system keychain, never synced or sent anywhere. For each finished command it saves the command line, the folder, when it ran, how long it took and whether it worked. It never saves output. It powers “Run again” suggestions, the log in the palette, and nus log. If you type secrets directly into commands (a password or token as an argument), they are saved too; turn this off or keep a shorter history."),
+                        "SHELL COLORS"=>Some("When a script sets the terminal's colors (OSC 10/11: kitty's set-colors, a base16 script), nus can take them for the whole window: paper or ink from the background, the accent from the foreground. Offer puts a chip on the pane to apply them; Always applies them at once; Pane only keeps them in that terminal. nus theme <name> and nus look do the same on purpose."),
+                        "PROGRAM COLORS"=>Some("claude, codex, htop and every TUI pick colors against someone else's background, and some of that text can't be read on yours. The grade moves only the unreadable text toward ink until it meets the contrast you pick (WCAG: 3:1, 4.5:1 AA, 7:1 AAA). Text that already reads is left alone."),
+                        "TRUECOLOR"=>Some("Programs that send 24-bit color ignore your theme. The theme's sixteen snaps each of those colors to the nearest of the theme's sixteen, so every program wears the theme. In rules.luau, program(p) gives one program its own sixteen, remaps a color it hardcodes, or sets these per program."),
+                        "PROGRESS"=>Some("A command can report how far along it is (OSC 9;4, as winget, some build tools and a one-line printf in a script do). nus draws it as a bar along the pane's top, and, with these on, as a line under the tab in the sidebar and on the taskbar button (Windows), so you can look away while it runs. Rules see it too: on_progress."),
                         "SCROLLBACK"=>Some("Lines a new shell keeps behind it; shells already open keep what they started with. Restored with the session."),
                         _=>None,
                     };
