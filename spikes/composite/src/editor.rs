@@ -534,6 +534,8 @@ pub struct EditorPane {
     pub notice: Option<(String, Instant)>,
     search: Option<(usize, u64, String, Task<work::Matches>)>,
     search_needed: bool,
+    /// While the buffer is a note: the rails a whole tab shows (notes_ui.rs).
+    pub notes: Option<crate::notes_ui::Rails>,
 }
 
 impl EditorPane {
@@ -558,6 +560,7 @@ impl EditorPane {
             notice: None,
             search: None,
             search_needed: false,
+            notes: None,
         }
     }
 
@@ -1379,6 +1382,9 @@ impl App {
         y: f32,
     ) -> bool {
         let pressed = state == ElementState::Pressed;
+        if pressed && button == MouseButton::Left && self.note_rails_mouse(x, y) {
+            return true;
+        }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let Some(tab) = self.tabs.get_mut(self.active) else {
@@ -1619,6 +1625,11 @@ impl App {
         r: Rect,
         focused: bool,
     ) {
+        // A note as wide as a tab keeps its index and references beside
+        // the text; the pane is still the whole rect.
+        let outer = r;
+        let r = self.draw_note_rails(scene, e, r);
+        let place = App::note_place_word(e);
         let t = self.theme.clone();
         let (ink, paper) = (t.ink, t.paper);
         let label = self.label();
@@ -1677,7 +1688,7 @@ impl App {
             let s: String = chars[..lo].iter().collect();
             format!("{s}…")
         };
-        e.rect = r;
+        e.rect = outer;
         e.strip_hits.clear();
         scene.rect(r, paper);
         scene.layer(Some(r));
@@ -1736,6 +1747,13 @@ impl App {
             }
             e.strip_hits.push((cell, i, false));
             x = cell.right() + px(2.0);
+        }
+        // A note says where it lives: plain in the folder, or sealed.
+        if let Some(word) = place {
+            let ww = fonts.measure(dim, word);
+            if x + ww + pad * 2.0 < r.right() {
+                fonts.draw(scene, dim, r.right() - pad - ww, strip_base, word);
+            }
         }
         scene.hline(r.x, r.y + strip_h - hair, r.w, hair, ink);
 

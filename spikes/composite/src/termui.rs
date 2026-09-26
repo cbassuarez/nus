@@ -213,6 +213,7 @@ impl App {
         let mut copy: Option<String> = None;
         let mut run: Option<String> = None;
         let mut share: Option<u64> = None;
+        let mut clip: Option<u64> = None;
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             let Pane::Term(t) = p else { continue };
             // The application asked for the mouse: it gets presses in its
@@ -284,6 +285,7 @@ impl App {
                     match kind {
                         0 => copy = Some(t.block_output_text(t.hover_block)),
                         2 => share = Some(t.hover_block),
+                        3 => clip = Some(t.hover_block),
                         _ => run = Some(t.block_cmd_text(t.hover_block)),
                     }
                     acted = true;
@@ -406,6 +408,10 @@ impl App {
         }
         if let Some(s) = share {
             self.share_block(s);
+            return true;
+        }
+        if let Some(s) = clip {
+            self.clip_block(Some(s));
             return true;
         }
         if middle {
@@ -579,11 +585,11 @@ impl App {
                 };
                 if y1 > y0 && !cmd.is_empty() {
                     scene.rect(Rect::new(r.x + self.px(8.0), y0, self.px(2.0), y1 - y0 - self.px(2.0)), fade(if exit.is_some_and(|e| e != 0) { self.surface.signal } else { ink }, 0.5));
-                    // Chips at the block's top right: share · run again · copy output.
+                    // Chips at the block's top right: share · run again · copy output · clip to note.
                     let isz = self.px(14.0);
                     let mut cx = r.right() - self.px(18.0) - isz;
                     let cy = y0 + self.px(2.0);
-                    for (k, icon, motion) in [(2usize, nus_render::text::icons::SHARE, IconMotion::Pop), (1usize, nus_render::text::icons::RELOAD, IconMotion::Spin(90.0)), (0usize, nus_render::text::icons::COPY, IconMotion::Pop)] {
+                    for (k, icon, motion) in [(2usize, nus_render::text::icons::SHARE, IconMotion::Pop), (1usize, nus_render::text::icons::RELOAD, IconMotion::Spin(90.0)), (0usize, nus_render::text::icons::COPY, IconMotion::Pop), (3usize, nus_render::text::icons::PENCIL, IconMotion::Pop)] {
                         let hit = Rect::new(cx - self.px(6.0), cy - self.px(4.0), isz + self.px(12.0), isz + self.px(8.0));
                         scene.push(nus_render::Instance::rounded(hit, self.px(4.0), fade(self.paper(), 0.92)));
                         self.icon_button(scene, icon, isz, cx, cy, ink, hit, hover_key("blockchip", k), motion);

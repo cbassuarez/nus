@@ -50,7 +50,7 @@ pub const ALWAYS: &[&str] = &[
     "blocklist.txt",
     "avatar.png",
 ];
-pub const DIRS: &[&str] = &["layouts", "themes", "surfaces", "library"];
+pub const DIRS: &[&str] = &["layouts", "themes", "surfaces", "library", "notes"];
 pub const SESSION: &str = "session.json";
 /// Files that only grow — an assistant's memory, written from wherever
 /// it worked — merge as the union of their lines instead of one side
@@ -58,7 +58,14 @@ pub const SESSION: &str = "session.json";
 pub const UNION: &[&str] = &["memory.md"];
 
 fn private_local(rel: &str) -> bool {
-    matches!(rel, "session.json" | "memory.md")
+    matches!(rel, "session.json" | "memory.md") || note_path(rel)
+}
+
+/// A profile note: `notes/<name>.md`, sealed at rest like memory.md.
+fn note_path(rel: &str) -> bool {
+    rel.strip_prefix("notes/")
+        .or_else(|| rel.strip_prefix("notes\\"))
+        .is_some_and(|n| n.ends_with(".md") && !n.contains(['/', '\\']))
 }
 fn read_local(profile: &Path, rel: &str) -> std::io::Result<Vec<u8>> {
     if private_local(rel) {
@@ -339,8 +346,10 @@ pub fn files_to_sync(profile: &Path, session: bool) -> Vec<String> {
             }
         } else if let Ok(rd) = std::fs::read_dir(profile.join(d)) {
             for e in rd.flatten() {
-                if e.path().is_file() {
-                    v.push(format!("{d}/{}", e.file_name().to_string_lossy()));
+                let rel = format!("{d}/{}", e.file_name().to_string_lossy());
+                // Notes: the .md files only, never a conflict's .lost copy.
+                if e.path().is_file() && (*d != "notes" || note_path(&rel)) {
+                    v.push(rel);
                 }
             }
         }
@@ -1173,6 +1182,39 @@ mod tests {
         assert!(!blob.windows(5).any(|w| w == b"\"b\":2"));
         assert!(!carrier.join("alpha").exists());
         assert!(!dir.join("settings.json.enc").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn profile_notes_travel_sealed_and_their_lost_copies_stay() {
+        assert!(note_path("notes/ideas.md"));
+        assert!(!note_path("notes/ideas.md.alpha.lost"));
+        assert!(!note_path("notes/sub/ideas.md"));
+        assert!(!note_path("notes/ideas.txt"));
+        let base = std::env::temp_dir().join(format!("nus-sync-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (a, b, carrier) = (base.join("a"), base.join("b"), base.join("carrier"));
+        std::fs::create_dir_all(a.join("notes")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        nus_vault::install_test_key(&a).unwrap();
+        nus_vault::install_test_key(&b).unwrap();
+        let k = new_key();
+        let f = Folder {
+            root: carrier.clone(),
+        };
+        nus_vault::write_at(&a, &a.join("notes/ideas.md"), b"# ideas\n- reflow").unwrap();
+        std::fs::write(a.join("notes/ideas.md.beta.lost"), b"old").unwrap();
+        assert_eq!(files_to_sync(&a, false), vec!["notes/ideas.md".to_string()]);
+        let r = exchange(&a, "alpha", &k, false, &[&f]);
+        assert_eq!(r.pushed, vec!["notes/ideas.md"]);
+        exchange(&b, "beta", &k, false, &[&f]);
+        // Sealed at rest on the other side too, and readable through its vault.
+        let raw = std::fs::read(b.join("notes/ideas.md")).unwrap();
+        assert!(!raw.windows(6).any(|w| w == b"reflow"));
+        assert_eq!(
+            nus_vault::read_at(&b, &b.join("notes/ideas.md")).unwrap(),
+            b"# ideas\n- reflow"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

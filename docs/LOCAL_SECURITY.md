@@ -14,7 +14,8 @@ Unlocked keys and plaintext necessarily exist in process memory.
 
 The vault covers session snapshots, recent-history state, assistant memory,
 held-process authentication records, journal records, terminal replay streams,
-replay images, the profile-sync encryption key, and the forge token. The primary
+replay images, profile notes (`profile/notes/*.md`), the profile-sync encryption
+key, and the forge token. The primary
 process migrates recognized legacy files in these locations before starting
 state writers. Migration uses an encrypted temporary file and atomic replacement;
 it does not create a plaintext backup. A completed migration marker makes later
@@ -36,7 +37,8 @@ copying the profile alone is not a recovery mechanism. An explicitly configured
 sync carrier decrypts locally and re-encrypts with the separate sync key, so
 other authorized devices can use their own local vault keys.
 
-The vault does **not** encrypt project files, ordinary settings, reading-list
+The vault does **not** encrypt project files (folder notes in `.nus/notes/`
+among them), ordinary settings, reading-list
 articles, browser-managed storage, explicit screenshots/exports, or files owned
 by independently installed Claude/Codex CLIs. The local control socket's discovery
 token remains an owner-only file so the CLI can connect. The phone uses an

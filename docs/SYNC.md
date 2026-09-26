@@ -59,7 +59,10 @@ device; it does not serialize independent devices or external sync software.
 **What travels.** The profile's own files: `settings.json`, `me.json` (your
 name, face and first day), `rules.luau`, `folders.json`, `ports.json`,
 `memory.md`, `sites.json`, `containers.json`, `blocklist.txt`,
-`avatar.png`, and every file in `layouts/`, `themes/` and `surfaces/`. Saved
+`avatar.png`, every file in `layouts/`, `themes/` and `surfaces/`, and the
+profile notes in `notes/` (the `.md` files; sealed on both devices, like
+`memory.md`, and never their `.lost` copies). Folder notes live in the
+project, not the profile, and travel only with the project's own git. Saved
 reading records and their immutable article objects also travel; temporary
 files, writer locks and conflict backups are excluded. Local article snapshots
 remain ordinary readable files in the profile: encryption protects the carrier,
