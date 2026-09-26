@@ -2197,7 +2197,8 @@ impl App {
             Hit::Welcome => self.open_welcome(),
             Hit::PinDisplay(mode) => self.sidebar_rules.pin_display = mode,
             Hit::Report(kind) => self.run(crate::app::Action::Report(kind)),
-            Hit::AppIcon(choice)=>{if choice!=crate::app_icon::Choice::Mercury || crate::mercury::earned(){self.behavior.app_icon=choice;crate::app_icon::select(choice);self.refresh_icon();self.toast(nus_render::text::icons::APP_WINDOW,"App Icon Changed",choice.name(),None);}},
+            Hit::AppIcon(choice)=>{if choice==crate::app_icon::Choice::Mercury && !crate::mercury::earned(){self.claim_mercury();}
+                if choice!=crate::app_icon::Choice::Mercury || crate::mercury::earned(){self.behavior.app_icon=choice;crate::app_icon::select(choice);self.refresh_icon();self.toast(nus_render::text::icons::APP_WINDOW,"App Icon Changed",choice.name(),None);}},
             Hit::Mercury => self.claim_mercury(),
             Hit::CopySupportDetails => {
                 match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(crate::support::details())) {
@@ -3467,10 +3468,13 @@ impl App {
                 v
             }
                     LOOK_APP_ICON => vec![
-                        ("APP ICON".into(), Info("Choose your running app’s icon. Automatic uses Mercury when claimed; choosing another icon keeps your badge. The installed package icon remains unchanged.".into())),
+                        ("APP ICON".into(), Info(if crate::mercury::can_claim() {
+                            "Choose your running app’s icon. Mercury, a silver n for the first edition, is yours for the claiming until 2027: click its tile. Choosing another icon later keeps it. The installed package icon remains unchanged."
+                        } else {
+                            "Choose your running app’s icon. Automatic uses Mercury when you have it; choosing another icon keeps it. The installed package icon remains unchanged."
+                        }.into())),
                         ("".into(),AppIcons),
-                        ("MERCURY".into(), Mercury),
-                    ],
+                    ].into_iter().chain(crate::mercury::earned().then(|| ("MERCURY".into(), Mercury))).collect(),
                     LOOK_TYPE => vec![
                 (
                     "THEME".into(),
