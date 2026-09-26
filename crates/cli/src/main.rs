@@ -16,6 +16,7 @@
 //!   nus raise                       bring the window up
 //!   nus hook claude|codex           an assistant's hook, reporting to its pane (hook.rs)
 //!   nus hook install claude|codex   add those hooks to the assistant's config
+//!   nus credential get              git's credential helper: the forge sign-in, when allowed
 //!   nus version
 //!
 //! It finds the running instance through `profile/instance` next to the
@@ -180,11 +181,44 @@ mod mcp;
 
 mod hook;
 
+/// git's credential protocol: `key=value` lines on stdin up to a blank
+/// line; for `get`, answer with `username=` and `password=` when nus has
+/// a sign-in for that host, else nothing (git asks its next helper).
+/// Always a success: a helper that fails stops git.
+fn credential(op: Option<&str>) -> ExitCode {
+    let mut fields = serde_json::Map::new();
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines().map_while(Result::ok) {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            if matches!(k, "protocol" | "host") {
+                fields.insert(k.into(), Value::String(v.into()));
+            }
+        }
+    }
+    if op != Some("get") {
+        return ExitCode::SUCCESS;
+    }
+    if let Ok(v) = call("credential", Value::Object(fields)) {
+        if let (Some(u), Some(p)) = (v["username"].as_str(), v["password"].as_str()) {
+            println!("username={u}\npassword={p}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An assistant's hook: quick, quiet, and always a success to the caller.
     if args.first().map(String::as_str) == Some("hook") {
         return hook::run(&args[1..]);
+    }
+    // git's credential helper: `nus credential get` answers from the
+    // running nus; store and erase are git's own business.
+    if args.first().map(String::as_str) == Some("credential") {
+        return credential(args.get(1).map(String::as_str));
     }
     // The MCP server: stdin to stdout until the assistant hangs up.
     if args.first().map(String::as_str) == Some("mcp") {

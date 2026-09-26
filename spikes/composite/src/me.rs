@@ -828,6 +828,8 @@ impl App {
                 self.toast(icons::COPY, "Copied", "the key · paste it on the other device", None);
             }
             CardHit::ForgeForget => {
+                if let Some(f) = crate::forge::load() { let _ = crate::forge::set_git_uses(&f.host, false); }
+                self.behavior.forge_git = false;
                 crate::forge::forget();
                 self.behavior.sync_git.clear();
                 self.save_prefs();

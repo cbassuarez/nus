@@ -219,6 +219,17 @@ impl App {
         let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
         match cmd {
             "version" => Ok(json!({ "nus": crate::updates::CURRENT })),
+            // git's credential helper (`nus credential get`): only when the
+            // setting lets git use the sign-in, only over https, only for
+            // the signed-in forge's host.
+            "credential" => {
+                let host = s("host").unwrap_or_default();
+                let https = s("protocol").as_deref() == Some("https");
+                match (self.behavior.forge_git && https).then(|| crate::forge::credential_for(&host)).flatten() {
+                    Some((username, password)) => Ok(json!({ "username": username, "password": password })),
+                    None => Ok(json!({})),
+                }
+            }
             "raise" => {
                 self.hatch_state.main_hidden = false;
                 self.window.set_visible(true);
@@ -641,7 +652,7 @@ mod tests {
         for cmd in [
             "launch", "send-text", "ask", "edit", "open", "page", "block",
             "hatch", "sync", "layout", "ls", "raise", "close", "split",
-            "focus", "theme", "look", "ports", "version", "hands",
+            "focus", "theme", "look", "ports", "version", "hands", "credential",
         ] {
             assert!(!Origin::Phone.allows(cmd), "the phone could reach {cmd}");
             assert!(Origin::Cli.allows(cmd), "the CLI lost {cmd}");

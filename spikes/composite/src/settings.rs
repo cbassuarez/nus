@@ -480,6 +480,8 @@ pub struct Behavior {
     pub ssh_integration: bool,
     /// Letter the edge of a shell that runs somewhere else (selvedge.rs).
     pub selvedge: bool,
+    /// git in every shell uses the forge sign-in (nus as its credential helper).
+    pub forge_git: bool,
     /// Places whose names match one of these (`*` any run) are guarded.
     pub guarded_places: Vec<String>,
     /// THEN · LAYOUT: which saved layout opens at launch.
@@ -963,6 +965,7 @@ impl Default for Behavior {
             then_layout: String::new(),
             ssh_integration: true,
             selvedge: true,
+            forge_git: false,
             guarded_places: vec!["*prod*".into()],
             shell_colours: ShellColours::Chip,
             shell_tint: crate::shell_colors::ShellTint::Random,
@@ -1192,6 +1195,7 @@ pub enum Hit {
     ForgetMemory,
     SshIntegration(bool),
     Selvedge(bool),
+    ForgeGit(bool),
     TidyEvery(TidyEvery),
     Dedupe(bool),
     ShellColours(ShellColours),
@@ -1827,6 +1831,7 @@ impl App {
             Hit::ForgetMemory => "memory cleared".into(),
             Hit::SshIntegration(b) => if b { "ssh brings the integration".into() } else { "ssh as is".into() },
             Hit::Selvedge(b) => if b { "shells elsewhere lettered".into() } else { "shells elsewhere plain".into() },
+            Hit::ForgeGit(b) => if b { "git uses the sign-in".into() } else { "git asks as before".into() },
             Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
             Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
             Hit::ShellColours(c) => format!("shell colors: {:?}", c).to_lowercase(),
@@ -2349,6 +2354,13 @@ impl App {
             }
             Hit::SshIntegration(b) => self.behavior.ssh_integration = b,
             Hit::Selvedge(b) => self.behavior.selvedge = b,
+            Hit::ForgeGit(b) => match crate::forge::load() {
+                Some(f) => match crate::forge::set_git_uses(&f.host, b) {
+                    Ok(()) => self.behavior.forge_git = b,
+                    Err(e) => self.toast_problem("Git Wasn't Changed", e, None),
+                },
+                None => self.behavior.forge_git = false,
+            },
             Hit::TidyEvery(e) => self.behavior.tidy_every = e,
             Hit::Dedupe(b) => self.behavior.dedupe = b,
             Hit::ShellColours(c) => self.behavior.shell_colours = c,
@@ -2386,6 +2398,8 @@ impl App {
             Hit::SyncEdit(k) => self.open_palette(match k { 0 => crate::app::PaletteMode::SyncFolder, 1 => crate::app::PaletteMode::SyncGit, _ => crate::app::PaletteMode::SyncJoin }),
             Hit::MeWalk(k) => self.open_me_card_at(match k {0=>crate::me::Step::Sync,2=>crate::me::Step::Import,_=>crate::me::Step::Forge}),
             Hit::ForgeForget => {
+                if let Some(f) = crate::forge::load() { let _ = crate::forge::set_git_uses(&f.host, false); }
+                self.behavior.forge_git = false;
                 crate::forge::forget();
                 self.behavior.sync_git.clear();
                 self.notice(nus_render::text::icons::GITHUB, "Forge Forgotten", "the repo is still yours to delete");
@@ -4449,6 +4463,15 @@ impl App {
                     ("".into(), Info(match crate::forge::load() {
                         Some(f) => format!("Signed in to {}. The token stays on this device and is only sent to that service.", f.word()),
                         None => "GitHub, GitLab, Forgejo or Gitea. Use one or both destinations.".into(),
+                    })),
+                    ("GIT IN YOUR SHELLS".into(), Choice(if crate::forge::load().is_some() {
+                        vec![("USES THIS SIGN-IN".into(), Hit::ForgeGit(!b.forge_git), b.forge_git)]
+                    } else {
+                        vec![("SIGN IN FIRST".into(), Hit::ForgeGit(false), false)]
+                    })),
+                    ("".into(), Info(match crate::forge::load() {
+                        Some(f) => format!("git push and pull over https to {} sign in as {} without asking: nus becomes git's credential helper for that host (in ~/.gitconfig), answering only while nus runs. Off takes the line out again.", crate::forge::host_name(&f.host), f.user),
+                        None => "After you sign in above, git in every shell can use that sign-in too.".into(),
                     })),
                     ("STEP 3 · WHAT & WHEN".into(), Section),
                     ("ALSO SYNC OPEN TABS".into(), Choice(vec![("YES".into(), Hit::SyncSession(true), b.sync_session), ("NO".into(), Hit::SyncSession(false), !b.sync_session)])),

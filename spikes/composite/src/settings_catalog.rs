@@ -17,7 +17,7 @@ fn switch(hit: Hit) -> Option<(&'static str, Hit, Hit, bool)> {
         PaneDivider => "RESIZE SPLIT PANES", Blocks => "COMMAND STATUS MARKERS", Journal => "REMEMBER COMMANDS I RUN",
         PortsRemember => "REMEMBER PORT LABELS", ClickToSource => "OPEN SOURCE FROM A PAGE", Remember => "REMEMBER OPEN TABS",
         HandsSubmit => "CONFIRM FORM SUBMISSION", ProgressSidebar => "SIDEBAR PROGRESS", ProgressTaskbar => "DOCK / TASKBAR PROGRESS",
-        SshIntegration => "SHELL INTEGRATION OVER SSH", Selvedge => "LETTER PLACE EDGES", Dedupe => "DUPLICATE PAGE NOTICE", SyncSession => "SYNC OPEN TABS",
+        SshIntegration => "SHELL INTEGRATION OVER SSH", Selvedge => "LETTER PLACE EDGES", ForgeGit => "GIT USES THE FORGE SIGN-IN", Dedupe => "DUPLICATE PAGE NOTICE", SyncSession => "SYNC OPEN TABS",
         SyncAtQuit => "SYNC WHEN QUITTING", PortsToast => "NEW PORT NOTIFICATIONS", PortsProbe => "DETECT WEB SERVERS",
         HatchAutohide => "HIDE HATCH WHEN UNFOCUSED", HatchStatus => "COMPACT WORK STATUS", HatchBackground => "KEEP NUS IN BACKGROUND", HatchDim => "DIM BEHIND MODAL", HatchNotify => "COMPLETION NOTICES", Phone => "PHONE ACCESS", SoundOn => "APP SOUNDS",
         StartupSound => "LAUNCH SOUND", MenuEnabled=>"MENU BAR / TRAY ICON", MenuNames=>"SHOW TASK & FILE NAMES", MenuRecent=>"INCLUDE FINISHED ITEMS"
@@ -133,6 +133,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::ProgressSidebar(true) => "Show task progress beside tabs.", Hit::ProgressSidebar(false) => "Hide progress in the sidebar.",
         Hit::ProgressTaskbar(true) => "Show progress on the app icon.", Hit::ProgressTaskbar(false) => "Keep the app icon unchanged.",
         Hit::SshIntegration(true) => "Install hooks for remote commands.", Hit::SshIntegration(false) => "Leave remote shells unchanged.",
+        Hit::ForgeGit(true) => "Let git in every shell use this sign-in.", Hit::ForgeGit(false) => "Leave git's own credentials alone.",
         Hit::Selvedge(true) => "Letter the edge of shells that run elsewhere.", Hit::Selvedge(false) => "Draw remote shells like local ones.",
         Hit::Hands(HandsMode::Ask) => "Ask before assistant actions.", Hit::Hands(HandsMode::Always) => "Allow actions without asking.", Hit::Hands(HandsMode::Never) => "Prevent assistant actions.",
         Hit::HandsSubmit(true) => "Always ask before submitting forms.", Hit::HandsSubmit(false) => "Use the site's existing permission.",

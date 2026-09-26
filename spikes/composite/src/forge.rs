@@ -58,7 +58,7 @@ impl Kind {
     }
 
     /// The username git speaks the token with, over Basic auth.
-    fn git_user(self, login: &str) -> String {
+    pub(crate) fn git_user(self, login: &str) -> String {
         match self {
             Kind::GitHub => "x-access-token".into(),
             Kind::GitLab => "oauth2".into(),
@@ -483,6 +483,48 @@ impl Probe {
     pub fn result(&self) -> Option<Vec<Found>> {
         self.found.lock().ok().and_then(|g| g.clone())
     }
+}
+
+// ── git's credential helper ─────────────────────────────────────────────
+
+/// What `nus credential get` hands git for `host` (`github.com`): the
+/// signed-in forge's user and token, when that's where git is going.
+pub fn credential_for(host: &str) -> Option<(String, String)> {
+    let f = load()?;
+    if !host_name(&f.host).eq_ignore_ascii_case(host.trim()) {
+        return None;
+    }
+    Some((f.kind.git_user(&f.user), token()?))
+}
+
+/// The helper line git runs: the nus command beside the app, pointed at
+/// this instance. None when the command isn't there.
+pub fn helper_line() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let nus = exe.parent()?.join(if cfg!(windows) { "nus.exe" } else { "nus" });
+    if !nus.is_file() {
+        return None;
+    }
+    let inst = std::env::current_dir().ok()?.join("profile").join("instance");
+    let q = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''");
+    Some(format!("!NUS_INSTANCE='{}' '{}' credential", q(&inst), q(&nus)))
+}
+
+fn helper_key(host: &str) -> String {
+    format!("credential.{}.helper", host.trim_end_matches('/'))
+}
+
+/// Let git in every shell use this sign-in (on), or stop (off): nus's
+/// line added to, or taken out of, the global config for the forge's host.
+pub fn set_git_uses(host: &str, on: bool) -> Result<(), String> {
+    let key = helper_key(host);
+    // Out first, so turning it on twice doesn't add it twice.
+    let _ = quiet("git", &["config", "--global", "--unset-all", &key, "nus.*credential"], "", 5);
+    if !on {
+        return Ok(());
+    }
+    let line = helper_line().ok_or("the nus command isn't beside the app")?;
+    quiet("git", &["config", "--global", "--add", &key, &line], "", 5).map(|_| ()).ok_or_else(|| "git config didn't take it".to_string())
 }
 
 // ── The flow, on a worker ─────────────────────────────────────────────────
