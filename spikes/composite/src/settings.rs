@@ -4820,18 +4820,24 @@ impl App {
                     for (i, (name, caption, icon, hit)) in items.into_iter().enumerate() {
                         let x = cx + (i % per_row) as f32 * (card_w + gap);
                         let cy = y + cap_h + (i / per_row) as f32 * (self.px(94.0) + gap);
-                        let button = Rect::new(x, cy + self.px(6.0), card_w, self.px(40.0));
-                        let hot = button.contains(mx, my);
-                        scene.rect(Rect::new(button.x + self.px(3.0), button.y + self.px(3.0), button.w, button.h), ink);
-                        scene.rect(button, if hot { t.tint } else { t.paper });
+                        let rest = Rect::new(x, cy + self.px(6.0), card_w, self.px(40.0));
+                        let hot = rest.contains(mx, my);
+                        scene.rect(Rect::new(rest.x + self.px(3.0), rest.y + self.px(3.0), rest.w, rest.h), ink);
+                        // Hover presses the card halfway into its shadow. The tint is
+                        // translucent, so paper goes under it or the shadow shows through.
+                        let push = if hot { self.px(1.5) } else { 0.0 };
+                        let button = Rect::new(rest.x + push, rest.y + push, rest.w, rest.h);
+                        let x = button.x;
+                        scene.rect(button, t.paper);
+                        if hot { scene.rect(button, t.tint); }
                         scene.outline(button, self.px(m::STRUCTURE), ink);
                         self.fonts.draw_icon(scene, icon, self.px(16.0), x + self.px(10.0), button.y + self.px(12.0), ink);
                         let name = self.fit(label, &name, card_w - self.px(42.0));
                         self.fonts.draw(scene, label, x + self.px(34.0), button.y + self.px(24.0), &name);
                         for (line, text) in crate::reader::wrap(&self.fonts, dim, &caption, card_w).into_iter().take(3).enumerate() {
-                            self.fonts.draw(scene, dim, x, cy + self.px(63.0 + line as f32 * 12.0), &text);
+                            self.fonts.draw(scene, dim, rest.x, cy + self.px(63.0 + line as f32 * 12.0), &text);
                         }
-                        self.settings_hits.push((button, hit));
+                        self.settings_hits.push((rest, hit));
                     }
                 }
                 Control::Studio => {
