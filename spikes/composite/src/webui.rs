@@ -216,9 +216,22 @@ impl App {
         false
     }
 
+    /// Playing, or showing elsewhere: a tab whose page plays video or
+    /// sound (as Chromium's tracker reports it, or WebKit's for a protected
+    /// service) or whose video is up in picture in picture or pinned to a
+    /// shell is working, however long it is since you looked at it.
+    pub(crate) fn tab_working(&self, i: usize) -> bool {
+        let Some(tab) = self.tabs.get(i) else { return false };
+        if self.pip.as_ref().is_some_and(|p| p.tab_id == tab.id) || self.docked.as_ref().is_some_and(|d| d.src_tab == tab.id) {
+            return true;
+        }
+        std::iter::once(&tab.left).chain(tab.right.as_ref()).any(|p| matches!(p, Pane::Web(w) if w.asleep.is_none() && w.tab.playing()))
+    }
+
     /// Idle tabs: sleep pages after a while (blank them, keep the URL),
     /// archive them into "recently closed" after longer. Never the active
-    /// tab, never a pinned one, never a shell.
+    /// tab, never a pinned one, never a shell, never one that is working:
+    /// its idle time starts when the video or sound stops.
     pub(crate) fn tend_idle_tabs(&mut self) {
         if crate::clock::since(self.last_tend).as_secs() < 5 {
             return;
@@ -229,7 +242,12 @@ impl App {
         let archive_after = self.behavior.archive_after_h;
         let mut archive: Vec<usize> = Vec::new();
         let kept: Vec<String> = self.folders.iter().filter(|f| f.kind == crate::folders::Kind::Plain).flat_map(|f| f.items.iter().map(|i| i.url.clone())).collect();
+        let working: Vec<bool> = (0..self.tabs.len()).map(|i| self.tab_working(i)).collect();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
+            if working[i] {
+                tab.last_active = crate::clock::now();
+                continue;
+            }
             if i == self.active || tab.pinned {
                 continue;
             }

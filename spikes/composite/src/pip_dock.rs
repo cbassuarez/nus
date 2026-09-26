@@ -121,8 +121,20 @@ impl App {
         })
     }
 
+    /// A page WebKit shows for its protected video (webkit.rs): its picture
+    /// is never a texture nus could draw over a shell.
+    fn protected_source(&self, src: (u64, bool)) -> bool {
+        let Some(t) = self.tabs.iter().find(|t| t.id == src.0) else { return false };
+        let pane = if src.1 { t.right.as_ref() } else { Some(&t.left) };
+        matches!(pane, Some(Pane::Web(w)) if w.tab.shared.borrow().native.is_some())
+    }
+
     /// Pin the video of (`tab`, `right`) to `host`.
     pub(crate) fn dock_video(&mut self, src: (u64, bool), host: (u64, bool)) {
+        if self.protected_source(src) {
+            self.notice(icons::PIP, "Protected Video", "it plays in picture in picture, not over a shell");
+            return;
+        }
         let corner = self.docked.as_ref().map(|d| d.corner).unwrap_or(Corner::TopRight);
         let width = self.docked.as_ref().map(|d| d.width).unwrap_or(0.34);
         self.pip = None;
@@ -137,6 +149,10 @@ impl App {
     /// From the floating window into this tab's shell.
     pub(crate) fn dock_from_pip(&mut self) -> bool {
         let Some((tab, right)) = self.pip.as_ref().map(|p| (p.tab_id, p.right)) else { return false };
+        if self.protected_source((tab, right)) {
+            self.notice(icons::PIP, "Protected Video", "it plays in picture in picture, not over a shell");
+            return false;
+        }
         let Some(host) = self.dock_host() else {
             self.notice(icons::TERMINAL, "No Shell Here", "open a shell in this tab, then pin the video to it");
             return false;
@@ -156,7 +172,7 @@ impl App {
             self.notice(icons::TERMINAL, "No Shell Here", "open a shell in this tab, then pin the video to it");
             return;
         };
-        let playing = (0..self.tabs.len()).find_map(|i| self.playing_video(i).map(|right| (self.tabs[i].id, right)));
+        let playing = (0..self.tabs.len()).find_map(|i| self.playing_video(i).map(|right| (self.tabs[i].id, right)).filter(|src| !self.protected_source(*src)));
         match playing {
             Some(src) => self.dock_video(src, host),
             None => self.notice(icons::PIP, "No Video Playing", "start a video in a tab, then pin it"),
