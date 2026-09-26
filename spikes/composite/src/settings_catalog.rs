@@ -159,6 +159,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::Starter(_) => "Replace the tab and window rules.", Hit::ResetRules => "Replace rules with the defaults.", Hit::ReloadRules => "Read changes from the rules file.", Hit::OpenRules => "Edit the rules in a new tab.",
         Hit::MakeDefault => "Ask the OS to open links with nus.", Hit::Unregister => "Remove nus's browser registration.",
         Hit::Widevine => "Download the Widevine module for DRM video now.",
+        Hit::ForgetPasswords => "Delete every sign-in saved in this profile.",
         Hit::Welcome => "Open onboarding and the app guide.", Hit::SoundOn(true) => "Play sounds for app events.", Hit::SoundOn(false) => "Mute app event sounds.",
         _ => return None,
     }.into();

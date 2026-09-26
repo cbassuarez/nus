@@ -1082,6 +1082,8 @@ pub enum Hit {
     MakeDefault,
     Unregister,
     Widevine,
+    /// BROWSER · PASSWORDS: delete every saved sign-in.
+    ForgetPasswords,
     /// PROMPT LSP: GET or REMOVE a prompt language server (index into LSP_TOOLS).
     LspTool(usize),
     StartOnLaunch(bool),
@@ -1902,6 +1904,7 @@ impl App {
             Hit::Unregister => "unregister nus as a browser".into(),
             Hit::Widevine => "fetch the Widevine module now".into(),
             Hit::LspTool(i) => self.lsp_tool_words(i).1,
+            Hit::ForgetPasswords => "forget every saved password".into(),
             Hit::BarStyle(b) => format!("loading bar {}", b.name()),
             Hit::BarColor(c) => format!("bar color {:?}", c).to_lowercase(),
         }
@@ -2036,6 +2039,7 @@ impl App {
                     s.scroll = 0.0;
                 }
             }
+            Hit::ForgetPasswords => self.ask_forget_passwords(),
             Hit::LspTool(i) => {
                 if let Some((id, _)) = LSP_TOOLS.get(i) {
                     self.bundle_toggle(id);
@@ -4188,7 +4192,8 @@ impl App {
                 ("".into(), Info("Global Privacy Control (Sec-GPC: 1) and Do Not Track on every request · sites that honour it stop selling what they see; the rest ignore it".into())),
                 ("CLEAR".into(), Buttons(vec![("COOKIES · ALL SITES".into(), icons::WARNING, Hit::ClearBrowsing(0)), ("THE CACHE".into(), icons::RELOAD, Hit::ClearBrowsing(1))])),
                 ("".into(), Info("cookies: every site signs you out, the containers included · the cache: pages fetch fresh; nothing of yours is touched".into())),
-                ("PASSWORDS".into(), Info("No built-in password manager. Password integration is not available in this build.".into())),
+                ("PASSWORDS".into(), Info("When you sign in on a page, nus offers to save it; back on that page's sign-in form, Fill puts it in. Saved sign-ins stay in this profile, encrypted with its keychain key, and go only to the site they were saved for. Never in incognito.".into())),
+                ("".into(), Buttons(vec![("FORGET SAVED PASSWORDS".into(), icons::WARNING, Hit::ForgetPasswords)])),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
             7 => {

@@ -110,7 +110,7 @@ pub fn is_private_path(path: &Path) -> bool {
     };
     matches!(
         rel.to_str(),
-        Some("session.json" | "recent.json" | "memory.md" | "sync/key" | "sync/forge.token")
+        Some("session.json" | "recent.json" | "memory.md" | "sync/key" | "sync/forge.token" | "passwords.json")
     ) || ["journal", "replay", "hold"]
         .iter()
         .any(|dir| rel.starts_with(dir))

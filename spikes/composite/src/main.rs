@@ -3,6 +3,7 @@
 
 mod access;
 mod overscroll;
+mod passwords;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;
@@ -1123,6 +1124,7 @@ fn main() -> ExitCode {
             a.tend_updates();
             a.poll_deferred();
             a.poll_page_menus();
+            a.tend_passwords();
             a.tend_tree();
             a.tend_touch();
             a.poll_loop();

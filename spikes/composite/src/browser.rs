@@ -136,6 +136,11 @@ pub struct Shared {
     pub(crate) print_asked: bool,
     /// Wheel the page had no room for since nus last looked (overscroll.rs).
     pub(crate) overscroll: f32,
+    /// The page's JavaScript worlds by id, and the site each belongs to,
+    /// as Chromium reports them: where a password report came from.
+    pub(crate) contexts: std::collections::HashMap<i64, String>,
+    /// Password forms sent and found, for the app (passwords.rs).
+    pub(crate) passwords: Vec<crate::passwords::Report>,
     pub(crate) print_msg: Option<i32>,
     /// Where that PDF went, or why it didn't.
     pub print_saved: Option<Result<std::path::PathBuf, String>>,
@@ -1116,6 +1121,26 @@ wrap_dev_tools_message_observer! {
                 s.log.push(e);
                 return;
             }
+            match method.as_str() {
+                "Runtime.executionContextCreated" => {
+                    let c = v.get("context");
+                    let default = c.and_then(|c| c.pointer("/auxData/isDefault")).and_then(|d| d.as_bool()).unwrap_or(false);
+                    if let (true, Some(id), Some(origin)) = (default, c.and_then(|c| c.get("id")).and_then(|i| i.as_i64()), c.and_then(|c| c.get("origin")).and_then(|o| o.as_str())) {
+                        let mut s = self.o.shared.borrow_mut();
+                        if s.contexts.len() < 256 { s.contexts.insert(id, origin.to_string()); }
+                    }
+                    return;
+                }
+                "Runtime.executionContextDestroyed" => {
+                    if let Some(id) = v.get("executionContextId").and_then(|i| i.as_i64()) { self.o.shared.borrow_mut().contexts.remove(&id); }
+                    return;
+                }
+                "Runtime.executionContextsCleared" => {
+                    self.o.shared.borrow_mut().contexts.clear();
+                    return;
+                }
+                _ => {}
+            }
             if method != "Runtime.bindingCalled" {
                 return;
             }
@@ -1130,6 +1155,24 @@ wrap_dev_tools_message_observer! {
                     s.paints += 1;
                     crate::browser_runtime::wake();
                 }
+                return;
+            }
+            // A password form: the site is the context Chromium names, not the page's say.
+            if v.get("name").and_then(|n| n.as_str()) == Some("nusPassword") {
+                if crate::private::enabled() { return; }
+                let Some(context) = v.get("executionContextId").and_then(|i| i.as_i64()) else { return };
+                let payload = v.get("payload").and_then(|p| p.as_str()).filter(|p| p.len() < 8192).and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok());
+                let mut s = self.o.shared.borrow_mut();
+                let Some(origin) = s.contexts.get(&context).cloned() else { return };
+                let text = |k: &str| payload.as_ref().and_then(|p| p.get(k)).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let report = match text("kind").as_str() {
+                    "sent" if !text("pass").is_empty() => crate::passwords::Report::Sent { origin, user: text("user"), pass: text("pass") },
+                    "form" => crate::passwords::Report::Form { origin, context },
+                    _ => return,
+                };
+                if s.passwords.len() < 16 { s.passwords.push(report); }
+                s.paints += 1;
+                crate::browser_runtime::wake();
                 return;
             }
             if v.get("name").and_then(|n| n.as_str()) == Some("nusOverscroll") {
@@ -2081,6 +2124,11 @@ impl BrowserTab {
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusInterstitial" }));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusPrint" }));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusOverscroll" }));
+        if !crate::private::enabled() {
+            tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusPassword" }));
+            tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::passwords::JS }));
+            tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::passwords::JS }));
+        }
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": PRINT_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": PRINT_JS }));
@@ -2145,6 +2193,11 @@ impl BrowserTab {
     }
 
     /// Send a DevTools protocol command; returns its message id.
+    /// Fill a saved sign-in into the page world it was asked for.
+    pub fn fill_password(&self, context: i64, user: &str, pass: &str) {
+        self.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::passwords::fill_js(user, pass), "contextId": context, "silent": true }));
+    }
+
     /// BROWSER · SCROLLBARS · HIDDEN for this page, live.
     pub fn hide_scrollbars(&self, hidden: bool) {
         self.devtools("Emulation.setScrollbarsHidden", serde_json::json!({ "hidden": hidden }));

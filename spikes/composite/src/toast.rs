@@ -34,6 +34,12 @@ pub enum Act {
     RetryInstall(String),
     /// Install this tool (by bundle id), from a notice that it is missing.
     Install(String),
+    /// Save the sign-in a page just sent (passwords.rs).
+    SavePassword,
+    /// Fill the saved sign-in into the page that asked (passwords.rs).
+    FillPassword,
+    /// Delete every saved sign-in, confirmed (passwords.rs).
+    ForgetPasswords,
     /// Show this file in its folder.
     RevealPath(std::path::PathBuf),
     /// Hand an address to the app that owns its scheme (mailto:, zoommtg:).
@@ -53,6 +59,9 @@ impl Act {
             Act::OpenPort(_) => ("Open", crate::app::key("O", true)),
             Act::RetryInstall(_) => ("Retry", String::new()),
             Act::Install(_) => ("Get", String::new()),
+            Act::SavePassword => ("Save", String::new()),
+            Act::FillPassword => ("Fill", String::new()),
+            Act::ForgetPasswords => ("Forget", String::new()),
             Act::UndoHunk(..) => ("Undo", String::new()),
             Act::LeaveWebKit(..) => ("Open In Chromium", String::new()),
             Act::OpenExternal(_) => ("Open", String::new()),
@@ -260,6 +269,9 @@ impl App {
                 self.ports_act(&key, crate::ports::Act::Open);
             }
             Some(Act::RetryInstall(id) | Act::Install(id)) => self.bundle_toggle(&id),
+            Some(Act::SavePassword) => self.save_offered_password(),
+            Some(Act::FillPassword) => self.fill_offered_password(),
+            Some(Act::ForgetPasswords) => self.forget_passwords(),
             Some(Act::UndoHunk(hunk, what, cwd)) => self.undo_hunk(hunk, what, cwd),
             Some(Act::OpenExternal(url)) => crate::app::open_with_os(std::path::Path::new(&url)),
             Some(Act::RevealPath(path)) => crate::downloads::reveal(&path, true),

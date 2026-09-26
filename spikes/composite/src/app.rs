@@ -978,6 +978,8 @@ pub struct App {
     pub tile_drag: Option<crate::tiles::Grab>,
     /// The pointer is a resize arrow over a divider.
     pub resize_cursor: Option<crate::tiles::Divider>,
+    /// Sign-ins waiting on Save or Fill (passwords.rs).
+    pub passwords: crate::passwords::Offers,
     pub peek_anim: Anim,
     /// The compact column's hovered row, for its tooltip after the panes.
     pub compact_tip: Option<(usize, f32)>,
@@ -1360,6 +1362,7 @@ impl App {
             send_request: None,
             tile_drag: None,
             resize_cursor: None,
+            passwords: Default::default(),
             peek_anim: Anim::at(0.0),
             compact_tip: None,
             pane_hits: Vec::new(),
