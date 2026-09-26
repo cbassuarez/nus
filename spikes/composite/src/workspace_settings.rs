@@ -650,7 +650,7 @@ impl App {
                     }
                 ),
                 buttons(vec![(
-                    "Choose installed font",
+                    "Choose installed font or one from profile/fonts",
                     Hit::Edit(Field::Font(role)),
                 )]),
             ));

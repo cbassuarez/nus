@@ -1,4 +1,9 @@
 //! Bundled families and their real supplied weights; no synthetic emboldening.
+//!
+//! nus vendors its own faces, and nothing stops you using yours: any font
+//! installed on the computer, or a file dropped into `profile/fonts`
+//! (.ttf, .otf, .ttc), is chosen under INSTALLED. Its licence is between
+//! you and its foundry.
 use crate::app::App;
 use nus_render::FontId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
@@ -54,7 +59,20 @@ fn finite(v:f32,lo:f32,hi:f32,default:f32)->f32 {if v.is_finite(){v.clamp(lo,hi)
 impl Typography {
     pub fn normalize(&mut self){self.ui_scale=finite(self.ui_scale,0.85,1.2,1.0);self.terminal_size=finite(self.terminal_size,9.0,24.0,13.0);self.terminal_line=finite(self.terminal_line,1.0,1.8,1.0);self.terminal_spacing=finite(self.terminal_spacing,0.0,3.0,0.0);self.editor_size=finite(self.editor_size,9.0,24.0,13.0);self.editor_line=finite(self.editor_line,1.0,1.8,1.25);}
 }
+/// Fonts of your own, loaded without installing them.
+pub fn own_dir() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_default().join("profile").join("fonts")
+}
+
 impl App {
+    /// Pick up files dropped into `profile/fonts` since the last look.
+    pub(crate) fn load_own_fonts(&self) {
+        let added = self.fonts.add_font_dir(&own_dir());
+        if added > 0 {
+            tracing::info!("{added} font file(s) from profile/fonts");
+        }
+    }
+
     pub(crate) fn font_face(&mut self,family:Family,weight:Weight,system:&str)->FontId {
         let fallback=self.bundled_face(family,weight);
         if system.is_empty(){return fallback;}
@@ -65,6 +83,7 @@ impl App {
     }
     pub(crate) fn set_system_font(&mut self,role:u8,name:&str)->bool {
         if role>2{return false;}
+        self.load_own_fonts();
         if !name.is_empty(){
             let found=self.fonts.system_families().into_iter().find(|(n,_)|n.eq_ignore_ascii_case(name));
             let Some((family,mono))=found else{self.notice(nus_render::text::icons::TEXT_AA,"Font Not Installed","choose a family from the list");return false;};
@@ -81,6 +100,7 @@ impl App {
         self.font_cache.push((family,weight,id));id
     }
     pub(crate) fn apply_fonts(&mut self) {
+        self.load_own_fonts();
         self.behavior.typography.normalize();
         let config=self.behavior.typography.clone();
         self.f.ui=self.font_face(self.behavior.ui_font,self.behavior.ui_weight,&config.system[0]);
