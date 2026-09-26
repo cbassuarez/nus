@@ -11,6 +11,7 @@ mod shells;
 mod selvedge;
 mod git_state;
 mod scm;
+mod git_gutter;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;

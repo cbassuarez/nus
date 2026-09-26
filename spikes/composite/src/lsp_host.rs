@@ -343,6 +343,9 @@ impl App {
                 Ok(()) => {
                     b.dirty = false;
                     b.save_pending = None;
+                    if let Some(d) = path.parent() {
+                        crate::git_state::touch(&d.to_string_lossy());
+                    }
                     Ok((path, b.uri.clone(), text))
                 }
                 Err(err) => Err(err.to_string()),

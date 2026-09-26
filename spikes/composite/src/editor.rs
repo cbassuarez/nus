@@ -1814,6 +1814,8 @@ impl App {
                 })
                 .collect()
         };
+        // Against HEAD: added, changed, removed (git_gutter.rs).
+        let gmarks = b.path.as_deref().and_then(|p| crate::git_gutter::for_buffer(p, b.revision, &b.text));
         let wash = crate::surface::mix(paper, ink, 0.04);
         let sel_color = self.theme.selection;
         let match_color = fade(ansi(3), 0.25);
@@ -1844,6 +1846,15 @@ impl App {
                 mono_dim
             };
             fonts.draw(scene, ns, r.x + cw * 0.5, base, &num);
+            if let Some(mk) = gmarks.as_ref().and_then(|g| g.get(line).copied().flatten()) {
+                let bar = px(3.0);
+                match mk {
+                    crate::git_gutter::Mark::Added => scene.rect(Rect::new(r.x + px(2.0), ly, bar, ch), ansi(2)),
+                    crate::git_gutter::Mark::Changed => scene.rect(Rect::new(r.x + px(2.0), ly, bar, ch), ansi(4)),
+                    // A notch at the top of the line: lines went here.
+                    crate::git_gutter::Mark::Removed => scene.rect(Rect::new(r.x + px(2.0), ly - px(1.5), cw * 0.9, px(3.0)), ansi(1)),
+                }
+            }
             if let Some(&(_, _, sev, _, _)) = diags
                 .iter()
                 .find(|&&(_, _, _, l0, l1)| line >= l0 && line <= l1)
