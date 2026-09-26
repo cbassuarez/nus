@@ -478,6 +478,10 @@ pub struct Behavior {
     /// ssh profiles bring the shell integration to the remote.
     #[serde(default = "default_true")]
     pub ssh_integration: bool,
+    /// Letter the edge of a shell that runs somewhere else (selvedge.rs).
+    pub selvedge: bool,
+    /// Places whose names match one of these (`*` any run) are guarded.
+    pub guarded_places: Vec<String>,
     /// THEN · LAYOUT: which saved layout opens at launch.
     #[serde(default)]
     pub then_layout: String,
@@ -958,6 +962,8 @@ impl Default for Behavior {
             ask_ctx: default_ask_ctx(),
             then_layout: String::new(),
             ssh_integration: true,
+            selvedge: true,
+            guarded_places: vec!["*prod*".into()],
             shell_colours: ShellColours::Chip,
             shell_tint: crate::shell_colors::ShellTint::Random,
             grade: Grade::Aa,
@@ -1185,6 +1191,7 @@ pub enum Hit {
     AskCtx(crate::askctx::Ctx),
     ForgetMemory,
     SshIntegration(bool),
+    Selvedge(bool),
     TidyEvery(TidyEvery),
     Dedupe(bool),
     ShellColours(ShellColours),
@@ -1819,6 +1826,7 @@ impl App {
             Hit::AskCtx(c) => format!("ask context · {}", c.key()),
             Hit::ForgetMemory => "memory cleared".into(),
             Hit::SshIntegration(b) => if b { "ssh brings the integration".into() } else { "ssh as is".into() },
+            Hit::Selvedge(b) => if b { "shells elsewhere lettered".into() } else { "shells elsewhere plain".into() },
             Hit::TidyEvery(e) => format!("tidy {:?}", e).to_lowercase(),
             Hit::Dedupe(b) => if b { "dedupe bands on".into() } else { "dedupe bands off".into() },
             Hit::ShellColours(c) => format!("shell colors: {:?}", c).to_lowercase(),
@@ -2340,6 +2348,7 @@ impl App {
                 }
             }
             Hit::SshIntegration(b) => self.behavior.ssh_integration = b,
+            Hit::Selvedge(b) => self.behavior.selvedge = b,
             Hit::TidyEvery(e) => self.behavior.tidy_every = e,
             Hit::Dedupe(b) => self.behavior.dedupe = b,
             Hit::ShellColours(c) => self.behavior.shell_colours = c,
@@ -4073,14 +4082,19 @@ impl App {
                 ));
                 v.insert(10, ("".into(), Info("an ssh profile (from ~/.ssh/config, or nus ssh <host>) writes nus's bash and zsh scripts to ~/.cache/nus on the remote over the same connection and execs your shell with them: marks, cwd with the host, exit codes, progress · nothing to install there".into())));
                 v.insert(11, (
+                    "PLACES".into(),
+                    Choice(vec![("LETTER THE EDGE".into(), Hit::Selvedge(!self.behavior.selvedge), self.behavior.selvedge)]),
+                ));
+                v.insert(12, ("".into(), Info(format!("a shell over ssh, mosh or et, or in WSL, wears its place on the pane's edge like a man page: HOST(SSH) across the top in reverse video, where it is along the bottom · names matching {} are guarded: *** HOST *** GUARDED on red · edit guarded_places in settings.json", if self.behavior.guarded_places.is_empty() { "nothing".to_string() } else { self.behavior.guarded_places.join(", ") }))));
+                v.insert(13, (
                     "PROGRESS".into(),
                     Choice(vec![
                         ("SIDEBAR · CRUMB".into(), Hit::ProgressSidebar(!self.behavior.progress_sidebar), self.behavior.progress_sidebar),
                         ("TASKBAR".into(), Hit::ProgressTaskbar(!self.behavior.progress_taskbar), self.behavior.progress_taskbar),
                     ]),
                 ));
-                v.insert(12, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
-                v.insert(13, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
+                v.insert(14, ("REMOTE CONTROL".into(), Info(format!("the nus command drives this window: nus ls · open · edit · launch · send-text · focus · theme · look · ports · hatch · block · ask · the port and token are in profile/instance · rules can call nus.run(\"split\")"))));
+                v.insert(15, ("".into(), Info(format!("every command is a block: a lamp on its prompt (click to fold), {} walks them, {} folds and unfolds, {} twice selects one, {} filters by command; hover a block for share · run again · copy", key("↑↓", false), key("←→", true), key("A", false), key("/", true)))));
                 v.insert(3, (
                     "CLIPBOARD".into(),
                     Choice(vec![

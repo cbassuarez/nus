@@ -6516,7 +6516,10 @@ impl App {
                 }
                 // In a tunnel the page takes the tunnel's hue, faintly; the
                 // rails and the tag below say where it goes.
-                let tunnel = p.tunnel().map(|h| { let c = self.tunnel_color(&h); (h, c) });
+                // A shell somewhere else wears the place on its edge
+                // (selvedge.rs); with that off, the old tint and rails.
+                let place = self.pane_place(p);
+                let tunnel = if place.is_some() { None } else { p.tunnel().map(|h| { let c = self.tunnel_color(&h); (h, c) }) };
                 if let Some((_, c)) = &tunnel {
                     scene.rect(clip, fade(*c, 0.08));
                 }
@@ -6549,6 +6552,16 @@ impl App {
                 self.draw_blocks(scene, p, r, hh);
                 self.draw_term_overlays(scene, p, r, hh, focused, split);
                 self.draw_link_band(scene, p, r, hh);
+                if let Some(place) = &place {
+                    let down = p.pty.exit_code().is_some();
+                    let where_ = p.cwd.clone().unwrap_or_default();
+                    let footer = [
+                        format!("{} {}", place.kind.to_lowercase(), place.name),
+                        format!("{}\u{d7}{}", p.term.cols(), p.term.rows()),
+                        where_,
+                    ];
+                    self.draw_selvedge(scene, clip, place, down, footer);
+                }
                 if let Some((_, c)) = &tunnel {
                     // Rails: a heavy rule down each side and a hairline
                     // across the top, like a page set in a box.

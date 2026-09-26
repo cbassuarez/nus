@@ -17,7 +17,7 @@ fn switch(hit: Hit) -> Option<(&'static str, Hit, Hit, bool)> {
         PaneDivider => "RESIZE SPLIT PANES", Blocks => "COMMAND STATUS MARKERS", Journal => "REMEMBER COMMANDS I RUN",
         PortsRemember => "REMEMBER PORT LABELS", ClickToSource => "OPEN SOURCE FROM A PAGE", Remember => "REMEMBER OPEN TABS",
         HandsSubmit => "CONFIRM FORM SUBMISSION", ProgressSidebar => "SIDEBAR PROGRESS", ProgressTaskbar => "DOCK / TASKBAR PROGRESS",
-        SshIntegration => "SHELL INTEGRATION OVER SSH", Dedupe => "DUPLICATE PAGE NOTICE", SyncSession => "SYNC OPEN TABS",
+        SshIntegration => "SHELL INTEGRATION OVER SSH", Selvedge => "LETTER PLACE EDGES", Dedupe => "DUPLICATE PAGE NOTICE", SyncSession => "SYNC OPEN TABS",
         SyncAtQuit => "SYNC WHEN QUITTING", PortsToast => "NEW PORT NOTIFICATIONS", PortsProbe => "DETECT WEB SERVERS",
         HatchAutohide => "HIDE HATCH WHEN UNFOCUSED", HatchStatus => "COMPACT WORK STATUS", HatchBackground => "KEEP NUS IN BACKGROUND", HatchDim => "DIM BEHIND MODAL", HatchNotify => "COMPLETION NOTICES", Phone => "PHONE ACCESS", SoundOn => "APP SOUNDS",
         StartupSound => "LAUNCH SOUND", MenuEnabled=>"MENU BAR / TRAY ICON", MenuNames=>"SHOW TASK & FILE NAMES", MenuRecent=>"INCLUDE FINISHED ITEMS"
@@ -133,6 +133,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::ProgressSidebar(true) => "Show task progress beside tabs.", Hit::ProgressSidebar(false) => "Hide progress in the sidebar.",
         Hit::ProgressTaskbar(true) => "Show progress on the app icon.", Hit::ProgressTaskbar(false) => "Keep the app icon unchanged.",
         Hit::SshIntegration(true) => "Install hooks for remote commands.", Hit::SshIntegration(false) => "Leave remote shells unchanged.",
+        Hit::Selvedge(true) => "Letter the edge of shells that run elsewhere.", Hit::Selvedge(false) => "Draw remote shells like local ones.",
         Hit::Hands(HandsMode::Ask) => "Ask before assistant actions.", Hit::Hands(HandsMode::Always) => "Allow actions without asking.", Hit::Hands(HandsMode::Never) => "Prevent assistant actions.",
         Hit::HandsSubmit(true) => "Always ask before submitting forms.", Hit::HandsSubmit(false) => "Use the site's existing permission.",
         Hit::AskCtx(c) => return Some(c.words().replace('·', "—")),
@@ -173,7 +174,7 @@ impl App {
             let mut source = rows;
             let mut ordered = Vec::new();
             for (heading,names) in [
-                ("SHELLS", vec!["DEFAULT SHELL","SHELLS","SHELL INTEGRATION","KEEP ALIVE","SSH"]),
+                ("SHELLS", vec!["DEFAULT SHELL","SHELLS","SHELL INTEGRATION","KEEP ALIVE","SSH","PLACES"]),
                 ("COMMAND EDITING", vec!["COMMAND LINE","PROMPT LSP","LANGUAGE SERVERS","EDITOR","BLOCKS","CLICK LINKS"]),
                 ("CLIPBOARD & SCROLLING",vec!["CLIPBOARD","OSC 52","SCROLL","WHEEL","SCROLLBACK"]),
                 ("HISTORY & REPLAY",vec!["JOURNAL","CUT OFF","REPLAY"]),
@@ -192,6 +193,7 @@ impl App {
                         "SHELL INTEGRATION"=>Some("Applies to new shells. Tracks the current folder, commands and exit codes so command navigation and status markers can work."),
                         "KEEP ALIVE"=>Some("Applies to new shells. Requires the nus-hold helper; existing shells keep the behavior they started with."),
                         "SSH"=>Some("When enabled, new SSH sessions copy shell integration scripts to ~/.cache/nus on the remote machine."),
+                        "PLACES"=>Some("A shell that runs somewhere else (ssh, mosh, et, WSL) is lettered on its edge, so it reads as elsewhere without relying on colour. Names matching guarded_places (in settings.json; *prod* to start) get a red GUARDED banner."),
                         "PROMPT LSP"=>Some("A language server reads the command line as you type: Quiet underlines a problem and ghosts a completion (Tab accepts); Menu lists completions under the caret. It needs the server for your shell, below."),
                         "LANGUAGE SERVERS"=>Some("bash-language-server reads bash and zsh; PowerShell Editor Services reads PowerShell. GET installs one into this profile (a folder under profile/tools you can delete); shells pick it up without restarting."),
                         "EDITOR"=>Some("Formatting needs a formatter for the file type. When none is installed, the file is saved unchanged."),

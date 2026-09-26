@@ -8,6 +8,7 @@ mod profile_orbit;
 mod real_pics;
 mod git_complete;
 mod shells;
+mod selvedge;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;
