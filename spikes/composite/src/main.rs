@@ -121,6 +121,7 @@ mod news;
 mod diffs;
 mod phone;
 mod private;
+mod widevine;
 mod security;
 mod secrets;
 mod protected_state;

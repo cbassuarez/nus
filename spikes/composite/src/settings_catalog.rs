@@ -28,7 +28,7 @@ pub(super) fn is_action(hit: Hit) -> bool {
     matches!(hit, Hit::Workspace(_) | Hit::Play(_) | Hit::MeEdit(_) | Hit::MeCard | Hit::MeFolder | Hit::MeForget | Hit::MeWalk(_) |
         Hit::SyncKey | Hit::SyncEdit(_) | Hit::SyncForget | Hit::SyncNow | Hit::ForgeForget |
         Hit::CopyPhoneUrl | Hit::HandsForget | Hit::ForgetMemory | Hit::PortsHidden | Hit::Starter(_) |
-        Hit::Search | Hit::FooterDefaults | Hit::PlaceEdit | Hit::Welcome | Hit::MenuPreview | Hit::MenuMove(..) | Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister |
+        Hit::Search | Hit::FooterDefaults | Hit::PlaceEdit | Hit::Welcome | Hit::MenuPreview | Hit::MenuMove(..) | Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine |
         Hit::ReloadAvatar | Hit::OpenProfileDir | Hit::Section(_))
 }
 
@@ -158,6 +158,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::HandsForget => "Clear remembered site permissions.", Hit::ForgetMemory => "Delete saved assistant memory.", Hit::PortsHidden => "Reset the hidden process list.",
         Hit::Starter(_) => "Replace the tab and window rules.", Hit::ResetRules => "Replace rules with the defaults.", Hit::ReloadRules => "Read changes from the rules file.", Hit::OpenRules => "Edit the rules in a new tab.",
         Hit::MakeDefault => "Ask the OS to open links with nus.", Hit::Unregister => "Remove nus's browser registration.",
+        Hit::Widevine => "Download the Widevine module for DRM video now.",
         Hit::Welcome => "Open onboarding and the app guide.", Hit::SoundOn(true) => "Play sounds for app events.", Hit::SoundOn(false) => "Mute app event sounds.",
         _ => return None,
     }.into();

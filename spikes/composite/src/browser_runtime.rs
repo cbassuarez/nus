@@ -136,6 +136,9 @@ pub fn ensure() -> bool {
     ) == 1;
     if ok {
         READY.store(true, Ordering::Release);
+        // Streaming sites need the Widevine CDM, which Chromium installs on
+        // its own schedule minutes after launch; ask for it now.
+        crate::widevine::fetch();
         crate::perf::startup(crate::perf::StartupMark::CefReady);
         crate::perf::record(
             "browser_initialization",

@@ -8471,6 +8471,13 @@ impl App {
     }
 
     pub(crate) fn open_url(&mut self, url: &str, new_tab: bool) {
+        // Chromium's own settings pages do not exist in nus's pages (they
+        // load forever); protected content and the rest live in nus's.
+        if crate::widevine::is_chrome_settings(url) {
+            self.open_settings_at(crate::settings::SEC_BROWSER, None);
+            self.notice(nus_render::text::icons::GLOBE, "Browser Settings", "chrome://settings lives here in nus · protected content is under PROTECTED CONTENT");
+            return;
+        }
         if new_tab {
             if let Some(w) = self.new_web_pane(url) {
                 let tab = self.make_tab(Pane::Web(w), None);
