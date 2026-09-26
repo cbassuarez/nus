@@ -902,6 +902,9 @@ pub struct App {
     pub sidebar_hover: bool,
     pub sidebar_leave: Option<Instant>,
     pub hover_row: Option<usize>,
+    /// The row the pointer rests on, and since when: a sleeping page there
+    /// starts waking before the click (webui.rs).
+    pub hover_wake: Option<(usize, Instant)>,
     /// How far the sidebar's list is scrolled (physical px), when the
     /// rows and folders outgrow the space between the header and the footer.
     pub sidebar_scroll: f32,
@@ -1328,6 +1331,7 @@ impl App {
             sidebar_hover: false,
             sidebar_leave: None,
             hover_row: None,
+            hover_wake: None,
             sidebar_scroll: 0.0,
             pins: Default::default(),
             glides: Default::default(),
@@ -2344,6 +2348,7 @@ impl App {
         }
         self.tend_idle_tabs();
         self.tend_swipe();
+        self.prewake();
         self.welcome_tick();
         if self.paste_request {
             self.paste_request = false;

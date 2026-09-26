@@ -10,11 +10,13 @@ use nus_render::{Rect, Scene};
 use crate::app::{fade, App, Pane, WebPane};
 use crate::interstitial::{Kind, Page, Sev};
 
-/// The waking transcript stands until the woken page has painted.
+/// The waking transcript stands until the woken page paints a document
+/// of its own — its first paint, not the end of its load: the rest of
+/// the page arrives in view, the way a page you opened does.
 pub(crate) fn settle_waking(w: &mut WebPane) {
     let mut s = w.tab.shared.borrow_mut();
     let waking = s.overlay.as_ref().is_some_and(|o| o.kind == Kind::Sleep && o.acts.is_empty());
-    if waking && s.bind.is_some() && !s.loading {
+    if waking && s.bind.is_some() && (s.painted_committed || !s.loading) {
         s.overlay = None;
         s.paints += 1;
     }

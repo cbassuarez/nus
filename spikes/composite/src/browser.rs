@@ -138,6 +138,9 @@ pub struct Shared {
     pub(crate) letting_go: bool,
     /// The page has shown a document of its own (not only a download).
     pub(crate) committed: bool,
+    /// A paint has arrived since the main document committed: the page
+    /// shows something of its own (a woken page is shown from then).
+    pub(crate) painted_committed: bool,
     /// Made by Chromium for a popup, waiting for its browser.
     pub(crate) created_by_chromium: bool,
     /// The page called `window.print()`: there is no print dialog for a
@@ -967,6 +970,7 @@ wrap_render_handler! {
                         s.select.bind = Some(bind);
                     } else {
                         s.bind = Some(bind);
+                        if s.committed { s.painted_committed = true; }
                         s.paint_size = (texture.width(), texture.height());
                         if s.paints == 0 {
                             tracing::info!("first paint +{}ms", s.created.elapsed().as_millis());
