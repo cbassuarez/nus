@@ -84,19 +84,23 @@ impl Contract {
 fn fail(s: &str) -> io::Error {
     io::Error::other(s)
 }
-fn ordinary(path: &Path) -> io::Result<()> {
-    let m = fs::symlink_metadata(path)?;
-    if m.file_type().is_symlink() {
-        return Err(fail(
-            "PROFILE_LINK: profile paths must not be symbolic links",
-        ));
-    }
+/// A symbolic link, or on Windows any reparse point (junctions included).
+fn is_link(m: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         if m.file_attributes() & 0x400 != 0 {
-            return Err(fail("PROFILE_LINK: reparse points are not supported"));
+            return true;
         }
+    }
+    m.file_type().is_symlink()
+}
+fn ordinary(path: &Path) -> io::Result<()> {
+    if is_link(&fs::symlink_metadata(path)?) {
+        return Err(fail(&format!(
+            "PROFILE_LINK: profile paths must not be symbolic links ({})",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -326,8 +330,14 @@ fn copy_tree(src: &Path, dst: &Path, budget: &mut u64, depth: u32) -> io::Result
         {
             continue;
         }
-        ordinary(&entry.path())?;
-        let meta = entry.metadata()?;
+        // Links inside the profile are never followed and are not state:
+        // Chromium keeps its own (SingletonLock, RunningChromeVersion...) in
+        // the root it is given, which is this profile. Sockets and pipes
+        // are runtime-only too.
+        let meta = fs::symlink_metadata(entry.path())?;
+        if is_link(&meta) || !(meta.is_dir() || meta.is_file()) {
+            continue;
+        }
         let to = dst.join(name);
         if meta.is_dir() {
             copy_tree(&entry.path(), &to, budget, depth + 1)?;
@@ -346,8 +356,6 @@ fn copy_tree(src: &Path, dst: &Path, budget: &mut u64, depth: u32) -> io::Result
                 return Err(fail("Profile changed while making its recovery generation"));
             }
             dest.sync_all()?;
-        } else {
-            return Err(fail("Profile contains a non-regular file"));
         }
     }
     #[cfg(unix)]
@@ -387,6 +395,46 @@ mod tests {
         assert_eq!(
             fs::read_to_string(d.path().join("profile/settings.json")).unwrap(),
             r#"{"schema":999}"#
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn links_inside_the_profile_do_not_block_an_upgrade() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let g = Guard::acquire(d.path()).unwrap();
+        g.open(&contract("0.8.0")).unwrap();
+        let profile = d.path().join("profile");
+        fs::write(profile.join("notes"), b"kept").unwrap();
+        // What Chromium leaves in its user-data root on macOS and Linux.
+        symlink("140.0.7339.0", profile.join("RunningChromeVersion")).unwrap();
+        fs::create_dir(profile.join("Default")).unwrap();
+        symlink("/nonexistent", profile.join("Default/link")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret"), b"not ours").unwrap();
+        symlink(outside.path(), profile.join("elsewhere")).unwrap();
+        let id = g.open(&contract("0.9.0")).unwrap().unwrap();
+        let saved = d.path().join("generations").join(id).join("profile");
+        assert_eq!(fs::read(saved.join("notes")).unwrap(), b"kept");
+        for link in ["RunningChromeVersion", "Default/link", "elsewhere"] {
+            assert!(
+                fs::symlink_metadata(saved.join(link)).is_err(),
+                "{link} was copied"
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_profile_folder_is_still_refused_by_name() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        symlink(real.path(), d.path().join("profile")).unwrap();
+        let g = Guard::acquire(d.path()).unwrap();
+        let e = g.open(&contract("0.8.0")).unwrap_err().to_string();
+        assert!(
+            e.starts_with("PROFILE_LINK") && e.contains("profile"),
+            "{e}"
         );
     }
     #[test]
@@ -441,12 +489,13 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         let g = Guard::acquire(d.path()).unwrap();
         g.open(&contract("0.8.0")).unwrap();
+        fs::write(outside.path().join("file"), b"outside").unwrap();
         std::os::unix::fs::symlink(outside.path(), d.path().join("profile/project")).unwrap();
-        assert!(g.open(&contract("0.9.0")).is_err());
-        assert_eq!(
-            read(&d.path().join("profile")).unwrap().unwrap().version,
-            "0.8.0"
-        );
+        let id = g.open(&contract("0.9.0")).unwrap().unwrap();
+        let saved = d.path().join("generations").join(id).join("profile");
+        assert!(fs::symlink_metadata(saved.join("project")).is_err());
+        assert_eq!(fs::read(outside.path().join("file")).unwrap(), b"outside");
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
     }
     #[test]
     fn interrupted_restore_finishes_without_discarding_either_profile() {
