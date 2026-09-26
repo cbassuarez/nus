@@ -158,6 +158,13 @@ pub enum Hit {
     StashPop,
     UndoCommit,
     OpenFile(usize),
+    /// A conflicted file: take our side, theirs, or mark it resolved.
+    Ours(usize),
+    Theirs(usize),
+    Resolved(usize),
+    /// The merge, rebase or pick under way: go on, or give up (asks twice).
+    Continue,
+    Abort,
 }
 
 pub struct Scm {
@@ -368,7 +375,7 @@ impl App {
         let files = snap.as_ref().map(|s| s.files.clone()).unwrap_or_default();
         let row = |i: usize| files.get(i).cloned();
         // A destructive action needs its second press.
-        let destructive = matches!(hit, Hit::Discard(_) | Hit::UndoCommit);
+        let destructive = matches!(hit, Hit::Discard(_) | Hit::UndoCommit | Hit::Abort | Hit::Ours(_) | Hit::Theirs(_));
         if destructive && self.scm.confirm != Some(hit) {
             self.scm.confirm = Some(hit);
             self.dirty = true;
@@ -441,6 +448,35 @@ impl App {
             Hit::Stash => self.scm.run("stash", vec![a(&["stash", "push", "--include-untracked"])]),
             Hit::StashPop => self.scm.run("pop the stash", vec![a(&["stash", "pop"])]),
             Hit::UndoCommit => self.scm.run("undo the last commit (changes kept)", vec![a(&["reset", "--soft", "HEAD~1"])]),
+            Hit::Ours(i) | Hit::Theirs(i) => {
+                if let Some(r) = row(i) {
+                    let side = if matches!(hit, Hit::Ours(_)) { "--ours" } else { "--theirs" };
+                    self.scm.run(&format!("take {} for {}", &side[2..], r.path), vec![a(&["checkout", side, "--", &r.path]), a(&["add", "--", &r.path])]);
+                }
+            }
+            Hit::Resolved(i) => {
+                if let Some(r) = row(i) {
+                    self.scm.run(&format!("mark {} resolved", r.path), vec![a(&["add", "--", &r.path])]);
+                }
+            }
+            Hit::Continue | Hit::Abort => {
+                let op = snap.as_ref().and_then(|s| s.state.op).unwrap_or("");
+                let verb = match op {
+                    "REBASING" => "rebase",
+                    "CHERRY-PICKING" => "cherry-pick",
+                    "REVERTING" => "revert",
+                    "MERGING" => "merge",
+                    _ => "",
+                };
+                if !verb.is_empty() {
+                    let cmd = match (hit, verb) {
+                        (Hit::Abort, v) => a(&[v, "--abort"]),
+                        (_, "merge") => a(&["commit", "--no-edit"]),
+                        (_, v) => a(&["-c", "core.editor=true", v, "--continue"]),
+                    };
+                    self.scm.run(&format!("{} the {verb}", if hit == Hit::Abort { "abort" } else { "continue" }), vec![cmd]);
+                }
+            }
             Hit::OpenFile(i) => {
                 if let (Some(r), Some(s)) = (row(i), snap.as_ref()) {
                     let p = std::path::Path::new(&s.state.root).join(&r.path);
@@ -628,6 +664,18 @@ impl App {
             let on = self.on_fill(self.surface.signal);
             let words = if s.state.conflicts > 0 { format!("{op} · {} CONFLICT{} · RESOLVE, STAGE, THEN COMMIT", s.state.conflicts, if s.state.conflicts == 1 { "" } else { "S" }) } else { format!("{op} · STAGE, THEN COMMIT TO FINISH") };
             self.fonts.draw(scene, Style { color: on, ..strong }, band.x + pad, band.y + self.px(18.0), &words);
+            // CONTINUE and ABORT (twice), in the band's own colours.
+            let mut bx3 = band.right() - pad;
+            let abort = if self.scm.confirm == Some(Hit::Abort) { "ABORT? AGAIN" } else { "ABORT" };
+            for (word, hit) in [(abort, Hit::Abort), ("CONTINUE", Hit::Continue)] {
+                let ww = self.fonts.measure(strong, word) + self.px(16.0);
+                bx3 -= ww;
+                let br = Rect::new(bx3, band.y + self.px(4.0), ww, band.h - self.px(8.0));
+                scene.outline(br, self.px(m::HAIRLINE), on);
+                self.fonts.draw(scene, Style { color: on, ..strong }, br.x + self.px(8.0), band.y + self.px(18.0), word);
+                self.scm.hits.push((br, hit));
+                bx3 -= self.px(8.0);
+            }
             body_top = band.bottom();
         }
 
@@ -712,7 +760,17 @@ impl App {
             let toggle = if f.group == Group::Staged { "UNSTAGE" } else { "STAGE" };
             let discard_armed = self.scm.confirm == Some(Hit::Discard(i));
             let discard = if discard_armed { "DISCARD? AGAIN" } else { "DISCARD" };
-            for (word, hit, color) in [(toggle, Hit::Toggle(i), ink), (discard, Hit::Discard(i), if discard_armed { self.surface.signal } else { t.dim })] {
+            let armed = |h: Hit| self.scm.confirm == Some(h);
+            let acts: Vec<(&str, Hit, nus_render::Color)> = if f.group == Group::Conflict {
+                vec![
+                    ("RESOLVED", Hit::Resolved(i), ink),
+                    (if armed(Hit::Theirs(i)) { "THEIRS? AGAIN" } else { "THEIRS" }, Hit::Theirs(i), if armed(Hit::Theirs(i)) { self.surface.signal } else { t.dim }),
+                    (if armed(Hit::Ours(i)) { "OURS? AGAIN" } else { "OURS" }, Hit::Ours(i), if armed(Hit::Ours(i)) { self.surface.signal } else { t.dim }),
+                ]
+            } else {
+                vec![(toggle, Hit::Toggle(i), ink), (discard, Hit::Discard(i), if discard_armed { self.surface.signal } else { t.dim })]
+            };
+            for (word, hit, color) in acts {
                 let ww = self.fonts.measure(label, word);
                 ax -= ww;
                 self.fonts.draw(scene, Style { color, ..label }, ax, base, word);
@@ -977,6 +1035,38 @@ mod tests {
         let diff = read_diff(&d, &FileRow { path: "a.txt".into(), mark: 'M', group: Group::Changed });
         assert!(diff.iter().any(|l| l == "+two"), "{diff:?}");
         assert_eq!(crate::git_state::get(&d), None, "first ask starts a read");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real merge conflict: the row is a conflict, the repository says MERGING.
+    #[test]
+    fn sees_a_real_conflict() {
+        if git(".", &["--version"]).is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nus-scm-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git").args(args).current_dir(&dir)
+                .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
+                .output().unwrap().status.success()
+        };
+        assert!(run(&["init", "-q", "-b", "main"]));
+        std::fs::write(dir.join("c.txt"), "base\n").unwrap();
+        assert!(run(&["add", "."]) && run(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", "base"]));
+        assert!(run(&["switch", "-q", "-c", "other"]));
+        std::fs::write(dir.join("c.txt"), "theirs\n").unwrap();
+        assert!(run(&["-c", "commit.gpgsign=false", "commit", "-q", "-am", "theirs"]));
+        assert!(run(&["switch", "-q", "main"]));
+        std::fs::write(dir.join("c.txt"), "ours\n").unwrap();
+        assert!(run(&["-c", "commit.gpgsign=false", "commit", "-q", "-am", "ours"]));
+        assert!(!run(&["merge", "-q", "other"]), "the merge should conflict");
+        let s = read_snap(&d).expect("a repository");
+        assert_eq!(s.state.op, Some("MERGING"));
+        assert_eq!(s.state.conflicts, 1);
+        assert!(s.files.iter().any(|f| f.path == "c.txt" && f.group == Group::Conflict));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
