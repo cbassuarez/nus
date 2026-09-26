@@ -693,6 +693,83 @@ impl App {
         self.save_prefs();
         self.dirty = true;
     }
+    /// CHOOSE MODEL: a dropdown of the models this provider has set up,
+    /// under its button; the last row types one instead.
+    pub(crate) fn choose_model(&mut self, id: u8) {
+        let current = self.behavior.assistants.providers[id as usize].model.clone();
+        let mut rows: Vec<(String, Option<String>, bool)> = vec![(
+            match id { 0 => "Auto · follows intelligence", 1 => "Provider default", _ => "None chosen" }.into(),
+            Some(String::new()),
+            id != 2,
+        )];
+        let models = self.known_models(id);
+        if id == 2 && models.is_empty() {
+            let why = if self.assistants.entries[2].checked { "No models pulled · ollama pull <name>" } else { "Check connections to list models" };
+            rows.push((why.into(), None, false));
+        }
+        for m in models {
+            rows.push((m.clone(), Some(m), true));
+        }
+        if !current.is_empty() && !rows.iter().any(|(_, v, _)| v.as_deref() == Some(current.as_str())) {
+            rows.push((current.clone(), Some(current.clone()), true));
+        }
+        rows.push(("Other model…".into(), None, true));
+        let at_row = rows.iter().position(|(_, v, on)| *on && v.as_deref() == Some(current.as_str()));
+        let hit = crate::settings::Hit::Workspace(crate::settings::workspace::Hit::Edit(Field::Model(id)));
+        let at = self.settings_hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| (r.x, r.bottom() + self.px(4.0))).unwrap_or(self.mouse);
+        self.open_choose_menu(Field::Model(id), at, rows, at_row);
+    }
+
+    /// The models a provider has here: Claude's aliases and its settings,
+    /// Codex's cached list and config, what Ollama has pulled.
+    fn known_models(&self, id: u8) -> Vec<String> {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
+        let mut out: Vec<String> = Vec::new();
+        let mut add = |m: &str| {
+            let m = m.trim();
+            if !m.is_empty() && m.len() < 120 && !out.iter().any(|x| x == m) {
+                out.push(m.to_string());
+            }
+        };
+        match id {
+            0 => {
+                for m in crate::intelligence::CLAUDE_MODELS.iter().filter(|m| !m.is_empty()) {
+                    add(m);
+                }
+                if let Some(v) = std::fs::read_to_string(home.join(".claude/settings.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+                    if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+                        add(m);
+                    }
+                }
+            }
+            1 => {
+                let codex = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".codex"));
+                if let Some(v) = std::fs::read_to_string(codex.join("models_cache.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+                    let list = v.get("models").and_then(|m| m.as_array()).cloned().or_else(|| v.as_array().cloned()).unwrap_or_default();
+                    for m in list {
+                        if let Some(s) = m.as_str().or_else(|| m.get("slug").and_then(|s| s.as_str())).or_else(|| m.get("id").and_then(|s| s.as_str())) {
+                            add(s);
+                        }
+                    }
+                }
+                if let Ok(text) = std::fs::read_to_string(codex.join("config.toml")) {
+                    for line in text.lines() {
+                        let line = line.trim();
+                        if let Some(rest) = line.strip_prefix("model").map(str::trim_start).and_then(|r| r.strip_prefix('=')) {
+                            add(rest.trim().trim_matches('"'));
+                        }
+                    }
+                }
+            }
+            _ => {
+                for m in &self.assistants.entries[2].models {
+                    add(m);
+                }
+            }
+        }
+        out
+    }
+
     pub(crate) fn edit_preference(&mut self, field: Field) {
         let value = match field {
             Field::Model(id) => self.behavior.assistants.providers[id as usize]

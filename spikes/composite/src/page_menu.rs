@@ -21,6 +21,9 @@ pub enum Source {
     Page(cef::RunContextMenuCallback),
     Media(Vec<Media>),
     Reading { entry: String, actions: Vec<Option<crate::library::MenuAction>> },
+    /// A dropdown from a settings button: each row's value (None types
+    /// one instead), and which row is the current one.
+    Choose { field: crate::assistants::Field, values: Vec<Option<String>>, current: Option<usize> },
 }
 
 pub struct PageMenu {
@@ -90,6 +93,16 @@ impl App {
         let items = rows.into_iter().enumerate().map(|(i, (action, label, enabled))|
             (i as i32, label, enabled && action.is_some())).collect();
         self.show_context_menu(PageMenu::new(id, right, at, items, Source::Reading { entry, actions }));
+    }
+
+    /// A dropdown under a settings button: `rows` are (label, value), a
+    /// None value asks for one to be typed.
+    pub(crate) fn open_choose_menu(&mut self, field: crate::assistants::Field, at: (f32, f32), rows: Vec<(String, Option<String>, bool)>, current: Option<usize>) {
+        let Some(tab) = self.tabs.get(self.active) else { return; };
+        let (id, right) = (tab.id, tab.focus_right && tab.right.is_some());
+        let items = rows.iter().enumerate().map(|(i, (label, _, on))| (i as i32, label.clone(), *on)).collect();
+        let values = rows.into_iter().map(|(_, v, _)| v).collect();
+        self.show_context_menu(PageMenu::new(id, right, at, items, Source::Choose { field, values, current }));
     }
 
     pub(crate) fn poll_page_menus(&mut self) {
@@ -184,6 +197,11 @@ impl App {
                 if let Some(action) = usize::try_from(id).ok().and_then(|i| actions.get(i)).copied().flatten() {
                     self.library_menu_action(&entry, action, menu.at);
                 }
+            },
+            Source::Choose { field, values, .. } => match usize::try_from(id).ok().and_then(|i| values.get(i)) {
+                Some(Some(value)) => self.set_preference(field, value),
+                Some(None) => self.edit_preference(field),
+                None => {}
             },
         }
         self.dirty = true;
@@ -281,6 +299,7 @@ impl App {
             .and_then(|t| if menu.right { t.right.as_ref() } else { Some(&t.left) })
             .is_some_and(|pane| match &menu.source {
                 Source::Reading { .. } => matches!(pane, Pane::Home(h) if h.library),
+                Source::Choose { .. } => matches!(pane, Pane::Settings(_)),
                 Source::Page(_) | Source::Media(_) => matches!(pane, Pane::Web(w) if w.reader.is_none()),
             })
     }
@@ -304,6 +323,7 @@ impl App {
             use nus_render::text::icons;
             match &menu.source {
                 Source::Media(_) => Some(icons::DOWNLOAD),
+                Source::Choose { current, .. } => (usize::try_from(*id).ok() == *current).then_some(icons::CHECK),
                 Source::Reading { actions, .. } => {
                     use crate::library::MenuAction;
                     match usize::try_from(*id).ok().and_then(|i| actions.get(i)).copied().flatten() {

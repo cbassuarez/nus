@@ -175,6 +175,7 @@ impl App {
             Hit::Default(i) => self.behavior.ask_backend = assistants::BINS[i as usize].into(),
             Hit::Draft(i) => self.draft_assistant(i, ""),
             Hit::Setup(i, k) => self.assistant_setup(i, k),
+            Hit::Edit(Field::Model(i)) => self.choose_model(i),
             Hit::Edit(f) => self.edit_preference(f),
             Hit::Memory => self.assistant_memory(),
             Hit::Template(k) => {
