@@ -8,6 +8,10 @@
 //! root at its end and nothing under the pointer left to scroll that way,
 //! and `overscroll-behavior` not `none`. nus moves the drawn page, so the
 //! page's own layout, fixed bars and scroll position never change.
+//!
+//! Sideways, the same report (`x` and the distance) is what lets a swipe
+//! go back or forward (swipe.rs): a wheel something on the page could
+//! still scroll is the page's, never a navigation.
 use std::time::Instant;
 
 /// Injected into every document with the other page scripts.
@@ -17,11 +21,23 @@ const scrolls=(el,dy)=>{const s=getComputedStyle(el);
  if(!/(auto|scroll|overlay)/.test(s.overflowY)||el.scrollHeight<=el.clientHeight+1)return 0;
  if(dy<0?el.scrollTop>0:el.scrollTop+el.clientHeight<el.scrollHeight-1)return 1;
  return s.overscrollBehaviorY==='auto'?0:1};
+const scrollsX=(el,dx)=>{const s=getComputedStyle(el);
+ if(!/(auto|scroll|overlay)/.test(s.overflowX)||el.scrollWidth<=el.clientWidth+1)return 0;
+ const left=Math.abs(el.scrollLeft);
+ if(dx<0?left>0:left+el.clientWidth<el.scrollWidth-1)return 1;
+ return s.overscrollBehaviorX==='auto'?0:1};
 addEventListener('wheel',e=>{try{
  if(e.defaultPrevented||e.ctrlKey)return;
- const dy=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?innerHeight:1);
- if(!dy||Math.abs(e.deltaX)>Math.abs(dy))return;
+ const unit=e.deltaMode===1?16:e.deltaMode===2?innerHeight:1;
+ const dy=e.deltaY*unit,dx=e.deltaX*unit;
  const html=document.documentElement,body=document.body;
+ if(dx&&Math.abs(dx)>Math.abs(dy)){
+  for(let el=e.target instanceof Element?e.target:null;el&&el!==html&&el!==body;el=el.parentElement||(el.getRootNode()&&el.getRootNode().host)||null){if(scrollsX(el,dx))return}
+  if([html,body].some(el=>el&&getComputedStyle(el).overscrollBehaviorX==='none'))return;
+  const root=document.scrollingElement||html,left=Math.abs(root.scrollLeft);
+  if(dx<0?left<=0:left+innerWidth>=root.scrollWidth-1)nusOverscroll('x'+dx);
+  return}
+ if(!dy)return;
  for(let el=e.target instanceof Element?e.target:null;el&&el!==html&&el!==body;el=el.parentElement||(el.getRootNode()&&el.getRootNode().host)||null){if(scrolls(el,dy))return}
  if([html,body].some(el=>el&&getComputedStyle(el).overscrollBehaviorY==='none'))return;
  const root=document.scrollingElement||html;

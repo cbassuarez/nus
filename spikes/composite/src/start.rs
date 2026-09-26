@@ -71,6 +71,8 @@ pub struct SavedTab {
     pub emoji: Option<String>,
     /// A colour the user chose, as #rrggbb.
     pub colour: Option<String>,
+    /// …or one of the theme's shell family, by slot (tab menu).
+    pub picked: Option<u8>,
     /// The page's container (pages only).
     pub container: Option<String>,
     /// Lives in the hatch.
@@ -152,6 +154,7 @@ impl SavedTab {
                     "name": t.name,
                     "emoji": t.emoji,
                     "colour": t.colour,
+                    "picked": t.picked,
                     "container": t.container,
                     "split": t.split,
                     "shell_slot": t.shell_slot,
@@ -190,6 +193,7 @@ impl Session {
                 name: t.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 emoji: t.get("emoji").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 colour: t.get("colour").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                picked: t.get("picked").and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()).filter(|&v| (v as usize) < crate::shell_colors::SLOTS),
                 container: t.get("container").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 split: t.get("split").and_then(|v| v.as_f64()).map(|v| v as f32),
                 shell_slot: t.get("shell_slot").and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()).filter(|&v| (v as usize) < crate::shell_colors::SLOTS),
@@ -476,6 +480,12 @@ impl App {
                 tab.look.signal = Some(c);
                 tab.look.bg = Some(App::tab_tint(self.theme.mode, c));
             }
+            if let Some(slot) = t.picked {
+                tab.picked = Some(slot);
+                tab.tint = None;
+                tab.look = self.shell_color(Some(slot)).unwrap_or(tab.look);
+                Self::fit_palette(&self.theme, &mut tab);
+            }
             if let Some(p) = t.parent.and_then(|p| ids.get(p).copied().flatten()) {
                 tab.parent = Some(p);
             }
@@ -566,7 +576,7 @@ impl App {
         let index_of = |id: u64| listed.iter().position(|t| t.id == id);
         let tabs: Vec<SavedTab> = listed
             .iter()
-            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), shell: state(&t.left, t.id, "l"), shell_right: t.right.as_ref().and_then(|p| state(p, t.id, "r")), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch, shell_slot: t.shell_slot })
+            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), shell: state(&t.left, t.id, "l"), shell_right: t.right.as_ref().and_then(|p| state(p, t.id, "r")), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), picked: t.picked, container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch, shell_slot: t.shell_slot })
             .filter(|t| t.left.is_some())
             .collect();
         let tiles = self.tiling.as_ref().map(|t| t.ids().iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
@@ -788,14 +798,14 @@ mod tests {
     fn session_json_roundtrip() {
         let s = Session {
             tabs: vec![
-                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), shell: Some(ShellState { cwd: Some("/x".into()), running: Some(("claude".into(), 7)), snapshot: Some("hi".into()), held: None, pane: None }), shell_right: None, pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), container: Some("WORK".into()), split: None, hatch: false, shell_slot: Some(11) },
-                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, container: None, split: None, hatch: false, shell_slot: None },
+                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), shell: Some(ShellState { cwd: Some("/x".into()), running: Some(("claude".into(), 7)), snapshot: Some("hi".into()), held: None, pane: None }), shell_right: None, pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), picked: None, container: Some("WORK".into()), split: None, hatch: false, shell_slot: Some(11) },
+                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, picked: None, container: None, split: None, hatch: false, shell_slot: None },
             ],
             active: 1,
             tiles: vec![0, 1],
             tile_shape: crate::tiles::Node::template(&[0usize, 1]),
             container: "PERSONAL".into(),
-            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, container: None, split: None, hatch: false, shell_slot: None }], active: 0, tiles: vec![], tile_shape: None, container: "WORK".into(), others: vec![], folder: None }],
+            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, picked: None, container: None, split: None, hatch: false, shell_slot: None }], active: 0, tiles: vec![], tile_shape: None, container: "WORK".into(), others: vec![], folder: None }],
             folder: None,
         };
         let dir = std::env::temp_dir().join(format!("nus-test-{}", std::process::id()));

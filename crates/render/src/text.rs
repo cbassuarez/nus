@@ -80,6 +80,8 @@ type FontDb = std::rc::Rc<std::cell::RefCell<fontdb::Database>>;
 type WeakFontBytes = std::sync::Weak<dyn AsRef<[u8]> + Send + Sync>;
 type FontFiles = HashMap<std::path::PathBuf, WeakFontBytes>;
 thread_local! {
+    /// Font files added beside the installed ones (`FontSystem::add_font_dir`).
+    static ADDED_FILES: std::cell::RefCell<std::collections::HashSet<std::path::PathBuf>> = Default::default();
     static FONT_DB: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<fontdb::Database>>> = Default::default();
     static FONT_DATA: std::cell::RefCell<FontFiles> = Default::default();
 }
@@ -325,6 +327,41 @@ impl FontSystem {
     /// Load a system font by family name, or fall back to `fallback`.
     pub fn load_system(&mut self, family: &str, fallback: FontId) -> FontId {
         self.load_system_weight(family, 400, fallback)
+    }
+
+    /// The fonts in `dir` (.ttf, .otf, .ttc, .otc), beside the installed
+    /// ones: from then on they are listed and loaded like them. A file
+    /// already added is not read again. Returns how many files were new.
+    pub fn add_font_dir(&self, dir: &std::path::Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let mut files: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    matches!(
+                        e.to_ascii_lowercase().as_str(),
+                        "ttf" | "otf" | "ttc" | "otc"
+                    )
+                })
+            })
+            .collect();
+        files.retain(|p| ADDED_FILES.with(|seen| seen.borrow_mut().insert(p.clone())));
+        if files.is_empty() {
+            return 0;
+        }
+        let database = self.database();
+        let mut db = database.borrow_mut();
+        let mut added = 0;
+        for file in files {
+            match db.load_font_file(&file) {
+                Ok(()) => added += 1,
+                Err(e) => tracing::warn!("font {}: {e}", file.display()),
+            }
+        }
+        added
     }
 
     pub fn system_families(&self) -> Vec<(String, bool)> {
@@ -973,5 +1010,31 @@ mod caps_tests {
         assert_eq!(caps("std - Rust"), "std - Rust");
         assert_eq!(caps("×"), "×");
         assert_eq!(caps("POWERSHELL  70×34"), "Powershell  70×34");
+    }
+}
+
+#[cfg(test)]
+mod own_font_tests {
+    #[test]
+    fn a_folder_of_fonts_joins_the_installed_ones_once() {
+        let dir = std::env::temp_dir().join(format!("nus-own-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/fonts/Silkscreen-Regular.ttf"
+            ),
+            dir.join("Mine.ttf"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a font").unwrap();
+        let fonts = super::FontSystem::new();
+        assert_eq!(fonts.add_font_dir(&dir), 1);
+        assert_eq!(fonts.add_font_dir(&dir), 0);
+        assert!(fonts
+            .system_families()
+            .iter()
+            .any(|(name, _)| name == "Silkscreen"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

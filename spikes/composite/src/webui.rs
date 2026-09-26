@@ -290,10 +290,36 @@ impl App {
         }
     }
 
+    /// A pointer that rests on a sleeping tab's row means a click is
+    /// coming: its page starts waking now, so the renderer and the first
+    /// bytes are on their way before the tab is shown.
+    pub(crate) fn prewake(&mut self) {
+        const REST: std::time::Duration = std::time::Duration::from_millis(120);
+        let Some(i) = self.hover_row else {
+            self.hover_wake = None;
+            return;
+        };
+        match self.hover_wake {
+            Some((j, at)) if j == i => {
+                let asleep = self.tabs.get(i).is_some_and(|t| std::iter::once(&t.left).chain(t.right.as_ref()).any(|p| matches!(p, Pane::Web(w) if w.asleep.is_some())));
+                if asleep && crate::clock::since(at) >= REST {
+                    self.wake_tab(i);
+                    self.dirty = true;
+                }
+            }
+            _ => self.hover_wake = Some((i, crate::clock::now())),
+        }
+    }
+
     /// A sleeping page wakes when it's shown.
     pub(crate) fn wake_tab(&mut self, i: usize) {
         if let Some(tab) = self.tabs.get_mut(i) {
             tab.last_active = crate::clock::now();
+            // Waking starts the page's history over: back must not take
+            // an empty history for a tab's first page and close it.
+            if matches!(&tab.left, Pane::Web(w) if w.asleep.is_some()) {
+                tab.closes_on_back = false;
+            }
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
                     if let Some(url) = w.asleep.as_ref() {

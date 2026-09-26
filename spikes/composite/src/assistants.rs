@@ -651,6 +651,7 @@ impl App {
                 }
             }
             Field::Font(role) => {
+                self.load_own_fonts();
                 for (family, mono) in self.fonts.system_families() {
                     if (role == 0 || mono)
                         && (input.is_empty()

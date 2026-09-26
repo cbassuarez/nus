@@ -437,6 +437,9 @@ pub struct WebPane {
     pub bounce_y: f32,
     /// A sideways swipe in progress (swipe.rs).
     pub swipe: Option<crate::swipe::Swipe>,
+    /// Sideways wheel waiting on the page's word that it had no room for
+    /// it (overscroll.rs): only that becomes a swipe.
+    pub swipe_pending: Option<(f32, Instant)>,
     /// When it went to sleep, for the waking transcript.
     pub slept: Option<Instant>,
     /// When it was woken: a page back within a moment never shows the
@@ -722,6 +725,9 @@ pub struct Tab {
     /// Stack parent (a top-level tab's id). One level only: a child never
     /// has children; links from a child join the same stack.
     pub parent: Option<u64>,
+    /// Opened onto its page (a link, a popup, the prompt): back from that
+    /// first page closes it. Never for a restored or reopened tab.
+    pub closes_on_back: bool,
     pub left: Pane,
     pub right: Option<Pane>,
     pub focus_right: bool,
@@ -734,6 +740,10 @@ pub struct Tab {
     pub emoji: Option<String>,
     /// A colour the user chose; it beats the rules' and survives a theme.
     pub tint: Option<nus_render::Color>,
+    /// A colour from the theme's shell family the user chose (tab menu):
+    /// the same colours shells wear, worked out again when the theme or
+    /// the signal changes.
+    pub picked: Option<u8>,
     /// A peek: a floating page over the tab with this id; not in the sidebar.
     pub peek: Option<u64>,
     /// Lives in the hatch (the quick terminal), not the sidebar.
@@ -896,6 +906,9 @@ pub struct App {
     pub sidebar_hover: bool,
     pub sidebar_leave: Option<Instant>,
     pub hover_row: Option<usize>,
+    /// The row the pointer rests on, and since when: a sleeping page there
+    /// starts waking before the click (webui.rs).
+    pub hover_wake: Option<(usize, Instant)>,
     /// How far the sidebar's list is scrolled (physical px), when the
     /// rows and folders outgrow the space between the header and the footer.
     pub sidebar_scroll: f32,
@@ -1322,6 +1335,7 @@ impl App {
             sidebar_hover: false,
             sidebar_leave: None,
             hover_row: None,
+            hover_wake: None,
             sidebar_scroll: 0.0,
             pins: Default::default(),
             glides: Default::default(),
@@ -1955,6 +1969,7 @@ impl App {
             bounce: Default::default(),
             bounce_y: 0.0,
             swipe: None,
+            swipe_pending: None,
             load_since: None,
             load_reported: 0.0,
             devtools: None,
@@ -2336,6 +2351,8 @@ impl App {
             self.register_window();
         }
         self.tend_idle_tabs();
+        self.tend_swipe();
+        self.prewake();
         self.welcome_tick();
         if self.paste_request {
             self.paste_request = false;
@@ -4679,6 +4696,12 @@ impl App {
         self.draw_download_overlay(&mut scene);
         self.draw_tip(&mut scene, w, h);
         self.draw_toast(&mut scene);
+        // The tab's menu, over the panes: it is as wide as it needs to be,
+        // not as the sidebar.
+        if (self.tab_menu.is_some() || self.tab_menu_anim.active()) && self.sidebar_visible() {
+            let sb = self.sidebar_rect();
+            self.draw_tab_menu(&mut scene, sb);
+        }
         self.draw_page_menu(&mut scene);
         self.draw_splash(&mut scene);
         self.draw_mercury(&mut scene);
@@ -5626,10 +5649,7 @@ impl App {
                 self.close_menus();
                 self.open_palette(PaletteMode::IconTab(i));
             }
-            SideHit::TabColour(i, k) => {
-                let c = if k == 0 { None } else { crate::surface::SWATCHES.get(k - 1).map(|s| s.1) };
-                self.run(Action::ColourTab(i, c));
-            }
+            SideHit::TabColour(i, k) => self.pick_tab_colour(i, k.checked_sub(1).map(|s| s as u8)),
             SideHit::TabFolder(i) => {
                 self.close_menus();
                 self.open_palette(PaletteMode::Folder(i));
@@ -5908,9 +5928,6 @@ impl App {
         if self.dl_menu || self.dl_anim.active() {
             // Downloads uses the shared modal, drawn above all panes.
         }
-        if self.tab_menu.is_some() || self.tab_menu_anim.active() {
-            self.draw_tab_menu(scene, sb);
-        }
 
         if self.kinds_menu || self.kinds_anim.active() {
             let k = self.kinds_anim.value();
@@ -6015,7 +6032,9 @@ impl App {
         crate::surface::mix(c, if dark { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] }, 0.88)
     }
 
-    /// The tab's menu: name, icon, a row of colours, pin, close.
+    /// The tab's menu: name, icon, the theme's colours, pin, close. It
+    /// hangs from the tab's row and is as wide as it needs to be, reaching
+    /// past the sidebar over the panes when the sidebar is narrow.
     fn draw_tab_menu(&mut self, scene: &mut Scene, sb: Rect) {
         let t = self.theme.clone();
         let ink = t.ink;
@@ -6028,7 +6047,7 @@ impl App {
         }
         let live = self.tab_menu.is_some();
         let (mx, my) = self.mouse;
-        let row = self.px(30.0);
+        let row = self.px(30.0).max(label.px * 1.8);
         // A tile row when there's a selection to tile with, or a tiling to leave.
         let others: Vec<usize> = self.selected.iter().copied().filter(|&k| k != i && k < self.tabs.len()).collect();
         let tile_row: Option<String> = if !others.is_empty() {
@@ -6039,12 +6058,28 @@ impl App {
             None
         };
         let page = matches!(self.tabs[i].left, Pane::Web(_));
-        let h_full = row * (4.0 + if tile_row.is_some() { 1.0 } else { 0.0 } + if page { 1.0 } else { 0.0 }) + self.px(40.0);
+        // The colours: none, then the theme's shell family, five hues by
+        // three lightnesses, each drawn as the pane it makes with its signal.
+        let dark = self.theme.mode == nus_render::Mode::Ink;
+        let family = crate::shell_colors::family(self.surface.signal, dark);
+        let sq = self.px(16.0);
+        let gap = self.px(6.0);
+        let grid_h = 3.0 * sq + 2.0 * gap + self.px(20.0);
+        let rows: Vec<(&str, &str)> = vec![("RENAME", "F2"), ("ICON", ""), ("SAVE TO FOLDER", ""), ("UNPIN", ""), ("CLOSE", "CTRL+SHIFT+W")];
+        let text_w = rows.iter().map(|(a, b)| self.fonts.measure(label, a) + if b.is_empty() { 0.0 } else { self.fonts.measure(label, b) + self.px(24.0) }).fold(0.0, f32::max);
+        let swatches_w = self.px(12.0) * 2.0 + 6.0 * sq + 5.0 * gap + self.px(10.0);
+        let width = (sb.w - self.px(12.0)).max(text_w + self.px(56.0)).max(swatches_w).max(self.px(240.0));
+        let (win_w, win_h) = (self.target.size.0 as f32, self.target.size.1 as f32);
+        let margin = self.px(8.0);
+        let width = width.min(win_w - 2.0 * margin);
+        let h_full = row * (4.0 + if tile_row.is_some() { 1.0 } else { 0.0 } + if page { 1.0 } else { 0.0 }) + grid_h + self.px(4.0);
         let h = h_full * k;
         // Rises from under the row; flips up when there's no room below.
-        let y0 = if top + h_full > sb.bottom() - self.px(m::FOOT_H) { top - row - h_full } else { top };
-        let r = Rect::new(sb.x + self.px(6.0), y0, sb.w - self.px(12.0), h);
-        scene.layer(Some(r));
+        let y0 = if top + h_full > win_h - margin { (top - row - h_full).max(margin) } else { top };
+        let x0 = (sb.x + self.px(6.0)).min(win_w - width - margin).max(margin);
+        let r = Rect::new(x0, y0, width, h);
+        let outer = scene.clip();
+        scene.layer(Some(Rect::new(r.x, r.y, r.w + self.px(3.0), r.h + self.px(3.0))));
         scene.rect(Rect::new(r.x + self.px(3.0), r.y + self.px(3.0), r.w, r.h), fade(ink, 0.6));
         scene.rect(r, paper);
         scene.outline(r, self.px(m::STRUCTURE), ink);
@@ -6057,10 +6092,10 @@ impl App {
             }
             let isz = me.px(12.0);
             me.fonts.draw_icon(scene, icon, isz, r.x + me.px(12.0), y + ((row - isz) / 2.0).round(), ink);
-            me.fonts.draw(scene, label, r.x + me.px(32.0), y + me.px(19.0), text);
+            me.fonts.draw(scene, label, r.x + me.px(32.0), y + (row + label.px) * 0.5 - me.px(2.0), text);
             if !key.is_empty() {
                 let kw = me.fonts.measure(label, key);
-                me.fonts.draw(scene, Style { color: t.dim, ..label }, r.right() - me.px(12.0) - kw, y + me.px(19.0), key);
+                me.fonts.draw(scene, Style { color: t.dim, ..label }, r.right() - me.px(12.0) - kw, y + (row + label.px) * 0.5 - me.px(2.0), key);
             }
             if live {
                 me.side_hits.push((cell, hit));
@@ -6070,30 +6105,35 @@ impl App {
         y += row;
         item(self, scene, nus_render::text::icons::SMILEY, "ICON", "", SideHit::TabIcon(i), y);
         y += row;
-        // Colours: none, then the swatches.
-        let sq = self.px(14.0);
-        let mut cx = r.x + self.px(12.0);
-        let cy = y + ((self.px(40.0) - sq) / 2.0).round();
-        let cur = self.tabs[i].tint;
-        let none = Rect::new(cx, cy, sq, sq);
+        let (picked, tint) = (self.tabs[i].picked, self.tabs[i].tint);
+        let gy = y + self.px(10.0);
+        let cx0 = r.x + self.px(12.0);
+        let none = Rect::new(cx0, gy, sq, sq);
         scene.outline(none, self.px(1.0), ink);
-        self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, self.px(9.0), none.x + self.px(2.5), none.y + self.px(2.5), ink);
-        if live {
-            self.side_hits.push((Rect::new(none.x - 2.0, y, sq + 6.0, self.px(40.0)), SideHit::TabColour(i, 0)));
+        self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, self.px(10.0), none.x + self.px(3.0), none.y + self.px(3.0), ink);
+        if picked.is_none() && tint.is_none() {
+            scene.outline(Rect::new(none.x - 3.0, none.y - 3.0, sq + 6.0, sq + 6.0), self.px(1.5), ink);
         }
-        cx += sq + self.px(8.0);
-        for (k, &(_, c)) in crate::surface::SWATCHES.iter().enumerate() {
-            let sw = Rect::new(cx, cy, sq, sq);
-            scene.rect(sw, c);
-            if cur == Some(c) {
-                scene.outline(Rect::new(sw.x - 2.0, sw.y - 2.0, sq + 4.0, sq + 4.0), self.px(1.5), ink);
+        if live {
+            self.side_hits.push((Rect::new(none.x - 3.0, none.y - 3.0, sq + 6.0, sq + 6.0), SideHit::TabColour(i, 0)));
+        }
+        for (slot, c) in family.iter().enumerate() {
+            // Columns are hues, rows lightnesses, as the family is built.
+            let (col, step) = (slot / 3, slot % 3);
+            let sw = Rect::new(cx0 + (1.0 + col as f32) * (sq + gap) + self.px(10.0), gy + step as f32 * (sq + gap), sq, sq);
+            let (bg, signal) = (c.bg.unwrap_or(paper), c.signal.unwrap_or(ink));
+            scene.rect(sw, bg);
+            scene.rect(Rect::new(sw.x, sw.bottom() - self.px(3.0), sw.w, self.px(3.0)), signal);
+            scene.outline(sw, self.px(1.0), fade(ink, 0.25));
+            let hot = live && sw.contains(mx, my);
+            if picked == Some(slot as u8) || hot {
+                scene.outline(Rect::new(sw.x - 3.0, sw.y - 3.0, sq + 6.0, sq + 6.0), self.px(1.5), ink);
             }
             if live {
-                self.side_hits.push((Rect::new(sw.x - 2.0, y, sq + 6.0, self.px(40.0)), SideHit::TabColour(i, k + 1)));
+                self.side_hits.push((Rect::new(sw.x - 3.0, sw.y - 3.0, sq + 6.0, sq + 6.0), SideHit::TabColour(i, slot + 1)));
             }
-            cx += sq + self.px(8.0);
         }
-        y += self.px(40.0);
+        y += grid_h;
         if let Some(text) = &tile_row {
             item(self, scene, nus_render::text::icons::TILES, text, if text == "UNTILE" { "" } else { "CTRL+SHIFT+D" }, SideHit::TabTile(i), y);
             y += row;
@@ -6106,9 +6146,46 @@ impl App {
         item(self, scene, nus_render::text::icons::PIN, if pinned { "UNPIN" } else { "PIN" }, "", SideHit::TabPin(i), y);
         y += row;
         item(self, scene, nus_render::text::icons::CLOSE, "CLOSE", "CTRL+SHIFT+W", SideHit::TabClose(i), y);
-        scene.layer(None);
+        scene.layer(outer);
         if live {
             self.tab_menu_last = Some((i, top));
+        }
+    }
+
+    /// A colour for tab `i` from the theme's shell family (`slot`), or
+    /// back to the one the rules give it (None). A picked colour is the
+    /// same one a shell wears and follows the theme as shells do.
+    pub(crate) fn pick_tab_colour(&mut self, i: usize, slot: Option<u8>) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        self.tabs[i].tint = None;
+        self.tabs[i].picked = slot.filter(|&s| (s as usize) < crate::shell_colors::SLOTS);
+        self.relook_tab(i);
+        self.save_session();
+        self.dirty = true;
+    }
+
+    /// Work tab `i`'s look out again (its picked colour, else its rules),
+    /// and its stack's pages with it.
+    pub(crate) fn relook_tab(&mut self, i: usize) {
+        let look = match self.tabs[i].picked {
+            Some(slot) => self.shell_color(Some(slot)).unwrap_or(Overrides { bg: None, signal: None }),
+            None => {
+                let parent = self.tabs[i].parent.and_then(|p| self.tabs.iter().find(|t| t.id == p)).map(|t| t.look.clone());
+                self.look_with(&self.tabs[i].left, parent.as_ref(), self.tabs[i].shell_slot)
+            }
+        };
+        self.tabs[i].look = look.clone();
+        let id = self.tabs[i].id;
+        for k in 0..self.tabs.len() {
+            if self.tabs[k].parent == Some(id) && self.tabs[k].tint.is_none() && self.tabs[k].picked.is_none() {
+                self.tabs[k].look = self.look_for(&self.tabs[k].left, Some(&look));
+            }
+        }
+        let theme = self.theme.clone();
+        for tab in &mut self.tabs {
+            Self::fit_palette(&theme, tab);
         }
     }
 
@@ -7559,6 +7636,7 @@ impl App {
                 let mode = self.theme.mode;
                 if let Some(t) = self.tabs.get_mut(i) {
                     t.tint = c;
+                    t.picked = None;
                     t.look.signal = c;
                     t.look.bg = c.map(|c| Self::tab_tint(mode, c));
                 }
@@ -8327,7 +8405,7 @@ impl App {
         self.next_id += 1;
         let shell_slot = self.new_shell_slot(&left);
         let look = self.look_with(&left, None, shell_slot);
-        let mut tab = Tab { id, parent: None, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, peek: None, hatch: false, split_w: None, solo: false, look, shell_slot };
+        let mut tab = Tab { id, parent: None, closes_on_back: false, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, picked: None, peek: None, hatch: false, split_w: None, solo: false, look, shell_slot };
         Self::fit_palette(&self.theme, &mut tab);
         tab
     }
@@ -8645,6 +8723,7 @@ impl App {
         let root = source;
         let mut tab = self.make_tab(Pane::Web(w), None);
         tab.parent = Some(self.tabs[root].id);
+        tab.closes_on_back = true;
         let parent_look = self.tabs[root].look.clone();
         tab.look = self.look_for(&tab.left, Some(&parent_look));
         self.collapsed.remove(&self.tabs[root].id);
@@ -8951,7 +9030,8 @@ impl App {
         }
         if new_tab {
             if let Some(w) = self.new_web_pane(url) {
-                let tab = self.make_tab(Pane::Web(w), None);
+                let mut tab = self.make_tab(Pane::Web(w), None);
+                tab.closes_on_back = true;
                 self.tabs.push(tab);
                 self.activate(self.tabs.len() - 1);
             }
@@ -9550,6 +9630,16 @@ impl App {
             let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::KindMore | SideHit::Window | SideHit::Kinds | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_) | SideHit::TabFolder(_)));
             if !on_menu {
                 self.close_menus();
+            }
+            // The tab's menu may reach past the sidebar: its rows answer
+            // wherever they are.
+            if button == MouseButton::Left && self.tab_menu.is_some() {
+                let hit = self.side_hits.iter().rev().find(|(r, h)| r.contains(x, y) && matches!(h, SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_) | SideHit::TabFolder(_))).map(|(_, h)| *h);
+                if let Some(hit) = hit {
+                    self.side_action(hit, true);
+                    self.dirty = true;
+                    return;
+                }
             }
         }
         // Right-click on NEW TAB fans out the kinds; on a row, the tab's menu.
@@ -10196,8 +10286,12 @@ impl App {
                 w.wheel_precise = matches!(delta, MouseScrollDelta::PixelDelta(_));
                 let (lx, ly) = ((x - w.page.x) / scale, (y - w.page.y) / scale);
                 w.tab.wheel(lx as i32, ly as i32, cef_flags, dx, dy);
+                // Held until the page says it had no room for it: a
+                // sideways scroller (a carousel, a wide table) keeps its wheel.
                 if sideways {
-                    self.swipe_step(right, sx);
+                    let now = crate::clock::now();
+                    let held = w.swipe_pending.filter(|(_, at)| now.duration_since(*at) < crate::swipe::HOLD).map(|(d, _)| d).unwrap_or(0.0);
+                    w.swipe_pending = Some((held + sx, now));
                 }
             }
         }

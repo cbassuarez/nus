@@ -3583,7 +3583,7 @@ impl App {
                 ("INTERFACE WEIGHT".into(), Choice(crate::fonts::Weight::ALL.iter().map(|&w|(w.name().into(),Hit::UiWeight(w),self.behavior.ui_weight==w)).collect())),
                 ("TERMINAL FONT".into(), Choice(crate::fonts::Family::MONO.iter().map(|&f|(f.name().into(),Hit::TermFont(f),self.behavior.term_font==f)).collect())),
                 ("TERMINAL WEIGHT".into(), Choice(crate::fonts::Weight::ALL.iter().map(|&w|(w.name().into(),Hit::TermWeight(w),self.behavior.term_weight==w)).collect())),
-                ("".into(), Info("Bundled fonts work without installation. Interface and terminal weights change independently. Terminal choices use fixed-width families so columns stay aligned.".into())),
+                ("".into(), Info("Bundled fonts work without installation. Interface and terminal weights change independently. Terminal choices use fixed-width families so columns stay aligned. Your own fonts work too: any font installed on this computer, or a .ttf, .otf or .ttc dropped into profile/fonts, is under INSTALLED; its licence is yours to keep with its foundry.".into())),
                 ("WORDMARK".into(), Info("Newsreader Italic".into())),
             ],
                     _ => {
