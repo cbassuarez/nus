@@ -201,9 +201,16 @@ impl App {
     }
 
     pub(crate) fn hatch_shade(&mut self) {
-        let show=self.behavior.hatch_dim && self.behavior.hatch_look==HatchLook::Card && self.hatch.as_ref().is_some_and(|h|h.visible&&!h.hiding);
+        // Behind either shape: the sheet as much as the card.
+        let show=self.behavior.hatch_dim && self.hatch.as_ref().is_some_and(|h|h.visible&&!h.hiding);
         let (_,_,(x,y,w,h,_))=self.hatch_geometry();
         let Some(shade)=&mut self.hatch_state.shade else {return;};
+        // A compositor without alpha would show the shade as solid black.
+        if show && !shade.target.translucent() {
+            tracing::warn!("hatch: this display can't draw a see-through backdrop; not dimming");
+            return;
+        }
+        let was=shade.visible;
         if show {
             shade.window.set_outer_position(winit::dpi::PhysicalPosition::new(x,y));
             let _=shade.window.request_inner_size(winit::dpi::PhysicalSize::new(w,h));
@@ -212,7 +219,12 @@ impl App {
             self.gpu.render(&mut shade.target,&shade.scene,[0.0,0.0,0.0,0.35]);
         }
         shade.visible=show;
-        if show {crate::hatch_native::show_passive(&shade.window);} else {shade.window.set_visible(false);}
+        if show && !was {
+            crate::hatch_native::show_passive(&shade.window);
+            // Drawn once more now that it is up at its size: a frame
+            // presented while hidden can be dropped.
+            shade.window.request_redraw();
+        } else if !show {shade.window.set_visible(false);}
     }
 
     pub(crate) fn hatch_badge_frame(&mut self) {

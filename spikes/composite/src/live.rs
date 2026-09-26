@@ -817,7 +817,7 @@ impl App {
             self.lv_lines(scene, Rect::new(inner.x + self.px(4.0), inner.y + self.px(4.0), inner.w - self.px(8.0), inner.h - self.px(8.0)), 4, fade(ink, 0.15));
         }
         self.fonts.draw_icon(scene, icons::CURSOR, self.px(10.0), other.x + other.w * 0.6, other.y + other.h * 0.6, ink);
-        if b.hatch_dim && b.hatch_look == HatchLook::Card {
+        if b.hatch_dim {
             scene.rect(Rect::new(target.x, target.y + self.px(5.0), target.w, target.h - self.px(5.0)), fade(ink, 0.25));
         }
         let frac = b.hatch_size as f32 / 100.0;

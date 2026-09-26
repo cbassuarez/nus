@@ -4265,7 +4265,7 @@ impl App {
                         ("60%".into(), Hit::HatchSize(60), b.hatch_size == 60),
                     ])),
                     ("".into(), Info("You can also drag its lower edge. On a Mac with a camera notch, the top sheet opens just below it.".into())),
-                    ("DIM THE SCREEN BEHIND THE CARD".into(), Choice(vec![("YES".into(), Hit::HatchDim(true), b.hatch_dim), ("NO".into(), Hit::HatchDim(false), !b.hatch_dim)])),
+                    ("DIM THE SCREEN BEHIND THE HATCH".into(), Choice(vec![("YES".into(), Hit::HatchDim(true), b.hatch_dim), ("NO".into(), Hit::HatchDim(false), !b.hatch_dim)])),
                     ("BEHAVIOR".into(), Section),
                     ("HIDE WHEN I CLICK AWAY".into(), Choice(vec![("YES".into(), Hit::HatchAutohide(true), b.hatch_autohide), ("NO".into(), Hit::HatchAutohide(false), !b.hatch_autohide)])),
                     ("".into(), Info(format!("{} pins it open. Escape always goes to the terminal, never closes the hatch.", key("↑", true)))),
