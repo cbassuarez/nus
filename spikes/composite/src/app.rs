@@ -5305,12 +5305,15 @@ impl App {
     pub(crate) fn draw_sidebar_scrollbar(&mut self, scene: &mut Scene, sb: Rect, g: &SidebarGeom) {
         let max = g.scroll_max();
         let window = g.foot_y - g.top;
-        if max <= 0.0 || window <= 0.0 || !sb.contains(self.mouse.0, self.mouse.1) {
+        let Some((w, always)) = self.thumb_style() else { return };
+        if max <= 0.0 || window <= 0.0 || !(always || sb.contains(self.mouse.0, self.mouse.1)) {
             return;
         }
-        let w = self.px(2.0);
         let x = if self.sidebar_right() { sb.x + self.px(1.0) } else { sb.right() - w - self.px(1.0) };
         let track = Rect::new(x, g.top + self.px(2.0), w, window - self.px(4.0));
+        if always {
+            scene.rect(track, fade(self.theme.dim, 0.12));
+        }
         let len = (track.h * window / g.reach).max(self.px(16.0)).min(track.h);
         let y = track.y + (track.h - len) * (self.sidebar_scroll / max).clamp(0.0, 1.0);
         scene.rect(Rect::new(track.x, y, track.w, len), fade(self.theme.dim, 0.6));

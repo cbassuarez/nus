@@ -345,7 +345,8 @@ pub static DOWNLOADS: std::sync::Mutex<Vec<Download>> = std::sync::Mutex::new(Ve
 pub static BLOCKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 /// Chromium's smooth scrolling, read once at start from the prefs.
 pub static SMOOTH_SCROLL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-/// BROWSER · SCROLLBARS, read once at start: 0 overlay, 1 classic, 2 hidden.
+/// BROWSER · SCROLLBARS: 0 overlay, 1 classic, 2 hidden. Overlay and classic
+/// are read once, when Chromium starts; hidden is set on each page, live.
 pub static SCROLLBARS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 /// BROWSER · PRIVACY SIGNAL: Sec-GPC and DNT on every request.
 pub static PRIVACY_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -727,7 +728,7 @@ wrap_app! {
                     let all = if had.is_empty() { "OverlayScrollbar".to_string() } else { format!("{had},OverlayScrollbar") };
                     cl.append_switch_with_value(Some(&"enable-features".into()), Some(&all.as_str().into()));
                 }
-                2 => cl.append_switch(Some(&"hide-scrollbars".into())),
+                // Hidden is per page, so it can change live (hide_scrollbars).
                 _ => {}
             }
             if std::env::var_os("NUS_AUTOPLAY").is_some() {
@@ -2086,6 +2087,9 @@ impl BrowserTab {
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::overscroll::JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::overscroll::JS }));
+        if SCROLLBARS.load(std::sync::atomic::Ordering::Relaxed) == 2 {
+            tab.hide_scrollbars(true);
+        }
         let id = tab.devtools("Target.getTargetInfo", serde_json::json!({}));
         tab.shared.borrow_mut().target_msg = id;
         tab
@@ -2141,6 +2145,11 @@ impl BrowserTab {
     }
 
     /// Send a DevTools protocol command; returns its message id.
+    /// BROWSER · SCROLLBARS · HIDDEN for this page, live.
+    pub fn hide_scrollbars(&self, hidden: bool) {
+        self.devtools("Emulation.setScrollbarsHidden", serde_json::json!({ "hidden": hidden }));
+    }
+
     pub fn devtools(&self, method: &str, params: serde_json::Value) -> i32 {
         let id = {
             let mut s = self.shared.borrow_mut();

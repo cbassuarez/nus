@@ -679,7 +679,7 @@ pub struct Behavior {
     /// Logical px one wheel notch moves a page or one of nus's own lists.
     #[serde(default = "default_wheel_px")]
     pub wheel_px: u16,
-    /// Pages' scrollbars: Chromium's overlay ones, the classic ones, or none (takes a restart).
+    /// Pages' scrollbars: Chromium's overlay ones, the classic ones, or none (hidden applies live; the others when Chromium starts).
     #[serde(default)]
     pub scrollbars: Scrollbars,
     /// Where downloads go; empty is ~/Downloads.
@@ -1963,7 +1963,19 @@ impl App {
             Hit::DownloadAsk(on) => { self.behavior.download_ask = on; let b = self.behavior.clone(); self.apply_behavior_statics(&b); }
             Hit::DownloadDone(what) => self.behavior.download_done = what,
             Hit::WheelPx(px) => self.behavior.wheel_px = px,
-            Hit::Scrollbars(s) => self.behavior.scrollbars = s,
+            Hit::Scrollbars(s) => {
+                self.behavior.scrollbars = s;
+                // Hidden applies to open pages now; overlay and classic
+                // are Chromium features, read when it starts.
+                crate::browser::SCROLLBARS.store(s as u8, std::sync::atomic::Ordering::Relaxed);
+                for tab in &self.tabs {
+                    for pane in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                        if let Pane::Web(w) = pane {
+                            w.tab.hide_scrollbars(s == Scrollbars::Hidden);
+                        }
+                    }
+                }
+            }
             Hit::PageZoom(pct) => { self.behavior.page_zoom = pct; let b = self.behavior.clone(); self.apply_behavior_statics(&b); self.rezoom_pages(); }
             Hit::PrivacySignal(on) => { self.behavior.privacy_signal = on; let b = self.behavior.clone(); self.apply_behavior_statics(&b); }
             Hit::Scrollback(n) => self.behavior.scrollback = n,
@@ -4093,7 +4105,11 @@ impl App {
                 ("WHEEL SPEED".into(), Choice([50u16, 75, 100, 150, 200].iter().map(|&px| (format!("{px} PX"), Hit::WheelPx(px), px == self.behavior.wheel_px)).collect())),
                 ("".into(), Info("how far one notch of the wheel moves a page, and nus's own lists — settings, the reader, the sidebar — which ride TERMINAL · SCROLL's curve · trackpads move as far as your fingers do".into())),
                 ("SCROLLBARS".into(), Choice(Scrollbars::ALL.iter().map(|&s| (s.name().caps(), Hit::Scrollbars(s), s == self.behavior.scrollbars)).collect())),
-                ("".into(), Info("overlay: thin, over the page, gone when still (macOS follows the system) · classic: the track beside the page · hidden: none drawn · takes effect at the next start".into())),
+                ("".into(), Info(if cfg!(target_os = "macos") {
+                    "for pages and nus's own lists · overlay: thin, gone when still · classic: always up, on a track · hidden: none drawn, applies at once · pages follow System Settings › Appearance › Show scroll bars for overlay or classic".into()
+                } else {
+                    "for pages and nus's own lists · overlay: thin, gone when still · classic: always up, on a track · hidden: none drawn · hidden applies at once; pages take overlay or classic at the next start".into()
+                })),
                 (
                     "LOADING BAR".into(),
                     Choice(BarStyle::ALL.iter().map(|&b| (b.name().caps(), Hit::BarStyle(b), b == self.load_bar.style)).collect()),

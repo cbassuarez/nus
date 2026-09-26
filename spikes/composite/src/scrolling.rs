@@ -239,16 +239,30 @@ impl App {
         }
     }
 
-    /// A list taller than its window says so: a thin thumb at the window's
-    /// right edge, dim, while the pointer is over it or the list is moving.
+    /// BROWSER · SCROLLBARS for nus's own lists: the thumb's width and
+    /// whether it stays up when still, or None when they are hidden.
+    pub(crate) fn thumb_style(&self) -> Option<(f32, bool)> {
+        match self.behavior.scrollbars {
+            crate::settings::Scrollbars::Overlay => Some((self.px(2.0), false)),
+            crate::settings::Scrollbars::Classic => Some((self.px(5.0), true)),
+            crate::settings::Scrollbars::Hidden => None,
+        }
+    }
+
+    /// A list taller than its window says so: a thumb at the window's
+    /// right edge, dim. Overlay shows it while the pointer is over the list
+    /// or it is moving; classic always, on a track; hidden never.
     /// `offset` is how far it is scrolled, `reach` how tall it is.
     pub(crate) fn draw_thumb(&mut self, scene: &mut nus_render::Scene, window: nus_render::Rect, offset: f32, reach: f32, moving: bool) {
         let max = (reach - window.h).max(0.0);
-        if max <= 0.0 || window.h <= 0.0 || !(moving || window.contains(self.mouse.0, self.mouse.1)) {
+        let Some((w, always)) = self.thumb_style() else { return };
+        if max <= 0.0 || window.h <= 0.0 || !(always || moving || window.contains(self.mouse.0, self.mouse.1)) {
             return;
         }
-        let w = self.px(2.0);
         let track = nus_render::Rect::new(window.right() - w - self.px(2.0), window.y + self.px(2.0), w, window.h - self.px(4.0));
+        if always {
+            scene.rect(track, crate::app::fade(self.theme.dim, 0.12));
+        }
         let len = (track.h * window.h / reach).max(self.px(16.0)).min(track.h);
         let y = track.y + (track.h - len) * (offset / max).clamp(0.0, 1.0);
         scene.rect(nus_render::Rect::new(track.x, y, track.w, len), crate::app::fade(self.theme.dim, 0.6));
