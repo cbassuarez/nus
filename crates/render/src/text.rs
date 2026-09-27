@@ -792,6 +792,10 @@ pub mod icons {
     icon!(X_CIRCLE, "x-circle");
     icon!(CIRCLE_DASHED, "circle-dashed");
     icon!(FILES, "files");
+    icon!(CREDIT_CARD, "credit-card");
+    icon!(MAP_PIN, "map-pin");
+    icon!(PASSWORD, "password");
+    icon!(KEY, "key");
 }
 
 impl FontSystem {
@@ -1061,7 +1065,7 @@ mod git_icon_tests {
     /// The git glyphs parse and leave ink at the size the UI uses.
     #[test]
     fn git_icons_render() {
-        for (name, svg) in [GIT_BRANCH, GIT_COMMIT, GIT_MERGE, GIT_PR, GIT_DIFF, PUSH, PULL, FETCH, STASH, UNDO_COMMIT, CHECK_CIRCLE, X_CIRCLE, CIRCLE_DASHED, FILES] {
+        for (name, svg) in [GIT_BRANCH, GIT_COMMIT, GIT_MERGE, GIT_PR, GIT_DIFF, PUSH, PULL, FETCH, STASH, UNDO_COMMIT, CHECK_CIRCLE, X_CIRCLE, CIRCLE_DASHED, FILES, CREDIT_CARD, MAP_PIN, PASSWORD, KEY] {
             let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
             let mut pm = resvg::tiny_skia::Pixmap::new(26, 26).unwrap();
             resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(26.0 / 256.0, 26.0 / 256.0), &mut pm.as_mut());

@@ -1518,10 +1518,24 @@ wrap_dev_tools_message_observer! {
                 let text = |k: &str| payload.as_ref().and_then(|p| p.get(k)).and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let report = match text("kind").as_str() {
                     "sent" if !text("pass").is_empty() => crate::passwords::Report::Sent { origin, user: text("user"), pass: text("pass") },
-                    "form" => crate::passwords::Report::Form { origin, context },
+                    "away" => crate::passwords::Report::Away { context },
+                    "focus" => {
+                        let Some(p) = payload.as_ref() else { return };
+                        let num = |x: Option<&serde_json::Value>| x.and_then(|n| n.as_f64()).filter(|n| n.is_finite()).unwrap_or(0.0) as f32;
+                        let rect = p.get("rect").and_then(|r| r.as_array()).filter(|r| r.len() == 4);
+                        let Some(rect) = rect.map(|r| [num(r.first()), num(r.get(1)), num(r.get(2)), num(r.get(3))]) else { return };
+                        let kinds = p.get("kinds").and_then(|k| k.as_array()).map(|k| k.iter().take(32).filter_map(|x| x.as_str()).map(|x| x.chars().take(32).collect()).collect()).unwrap_or_default();
+                        crate::passwords::Report::Focus { origin, context, field: text("field"), kinds, rect, dpr: num(p.get("dpr")).clamp(0.25, 8.0), value: text("value").chars().take(64).collect() }
+                    }
+                    "filled" => {
+                        let fields = payload.as_ref().and_then(|p| p.get("fields")).and_then(|f| f.as_object())
+                            .map(|f| f.iter().take(32).filter_map(|(k, v)| Some((k.chars().take(32).collect(), v.as_str()?.chars().take(256).collect()))).collect())
+                            .unwrap_or_default();
+                        crate::passwords::Report::Filled { origin, fields }
+                    }
                     _ => return,
                 };
-                if s.passwords.len() < 16 { s.passwords.push(report); }
+                if s.passwords.len() < 64 { s.passwords.push(report); }
                 s.paints += 1;
                 crate::browser_runtime::wake();
                 return;
@@ -2459,6 +2473,8 @@ impl BrowserTab {
             tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusPassword" }));
             tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::passwords::JS }));
             tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::passwords::JS }));
+            tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::autofill::JS }));
+            tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::autofill::JS }));
         }
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS, "runImmediately": true }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": PRINT_JS }));
@@ -2527,6 +2543,12 @@ impl BrowserTab {
     /// Fill a saved sign-in into the page world it was asked for.
     pub fn fill_password(&self, context: i64, user: &str, pass: &str) {
         self.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::passwords::fill_js(user, pass), "contextId": context, "silent": true }));
+    }
+
+    /// Fill a card, an address or a new password into the form of the
+    /// field that asked, in the page world it asked from.
+    pub fn fill_form(&self, context: i64, values: &std::collections::BTreeMap<String, String>) {
+        self.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::autofill::fill_js(values), "contextId": context, "silent": true }));
     }
 
     /// BROWSER · SCROLLBARS · HIDDEN for this page, live.

@@ -4,6 +4,7 @@
 mod access;
 mod overscroll;
 mod passwords;
+mod autofill;
 mod profile_orbit;
 mod real_pics;
 mod git_complete;

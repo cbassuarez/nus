@@ -1,11 +1,11 @@
-//! Saved sign-ins for pages: offered when a login form is sent, filled on
-//! request when one comes back.
+//! Saved sign-ins for pages: offered when a login form is sent, listed
+//! under the field (autofill.rs) when one comes back.
 //!
-//! The page script only reports: a password form was sent (what was in it),
-//! or a password field is on the page. Which site it was comes from the
-//! JavaScript context Chromium names for the call, never from the page's
-//! word, so a page can't file a password under another site or ask for
-//! one. Nothing is saved without Save, nothing filled without Fill, and a
+//! The page script only reports: a password form was sent (what was in
+//! it). Which site it was comes from the JavaScript context Chromium names
+//! for the call, never from the page's word, so a page can't file a
+//! password under another site or ask for one. Nothing is saved without
+//! Save, nothing filled without a pick from the list, and a
 //! fill goes only to the context of the site it was saved for. Kept in
 //! profile/passwords.json, sealed with the profile's keychain key like the
 //! rest of nus's sensitive state; never in incognito.
@@ -33,13 +33,11 @@ addEventListener('submit',capture,true);
 addEventListener('click',e=>{const t=e.target;if(t&&t.closest&&t.closest('button,input[type=submit],input[type=image],[role=button]'))capture()},true);
 addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target&&e.target.tagName==='INPUT')capture()},true);
 addEventListener('pagehide',capture,true);
-let told=false;const look=()=>{if(!told&&pws().length){told=true;send({kind:'form'})}};
 const set=(el,v)=>{const d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(el,v);
  el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))};
-Object.defineProperty(window,'__nusFill',{value:(user,pass)=>{const pw=pws()[0];if(!pw)return false;
+Object.defineProperty(window,'__nusFill',{value:(user,pass)=>{const a=document.activeElement,all=pws();
+ const pw=(a&&a.form&&all.find(p=>p.form===a.form))||all[0];if(!pw)return false;
  const u=userFor(pw);if(u&&user)set(u,user);set(pw,pass);return true}});
-new MutationObserver(look).observe(document,{subtree:true,childList:true});
-addEventListener('DOMContentLoaded',look);look();
 }catch(_){}})()"#;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
@@ -55,7 +53,14 @@ pub struct Login {
 #[derive(Clone, Debug)]
 pub enum Report {
     Sent { origin: String, user: String, pass: String },
-    Form { origin: String, context: i64 },
+    /// A field autofill knows took focus (autofill.rs): its kind, the
+    /// kinds beside it, where it is in CSS px and the page's pixel ratio,
+    /// and what's typed so far.
+    Focus { origin: String, context: i64, field: String, kinds: Vec<String>, rect: [f32; 4], dpr: f32, value: String },
+    /// That field lost focus, or the page moved under it.
+    Away { context: i64 },
+    /// A card or address form was sent (never its security code).
+    Filled { origin: String, fields: std::collections::BTreeMap<String, String> },
 }
 
 fn path() -> PathBuf {
@@ -105,6 +110,7 @@ pub fn upsert(list: &mut Vec<Login>, origin: &str, user: &str, pass: &str, now: 
 }
 
 /// The sign-in to fill for a site: the one used most recently.
+#[cfg(test)]
 pub fn best<'a>(list: &'a [Login], origin: &str) -> Option<&'a Login> {
     list.iter().filter(|l| l.origin == origin).max_by_key(|l| l.used.max(l.saved))
 }
@@ -144,12 +150,12 @@ mod tests {
     }
 }
 
-/// A sign-in waiting on the user's Save or Fill: in memory only, and only
-/// the latest of each.
+/// What waits on the user's Save: in memory only, and only the latest.
 #[derive(Default)]
 pub struct Offers {
     pub save: Option<(String, String, String)>,
-    pub fill: Option<(u64, bool, i64, String)>,
+    /// A card (true) or address sent, to keep on Save (autofill.rs).
+    pub wallet: Option<(bool, crate::autofill::Entry)>,
 }
 
 impl crate::app::App {
@@ -186,14 +192,7 @@ impl crate::app::App {
                     self.passwords.save = Some((origin, user, pass));
                     self.toast(icons::LOCK_KEY, words, format!("{who} · kept in this profile, encrypted"), Some(Act::SavePassword));
                 }
-                Report::Form { origin, context } => {
-                    let Some(login) = best(&list, &origin) else { continue };
-                    let n = list.iter().filter(|l| l.origin == origin).count();
-                    let who = if login.user.is_empty() { host(&origin).to_string() } else { login.user.clone() };
-                    let more = if n > 1 { format!(" · {} saved", n) } else { String::new() };
-                    self.passwords.fill = Some((tab, right, context, origin.clone()));
-                    self.toast(icons::LOCK_KEY, "Sign In", format!("{who} · {}{more}", host(&origin)), Some(Act::FillPassword));
-                }
+                other => self.autofill_report(tab, right, other),
             }
         }
     }
@@ -206,24 +205,6 @@ impl crate::app::App {
             Ok(()) => self.toast(nus_render::text::icons::CHECK, "Password Saved", host(&origin).to_string(), None),
             Err(e) => self.toast_problem("Could Not Save Password", e.to_string(), None),
         }
-    }
-
-    pub(crate) fn fill_offered_password(&mut self) {
-        let Some((tab, right, context, origin)) = self.passwords.fill.take() else { return };
-        let mut list = load();
-        let Some(login) = best(&list, &origin).cloned() else { return };
-        let Some(t) = self.tabs.iter().find(|t| t.id == tab) else { return };
-        let Some(crate::app::Pane::Web(w)) = (if right { t.right.as_ref() } else { Some(&t.left) }) else { return };
-        // Only into the world that site's page asked from, and only if
-        // Chromium still says it is that site.
-        if w.tab.shared.borrow().contexts.get(&context) != Some(&origin) {
-            return;
-        }
-        w.tab.fill_password(context, &login.user, &login.pass);
-        if let Some(l) = list.iter_mut().find(|l| l.origin == origin && l.user == login.user) {
-            l.used = crate::journal::now();
-        }
-        let _ = store(&list);
     }
 
     /// Settings · Browser: asks first, with how many would go.

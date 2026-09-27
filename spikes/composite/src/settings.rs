@@ -1156,6 +1156,8 @@ pub enum Hit {
     Widevine,
     /// BROWSER · PASSWORDS: delete every saved sign-in.
     ForgetPasswords,
+    /// BROWSER · AUTOFILL: delete every kept card and address.
+    ForgetWallet,
     /// TERMINAL · SHELLS (shells.rs): open one, hide or show it, take one
     /// of your own out, get a missing one, add yours, edit shells.json,
     /// look for newly installed ones.
@@ -2005,6 +2007,7 @@ impl App {
             Hit::Widevine => "fetch the Widevine module now".into(),
             Hit::LspTool(i) => self.lsp_tool_words(i).1,
             Hit::ForgetPasswords => "forget every saved password".into(),
+            Hit::ForgetWallet => "forget every kept card and address".into(),
             Hit::ShellOpen(i) => format!("open {}", self.profiles.get(i).map(|p| p.name.as_str()).unwrap_or("shell")),
             Hit::ShellHide(i) => format!("{} {}", if self.shell_hidden(i) { "show" } else { "hide" }, self.profiles.get(i).map(|p| p.name.as_str()).unwrap_or("shell")),
             Hit::ShellRemove(i) => format!("remove {}", self.profiles.get(i).map(|p| p.name.as_str()).unwrap_or("shell")),
@@ -2157,6 +2160,7 @@ impl App {
                 }
             }
             Hit::ForgetPasswords => self.ask_forget_passwords(),
+            Hit::ForgetWallet => self.ask_forget_wallet(),
             Hit::LspTool(i) => {
                 if let Some((id, _)) = LSP_TOOLS.get(i) {
                     self.bundle_toggle(id);
@@ -4387,8 +4391,9 @@ impl App {
                 ("".into(), Info("Global Privacy Control (Sec-GPC: 1) and Do Not Track on every request · sites that honour it stop selling what they see; the rest ignore it".into())),
                 ("CLEAR".into(), Buttons(vec![("COOKIES · ALL SITES".into(), icons::WARNING, Hit::ClearBrowsing(0)), ("THE CACHE".into(), icons::RELOAD, Hit::ClearBrowsing(1))])),
                 ("".into(), Info("cookies: every site signs you out, the containers included · the cache: pages fetch fresh; nothing of yours is touched".into())),
-                ("PASSWORDS".into(), Info("When you sign in on a page, nus offers to save it; back on that page's sign-in form, Fill puts it in. Saved sign-ins stay in this profile, encrypted with its keychain key, and go only to the site they were saved for. Never in incognito.".into())),
-                ("".into(), Buttons(vec![("FORGET SAVED PASSWORDS".into(), icons::WARNING, Hit::ForgetPasswords)])),
+                ("AUTOFILL".into(), Info("When you sign in, pay or give an address on a page, nus offers to keep it; back in a field that asks for it, nus lists what it kept under the field, and a new account's password field offers a strong one. Kept in this profile, encrypted with its keychain key: sign-ins go only to the site they were saved for, cards only to secure pages, and a card's security code is never kept. Never in incognito.".into())),
+                ("".into(), Info("payments: Google Pay opens its own window · Apple Pay is Safari's, so on a Mac a card field offers the page in Safari".into())),
+                ("".into(), Buttons(vec![("FORGET SAVED PASSWORDS".into(), icons::WARNING, Hit::ForgetPasswords), ("FORGET CARDS AND ADDRESSES".into(), icons::WARNING, Hit::ForgetWallet)])),
                 ("ENGINE".into(), Info(format!("Chromium {}", crate::chromium_version()))),
             ],
             7 => {

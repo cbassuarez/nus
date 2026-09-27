@@ -27,6 +27,11 @@ pub enum Source {
     /// A shell's right click: the block and the link under the pointer,
     /// and what was selected.
     Shell { block: Option<u64>, link: Option<String>, selection: String },
+    /// Autofill under a page's field (autofill.rs): the page world it
+    /// asked from and its site, and each row's pick, detail and icon. The
+    /// page keeps its keys and clicks; the list takes only the arrows,
+    /// Enter on a chosen row, and Escape.
+    Autofill { context: i64, origin: String, picks: Vec<crate::autofill::Pick>, details: Vec<String>, icons: Vec<(&'static str, &'static str)> },
 }
 
 /// The shell menu's rows.
@@ -157,6 +162,39 @@ impl App {
         let items = rows.iter().enumerate().map(|(i, (label, _, on))| (i as i32, label.clone(), *on)).collect();
         let values = rows.into_iter().map(|(_, v, _)| v).collect();
         self.show_context_menu(PageMenu::new(id, right, at, items, Source::Choose { field, values, current }));
+    }
+
+    /// The autofill list under a field, or the open one brought up to
+    /// date as you type (no rise again).
+    pub(crate) fn open_autofill_menu(&mut self, tab: u64, right: bool, at: (f32, f32), context: i64, origin: String, rows: Vec<crate::autofill::Row>) {
+        let items: Vec<model::Item> = rows.iter().enumerate().map(|(i, r)| (i as i32, r.label.clone(), true)).collect();
+        let details = rows.iter().map(|r| r.detail.clone()).collect();
+        let icons = rows.iter().map(|r| r.icon).collect();
+        let picks = rows.into_iter().map(|r| r.pick).collect();
+        let source = Source::Autofill { context, origin, picks, details, icons };
+        if let Some(menu) = self.page_menu.as_mut().filter(|m| m.tab == tab && m.right == right && matches!(m.source, Source::Autofill { .. })) {
+            let keep = menu.selected.filter(|s| (*s as usize) < items.len() && menu.keyboard);
+            menu.items = items; menu.source = source; menu.at = at;
+            menu.selected = keep; menu.hits.clear(); menu.scroll = 0.0;
+            self.dirty = true;
+            return;
+        }
+        let mut menu = PageMenu::new(tab, right, at, items, source);
+        menu.selected = None;
+        menu.keyboard = false;
+        self.show_context_menu(menu);
+    }
+
+    /// Close the autofill list, when it's the one from this page world
+    /// (or any, with None).
+    pub(crate) fn close_autofill(&mut self, context: Option<i64>) {
+        if self.page_menu.as_ref().is_some_and(|m| matches!(&m.source, Source::Autofill { context: c, .. } if context.is_none_or(|x| x == *c))) {
+            self.close_page_menu();
+        }
+    }
+
+    fn autofill_open(&self) -> bool {
+        self.page_menu.as_ref().is_some_and(|m| matches!(m.source, Source::Autofill { .. }))
     }
 
     pub(crate) fn poll_page_menus(&mut self) {
@@ -291,6 +329,11 @@ impl App {
                     _ => {}
                 }
             },
+            Source::Autofill { context, origin, picks, .. } => {
+                if let Some(pick) = usize::try_from(id).ok().and_then(|i| picks.get(i)).cloned() {
+                    self.autofill_pick(menu.tab, menu.right, context, &origin, pick);
+                }
+            },
         }
         self.dirty = true;
     }
@@ -308,6 +351,12 @@ impl App {
     pub(crate) fn page_menu_mouse(&mut self, button: MouseButton, state: ElementState) -> bool {
         if state == ElementState::Released && self.page_menu_buttons.remove(&button) { return true; }
         if self.page_menu.is_none() { return false; }
+        // A click beside the autofill list is the page's: the list goes
+        // and the click lands where it was aimed.
+        if self.autofill_open() && !self.page_menu.as_ref().and_then(|m| m.panel).is_some_and(|r| r.contains(self.mouse.0, self.mouse.1)) {
+            if state == ElementState::Pressed { self.close_page_menu(); }
+            return false;
+        }
         if state == ElementState::Pressed {
             self.page_menu_buttons.insert(button);
             if button == MouseButton::Left { self.page_menu_click(self.mouse.0, self.mouse.1); }
@@ -319,6 +368,11 @@ impl App {
     pub(crate) fn page_menu_motion(&mut self, x: f32, y: f32) -> bool {
         let Some(menu) = self.page_menu.as_mut() else { return false; };
         let selected = menu.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| *id);
+        let autofill = matches!(menu.source, Source::Autofill { .. });
+        let inside = menu.panel.is_some_and(|r| r.contains(x, y));
+        // Over the page, the autofill list keeps its keyboard choice and
+        // the page keeps its hover.
+        if autofill && !inside { return false; }
         if menu.selected != selected || menu.keyboard {
             menu.selected = selected;
             menu.keyboard = false;
@@ -333,6 +387,7 @@ impl App {
             MouseScrollDelta::PixelDelta(p) => p.y as f32 };
         if !dy.is_finite() { return true; }
         let inside = self.page_menu.as_ref().and_then(|m| m.panel).is_some_and(|r| r.contains(self.mouse.0, self.mouse.1));
+        if !inside && self.autofill_open() { self.close_page_menu(); return false; }
         if inside {
             if let Some(menu) = self.page_menu.as_mut() {
                 menu.scroll = (menu.scroll - dy).clamp(0.0, menu.scroll_max);
@@ -353,6 +408,25 @@ impl App {
             return ev.repeat && self.page_menu_keys.contains(&ev.physical_key);
         };
         if ev.state != ElementState::Pressed { return true; }
+        if matches!(menu.source, Source::Autofill { .. }) {
+            // The field keeps typing; the list takes only what moves in it.
+            let mut close = false;
+            let mut pick = None;
+            match &ev.logical_key {
+                Key::Named(NamedKey::Escape) => close = true,
+                Key::Named(NamedKey::ArrowDown) => menu.selected = model::step(&menu.items, menu.selected, false),
+                Key::Named(NamedKey::ArrowUp) => menu.selected = model::step(&menu.items, menu.selected, true),
+                Key::Named(NamedKey::Enter) if menu.selected.is_some() && menu.keyboard && !ev.repeat => pick = menu.selected,
+                Key::Named(NamedKey::Tab) => { self.close_page_menu(); return false; },
+                _ => return false,
+            }
+            menu.keyboard = true;
+            menu.reveal = true;
+            self.page_menu_keys.insert(ev.physical_key);
+            if close { self.close_page_menu(); } else if let Some(id) = pick { self.page_menu_pick(id); }
+            self.dirty = true;
+            return true;
+        }
         self.page_menu_keys.insert(ev.physical_key);
         menu.keyboard = true;
         menu.reveal = true;
@@ -390,6 +464,8 @@ impl App {
                 Source::Choose { .. } => matches!(pane, Pane::Settings(_)),
                 Source::Page(_) | Source::Media(_) => matches!(pane, Pane::Web(w) if w.reader.is_none()),
                 Source::Shell { .. } => matches!(pane, Pane::Term(_)),
+                Source::Autofill { context, origin, .. } => matches!(pane, Pane::Web(w) if w.reader.is_none()
+                    && w.tab.shared.borrow().contexts.get(context) == Some(origin)),
             })
     }
 
@@ -407,6 +483,9 @@ impl App {
                 let shift = !cfg!(target_os = "macos");
                 return match *id { shell::COPY => crate::app::key("C", shift), shell::PASTE => crate::app::key("V", shift), _ => String::new() };
             }
+            if let Source::Autofill { details, .. } = &menu.source {
+                return usize::try_from(*id).ok().and_then(|i| details.get(i)).cloned().unwrap_or_default();
+            }
             if !matches!(menu.source, Source::Page(_)) { return String::new(); }
             match *id { browser::CMD_COPY_PAGE => crate::app::key("C", true),
                 113 => crate::app::key("C", false), 114 => crate::app::key("V", false),
@@ -417,6 +496,7 @@ impl App {
             use nus_render::text::icons;
             match &menu.source {
                 Source::Media(_) => Some(icons::DOWNLOAD),
+                Source::Autofill { icons: own, .. } => usize::try_from(*id).ok().and_then(|i| own.get(i)).copied(),
                 Source::Choose { current, .. } => (usize::try_from(*id).ok() == *current).then_some(icons::CHECK),
                 Source::Shell { .. } => match *id {
                     shell::COPY | shell::LINK_COPY | shell::OUTPUT => Some(icons::COPY),

@@ -169,6 +169,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::MakeDefault => "Ask the OS to open links with nus.", Hit::Unregister => "Remove nus's browser registration.",
         Hit::Widevine => "Download the Widevine module for DRM video now.",
         Hit::ForgetPasswords => "Delete every sign-in saved in this profile.",
+        Hit::ForgetWallet => "Delete every card and address kept in this profile.",
         Hit::Welcome => "Open onboarding and the app guide.", Hit::SoundOn(true) => "Play sounds for app events.", Hit::SoundOn(false) => "Mute app event sounds.",
         _ => return None,
     }.into();
