@@ -186,16 +186,16 @@ impl App {
                 self.play_event("toggle");
             }
             GroupAct::Archive => {
+                // The whole group in one close: one transition, one sound.
+                // Into RECENTLY CLOSED, reopenable; never a hard delete.
                 let ids: Vec<u64> = g.tabs.iter().filter_map(|&i| self.tabs.get(i).map(|t| t.id)).collect();
-                for id in ids {
-                    if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
-                        // Into RECENTLY CLOSED, reopenable; never a hard delete.
-                        self.selected.clear();
-                        self.activate(i);
-                        self.close_tabs(true);
-                    }
+                let at: Vec<usize> = ids.iter().filter_map(|id| self.tabs.iter().position(|t| t.id == *id)).collect();
+                if let Some(&first) = at.first() {
+                    self.selected.clear();
+                    self.selected.extend(at.iter().copied());
+                    self.activate(first);
+                    self.close_tabs(true);
                 }
-                self.play_event("tab.close");
             }
             GroupAct::Skip => {}
         }

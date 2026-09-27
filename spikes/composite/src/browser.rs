@@ -154,6 +154,9 @@ pub struct Shared {
     pub gone: bool,
     /// nus is closing or sleeping this page itself; its close is expected.
     pub(crate) letting_go: bool,
+    /// Asked to close as part of closing tabs, and waiting on Chromium to
+    /// finish (unload handlers): it goes with its batch, quietly, when it's gone.
+    pub closing: bool,
     /// The page has shown a document of its own (not only a download).
     pub(crate) committed: bool,
     /// A paint has arrived since the main document committed: the page

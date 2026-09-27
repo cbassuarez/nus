@@ -9086,6 +9086,60 @@ impl App {
     /// itself, a page you chose to leave, a new tab that turned out to be
     /// a download — go, and their pane with them.
     fn take_away_gone_pages(&mut self) {
+        // Pages closing with a batch: a leave-page question brings its tab
+        // forward (and it's no longer part of the batch); the gone ones
+        // leave together, without a sound of their own.
+        let mut asking: Option<usize> = None;
+        let mut batch: Vec<u64> = Vec::new();
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let mut all_gone = true;
+            let mut any_closing = false;
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Web(w) = p {
+                    let mut s = w.tab.shared.borrow_mut();
+                    if !s.closing {
+                        continue;
+                    }
+                    any_closing = true;
+                    if s.dialog.is_some() {
+                        s.closing = false;
+                        asking = Some(i);
+                    }
+                    if !s.gone {
+                        all_gone = false;
+                    }
+                }
+            }
+            if any_closing && all_gone {
+                batch.push(tab.id);
+            }
+        }
+        if let Some(i) = asking {
+            self.activate(i);
+        }
+        if !batch.is_empty() {
+            let was_active = self.tabs.get(self.active).map(|t| t.id);
+            for id in &batch {
+                let Some(i) = self.tabs.iter().position(|t| t.id == *id) else { continue };
+                if self.tabs.len() <= 1 {
+                    self.tabs[i].left = Pane::Home(crate::home::HomePane::new());
+                    self.tabs[i].right = None;
+                    break;
+                }
+                let tab = self.tabs.remove(i);
+                self.tile_forget(tab.id);
+                if let Pane::Web(w) = &tab.left {
+                    self.closed.push(Closed::Web(w.tab.shared.borrow().url.clone()));
+                }
+                self.tab_removed(i);
+            }
+            if was_active.is_some_and(|id| batch.contains(&id)) || self.active >= self.tabs.len() {
+                let next = self.mru.first().copied().unwrap_or(0).min(self.tabs.len().saturating_sub(1));
+                self.activate(next);
+            }
+            self.layout();
+            self.dirty = true;
+        }
         let mut gone: Vec<(u64, bool)> = Vec::new();
         for tab in &self.tabs {
             for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
@@ -9538,25 +9592,31 @@ impl App {
         // A page with unsaved work gets its say (`beforeunload`): its tab
         // stays, with the leave-page question up, until you answer. Pages
         // with nothing to say start closing here.
-        let mut held = None;
+        // Chromium usually finishes closing a page a moment later (its
+        // unload handlers run first): those pages are marked and leave with
+        // this close, quietly, when they're gone (take_away_gone_pages), so
+        // closing many tabs is one transition and one sound, not a cascade.
+        // A page that asks "leave this page?" is brought forward there.
+        let mut held_any = false;
         targets.retain(|&i| {
             let Some(tab) = self.tabs.get(i) else { return true };
             let mut ok = true;
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                 if let Pane::Web(w) = p {
                     if !w.tab.shared.borrow().gone && !w.tab.ask_to_close() {
+                        w.tab.shared.borrow_mut().closing = true;
                         ok = false;
                     }
                 }
             }
-            if !ok { held = Some(i); }
+            if !ok { held_any = true; }
             ok
         });
-        if let Some(i) = held {
-            self.active = i;
+        if held_any {
             self.selected.clear();
             self.dirty = true;
             if targets.is_empty() {
+                self.play_event("tab.close");
                 return;
             }
         }
