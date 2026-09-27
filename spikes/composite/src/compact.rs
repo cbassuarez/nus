@@ -32,6 +32,11 @@ impl App {
         self.dirty = true;
     }
 
+    /// A pinned cell's height: a preview tile needs the rows' 48 px, an icon 32.
+    pub(crate) fn compact_pin_h(&self) -> f32 {
+        self.px(if self.sidebar_rules.small_tabs == crate::sidebar::SmallTabs::Preview { 48.0 } else { 32.0 })
+    }
+
     /// The compact column: window square, NEW TAB, icon rows, settings.
     pub(crate) fn draw_sidebar_compact(&mut self, scene: &mut Scene) {
         let t = self.theme.clone();
@@ -67,9 +72,11 @@ impl App {
         let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
         let mut py = sb.y + COMPACT_HEAD * self.scale + self.pins_height();
-        let pin_h = self.px(32.0);
+        let pin_h = self.compact_pin_h();
         for &i in &g.pinned {
             let cell = Rect::new(sb.x, py, sb.w, pin_h);
+            // A pinned tile stays in its cell: previews are taller than icons.
+            scene.layer(Some(cell));
             let active = i == self.active;
             if active {
                 scene.rect(cell, ink);
@@ -78,6 +85,7 @@ impl App {
             }
             let color = if active { self.on_fill(ink) } else { t.dim };
             self.draw_tab_icon(scene, &tabs[i], cx, py + ((pin_h - isz) / 2.0).round(), isz, color);
+            scene.layer(None);
             py += pin_h;
         }
         if !g.pinned.is_empty() {

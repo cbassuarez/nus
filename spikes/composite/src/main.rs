@@ -14,6 +14,7 @@ mod scm;
 mod git_gutter;
 mod pr;
 mod git_side;
+mod clicks;
 mod interstitial;
 mod interstitial_ui;
 mod pip_dock;
@@ -670,7 +671,16 @@ impl ApplicationHandler<UserEvent> for Host {
             }
         }
         for i in spawn_from {
+            // Pages it was asked to open (a Shift-click), carried over.
+            let urls = self.apps.get_mut(i).map(|a| std::mem::take(&mut a.new_window_urls)).unwrap_or_default();
             self.spawn_window(event_loop, Some(i));
+            if !urls.is_empty() {
+                if let Some(a) = self.apps.last_mut() {
+                    for u in &urls {
+                        a.open_url(u, true);
+                    }
+                }
+            }
         }
         for (i, id, dest) in sends {
             self.send_tab(event_loop, i, id, dest);

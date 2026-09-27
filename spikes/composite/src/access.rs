@@ -162,6 +162,7 @@ impl App {
                 S::Downloads => "downloads".into(),
                 S::Fold(i) => format!("{} {}", if self.collapsed.contains(&self.tabs[i].id) { "unfold" } else { "fold" }, self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::Settings => "settings".into(),
+                S::TabCopy(i) => { let n = self.copy_set(i).len(); if n > 1 { format!("copy {n} tabs' addresses") } else { "copy this tab's address".into() } }
                 S::TabRename(i) => format!("rename tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::TabIcon(_) => "tab icon".into(),
                 S::TabColour(_, 0) => "tab color: none".into(),

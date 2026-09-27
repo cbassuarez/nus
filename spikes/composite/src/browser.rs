@@ -71,6 +71,10 @@ pub struct Shared {
     /// A page asked for a new window (target=_blank, window.open); the app
     /// opens it as a tab in this tab's stack.
     pub popup: Option<String>,
+    /// Links opened with the browser's own modifiers: ⌘/Ctrl-click or a
+    /// middle click (a tab behind this one, `false`), Shift-click (a new
+    /// window, `true`).
+    pub link_open: Vec<(String, bool)>,
     /// The link under the pointer (Chromium's status message), for peeks.
     pub hover_url: String,
     pub created: Created,
@@ -1717,6 +1721,19 @@ wrap_life_span_handler! {
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
             let _ = browser;
+            // A link opened the browser's usual ways: ⌘/Ctrl or middle click
+            // for a tab behind this one, Shift for a new window. The app opens
+            // it; the page isn't joined to this one, as in Chrome.
+            {
+                use cef::sys::cef_window_open_disposition_t as Wod;
+                let how = Wod::from(_target_disposition);
+                if matches!(how, Wod::CEF_WOD_NEW_BACKGROUND_TAB | Wod::CEF_WOD_NEW_WINDOW) {
+                    if let Some(url) = target_url {
+                        self.d.shared.borrow_mut().link_open.push((url.to_string(), how == Wod::CEF_WOD_NEW_WINDOW));
+                    }
+                    return 1;
+                }
+            }
             let factory = self.d.shared.borrow().popup_factory.clone();
             // A real window, joined to its opener: sign-in and payment popups
             // talk back through `window.opener` and close themselves.

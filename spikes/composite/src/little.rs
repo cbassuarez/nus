@@ -194,6 +194,8 @@ pub struct Little {
     /// Header hit rects: keep, close.
     pub keep: Rect,
     pub close: Rect,
+    /// Double and triple clicks on its page.
+    pub clicks: std::cell::Cell<crate::clicks::Counter>,
 }
 
 pub const LITTLE_W: f64 = 560.0;
@@ -240,6 +242,7 @@ impl App {
             mods: Default::default(),
             keep: Rect::new(0.0, 0.0, 0.0, 0.0),
             close: Rect::new(0.0, 0.0, 0.0, 0.0),
+            clicks: Default::default(),
         };
         l.window.set_visible(true);
         l.window.focus_window();
@@ -414,7 +417,10 @@ impl App {
                 MouseButton::Middle => cef::MouseButtonType::MIDDLE,
                 _ => return,
             };
-            l.pane.tab.mouse_click(lx as i32, ly as i32, crate::app::cef_mods(l.mods), b, !pressed, 1);
+            let mut counter = l.clicks.get();
+            let n = counter.count(crate::clicks::id(button), pressed, x, y, 4.0 * scale, crate::window_resize::double_click_interval());
+            l.clicks.set(counter);
+            l.pane.tab.mouse_click(lx as i32, ly as i32, crate::app::cef_mods(l.mods), b, !pressed, n);
         }
     }
 

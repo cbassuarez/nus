@@ -333,7 +333,9 @@ impl App {
                 // Click count.
                 let now = crate::clock::now();
                 let count = match t.clicks {
-                    Some(c) if now.duration_since(c.at).as_millis() < 400 && c.pos == (line, col) => c.count + 1,
+                    // The system's double-click time, and a cell of slop: a hand
+                    // that drifts a pixel across a cell edge still clicks twice.
+                    Some(c) if now.duration_since(c.at) <= crate::window_resize::double_click_interval() && c.pos.0 == line && c.pos.1.abs_diff(col) <= 1 => c.count % 3 + 1,
                     _ => 1,
                 };
                 t.clicks = Some(Clicks { at: now, pos: (line, col), count });

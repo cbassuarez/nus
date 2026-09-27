@@ -582,7 +582,7 @@ impl App {
                 for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                     if let Pane::Web(w)=p {if w.page.contains(pos.0,pos.1) {
                         let b=match button {MouseButton::Left=>cef::MouseButtonType::LEFT,MouseButton::Right=>cef::MouseButtonType::RIGHT,MouseButton::Middle=>cef::MouseButtonType::MIDDLE,_=>return};
-                        w.tab.mouse_click(((pos.0-w.page.x)/a.scale) as i32,((pos.1-w.page.y)/a.scale) as i32,crate::app::cef_mods(a.mods),b,!pressed,1);w.tab.focus(true);return;
+                        let n=a.page_clicks.count(crate::clicks::id(button),pressed,pos.0,pos.1,4.0*a.scale,crate::window_resize::double_click_interval());w.tab.mouse_click(((pos.0-w.page.x)/a.scale) as i32,((pos.1-w.page.y)/a.scale) as i32,crate::app::cef_mods(a.mods),b,!pressed,n);w.tab.focus(true);return;
                     }}
                 }
             }

@@ -582,6 +582,8 @@ pub enum SideHit {
     TabPin(usize),
     Pinned(crate::pins::Act),
     TabClose(usize),
+    /// Copy this tab's address, or every selected tab's, one per line.
+    TabCopy(usize),
     /// Tile this tab with the selection, or untile it.
     TabTile(usize),
     /// Save this tab's page into a folder (the palette picks which).
@@ -989,6 +991,10 @@ pub struct App {
     /// Asks the host answers: front that window; open a new one.
     pub front_request: Option<u64>,
     pub new_window_request: bool,
+    /// Double and triple clicks on pages (clicks.rs).
+    pub page_clicks: crate::clicks::Counter,
+    /// Pages the next new window opens (Shift-click on a link, OPEN IN NEW WINDOW).
+    pub new_window_urls: Vec<String>,
     /// A window that came up as the prompt and has not been given a folder
     /// or a tab yet: its rows offer folders.
     pub fresh: bool,
@@ -1420,6 +1426,8 @@ impl App {
             ordinal: 0,
             front_request: None,
             new_window_request: false,
+            page_clicks: Default::default(),
+            new_window_urls: Vec::new(),
             fresh: false,
             born_in: None,
             windows: Arc::new(Vec::new()),
@@ -2938,7 +2946,56 @@ impl App {
     }
 
     /// Ctrl+Shift+C: the selection if there is one, else the last output.
+    /// The tabs a copy takes: the selection with `i`, or `i` alone.
+    pub(crate) fn copy_set(&self, i: usize) -> Vec<usize> {
+        let mut v: Vec<usize> = self.selected.iter().copied().filter(|&k| k < self.tabs.len()).collect();
+        if !v.is_empty() && !v.contains(&i) && i < self.tabs.len() {
+            v.push(i);
+        }
+        if v.is_empty() && i < self.tabs.len() {
+            v.push(i);
+        }
+        v.sort_unstable();
+        v
+    }
+
+    /// Where a tab is, as text: a page's address, a file's path, a shell's
+    /// folder. None for pages of nus's own.
+    pub(crate) fn tab_address(&self, i: usize) -> Option<String> {
+        let tab = self.tabs.get(i)?;
+        let (main, _) = tab.panes();
+        match main {
+            Pane::Web(w) => Some(w.tab.shared.borrow().url.clone()).filter(|u| !u.is_empty()),
+            Pane::Editor(e) => e.buffers.get(e.active)?.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            Pane::Term(t) => t.cwd.clone(),
+            _ => None,
+        }
+    }
+
+    /// Copy tab `i`'s address, or every selected tab's, one per line, in
+    /// the sidebar's order.
+    pub(crate) fn copy_tabs(&mut self, i: usize) {
+        let set = self.copy_set(i);
+        let lines: Vec<String> = set.iter().filter_map(|&k| self.tab_address(k)).collect();
+        if lines.is_empty() {
+            self.toast(nus_render::text::icons::COPY, "Nothing To Copy", "these tabs have no address", None);
+            return;
+        }
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(lines.join("\n"));
+        }
+        self.play_event("toggle");
+        let n = lines.len();
+        let detail = if n == 1 { lines[0].clone() } else { format!("{n} addresses, one per line") };
+        self.toast(nus_render::text::icons::COPY, if n == 1 { "Copied" } else { "Copied Tabs" }, detail, None);
+    }
+
     pub(crate) fn copy_selection_or_output(&mut self) {
+        // Several tabs selected in the sidebar: the chord copies them all,
+        // unless the shell has text selected.
+        if self.selected.len() > 1 && self.focused_term().is_none_or(|t| t.sel.is_none()) {
+            return self.copy_tabs(self.active);
+        }
         // On a page the chord copies its address; the terminal chord is untouched.
         if self.focused_term().is_none() && self.copy_page_url() {
             return;
@@ -5234,7 +5291,7 @@ impl App {
         let sb = self.list_rect();
         let space_row = self.side_header_h();
         let pinned: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].pinned && !self.tabs[i].hatch && !self.pins.owns(self.tabs[i].id)).collect();
-        let pinned_h = if pinned.is_empty() { 0.0 } else if self.sidebar_icons() {self.px(32.0)*pinned.len() as f32} else {self.header_h()};
+        let pinned_h = if pinned.is_empty() { 0.0 } else if self.sidebar_icons() {self.compact_pin_h()*pinned.len() as f32} else {self.header_h()};
         let row = self.px(if self.sidebar_icons() && self.sidebar_rules.small_tabs==crate::sidebar::SmallTabs::Preview {48.0}else{m::ROW_H});
         let top = sb.y + space_row + self.pins_height() + pinned_h;
         let foot_y = sb.bottom() - self.sidebar_footer_h();
@@ -5836,6 +5893,10 @@ impl App {
                 }
             }
             SideHit::Fold(i) => self.toggle_fold(i),
+            SideHit::TabCopy(i) => {
+                self.close_menus();
+                self.copy_tabs(i);
+            }
             SideHit::TabRename(i) => {
                 self.close_menus();
                 self.open_palette(PaletteMode::RenameTab(i));
@@ -6267,7 +6328,7 @@ impl App {
         let (win_w, win_h) = (self.target.size.0 as f32, self.target.size.1 as f32);
         let margin = self.px(8.0);
         let width = width.min(win_w - 2.0 * margin);
-        let h_full = row * (4.0 + if tile_row.is_some() { 1.0 } else { 0.0 } + if page { 1.0 } else { 0.0 }) + grid_h + self.px(4.0);
+        let h_full = row * (5.0 + if tile_row.is_some() { 1.0 } else { 0.0 } + if page { 1.0 } else { 0.0 }) + grid_h + self.px(4.0);
         let h = h_full * k;
         // Rises from under the row; flips up when there's no room below.
         let y0 = if top + h_full > win_h - margin { (top - row - h_full).max(margin) } else { top };
@@ -6339,6 +6400,11 @@ impl App {
         }
         let pinned = self.tabs[i].pinned;
         item(self, scene, nus_render::text::icons::PIN, if pinned { "UNPIN" } else { "PIN" }, "", SideHit::TabPin(i), y);
+        y += row;
+        let n = self.copy_set(i).len();
+        let copy_words = if n > 1 { format!("COPY {n} TABS") } else { "COPY ADDRESS".to_string() };
+        let copy_key = if cfg!(target_os = "macos") { "\u{2318}C" } else { "CTRL+C" };
+        item(self, scene, nus_render::text::icons::COPY, &copy_words, if n > 1 { copy_key } else { "" }, SideHit::TabCopy(i), y);
         y += row;
         item(self, scene, nus_render::text::icons::CLOSE, "CLOSE", "CTRL+SHIFT+W", SideHit::TabClose(i), y);
         scene.layer(outer);
@@ -9069,6 +9135,24 @@ impl App {
                 }
             }
         }
+        // Links opened with modifiers: behind the current tab, or a new window.
+        let mut links: Vec<(String, bool)> = Vec::new();
+        for tab in &self.tabs {
+            for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
+                if let Pane::Web(w) = p {
+                    links.append(&mut w.tab.shared.borrow_mut().link_open);
+                }
+            }
+        }
+        for (url, window) in links {
+            if window {
+                self.new_window_urls.push(url);
+                self.new_window_request = true;
+            } else {
+                self.open_url_behind(&url);
+            }
+            self.dirty = true;
+        }
         for (i, url) in opens {
             match self.behavior.links {
                 crate::settings::Links::Stack => self.open_in_stack(i, &url),
@@ -9244,7 +9328,35 @@ impl App {
             self.dirty = true;
             return;
         }
+        // An address, with the browser's modifiers: Shift+Enter in a new
+        // window; ⌘+Enter (Alt+Enter on Windows and Linux, Ctrl too) in a new tab.
+        if let Action::NewBrowser(url) | Action::OpenInPane(url) = &action {
+            if !url.is_empty() {
+                let tab_chord = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.alt_key() || self.mods.control_key() };
+                if self.mods.shift_key() {
+                    self.new_window_urls.push(url.clone());
+                    self.new_window_request = true;
+                    return;
+                }
+                if tab_chord {
+                    return self.open_url(url, true);
+                }
+            }
+        }
         self.run(action);
+    }
+
+    /// A page in a new tab right after the current one, which stays in front:
+    /// the ⌘/Ctrl-click tab. It wakes when you go to it.
+    pub(crate) fn open_url_behind(&mut self, url: &str) {
+        if let Some(w) = self.new_web_pane(url) {
+            let mut tab = self.make_tab(Pane::Web(w), None);
+            tab.closes_on_back = true;
+            let at = (self.active + 1).min(self.tabs.len());
+            self.tabs.insert(at, tab);
+            self.notice(nus_render::text::icons::GLOBE, "Opened Behind", crate::app::fit_cmd(url, 60));
+            self.layout();
+        }
     }
 
     pub(crate) fn open_url(&mut self, url: &str, new_tab: bool) {
@@ -9907,7 +10019,7 @@ impl App {
         }
         // A menu is up: a click elsewhere closes it.
         if pressed && (self.win_menu || self.kinds_menu || self.dl_menu || self.tab_menu.is_some()) {
-            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::KindMore | SideHit::Window | SideHit::Kinds | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabTile(_) | SideHit::TabFolder(_)));
+            let on_menu = self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow | SideHit::Kind(_) | SideHit::KindPage | SideHit::KindMore | SideHit::Window | SideHit::Kinds | SideHit::Downloads | SideHit::TabRename(_) | SideHit::TabIcon(_) | SideHit::TabColour(..) | SideHit::TabPin(_) | SideHit::TabClose(_) | SideHit::TabCopy(_) | SideHit::TabTile(_) | SideHit::TabFolder(_)));
             if !on_menu {
                 self.close_menus();
             }
@@ -10273,7 +10385,8 @@ impl App {
                                 MouseButton::Middle => cef::MouseButtonType::MIDDLE,
                                 _ => continue,
                             };
-                            d.mouse_click(lx as i32, ly as i32, mods, b, !pressed, 1);
+                            let n = self.page_clicks.count(crate::clicks::id(button), pressed, x, y, 4.0 * scale, crate::window_resize::double_click_interval());
+                            d.mouse_click(lx as i32, ly as i32, mods, b, !pressed, n);
                             d.focus(true);
                             w.tab.focus(false);
                             focus_dt = Some((is_right, true));
@@ -10293,7 +10406,8 @@ impl App {
                             MouseButton::Middle => cef::MouseButtonType::MIDDLE,
                             _ => continue,
                         };
-                        w.tab.mouse_click(lx as i32, ly as i32, mods, b, !pressed, 1);
+                        let n = self.page_clicks.count(crate::clicks::id(button), pressed, x, y, 4.0 * scale, crate::window_resize::double_click_interval());
+                        w.tab.mouse_click(lx as i32, ly as i32, mods, b, !pressed, n);
                         if button == MouseButton::Left {
                             down_in_web = pressed;
                         }
