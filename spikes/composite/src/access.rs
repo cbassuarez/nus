@@ -245,8 +245,20 @@ impl App {
                         n
                     }
                     Pane::Editor(e) => {
-                        let mut n = Node::new(Role::Document);
-                        n.set_label(format!("editor · {}", e.title()));
+                        // A note is multiline text you can read, with its
+                        // save state in the name (a screen reader says it).
+                        let note = e.buf().and_then(|b| b.note.as_ref().map(|v| (v, b)));
+                        let mut n = Node::new(if note.is_some() { Role::MultilineTextInput } else { Role::Document });
+                        match note {
+                            Some((v, b)) => {
+                                let status = crate::notes_session::status(&v.key).map(|s| s.word()).unwrap_or_default();
+                                n.set_label(format!("note · {} · {status}", v.title));
+                                if b.text.len_bytes() <= 256 * 1024 {
+                                    n.set_value(b.text.to_string());
+                                }
+                            }
+                            None => n.set_label(format!("editor · {}", e.title())),
+                        }
                         n.set_bounds(bounds(e.rect));
                         n
                     }
@@ -293,7 +305,7 @@ impl App {
                             Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::Back |
                             Hit::AddArt | Hit::AskArt | Hit::OpenArtFolder | Hit::EditHomeUrl | Hit::SetLaunchTabs | Hit::ClearLaunchTabs => Node::new(Role::Button),
                             h if App::setting_is_action(h) => Node::new(Role::Button),
-                            Hit::AskCtx(_) | Hit::FooterTheme(_) => Node::new(Role::CheckBox),
+                            Hit::AskCtx(_) | Hit::FooterTheme(_) | Hit::ReactTo(..) => Node::new(Role::CheckBox),
                             _ => Node::new(Role::RadioButton),
                         };
                         c.set_label(label);

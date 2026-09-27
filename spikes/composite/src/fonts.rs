@@ -1,4 +1,9 @@
 //! Bundled families and their real supplied weights; no synthetic emboldening.
+//!
+//! nus vendors its own faces, and nothing stops you using yours: any font
+//! installed on the computer, or a file dropped into `profile/fonts`
+//! (.ttf, .otf, .ttc), is chosen under INSTALLED. Its licence is between
+//! you and its foundry.
 use crate::app::App;
 use nus_render::FontId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
@@ -48,13 +53,36 @@ pub struct Typography {
     pub editor_weight: Weight,
     pub editor_size: f32,
     pub editor_line: f32,
+    /// Notes' own face: Blueprint's (Areal Mono Medium, 14 pt, 1.25 line,
+    /// 0.25 tracking) unless you choose another. Code keeps the editor's.
+    pub notes_family: Family,
+    pub notes_weight: Weight,
+    pub notes_size: f32,
+    pub notes_line: f32,
+    pub notes_spacing: f32,
+    /// Characters a note's line is set in before the page gets margins;
+    /// 0: as wide as the pane.
+    pub notes_measure: u16,
 }
-impl Default for Typography { fn default()->Self { Self {system:Default::default(),ui_scale:1.0,terminal_size:13.0,terminal_line:1.0,terminal_spacing:0.0,editor_family:Family::Plex,editor_weight:Weight::Regular,editor_size:13.0,editor_line:1.25} } }
+impl Default for Typography { fn default()->Self { Self {system:Default::default(),ui_scale:1.0,terminal_size:13.0,terminal_line:1.0,terminal_spacing:0.0,editor_family:Family::Plex,editor_weight:Weight::Regular,editor_size:13.0,editor_line:1.25,notes_family:Family::ArealMono,notes_weight:Weight::Medium,notes_size:14.0,notes_line:1.25,notes_spacing:0.25,notes_measure:72} } }
 fn finite(v:f32,lo:f32,hi:f32,default:f32)->f32 {if v.is_finite(){v.clamp(lo,hi)}else{default}}
 impl Typography {
-    pub fn normalize(&mut self){self.ui_scale=finite(self.ui_scale,0.85,1.2,1.0);self.terminal_size=finite(self.terminal_size,9.0,24.0,13.0);self.terminal_line=finite(self.terminal_line,1.0,1.8,1.0);self.terminal_spacing=finite(self.terminal_spacing,0.0,3.0,0.0);self.editor_size=finite(self.editor_size,9.0,24.0,13.0);self.editor_line=finite(self.editor_line,1.0,1.8,1.25);}
+    pub fn normalize(&mut self){self.ui_scale=finite(self.ui_scale,0.85,1.2,1.0);self.terminal_size=finite(self.terminal_size,9.0,24.0,13.0);self.terminal_line=finite(self.terminal_line,1.0,1.8,1.0);self.terminal_spacing=finite(self.terminal_spacing,0.0,3.0,0.0);self.editor_size=finite(self.editor_size,9.0,24.0,13.0);self.editor_line=finite(self.editor_line,1.0,1.8,1.25);self.notes_size=finite(self.notes_size,9.0,28.0,14.0);self.notes_line=finite(self.notes_line,1.0,2.0,1.25);self.notes_spacing=finite(self.notes_spacing,0.0,3.0,0.25);if self.notes_measure!=0{self.notes_measure=self.notes_measure.clamp(40,160);}}
 }
+/// Fonts of your own, loaded without installing them.
+pub fn own_dir() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_default().join("profile").join("fonts")
+}
+
 impl App {
+    /// Pick up files dropped into `profile/fonts` since the last look.
+    pub(crate) fn load_own_fonts(&self) {
+        let added = self.fonts.add_font_dir(&own_dir());
+        if added > 0 {
+            tracing::info!("{added} font file(s) from profile/fonts");
+        }
+    }
+
     pub(crate) fn font_face(&mut self,family:Family,weight:Weight,system:&str)->FontId {
         let fallback=self.bundled_face(family,weight);
         if system.is_empty(){return fallback;}
@@ -65,6 +93,7 @@ impl App {
     }
     pub(crate) fn set_system_font(&mut self,role:u8,name:&str)->bool {
         if role>2{return false;}
+        self.load_own_fonts();
         if !name.is_empty(){
             let found=self.fonts.system_families().into_iter().find(|(n,_)|n.eq_ignore_ascii_case(name));
             let Some((family,mono))=found else{self.notice(nus_render::text::icons::TEXT_AA,"Font Not Installed","choose a family from the list");return false;};
@@ -81,12 +110,15 @@ impl App {
         self.font_cache.push((family,weight,id));id
     }
     pub(crate) fn apply_fonts(&mut self) {
+        self.load_own_fonts();
         self.behavior.typography.normalize();
         let config=self.behavior.typography.clone();
         self.f.ui=self.font_face(self.behavior.ui_font,self.behavior.ui_weight,&config.system[0]);
         self.f.strong=self.font_face(self.behavior.ui_font,Weight::Bold,&config.system[0]);
         self.f.term=self.font_face(self.behavior.term_font,self.behavior.term_weight,&config.system[1]);
         self.f.editor=self.font_face(config.editor_family,config.editor_weight,&config.system[2]);
+        self.f.notes=self.font_face(config.notes_family,config.notes_weight,"");
+        self.f.notes_bold=self.font_face(config.notes_family,Weight::Bold,"");
         let px=self.terminal_px();
         for tab in &mut self.tabs {for pane in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {if let crate::app::Pane::Term(t)=pane {
             t.grid.set_font(&self.fonts,self.f.term,px*t.zoom as f32/100.0);

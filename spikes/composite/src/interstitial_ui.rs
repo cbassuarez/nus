@@ -10,11 +10,13 @@ use nus_render::{Rect, Scene};
 use crate::app::{fade, App, Pane, WebPane};
 use crate::interstitial::{Kind, Page, Sev};
 
-/// The waking transcript stands until the woken page has painted.
+/// The waking transcript stands until the woken page paints a document
+/// of its own — its first paint, not the end of its load: the rest of
+/// the page arrives in view, the way a page you opened does.
 pub(crate) fn settle_waking(w: &mut WebPane) {
     let mut s = w.tab.shared.borrow_mut();
     let waking = s.overlay.as_ref().is_some_and(|o| o.kind == Kind::Sleep && o.acts.is_empty());
-    if waking && s.bind.is_some() && !s.loading {
+    if waking && s.bind.is_some() && (s.painted_committed || !s.loading) {
         s.overlay = None;
         s.paints += 1;
     }
@@ -102,9 +104,10 @@ impl App {
     /// Every idle page but this tab's, asleep now (the out-of-memory page).
     pub(crate) fn sleep_idle_tabs(&mut self) -> usize {
         let media_window = self.pip.is_some() || self.little.is_some() || self.docked.is_some();
+        let working: Vec<bool> = (0..self.tabs.len()).map(|i| self.tab_working(i)).collect();
         let mut n = 0;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            if i == self.active || tab.pinned || media_window {
+            if i == self.active || tab.pinned || media_window || working[i] {
                 continue;
             }
             if let Pane::Web(w) = &mut tab.left {
@@ -307,7 +310,7 @@ impl App {
                 let vx = tx + lw + pw;
                 let vw = self.fonts.draw(scene, ui, vx, y, &shown);
                 if on {
-                    scene.rect(Rect::new(vx + vw + self.px(1.0), y - ui.px * 0.8, self.px(2.0), ui.px), ink);
+                    self.draw_line_caret(scene, vx + vw + self.px(1.0), y, ui.px, 1.0, self.last_key);
                 }
                 let rule = Rect::new(tx + lw, y + line_h * 0.28, width - lw, self.px(1.0));
                 scene.rect(rule, if on { ink } else { fade(ink, 0.25) });

@@ -905,11 +905,7 @@ impl App {
         if lit {
             let iw = self.fonts.measure(ui, &ask.input);
             let cxr = (field.x + self.px(8.0) + iw.min(field.w - self.px(16.0))).round();
-            let on = (crate::clock::since(self.started).as_secs_f32() * 2.0) as u32 % 2 == 0;
-            if on {
-                scene.rect(Rect::new(cxr, fy + self.px(6.0), self.px(1.5), field.h - self.px(12.0)), ink);
-            }
-            self.dirty = true;
+            self.draw_line_caret(scene, cxr, fb, ui.px, 1.0, self.last_key);
         }
         ask.hits.push((field, AskHit::Field));
         // The turns, oldest first, scrolled so the newest is in view.

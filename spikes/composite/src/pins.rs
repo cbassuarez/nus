@@ -567,21 +567,35 @@ impl App {
             }
             let color = if active { self.surface.signal } else { ink };
             let tiles = !self.pins.editing;
+            // A spawner owns no tab. Reuse identity from an already-open page
+            // in the same container, without loading or waking its destination.
+            let page_source = live.or_else(|| match &pin.target {
+                Target::Page { url, container } => self.tabs.iter().rposition(|tab| match &tab.left {
+                    Pane::Web(w) => &w.container == container && crate::web_preview::same_site(url, &w.tab.shared.borrow().url),
+                    _ => false,
+                }),
+                _ => None,
+            });
+            let identity = page_source.is_some_and(|i| match &self.tabs[i].left {
+                Pane::Web(w) => crate::web_preview::use_site_icon(&w.tab.shared.borrow()),
+                _ => false,
+            });
+            let size = if tiles && !compact && identity && self.sidebar_rules.pin_display == Display::Preview { self.px(30.0) } else { size };
             let ix = if compact || tiles {
                 rr.x + (rr.w - size) * 0.5
             } else {
                 rr.x + self.px(9.0)
             };
             let iy = rr.y + self.px(if compact { 11.0 } else if tiles { 16.0 } else { 8.0 });
-            let favicon = live.and_then(|i| match &self.tabs[i].left {
-                Pane::Web(w) => w.favicon.as_ref().map(|(_, tex)| tex.clone()),
+            let favicon = page_source.and_then(|i| match &self.tabs[i].left {
+                Pane::Web(w) => w.favicon.as_ref().map(|(_, tex)| (tex.clone(), w.favicon_rect(Rect::new(ix, iy, size, size)))),
                 _ => None,
             });
             // Reuse the browser's existing composited texture, as compact tab
             // previews do. Pinning alone never opens or wakes a web page.
             let preview = if tiles && !compact && self.sidebar_rules.pin_display == Display::Preview {
-                live.and_then(|i| match &self.tabs[i].left {
-                    Pane::Web(w) => w.preview_texture(),
+                page_source.and_then(|i| match (&pin.target, &self.tabs[i].left) {
+                    (Target::Page { url, .. }, Pane::Web(w)) if w.tab.shared.borrow().url == *url => w.preview_texture(),
                     _ => None,
                 })
             } else { None };
@@ -591,9 +605,11 @@ impl App {
                 let picture = Rect::new(rr.x + inset, rr.y + self.px(5.0), rr.w - inset * 2.0, rr.h - self.px(28.0));
                 scene.texture(picture, bind, Some(body));
                 scene.layer(Some(body));
-            } else if let Some(tex) = favicon {
-                scene.texture(Rect::new(ix, iy, size, size), tex, Some(body));
+            } else if let Some((tex, rect)) = favicon {
+                scene.texture(rect, tex, Some(body));
                 scene.layer(Some(body));
+            } else if let Target::Page { url, .. } = &pin.target {
+                self.draw_site_monogram(scene, url, Rect::new(ix, iy, size, size), color);
             } else {
                 self.fonts.draw_icon(scene, pin.icon(), size, ix, iy, color);
             }

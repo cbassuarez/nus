@@ -198,7 +198,13 @@ impl App {
             for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
                 if let Pane::Editor(e) = p {
                     if let Some(b) = e.buf() {
-                        g.editor = Some((b.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "untitled".into()), b.text.to_string()));
+                        // A note sends what you selected in it, else all of
+                        // it, named by its title rather than a sealed path.
+                        g.editor = Some(match &b.note {
+                            Some(v) if b.selection().is_some() => (format!("note · {} · the selected passage", v.title), b.selected_text()),
+                            Some(v) => (format!("note · {}", v.title), b.text.to_string()),
+                            None => (b.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "untitled".into()), b.text.to_string()),
+                        });
                     }
                 }
             }

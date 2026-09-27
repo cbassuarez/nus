@@ -122,10 +122,12 @@ pub fn repo(cwd: &str) -> Option<Repo> {
 /// The words of the git command the caret is in, and whether the last
 /// word is still being typed (no space after it). None: not in a git command.
 fn git_words(line: &str) -> Option<(Vec<String>, bool)> {
-    // Only the last command of a pipeline or list.
-    let seg = line.rsplit(['|', '&', ';']).next().unwrap_or(line);
-    let open = !seg.ends_with(char::is_whitespace);
-    let words: Vec<String> = seg.split_whitespace().map(str::to_string).collect();
+    // Only unquoted operators start a new command; a pipe inside a
+    // quoted argument must never activate Git's completer.
+    let ranges = crate::prompt_code::token_ranges(line);
+    let first = ranges.iter().rposition(|r| matches!(&line[r.clone()], "|" | "&" | ";")).map(|i| i + 1).unwrap_or(0);
+    let open = !line.ends_with(char::is_whitespace);
+    let words: Vec<String> = ranges[first..].iter().map(|r| line[r.clone()].to_string()).collect();
     if words.first().map(String::as_str) != Some("git") || (words.len() == 1 && open) {
         return None;
     }
@@ -187,14 +189,25 @@ pub fn ghost(line: &str, cwd: Option<&str>) -> Option<String> {
     if prefix.is_empty() {
         return None;
     }
-    let hit = list.iter().find(|c| c.len() > prefix.len() && c.starts_with(&prefix))?;
+    let hit = list.iter().find(|c| c.len() > prefix.len() && c.starts_with(&prefix) && safe_word(c))?;
     Some(hit[prefix.len()..].to_string())
+}
+
+/// Full-word choices for Code, available without a language server.
+pub fn completions(line: &str, cwd: Option<&str>) -> Vec<String> {
+    let Some((words, open)) = git_words(line) else { return Vec::new() };
+    let repo = cwd.and_then(repo);
+    let (prefix, list) = candidates(&words, open, repo.as_ref());
+    list.into_iter().filter(|s| s.starts_with(&prefix) && s != &prefix && safe_word(s)).take(40).collect()
+}
+
+fn safe_word(word: &str) -> bool {
+    crate::prompt_code::safe_text(word) && !word.chars().any(|c| c.is_whitespace() || "'\"`$\\;|&<>()".contains(c))
 }
 
 /// Whether the caret is in a git command (so other completers stay out).
 pub fn is_git(line: &str) -> bool {
-    let seg = line.rsplit(['|', '&', ';']).next().unwrap_or(line);
-    seg.split_whitespace().next() == Some("git") && seg.contains(char::is_whitespace)
+    git_words(line).is_some()
 }
 
 /// What a word of a git line is, for its colour: the subcommand, a ref, a
@@ -301,4 +314,20 @@ mod tests {
         assert!(is_git("git push "));
         assert!(!is_git("git"));
     }
+
+    #[test]
+    fn code_menu_exists_without_repository_or_server() {
+        assert_eq!(completions("git log --", None)[..4], ["--oneline", "--graph", "--all", "--decorate"]);
+        assert!(completions("git pu", None).contains(&"push".to_string()));
+        assert!(!safe_word("src/two words.rs"));
+        assert!(!safe_word("cafe\u{301}"));
+    }
+
+    #[test]
+    fn quoted_pipeline_stays_a_literal_argument() {
+        assert!(!is_git("echo 'hi | git st"));
+        assert!(completions("echo 'hi | git st", None).is_empty());
+        assert!(completions("echo 'hi | there' | git st", None).contains(&"status".to_string()));
+    }
+
 }

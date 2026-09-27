@@ -10,7 +10,7 @@ use crate::anim::Anim;
 use crate::app::{Caps, fade, hover_key, Hover};
 use crate::app::{App, Pane, SettingsPane};
 use crate::anim::{BarColor, BarStyle};
-use crate::surface::{self, Fullscreen, HoverFrom, OpacityOn, Shell, Side, TextureKind, TextureOn, SWATCHES};
+use crate::surface::{self, ActivitySource, Fullscreen, HoverFrom, Material, OpacityOn, Reaction, Shell, Side, TextureKind, TextureOn, SWATCHES};
 use nus_render::text::icons;
 use nus_render::Style;
 use nus_render::theme::metric as m;
@@ -233,7 +233,7 @@ impl Default for HeaderPrefs {
     }
 }
 
-/// The terminal cursor, the app's way.
+/// The terminal's shape override. Native text fields always use a pipe.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CursorShapePref {
     Shell,
@@ -269,10 +269,11 @@ pub enum CursorMotion {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(from = "StoredCursorPrefs")]
 pub struct CursorPrefs {
     pub shape: CursorShapePref,
     pub blink: Blink,
-    /// Blink period, ms.
+    /// One complete visible/hidden blink cycle, in milliseconds.
     pub period: u32,
     pub color: CursorColor,
     pub motion: CursorMotion,
@@ -283,15 +284,58 @@ pub struct CursorPrefs {
     /// Neovide's trail_size: how far the smear's tail lags its head, 0..1.
     #[serde(default = "default_smear")]
     pub smear: f32,
+    /// The shared caret's close halo, from none (0) to full (1).
+    #[serde(default = "default_caret_glow")]
+    pub glow: f32,
+    /// Highlight gain above paper white on an HDR-capable surface.
+    #[serde(default = "default_caret_hdr_gain")]
+    pub hdr_gain: f32,
+    /// Version 1 stores a full cycle; older profiles stored one blink phase.
+    pub cadence_version: u8,
+}
+
+#[derive(serde::Deserialize)]
+struct StoredCursorPrefs {
+    shape: CursorShapePref,
+    blink: Blink,
+    period: u32,
+    color: CursorColor,
+    motion: CursorMotion,
+    weight: f32,
+    hollow_unfocused: bool,
+    hide_while_typing: bool,
+    #[serde(default = "default_smear")]
+    smear: f32,
+    #[serde(default = "default_caret_glow")]
+    glow: f32,
+    #[serde(default = "default_caret_hdr_gain")]
+    hdr_gain: f32,
+    #[serde(default)]
+    cadence_version: u8,
+}
+
+impl From<StoredCursorPrefs> for CursorPrefs {
+    fn from(p: StoredCursorPrefs) -> Self {
+        Self {
+            shape: p.shape, blink: p.blink,
+            period: if p.cadence_version == 0 { p.period.max(100).saturating_mul(2) } else { p.period },
+            color: p.color, motion: p.motion, weight: p.weight,
+            hollow_unfocused: p.hollow_unfocused, hide_while_typing: p.hide_while_typing,
+            smear: p.smear, glow: p.glow, hdr_gain: p.hdr_gain, cadence_version: 1,
+        }
+    }
 }
 
 fn default_smear() -> f32 {
     1.0
 }
 
+fn default_caret_glow() -> f32 { 0.55 }
+fn default_caret_hdr_gain() -> f32 { 1.5 }
+
 impl Default for CursorPrefs {
     fn default() -> Self {
-        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::Never, period: 530, color: CursorColor::Theme, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, hide_while_typing: true, smear: 1.0 }
+        CursorPrefs { shape: CursorShapePref::Shell, blink: Blink::AfterIdle, period: 1200, color: CursorColor::Theme, motion: CursorMotion::Jump, weight: 2.0, hollow_unfocused: true, hide_while_typing: true, smear: 1.0, glow: default_caret_glow(), hdr_gain: default_caret_hdr_gain(), cadence_version: 1 }
     }
 }
 
@@ -501,6 +545,8 @@ pub struct Behavior {
     /// Blocks: lamps in the gutter, and output longer than this folds itself (0 = never).
     #[serde(default = "default_true")]
     pub blocks: bool,
+    /// A note's formatting rail is folded to its tab (notes_format.rs).
+    pub notes_rail_folded: bool,
     #[serde(default)]
     pub fold_over: u32,
     /// The journal: one line per finished block, per folder, kept this many days.
@@ -924,6 +970,7 @@ impl Default for Behavior {
             format_on_save: true,
             prompt_lsp: PromptLsp::Quiet,
             blocks: true,
+            notes_rail_folded: false,
             fold_over: 0,
             journal: true,
             journal_keep: 30,
@@ -1049,6 +1096,8 @@ pub enum Slider {
     Saturation,
     BlinkPeriod,
     CurWeight,
+    CurGlow,
+    CurHdrGain,
     Smear,
     Hue,
     Sat,
@@ -1080,6 +1129,9 @@ pub enum Hit {
     Signal(Color),
     Base(Option<Color>),
     Shell(Shell),
+    Material(Material),
+    Reaction(Reaction),
+    ReactTo(ActivitySource, bool),
     /// A slider bar: kind, bar x, bar width.
     Slider(Slider, f32, f32),
     Side(Side),
@@ -1123,6 +1175,8 @@ pub enum Hit {
     PickAvatar,
     OpenProfileDir,
     Preset(usize),
+    /// Apply the Blueprint palette and terminal appearance through existing settings.
+    ApplyBlueprint,
     SavePreset,
     OpenPresets,
     StopSel(usize),
@@ -1318,7 +1372,7 @@ pub enum Hit {
 pub const GROUPS: [(&str, std::ops::Range<usize>); 8] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("COMMANDS",19..20), ("SYSTEM", 9..12), ("DESKTOP", 17..19), ("YOU", 12..15), ("PERSONALIZE", 15..17)];
 
 /// The look studio's tabs.
-pub const LOOK_TABS: [&str; 6] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CURSOR", "APP ICON"];
+pub const LOOK_TABS: [&str; 6] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CARET", "APP ICON"];
 pub const LOOK_PRESETS: usize = 0;
 pub const LOOK_SURFACE: usize = 1;
 pub const LOOK_TOKENS: usize = 2;
@@ -1531,8 +1585,10 @@ impl App {
             Slider::Hue => surface::to_hsl(self.tok_color()).0,
             Slider::Sat => surface::to_hsl(self.tok_color()).1,
             Slider::Light => surface::to_hsl(self.tok_color()).2,
-            Slider::BlinkPeriod => (self.cursor.period as f32 - 200.0) / 1000.0,
+            Slider::BlinkPeriod => ((self.cursor.period as f32 - 400.0) / 2000.0).clamp(0.0, 1.0),
             Slider::CurWeight => (self.cursor.weight - 1.0) / 5.0,
+            Slider::CurGlow => self.cursor.glow.clamp(0.0, 1.0),
+            Slider::CurHdrGain => (self.cursor.hdr_gain.clamp(1.0, 3.0) - 1.0) / 2.0,
         }
     }
 
@@ -1574,8 +1630,10 @@ impl App {
                 };
                 self.set_tok(c);
             }
-            Slider::BlinkPeriod => self.cursor.period = ((200.0 + v * 1000.0) / 10.0).round() as u32 * 10,
+            Slider::BlinkPeriod => self.cursor.period = ((400.0 + v * 2000.0) / 10.0).round() as u32 * 10,
             Slider::CurWeight => self.cursor.weight = ((1.0 + v * 5.0) * 2.0).round() / 2.0,
+            Slider::CurGlow => self.cursor.glow = (v * 100.0).round() / 100.0,
+            Slider::CurHdrGain => self.cursor.hdr_gain = ((1.0 + v * 2.0) * 20.0).round() / 20.0,
         }
         self.layout();
     }
@@ -1624,7 +1682,7 @@ impl App {
         match hit {
             // A bundle's GET plays its own press.
             Hit::Play(_) | Hit::EventCue(..) | Hit::EventNext(_) | Hit::SoundOn(_) | Hit::Slider(..) | Hit::LspTool(_) => {}
-            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove | Hit::ShellOpen(_) | Hit::ShellRemove(_) | Hit::ShellGet(_) | Hit::ShellAdd | Hit::ShellEdit | Hit::ShellRescan => {
+            Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine | Hit::ReloadAvatar | Hit::PickAvatar | Hit::OpenProfileDir | Hit::ApplyBlueprint | Hit::SavePreset | Hit::OpenPresets | Hit::StopAdd | Hit::StopRemove | Hit::ShellOpen(_) | Hit::ShellRemove(_) | Hit::ShellGet(_) | Hit::ShellAdd | Hit::ShellEdit | Hit::ShellRescan => {
                 self.play_event("control.press")
             }
             _ => self.play_event("toggle"),
@@ -1719,7 +1777,10 @@ impl App {
             Hit::Signal(c) => format!("signal {}", surface::hex(c)),
             Hit::Base(None) => "no base".into(),
             Hit::Base(Some(c)) => format!("base {}", surface::hex(c)),
-            Hit::Shell(s) => format!("carapace {}", s.name()),
+            Hit::Shell(s) => format!("carapace {}", if self.surface.material != Material::Plain && s == Shell::Stroke { "perimeter" } else { s.name() }),
+            Hit::Material(m) => format!("carapace material: {}", m.name()),
+            Hit::Reaction(r) => format!("carapace reaction: {}", r.name()),
+            Hit::ReactTo(source, on) => format!("{} carapace response to {}", if on { "enable" } else { "disable" }, source.name()),
             Hit::Slider(k, _, _) => format!("{:?}", k).to_lowercase(),
             Hit::Side(s) => format!("sidebar {:?}", s).to_lowercase(),
             Hit::SmallTabs(mode)=>format!("small sidebar {mode:?}"),
@@ -1751,6 +1812,7 @@ impl App {
             Hit::Reduce(None) => "reduce motion follows the OS".into(),
             Hit::Reduce(Some(r)) => format!("reduce motion {}", if r { "on" } else { "off" }),
             Hit::Preset(k) => format!("theme {}", crate::themes::all().get(k).map(|p| p.name.clone()).unwrap_or_default()),
+            Hit::ApplyBlueprint => "apply Blueprint terminal appearance".into(),
             Hit::SavePreset => "save the look as a theme".into(),
             Hit::OpenPresets => "open the presets folder".into(),
             Hit::StopSel(i) => format!("stop {}", i + 1),
@@ -1997,6 +2059,9 @@ impl App {
                 self.surface.shell = sh;
                 self.layout();
             }
+            Hit::Material(material) => self.surface.material = material,
+            Hit::Reaction(reaction) => self.surface.reaction = reaction,
+            Hit::ReactTo(source, on) => self.surface.react_to.set(source, on),
             Hit::Slider(kind, x0, w) => self.set_slider(kind, (x - x0) / w),
             Hit::Side(side) => {
                 self.sidebar_rules.side = side;
@@ -2118,6 +2183,7 @@ impl App {
                     self.apply_theme(&t);
                 }
             }
+            Hit::ApplyBlueprint => self.apply_blueprint_terminal(),
             Hit::SavePreset => {
                 let n = crate::themes::all().len() + 1;
                 let name = format!("mine-{n}");
@@ -3131,7 +3197,9 @@ impl App {
         // Hard shadow under the whole proof: it's a card too.
         scene.rect(Rect::new(win.x + self.px(6.0), win.y + self.px(6.0), win.w, win.h), ink);
         scene.push(nus_render::Instance::rounded(win, radius, paper));
-        match self.surface.shell {
+        if self.surface.material != Material::Plain {
+            scene.push(nus_render::Instance::carapace(win, self.carapace_look(sw, radius)));
+        } else { match self.surface.shell {
             Shell::Band => {
                 scene.layer(Some(within(Rect::new(win.x, win.y, win.w, sw))));
                 scene.push(nus_render::Instance::rounded(win, radius, self.surface.signal));
@@ -3140,9 +3208,9 @@ impl App {
             Shell::Stroke => scene.push(nus_render::Instance::stroke(win, radius, sw, self.surface.signal, None, 0.0)),
             Shell::Gradient => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &ramp, self.surface.angle, 0.0, false)),
             Shell::Aurora => scene.push(nus_render::Instance::stroke_stops(win, radius, sw, &ramp, self.surface.angle, self.shell_phase, true)),
-        }
+        } }
         if let Some(kind) = self.surface.texture_kind.shader_kind() {
-            if self.surface.texture > 0.0 && self.surface.texture_on == TextureOn::Carapace {
+            if self.surface.material == Material::Plain && self.surface.texture > 0.0 && self.surface.texture_on == TextureOn::Carapace {
                 let gc = [1.0, 1.0, 1.0, (self.surface.texture * 3.0).min(1.0)];
                 let tm = if self.surface.texture_motion { crate::clock::since(self.started).as_secs_f32() % 3600.0 } else { 0.0 };
                 let pitch = self.px(self.surface.texture_scale);
@@ -3195,16 +3263,28 @@ impl App {
             }
             ly += self.px(14.0);
         }
-        // Prompt with the cursor as configured.
+        // Both surface shapes share one material and rhythm in the proof.
+        let caret_live = self.window_focused && self.caret_enabled.get();
+        let caret = if caret_live { self.caret_sample(self.last_key) } else { crate::caret::Sample { opacity: 0.35, next_ms: None } };
+        let caret_glow = if caret_live { self.cursor.glow } else { 0.0 };
+        let caret_gain = if caret_live { self.cursor.hdr_gain } else { 1.0 };
         let mut lx = pane.x + self.px(10.0);
         lx += self.fonts.draw(scene, mono(ansi[2], self), lx, ly, "$ ");
         let cur_c = match self.cursor.color { crate::settings::CursorColor::Theme => self.theme.caret, _ => self.surface.signal };
         let cw = self.px(5.5);
         let chh = self.px(11.0);
-        match self.cursor.shape {
-            crate::settings::CursorShapePref::Beam => scene.rect(Rect::new(lx, ly - self.px(9.0), self.px(1.5), chh), cur_c),
-            crate::settings::CursorShapePref::Underline => scene.rect(Rect::new(lx, ly + self.px(1.0), cw, self.px(1.5)), cur_c),
-            _ => scene.rect(Rect::new(lx, ly - self.px(9.0), cw, chh), cur_c),
+        let weight = self.px(self.cursor.weight * 0.6).max(1.0);
+        self.fonts.draw(scene, mono(ink, self), lx, ly, "echo");
+        let shell_caret = match self.cursor.shape {
+            crate::settings::CursorShapePref::Beam => Rect::new(lx, ly - self.px(9.0), weight, chh),
+            crate::settings::CursorShapePref::Underline => Rect::new(lx, ly + self.px(1.0), cw, weight),
+            _ => Rect::new(lx, ly - self.px(9.0), cw, chh),
+        };
+        scene.caret(shell_caret, fade(cur_c, caret.opacity), caret_glow, caret_gain);
+        if matches!(self.cursor.shape, CursorShapePref::Shell | CursorShapePref::Block) {
+            scene.layer(Some(within(shell_caret)));
+            self.fonts.draw(scene, mono(fade(paper, caret.opacity), self), lx, ly, "e");
+            scene.layer(Some(within(inner)));
         }
         // Page pane.
         let page = Rect::new(pane.right(), pane.y, inner.right() - pane.right(), pane.h);
@@ -3217,6 +3297,11 @@ impl App {
             let w = page.w - self.px(24.0) - if k == 3 { page.w * 0.3 } else { 0.0 };
             scene.rect(Rect::new(page.x + self.px(12.0), page.y + self.px(34.0) + k as f32 * self.px(9.0), w.max(0.0), self.px(3.0)), fade(page_ink, 0.25));
         }
+        let native_y = page.y + self.px(89.0);
+        let native_x = page.x + self.px(12.0);
+        let text_width = self.fonts.draw(scene, mono(page_ink, self), native_x, native_y, "Write");
+        let page_caret = nus_render::policy::ensure_contrast(cur_c, t.page, 3.0);
+        scene.caret(Rect::new(native_x + text_width, native_y - self.px(9.0), weight, chh), fade(page_caret, caret.opacity), caret_glow, caret_gain);
         // ANSI strip along the bottom of the shell pane.
         let strip_y = pane.bottom() - self.px(12.0);
         let cell = (pane.w - self.px(20.0)) / 16.0;
@@ -3326,19 +3411,22 @@ impl App {
                 let mut base: Vec<(Option<Color>, Hit, bool)> = vec![(None, Hit::Base(None), self.surface.base.is_none())];
                 base.extend(SWATCHES.iter().map(|&(_, c)| (Some(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
                 let translucent = self.target.translucent();
+                let plain = self.surface.material == Material::Plain;
                 let _ = (&preset_chips, &sig, &fam, &stops, &stop_colors);
                 // The carapace's tokens as tiles: signal, then the ramp's stops.
                 let mut tiles: Vec<(String, Option<Color>, String, Hit, bool)> = vec![("SIGNAL".into(), Some(self.surface.signal), hex(self.surface.signal), Hit::TokSel(TokSel::Signal), self.tok_sel == TokSel::Signal)];
-                for (i, &c) in ramp.iter().enumerate() {
-                    tiles.push((format!("STOP {}", i + 1), Some(c), hex(c), Hit::TokSel(TokSel::Stop(i)), self.tok_sel == TokSel::Stop(i)));
+                if plain {
+                    for (i, &c) in ramp.iter().enumerate() {
+                        tiles.push((format!("STOP {}", i + 1), Some(c), hex(c), Hit::TokSel(TokSel::Stop(i)), self.tok_sel == TokSel::Stop(i)));
+                    }
+                    if ramp.len() < 4 {
+                        tiles.push(("ADD".into(), None, "a stop".into(), Hit::StopAdd, false));
+                    }
+                    if self.surface.stops.len() > 2 {
+                        tiles.push(("REMOVE".into(), None, "last stop".into(), Hit::StopRemove, false));
+                    }
                 }
-                if ramp.len() < 4 {
-                    tiles.push(("ADD".into(), None, "a stop".into(), Hit::StopAdd, false));
-                }
-                if self.surface.stops.len() > 2 {
-                    tiles.push(("REMOVE".into(), None, "last stop".into(), Hit::StopRemove, false));
-                }
-                let editing = matches!(self.tok_sel, TokSel::Signal | TokSel::Stop(_));
+                let editing = self.tok_sel == TokSel::Signal || (plain && matches!(self.tok_sel, TokSel::Stop(_)));
                 let mut tray: Vec<(String, Option<Color>, String, Hit, bool)> = Vec::new();
                 if editing {
                     let cur = self.tok_color();
@@ -3354,8 +3442,19 @@ impl App {
                 base_tiles.extend(SWATCHES[6..].iter().chain(SWATCHES[..6].iter()).map(|&(_, c)| (String::new(), Some(c), hex(c), Hit::Base(Some(c)), self.surface.base == Some(c))));
                 let _ = base;
                 let mut v = vec![
-                    ("CARAPACE TOKENS".into(), Tokens(tiles, true)),
+                    ("MATERIAL".into(), Choice(Material::ALL.iter().map(|&m| (m.name().caps(), Hit::Material(m), m == self.surface.material)).collect())),
+                    ("".into(), Info(self.surface.material.description().into())),
                 ];
+                if !plain { v.extend(vec![
+                    ("REACTION".into(), Choice(Reaction::ALL.iter().map(|&r| (r.name().caps(), Hit::Reaction(r), r == self.surface.reaction)).collect())),
+                    ("".into(), Info("Still keeps the material settled. Subtle responds with a small movement; Expressive gives it more room, at the same calm pace. Reduced motion keeps it still.".into())),
+                    ("RESPOND TO".into(), Choice(ActivitySource::ALL.iter().map(|&source| {
+                        let enabled = self.surface.react_to.enabled(source);
+                        (source.name().caps(), Hit::ReactTo(source, !enabled), enabled)
+                    }).collect())),
+                    ("".into(), Info("Work moves the surface; loading carries progress; completion settles it; attention holds an accent. Typing and media are optional. The preview follows this window's activity.".into())),
+                ]); }
+                v.push(("CARAPACE TOKENS".into(), Tokens(tiles, true)));
                 if editing {
                     let what = match self.tok_sel { TokSel::Signal => "signal".to_string(), TokSel::Stop(i) => format!("stop {}", i + 1), _ => String::new() };
                     v.push((format!("{} HUE", what.caps()), Slider(self::Slider::Hue, self.slider_value(self::Slider::Hue), format!("{}°", (surface::to_hsl(self.tok_color()).0 * 360.0).round()))));
@@ -3363,7 +3462,7 @@ impl App {
                     v.push(("LIGHTNESS".into(), Slider(self::Slider::Light, self.slider_value(self::Slider::Light), format!("{}% · {}", (surface::to_hsl(self.tok_color()).2 * 100.0).round(), hex(self.tok_color())))));
                     v.push(("TRAY".into(), Tokens(tray, false)));
                 }
-                v.push(("".into(), Info("signal: the carapace, the window square, ticks, progress · stops: the gradient and aurora ramps".into())));
+                v.push(("".into(), Info(if plain { "signal: the carapace, the window square, ticks, progress · stops: the gradient and aurora ramps" } else { "Signal colors the carapace, the window square, ticks and progress." }.into())));
                 v.push(("BASE".into(), Tokens(base_tiles, false)));
                 v.extend(vec![
                     (
@@ -3399,7 +3498,7 @@ impl App {
                     ),
                     (
                         "TEXTURE".into(),
-                        Choice(TextureKind::ALL.iter().map(|&k| (k.name().caps(), Hit::TexKind(k), k == self.surface.texture_kind)).collect()),
+                        Choice(TextureKind::OFFERED.iter().map(|&k| (k.name().caps(), Hit::TexKind(k), k == self.surface.texture_kind)).collect()),
                     ),
                     (
                         "STRENGTH".into(),
@@ -3417,17 +3516,27 @@ impl App {
                             ("PANES".into(), Hit::TexOn(TextureOn::Panes), self.surface.texture_on == TextureOn::Panes),
                         ]),
                     ),
-                    (
+                ]);
+                if self.surface.material == Material::Plain || self.surface.texture_on != TextureOn::Carapace {
+                    v.push((
                         "MOTION".into(),
                         Choice(vec![
                             ("STILL".into(), Hit::TexMotion(false), !self.surface.texture_motion),
-                            ("ANIMATED · GRAIN FLICKERS, PATTERNS DRIFT".into(), Hit::TexMotion(true), self.surface.texture_motion),
+                            ("ANIMATED".into(), Hit::TexMotion(true), self.surface.texture_motion),
                         ]),
-                    ),
+                    ));
+                }
+                v.extend(vec![
                     (
-                        "CARAPACE".into(),
-                        Choice(Shell::ALL.iter().map(|&s| (s.name().caps(), Hit::Shell(s), s == self.surface.shell)).collect()),
+                        "FRAME".into(),
+                        Choice(if plain {
+                            Shell::ALL.iter().map(|&s| (s.name().caps(), Hit::Shell(s), s == self.surface.shell)).collect()
+                        } else { vec![
+                            ("BAND".into(), Hit::Shell(Shell::Band), self.surface.shell == Shell::Band),
+                            ("PERIMETER".into(), Hit::Shell(Shell::Stroke), self.surface.shell != Shell::Band),
+                        ] }),
                     ),
+                    ("".into(), Info(if plain { "Band follows the top edge; Stroke, Gradient and Aurora frame the window. Grain can sit over any material." } else { "Band follows the top edge; Perimeter follows the whole frame. Grain can sit over any material." }.into())),
                     (
                         "WIDTH".into(),
                         Slider(self::Slider::ShellWidth, self.slider_value(self::Slider::ShellWidth), format!("{}px", self.surface.shell_width)),
@@ -3436,6 +3545,8 @@ impl App {
                         "RADIUS".into(),
                         Slider(self::Slider::Radius, self.slider_value(self::Slider::Radius), format!("{}px corners", self.surface.shell_radius)),
                     ),
+                ]);
+                if plain { v.extend(vec![
                     (
                         "ANGLE".into(),
                         Slider(self::Slider::Angle, self.slider_value(self::Slider::Angle), format!("{}° · gradient and aurora", self.surface.angle)),
@@ -3448,7 +3559,10 @@ impl App {
                         "BREATH".into(),
                         Slider(self::Slider::Breath, self.slider_value(self::Slider::Breath), format!("{}% · the aurora stroke swells", (self.surface.breath * 100.0).round())),
                     ),
-                ]);
+                ]); }
+                if !TextureKind::OFFERED.contains(&self.surface.texture_kind) {
+                    v.push(("SAVED TEXTURE".into(), Info(format!("This look keeps its saved {} texture. New materials use only Grain on the carapace; the saved texture still works on chrome and panes. Choose None or Grain above to replace it.", self.surface.texture_kind.name()))));
+                }
                 v
             }
                     LOOK_TOKENS => {
@@ -3583,34 +3697,37 @@ impl App {
                 ("INTERFACE WEIGHT".into(), Choice(crate::fonts::Weight::ALL.iter().map(|&w|(w.name().into(),Hit::UiWeight(w),self.behavior.ui_weight==w)).collect())),
                 ("TERMINAL FONT".into(), Choice(crate::fonts::Family::MONO.iter().map(|&f|(f.name().into(),Hit::TermFont(f),self.behavior.term_font==f)).collect())),
                 ("TERMINAL WEIGHT".into(), Choice(crate::fonts::Weight::ALL.iter().map(|&w|(w.name().into(),Hit::TermWeight(w),self.behavior.term_weight==w)).collect())),
-                ("".into(), Info("Bundled fonts work without installation. Interface and terminal weights change independently. Terminal choices use fixed-width families so columns stay aligned.".into())),
+                ("".into(), Info("Bundled fonts work without installation. Interface and terminal weights change independently. Terminal choices use fixed-width families so columns stay aligned. Your own fonts work too: any font installed on this computer, or a .ttf, .otf or .ttc dropped into profile/fonts, is under INSTALLED; its licence is yours to keep with its foundry.".into())),
                 ("WORDMARK".into(), Info("Newsreader Italic".into())),
             ],
                     _ => {
                 let c = &self.cursor;
                 vec![
+                    ("".into(), Info("One caret across nus: a square cell in the shell and a precise pipe in native text fields. Selections keep a quiet fill and a solid active edge; replacement adds a steady underline.".into())),
                     (
-                        "SHAPE".into(),
+                        "TERMINAL SHAPE".into(),
                         Choice(vec![
-                            ("THE SHELL'S".into(), Hit::CurShape(CursorShapePref::Shell), c.shape == CursorShapePref::Shell),
-                            ("BLOCK".into(), Hit::CurShape(CursorShapePref::Block), c.shape == CursorShapePref::Block),
-                            ("BEAM".into(), Hit::CurShape(CursorShapePref::Beam), c.shape == CursorShapePref::Beam),
+                            ("AUTOMATIC".into(), Hit::CurShape(CursorShapePref::Shell), c.shape == CursorShapePref::Shell),
+                            ("CELL".into(), Hit::CurShape(CursorShapePref::Block), c.shape == CursorShapePref::Block),
+                            ("PIPE".into(), Hit::CurShape(CursorShapePref::Beam), c.shape == CursorShapePref::Beam),
                             ("UNDERLINE".into(), Hit::CurShape(CursorShapePref::Underline), c.shape == CursorShapePref::Underline),
                         ]),
                     ),
+                    ("".into(), Info("Automatic uses a cell at the shell prompt and respects a running program's requested shape. This override affects terminals; native text fields keep their pipe.".into())),
                     (
-                        "UNFOCUSED".into(),
+                        "INACTIVE TERMINAL".into(),
                         Choice(vec![("HOLLOW".into(), Hit::CurHollow(true), c.hollow_unfocused), ("HIDDEN".into(), Hit::CurHollow(false), !c.hollow_unfocused)]),
                     ),
                     (
                         "BLINK".into(),
                         Choice(vec![
                             ("NEVER".into(), Hit::CurBlink(Blink::Never), c.blink == Blink::Never),
-                            ("AFTER 2S IDLE".into(), Hit::CurBlink(Blink::AfterIdle), c.blink == Blink::AfterIdle),
+                            ("AFTER TYPING".into(), Hit::CurBlink(Blink::AfterIdle), c.blink == Blink::AfterIdle),
                             ("ALWAYS".into(), Hit::CurBlink(Blink::Always), c.blink == Blink::Always),
                         ]),
                     ),
-                    ("PERIOD".into(), Slider(self::Slider::BlinkPeriod, self.slider_value(self::Slider::BlinkPeriod), format!("{}ms", c.period))),
+                    ("BLINK CYCLE".into(), Slider(self::Slider::BlinkPeriod, self.slider_value(self::Slider::BlinkPeriod), format!("{}ms · one complete blink", c.period))),
+                    ("".into(), Info("The caret appears immediately when you type, holds, then fades out and back in. After typing adds a brief pause before the rhythm begins. Reduced motion keeps it steady.".into())),
                     (
                         "COLOR".into(),
                         Choice(vec![
@@ -3619,9 +3736,11 @@ impl App {
                             ("THE TAB'S OWN".into(), Hit::CurColor(CursorColor::Tab), c.color == CursorColor::Tab),
                         ]),
                     ),
-                    ("".into(), Info("the theme's caret is a token — LOOK · TOKENS sets it, the ink unless a theme says; the selection wash is a token there too · text under a block cursor inverts".into())),
+                    ("".into(), Info("LOOK · TOKENS sets the caret color and selection fill. Text inside a shell cell stays on its original baseline and changes ink for contrast.".into())),
+                    ("GLOW".into(), Slider(self::Slider::CurGlow, self.slider_value(self::Slider::CurGlow), format!("{:.0}% · a close halo around the caret", c.glow * 100.0))),
+                    ("HDR BRIGHTNESS".into(), Slider(self::Slider::CurHdrGain, self.slider_value(self::Slider::CurHdrGain), format!("{:.2}× · highlight on supported displays", c.hdr_gain))),
                     (
-                        "MOTION".into(),
+                        "TERMINAL MOTION".into(),
                         Choice(vec![
                             ("JUMP".into(), Hit::CurMotion(CursorMotion::Jump), c.motion == CursorMotion::Jump),
                             ("GLIDE".into(), Hit::CurMotion(CursorMotion::Glide), c.motion == CursorMotion::Glide),
@@ -3629,9 +3748,9 @@ impl App {
                             ("SMEAR".into(), Hit::CurMotion(CursorMotion::Smear), c.motion == CursorMotion::Smear),
                         ]),
                     ),
-                    ("".into(), Info("glide eases between cells on the motion register; comet leaves a short ink trail; smear stretches the body the way neovide does".into())),
-                    ("TRAIL".into(), Slider(self::Slider::Smear, self.slider_value(self::Slider::Smear), format!("{:.0}% · neovide's trail_size: how far the tail lags the head (smear only)", c.smear * 100.0))),
-                    ("WEIGHT".into(), Slider(self::Slider::CurWeight, self.slider_value(self::Slider::CurWeight), format!("{}px · beam and underline", c.weight))),
+                    ("".into(), Info("Glide eases between terminal cells; Comet leaves a short ink trail; Smear stretches the cell between positions. Native fields move directly to the insertion point.".into())),
+                    ("TRAIL".into(), Slider(self::Slider::Smear, self.slider_value(self::Slider::Smear), format!("{:.0}% · how far the tail follows behind (Smear only)", c.smear * 100.0))),
+                    ("WEIGHT".into(), Slider(self::Slider::CurWeight, self.slider_value(self::Slider::CurWeight), format!("{}px · pipe and underline", c.weight))),
                     (
                         "WHILE TYPING".into(),
                         Choice(vec![("HIDE THE POINTER".into(), Hit::CurHide(true), c.hide_while_typing), ("KEEP IT".into(), Hit::CurHide(false), !c.hide_while_typing)]),
@@ -3982,12 +4101,13 @@ impl App {
                     ),
                 )];
                 // Shell integration: what each shell gets.
+                v.push(("APPEARANCE".into(), Buttons(vec![("APPLY BLUEPRINT".into(), icons::BRUSH, Hit::ApplyBlueprint)])));
                 v.insert(0, ("".into(), Info("prompt marks · cwd · exit codes · new tabs open where you are · jump to prompts · copy a command's output".into())));
                 v.insert(1, (
                     "COMMAND LINE".into(),
                     Choice(vec![("HIGHLIGHT".into(), Hit::Highlight(!self.behavior.highlight), self.behavior.highlight), ("PREDICT".into(), Hit::Predict(!self.behavior.predict), self.behavior.predict)]),
                 ));
-                v.insert(2, ("".into(), Info("terminal-side, nothing to install: tokens colored as you type; the history entry that continues your line ghosts after the caret, Right or End accepts · git knows its own: subcommands and aliases, branches, remotes, changed files and common flags, colored and completed (Tab accepts)".into())));
+                v.insert(2, ("".into(), Info("At the end of the line, Right or Ctrl+F accepts the visible suggestion; Alt/Option+Right accepts the next token. Tab opens Code; Tab or Enter inserts the selected choice, then Enter runs accepted text. Ctrl+R searches history; Up/Down recalls prefix matches or chooses in Code. Escape closes assistance and keeps your draft.".into())));
                 let pl = self.behavior.prompt_lsp;
                 v.insert(3, (
                     "PROMPT LSP".into(),
@@ -4229,9 +4349,14 @@ impl App {
                         format!("{} · how eagerly it follows real progress", self.load_bar.chase),
                     ),
                 ),
-                ("PROTECTED CONTENT".into(), Info(crate::widevine::status())),
+                ("PROTECTED VIDEO".into(), Info(if cfg!(target_os = "macos") {
+                    "Streaming sites use macOS WebKit. Sign in on the site; playback depends on the service accepting this browser.".into()
+                } else {
+                    "Protected playback needs a supported DRM module, codecs and acceptance by the streaming service.".into()
+                })),
+                ("CHROMIUM MODULE".into(), Info(crate::widevine::status())),
                 ("".into(), Buttons(vec![("FETCH NOW".into(), icons::DOWNLOAD, Hit::Widevine)])),
-                ("".into(), Info("Widevine plays DRM video (Netflix, Prime Video, Disney+). Chromium downloads it into your profile once, then keeps it current; FETCH NOW asks for it straight away.".into())),
+                ("".into(), Info("FETCH NOW asks Chromium to install or update Widevine. An installed module does not guarantee a service will play. This does not change WebKit playback on macOS.".into())),
                 (
                     "DEFAULT BROWSER".into(),
                     Buttons(vec![("MAKE DEFAULT".into(), icons::GLOBE, Hit::MakeDefault), ("UNREGISTER".into(), icons::CLOSE, Hit::Unregister)]),
@@ -5447,6 +5572,52 @@ mod pip_preferences_tests {
         let empty:Behavior=serde_json::from_str("{}").unwrap();assert_eq!(empty.pip_skip_seconds,10);
         assert!(serde_json::from_str::<Behavior>(r#"{"pip_skip_seconds":{}}"#).is_err());
         assert!(serde_json::from_str::<Behavior>(r#"{"pip_skip_seconds":[]}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod caret_preferences_tests {
+    use super::*;
+
+    #[test]
+    fn new_profiles_blink_with_a_quiet_glow() {
+        let prefs = CursorPrefs::default();
+        assert_eq!(prefs.blink, Blink::AfterIdle);
+        assert_eq!(prefs.period, 1200);
+        assert_eq!(prefs.shape, CursorShapePref::Shell);
+        assert_eq!(prefs.glow, 0.55);
+        assert_eq!(prefs.hdr_gain, 1.5);
+    }
+
+    #[test]
+    fn saved_carets_gain_light_defaults_without_overwriting_explicit_choices() {
+        let old = serde_json::json!({
+            "shape": "Underline", "blink": "Never", "period": 720,
+            "color": "Signal", "motion": "Glide", "weight": 3.0,
+            "hollow_unfocused": false, "hide_while_typing": false, "smear": 0.4
+        });
+        let prefs: CursorPrefs = serde_json::from_value(old).unwrap();
+        assert_eq!(prefs.blink, Blink::Never);
+        assert_eq!(prefs.period, 1440);
+        assert_eq!(prefs.cadence_version, 1);
+        assert_eq!(prefs.shape, CursorShapePref::Underline);
+        assert_eq!(prefs.glow, 0.55);
+        assert_eq!(prefs.hdr_gain, 1.5);
+        let mut updated = serde_json::to_value(prefs).unwrap();
+        updated["glow"] = serde_json::json!(0.0);
+        updated["hdr_gain"] = serde_json::json!(1.0);
+        let explicit: CursorPrefs = serde_json::from_value(updated).unwrap();
+        assert_eq!(explicit.glow, 0.0);
+        assert_eq!(explicit.hdr_gain, 1.0);
+        assert_eq!(explicit.period, 1440);
+    }
+
+    #[test]
+    fn current_cycle_roundtrips_without_migrating_twice() {
+        let encoded = serde_json::to_string(&CursorPrefs::default()).unwrap();
+        let prefs: CursorPrefs = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(prefs.period, 1200);
+        assert_eq!(prefs.cadence_version, 1);
     }
 }
 

@@ -98,6 +98,8 @@ impl App {
     }
 
     pub(super) fn draw_hatch(&mut self, h: &mut Hatch) {
+        self.hatch_caret_deadline.set(None);
+        self.painting_hatch = true;
         let scale = h.window.scale_factor() as f32;
         let px = |n:f32| (n*scale).round();
         let (w, height) = (h.target.size.0 as f32, h.target.size.1 as f32);
@@ -183,6 +185,7 @@ impl App {
         h.hits.push((Rect::new(0.0,height-px(10.0),w,px(10.0)),Hit::Lip));
         if h.look==HatchLook::Card { h.hits.push((Rect::new(0.0,0.0,right,px(43.0)),Hit::Frame)); }
         h.scene.finish();
+        self.painting_hatch = false;
         if let Some(notch)=h.notch {
             let reveal=h.slide.value();
             let width=notch.width as f32+(w-notch.width as f32)*reveal;

@@ -555,7 +555,10 @@ impl App {
                         match what.as_str() {
                             "info" => {
                                 let sh = w.tab.shared.borrow();
-                                Ok(json!({ "tab": tab + 1, "url": sh.url, "title": sh.title, "loading": sh.loading }))
+                                Ok(json!({ "tab": tab + 1, "url": sh.url, "title": sh.title, "loading": sh.loading,
+                                    "engine": if sh.native.is_some() { "WebKit" } else { "Chromium" },
+                                    "native_stage": sh.native.as_ref().map(|n| n.stage()),
+                                    "media_diagnostic": sh.native_media_diagnostic }))
                             }
                             "text" => {
                                 let id = w.tab.eval_reply(crate::reader::EXTRACT_JS);

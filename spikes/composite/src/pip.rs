@@ -2,6 +2,12 @@
 //! cropped to its video, with eased moves/resizes and transport that acts
 //! on the element through the DevTools channel.
 //!
+//! A page WebKit shows for its protected video (webkit.rs) has no texture
+//! to lend — the DRM won't have it — so its view comes into the window
+//! instead, under the same controls, which reach its video through
+//! WebKit's own script: the window, the keys, the policies and the
+//! transport are the same for both.
+//!
 //! The controls sit **over the picture**, the shape every other browser
 //! uses, so nobody has to learn ours: a scrim, the tab's name and the way
 //! back at the top, the transport in the middle, the scrubber along the
@@ -103,6 +109,29 @@ pub enum Hit {
     Track,
 }
 
+/// Expanded touch targets may overlap. Prefer the nearest control's center
+/// instead of letting the first item steal the neighboring control's edge.
+fn control_at(hits: &[(Rect, Hit)], x: f32, y: f32) -> Option<Hit> {
+    hits.iter().filter(|(r, _)| r.contains(x, y)).min_by(|(a, _), (b, _)| {
+        let distance = |r: &Rect| (x - r.x - r.w * 0.5).powi(2) + (y - r.y - r.h * 0.5).powi(2);
+        distance(a).total_cmp(&distance(b))
+    }).map(|(_, hit)| *hit)
+}
+
+fn toggles_playback(key: &WKey) -> bool {
+    match key {
+        WKey::Named(NamedKey::Space) => true,
+        WKey::Character(c) => c.eq_ignore_ascii_case("k") || c.eq_ignore_ascii_case("m"),
+        _ => false,
+    }
+}
+
+fn control_order(hits: &[(Rect, Hit)]) -> Vec<Hit> {
+    [Hit::Play, Hit::Back, Hit::Forward, Hit::Mute, Hit::Track, Hit::Smaller,
+        Hit::Larger, Hit::Dock, Hit::ToTab, Hit::Close].into_iter()
+        .filter(|hit| hits.iter().any(|(_, drawn)| drawn == hit)).collect()
+}
+
 /// How long the controls stay up after the pointer leaves, and how long
 /// they take to go.
 const LINGER: Duration = Duration::from_millis(1200);
@@ -178,7 +207,7 @@ impl Pip {
 
     /// The control under `pos`, if any.
     pub fn hit_at(&self, x: f32, y: f32) -> Option<Hit> {
-        self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h)
+        control_at(&self.hits, x, y)
     }
 
     /// Where along the scrubber `x` falls, 0..1.
@@ -257,27 +286,75 @@ impl App {
         if !self.behavior.pip_policy.leave_app || self.window_focused && !minimized || child_focused || self.pip.is_some() {
             self.pip_away_pending=None;return;
         }
-        if self.webkit_pip(self.active,true) {
-            self.pip_away_pending=None;
-        } else if let Some(right)=self.playing_video(self.active) {
+        if let Some(right)=self.playing_video(self.active) {
             self.request_pip(self.active,right);self.pip_away_pending=None;
         } else if elapsed>3.0 {self.pip_away_pending=None;}
     }
 
-    /// Tab `tab`'s WebKit pages: their playing video to the system's
-    /// picture in picture (on), or back into the page. True if it has any.
-    pub(crate) fn webkit_pip(&self, tab: usize, on: bool) -> bool {
-        let Some(t) = self.tabs.get(tab) else { return false };
-        let mut any = false;
-        for p in std::iter::once(&t.left).chain(t.right.as_ref()) {
-            if let crate::app::Pane::Web(w) = p {
-                if let Some(n) = &w.tab.shared.borrow().native {
-                    n.pip(on);
-                    any = true;
+    /// WebKit's pages (webkit.rs): what their trackers say, and a page that
+    /// asked for picture in picture gets nus's; then the PiP source's page
+    /// into the window and every other one home. Every tick, so each way
+    /// PiP ends — closed, returned, replaced, its tab gone — brings the
+    /// page back.
+    fn tend_webkit(&mut self) {
+        let mut asked = None;
+        for (k, tab) in self.tabs.iter().enumerate() {
+            for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
+                if let crate::app::Pane::Web(w) = p {
+                    if w.tab.tend_native_media() {
+                        asked = Some((k, right));
+                    }
                 }
             }
         }
-        any
+        if let Some((tab, right)) = asked {
+            self.request_pip(tab, right);
+        }
+        let target = self.pip.as_ref().map(|p| (p.tab_id, p.right, p.window.clone()));
+        self.place_webkit_pip(target);
+    }
+
+    /// The WebKit page of (tab id, right pane) into `target`'s window, any
+    /// other WebKit page back to its pane. A page that can't come (WebKit's
+    /// own fullscreen has it) closes the window rather than leave it empty.
+    fn place_webkit_pip(&mut self, target: Option<(u64, bool, Arc<Window>)>) {
+        let (mut moved, mut refused) = (false, false);
+        for tab in &self.tabs {
+            for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
+                let crate::app::Pane::Web(w) = p else { continue };
+                let s = w.tab.shared.borrow();
+                let Some(n) = &s.native else { continue };
+                match &target {
+                    Some((id, r, window)) if *id == tab.id && *r == right => {
+                        if !n.in_pip() {
+                            if n.enter_pip(window) {
+                                moved = true;
+                            } else {
+                                refused = true;
+                            }
+                        }
+                        n.fit_pip();
+                    }
+                    _ if n.in_pip() => {
+                        n.leave_pip();
+                        moved = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if refused {
+            tracing::info!("WebKit's page can't come into picture in picture; closing it");
+            self.pip = None;
+        }
+        if moved {
+            self.dirty = true;
+        }
+    }
+
+    /// Whether the PiP source is a page WebKit shows (webkit.rs).
+    fn pip_native(&self) -> bool {
+        self.pip.as_ref().and_then(|p| self.web_tab(p.tab, p.right)).is_some_and(|t| t.shared.borrow().native.is_some())
     }
 
     pub fn request_pip(&mut self, tab: usize, right: bool) {
@@ -329,6 +406,7 @@ impl App {
     pub fn close_pip(&mut self) {
         self.pip_away_pending = None;
         self.pip_request = None;
+        self.place_webkit_pip(None);
         self.pip = None;
     }
 
@@ -360,6 +438,7 @@ impl App {
     /// Per-frame: draw the cropped video, ease the window, retire PiP when
     /// the tab is gone.
     pub fn pip_frame(&mut self) {
+        self.tend_webkit();
         let Some(pip) = self.pip.as_mut() else { return };
         let Some(index)=self.tabs.iter().position(|t|t.id==pip.tab_id) else {self.pip=None;return;};
         pip.tab=index;
@@ -383,9 +462,11 @@ impl App {
             self.pip = None;
             return;
         };
-        let shared = t.shared.borrow();
-        let (bind, video) = (shared.bind.clone(), shared.video.clone());
-        drop(shared);
+        // WebKit's page is in the window itself, under the drawing: there is
+        // no picture to draw for it, only the controls over it.
+        let native = t.shared.borrow().native.is_some();
+        let bind = if native { None } else { t.shared.borrow().bind.clone() };
+        let video = t.video();
         let pip = self.pip.as_mut().unwrap();
         if let Some(aspect)=video.as_ref().and_then(|v|geometry::stream_aspect(v.video_width,v.video_height)) {
             if (aspect-pip.aspect).abs()>f64::EPSILON*aspect {
@@ -408,7 +489,7 @@ impl App {
         let band = if self.behavior.pip_band { (4.0 * scale).round() } else { 0.0 };
         // Decorations overlay the stream; subtracting the band would squeeze it.
         let picture = Rect::new(0.0, 0.0, w, h);
-        let picture_ready=bind.is_some() && video.is_some();
+        let picture_ready=(native || bind.is_some()) && video.is_some();
         if let (Some(bind), Some(v)) = (bind, video.clone()) {
             scene.rect(picture,[0.0,0.0,0.0,1.0]);
             // Missing page pixels (object-fit:cover or an offscreen edge)
@@ -423,13 +504,13 @@ impl App {
                 }
             }
             scene.layer(None);
-            // The progress rule: played time along the foot, there
-            // whether or not the controls are. Off by default.
-            if self.behavior.pip_progress && v.dur > 0.0 {
-                let p = (v.t / v.dur).clamp(0.0, 1.0) as f32;
-                let t = (2.0 * scale).round();
-                scene.rect(Rect::new(0.0, h - t, w * p, t), self.surface.signal);
-            }
+        }
+        // The progress rule: played time along the foot, there
+        // whether or not the controls are. Off by default.
+        if let Some(v) = video.as_ref().filter(|v| self.behavior.pip_progress && v.dur > 0.0) {
+            let p = (v.t / v.dur).clamp(0.0, 1.0) as f32;
+            let t = (2.0 * scale).round();
+            scene.rect(Rect::new(0.0, h - t, w * p, t), self.surface.signal);
         }
         // The controls, over the picture.
         let reduced = self.motion.reduced();
@@ -437,15 +518,22 @@ impl App {
             let pip = self.pip.as_ref().unwrap();
             pip.controls_alpha(video.as_ref().is_some_and(|v| v.paused), reduced)
         };
-        let hits = if alpha > 0.01 {
-            self.draw_pip_controls(&mut scene, picture, scale, alpha, video.as_ref())
-        } else {
-            Vec::new()
-        };
+        // Keep the geometry current even after the controls fade. AppKit can
+        // deliver pointer entry and a press before the next redraw; that first
+        // press must hit the control, not start dragging the window.
+        let hits = self.draw_pip_controls(&mut scene, picture, scale, alpha, video.as_ref());
+        let mut carapace = self.carapace_look(band, 0.0);
+        carapace.band = true;
+        carapace.grain_scale = (self.surface.texture_scale * scale).max(0.25);
         let pip = self.pip.as_mut().unwrap();
         pip.hits = hits;
+        if pip.key_focus.is_some_and(|hit| !pip.hits.iter().any(|(_, drawn)| *drawn == hit)) {
+            pip.key_focus = None;
+        }
         // Texture lives on the carapace only; the video stays clean.
-        if band > 0.0 {
+        if band > 0.0 && self.surface.material != crate::surface::Material::Plain {
+            scene.push(nus_render::Instance::carapace(Rect::new(0.0, 0.0, w, h), carapace));
+        } else if band > 0.0 {
             scene.rect(Rect::new(0.0, 0.0, w, band), self.surface.signal);
             if let (Some(kind), true) = (self.surface.texture_kind.shader_kind(), self.surface.texture > 0.0) {
                 scene.push(nus_render::Instance::texture_kind(Rect::new(0.0, 0.0, w, band), kind, [1.0, 1.0, 1.0, self.surface.texture], self.surface.texture_scale * scale, 0.0));
@@ -457,7 +545,8 @@ impl App {
         }
         scene.finish();
         pip.scene = scene;
-        let clear = theme.paper;
+        // Clear through to WebKit's page beneath; the paper otherwise.
+        let clear = if native { [0.0; 4] } else { theme.paper };
         let pip = self.pip.as_mut().unwrap();
         pip.window.pre_present_notify();
         let Pip { target, scene, .. } = pip;
@@ -528,7 +617,8 @@ impl App {
         mark(self,scene,icons::PLUS,isz,rx+isz/2.0,top,Hit::Larger,&mut hits);
         rx -= isz + px(16.0);
         mark(self,scene,icons::MINUS,isz,rx+isz/2.0,top,Hit::Smaller,&mut hits);
-        if !narrow {
+        // Protected video can't be drawn over a shell: no pinning it there.
+        if !narrow && !self.pip_native() {
             rx -= isz + px(20.0);
             mark(self,scene,icons::TERMINAL,isz,rx+isz/2.0,top,Hit::Dock,&mut hits);
         }
@@ -616,15 +706,28 @@ impl App {
         if !pip.focused {
             return;
         }
+        // App/system chords do not also operate the video beneath them.
+        if pip.mods.control_key() || pip.mods.super_key() || pip.mods.alt_key() { return; }
         if ev.logical_key==WKey::Named(NamedKey::Tab) {
-            let order:Vec<Hit>=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Track,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close].into_iter().filter(|h|!matches!(h,Hit::Track) || pip.track.is_some()).collect();
+            let order=control_order(&pip.hits);
+            if order.is_empty() { return; }
             let back=pip.mods.shift_key();let n=order.len();
             let next=pip.key_focus.and_then(|h|order.iter().position(|v|*v==h)).map(|i|if back {(i+n-1)%n}else{(i+1)%n}).unwrap_or(if back{n-1}else{0});
             let p=self.pip.as_mut().unwrap();p.key_focus=Some(order[next]);p.window.request_redraw();return;
         }
-        if ev.logical_key==WKey::Named(NamedKey::Enter) || ev.logical_key==WKey::Named(NamedKey::Space) {
-            if let Some(hit)=pip.key_focus {self.pip_act(hit);return;}
+        if pip.key_focus == Some(Hit::Track) {
+            match &ev.logical_key {
+                WKey::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => { self.pip_act(Hit::Back); return; }
+                WKey::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => { self.pip_act(Hit::Forward); return; }
+                WKey::Named(NamedKey::Home) => { self.pip_seek_to(0.0); return; }
+                WKey::Named(NamedKey::End) => { self.pip_seek_to(1.0); return; }
+                _ => {}
+            }
         }
+        if ev.logical_key==WKey::Named(NamedKey::Enter) || ev.logical_key==WKey::Named(NamedKey::Space) {
+            if let Some(hit)=pip.key_focus {if !ev.repeat {self.pip_act(hit);}return;}
+        }
+        if ev.repeat && toggles_playback(&ev.logical_key) { return; }
         let (tab, right) = (pip.tab, pip.right);
         let back=format!("__nus.seek(-{})",self.behavior.pip_skip_seconds.clamp(1,120));
         let forward=format!("__nus.seek({})",self.behavior.pip_skip_seconds.clamp(1,120));
@@ -652,7 +755,7 @@ impl App {
             _ => return,
         };
         if let Some(t) = self.web_tab(tab, right) {
-            t.eval(cmd);
+            t.media(cmd);
         }
     }
 
@@ -667,12 +770,12 @@ impl App {
                 let pos=p.window.outer_position().map(|p|(p.x as f64/scale,p.y as f64/scale)).unwrap_or((p.cur.x,p.cur.y));
                 p.press_origin=(pos.0+x as f64/scale,pos.1+y as f64/scale);
                 p.area=native::work_area(&p.window);
-                if edge!=(0,0) {
-                    if crate::hatch_native::wayland(){use winit::window::ResizeDirection as D;let direction=match edge{(-1,-1)=>D::NorthWest,(1,-1)=>D::NorthEast,(-1,1)=>D::SouthWest,(1,1)=>D::SouthEast,(-1,0)=>D::West,(1,0)=>D::East,(0,-1)=>D::North,_=>D::South};let _=p.window.drag_resize_window(direction);return;}
-                    p.gesture=Some((p.cur,p.press_origin,edge));p.pressed=true;return;}
                 if let Some(hit)=p.hit_at(x,y) {
                     p.press_hit=Some(hit);
                     if hit==Hit::Track {p.scrubbing=true;let f=p.track_fraction(x);self.pip_seek_to(f);}
+                } else if edge!=(0,0) {
+                    if crate::hatch_native::wayland(){use winit::window::ResizeDirection as D;let direction=match edge{(-1,-1)=>D::NorthWest,(1,-1)=>D::NorthEast,(-1,1)=>D::SouthWest,(1,1)=>D::SouthEast,(-1,0)=>D::West,(1,0)=>D::East,(0,-1)=>D::North,_=>D::South};let _=p.window.drag_resize_window(direction);return;}
+                    p.gesture=Some((p.cur,p.press_origin,edge));p.pressed=true;
                 } else {p.pressed=true;}
             }
             ElementState::Released=>{
@@ -736,7 +839,7 @@ impl App {
             return;
         }
         let edge=p.edge_at(x as f32,y as f32);
-        let cursor=match edge {(-1,-1)|(1,1)=>winit::window::CursorIcon::NwseResize,(1,-1)|(-1,1)=>winit::window::CursorIcon::NeswResize,(_,0) if edge.0!=0=>winit::window::CursorIcon::EwResize,(0,_) if edge.1!=0=>winit::window::CursorIcon::NsResize,_=>winit::window::CursorIcon::Default};
+        let cursor=if p.hit_at(x as f32,y as f32).is_some() {winit::window::CursorIcon::Pointer} else {match edge {(-1,-1)|(1,1)=>winit::window::CursorIcon::NwseResize,(1,-1)|(-1,1)=>winit::window::CursorIcon::NeswResize,(_,0) if edge.0!=0=>winit::window::CursorIcon::EwResize,(0,_) if edge.1!=0=>winit::window::CursorIcon::NsResize,_=>winit::window::CursorIcon::Default}};
         p.window.set_cursor(cursor);
         // The marks light under the pointer, so it has to redraw.
         p.window.request_redraw();
@@ -744,10 +847,12 @@ impl App {
 
     /// Seek to a fraction of the run time.
     fn pip_seek_to(&mut self, f: f32) {
+        if !f.is_finite() { return; }
+        let f = f.clamp(0.0, 1.0);
         let Some(pip) = self.pip.as_ref() else { return };
         let (tab, right) = (pip.tab, pip.right);
         if let Some(t) = self.web_tab(tab, right) {
-            t.eval(&format!("__nus.seekTo({f})"));
+            t.media(&format!("__nus.seekTo({f})"));
         }
         if let Some(p) = self.pip.as_ref() {
             p.window.request_redraw();
@@ -774,7 +879,7 @@ impl App {
             Hit::Track => return,
         };
         if let Some(t) = self.web_tab(tab, right) {
-            t.eval(cmd);
+            t.media(cmd);
         }
         if let Some(p) = self.pip.as_ref() {
             p.window.request_redraw();
@@ -829,6 +934,9 @@ impl App {
 
     /// Bring the video's tab back and close PiP.
     pub fn return_from_pip(&mut self) {
+        if self.pip.is_some() {
+            self.place_webkit_pip(None);
+        }
         if let Some(p) = self.pip.take() {
             let tab = p.tab;
             drop(p);
@@ -850,8 +958,7 @@ impl App {
         use accesskit::{Action,Node,NodeId,Role,TreeInfo,TreeId,TreeUpdate};
         let mut nodes=Vec::new();let mut children=Vec::new();let mut focus=NodeId(1);
         if let Some(p)=&self.pip {
-            for hit in [Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close,Hit::Track] {
-                if matches!(hit,Hit::Track) && p.track.is_none(){continue;}
+            for hit in control_order(&p.hits) {
                 let id=NodeId(10+hit as u64);let mut n=Node::new(if hit==Hit::Track {Role::Slider}else{Role::Button});n.set_label(match hit {Hit::Back=>format!("Back {} seconds",self.behavior.pip_skip_seconds.clamp(1,120)),Hit::Forward=>format!("Forward {} seconds",self.behavior.pip_skip_seconds.clamp(1,120)),_=>hit.label().into()});n.add_action(Action::Focus);
                 if hit==Hit::Track {n.add_action(Action::Increment);n.add_action(Action::Decrement);n.add_action(Action::SetValue);n.set_min_numeric_value(0.0);n.set_max_numeric_value(100.0);if let Some(v)=self.pane_video(p.tab,p.right){n.set_numeric_value((v.t/v.dur*100.0).clamp(0.0,100.0));}}
                 else {n.add_action(Action::Click);}
@@ -865,6 +972,7 @@ impl App {
     pub(crate) fn pip_access_action(&mut self,req:accesskit::ActionRequest) {
         use accesskit::{Action,ActionData};
         let Some(hit)=[Hit::Play,Hit::Back,Hit::Forward,Hit::Mute,Hit::Smaller,Hit::Larger,Hit::Dock,Hit::ToTab,Hit::Close,Hit::Track].into_iter().find(|h|10+*h as u64==req.target_node.0) else {return;};
+        if !self.pip.as_ref().is_some_and(|p| p.hits.iter().any(|(_, drawn)| *drawn == hit)) { return; }
         match req.action {
             Action::Click=>self.pip_act(hit),
             Action::Focus=>{if let Some(p)=&mut self.pip {p.key_focus=Some(hit);p.window.focus_window();p.window.request_redraw();}},
@@ -872,6 +980,43 @@ impl App {
             Action::Decrement if hit==Hit::Track=>self.pip_act(Hit::Back),
             Action::SetValue if hit==Hit::Track=>{if let Some(ActionData::NumericValue(v))=req.data{if v.is_finite(){self.pip_seek_to((v/100.0).clamp(0.0,1.0)as f32);}}},
             _=>{}
+        }
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_targets_choose_the_nearest_control() {
+        let mut hits = vec![
+            (Rect::new(0.0, 0.0, 35.0, 35.0), Hit::Close),
+            (Rect::new(31.0, 0.0, 35.0, 35.0), Hit::ToTab),
+        ];
+        assert_eq!(control_at(&hits, 34.0, 17.0), Some(Hit::ToTab));
+        hits.reverse();
+        assert_eq!(control_at(&hits, 32.0, 17.0), Some(Hit::Close));
+        assert_eq!(control_at(&hits, 100.0, 17.0), None);
+    }
+
+    #[test]
+    fn keyboard_and_accessibility_skip_controls_that_do_not_exist() {
+        let r = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let native_narrow = [(r, Hit::Close), (r, Hit::Play), (r, Hit::Mute), (r, Hit::ToTab)];
+        assert_eq!(control_order(&native_narrow), vec![Hit::Play, Hit::Mute, Hit::ToTab, Hit::Close]);
+        let seekable = [(r, Hit::Track), (r, Hit::Mute), (r, Hit::Play)];
+        assert_eq!(control_order(&seekable), vec![Hit::Play, Hit::Mute, Hit::Track]);
+        assert!(control_order(&[]).is_empty());
+    }
+
+    #[test]
+    fn held_toggle_keys_are_distinct_from_repeatable_transport() {
+        for key in [WKey::Named(NamedKey::Space), WKey::Character("k".into()), WKey::Character("M".into())] {
+            assert!(toggles_playback(&key));
+        }
+        for key in [WKey::Named(NamedKey::ArrowRight), WKey::Character("j".into()), WKey::Character(".".into())] {
+            assert!(!toggles_playback(&key));
         }
     }
 }

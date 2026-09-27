@@ -1,53 +1,28 @@
-//! The prompt line has a language server too: bash-language-server or
-//! PowerShell Editor Services by shell, fed the typed command as a
-//! one-line document. QUIET (the default) underlines a diagnostic and
-//! rides completions on the ghost prediction (Tab accepts); MENU shows a
-//! small list under the caret; OFF is off. Nothing here blocks: text goes
-//! out debounced, answers come back through the app's LSP host.
-
-use std::time::Instant;
-
-use nus_lsp::lsp_types::{CompletionItem, Diagnostic, Position, Url};
-use nus_render::text::Style;
-use nus_render::{Rect, Scene};
-use winit::event::ElementState;
-use winit::keyboard::{Key as WKey, NamedKey};
-
-use crate::app::{fade, App, Pane, TermPane};
+//! Prompt language servers contribute to the same Code menu as history
+//! and Git. Async answers are bound to the exact command and caret.
+use crate::app::{App, Pane, TermPane};
 use crate::editor::Pending;
+use crate::prompt_code::{CodeItem, CodeMenu, PromptLine, PromptStamp};
 use crate::settings::PromptLsp;
-use nus_render::theme::metric as m;
+use nus_lsp::lsp_types::{
+    CompletionItem, CompletionTextEdit, Diagnostic, InsertTextFormat, Position, Url,
+};
+use nus_render::{text::Style, Rect, Scene};
+use std::time::Instant;
 
 pub struct LineLsp {
     pub key: String,
     pub uri: Url,
     pub opened: bool,
-    /// The last text the server saw, and when the line last changed.
     pub sent: String,
     pub changed_at: Instant,
     pub dirty: bool,
     pub diags: Vec<Diagnostic>,
-    /// Completions for the word at the end of the line.
     pub items: Vec<CompletionItem>,
-    pub sel: usize,
-    pub word: String,
+    pub snapshot: Option<PromptStamp>,
+    // Kept for the existing screenshot diagnostic probe.
     pub menu: bool,
     pub ghost: Option<String>,
-}
-
-/// The trailing word being completed: letters, digits, `_`, `-`, `.`, `/`.
-/// Whether the word at the end of `text` is one the language server should
-/// complete: the command position, a path, or a `$variable`.
-pub fn lsp_wants(text: &str) -> bool {
-    if crate::git_complete::is_git(text) || text.ends_with(char::is_whitespace) {
-        return false;
-    }
-    let word = word_at_end(text);
-    let before = text[..text.len() - word.len()].chars().last();
-    if before == Some('$') || word.contains('/') || word.contains('\\') || word.starts_with('.') || word.starts_with('~') {
-        return true;
-    }
-    matches!(crate::predict::tokens(text).last(), Some((_, _, crate::predict::Tok::Command)))
 }
 
 pub fn word_at_end(text: &str) -> String {
@@ -59,17 +34,134 @@ pub fn word_at_end(text: &str) -> String {
         .rev()
         .collect()
 }
+pub fn lsp_wants(text: &str) -> bool {
+    if crate::git_complete::is_git(text) || text.ends_with(char::is_whitespace) {
+        return false;
+    }
+    let word = word_at_end(text);
+    let before = text[..text.len() - word.len()].chars().last();
+    if before == Some('$')
+        || word.contains('/')
+        || word.contains('\\')
+        || word.starts_with('.')
+        || word.starts_with('~')
+    {
+        return true;
+    }
+    matches!(
+        crate::predict::tokens(text).last(),
+        Some((_, _, crate::predict::Tok::Command))
+    )
+}
+
+fn byte_at(text: &str, pos: Position) -> Option<usize> {
+    if pos.line != 0 {
+        return None;
+    }
+    let mut units = 0;
+    for (byte, ch) in text.char_indices() {
+        if units == pos.character {
+            return Some(byte);
+        }
+        units += ch.len_utf16() as u32;
+        if units > pos.character {
+            return None;
+        }
+    }
+    (units == pos.character).then_some(text.len())
+}
+
+pub fn code_item(line: &PromptLine, item: &CompletionItem) -> Option<CodeItem> {
+    if item.insert_text_format == Some(InsertTextFormat::SNIPPET)
+        || item
+            .additional_text_edits
+            .as_ref()
+            .is_some_and(|e| !e.is_empty())
+    {
+        return None;
+    }
+    let (range, insert) = match &item.text_edit {
+        Some(CompletionTextEdit::Edit(e)) => (
+            byte_at(&line.text, e.range.start)?..byte_at(&line.text, e.range.end)?,
+            e.new_text.clone(),
+        ),
+        Some(CompletionTextEdit::InsertAndReplace(e)) => (
+            byte_at(&line.text, e.replace.start)?..byte_at(&line.text, e.replace.end)?,
+            e.new_text.clone(),
+        ),
+        None => {
+            let word = word_at_end(line.prefix());
+            let start = line.caret - word.len();
+            let mut end = line.caret;
+            for (i, ch) in line.text[line.caret..].char_indices() {
+                if !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '\\')) {
+                    break;
+                }
+                end = line.caret + i + ch.len_utf8();
+            }
+            (
+                start..end,
+                item.insert_text
+                    .clone()
+                    .unwrap_or_else(|| item.label.clone()),
+            )
+        }
+    };
+    if range.start > line.caret
+        || range.end < line.caret
+        || range.start > range.end
+        || insert.is_empty()
+        || !crate::prompt_code::safe_text(&insert)
+    {
+        return None;
+    }
+    let word_range = line.token_range();
+    if range.start < word_range.start || range.end > word_range.end {
+        return None;
+    }
+    if !insert.starts_with(&line.text[range.start..line.caret])
+        || insert == line.text[range.clone()]
+    {
+        return None;
+    }
+    Some(CodeItem {
+        label: item.label.chars().filter(|c| !c.is_control()).collect(),
+        detail: item
+            .detail
+            .as_deref()
+            .unwrap_or("Code")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(80)
+            .collect(),
+        range,
+        insert,
+    })
+}
 
 impl App {
-    /// Once a loop: keep the focused shell's line in step with its server.
     pub(crate) fn prompt_lsp_tick(&mut self) {
         let mode = self.behavior.prompt_lsp;
         let active = self.active;
-        // Which shell and what it says.
-        let (typed, profile, plsp_missing) = {
-            let Some(tab) = self.tabs.get_mut(active) else { return };
-            let Pane::Term(t) = tab.focused() else { return };
-            if mode == PromptLsp::Off {
+        let (line, profile, missing) = {
+            let Some(Pane::Term(t)) = self.tabs.get_mut(active).map(|t| t.focused()) else {
+                return;
+            };
+            let line = t.prompt_line();
+            if t.code_menu
+                .as_ref()
+                .is_some_and(|m| line.as_ref().is_none_or(|l| !l.matches(&m.stamp)))
+            {
+                t.code_menu = None;
+                self.dirty = true;
+            }
+            if t.prompt_edit_pending
+                .as_ref()
+                .is_some_and(|e| line.as_ref().is_none_or(|l| !e.waiting(l)))
+            {
+                t.prompt_edit_pending = None;
+            }
+            if mode == PromptLsp::Off || !self.behavior.shell_integration {
                 if let Some(l) = t.plsp.take() {
                     if let Some(s) = self.lsp.map.get(&l.key) {
                         s.client.did_close(l.uri);
@@ -78,70 +170,78 @@ impl App {
                 t.plsp_tried = false;
                 return;
             }
-            let typed = t.typed().map(|(_, s)| s);
-            (typed, t.profile, t.plsp.is_none() && !t.plsp_tried)
+            (line, t.profile, t.plsp.is_none() && !t.plsp_tried)
         };
-        if plsp_missing {
+        if missing {
             self.prompt_lsp_start(active, profile);
         }
-        let Some(tab) = self.tabs.get_mut(active) else { return };
-        let Pane::Term(t) = tab.focused() else { return };
+        let Some(Pane::Term(t)) = self.tabs.get_mut(active).map(|t| t.focused()) else {
+            return;
+        };
         let Some(l) = t.plsp.as_mut() else { return };
-        let Some(text) = typed else {
-            // Not at a prompt: nothing to show.
+        let Some(line) = line else {
             if !l.diags.is_empty() || !l.items.is_empty() || l.ghost.is_some() || l.menu {
                 l.diags.clear();
                 l.items.clear();
                 l.ghost = None;
                 l.menu = false;
+                l.snapshot = None;
                 self.dirty = true;
             }
             return;
         };
-        if text != l.sent && !l.dirty {
-            l.dirty = true;
+        let stamp = line.stamp();
+        if l.snapshot.as_ref() != Some(&stamp) {
+            l.snapshot = Some(stamp.clone());
             l.changed_at = crate::clock::now();
-            // Stale answers go the moment the line moves.
-            l.ghost = None;
+            l.dirty = true;
+            l.diags.clear();
             l.items.clear();
+            l.ghost = None;
             l.menu = false;
             self.dirty = true;
         }
-        if l.dirty && crate::clock::since(l.changed_at).as_millis() >= 120 && text != l.sent {
-            let Some(s) = self.lsp.map.get(&l.key) else { return };
-            if !s.client.is_ready() {
-                return;
-            }
-            let language = if l.uri.as_str().ends_with(".ps1") { "powershell" } else { "shellscript" };
-            if !l.opened {
-                s.client.did_open(l.uri.clone(), language, &text);
-                l.opened = true;
-            } else {
-                s.client.did_change(l.uri.clone(), &text);
-            }
-            l.sent = text.clone();
-            l.dirty = false;
-            l.word = word_at_end(&text);
-            // Ask only where a shell's language server knows the answer: a
-            // command name where one goes, a path, a variable. Arguments to
-            // a program (git's `push`) aren't command names.
-            if !lsp_wants(&text) {
-                l.ghost = None;
-                l.items.clear();
-                l.menu = false;
-            } else if !l.word.is_empty() {
-                let pos = Position::new(0, text.encode_utf16().count() as u32);
-                let id = s.client.completion(l.uri.clone(), pos, None);
-                self.lsp.pending.insert((l.key.clone(), id), Pending::PromptCompletion { uri: l.uri.clone() });
-            }
-        } else if l.dirty && text == l.sent {
-            l.dirty = false;
+        if !l.dirty || crate::clock::since(l.changed_at).as_millis() < 120 {
+            return;
+        }
+        let Some(server) = self.lsp.map.get(&l.key) else {
+            return;
+        };
+        if !server.client.is_ready() {
+            return;
+        }
+        let language = if l.uri.as_str().ends_with(".ps1") {
+            "powershell"
+        } else {
+            "shellscript"
+        };
+        if !l.opened {
+            server.client.did_open(l.uri.clone(), language, &line.text);
+            l.opened = true;
+        } else if l.sent != line.text {
+            server.client.did_change(l.uri.clone(), &line.text);
+        }
+        l.sent = line.text.clone();
+        l.dirty = false;
+        if lsp_wants(line.prefix()) && !word_at_end(line.prefix()).is_empty() {
+            let pos = Position::new(0, line.prefix().encode_utf16().count() as u32);
+            let id = server.client.completion(l.uri.clone(), pos, None);
+            self.lsp.pending.insert(
+                (l.key.clone(), id),
+                Pending::PromptCompletion {
+                    uri: l.uri.clone(),
+                    stamp,
+                },
+            );
         }
     }
 
-    /// Start (or find) the server for a shell's prompt line.
     fn prompt_lsp_start(&mut self, ti: usize, profile: usize) {
-        let kind = self.profiles.get(profile).map(|p| crate::shell::kind_of(&p.program)).unwrap_or(crate::shell::Kind::Other);
+        let kind = self
+            .profiles
+            .get(profile)
+            .map(|p| crate::shell::kind_of(&p.program))
+            .unwrap_or(crate::shell::Kind::Other);
         let (command, ext) = match kind {
             crate::shell::Kind::PowerShell => ("powershell-editor-services", "ps1"),
             crate::shell::Kind::Bash | crate::shell::Kind::Zsh => ("bash-language-server", "sh"),
@@ -152,15 +252,27 @@ impl App {
                 return;
             }
         };
-        let Some(server) = nus_lsp::registry::SERVERS.iter().find(|s| s.command == command) else { return };
-        let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_default();
+        let Some(server) = nus_lsp::registry::SERVERS
+            .iter()
+            .find(|s| s.command == command)
+        else {
+            return;
+        };
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
         let key = self.lsp_key_for_server(server, &home, true);
-        let Some(Pane::Term(t)) = self.tabs.get_mut(ti).map(|t| t.focused()) else { return };
+        let Some(Pane::Term(t)) = self.tabs.get_mut(ti).map(|t| t.focused()) else {
+            return;
+        };
         t.plsp_tried = true;
         let Some(key) = key else { return };
-        let id = t.pty.pid().unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("nus-prompt-{id}.{ext}"));
-        let Ok(uri) = Url::from_file_path(&path) else { return };
+        let path =
+            std::env::temp_dir().join(format!("nus-prompt-{}.{}", t.pty.pid().unwrap_or(0), ext));
+        let Ok(uri) = Url::from_file_path(&path) else {
+            return;
+        };
         t.plsp = Some(LineLsp {
             key,
             uri,
@@ -170,47 +282,65 @@ impl App {
             dirty: false,
             diags: Vec::new(),
             items: Vec::new(),
-            sel: 0,
-            word: String::new(),
+            snapshot: None,
             menu: false,
             ghost: None,
         });
     }
 
-    /// The server answered a prompt completion: filter to the word, and
-    /// ghost or list it per the setting.
-    pub(crate) fn prompt_lsp_items(&mut self, uri: &Url, items: Vec<CompletionItem>) {
-        let mode = self.behavior.prompt_lsp;
+    pub(crate) fn prompt_lsp_items(
+        &mut self,
+        uri: &Url,
+        stamp: &PromptStamp,
+        items: Vec<CompletionItem>,
+    ) {
+        if self.behavior.prompt_lsp == PromptLsp::Off {
+            return;
+        }
         for tab in &mut self.tabs {
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
-                let Pane::Term(t) = p else { continue };
+            for pane in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                let Pane::Term(t) = pane else { continue };
+                let Some(line) = t.prompt_line() else {
+                    continue;
+                };
                 let Some(l) = t.plsp.as_mut() else { continue };
                 if &l.uri != uri {
                     continue;
                 }
-                let w = l.word.to_lowercase();
-                let mut items: Vec<CompletionItem> = items
+                if !line.matches(stamp) || l.snapshot.as_ref() != Some(stamp) || l.dirty {
+                    return;
+                }
+                let mut items: Vec<_> = items
                     .into_iter()
-                    .filter(|it| {
-                        let label = it.filter_text.as_deref().unwrap_or(&it.label).to_lowercase();
-                        label.starts_with(&w) && label != w
-                    })
+                    .filter(|it| code_item(&line, it).is_some())
                     .collect();
-                items.sort_by(|a, b| a.sort_text.as_deref().unwrap_or(&a.label).cmp(b.sort_text.as_deref().unwrap_or(&b.label)));
+                items.sort_by(|a, b| {
+                    a.sort_text
+                        .as_deref()
+                        .unwrap_or(&a.label)
+                        .cmp(b.sort_text.as_deref().unwrap_or(&b.label))
+                });
                 items.truncate(40);
-                l.sel = 0;
-                match mode {
-                    PromptLsp::Quiet => {
-                        l.ghost = items.first().map(|it| it.label[l.word.len().min(it.label.len())..].to_string()).filter(|s| !s.is_empty());
-                        l.items = items;
-                        l.menu = false;
+                l.items = items;
+                l.ghost = l
+                    .items
+                    .first()
+                    .and_then(|it| code_item(&line, it))
+                    .and_then(|it| {
+                        it.insert
+                            .strip_prefix(&line.text[it.range])
+                            .map(str::to_string)
+                    });
+                l.menu = false;
+                if self.behavior.prompt_lsp == PromptLsp::Menu
+                    && t.code_menu.is_none()
+                    && !t.prompt_history.active()
+                    && t.prompt_quiet.as_ref().is_none_or(|s| !line.matches(s))
+                {
+                    let items = t.code_items(&line);
+                    if !items.is_empty() {
+                        t.code_menu = Some(CodeMenu::new(line.stamp(), items));
                     }
-                    PromptLsp::Menu => {
-                        l.menu = !items.is_empty();
-                        l.ghost = None;
-                        l.items = items;
-                    }
-                    PromptLsp::Off => {}
                 }
                 self.dirty = true;
                 return;
@@ -218,179 +348,93 @@ impl App {
         }
     }
 
-    /// Diagnostics for a prompt line.
     pub(crate) fn prompt_lsp_diags(&mut self, uri: &Url, diags: Vec<Diagnostic>) -> bool {
         for tab in &mut self.tabs {
-            for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
-                let Pane::Term(t) = p else { continue };
+            for pane in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+                let Pane::Term(t) = pane else { continue };
+                let current = t.prompt_line();
                 let Some(l) = t.plsp.as_mut() else { continue };
                 if &l.uri == uri {
-                    l.diags = diags;
-                    self.dirty = true;
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Keys while a completion menu is up, or Tab on a ghost. Returns true
-    /// when consumed.
-    pub(crate) fn prompt_lsp_key(&mut self, ev: &crate::app::KeyIn) -> bool {
-        if ev.state != ElementState::Pressed || self.behavior.prompt_lsp == PromptLsp::Off {
-            return false;
-        }
-        if self.mods.control_key() || self.mods.alt_key() || self.mods.super_key() {
-            return false;
-        }
-        let Some(tab) = self.tabs.get_mut(self.active) else { return false };
-        let Pane::Term(t) = tab.focused() else { return false };
-        let Some(l) = t.plsp.as_mut() else { return false };
-        let key = &ev.logical_key;
-        if l.menu {
-            match key {
-                WKey::Named(NamedKey::ArrowDown) => {
-                    l.sel = (l.sel + 1).min(l.items.len().saturating_sub(1));
-                    self.dirty = true;
-                    return true;
-                }
-                WKey::Named(NamedKey::ArrowUp) => {
-                    l.sel = l.sel.saturating_sub(1);
-                    self.dirty = true;
-                    return true;
-                }
-                WKey::Named(NamedKey::Escape) => {
-                    l.menu = false;
-                    self.dirty = true;
-                    return true;
-                }
-                WKey::Named(NamedKey::Tab) => {
-                    if let Some(it) = l.items.get(l.sel) {
-                        let rest = it.label[l.word.len().min(it.label.len())..].to_string();
-                        let _ = t.pty.write(rest.as_bytes());
+                    if !l.dirty
+                        && current.as_ref().is_some_and(|line| {
+                            l.snapshot.as_ref().is_some_and(|s| line.matches(s))
+                        })
+                    {
+                        l.diags = diags;
+                        self.dirty = true;
                     }
-                    l.menu = false;
-                    l.items.clear();
-                    self.dirty = true;
                     return true;
                 }
-                _ => {
-                    // Any other key: the shell gets it; the menu closes and
-                    // comes back with the next answer.
-                    l.menu = false;
-                    self.dirty = true;
-                    return false;
-                }
-            }
-        }
-        // Tab takes the server's ghost only where it was asked for: never on
-        // a git line (git's own completer has that; see predict.rs).
-        let wanted = t.typed().is_some_and(|(_, typed)| lsp_wants(&typed));
-        let Some(l) = t.plsp.as_mut() else { return false };
-        if matches!(key, WKey::Named(NamedKey::Tab)) && wanted {
-            if let Some(g) = l.ghost.take() {
-                let _ = t.pty.write(g.as_bytes());
-                l.items.clear();
-                self.dirty = true;
-                return true;
             }
         }
         false
     }
 
-    /// Drawn over the prompt row after the coloured tokens: the ghost, a
-    /// diagnostic's underline (and its message when the pointer rests on
-    /// it), the menu.
-    pub(crate) fn draw_prompt_lsp(&mut self, scene: &mut Scene, p: &TermPane, col0: usize, typed: &str, history_ghost: bool) {
-        let Some(l) = p.plsp.as_ref() else { return };
+    pub(crate) fn draw_prompt_lsp(&mut self, scene: &mut Scene, p: &TermPane, line: &PromptLine) {
+        let Some(l) = p
+            .plsp
+            .as_ref()
+            .filter(|l| !l.dirty && l.snapshot.as_ref().is_some_and(|s| line.matches(s)))
+        else {
+            return;
+        };
         let (cw, ch) = p.grid.cell_size();
-        let cur = p.term.cursor();
-        let y = p.origin.1 + cur.row as f32 * ch;
-        let base = y + p.grid.metrics.baseline;
-        let font = p.grid.font;
-        let px = p.grid.px;
-        let t = self.theme.clone();
-        let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
-        let mono = Style { font, px, color: t.ink, tracking: 0.0 };
-        let (mx, my) = self.mouse;
-        // The ghost, unless history already had one.
-        if !history_ghost {
-            if let Some(g) = &l.ghost {
-                let x = p.origin.0 + cur.col as f32 * cw;
-                let cols_left = p.term.cols().saturating_sub(cur.col);
-                let g: String = g.chars().take(cols_left).collect();
-                self.fonts.draw(scene, Style { color: fade(t.ink, 0.38), ..mono }, x, base, &g);
-            }
-        }
-        // Diagnostics on the line.
-        let n = typed.chars().count();
-        for d in &l.diags {
-            if d.range.start.line != 0 {
+        let theme = self.theme.clone();
+        for diag in &l.diags {
+            let (Some(start), Some(end)) = (
+                byte_at(&line.text, diag.range.start),
+                byte_at(&line.text, diag.range.end),
+            ) else {
                 continue;
-            }
-            let a = nus_lsp::offset_of(typed, d.range.start).min(n);
-            let z = nus_lsp::offset_of(typed, d.range.end).clamp(a + 1, n.max(a + 1));
-            let sev = crate::editor::severity_ansi(d);
-            let uy = y + ch - self.px(2.0);
-            let mut ux = p.origin.0 + (col0 + a) as f32 * cw;
-            let end = p.origin.0 + (col0 + z) as f32 * cw;
-            let span = Rect::new(ux, y, end - ux, ch);
-            while ux < end {
-                scene.rect(Rect::new(ux, uy, self.px(2.0), self.px(1.5)), ansi(sev));
-                ux += self.px(4.0);
-            }
-            if span.contains(mx, my) {
-                let msg = d.message.lines().next().unwrap_or("").to_string();
-                let w = self.fonts.measure(mono, &msg) + self.px(16.0);
-                let h = ch + self.px(8.0);
-                let bx = span.x.min(p.rect.right() - w - self.px(8.0)).max(p.rect.x);
-                let by = if y - h - self.px(4.0) > p.rect.y { y - h - self.px(4.0) } else { y + ch + self.px(4.0) };
-                let r = Rect::new(bx, by, w, h);
-                scene.rect(r, t.paper);
-                scene.outline(r, self.px(m::HAIRLINE), ansi(sev));
-                self.fonts.draw(scene, mono, bx + self.px(8.0), by + self.px(4.0) + p.grid.metrics.baseline, &msg);
-            }
-        }
-        // The menu.
-        if l.menu && !l.items.is_empty() {
-            let shown = l.items.len().min(8);
-            let row_h = ch + self.px(4.0);
-            let mono_dim = Style { color: t.dim, ..mono };
-            let wmax = l
-                .items
+            };
+            let color = crate::theme_edit::from_rgb(theme.ansi[crate::editor::severity_ansi(diag)]);
+            for cell in line
+                .cells
                 .iter()
-                .take(shown)
-                .map(|i| self.fonts.measure(mono, &i.label) + i.detail.as_ref().map(|d| self.fonts.measure(mono_dim, d) + self.px(16.0)).unwrap_or(0.0))
-                .fold(0.0f32, f32::max)
-                .min(p.rect.w * 0.6);
-            let bw = wmax + self.px(20.0);
-            let bh = shown as f32 * row_h + self.px(6.0);
-            let word_cols = l.word.chars().count();
-            let bx = (p.origin.0 + (cur.col.saturating_sub(word_cols)) as f32 * cw).min(p.rect.right() - bw - self.px(8.0)).max(p.rect.x);
-            let below = y + ch + self.px(2.0);
-            let by = if below + bh > p.rect.bottom() { y - bh - self.px(2.0) } else { below };
-            let r = Rect::new(bx, by, bw, bh);
-            scene.rect(r, t.paper);
-            scene.outline(r, self.px(m::HAIRLINE), t.ink);
-            let mut yy = by + self.px(3.0);
-            for (k, it) in l.items.iter().enumerate().take(shown) {
-                if k == l.sel {
-                    scene.rect(Rect::new(bx, yy, bw, row_h), fade(self.surface.signal, 0.18));
+                .filter(|c| c.byte >= start && c.byte < end.max(start + 1))
+            {
+                let x = p.origin.0 + cell.col as f32 * cw;
+                let y = p.origin.1 + cell.row as f32 * ch;
+                let rect = Rect::new(x, y, cell.width as f32 * cw, ch);
+                let mut ux = x;
+                while ux < rect.right() {
+                    scene.rect(
+                        Rect::new(ux, y + ch - self.px(2.0), self.px(2.0), self.px(1.5)),
+                        color,
+                    );
+                    ux += self.px(4.0);
                 }
-                let b = yy + self.px(2.0) + p.grid.metrics.baseline;
-                let lw = self.fonts.draw(scene, mono, bx + self.px(10.0), b, &it.label);
-                if let Some(d) = &it.detail {
-                    let dw = self.fonts.measure(mono_dim, d);
-                    if lw + dw + self.px(30.0) < bw {
-                        self.fonts.draw(scene, mono_dim, bx + bw - self.px(10.0) - dw, b, d);
-                    }
+                if rect.contains(self.mouse.0, self.mouse.1) && p.code_menu.is_none() {
+                    let style = Style {
+                        font: p.grid.font,
+                        px: p.grid.px,
+                        color: theme.ink,
+                        tracking: 0.0,
+                    };
+                    let msg = diag.message.lines().next().unwrap_or("");
+                    let width = (self.fonts.measure(style, msg) + self.px(16.0)).min(p.rect.w);
+                    let height = ch + self.px(8.0);
+                    let bx = x.min(p.rect.right() - width).max(p.rect.x);
+                    let by = if y - height > p.rect.y {
+                        y - height
+                    } else {
+                        y + ch
+                    };
+                    let r = Rect::new(bx, by, width, height);
+                    scene.rect(r, theme.paper);
+                    scene.outline(r, self.px(1.0), color);
+                    let old = scene.clip();
+                    scene.layer(Some(r));
+                    self.fonts.draw(
+                        scene,
+                        style,
+                        bx + self.px(8.0),
+                        by + self.px(4.0) + p.grid.metrics.baseline,
+                        msg,
+                    );
+                    scene.layer(old);
                 }
-                yy += row_h;
             }
-            let hint = "TAB ACCEPTS · ESC";
-            let hw = self.fonts.measure(self.label(), hint);
-            let dim = Style { color: t.dim, ..self.label() };
-            self.fonts.draw(scene, dim, bx + bw - hw - self.px(10.0), by + bh + self.px(14.0), hint);
         }
     }
 }
@@ -398,12 +442,55 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    #[test]
+    fn unicode_positions_and_insertion_text_are_respected() {
+        assert_eq!(byte_at("a界😀z", Position::new(0, 4)), Some(8));
+        assert_eq!(byte_at("a界😀z", Position::new(0, 3)), None);
+        let mut term = nus_vt::Term::new(80, 5, 20);
+        term.advance("\x1b]133;B\x07ec".as_bytes());
+        let line = PromptLine::read(&term).unwrap();
+        let item = CompletionItem {
+            label: "echo (shell)".into(),
+            insert_text: Some("echo".into()),
+            ..CompletionItem::default()
+        };
+        assert_eq!(code_item(&line, &item).unwrap().insert, "echo");
+        assert!(code_item(
+            &line,
+            &CompletionItem {
+                insert_text: Some("echo\nrm x".into()),
+                ..item.clone()
+            }
+        )
+        .is_none());
+        assert!(code_item(
+            &line,
+            &CompletionItem {
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..item
+            }
+        )
+        .is_none());
+    }
+    #[test]
+    fn replacement_preserves_following_arguments() {
+        let mut term = nus_vt::Term::new(80, 5, 20);
+        term.advance(b"\x1b]133;B\x07echo ./sr --all\x1b[6D");
+        let line = PromptLine::read(&term).unwrap();
+        let item = CompletionItem {
+            label: "./src".into(),
+            ..CompletionItem::default()
+        };
+        let result = code_item(&line, &item).unwrap();
+        assert_eq!(result.range, 5..9);
+        assert_eq!(&line.text[result.range.end..], " --all");
+    }
     #[test]
     fn trailing_word() {
         assert_eq!(word_at_end("git sta"), "sta");
         assert_eq!(word_at_end("ls ./src/ma"), "./src/ma");
-        assert_eq!(word_at_end("echo hi "), "");
-        assert_eq!(word_at_end("ech"), "ech");
+        assert!(!lsp_wants("git push"));
+        assert!(!lsp_wants("echo ordinary"));
+        assert!(lsp_wants("echo $va"));
     }
 }

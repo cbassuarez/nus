@@ -1,0 +1,19 @@
+diff --git a/media/BUILD.gn b/media/BUILD.gn
+index 5c60f7e080..db68e70cf4 100644
+--- a/media/BUILD.gn
++++ b/media/BUILD.gn
+@@ -86,11 +86,9 @@ buildflag_header("media_buildflags") {
+   }
+ }
+ 
+-if (proprietary_codecs && media_use_ffmpeg) {
+-  assert(
+-      ffmpeg_branding != "Chromium",
+-      "proprietary codecs and ffmpeg_branding set to Chromium are incompatible")
+-}
++# nus: proprietary_codecs with ffmpeg_branding=Chromium is the royalty-free
++# build. FFmpeg demuxes MP4 without its H.264/AAC decoders; VideoToolbox and
++# AudioToolbox (mac-aac-audiotoolbox.patch) decode instead.
+ 
+ # Common configuration for targets in the media directory; these must not be
+ # exported since things like USE_NEON have different meanings elsewhere in the

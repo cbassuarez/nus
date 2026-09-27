@@ -744,12 +744,12 @@ impl App {
             let st = if self.scm.message.is_empty() { dim } else { msg_style };
             let lw2 = self.fonts.draw(scene, st, field.x + self.px(8.0), ly, l);
             if self.scm.typing && k + 1 == lines.len().min(3) && !self.scm.message.is_empty() {
-                scene.rect(Rect::new(field.x + self.px(9.0) + lw2, ly - self.px(11.0), self.px(1.5), self.px(14.0)), ink);
+                self.draw_line_caret(scene, field.x + self.px(9.0) + lw2, ly, msg_style.px, 1.0, self.last_key);
             }
             ly += self.px(16.0);
         }
         if self.scm.typing && self.scm.message.is_empty() {
-            scene.rect(Rect::new(field.x + self.px(8.0), field.y + self.px(7.0), self.px(1.5), self.px(14.0)), ink);
+            self.draw_line_caret(scene, field.x + self.px(8.0), field.y + self.px(18.0), msg_style.px, 1.0, self.last_key);
         }
         y = field.bottom() + self.px(10.0);
         let staged = s.files.iter().filter(|f| f.group == Group::Staged).count();

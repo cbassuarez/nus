@@ -2,6 +2,8 @@ struct Globals {
     screen: vec2<f32>,
     corner_radius: f32,
     padding: f32,
+    // x: live headroom relative to SDR white; remaining components reserved.
+    display: vec4<f32>,
 };
 var<immediate> globals: Globals;
 @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -34,6 +36,7 @@ struct VsOut {
     @location(9) @interpolate(flat) stop3: vec4<f32>,
     @location(10) @interpolate(flat) stop4: vec4<f32>,
     @location(11) @interpolate(flat) raw2: u32,
+    @location(12) @interpolate(flat) controls: vec2<f32>,
 };
 
 fn unpack(c: u32) -> vec4<f32> {
@@ -71,6 +74,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
     out.stop3 = unpack(bitcast<u32>(inst.uv.z));
     out.stop4 = unpack(bitcast<u32>(inst.uv.w));
     out.raw2 = inst.color2;
+    out.controls = inst.uv.zw;
     return out;
 }
 
@@ -463,11 +467,248 @@ fn atom(in: VsOut) -> vec4<f32> {
     return vec4(out.rgb / out.a, out.a * in.color.a);
 }
 
+// Distance along the outer rounded perimeter, starting at its top-left
+// tangent. Unlike a nearest-side coordinate, this stays continuous on arcs.
+fn carapace_path(p: vec2<f32>, size: vec2<f32>, radius: f32) -> vec2<f32> {
+    let r = radius;
+    let a = r * 1.570796327;
+    let w = size.x - 2.0 * r;
+    let h = size.y - 2.0 * r;
+    let length = 2.0 * (w + h) + 4.0 * a;
+    var s = p.x - r;
+    if r > 0.0 && p.x > size.x - r && p.y < r {
+        s = w + (atan2(p.y - r, p.x - size.x + r) + 1.570796327) * r;
+    } else if r > 0.0 && p.x > size.x - r && p.y > size.y - r {
+        s = w + a + h + atan2(p.y - size.y + r, p.x - size.x + r) * r;
+    } else if r > 0.0 && p.x < r && p.y > size.y - r {
+        s = 2.0 * w + 2.0 * a + h + (atan2(p.y - size.y + r, p.x - r) - 1.570796327) * r;
+    } else if r > 0.0 && p.x < r && p.y < r {
+        s = length + (atan2(p.y - r, p.x - r) + 1.570796327) * r;
+    } else if min(p.x, size.x - p.x) < min(p.y, size.y - p.y) {
+        s = select(length - a - (p.y - r), w + a + p.y - r, p.x > size.x * 0.5);
+    } else if p.y > size.y * 0.5 {
+        s = w + 2.0 * a + h + size.x - r - p.x;
+    }
+    return vec2(s, max(length, 1.0));
+}
+
+// A small irregular ink deposit. Radial lobes and narrow spurs describe a
+// splash's silhouette; there is deliberately no specular or metallic shading.
+fn carapace_blot(delta: vec2<f32>, radii: vec2<f32>, seed: f32) -> f32 {
+    let p = delta / max(radii, vec2(0.12));
+    if abs(p.x) > 2.7 || abs(p.y) > 2.7 { return 0.0; }
+    let angle = atan2(p.y, p.x);
+    let lobes = 1.0 + 0.095 * sin(angle * 5.0 + seed)
+        + 0.060 * sin(angle * 9.0 + 1.7 + seed) + 0.035 * sin(angle * 15.0 + 0.8);
+    let spur = 0.13 * pow(max(0.0, cos(angle * 3.0 + seed + 0.7)), 14.0);
+    return exp(-dot(p, p) * 1.15 / pow(lobes + spur, 2.0));
+}
+
+// kind 22: a material, not a rectangular texture overlay. All light, pigment,
+// activity and optional grain share the exact same final silhouette.
+fn carapace(in: VsOut) -> vec4<f32> {
+    let half = in.size * 0.5;
+    let radius = in.params.x;
+    let width = in.params.y;
+    if width <= 0.0 || min(in.size.x, in.size.y) <= 0.0 { return vec4(0.0); }
+    let p = in.local;
+    let outer = sd_box(p - half, half, radius);
+    let inner = sd_box(p - half, max(half - vec2(width), vec2(0.0)), max(radius - width, 0.0));
+    var alpha = (1.0 - smoothstep(-0.6, 0.6, outer)) * smoothstep(-0.6, 0.6, inner);
+    let band = (in.extra & 32u) != 0u;
+    if band { alpha *= 1.0 - smoothstep(width - 0.5, width + 0.5, p.y); }
+    if alpha <= 0.0 { return vec4(0.0); }
+    let depth = -outer;
+    let u = clamp(depth / width, 0.0, 1.0);
+    let v = p / max(in.size, vec2(1.0));
+    let path = carapace_path(p, in.size, radius);
+    let s = path.x;
+    let perimeter = path.y;
+    let e = in.controls.x;
+    // A still material is independent of the caller's clock, including its
+    // geometry. Attention can leave a held accent without introducing motion.
+    let determinate = in.controls.y >= 0.0 && e > 0.0;
+    let progress = clamp(in.controls.y, 0.0, 1.0);
+    let phase = select(0.0, select(in.phase * 6.283185307, progress * 3.141592654, determinate), e > 0.0);
+    let travel = select(0.0, select(in.phase, progress, determinate), e > 0.0);
+    let attention = (in.extra & 16u) != 0u;
+    let material = in.extra & 15u;
+    let base = in.color.rgb;
+    let black = vec3(0.059, 0.086, 0.102);
+    let white = vec3(0.969, 0.945, 0.871);
+    let dark = mix(base, black, 0.78);
+    var color = base;
+
+    if material == 1u {
+        // One continuous pool, with only a short interruption on the top
+        // edge. The terminal splash and its two tiny satellites may float;
+        // the rest of the body never turns into orbiting beads or tubes.
+        let tip = in.size.x * 0.64 - radius;
+        let unit = min(width, in.size.x * 0.047);
+        let end = tip + unit * 4.2;
+        let before = (tip - s + perimeter) % perimeter;
+        let taper = smoothstep(0.0, width * 2.8, before);
+        let uneven = 0.032 * sin(s * 0.067) + 0.018 * sin(s * 0.173 + 2.1)
+            + 0.045 * (vnoise(vec2(s * 0.12, 4.8)) - 0.5);
+        var spread = width * (0.21 + 0.10 * taper + uneven);
+        var endpoint = 0.0;
+        var cap = max(unit * 0.42, 0.12);
+        if s > tip && s < end {
+            if s - tip < end - s {
+                endpoint = s - tip;
+                spread = width * 0.21;
+                cap = max(unit * 0.26, 0.12);
+            } else {
+                endpoint = end - s;
+                spread = width * (0.31 + uneven);
+            }
+        }
+        let center = width * (0.50 + 0.029 * sin(s * 0.023) + 0.018 * sin(s * 0.091 + 1.3));
+        let q = vec2(endpoint / cap, (depth - center) / max(spread, 0.12));
+        var field = exp(-dot(q, q) * 1.15);
+        field += carapace_blot(vec2(s - tip + unit * 0.32, depth - width * 0.52),
+            vec2(unit * 0.50, width * (0.30 + e * 0.025 * sin(phase))), 0.0);
+        field += carapace_blot(vec2(s - tip - unit * (1.35 - e * 0.32 * sin(phase)),
+            depth - width * (0.50 + e * 0.065 * sin(phase))), vec2(unit, width) * 0.24, 1.73);
+        field += carapace_blot(vec2(s - tip - unit * (2.28 + e * 0.23 * sin(phase)),
+            depth - width * (0.51 - e * 0.045 * sin(phase))), vec2(unit, width) * 0.15, 3.46);
+        field += carapace_blot(vec2(s - tip - unit * 0.49, depth - width * 0.17),
+            vec2(unit * 0.065, width * 0.11), 5.19);
+        field += carapace_blot(vec2(s - tip - unit * 1.70, depth - width * 0.84),
+            vec2(unit, width) * 0.055, 6.92);
+        field += carapace_blot(vec2(s - tip - unit * 2.78, depth - width * 0.29),
+            vec2(unit * 0.06, width * 0.04), 8.65);
+        let threshold = 0.28 + 0.065 * (vnoise(vec2(s * 0.73, depth * 0.86)) - 0.5)
+            + 0.028 * (vnoise(vec2(s * 1.7, depth * 1.3)) - 0.5);
+        // A fixed field transition avoids temporal noise and remains legible
+        // at a one-pixel border, while preserving the rough pooled outline.
+        alpha *= smoothstep(threshold - 0.025, threshold + 0.070, field);
+        let paper_luma = dot(in.color2.rgb, vec3(0.2126, 0.7152, 0.0722));
+        let pigment = select(mix(base, vec3(0.008, 0.016, 0.020), 0.64),
+            mix(base, vec3(0.529, 0.573, 0.588), 0.20), paper_luma < 0.35);
+        let density = 0.025 + 0.055 * clamp(field - 0.3, 0.0, 1.0) + 0.018 * vnoise(vec2(s * 0.025, depth * 0.4));
+        color = mix(pigment, black, density);
+        if determinate && p.y < width {
+            // The top pool acquires a faint layer of fresh pigment from left
+            // to right. Its front is the actual progress, never the clock.
+            let loaded = 1.0 - smoothstep(progress - 0.01, progress + 0.01, v.x);
+            color = mix(color, base, loaded * e * 0.24);
+        }
+        if attention && p.y < width && abs(s - tip) < width * 2.0 {
+            color = mix(color, base, 0.18 + e * 0.22);
+        }
+    } else if material == 2u {
+        // Pigmented body beneath a rounded clear glaze: broad reflection,
+        // crisp outer catch, and a dark inner lip.
+        let curve = sin(u * 3.141592654);
+        let sweep = select(0.33 + e * sin(phase) * 0.22, 0.10 + progress * 0.80, determinate);
+        let soft = exp(-pow((v.x + v.y * 0.2 - sweep) * 3.7, 2.0));
+        let stripe = exp(-pow((u - 0.22 - e * sin(phase) * 0.045) * 11.0, 2.0));
+        color = mix(base, black, 0.16 + pow(u, 4.0) * 0.57);
+        color = mix(color, base, curve * 0.38);
+        color = mix(color, vec3(0.925, 0.965, 0.965), soft * stripe * 0.79);
+        color = mix(color, white, soft * 0.065);
+        color = mix(color, white, (1.0 - smoothstep(0.15, 0.75, depth)) * 0.40);
+        color = mix(color, black, (1.0 - smoothstep(0.10, 0.85, width - depth)) * 0.70);
+        if attention { color = mix(color, white, soft * 0.10); }
+    } else if material == 3u {
+        // A muted thin-film spectrum, retaining the chosen signal in its
+        // dark substrate instead of replacing it with saturated rainbow.
+        let colors = array<vec3<f32>, 5>(vec3(0.165, 0.220, 0.286),
+            vec3(0.427, 0.361, 0.576), vec3(0.325, 0.604, 0.616),
+            vec3(0.741, 0.608, 0.380), vec3(0.247, 0.333, 0.447));
+        let advance = select(sin(phase) * e * 0.24, (progress - 0.5) * e * 0.36, determinate);
+        let q = clamp(v.x * 0.7 + v.y * 0.28 + u * 0.12 + advance, 0.0, 1.0) * 3.99;
+        let index = u32(floor(q));
+        let spectrum = mix(colors[index], colors[min(4u, index + 1u)], fract(q));
+        color = mix(dark, mix(spectrum, base, 0.12), 0.42 + sin(u * 3.141592654) * 0.40);
+        color = mix(color, white, (1.0 - smoothstep(0.15, 0.85, depth)) * 0.22);
+        if attention { color = mix(color, white, 0.06); }
+    } else if material == 4u {
+        color = mix(base, black, u * 0.19);
+        let joint_start = in.size.x * 0.68;
+        let joint_end = in.size.x * 0.72;
+        if p.y < width && p.x > joint_start && p.x < joint_end {
+            let joint = (p.x - joint_start) / max(joint_end - joint_start, 1.0);
+            var light = 1.0 - smoothstep(0.08, 0.14 + e * 0.14, abs(joint - travel));
+            if in.controls.y >= 0.0 { light = 1.0 - smoothstep(in.controls.y - 0.03, in.controls.y + 0.03, joint); }
+            color = mix(vec3(0.678, 0.573, 0.388), vec3(0.957, 0.886, 0.694), light * e * 0.85);
+            if attention { color = mix(color, vec3(0.949, 0.804, 0.478), 0.55 + e * 0.25); }
+        }
+        if p.y < width && min(abs(p.x - joint_start), abs(p.x - joint_end)) < 0.65 { color = black; }
+    } else if material == 5u {
+        let near = min(p, in.size - p);
+        let active_corner = p.x < half.x && p.y < half.y;
+        let resting_length = min(max(36.0, radius + width * 1.5), min(in.size.x, in.size.y) * 0.28);
+        var extension = e * 18.0 * (0.5 + 0.5 * sin(phase - s / perimeter * 6.283185307));
+        if determinate {
+            let corner_index = select(select(3.0, 2.0, p.x >= half.x), select(0.0, 1.0, p.x >= half.x), p.y < half.y);
+            extension = e * 18.0 * clamp(progress * 4.0 - corner_index, 0.0, 1.0);
+        }
+        if attention { extension = select(0.0, 12.0 + e * 9.0, active_corner); }
+        let arm = min(resting_length + extension, min(in.size.x, in.size.y) * 0.38);
+        // Empty spans stay empty, including with grain enabled.
+        alpha *= 1.0 - smoothstep(arm - 0.6, arm + 0.6, max(near.x, near.y));
+        if attention && active_corner { color = mix(color, white, 0.20 + e * 0.25); }
+    } else if material == 6u {
+        // Two translucent impressions with a dark shared overlap. Their
+        // exposed lips reverse on opposing sides, like shifted print plates.
+        let upper = select((p.x < half.x), (p.y < half.y), min(p.x, in.size.x - p.x) >= min(p.y, in.size.y - p.y));
+        let slip = select(sin(phase), 1.0 - progress, determinate);
+        let shift = (min(width * 0.20, 1.2) + e * min(width * 0.30, 2.1) * slip) * select(-1.0, 1.0, upper);
+        let a = clamp((1.0 - abs((depth - width * 0.48 + shift * 0.45) / (width * 0.48))) * 4.0, 0.0, 1.0);
+        let b = clamp((1.0 - abs((depth - width * 0.53 - shift * 0.45) / (width * 0.46))) * 4.0, 0.0, 1.0);
+        let first = mix(base, vec3(0.169, 0.529, 0.616), 0.42);
+        let second = mix(base, vec3(0.761, 0.388, 0.341), 0.78);
+        color = mix(first, second, b);
+        color = mix(color, black, min(a, b) * 0.71);
+        alpha *= max(a, b) * 0.92;
+        if attention { color = mix(color, second, (1.0 - min(a, b)) * 0.22); }
+    } else if material == 7u {
+        let fixed_light = max(exp(-dot(v * 5.5, v * 5.5)),
+            exp(-dot((vec2(1.0) - v) * 5.5, (vec2(1.0) - v) * 5.5)) * 0.55);
+        let along = select(s / perimeter, v.x, band);
+        let delta = abs(along - travel);
+        // Determinate progress ends at the end of the path. Only an
+        // indeterminate activity glint wraps around to its beginning.
+        let distance = select(min(delta, 1.0 - delta), delta, determinate);
+        var glint = exp(-pow(distance / (0.025 + e * 0.048), 2.0)) * e;
+        if attention { glint = max(glint, exp(-pow(along / 0.035, 2.0)) * 0.65); }
+        let lightness = clamp(fixed_light + glint, 0.0, 1.0);
+        let ridge = mix(0.28, exp(-pow((u - 0.16) * 20.0, 2.0)), smoothstep(1.0, 3.0, width));
+        let shoulder = exp(-pow((u - 0.30) * 4.5, 2.0));
+        color = mix(black, base, 0.12);
+        color = mix(color, base, lightness * shoulder * 0.80);
+        color = mix(color, vec3(0.859, 0.933, 0.941), ridge * lightness * 0.84);
+        color = mix(color, black, (1.0 - smoothstep(0.10, 0.85, width - depth)) * 0.70);
+    }
+    let grain = f32((in.extra >> 8u) & 255u) * (0.3 / 255.0);
+    if grain > 0.0 {
+        let scale = max(f32(in.extra >> 16u) / 64.0, 0.25);
+        let n = hash(floor(in.clip.xy / scale));
+        color = mix(color, select(vec3(0.0), vec3(1.0), n > 0.5), abs(n - 0.5) * 2.0 * grain);
+    }
+    return vec4(color, in.color.a * alpha);
+}
+
 // kind 0: solid. 1: atlas glyph (R = coverage). 2: external RGBA texture.
 // 3: rounded fill (params.x = radius). 4: rounded stroke (params.x = radius,
 // params.y = thickness). 3 and 4 blend toward color2 along a diagonal
 // gradient when color2.a > 0; `phase` slides it (aurora).
 fn shade(in: VsOut) -> vec4<f32> {
+    if in.kind == 22u {
+        return carapace(in);
+    }
+    if in.kind == 20u {
+        // Square, pixel-precise core with a small analytic halo outside it.
+        let half = in.size * 0.5;
+        let core_half = max(half - vec2(in.params.x), vec2(0.0));
+        let distance = sd_box(in.local - half, core_half, 0.0);
+        let core = 1.0 - smoothstep(-0.5, 0.5, distance);
+        let spread = clamp(core_half.y / 6.0, 0.75, 3.0);
+        let halo = 0.14 * in.params.y * exp(-pow(max(distance, 0.0) / spread, 2.0) * 0.5);
+        return vec4(in.color.rgb, in.color.a * (core + halo * (1.0 - core)));
+    }
     if in.kind == 19u {
         return atom(in);
     }
@@ -669,7 +910,7 @@ fn shade(in: VsOut) -> vec4<f32> {
         let cov = 1.0 - smoothstep(r - 0.6, r + 0.6, d);
         return texture_out(in, cov, true);
     }
-    if in.kind == 1u {
+    if in.kind == 1u || in.kind == 21u {
         let s = textureSample(tex, tex_sampler, in.uv);
         return vec4(in.color.rgb, in.color.a * s.r);
     }
@@ -724,6 +965,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if globals.padding > 0.0 {
         let rgb = max(color.rgb, vec3(0.0));
         color = vec4(select(rgb / 12.92, pow((rgb + vec3(0.055)) / 1.055, vec3(2.4)), rgb > vec3(0.04045)) * globals.padding, color.a);
+        if in.kind == 20u {
+            let half = in.size * 0.5;
+            let core_half = max(half - vec2(in.params.x), vec2(0.0));
+            let distance = sd_box(in.local - half, core_half, 0.0);
+            let core = 1.0 - smoothstep(-0.5, 0.5, distance);
+            let gain = min(clamp(in.phase, 1.0, 3.0), max(globals.display.x, 1.0));
+            // Emit only from the active core, never the halo or surrounding
+            // text. The encoded input is clamped before it reaches this path.
+            color = vec4(color.rgb * (1.0 + (gain - 1.0) * core), color.a);
+        }
+    }
+    if in.kind == 21u {
+        var ink = in.color2.rgb;
+        if globals.padding > 0.0 {
+            ink = select(ink / 12.92, pow((ink + vec3(0.055)) / 1.055, vec3(2.4)), ink > vec3(0.04045)) * globals.padding;
+        }
+        color = vec4(mix(color.rgb, ink, in.phase), color.a);
     }
     let radius = min(globals.corner_radius, min(globals.screen.x, globals.screen.y) * 0.5);
     if radius <= 0.0 { return color; }

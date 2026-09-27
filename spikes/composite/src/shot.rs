@@ -365,6 +365,18 @@ impl App {
                 self.window.set_minimized(true);
             }
             "input"=>{for c in rest.chars(){self.type_char(c);}},
+            "assertcaret" => {
+                self.redraw();
+                let cores: Vec<_> = self.scene.instances().iter().filter(|i| i.kind == 20 && i.color[3] > 0.0)
+                    .map(|i| (i.size[0] - i.uv[0] * 2.0, i.size[1] - i.uv[0] * 2.0)).collect();
+                let ok = match rest {
+                    "pipe" => cores.len() == 1 && cores[0].0 <= self.px(6.0) && cores[0].0 < cores[0].1 * 0.4,
+                    "cell" => cores.len() == 1 && cores[0].0 > self.px(6.0),
+                    "none" => cores.is_empty(),
+                    _ => panic!("assertcaret expects pipe, cell or none"),
+                };
+                assert!(ok, "caret {rest}: {cores:?}; window focused={}, modal={}/{}/{}/{}, composing={}", self.window_focused, self.palette.is_some(), self.start.is_some(), self.splash.is_some(), self.timeline.is_some(), self.prompt_composing);
+            },
             "downloadquery"=>assert_eq!(self.download_ui.query,rest),
             "downloadmatches"=>{let count=crate::downloads::list().iter().filter(|d|crate::downloads::matches(d,&self.download_ui.query)).count();assert_eq!(count,rest.parse::<usize>().unwrap());},
             "downloadbounds"=>{let full=nus_render::Rect::new(0.0,0.0,self.target.size.0 as f32,self.target.size.1 as f32);let area=self.download_ui.rect.unwrap_or(full);for(r,hit)in &self.download_ui.hits{assert!(r.x>=area.x&&r.y>=area.y&&r.right()<=area.right()+1.0&&r.bottom()<=area.bottom()+1.0,"download hit outside surface: {hit:?} {r:?}");}},
@@ -561,11 +573,29 @@ impl App {
             "pipkeys"=>{
                 use winit::keyboard::{Key,NamedKey,PhysicalKey,KeyCode};
                 self.pip_focus(true);
-                let named=match rest {"left"=>NamedKey::ArrowLeft,"right"=>NamedKey::ArrowRight,"tab"=>NamedKey::Tab,"space"=>NamedKey::Space,_=>panic!("unknown PiP key")};
+                let named=match rest {"left"=>NamedKey::ArrowLeft,"right"=>NamedKey::ArrowRight,"up"=>NamedKey::ArrowUp,"down"=>NamedKey::ArrowDown,"home"=>NamedKey::Home,"end"=>NamedKey::End,"enter"=>NamedKey::Enter,"escape"=>NamedKey::Escape,"tab"=>NamedKey::Tab,"space"=>NamedKey::Space,_=>panic!("unknown PiP key")};
                 self.pip_key(&crate::app::KeyIn{physical_key:PhysicalKey::Code(KeyCode::ArrowLeft),logical_key:Key::Named(named),text:None,state:ElementState::Pressed,repeat:false});
             },
-            "videostart"=>{if let Pane::Web(w)=&self.tabs[self.active].left {w.tab.eval("document.querySelector('video').pause(); document.querySelector('video').currentTime=30; __nus.report()");}},
+            "videostart"=>{if let Pane::Web(w)=&self.tabs[self.active].left {w.tab.media("__nus.command(v=>{v.pause();v.currentTime=30},'seek-failed')");}},
             "assertvideotime"=>{let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};let v=w.tab.video().expect("video");assert!((v.t-rest.parse::<f64>().unwrap()).abs()<0.2,"video time {}",v.t);},
+            "assertnativevideo"=>{
+                let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};
+                let s=w.tab.shared.borrow();let n=s.native.as_ref().expect("expected WebKit page");
+                assert!(s.native_video.is_some(),"expected native video report: native_url={:?} native_loading={} tab_url={:?} diagnostic={:?}",n.url(),n.loading(),s.url,s.native_media_diagnostic);
+            },
+            "assertnativepip"=>{let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};let state=w.tab.shared.borrow();let native=state.native.as_ref().expect("WebKit page");assert_eq!(native.in_pip(),rest=="on","native PiP attachment");},
+            "assertvideostate"=>{let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};let v=w.tab.video().expect("video");assert!(match rest {"paused"=>v.paused,"playing"=>!v.paused&&!v.ended,"muted"=>v.muted,"unmuted"=>!v.muted,_=>panic!("unknown video state")},"video state: paused={} ended={} muted={}",v.paused,v.ended,v.muted);},
+            "pipclick"=>{
+                use crate::pip::Hit;
+                let hit=match rest {"play"=>Hit::Play,"back"=>Hit::Back,"forward"=>Hit::Forward,"mute"=>Hit::Mute,"return"=>Hit::ToTab,"close"=>Hit::Close,_=>panic!("unknown PiP control")};
+                let p=self.pip.as_ref().expect("PiP");let (r,_)=p.hits.iter().find(|(_,h)|*h==hit).expect("control available");let (x,y)=(r.x+r.w/2.0,r.y+r.h/2.0);
+                self.pip_cursor_moved(x as f64,y as f64);self.pip_mouse(MouseButton::Left,ElementState::Pressed);self.pip_mouse(MouseButton::Left,ElementState::Released);
+            },
+            "pipscrub"=>{
+                let f:f32=rest.parse().unwrap();assert!(f.is_finite()&&(0.0..=1.0).contains(&f));
+                let p=self.pip.as_ref().expect("PiP");let (r,_)=p.hits.iter().find(|(_,h)|*h==crate::pip::Hit::Track).expect("seekable control");let (start,x,y)=(r.x+1.0,r.x+r.w*f,r.y+r.h/2.0);
+                self.pip_cursor_moved(start as f64,y as f64);self.pip_mouse(MouseButton::Left,ElementState::Pressed);self.pip_cursor_moved(x as f64,y as f64);self.pip_mouse(MouseButton::Left,ElementState::Released);
+            },
             "pipskip"=>{self.behavior.pip_skip_seconds=rest.parse().unwrap();self.save_prefs();},
             "pipskipkeyboard"=>{
                 let index=self.settings_hits.iter().position(|(_,h)|matches!(h,crate::settings::Hit::Slider(crate::settings::Slider::PipSkip,_,_))).expect("skip slider visible");
@@ -1404,6 +1434,40 @@ impl App {
                 assert!(self.look_scroll>0.0,"footer scroll did not move");
             }
             "radius" => {self.surface.shell_radius=rest.parse().unwrap();self.save_prefs();self.dirty=true;}
+            // Deterministic material proofs, separate from the real shell/browser probes.
+            "carapacefixture" => {
+                if rest == "off" { self.carapace.fixture = None; } else {
+                    let old = self.carapace.fixture.unwrap_or_default();
+                    let mut input = crate::carapace_activity::ActivityInput {
+                        identity: u64::MAX, output: old.output, typed: old.typed,
+                        completion: old.completion, ..Default::default()
+                    };
+                    match rest {
+                        "idle" => {}, "work" => input.working = true,
+                        "output" => input.output += 1, "typing" => input.typed += 1,
+                        "completion" => input.completion += 1,
+                        "attention" => input.attention = true,
+                        "loading" => { input.loading = true; input.progress = Some(0.42); },
+                        "media" => input.media = true,
+                        _ => panic!("unknown carapace fixture: {rest}"),
+                    }
+                    self.carapace.fixture = Some(input);
+                }
+                self.carapace_tick();
+            }
+            "carapacestate" => {
+                let frame = self.carapace.activity.frame();
+                let moving = self.carapace.activity.animating();
+                eprintln!("carapace {rest}: {frame:?}, animating={moving}");
+                match rest {
+                    "quiet" => assert!(frame.energy == 0.0 && !moving && !frame.attention && frame.progress.is_none()),
+                    "active" => assert!(frame.energy > 0.0 && moving),
+                    "held" => assert!(frame.attention && frame.energy > 0.0 && !moving),
+                    "reduced" => assert!(frame.energy > 0.0 && frame.phase == 0.0 && !moving),
+                    p if p.starts_with("progress:") => assert_eq!(frame.progress, Some(p[9..].parse::<f32>().unwrap())),
+                    _ => panic!("unknown carapace state: {rest}"),
+                }
+            }
             "looktab" => {self.open_settings_at(0,Some(rest.parse().unwrap()));}
             "welcomescroll" => {
                 if let Pane::Hints(p)=&mut self.tabs[self.active].left {p.scroll=rest.parse::<f32>().unwrap()*self.scale;}
@@ -2348,6 +2412,7 @@ impl App {
             "space" => named(NamedKey::Space, KeyCode::Space),
             "backspace" => named(NamedKey::Backspace, KeyCode::Backspace),
             "delete" => named(NamedKey::Delete, KeyCode::Delete),
+            "insert" => named(NamedKey::Insert, KeyCode::Insert),
             "up" => named(NamedKey::ArrowUp, KeyCode::ArrowUp),
             "down" => named(NamedKey::ArrowDown, KeyCode::ArrowDown),
             "left" => named(NamedKey::ArrowLeft, KeyCode::ArrowLeft),
@@ -2459,13 +2524,18 @@ impl App {
                 continue;
             };
             let rect = self.tabs.get(tab).and_then(|t| if right { t.right.as_ref() } else { Some(&t.left) }).and_then(|p| match p {
-                Pane::Web(w) => Some(w.page),
+                Pane::Web(w) => Some((w.page, w.tab.shared.borrow().protected_video)),
                 _ => None,
             });
-            let Some(r) = rect else {
+            let Some((r, protected)) = rect else {
                 let _ = d.reply.send(serde_json::json!({ "ok": false, "error": "no page" }));
                 continue;
             };
+            // Its pixels may be decrypted DRM video: never read back.
+            if protected {
+                let _ = d.reply.send(serde_json::json!({ "ok": false, "error": "this page plays protected video; nus doesn't capture it" }));
+                continue;
+            }
             let path = dir.join(format!("page-{}.png", crate::journal::now()));
             let crop = (r.x.max(0.0) as u32, r.y.max(0.0) as u32, r.w.max(1.0) as u32, r.h.max(1.0) as u32);
             match self.snapshot_png(clear, Some(crop), &path) {

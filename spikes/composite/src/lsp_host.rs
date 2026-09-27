@@ -296,6 +296,8 @@ impl App {
     /// Ctrl+S: format through the server when it can, then write.
     pub(crate) fn editor_save(&mut self) {
         if self.focused_editor().and_then(|e| e.buf()).is_some_and(|b| !b.ready()) { return; }
+        // A note saves through its session, never through format-on-save.
+        if self.save_note_now() { return; }
         let can_format = self.lsp_for_focused().and_then(|(key, uri)| {
             let s = self.lsp.map.get(&key)?;
             let caps = s.client.capabilities.lock().ok()?.clone()?;
@@ -331,6 +333,7 @@ impl App {
 
     /// Write the active buffer to disk.
     pub(crate) fn editor_write(&mut self) {
+        if self.save_note_now() { return; }
         let written = {
             let Some(e) = self.focused_editor() else {
                 return;
@@ -580,13 +583,13 @@ impl App {
             }
         };
         match p {
-            Pending::PromptCompletion { uri } => {
+            Pending::PromptCompletion { uri, stamp } => {
                 let items: Vec<lt::CompletionItem> = match Client::parse::<lt::CompletionResponse>(result) {
                     Some(lt::CompletionResponse::Array(a)) => a,
                     Some(lt::CompletionResponse::List(l)) => l.items,
                     None => Vec::new(),
                 };
-                self.prompt_lsp_items(&uri, items);
+                self.prompt_lsp_items(&uri, &stamp, items);
             }
             Pending::Hover { uri, at } => {
                 let Some(h): Option<lt::Hover> = Client::parse(result) else {

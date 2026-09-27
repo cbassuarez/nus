@@ -29,11 +29,12 @@ pub(super) fn is_action(hit: Hit) -> bool {
         Hit::SyncKey | Hit::SyncEdit(_) | Hit::SyncForget | Hit::SyncNow | Hit::ForgeForget |
         Hit::CopyPhoneUrl | Hit::HandsForget | Hit::ForgetMemory | Hit::PortsHidden | Hit::Starter(_) |
         Hit::Search | Hit::FooterDefaults | Hit::PlaceEdit | Hit::Welcome | Hit::MenuPreview | Hit::MenuMove(..) | Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine |
-        Hit::ReloadAvatar | Hit::OpenProfileDir | Hit::Section(_))
+        Hit::ReloadAvatar | Hit::OpenProfileDir | Hit::ApplyBlueprint | Hit::Section(_))
 }
 
 fn action_icon(hit: Hit) -> (&'static str, &'static str) {
     match hit {
+        Hit::ApplyBlueprint => icons::BRUSH,
         Hit::Play(_) => icons::PLAY,
         Hit::MeEdit(_) => icons::PENCIL,
         Hit::MeCard | Hit::MeWalk(_) => icons::USER,
@@ -49,6 +50,12 @@ fn action_icon(hit: Hit) -> (&'static str, &'static str) {
 
 fn description(hit: Hit) -> Option<String> {
     let text: String = match hit {
+        Hit::Material(material) => material.description(),
+        Hit::Reaction(Reaction::Still) => "Keep the carapace settled, with no response animation.",
+        Hit::Reaction(Reaction::Subtle) => "Let activity make small, quiet changes to the carapace.",
+        Hit::Reaction(Reaction::Expressive) => "Give activity more visible movement while keeping the pace calm.",
+        Hit::ReactTo(source, on) => return Some(format!("{} the carapace respond to {}.", if on { "Let" } else { "Do not let" }, source.name())),
+        Hit::ApplyBlueprint => "Apply the Blueprint palette, Areal Mono Medium, a gliding underline cursor and a subtle stitch texture.",
         Hit::MenuEnabled(true)=>"Show nus in your menu bar or tray.",Hit::MenuEnabled(false)=>"Use the drawer from the nus footer only.",
         Hit::MenuSignal(crate::menu_drawer::SignalStyle::Dot)=>"A quiet mark with an activity or attention dot.",
         Hit::MenuSignal(crate::menu_drawer::SignalStyle::Count)=>"Show the number of active tasks and downloads.",
@@ -70,10 +77,10 @@ fn description(hit: Hit) -> Option<String> {
         Hit::HdrFlash(true) => "Briefly highlight pressed controls.", Hit::HdrFlash(false) => "No flash when controls are pressed.",
         Hit::Compact(true) => "Narrow sidebar with icons only.", Hit::Compact(false) => "Show tab icons and their titles.",
         Hit::PinDisplay(crate::pins::Display::Icon) => "Use a favicon, or an icon for shells and built-in pages.",
-        Hit::PinDisplay(crate::pins::Display::Preview) => "Show the open web page inside its pinned tile.",
+        Hit::PinDisplay(crate::pins::Display::Preview) => "Show the open web page inside its pinned tile. Streaming sites show their site icon.",
         Hit::SmallTabs(crate::sidebar::SmallTabs::Icons) => "Use an icon for each tab type.",
         Hit::SmallTabs(crate::sidebar::SmallTabs::Favicons) => "Use each website's own icon.",
-        Hit::SmallTabs(crate::sidebar::SmallTabs::Preview) => "Show a miniature page preview.",
+        Hit::SmallTabs(crate::sidebar::SmallTabs::Preview) => "Show a miniature page preview. Streaming sites show their site icon.",
         Hit::DownloadRename(crate::downloads::Rename::Off) => "Keep the site's filename.",
         Hit::DownloadRename(crate::downloads::Rename::All) => "Use readable page titles.",
         Hit::DownloadRename(crate::downloads::Rename::Selective) => "Keep technical names intact.",
@@ -176,7 +183,7 @@ impl App {
             let mut ordered = Vec::new();
             for (heading,names) in [
                 ("SHELLS", vec!["DEFAULT SHELL","SHELLS","SHELL INTEGRATION","KEEP ALIVE","SSH","PLACES"]),
-                ("COMMAND EDITING", vec!["COMMAND LINE","PROMPT LSP","LANGUAGE SERVERS","EDITOR","BLOCKS","CLICK LINKS"]),
+                ("COMMAND EDITING", vec!["APPEARANCE","COMMAND LINE","PROMPT LSP","LANGUAGE SERVERS","EDITOR","BLOCKS","CLICK LINKS"]),
                 ("CLIPBOARD & SCROLLING",vec!["CLIPBOARD","OSC 52","SCROLL","WHEEL","SCROLLBACK"]),
                 ("HISTORY & REPLAY",vec!["JOURNAL","CUT OFF","REPLAY"]),
                 ("COLORS & PROGRESS",vec!["SHELL COLORS","PROGRAM COLORS","TRUECOLOR","PROGRESS"]),
@@ -190,12 +197,14 @@ impl App {
                 for name in names {
                     if let Some(i)=source.iter().position(|(label,_)|label==name) {ordered.push(source.remove(i));}
                     let note=match name {
+                        "APPEARANCE"=>Some("Blueprint uses 14pt Areal Mono Medium, 1.25 line spacing, 0.25px column spacing, a steady 3px gliding underline, and 3% stitch texture on panes. It changes the palette and terminal appearance; your interface and editor fonts, layout and sounds stay as they are. Every setting remains adjustable."),
+                        "COMMAND LINE"=>Some("At the end of the line, Right or Ctrl+F accepts the visible suggestion; Alt/Option+Right accepts the next token. Tab opens Code; Tab or Enter inserts the selected choice, then Enter runs accepted text. Ctrl+R searches history; Up/Down recalls prefix matches or chooses in Code. Escape closes assistance and keeps your draft."),
                         "SHELLS"=>Some("Everything nus found on this machine, grouped, with how much of nus's integration each gets (hover a badge). Hidden ones stay here and in the palette; OPEN starts one now."),
                         "SHELL INTEGRATION"=>Some("Applies to new shells. Tracks the current folder, commands and exit codes so command navigation and status markers can work."),
                         "KEEP ALIVE"=>Some("Applies to new shells. Requires the nus-hold helper; existing shells keep the behavior they started with."),
                         "SSH"=>Some("When enabled, new SSH sessions copy shell integration scripts to ~/.cache/nus on the remote machine."),
                         "PLACES"=>Some("A shell that runs somewhere else (ssh, mosh, et, WSL) is lettered on its edge, so it reads as elsewhere without relying on colour. Names matching guarded_places (in settings.json; *prod* to start) get a red GUARDED banner."),
-                        "PROMPT LSP"=>Some("A language server reads the command line as you type: Quiet underlines a problem and ghosts a completion (Tab accepts); Menu lists completions under the caret. It needs the server for your shell, below."),
+                        "PROMPT LSP"=>Some("A language server reads the command line as you type. Quiet underlines problems and suggests completions inline; Menu lists completions under the caret. Tab opens the choices. Language-server results need the server for your shell, below."),
                         "LANGUAGE SERVERS"=>Some("bash-language-server reads bash and zsh; PowerShell Editor Services reads PowerShell. GET installs one into this profile (a folder under profile/tools you can delete); shells pick it up without restarting."),
                         "EDITOR"=>Some("Formatting needs a formatter for the file type. When none is installed, the file is saved unchanged."),
                         "REPLAY"=>Some("Records terminal output and a snapshot of the page beside it at command checkpoints. Changes apply now; turning it off leaves existing recordings available."),
@@ -469,10 +478,33 @@ impl App {
                 checked += 1;
             }
         }
-        for (slider,min,max) in [(Slider::TexScale,1.0,10.0),(Slider::CurWeight,1.0,6.0),(Slider::Saturation,0.5,1.5)] {
+        for material in Material::ALL {
+            self.apply_setting(Hit::Material(material), 0.0);
+            assert_eq!(self.surface.material, material);
+            self.save_prefs();
+            assert_eq!(crate::prefs::Prefs::load().surface.unwrap().material, material);
+            checked += 1;
+        }
+        for reaction in Reaction::ALL {
+            self.apply_setting(Hit::Reaction(reaction), 0.0);
+            assert_eq!(self.surface.reaction, reaction);
+            self.save_prefs();
+            assert_eq!(crate::prefs::Prefs::load().surface.unwrap().reaction, reaction);
+            checked += 1;
+        }
+        for source in ActivitySource::ALL {
+            for enabled in [false, true] {
+                self.apply_setting(Hit::ReactTo(source, enabled), 0.0);
+                assert_eq!(self.surface.react_to.enabled(source), enabled);
+                self.save_prefs();
+                assert_eq!(crate::prefs::Prefs::load().surface.unwrap().react_to.enabled(source), enabled);
+                checked += 1;
+            }
+        }
+        for (slider,min,max) in [(Slider::TexScale,1.0,10.0),(Slider::BlinkPeriod,400.0,2400.0),(Slider::CurWeight,1.0,6.0),(Slider::CurGlow,0.0,1.0),(Slider::CurHdrGain,1.0,3.0),(Slider::Saturation,0.5,1.5)] {
             for v in [0.0,0.5,1.0] {
                 self.set_slider(slider,v);
-                let actual=match slider {Slider::TexScale=>self.surface.texture_scale,Slider::CurWeight=>self.cursor.weight,_=>self.theme_edit.saturation};
+                let actual=match slider {Slider::TexScale=>self.surface.texture_scale,Slider::BlinkPeriod=>self.cursor.period as f32,Slider::CurWeight=>self.cursor.weight,Slider::CurGlow=>self.cursor.glow,Slider::CurHdrGain=>self.cursor.hdr_gain,_=>self.theme_edit.saturation};
                 assert!((actual-(min+v*(max-min))).abs()<0.01,"slider {slider:?} {v} -> {actual}");
             }
         }

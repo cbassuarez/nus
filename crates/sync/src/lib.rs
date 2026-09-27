@@ -62,10 +62,19 @@ fn private_local(rel: &str) -> bool {
 }
 
 /// A profile note: `notes/<name>.md`, sealed at rest like memory.md.
+/// A note in the newer format (`notes/<32 hex id>.md`, with history and
+/// sources beside it) stays on this device until sync carries all of it:
+/// a device that knows only whole files must not overwrite one.
 fn note_path(rel: &str) -> bool {
     rel.strip_prefix("notes/")
         .or_else(|| rel.strip_prefix("notes\\"))
-        .is_some_and(|n| n.ends_with(".md") && !n.contains(['/', '\\']))
+        .is_some_and(|n| {
+            let stem = n.strip_suffix(".md");
+            let canonical = stem.is_some_and(|s| {
+                s.len() == 32 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            });
+            stem.is_some() && !canonical && !n.contains(['/', '\\'])
+        })
 }
 fn read_local(profile: &Path, rel: &str) -> std::io::Result<Vec<u8>> {
     if private_local(rel) {
@@ -729,7 +738,13 @@ pub fn exchange(
                     .push(format!("{rel}: local state is locked; replacement skipped"));
                 continue;
             }
-            let lost = profile.join(format!("{rel}.{device}.lost"));
+            // Never over an older kept copy: each loss keeps its own.
+            let mut lost = profile.join(format!("{rel}.{device}.lost"));
+            let mut n = 2;
+            while lost.exists() {
+                lost = profile.join(format!("{rel}.{device}.{n}.lost"));
+                n += 1;
+            }
             let backup = if library_path(rel) || private_local(rel) {
                 std::fs::copy(&dest, &lost).map(|_| ())
             } else {
@@ -737,9 +752,10 @@ pub fn exchange(
             };
             if backup.is_ok() {
                 rep.kept.push(rel.clone());
-            } else if library_path(rel) {
+            } else if library_path(rel) || private_local(rel) {
+                // Fail closed: what cannot be kept is not replaced.
                 rep.errors.push(format!(
-                    "{rel}: could not preserve the existing reading copy"
+                    "{rel}: could not preserve the existing copy; not replaced"
                 ));
                 continue;
             }
@@ -1170,6 +1186,19 @@ mod tests {
             std::fs::read_to_string(a.join("settings.json.alpha.lost")).unwrap(),
             "{\"a\":1}"
         );
+        // A second loss keeps its own copy; the first stays as it was.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(b.join("settings.json"), "{\"b\":3}").unwrap();
+        exchange(&b, "beta", &k, false, &[&f]);
+        exchange(&a, "alpha", &k, false, &[&f]);
+        assert_eq!(
+            std::fs::read_to_string(a.join("settings.json.alpha.lost")).unwrap(),
+            "{\"a\":1}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(a.join("settings.json.alpha.2.lost")).unwrap(),
+            "{\"b\":2}"
+        );
         // Session only when asked.
         std::fs::write(a.join("session.json"), "{}").unwrap();
         let r = exchange(&a, "alpha", &k, false, &[&f]);
@@ -1191,6 +1220,11 @@ mod tests {
         assert!(!note_path("notes/ideas.md.alpha.lost"));
         assert!(!note_path("notes/sub/ideas.md"));
         assert!(!note_path("notes/ideas.txt"));
+        assert!(
+            !note_path("notes/2c557afcd3864f9c85f659ea18770ea1.md"),
+            "a newer-format note stays local"
+        );
+        assert!(note_path("notes/2c557afcd3864f9c85f659ea18770ea1-x.md"));
         let base = std::env::temp_dir().join(format!("nus-sync-notes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let (a, b, carrier) = (base.join("a"), base.join("b"), base.join("carrier"));

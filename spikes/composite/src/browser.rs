@@ -20,12 +20,21 @@ pub struct Shared {
     pub nus_download_at: Option<std::time::Instant>,
     pub sleep_safe: bool,
     pub suspended: bool,
+    /// The first load has finished (redirects before it are one page).
+    pub settled: bool,
+    /// Main-frame address changes since then: links, back and forward,
+    /// and a single-page app's own history. Chromium's `can_go_back` is
+    /// a cached answer that trails these; this count does not.
+    pub moves: u32,
     pub restore_scroll: Option<(f64,f64)>,
     pub capture_guard: bool,
     pub scroll_position: (f64,f64),
     pub viewer: crate::file_viewer::Shared,
     pub edit_source: Option<std::path::PathBuf>,
     pub save_reading: bool,
+    /// ADD TO NOTE from the page's menu: the page's address and the words
+    /// selected when the menu opened (notes_ui.rs).
+    pub note_capture: Option<(String, String)>,
     /// Latest imported paint, bound for the quad pipeline.
     pub bind: Option<Arc<wgpu::BindGroup>>,
     pub paint_size: (u32, u32),
@@ -40,6 +49,11 @@ pub struct Shared {
     pub paints: u64,
     /// The page's dominant <video>, reported by the injected tracker.
     pub video: Option<Video>,
+    /// Something in any reported frame (video or audio) is playing.
+    pub media_playing: bool,
+    /// Per-document-world reports: an empty iframe must not erase a player
+    /// elsewhere, and transport must run in the selected player's world.
+    pub(crate) video_frames: VideoFrames,
     pub next_msg: i32,
     /// CDP target id of this page (for the DevTools frontend URL).
     pub target_id: Option<String>,
@@ -66,6 +80,12 @@ pub struct Shared {
     /// Every <video> and <audio> on the page with a source, as the report
     /// last saw them (webui's strip icon, the page menu).
     pub media: Vec<Media>,
+    /// A frame of this document gave a video MediaKeys (EME), so its pixels
+    /// may be decrypted DRM video: screenshots and replay stills refuse it.
+    /// Held until the next document; a player that drops its keys may
+    /// still have frames on screen. Seen only where the video report runs:
+    /// the page and its same-site frames, not cross-site ones.
+    pub protected_video: bool,
     /// A right-click's menu, waiting for the app to draw it (page_menu.rs).
     pub menu: Option<MenuRequest>,
     /// Pages the menu asked to open: (url, beside).
@@ -78,6 +98,9 @@ pub struct Shared {
     /// The page's favicon, straight-alpha BGRA, once downloaded.
     pub favicon: Option<Favicon>,
     pub favicon_url: String,
+    /// Downloads belong to one document, including a reload at the same URL.
+    pub(crate) favicon_epoch: u64,
+    pub(crate) native_icon_document: Option<(String, String)>,
     /// Find in page: (matches, active ordinal), from the find handler.
     pub find: Option<(i32, i32)>,
     /// A permission the page asked for, waiting on the band.
@@ -129,6 +152,9 @@ pub struct Shared {
     pub(crate) letting_go: bool,
     /// The page has shown a document of its own (not only a download).
     pub(crate) committed: bool,
+    /// A paint has arrived since the main document committed: the page
+    /// shows something of its own (a woken page is shown from then).
+    pub(crate) painted_committed: bool,
     /// Made by Chromium for a popup, waiting for its browser.
     pub(crate) created_by_chromium: bool,
     /// The page called `window.print()`: there is no print dialog for a
@@ -136,6 +162,8 @@ pub struct Shared {
     pub(crate) print_asked: bool,
     /// Wheel the page had no room for since nus last looked (overscroll.rs).
     pub(crate) overscroll: f32,
+    /// Sideways wheel events the page had no room for, since nus last looked.
+    pub(crate) overscroll_side: u32,
     /// The page's JavaScript worlds by id, and the site each belongs to,
     /// as Chromium reports them: where a password report came from.
     pub(crate) contexts: std::collections::HashMap<i64, String>,
@@ -150,11 +178,18 @@ pub struct Shared {
     /// (webkit.rs); the Chromium page underneath is about:blank meanwhile.
     pub native: Option<crate::webkit::NativePage>,
     /// The cookie read that comes before it: (message id, the address).
-    pub native_ask: Option<(i32, String)>,
+    pub native_ask: Option<(i32, String, std::time::Instant)>,
     /// The host you took back from WebKit: stays in Chromium until you leave it.
     pub native_declined: String,
     /// WebKit just took the page over (the app says so once).
     pub native_began: bool,
+    /// WebKit's page as its own tracker reports it (webkit.rs polls it):
+    /// the Chromium fields above describe the about:blank underneath.
+    pub native_video: Option<Video>,
+    pub native_playing: bool,
+    pub(crate) native_control_error: Option<String>,
+    pub(crate) native_media_diagnostic: Option<String>,
+    pub native_sleep_safe: bool,
     /// Its only navigation became a download, now finished: the tab has
     /// nothing to show.
     pub download_only: bool,
@@ -215,12 +250,44 @@ pub fn web_scheme(url: &str) -> bool {
 }
 
 impl Shared {
+    fn reset_favicon(&mut self) {
+        self.favicon_epoch = self.favicon_epoch.wrapping_add(1);
+        self.favicon = None;
+        self.favicon_url.clear();
+        self.native_icon_document = None;
+    }
+
+    fn request_favicon(&mut self, url: &str) -> Option<u64> {
+        if self.favicon_url == url { return None; }
+        self.favicon_url = url.into();
+        Some(self.favicon_epoch)
+    }
+
+    fn native_favicon(&mut self, icon: &crate::webkit::PageIcon) -> Option<u64> {
+        // A delayed answer from a previous address must not supply its icon.
+        if self.loading || icon.page != self.url { return None; }
+        let document = (origin_of(&icon.page)?, icon.document.clone());
+        if self.native_icon_document.as_ref() != Some(&document) {
+            self.reset_favicon();
+            self.native_icon_document = Some(document);
+        }
+        self.request_favicon(&icon.url)
+    }
+
+    fn favicon_current(&self, epoch: u64, icon: &str) -> bool {
+        self.favicon_epoch == epoch && self.favicon_url == icon
+            && self.native.as_ref().is_none_or(|n| !n.loading() && n.url() == self.url)
+    }
+
     fn address(&mut self, url: &str) {
+        // The blank Chromium document is only a host while WebKit owns
+        // this navigation. Its late callbacks must not replace that address.
+        if self.native.is_some() || self.native_ask.is_some() { return; }
         // Chrome's error document is an implementation detail, not the destination.
         if url.starts_with("chrome-error:") || self.failed_url.as_deref().is_some_and(|failed|failed!=url) {return;}
         // The blank document an interstitial is written over.
         if url == "about:blank" && (self.interstitial.is_some() || self.overlay.is_some()) {return;}
-        if crate::sites::host_of(url)!=crate::sites::host_of(&self.url) {self.favicon=None;self.favicon_url.clear();}
+        if origin_of(url)!=origin_of(&self.url) {self.reset_favicon();}
         if self.url!=url {self.zoom_motion=None;}
         self.url=url.into();self.paints+=1;
     }
@@ -231,6 +298,7 @@ impl Shared {
         }
     }
     fn failed(&mut self, url: &str, authoritative: bool) {
+        if self.native.is_some() || self.native_ask.is_some() { return; }
         // A late CEF error/display callback can name the pre-redirect URL.
         // CDP unreachableUrl is authoritative for the committed error document.
         let destination = if !authoritative && url==self.requested_url && self.url!=self.requested_url {self.url.clone()} else {url.into()};
@@ -239,6 +307,7 @@ impl Shared {
         self.loading=false;self.progress=1.0;
     }
     fn navigation(&mut self,url:&str) {
+        if self.native.is_some() || self.native_ask.is_some() { return; }
         if url == "about:blank" && (self.interstitial.is_some() || self.overlay.is_some()) {return;}
         // Anywhere else: the interstitial is over.
         self.interstitial=None;self.inject=false;
@@ -252,8 +321,10 @@ wrap_load_handler! {
     pub struct LoadBuilder { shared: SharedRef }
     impl LoadHandler {
         fn on_loading_state_change(&self,_browser:Option<&mut Browser>,is_loading: ::std::os::raw::c_int,_back: ::std::os::raw::c_int,_forward: ::std::os::raw::c_int) {
-            let mut s=self.shared.borrow_mut();s.loading=is_loading!=0;
-            if !s.loading {s.progress=1.0;}
+            let mut s=self.shared.borrow_mut();
+            if s.native.is_some() || s.native_ask.is_some() { return; }
+            s.loading=is_loading!=0;
+            if !s.loading {s.progress=1.0;s.settled=true;}
             s.paints+=1;
         }
         fn on_load_error(&self,browser:Option<&mut Browser>,frame:Option<&mut Frame>,error_code:Errorcode,_error_text:Option<&CefString>,failed_url:Option<&CefString>) {
@@ -263,6 +334,7 @@ wrap_load_handler! {
             let code=cef::sys::cef_errorcode_t::from(error_code) as i32;
             let can_back=browser.is_some_and(|b|b.can_go_back()!=0);
             let mut s=self.shared.borrow_mut();
+            if s.native.is_some() || s.native_ask.is_some() { return; }
             s.failed(&url.to_string(),false);
             // In place of Chromium's error document: nus's transcript.
             let dest=s.failed_url.clone().unwrap_or_else(||url.to_string());
@@ -294,7 +366,14 @@ wrap_load_handler! {
         }
         fn on_load_start(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,_transition_type:TransitionType) {
             // A document of its own: this tab is more than a download.
-            if frame.is_some_and(|f|f.is_main()!=0) { self.shared.borrow_mut().committed=true; }
+            if frame.is_some_and(|f|f.is_main()!=0) {
+                let mut s=self.shared.borrow_mut();
+                s.committed=true;
+                // A new document: whatever played DRM video is gone with the old one.
+                s.protected_video=false;
+                // CEF's blank backing document is not the native page's document.
+                if s.native.is_none() && s.native_ask.is_none() { s.reset_favicon(); }
+            }
         }
         fn on_load_end(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,_status: ::std::os::raw::c_int) {
             let Some(frame)=frame.filter(|f|f.is_main()!=0) else {return};
@@ -612,12 +691,262 @@ pub struct Video {
     pub dur: f64,
 }
 
+/// What the page's tracker (assets/video.js) says: from Chromium's
+/// binding, or fetched from WebKit's page (webkit.rs).
+#[derive(Debug, Default, PartialEq)]
+pub struct Report {
+    pub video: Option<Video>,
+    pub media: Vec<Media>,
+    /// Said by the top document (frames report too).
+    pub top: bool,
+    pub sleep_safe: bool,
+    pub scroll: (f64, f64),
+    /// Any <video> or <audio> on the page is playing.
+    pub playing: bool,
+    /// This frame has attached MediaKeys to a video.
+    pub drm: bool,
+    /// A bounded transport error code, never arbitrary page-provided prose.
+    pub control_error: Option<String>,
+    /// Media error/state and observed EME access outcomes only; no URLs,
+    /// configuration, license bytes or arbitrary site error messages.
+    pub media_diagnostic: Option<String>,
+}
+
+fn media_diagnostic(value: Option<&serde_json::Value>) -> Option<String> {
+    let d=value.filter(|v|v.is_object())?;
+    let state=|key: &str,max: u64| d.get(key).and_then(|v|v.as_u64()).filter(|n|*n<=max).unwrap_or(0);
+    let error=match state("mediaError",4) {1=>"aborted",2=>"network failure",3=>"decode failure",4=>"source unsupported",_=>"none"};
+    let mut text=format!("media error: {error}; ready: {}; network: {}",state("readyState",4),state("networkState",3));
+    if let Some(eme)=d.get("eme").and_then(|v|v.as_array()) {
+        for e in eme.iter().take(8) {
+            let Some(key)=e.get("keySystem").and_then(|v|v.as_str()).filter(|s|!s.is_empty() && s.len()<=80 && s.bytes().all(|b|b.is_ascii_alphanumeric() || matches!(b,b'.'|b'-'))) else {continue};
+            let Some(status)=e.get("status").and_then(|v|v.as_str()).filter(|s|matches!(*s,"requested"|"granted"|"denied")) else {continue};
+            text.push_str(&format!("; EME access {key}: {status}"));
+            if let Some(name)=e.get("error").and_then(|v|v.as_str()).filter(|s|matches!(*s,"NotSupportedError"|"SecurityError"|"NotAllowedError"|"InvalidStateError"|"TypeError"|"AbortError"|"QuotaExceededError")) {
+                text.push_str(&format!(" ({name})"));
+            }
+        }
+    }
+    Some(text)
+}
+
+pub(crate) fn control_error_message(code: &str) -> Option<&'static str> {
+    match code {
+        "play-blocked" => Some("Start playback on the page, then try again"),
+        "play-failed" => Some("The player could not start playback"),
+        "seek-failed" => Some("The player could not seek to that position"),
+        "volume-failed" => Some("The player could not change its volume"),
+        "unavailable" => Some("This video is no longer available"),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct VideoFrames {
+    reports: std::collections::BTreeMap<i64, Report>,
+    selected: Option<i64>,
+}
+
+impl Shared {
+    fn refresh_media(&mut self) {
+        let selected = self.video_frames.reports.iter().filter_map(|(&id, r)| r.video.as_ref().map(|v| (id,v)))
+            .max_by(|(a,av),(b,bv)| {
+                (!av.paused && !av.ended).cmp(&(!bv.paused && !bv.ended))
+                    .then_with(|| (av.w*av.h).total_cmp(&(bv.w*bv.h)))
+                    .then_with(|| (Some(*a)==self.video_frames.selected).cmp(&(Some(*b)==self.video_frames.selected)))
+                    .then_with(|| b.cmp(a))
+            }).map(|(id,_)| id);
+        let video = selected.and_then(|id| self.video_frames.reports.get(&id)).and_then(|r| r.video.clone());
+        let playing = self.video_frames.reports.values().any(|r| r.playing);
+        let mut media = Vec::new();
+        for item in self.video_frames.reports.values().flat_map(|r| &r.media) {
+            if !media.iter().any(|m: &Media| m.kind==item.kind && m.src==item.src) { media.push(item.clone()); }
+        }
+        if self.video!=video || self.media!=media || self.media_playing!=playing { self.paints+=1; }
+        self.video_frames.selected=selected; self.video=video; self.media=media; self.media_playing=playing;
+    }
+
+    fn record_media(&mut self, context: i64, report: Report) {
+        if !self.video_frames.reports.contains_key(&context) && self.video_frames.reports.len()>=256 { return; }
+        if report.drm { self.protected_video=true; }
+        if report.top { self.sleep_safe=report.sleep_safe; self.scroll_position=report.scroll; }
+        if let Some(code)=report.control_error.as_deref() {
+            if self.video_frames.reports.get(&context).and_then(|r| r.control_error.as_deref())!=Some(code) {
+                if let Some(message)=control_error_message(code) { self.said=Some(("VIDEO".into(),message.into())); }
+            }
+        }
+        self.video_frames.reports.insert(context,report);
+        self.refresh_media();
+    }
+
+    fn forget_media(&mut self, context: Option<i64>) {
+        if let Some(id)=context { self.video_frames.reports.remove(&id); }
+        else { self.video_frames.reports.clear(); self.sleep_safe=false; }
+        self.refresh_media();
+    }
+}
+
+pub fn read_report(payload: &str) -> Report {
+    let report = serde_json::from_str::<serde_json::Value>(payload).unwrap_or(serde_json::Value::Null);
+    let media: Vec<Media> = report
+        .get("media")
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    Some(Media {
+                        kind: m.get("k")?.as_str()?.to_string(),
+                        src: m.get("src")?.as_str()?.to_string(),
+                        w: m.get("w").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                        h: m.get("h").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                        blob: m.get("blob").and_then(|x| x.as_bool()).unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let video = report.get("v").cloned().and_then(|p| {
+        let f = |k: &str| p.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let b = |k: &str| p.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+        if !p.is_object() || !(f("w")>0.0 && f("h")>0.0 && f("vw")>0.0 && f("vh")>0.0) {
+            return None;
+        }
+        Some(Video {
+            x: f("x") as f32,
+            y: f("y") as f32,
+            w: f("w") as f32,
+            h: f("h") as f32,
+            vw: f("vw") as f32,
+            vh: f("vh") as f32,
+            video_width: f("videoWidth"),
+            video_height: f("videoHeight"),
+            picture: [f("dx") as f32,f("dy") as f32,p.get("dw").and_then(|v|v.as_f64()).unwrap_or(1.0) as f32,p.get("dh").and_then(|v|v.as_f64()).unwrap_or(1.0) as f32],
+            paused: b("paused"),
+            ended: b("ended"),
+            muted: b("muted"),
+            t: f("t"),
+            dur: f("dur"),
+        })
+    });
+    let flag = |k: &str| report.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    Report {
+        playing: flag("playing") || video.as_ref().is_some_and(|v| !v.paused && !v.ended),
+        drm: flag("drm"),
+        control_error: report.get("controlError").and_then(|v|v.as_str()).filter(|s|control_error_message(s).is_some()).map(str::to_string),
+        media_diagnostic: media_diagnostic(report.get("diagnostic")),
+        video,
+        media,
+        top: flag("top"),
+        sleep_safe: flag("sleepSafe"),
+        scroll: (report.get("scrollX").and_then(|v| v.as_f64()).unwrap_or(0.0), report.get("scrollY").and_then(|v| v.as_f64()).unwrap_or(0.0)),
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::{read_report, Report, Shared};
+
+    #[test]
+    fn the_tracker_report_says_what_plays_where() {
+        let r = read_report(r#"{"v":{"x":0,"y":0,"w":640,"h":360,"vw":1280,"vh":720,"videoWidth":1920,"videoHeight":1080,"paused":false,"ended":false,"muted":true,"t":12.5,"dur":3600},"media":[{"k":"video","src":"blob:x","w":1920,"h":1080,"blob":true}],"playing":false,"top":true,"scrollX":0,"scrollY":40,"sleepSafe":false}"#);
+        assert!(r.top);
+        // A playing video counts even where the page-wide flag says otherwise.
+        assert!(r.playing);
+        assert!(!r.sleep_safe);
+        assert_eq!(r.scroll, (0.0, 40.0));
+        let v = r.video.unwrap();
+        assert_eq!((v.video_width, v.video_height, v.t, v.dur, v.muted), (1920.0, 1080.0, 12.5, 3600.0, true));
+        assert_eq!(r.media.len(), 1);
+        // Sound alone is playing too.
+        let audio = read_report(r#"{"v":null,"media":[],"playing":true,"top":false,"sleepSafe":true}"#);
+        assert!(audio.playing && audio.video.is_none() && !audio.top && audio.sleep_safe);
+        // Nothing said yet: nothing plays, and it is not known to be safe to sleep.
+        assert_eq!(read_report(""), Report::default());
+    }
+
+    fn frame(top: bool, width: u32, paused: bool, src: &str) -> Report {
+        read_report(&serde_json::json!({"top":top,"v":{"x":10,"y":20,"w":width,"h":180,"vw":1280,"vh":720,"paused":paused},
+            "media":[{"k":"video","src":src}],"sleepSafe":false}).to_string())
+    }
+
+    #[test]
+    fn frames_keep_the_selected_video_and_route_commands_to_its_world() {
+        let mut s=Shared::default();
+        s.record_media(10,frame(true,960,true,"main"));
+        s.record_media(20,frame(false,320,false,"child"));
+        assert_eq!(s.video_frames.selected,Some(20));
+        assert!(s.media_playing);
+        assert_eq!(s.media.len(),2);
+        s.record_media(30,Report::default());
+        assert_eq!(s.video_frames.selected,Some(20),"an empty sibling cannot erase the player");
+        s.record_media(10,frame(true,960,true,"main"));
+        assert_eq!(s.video_frames.selected,Some(20),"a paused top-page player cannot steal the controls");
+        let params=super::media_evaluation("__nus.toggle()",s.video_frames.selected.unwrap());
+        assert_eq!(params["contextId"],20);
+        assert_eq!(params["userGesture"],true);
+        assert_eq!(params["expression"],"window.__nus && (__nus.toggle())");
+        s.forget_media(Some(20));
+        assert_eq!(s.video_frames.selected,Some(10));
+        assert!(!s.media_playing);
+        assert_eq!(s.media.len(),1);
+        s.forget_media(None);
+        assert!(s.video.is_none() && s.media.is_empty() && !s.sleep_safe);
+    }
+
+    #[test]
+    fn equal_frame_candidates_are_stable_and_audio_survives_video_updates() {
+        let mut s=Shared::default();
+        s.record_media(20,frame(false,320,true,"same"));
+        s.record_media(10,frame(true,320,true,"same"));
+        assert_eq!(s.video_frames.selected,Some(20),"equal players keep the current selection");
+        assert_eq!(s.media.len(),1,"a parent scanning a child must not duplicate its media");
+        s.record_media(30,read_report(r#"{"playing":true,"v":null,"media":[{"k":"audio","src":"song"}]}"#));
+        s.record_media(10,frame(true,320,true,"same"));
+        assert!(s.media_playing);
+        s.forget_media(Some(30));
+        assert!(!s.media_playing);
+    }
+
+    #[test]
+    fn transport_errors_are_allowlisted_and_reported_once_per_transition() {
+        let mut s=Shared::default();
+        let failed=r#"{"controlError":"play-blocked","drm":true}"#;
+        s.record_media(10,read_report(failed));
+        assert!(s.said.take().is_some());
+        s.record_media(10,read_report(failed));
+        assert!(s.said.is_none());
+        s.record_media(10,Report::default());
+        assert!(s.protected_video,"a clear report cannot release the document DRM guard");
+        s.record_media(10,read_report(failed));
+        assert!(s.said.take().is_some());
+        assert!(read_report(r#"{"controlError":"untrusted page text"}"#).control_error.is_none());
+        for payload in [r#"{"v":true}"#,r#"{"v":{"w":0,"h":10,"vw":10,"vh":10}}"#] {
+            assert!(read_report(payload).video.is_none());
+        }
+    }
+
+    #[test]
+    fn media_diagnostics_keep_only_bounded_codes_and_access_outcomes() {
+        let r=read_report(r#"{"diagnostic":{"mediaError":4,"readyState":0,"networkState":3,"url":"secret","eme":[{"keySystem":"com.apple.fps","status":"granted"},{"keySystem":"com.widevine.alpha","status":"denied","error":"NotSupportedError","message":"secret license"},{"keySystem":"https://secret","status":"denied"}]}}"#);
+        let d=r.media_diagnostic.unwrap();
+        assert!(d.contains("source unsupported") && d.contains("network: 3"));
+        assert!(d.contains("EME access com.apple.fps: granted"));
+        assert!(d.contains("com.widevine.alpha: denied (NotSupportedError)"));
+        assert!(!d.contains("secret"));
+        assert!(read_report(r#"{"diagnostic":null}"#).media_diagnostic.is_none());
+    }
+}
+
 fn debug_port(value: Option<&str>, private: bool) -> Option<u16> {
     if private { return None; }
     value.and_then(|s| s.parse::<u16>().ok()).filter(|p| *p >= 1024)
 }
 fn external_debug_port() -> Option<u16> {
     debug_port(std::env::var("NUS_REMOTE_DEBUGGING_PORT").ok().as_deref(), crate::private::enabled())
+}
+
+fn media_evaluation(expr: &str, context: i64) -> serde_json::Value {
+    serde_json::json!({"expression":format!("window.__nus && ({expr})"),"contextId":context,"userGesture":true})
 }
 
 #[cfg(test)]
@@ -861,6 +1190,7 @@ wrap_render_handler! {
                         s.select.bind = Some(bind);
                     } else {
                         s.bind = Some(bind);
+                        if s.committed { s.painted_committed = true; }
                         s.paint_size = (texture.width(), texture.height());
                         if s.paints == 0 {
                             tracing::info!("first paint +{}ms", s.created.elapsed().as_millis());
@@ -906,7 +1236,8 @@ wrap_display_handler! {
         }
         fn on_title_change(&self, _browser: Option<&mut Browser>, title: Option<&CefString>) {
             if let Some(t) = title {
-                self.d.shared.borrow_mut().title = t.to_string();
+                let mut s = self.d.shared.borrow_mut();
+                if s.native.is_none() && s.native_ask.is_none() { s.title = t.to_string(); }
             }
         }
 
@@ -920,6 +1251,9 @@ wrap_display_handler! {
                 let mut s = self.d.shared.borrow_mut();
                 tracing::info!("address {} +{}ms", u, s.created.elapsed().as_millis());
                 let u = u.to_string();
+                if s.settled && u != s.url && !u.starts_with("about:") {
+                    s.moves += 1;
+                }
                 s.address(&u);
             }
             // A new page is on its way: draw it as soon as it paints, even
@@ -934,6 +1268,7 @@ wrap_display_handler! {
         }
 
         fn on_favicon_urlchange(&self, browser: Option<&mut Browser>, icon_urls: Option<&mut CefStringList>) {
+            if { let s = self.d.shared.borrow(); s.native.is_some() || s.native_ask.is_some() } { return; }
             let Some(list) = icon_urls else { return };
             let raw: *const cef::sys::_cef_string_list_t = (&*list).into();
             let Some(raw) = (unsafe { raw.as_ref() }) else { return };
@@ -953,18 +1288,14 @@ wrap_display_handler! {
                 }
             }
             let Some(url) = first else { return };
-            if self.d.shared.borrow().favicon_url == url {
-                return;
-            }
-            self.d.shared.borrow_mut().favicon_url = url.clone();
             if let Some(h) = browser.and_then(|b| b.host()) {
-                let mut cb = FaviconBuilder::new(FaviconSink { shared: self.d.shared.clone(), url: url.clone() });
-                h.download_image(Some(&url.as_str().into()), 1, 64, 0, Some(&mut cb));
+                download_favicon(&h, &self.d.shared, &url, None);
             }
         }
 
         fn on_loading_progress_change(&self, browser: Option<&mut Browser>, progress: f64) {
             let mut s = self.d.shared.borrow_mut();
+            if s.native.is_some() || s.native_ask.is_some() { return; }
             if progress >= 1.0 && s.loading {
                 if !crate::private::enabled() { tracing::info!("loaded {} +{}ms", s.url, s.created.elapsed().as_millis()); }
             }
@@ -985,6 +1316,16 @@ wrap_display_handler! {
 pub struct FaviconSink {
     pub shared: SharedRef,
     pub url: String,
+    pub epoch: u64,
+}
+
+fn download_favicon(host: &BrowserHost, shared: &SharedRef, url: &str, requested_epoch: Option<u64>) {
+    let epoch = requested_epoch.or_else(|| shared.borrow_mut().request_favicon(url));
+    let Some(epoch) = epoch else { return };
+    let mut cb = FaviconBuilder::new(FaviconSink { shared: shared.clone(), url: url.into(), epoch });
+    // Chromium's favicon request uses this browser's context/cache. No
+    // separate client, identity service, persistent logo files, or cookies.
+    host.download_image(Some(&url.into()), 1, 64, 0, Some(&mut cb));
 }
 
 wrap_download_image_callback! {
@@ -994,6 +1335,7 @@ wrap_download_image_callback! {
 
     impl DownloadImageCallback {
         fn on_download_image_finished(&self, _image_url: Option<&CefString>, http_status_code: ::std::os::raw::c_int, image: Option<&mut Image>) {
+            if !self.f.shared.borrow().favicon_current(self.f.epoch, &self.f.url) { return; }
             let Some(img) = image else { return };
             if http_status_code >= 400 || img.is_empty() != 0 {
                 return;
@@ -1132,11 +1474,13 @@ wrap_dev_tools_message_observer! {
                     return;
                 }
                 "Runtime.executionContextDestroyed" => {
-                    if let Some(id) = v.get("executionContextId").and_then(|i| i.as_i64()) { self.o.shared.borrow_mut().contexts.remove(&id); }
+                    if let Some(id) = v.get("executionContextId").and_then(|i| i.as_i64()) {
+                        let mut s=self.o.shared.borrow_mut(); s.contexts.remove(&id); s.forget_media(Some(id));
+                    }
                     return;
                 }
                 "Runtime.executionContextsCleared" => {
-                    self.o.shared.borrow_mut().contexts.clear();
+                    let mut s=self.o.shared.borrow_mut(); s.contexts.clear(); s.forget_media(None);
                     return;
                 }
                 _ => {}
@@ -1176,6 +1520,11 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             if v.get("name").and_then(|n| n.as_str()) == Some("nusOverscroll") {
+                if v.get("payload").and_then(|p| p.as_str()).is_some_and(|p| p.starts_with('x')) {
+                    self.o.shared.borrow_mut().overscroll_side += 1;
+                    crate::browser_runtime::wake();
+                    return;
+                }
                 let dy = v.get("payload").and_then(|p| p.as_str()).and_then(|p| p.parse::<f32>().ok()).filter(|d| d.is_finite()).unwrap_or(0.0);
                 if dy != 0.0 {
                     let mut s = self.o.shared.borrow_mut();
@@ -1196,57 +1545,13 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             let payload = v.get("payload").and_then(|p| p.as_str()).unwrap_or("null");
-            let report = serde_json::from_str::<serde_json::Value>(payload).unwrap_or(serde_json::Value::Null);
-            let media: Vec<Media> = report
-                .get("media")
-                .and_then(|m| m.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|m| {
-                            Some(Media {
-                                kind: m.get("k")?.as_str()?.to_string(),
-                                src: m.get("src")?.as_str()?.to_string(),
-                                w: m.get("w").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-                                h: m.get("h").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-                                blob: m.get("blob").and_then(|x| x.as_bool()).unwrap_or(false),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let video = report.get("v").cloned().and_then(|p| {
-                let f = |k: &str| p.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
-                let b = |k: &str| p.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
-                if p.is_null() {
-                    return None;
-                }
-                Some(Video {
-                    x: f("x") as f32,
-                    y: f("y") as f32,
-                    w: f("w") as f32,
-                    h: f("h") as f32,
-                    vw: f("vw") as f32,
-                    vh: f("vh") as f32,
-                    video_width: f("videoWidth"),
-                    video_height: f("videoHeight"),
-                    picture: [f("dx") as f32,f("dy") as f32,f("dw") as f32,f("dh") as f32],
-                    paused: b("paused"),
-                    ended: b("ended"),
-                    muted: b("muted"),
-                    t: f("t"),
-                    dur: f("dur"),
-                })
-            });
+            let Some(context)=v.get("executionContextId").and_then(|id|id.as_i64()) else {return};
+            let report = read_report(payload);
             let mut s = self.o.shared.borrow_mut();
-            if report.get("top").and_then(|v|v.as_bool()) == Some(true) {
-            s.sleep_safe=report.get("sleepSafe").and_then(|v|v.as_bool()).unwrap_or(false);
-            s.scroll_position=(report.get("scrollX").and_then(|v|v.as_f64()).unwrap_or(0.0),report.get("scrollY").and_then(|v|v.as_f64()).unwrap_or(0.0));
-            }
-            s.video = video;
-            if s.media != media {
-                s.media = media;
-                s.paints += 1;
-            }
+            // Ignore messages from a destroyed world instead of reviving its
+            // player after navigation. Only tracked default worlds control media.
+            if !s.contexts.contains_key(&context) {return;}
+            s.record_media(context,report);
         }
     }
 }
@@ -1320,6 +1625,7 @@ wrap_context_menu_handler! {
                 items.push((29001,"EDIT SOURCE".into(),true));
             }
             if !crate::private::enabled(){items.push((29002,"SAVE TO READING LIST".into(),true));}
+            if !crate::private::enabled(){items.push((29003,if selected {"ADD SELECTION TO A NOTE…".into()} else {"ADD THIS PAGE TO A NOTE…".into()},true));}
 
             let mut sh = self.display.shared.borrow_mut();
             if let Some(old) = sh.menu.take() {
@@ -1358,6 +1664,7 @@ wrap_context_menu_handler! {
                 CMD_PIP => sh.said = Some(("PIP".into(), String::new())),
                 29001 => sh.edit_source=url::Url::parse(&page).ok().and_then(|u|u.to_file_path().ok()).filter(|p|crate::file_viewer::Kind::of(p).is_some()),
                 29002 => sh.save_reading=true,
+                29003 => sh.note_capture = Some((page.clone(), s(p.selection_text()))),
                 CMD_NOTHING => {}
                 _ => return 0,
             }
@@ -2030,7 +2337,9 @@ impl BrowserTab {
     }
     pub fn can_suspend(&self) -> bool {
         let s=self.shared.borrow();
-        self.browser.is_some() && s.sleep_safe && !s.capture_guard && !s.loading && s.permission.is_none()
+        // WebKit's page says for itself: the Chromium page under it is blank.
+        let safe = if s.native.is_some() { s.native_sleep_safe } else { s.sleep_safe };
+        self.browser.is_some() && safe && !s.capture_guard && !s.loading && s.permission.is_none()
             && !self.can_go_back() && !self.can_go_forward() && !self.has_devtools()
     }
     pub fn suspend(&mut self) {
@@ -2065,7 +2374,8 @@ impl BrowserTab {
         // A `nus://` address: a blank document, and the page (or command) on it.
         let internal = crate::interstitial::internal(url);
         let original_url = internal.as_ref().map(|_| url.to_string());
-        let url = if internal.is_some() { "about:blank" } else { url };
+        let native_url = crate::webkit::protected(url).then(|| url.to_string());
+        let url = if internal.is_some() || native_url.is_some() { "about:blank" } else { url };
         if let Some(i) = internal.clone() {
             let mut s = shared.borrow_mut();
             match i {
@@ -2105,6 +2415,7 @@ impl BrowserTab {
         )?;
         if !crate::private::enabled() { tracing::info!("create_browser_sync {url} took {}ms", crate::clock::since(t0).as_millis()); }
         let tab = BrowserTab::attach(browser, shared);
+        if let Some(url) = native_url { tab.native_load(&url); }
         if internal.is_some() {
             if let Some(original) = original_url { tab.shared.borrow_mut().url = original; }
         }
@@ -2129,7 +2440,7 @@ impl BrowserTab {
             tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::passwords::JS }));
             tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::passwords::JS }));
         }
-        tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS }));
+        tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": VIDEO_JS, "runImmediately": true }));
         tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": PRINT_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": PRINT_JS }));
         tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": VIDEO_JS }));
@@ -2235,12 +2546,74 @@ impl BrowserTab {
     }
 
     pub fn prepare_pip(&self) {
-        self.eval("window.__nus && __nus.reveal()");
+        self.media("__nus.reveal()");
         if let Some(h)=self.host() {h.invalidate(cef::PaintElementType::VIEW);h.send_external_begin_frame();}
     }
 
     pub fn video(&self) -> Option<Video> {
-        self.shared.borrow().video.clone()
+        let s = self.shared.borrow();
+        if s.native.is_some() { s.native_video.clone() } else { s.video.clone() }
+    }
+
+    /// Something on the page is playing: its video, or any <video> or
+    /// <audio> the tracker saw, in WebKit's page when it has one.
+    pub fn playing(&self) -> bool {
+        let s = self.shared.borrow();
+        let video = |v: &Option<Video>| v.as_ref().is_some_and(|v| !v.paused && !v.ended);
+        if s.native.is_some() { s.native_playing || video(&s.native_video) } else { s.media_playing || video(&s.video) }
+    }
+
+    /// Transport for the page's video (`__nus` in assets/video.js): in
+    /// WebKit's page when it has one, else Chromium's, as a user gesture.
+    pub fn media(&self, expr: &str) {
+        if let Some(n) = &self.shared.borrow().native {
+            n.eval(expr);
+            return;
+        }
+        let Some(context)=self.shared.borrow().video_frames.selected else {return};
+        self.devtools("Runtime.evaluate", media_evaluation(expr,context));
+    }
+
+    /// WebKit's page: fetch what its tracker last said (a few times a
+    /// second; the answer lands on a later tick) and keep it. True when
+    /// the page asked for picture in picture itself.
+    pub fn tend_native_media(&self) -> bool {
+        let poll = {
+            let s = self.shared.borrow();
+            let Some(n) = &s.native else { return false };
+            n.poll();
+            match n.take_report().and_then(|a| crate::webkit::read_poll(&a)) {
+                Some(answer) => answer,
+                None => return false,
+            }
+        };
+        if let Some(icon) = &poll.icon {
+            if let Some(host) = self.host() {
+                let epoch = {
+                    let mut s = self.shared.borrow_mut();
+                    // WebKit can have advanced since the poll was evaluated.
+                    let current = s.native.as_ref().is_some_and(|n| !n.loading() && n.url() == icon.page);
+                    if current { s.native_favicon(icon) } else { None }
+                };
+                if let Some(epoch) = epoch { download_favicon(&host, &self.shared, &icon.url, Some(epoch)); }
+            }
+        }
+        let report = read_report(&poll.report);
+        let mut s = self.shared.borrow_mut();
+        if report.media_diagnostic!=s.native_media_diagnostic {
+            if let Some(diagnostic)=&report.media_diagnostic {tracing::debug!(%diagnostic,"native media state");}
+            s.native_media_diagnostic=report.media_diagnostic;
+        }
+        if report.control_error!=s.native_control_error {
+            if let Some(message)=report.control_error.as_deref().and_then(control_error_message) {
+                s.said=Some(("VIDEO".into(),message.into())); s.paints+=1;
+            }
+            s.native_control_error=report.control_error;
+        }
+        s.native_playing = report.playing;
+        s.native_sleep_safe = report.sleep_safe;
+        s.native_video = report.video;
+        poll.pip
     }
 
     /// Save a file the page is showing, through the page's own session
@@ -2289,18 +2662,34 @@ impl BrowserTab {
     /// any other ends WebKit's turn and goes to Chromium as usual.
     fn native_load(&self, url: &str) -> bool {
         let mut s = self.shared.borrow_mut();
+        s.reset_favicon();
         s.native_ask = None;
-        if s.native.is_none() {
-            return false;
-        }
-        if crate::webkit::protected(url) {
-            if let Some(n) = &s.native { n.load(url); }
+        s.native_video = None;
+        s.native_playing = false;
+        s.native_sleep_safe = false;
+        s.native_control_error = None;
+        s.native_media_diagnostic = None;
+        let protected = crate::webkit::protected(url);
+        if protected && s.native.is_some() {
+            s.native.as_ref().unwrap().load(url);
             s.url = url.to_string();
             s.requested_url = url.to_string();
+            s.loading = true;
+            s.progress = 0.0;
             return true;
         }
         s.native = None;
-        false
+        if !protected || host_of_url(url) == s.native_declined { return false; }
+        s.navigation(url);
+        drop(s);
+        // Route the original destination before Chromium can redirect a
+        // streaming site to its unsupported-browser page.
+        let id = self.devtools("Network.getCookies", serde_json::json!({ "urls": crate::webkit::cookie_urls(url) }));
+        self.shared.borrow_mut().native_ask = Some((id, url.to_string(), std::time::Instant::now()));
+        if let Some(f) = self.browser.as_ref().and_then(|b| b.main_frame()) {
+            f.load_url(Some(&"about:blank".into()));
+        }
+        true
     }
 
     /// Hand a protected page to WebKit, once its cookies are read; keep
@@ -2317,6 +2706,9 @@ impl BrowserTab {
             let Some(n) = s.native.as_ref() else { return };
             n.tend();
             let (u, t, l) = (n.url(), n.title(), n.loading());
+            if (l && !s.loading) || (!u.is_empty() && u != "about:blank" && origin_of(&u) != origin_of(&s.url)) {
+                s.reset_favicon();
+            }
             if !u.is_empty() && u != "about:blank" {
                 s.url = u.clone();
                 s.requested_url = u;
@@ -2334,17 +2726,28 @@ impl BrowserTab {
         match ask {
             None if crate::webkit::protected(&url) && host != declined && self.browser.is_some() => {
                 let id = self.devtools("Network.getCookies", serde_json::json!({ "urls": crate::webkit::cookie_urls(&url) }));
-                self.shared.borrow_mut().native_ask = Some((id, url));
+                self.shared.borrow_mut().native_ask = Some((id, url, std::time::Instant::now()));
             }
-            Some((id, asked)) => {
-                if !crate::webkit::protected(&url) {
+            Some((id, asked, started)) => {
+                if url != asked || !crate::webkit::protected(&url) {
                     self.shared.borrow_mut().native_ask = None;
+                    self.take_reply(id);
                     return;
                 }
-                let Some(reply) = self.take_reply(id) else { return };
-                let cookies = reply.get("cookies").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-                let Some(page) = crate::webkit::NativePage::new(&asked, &cookies, crate::private::enabled()) else {
-                    self.shared.borrow_mut().native_declined = host;
+                let reply = self.take_reply(id);
+                if reply.is_none() && started.elapsed() < std::time::Duration::from_secs(5) { return; }
+                // WebKit can sign in itself if Chromium's cookie query fails;
+                // a lost DevTools reply must not strand a blank loading tab.
+                let cookies = reply.as_ref().and_then(|r| r.get("cookies")).and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                let cache_path = self.host().and_then(|h| h.request_context())
+                    .map(|c| CefString::from(&c.cache_path()).to_string()).unwrap_or_default();
+                let Some(page) = crate::webkit::NativePage::new(&asked, &cookies, crate::private::enabled(), &cache_path) else {
+                    {
+                        let mut s = self.shared.borrow_mut();
+                        s.native_ask = None;
+                        s.native_declined = host;
+                    }
+                    self.load(&asked);
                     return;
                 };
                 if let Some(f) = self.browser.as_ref().and_then(|b| b.main_frame()) {
@@ -2639,13 +3042,19 @@ impl BrowserTab {
     }
 
     pub fn back(&self) {
-        if let Some(n) = &self.shared.borrow().native { return n.back(); }
+        {
+            let mut s = self.shared.borrow_mut();
+            if s.native.is_some() { s.reset_favicon(); s.loading = true; return s.native.as_ref().unwrap().back(); }
+        }
         if let Some(b)=&self.browser { b.go_back(); }
         self.nudge();
     }
 
     pub fn forward(&self) {
-        if let Some(n) = &self.shared.borrow().native { return n.forward(); }
+        {
+            let mut s = self.shared.borrow_mut();
+            if s.native.is_some() { s.reset_favicon(); s.loading = true; return s.native.as_ref().unwrap().forward(); }
+        }
         if let Some(b)=&self.browser { b.go_forward(); }
         self.nudge();
     }
@@ -2653,6 +3062,15 @@ impl BrowserTab {
     pub fn can_go_back(&self) -> bool {
         if let Some(n) = &self.shared.borrow().native { return n.can_go_back(); }
         self.browser.as_ref().is_some_and(|b|b.can_go_back()!=0)
+    }
+
+    /// There is somewhere back to go, or may be: Chromium says so, or the
+    /// page has moved since it first settled, or it is still on its way.
+    /// Only a page that is certainly on its first entry answers false.
+    pub fn may_go_back(&self) -> bool {
+        if self.can_go_back() { return true; }
+        let s = self.shared.borrow();
+        s.native.is_none() && (s.moves > 0 || s.loading || !s.settled)
     }
 
     pub fn can_go_forward(&self) -> bool {
@@ -2672,7 +3090,10 @@ impl BrowserTab {
     }
 
     pub fn reload(&self) {
-        if let Some(n) = &self.shared.borrow().native { return n.reload(); }
+        {
+            let mut s = self.shared.borrow_mut();
+            if s.native.is_some() { s.reset_favicon(); s.loading = true; return s.native.as_ref().unwrap().reload(); }
+        }
         if let Some(b)=&self.browser { b.reload(); }
         self.nudge();
     }
@@ -2720,6 +3141,60 @@ wrap_resource_handler! {
 #[cfg(test)]
 mod navigation_tests {
     use super::*;
+    #[test]
+    fn favicon_downloads_belong_to_the_requested_icon_and_document() {
+        let mut s = Shared::default();
+        s.address("https://first.example/");
+        let old = s.request_favicon("https://cdn.example/icon.png").unwrap();
+        assert!(s.favicon_current(old, "https://cdn.example/icon.png"));
+        assert_eq!(s.request_favicon("https://cdn.example/icon.png"), None, "failed downloads are not retried each tick");
+        s.address("https://second.example/");
+        assert!(!s.favicon_current(old, "https://cdn.example/icon.png"));
+        let current = s.request_favicon("https://cdn.example/icon.png").unwrap();
+        assert!(s.favicon_current(current, "https://cdn.example/icon.png"));
+        assert!(!s.favicon_current(old, "https://cdn.example/icon.png"), "a shared CDN URL cannot revive the previous site's callback");
+        s.reset_favicon();
+        s.request_favicon("https://cdn.example/icon.png");
+        assert!(!s.favicon_current(current, "https://cdn.example/icon.png"), "a reload also replaces the document");
+    }
+
+    #[test]
+    fn native_icon_reports_follow_document_identity_and_reject_old_addresses() {
+        let mut s = Shared::default();
+        s.address("https://stream.example/watch");
+        let mut icon = crate::webkit::PageIcon { page: s.url.clone(), document: "1".into(), url: "https://cdn.example/icon.png".into() };
+        let first = s.native_favicon(&icon).unwrap();
+        assert_eq!(s.native_favicon(&icon), None);
+        s.address("https://stream.example/watch#details");
+        assert_eq!(s.native_favicon(&icon), None, "the old address cannot choose the icon");
+        icon.page = s.url.clone();
+        assert_eq!(s.native_favicon(&icon), None, "same-document navigation keeps the one request");
+        icon.document = "2".into();
+        let next = s.native_favicon(&icon).unwrap();
+        assert_ne!(first, next);
+        assert!(!s.favicon_current(first, &icon.url));
+        s.loading = true;
+        icon.document = "3".into();
+        assert_eq!(s.native_favicon(&icon), None, "wait for the document to settle");
+    }
+
+    #[test]
+    fn chromium_callbacks_cannot_replace_a_pending_native_destination() {
+        let destination = "https://www.primevideo.com/detail/episode";
+        let mut s = Shared::default();
+        s.navigation(destination);
+        s.native_ask = Some((42, destination.into(), std::time::Instant::now()));
+        s.address("about:blank");
+        s.failed("https://www.primevideo.com/unsupported", true);
+        s.navigation("about:blank");
+        assert_eq!(s.url, destination);
+        assert_eq!(s.requested_url, destination);
+        assert!(s.failed_url.is_none());
+        assert!(s.loading);
+        s.native_ask = None;
+        s.navigation("https://example.com/");
+        assert_eq!(s.url, "https://example.com/");
+    }
     #[test]
     fn late_original_address_cannot_replace_a_committed_failed_redirect() {
         let mut s=Shared::default();

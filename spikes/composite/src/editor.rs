@@ -14,6 +14,7 @@ use nus_lsp::lsp_types::{CompletionItem, Diagnostic, DiagnosticSeverity, Url};
 use nus_render::text::Style;
 use nus_render::{Rect, Scene};
 use ropey::Rope;
+use unicode_segmentation::UnicodeSegmentation;
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::{Key as WKey, NamedKey};
 
@@ -64,6 +65,22 @@ pub struct Buffer {
     pub in_lsp: bool,
     /// A save waits on the formatter's answer (sent at this instant).
     pub save_pending: Option<Instant>,
+    /// A note's view of its shared session (notes_session.rs): the text,
+    /// undo and saving are the session's, the caret and scroll this
+    /// buffer's own.
+    pub note: Option<crate::notes_session::View>,
+    /// The next change to a note may merge into the last undo step.
+    note_merge: bool,
+    /// Which lines of a note are fenced code, as of a revision.
+    md_kinds: Option<(u64, Vec<crate::notes_format::LineKind>)>,
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        if let Some(v) = &self.note {
+            crate::notes_session::detach(v);
+        }
+    }
 }
 
 impl Buffer {
@@ -80,7 +97,194 @@ impl Buffer {
         Ok(b)
     }
 
+    /// A note, open through its session: ready at once, no language
+    /// server (its words are yours, not a project's).
+    pub fn for_note(path: &Path, view: crate::notes_session::View, text: Rope) -> Buffer {
+        let mut b = Buffer::empty();
+        b.path = Some(path.to_path_buf());
+        b.language = "markdown";
+        b.text = text;
+        b.note = Some(view);
+        b
+    }
+
+    /// Take what the note's session changed since this buffer looked: a
+    /// capture, another view's typing, an undo. The caret and scroll stay
+    /// with the text they were on. True when anything changed.
+    pub fn pull_note(&mut self) -> bool {
+        let Some(v) = self.note.as_mut() else { return false };
+        let Some((text, sp)) = crate::notes_session::pull(v) else { return false };
+        self.follow(text, sp);
+        true
+    }
+
+    fn follow(&mut self, text: Rope, sp: crate::notes_session::Splice) {
+        let top = self.text.line_to_char(self.scroll.min(self.text.len_lines().saturating_sub(1)));
+        self.text = text;
+        let n = self.text.len_chars();
+        self.cursor = sp.map(self.cursor).min(n);
+        self.anchor = self.anchor.map(|a| sp.map(a).min(n));
+        self.scroll = self.text.char_to_line(sp.map(top).min(n));
+        self.spans = None;
+        self.highlighting = None;
+        self.revision = self.revision.wrapping_add(1);
+        self.want_col = None;
+    }
+
     pub fn ready(&self) -> bool { self.loading.is_none() && self.load_error.is_none() }
+
+    /// A note's lines as fenced code or text, kept for this revision.
+    pub fn ensure_md_kinds(&mut self) {
+        if self.md_kinds.as_ref().is_some_and(|(r, _)| *r == self.revision) {
+            return;
+        }
+        // A very large note is drawn as text: no fence scan per keystroke.
+        if self.text.len_bytes() > 2 * 1024 * 1024 {
+            self.md_kinds = Some((self.revision, Vec::new()));
+            return;
+        }
+        let lines: Vec<String> = self.text.lines().map(|l| l.to_string()).collect();
+        let kinds = crate::notes_format::line_kinds(lines.iter().map(|l| l.trim_end_matches(['\n', '\r'])));
+        self.md_kinds = Some((self.revision, kinds));
+    }
+
+    pub fn md_kind(&self, line: usize) -> crate::notes_format::LineKind {
+        self.md_kinds.as_ref().and_then(|(_, k)| k.get(line).copied()).unwrap_or(crate::notes_format::LineKind::Text)
+    }
+
+    /// One formatting splice, as one undo step.
+    fn apply_format(&mut self, base: usize, e: crate::notes_format::Edit) {
+        self.remember(false);
+        let n = self.len_chars();
+        let (a, z) = ((base + e.start).min(n), (base + e.end).min(n));
+        self.text.remove(a..z);
+        self.text.insert(a, &e.insert);
+        let n = self.len_chars();
+        self.cursor = (base + e.cursor).min(n);
+        self.anchor = e.anchor.map(|x| (base + x).min(n));
+        self.changed();
+    }
+
+    /// The caret's line(s) as text, and where they start.
+    fn caret_lines(&self) -> (usize, usize, usize, String) {
+        let (a, z) = self.selection().unwrap_or((self.cursor, self.cursor));
+        let (l0, l1) = (self.line_of(a), self.line_of(z.saturating_sub(1).max(a)));
+        let start = self.text.line_to_char(l0);
+        let end = self.text.line_to_char(l1) + self.line_len(l1);
+        (l0, l1, start, self.text.slice(start..end).to_string())
+    }
+
+    /// Bold, italic, code or mark on the selection (or the caret's word).
+    pub fn format_inline(&mut self, marker: &str) {
+        if !self.ready() { return; }
+        let (_, _, start, text) = self.caret_lines();
+        let (a, z) = self.selection().unwrap_or((self.cursor, self.cursor));
+        let e = crate::notes_format::toggle_inline(&text, (a - start, z - start), marker);
+        self.apply_format(start, e);
+    }
+
+    pub fn format_link(&mut self) {
+        if !self.ready() { return; }
+        let (_, _, start, text) = self.caret_lines();
+        let (a, z) = self.selection().unwrap_or((self.cursor, self.cursor));
+        let e = crate::notes_format::link(&text, (a - start, z - start));
+        self.apply_format(start, e);
+    }
+
+    /// A heading, list, checklist or quote on the caret's lines, or off.
+    pub fn format_lines(&mut self, tool: crate::notes_format::LineTool) {
+        if !self.ready() { return; }
+        let (_, _, start, text) = self.caret_lines();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let out = crate::notes_format::toggle_lines(&lines, tool).join("\n");
+        let len = out.chars().count();
+        // The caret goes to the end of the lines' words.
+        let e = crate::notes_format::Edit { start: 0, end: text.chars().count(), insert: out, anchor: None, cursor: len };
+        self.apply_format(start, e);
+    }
+
+    /// Tick or untick the checklist item on `line`.
+    pub fn toggle_checkbox(&mut self, line: usize) -> bool {
+        let lt = self.line_text(line);
+        let Some((col, c)) = crate::notes_format::toggle_box(&lt) else { return false };
+        let at = self.text.line_to_char(line) + col;
+        let (cursor, anchor) = (self.cursor, self.anchor);
+        self.remember(false);
+        self.text.remove(at..at + 1);
+        self.text.insert_char(at, c);
+        self.cursor = cursor;
+        self.anchor = anchor;
+        self.changed();
+        true
+    }
+
+    /// Enter in a note's list: the next item, or the end of the list on an
+    /// empty one; numbers after it count on. False: an ordinary newline.
+    fn note_newline(&mut self) -> bool {
+        if self.selection().is_some() { return false; }
+        let line = self.line_of(self.cursor);
+        if self.md_kind(line) != crate::notes_format::LineKind::Text { return false; }
+        let lt = self.line_text(line);
+        let start = self.text.line_to_char(line);
+        match crate::notes_format::enter(&lt) {
+            crate::notes_format::Enter::Plain => false,
+            crate::notes_format::Enter::End => {
+                let b = crate::notes_format::block(&lt);
+                self.remember(false);
+                let len = lt.chars().count();
+                self.text.remove(start + b.indent..start + len);
+                self.cursor = start + b.indent;
+                self.anchor = None;
+                self.changed();
+                true
+            }
+            crate::notes_format::Enter::Continue(next) => {
+                self.insert(&format!("\n{next}"), false);
+                // Numbers below count on from the new item.
+                let lines: Vec<String> = (0..self.text.len_lines()).map(|l| self.line_text(l)).collect();
+                let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+                let fixes = crate::notes_format::renumber(&refs, line + 1);
+                if !fixes.is_empty() {
+                    let caret = self.cursor;
+                    for (l, text) in fixes.into_iter().rev() {
+                        let s = self.text.line_to_char(l);
+                        let e = s + self.line_len(l);
+                        self.text.remove(s..e);
+                        self.text.insert(s, &text);
+                    }
+                    self.cursor = caret;
+                    self.changed();
+                }
+                true
+            }
+        }
+    }
+
+    /// Tab in a note's list item: indent (or outdent) the item by two, the
+    /// caret staying with its words. False: not a list item.
+    fn note_list_indent(&mut self, out: bool) -> bool {
+        if self.selection().is_some_and(|(a, z)| self.line_of(a) != self.line_of(z.saturating_sub(1).max(a))) { return false; }
+        let line = self.line_of(self.cursor);
+        let lt = self.line_text(line);
+        let b = crate::notes_format::block(&lt);
+        if !matches!(b.kind, crate::notes_format::BlockKind::Bullet(_) | crate::notes_format::BlockKind::Number(_) | crate::notes_format::BlockKind::Check { .. }) {
+            return false;
+        }
+        let start = self.text.line_to_char(line);
+        self.remember(false);
+        if out {
+            let n = b.indent.min(2);
+            if n == 0 { return true; }
+            self.text.remove(start..start + n);
+            self.cursor = self.cursor.saturating_sub(n).max(start);
+        } else {
+            self.text.insert(start, "  ");
+            self.cursor += 2;
+        }
+        self.anchor = None;
+        self.changed();
+        true
+    }
 
     pub fn presented(&mut self) {
         if !self.ready() { return; }
@@ -144,10 +348,16 @@ impl Buffer {
             opened_at: None,
             in_lsp: false,
             save_pending: None,
+            note: None,
+            note_merge: false,
+            md_kinds: None,
         }
     }
 
     pub fn name(&self) -> String {
+        if let Some(v) = &self.note {
+            return v.title.clone();
+        }
         self.path
             .as_ref()
             .and_then(|p| p.file_name())
@@ -209,6 +419,12 @@ impl Buffer {
     /// within 400ms merge into one step.
     fn remember(&mut self, merge: bool) {
         let now = crate::clock::now();
+        if self.note.is_some() {
+            // A note's undo is its session's, shared by every view.
+            self.note_merge = merge;
+            self.last_edit = now;
+            return;
+        }
         if merge && !self.undo.is_empty() && now.duration_since(self.last_edit).as_millis() < 400 {
             self.last_edit = now;
             return;
@@ -231,9 +447,21 @@ impl Buffer {
         self.highlighting = None;
         self.revision = self.revision.wrapping_add(1);
         self.want_col = None;
+        let merge = std::mem::take(&mut self.note_merge);
+        if let Some(v) = self.note.as_mut() {
+            if let Some((text, sp)) = crate::notes_session::push(v, &self.text, merge) {
+                self.follow(text, sp);
+            }
+        }
     }
 
     pub fn undo(&mut self) {
+        if let Some(v) = &self.note {
+            if crate::notes_session::undo(v) {
+                self.pull_note();
+            }
+            return;
+        }
         if let Some(s) = self.undo.pop() {
             self.redo.push(Snap {
                 text: self.text.clone(),
@@ -248,6 +476,12 @@ impl Buffer {
     }
 
     pub fn redo(&mut self) {
+        if let Some(v) = &self.note {
+            if crate::notes_session::redo(v) {
+                self.pull_note();
+            }
+            return;
+        }
         if let Some(s) = self.redo.pop() {
             self.undo.push(Snap {
                 text: self.text.clone(),
@@ -272,6 +506,44 @@ impl Buffer {
         self.anchor = None;
         self.text.insert(self.cursor, s);
         self.cursor += s.chars().count();
+        self.changed();
+    }
+
+    /// The next complete grapheme, only when the caret is on a boundary
+    /// and there is text before the line ending. This also drives the
+    /// replacement underline, so the mark agrees with the edit.
+    fn replacement_len(&self) -> Option<usize> {
+        if self.selection().is_some() { return None; }
+        let line = self.line_text(self.line_of(self.cursor));
+        let col = self.col_of(self.cursor);
+        let mut at = 0;
+        for grapheme in line.graphemes(true) {
+            let len = grapheme.chars().count();
+            if at == col { return Some(len); }
+            if at > col { break; }
+            at += len;
+        }
+        None
+    }
+
+    /// Typing in explicit Replace mode replaces graphemes, never a line
+    /// ending. Paste and completion keep their normal insertion contracts.
+    fn type_text(&mut self, text: &str, overwrite: bool) {
+        if !overwrite || self.selection().is_some() || self.replacement_len().is_none() {
+            self.insert(text, true);
+            return;
+        }
+        if !self.ready() { return; }
+        let line = self.line_of(self.cursor);
+        let end = self.text.line_to_char(line) + self.line_len(line);
+        let tail = self.text.slice(self.cursor..end).to_string();
+        let count = text.graphemes(true).count();
+        let remove = tail.graphemes(true).take(count).map(|g| g.chars().count()).sum::<usize>();
+        self.remember(true);
+        self.text.remove(self.cursor..self.cursor + remove);
+        self.text.insert(self.cursor, text);
+        self.cursor += text.chars().count();
+        self.anchor = None;
         self.changed();
     }
 
@@ -311,6 +583,10 @@ impl Buffer {
 
     /// Enter: newline plus the current line's leading whitespace.
     pub fn newline(&mut self) {
+        if self.note.is_some() {
+            self.ensure_md_kinds();
+            if self.note_newline() { return; }
+        }
         let line = self.line_of(self.cursor);
         let lt: String = self.text.line(line).chars().take(8192).collect();
         let indent: String = lt.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
@@ -326,6 +602,7 @@ impl Buffer {
     /// Tab: indent the selected lines, or insert spaces to the next stop.
     pub fn indent(&mut self, out: bool) {
         if !self.ready() { return; }
+        if self.note.is_some() && self.note_list_indent(out) { return; }
         match self.selection() {
             Some((a, b)) if self.line_of(a) != self.line_of(b.saturating_sub(1)) || out => {
                 self.remember(false);
@@ -481,7 +758,7 @@ pub enum Pending {
     Definition { uri: Url },
     Format { uri: Url, then_save: bool },
     /// A completion for a shell's prompt line.
-    PromptCompletion { uri: Url },
+    PromptCompletion { uri: Url, stamp: crate::prompt_code::PromptStamp },
 }
 
 pub struct Find {
@@ -509,6 +786,8 @@ pub struct HoverBox {
 }
 
 pub struct EditorPane {
+    /// Explicit Insert-key mode; it never changes the caret's pipe shape.
+    pub overwrite: bool,
     pub zoom: u32,
     pub rect: Rect,
     pub buffers: Vec<Buffer>,
@@ -524,6 +803,8 @@ pub struct EditorPane {
     pub cell: (f32, f32),
     pub rows: usize,
     pub strip_hits: Vec<(Rect, usize, bool)>,
+    /// The existing status word toggles Insert/Replace on keyboards without Insert.
+    pub mode_hit: Option<Rect>,
     pub dragging: bool,
     /// Pointer rest for hover: where and since when.
     pub rest: Option<((f32, f32), Instant)>,
@@ -536,11 +817,14 @@ pub struct EditorPane {
     search_needed: bool,
     /// While the buffer is a note: the rails a whole tab shows (notes_ui.rs).
     pub notes: Option<crate::notes_ui::Rails>,
+    /// The formatting rail's buttons, from the last draw.
+    pub format_hits: Vec<(Rect, crate::notes_ui::RailHit2)>,
 }
 
 impl EditorPane {
     pub fn new(rect: Rect) -> EditorPane {
         EditorPane {
+            overwrite: false,
             zoom: 100,
             rect,
             buffers: Vec::new(),
@@ -553,6 +837,7 @@ impl EditorPane {
             cell: (8.0, 16.0),
             rows: 1,
             strip_hits: Vec::new(),
+            mode_hit: None,
             dragging: false,
             rest: None,
             hover_sent_at: None,
@@ -561,6 +846,7 @@ impl EditorPane {
             search: None,
             search_needed: false,
             notes: None,
+            format_hits: Vec::new(),
         }
     }
 
@@ -590,7 +876,12 @@ impl EditorPane {
             self.active = i;
             return Ok(i);
         }
-        let b = Buffer::from_path(&abs)?;
+        let b = if crate::notes::place_of(&abs).is_some() {
+            let (view, text) = crate::notes_session::attach(&abs).map_err(|e| anyhow::anyhow!("{e}"))?;
+            Buffer::for_note(&abs, view, text)
+        } else {
+            Buffer::from_path(&abs)?
+        };
         self.buffers.push(b);
         self.active = self.buffers.len() - 1;
         self.find = None;
@@ -1012,6 +1303,13 @@ impl App {
                     _ => {}
                 }
             }
+            if matches!(key, WKey::Named(NamedKey::Insert)) && !cmd && !alt && !shift {
+                e.overwrite = !e.overwrite;
+                e.completion = None;
+                self.dirty = true;
+                return true;
+            }
+            let overwrite = e.overwrite;
             let page_rows = e.rows.max(1) as i64;
             let Some(b) = e.buf_mut() else { return true };
             let n = b.len_chars();
@@ -1154,7 +1452,7 @@ impl App {
                         request = Some(("completion", Pending::Completion { uri }));
                     }
                 }
-                WKey::Named(NamedKey::Space) => b.insert(" ", true),
+                WKey::Named(NamedKey::Space) => b.type_text(" ", overwrite),
                 WKey::Named(NamedKey::F12) => {
                     moved = false;
                     goto_def = true;
@@ -1312,7 +1610,7 @@ impl App {
                         .filter(|t| !t.is_empty() && !t.chars().any(char::is_control))
                     {
                         if !ctrl && !alt {
-                            b.insert(t, true);
+                            b.type_text(t, overwrite);
                             // A trigger character asks the server as you type.
                             if let Some(uri) = b.uri.clone() {
                                 if t == "."
@@ -1385,6 +1683,26 @@ impl App {
         if pressed && button == MouseButton::Left && self.note_rails_mouse(x, y) {
             return true;
         }
+        if pressed && button == MouseButton::Left && !self.mods.shift_key() && self.note_format_mouse(x, y) {
+            return true;
+        }
+        // Closing a note's last view saves it first; a note that cannot be
+        // saved stays open.
+        if pressed && matches!(button, MouseButton::Left | MouseButton::Middle) {
+            let closing = self.tabs.get(self.active).and_then(|t| {
+                std::iter::once(&t.left).chain(t.right.as_ref()).find_map(|p| match p {
+                    Pane::Editor(e) if e.rect.contains(x, y) => e.strip_hits.iter().find(|(r, _, close)| r.contains(x, y) && (*close || button == MouseButton::Middle))
+                        .and_then(|(_, i, _)| e.buffers.get(*i)?.note.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(v) = closing {
+                if !self.note_may_close(&v) {
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let Some(tab) = self.tabs.get_mut(self.active) else {
@@ -1402,6 +1720,13 @@ impl App {
             }
             hit_editor = true;
             let mut start_drag = false;
+            if button == MouseButton::Left && e.mode_hit.is_some_and(|r| r.contains(x, y)) {
+                e.overwrite = !e.overwrite;
+                e.completion = None;
+                e.hover = None;
+                self.dirty = true;
+                return true;
+            }
             // The strip: switch or close a buffer.
             if let Some((_, i, close)) = e
                 .strip_hits
@@ -1554,6 +1879,16 @@ impl App {
                     let was_loading = b.loading.is_some();
                     expired |= b.poll();
                     if was_loading && b.ready() { loaded.push((ti, right, bi)); }
+                    // A note follows its session: another view's typing, a
+                    // capture, whether it is saved yet.
+                    if b.note.is_some() {
+                        expired |= b.pull_note();
+                        let dirty = b.note.as_ref().is_some_and(|v| crate::notes_session::dirty(&v.key));
+                        if dirty != b.dirty {
+                            b.dirty = dirty;
+                            expired = true;
+                        }
+                    }
                 }
                 expired |= e.poll_search();
                 if let Some(((x, y), at)) = e.rest {
@@ -1587,6 +1922,8 @@ impl App {
             }
         }
         for (ti, right, bi) in loaded { self.lsp_open_buffer(ti, right, bi); }
+        expired |= crate::notes_session::tend();
+        self.tend_notes();
         if let Some((c, _)) = hover_req {
             self.editor_hover_at(c);
         }
@@ -1638,23 +1975,32 @@ impl App {
             color: t.dim,
             ..label
         };
-        let term_px = self.behavior.typography.editor_size * self.scale * 96.0 / 72.0 * e.zoom as f32 / 100.0;
+        // A note is set in its own face (Blueprint's, unless chosen), with
+        // no line numbers and a measure; code keeps the editor's.
+        let is_note = e.buf().is_some_and(|b| b.note.is_some());
+        let ty = &self.behavior.typography;
+        let (face, size, line_h, tracking) = if is_note {
+            (self.f.notes, ty.notes_size, ty.notes_line, ty.notes_spacing * self.scale * e.zoom as f32 / 100.0)
+        } else {
+            (self.f.editor, ty.editor_size, ty.editor_line, 0.0)
+        };
+        let measure = if is_note { ty.notes_measure } else { 0 };
+        let term_px = size * self.scale * 96.0 / 72.0 * e.zoom as f32 / 100.0;
         let mono = Style {
-            font: self.f.editor,
+            font: face,
             px: term_px,
             color: ink,
-            tracking: 0.0,
+            tracking,
         };
         let mono_dim = Style {
             color: t.dim,
             ..mono
         };
         let cw = self.fonts.measure(mono, "M").max(1.0);
-        let metrics = self.fonts.metrics(self.f.editor, term_px);
-        let ch = metrics.line_height.max(term_px * self.behavior.typography.editor_line);
+        let metrics = self.fonts.metrics(face, term_px);
+        let ch = metrics.line_height.max(term_px * line_h);
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
         let signal = self.surface.signal;
-        let caret = self.caret_color();
         let (mx, my) = self.mouse;
         let strip_h = self.header_h();
         let status_h = self.px(m::PANE_FOOTER);
@@ -1665,13 +2011,12 @@ impl App {
 
         let scale = self.scale;
         let px = |v: f32| (v * scale).round();
-        let fonts = &mut self.fonts;
-        let fit = |fonts: &nus_render::text::FontSystem,
+        let fit = |font_system: &nus_render::text::FontSystem,
                    style: Style,
                    text: &str,
                    max_w: f32|
          -> String {
-            if fonts.measure(style, text) <= max_w {
+            if font_system.measure(style, text) <= max_w {
                 return text.to_string();
             }
             let chars: Vec<char> = text.chars().collect();
@@ -1679,7 +2024,7 @@ impl App {
             while lo < hi {
                 let mid = (lo + hi).div_ceil(2);
                 let s: String = chars[..mid].iter().collect();
-                if fonts.measure(style, &format!("{s}…")) <= max_w {
+                if font_system.measure(style, &format!("{s}…")) <= max_w {
                     lo = mid;
                 } else {
                     hi = mid - 1;
@@ -1690,6 +2035,7 @@ impl App {
         };
         e.rect = outer;
         e.strip_hits.clear();
+        e.mode_hit = None;
         scene.rect(r, paper);
         scene.layer(Some(r));
 
@@ -1708,7 +2054,7 @@ impl App {
             } else {
                 dim
             };
-            let w = fonts.measure(st, &name);
+            let w = self.fonts.measure(st, &name);
             let cell = Rect::new(x - px(6.0), r.y, w + px(30.0), strip_h);
             let hot = cell.contains(mx, my);
             if active {
@@ -1719,12 +2065,12 @@ impl App {
             } else if hot {
                 scene.rect(cell, crate::surface::mix(paper, ink, 0.05));
             }
-            fonts.draw(scene, st, x, strip_base, &name);
+            self.fonts.draw(scene, st, x, strip_base, &name);
             // Dirty dot, or a close × when hot.
             let dx = x + w + px(8.0);
             let close_r = Rect::new(dx - px(4.0), r.y + px(8.0), px(14.0), px(14.0));
             if hot {
-                fonts.draw(
+                self.fonts.draw(
                     scene,
                     Style {
                         color: if close_r.contains(mx, my) {
@@ -1750,15 +2096,15 @@ impl App {
         }
         // A note says where it lives: plain in the folder, or sealed.
         if let Some(word) = place {
-            let ww = fonts.measure(dim, word);
+            let ww = self.fonts.measure(dim, &word);
             if x + ww + pad * 2.0 < r.right() {
-                fonts.draw(scene, dim, r.right() - pad - ww, strip_base, word);
+                self.fonts.draw(scene, dim, r.right() - pad - ww, strip_base, &word);
             }
         }
         scene.hline(r.x, r.y + strip_h - hair, r.w, hair, ink);
 
         let Some(bi) = (e.active < e.buffers.len()).then_some(e.active) else {
-            fonts.draw(
+            self.fonts.draw(
                 scene,
                 dim,
                 r.x + pad,
@@ -1770,7 +2116,7 @@ impl App {
         };
 
         // Geometry.
-        let gutter_w = {
+        let gutter_w = if is_note { 0.0 } else {
             let digits = e.buffers[bi]
                 .text
                 .len_lines()
@@ -1780,12 +2126,43 @@ impl App {
                 .max(3);
             cw * (digits as f32 + 2.0)
         };
-        let text_top = r.y + strip_h + px(6.0);
+        // A note's column sits in the middle once the pane is wider than
+        // its measure, with a margin of its own either way.
+        let margin = if measure > 0 {
+            let column = cw * measure as f32;
+            ((r.w - column) / 2.0).max(px(24.0).min(r.w * 0.06))
+        } else {
+            0.0
+        };
+        // Its formatting rail lives in that margin when the margin (and the
+        // pane's height) can hold it; else it is a row under the strip.
+        // Folding or unfolding it never moves the text in the margin case.
+        e.format_hits.clear();
+        let rail_w = px(40.0);
+        let rail_btn = px(34.0);
+        let rail_len = rail_btn * (crate::notes_format::RAIL.len() + 1) as f32;
+        let rail = if !is_note {
+            None
+        } else if margin >= rail_w + px(28.0) && r.h - strip_h - status_h >= rail_len + px(16.0) {
+            Some(false)
+        } else {
+            Some(true)
+        };
+        let folded = self.behavior.notes_rail_folded;
+        let row_h = match rail {
+            Some(true) => if folded { px(28.0) } else { px(36.0) },
+            _ => 0.0,
+        };
+        let text_top = r.y + strip_h + row_h + px(6.0);
         let text_bottom = r.bottom() - status_h - if e.find.is_some() { status_h } else { 0.0 };
         let rows = ((text_bottom - text_top) / ch).floor().max(1.0) as usize;
         e.rows = rows;
         e.cell = (cw, ch);
-        e.origin = (r.x + gutter_w + pad, text_top);
+        let left = if measure > 0 { r.x + margin } else { r.x + gutter_w + pad };
+        e.origin = (left, text_top);
+        if is_note {
+            e.buffers[bi].ensure_md_kinds();
+        }
         let (ox, oy) = e.origin;
         let baseline_off = metrics.ascent + (ch - (metrics.ascent + metrics.descent)) * 0.5;
 
@@ -1853,8 +2230,8 @@ impl App {
             if line == cur_line && focused {
                 scene.rect(Rect::new(r.x, ly, r.w, ch), wash);
             }
-            // Gutter number, a diagnostic mark beside it.
-            let num = format!("{:>w$}", line + 1, w = (gutter_w / cw) as usize - 2);
+            // Gutter number, a diagnostic mark beside it (not in a note).
+            let num = if is_note { String::new() } else { format!("{:>w$}", line + 1, w = (gutter_w / cw) as usize - 2) };
             let ns = if line == cur_line {
                 Style {
                     color: ink,
@@ -1863,7 +2240,7 @@ impl App {
             } else {
                 mono_dim
             };
-            fonts.draw(scene, ns, r.x + cw * 0.5, base, &num);
+            self.fonts.draw(scene, ns, r.x + cw * 0.5, base, &num);
             // Blame, faint, after the caret's line: saved files in a repository only.
             if line == cur_line && focused && !b.dirty && gmarks.is_some() {
                 if let Some(words) = b.path.as_deref().and_then(|p| crate::git_gutter::blame_line(p, line)) {
@@ -1872,7 +2249,7 @@ impl App {
                     if bx < r.right() - cw * 12.0 {
                         let faint = Style { color: crate::surface::mix(paper, ink, 0.4), ..mono_dim };
                         let fit: String = words.chars().take(((r.right() - bx) / cw) as usize).collect();
-                        fonts.draw(scene, faint, bx, base, &fit);
+                        self.fonts.draw(scene, faint, bx, base, &fit);
                     }
                 }
             }
@@ -1925,12 +2302,16 @@ impl App {
                     );
                 }
             }
+            // A note: its Markdown, styled where it stands (markers faint).
+            if is_note {
+                self.draw_note_line(scene, b, line, (ox, ly, base), scroll_col, columns, (cw, ch), mono);
+            }
             // The text, as coloured runs.
-            let spans = b.spans_for(line);
+            let spans: &[(usize, usize, crate::predict::Tok)] = if is_note { &[] } else { b.spans_for(line) };
             let chars: Vec<char> = b.text.slice(visible_start..visible_end).chars().collect();
             let mut col = scroll_col;
             let mut draw_run = |scene: &mut Scene,
-                                fonts: &mut nus_render::text::FontSystem,
+                                font_system: &mut nus_render::text::FontSystem,
                                 from: usize,
                                 to: usize,
                                 color: nus_render::Color| {
@@ -1941,7 +2322,7 @@ impl App {
                 }
                 let run: String = chars[from..to.min(chars.len())].iter().collect();
                 let run = run.replace('\t', "    ");
-                fonts.draw(
+                font_system.draw(
                     scene,
                     Style { color, ..mono },
                     ox + from as f32 * cw,
@@ -1951,7 +2332,7 @@ impl App {
             };
             for &(a, l, class) in spans {
                 if a > col {
-                    draw_run(scene, fonts, col, a, ink);
+                    draw_run(scene, &mut self.fonts, col, a, ink);
                 }
                 let color = match class {
                     crate::predict::Tok::Command => ansi(4),
@@ -1962,10 +2343,12 @@ impl App {
                     crate::predict::Tok::Path => ansi(6),
                     crate::predict::Tok::Plain => ink,
                 };
-                draw_run(scene, fonts, a.max(col), a + l, color);
+                draw_run(scene, &mut self.fonts, a.max(col), a + l, color);
                 col = (a + l).max(col);
             }
-            draw_run(scene, fonts, col, scroll_col + chars.len(), ink);
+            if !is_note {
+                draw_run(scene, &mut self.fonts, col, scroll_col + chars.len(), ink);
+            }
             // Diagnostics: a dotted underline.
             for &(a, z, sev, _, _) in &diags {
                 let (s0, s1) = (a.max(visible_start), z.min(visible_end.max(visible_start + 1)));
@@ -1982,10 +2365,30 @@ impl App {
             // The caret.
             if line == cur_line && focused && e.goto.is_none() && e.find.is_none() {
                 let cx = ox + b.col_of(b.cursor).saturating_sub(scroll_col) as f32 * cw;
-                scene.rect(Rect::new(cx - px(0.5), ly, px(2.0), ch), caret);
+                if sel.is_some() {
+                    self.draw_selection_edge(scene, cx, base, term_px, 1.0, self.last_key);
+                } else {
+                    let replacement_width = e.overwrite.then(|| b.replacement_len()).flatten().map(|n| {
+                        let next = b.text.slice(b.cursor..b.cursor + n).to_string().replace('\t', "    ");
+                        self.fonts.measure(mono, &next)
+                    });
+                    self.draw_text_caret(scene, cx, base, term_px, 1.0, self.last_key, replacement_width);
+                }
             }
         }
 
+        // The formatting rail (or row), over what is under it.
+        if let Some(as_row) = rail {
+            let b = &e.buffers[bi];
+            let line = b.line_of(b.cursor);
+            let active = crate::notes_format::active(&b.line_text(line), b.md_kind(line), b.col_of(b.cursor));
+            let area = if as_row {
+                Rect::new(r.x, r.y + strip_h, r.w, row_h)
+            } else {
+                Rect::new(r.x + (margin - rail_w) / 2.0, text_top, rail_w, if folded { rail_btn } else { rail_len })
+            };
+            self.draw_format_rail(scene, e, area, as_row, folded, &active);
+        }
         // Status row: path · Ln, Col · language · server, or the notice.
         let sy = r.bottom() - status_h;
         scene.hline(r.x, sy, r.w, hair, ink);
@@ -2030,15 +2433,16 @@ impl App {
                 s.push_str(" · ");
                 s.push_str(&e.status);
             }
+            s.push_str(if e.overwrite { " · REPLACE" } else { " · INSERT" });
             if let Some(g) = &e.goto {
-                s = format!("GO TO LINE {g}_");
+                s = format!("GO TO LINE {g}");
             }
             s
         };
-        let rw = fonts.measure(label, &right_text);
-        let left = fit(fonts, dim, &left, r.w - rw - 3.0 * pad);
-        fonts.draw(scene, dim, r.x + pad, base, &left);
-        fonts.draw(
+        let rw = self.fonts.measure(label, &right_text);
+        let left = fit(&self.fonts, dim, &left, r.w - rw - 3.0 * pad);
+        self.fonts.draw(scene, dim, r.x + pad, base, &left);
+        self.fonts.draw(
             scene,
             if e.goto.is_some() {
                 Style {
@@ -2053,6 +2457,19 @@ impl App {
             &right_text,
         );
 
+        if e.goto.is_some() {
+            self.draw_line_caret(scene, r.right() - pad + px(1.0), base, label.px, 1.0, self.last_key);
+        } else {
+            let mode = if e.overwrite { "REPLACE" } else { "INSERT" };
+            let width = self.fonts.measure(label, mode);
+            let hit = Rect::new(r.right() - pad - width - px(4.0), sy, width + px(8.0), status_h);
+            e.mode_hit = Some(hit);
+            if hit.contains(mx, my) {
+                scene.hline(hit.x + px(4.0), base + px(3.0), width, hair, signal);
+                self.tip_words(hit, if e.overwrite { "Insert between characters · click or press Insert" } else { "Replace next character · click or press Insert" });
+            }
+        }
+
         // Find bar above the status row.
         if let Some(f) = &e.find {
             let fy = sy - status_h;
@@ -2061,31 +2478,27 @@ impl App {
             let base = fy + px(17.0);
             let mut x = r.x + pad;
             let head = if f.with_replace { "REPLACE" } else { "FIND" };
-            x += fonts.draw(scene, strong, x, base, head) + pad;
-            let q = format!("{}{}", f.query, if !f.in_replace { "_" } else { "" });
-            x += fonts.draw(
+            x += self.fonts.draw(scene, strong, x, base, head) + pad;
+            let query_width = self.fonts.draw(
                 scene,
-                Style {
-                    color: if f.in_replace { t.dim } else { ink },
-                    ..mono
-                },
-                x,
-                base,
-                &q,
-            ) + pad * 2.0;
+                Style { color: if f.in_replace { t.dim } else { ink }, ..mono },
+                x, base, &f.query,
+            );
+            if !f.in_replace {
+                self.draw_line_caret(scene, x + query_width, base, mono.px, 1.0, self.last_key);
+            }
+            x += query_width + pad * 2.0;
             if f.with_replace {
-                x += fonts.draw(scene, dim, x, base, "WITH") + pad;
-                let rp = format!("{}{}", f.replace, if f.in_replace { "_" } else { "" });
-                x += fonts.draw(
+                x += self.fonts.draw(scene, dim, x, base, "WITH") + pad;
+                let replace_width = self.fonts.draw(
                     scene,
-                    Style {
-                        color: if f.in_replace { ink } else { t.dim },
-                        ..mono
-                    },
-                    x,
-                    base,
-                    &rp,
-                ) + pad * 2.0;
+                    Style { color: if f.in_replace { ink } else { t.dim }, ..mono },
+                    x, base, &f.replace,
+                );
+                if f.in_replace {
+                    self.draw_line_caret(scene, x + replace_width, base, mono.px, 1.0, self.last_key);
+                }
+                x += replace_width + pad * 2.0;
             }
             let count = if e.search.is_some() || e.search_needed {
                 "SEARCHING…".into()
@@ -2098,14 +2511,14 @@ impl App {
             } else {
                 format!("{} OF {}{}", f.current + 1, f.matches.len(), if f.truncated { "+" } else { "" })
             };
-            fonts.draw(scene, dim, x, base, &count);
+            self.fonts.draw(scene, dim, x, base, &count);
             let hint = if f.with_replace {
                 "ENTER REPLACES · CTRL+ENTER ALL · TAB SWITCHES · ESC"
             } else {
                 "ENTER NEXT · SHIFT+ENTER BACK · ESC"
             };
-            let hw = fonts.measure(dim, hint);
-            fonts.draw(scene, dim, r.right() - pad - hw, base, hint);
+            let hw = self.fonts.measure(dim, hint);
+            self.fonts.draw(scene, dim, r.right() - pad - hw, base, hint);
         }
 
         // Completion menu under the caret.
@@ -2123,10 +2536,10 @@ impl App {
                 .skip(c.scroll)
                 .take(shown)
                 .map(|i| {
-                    fonts.measure(mono, &i.label)
+                    self.fonts.measure(mono, &i.label)
                         + i.detail
                             .as_ref()
-                            .map(|d| fonts.measure(mono_dim, d) + pad)
+                            .map(|d| self.fonts.measure(mono_dim, d) + pad)
                             .unwrap_or(0.0)
                 })
                 .fold(0.0f32, f32::max)
@@ -2149,18 +2562,18 @@ impl App {
                     scene.rect(rr, fade(signal, 0.18));
                 }
                 let base = yy + baseline_off + px(2.0);
-                let lw = fonts.draw(
+                let lw = self.fonts.draw(
                     scene,
                     mono,
                     bx + pad,
                     base,
-                    &fit(fonts, mono, &item.label, bw - 2.0 * pad),
+                    &fit(&self.fonts, mono, &item.label, bw - 2.0 * pad),
                 );
                 if let Some(d) = &item.detail {
-                    let dd = fit(fonts, mono_dim, d, bw - 3.0 * pad - lw);
-                    let dw = fonts.measure(mono_dim, &dd);
+                    let dd = fit(&self.fonts, mono_dim, d, bw - 3.0 * pad - lw);
+                    let dw = self.fonts.measure(mono_dim, &dd);
                     if lw + dw + 3.0 * pad < bw {
-                        fonts.draw(scene, mono_dim, bx + bw - pad - dw, base, &dd);
+                        self.fonts.draw(scene, mono_dim, bx + bw - pad - dw, base, &dd);
                     }
                 }
                 yy += row_h;
@@ -2178,11 +2591,11 @@ impl App {
                     .text
                     .lines()
                     .take(14)
-                    .map(|l| fit(fonts, mono, l, r.w * 0.7))
+                    .map(|l| fit(&self.fonts, mono, l, r.w * 0.7))
                     .collect();
                 let wmax = lines
                     .iter()
-                    .map(|l| fonts.measure(mono, l))
+                    .map(|l| self.fonts.measure(mono, l))
                     .fold(0.0f32, f32::max);
                 let bw = wmax + 2.0 * pad;
                 let bh = lines.len() as f32 * ch + 2.0 * px(6.0);
@@ -2198,7 +2611,7 @@ impl App {
                 scene.outline(hr, hair, ink);
                 let mut yy = by + px(6.0) + baseline_off;
                 for l in &lines {
-                    fonts.draw(scene, mono, bx + pad, yy, l);
+                    self.fonts.draw(scene, mono, bx + pad, yy, l);
                     yy += ch;
                 }
             }
@@ -2255,6 +2668,52 @@ mod performance_tests {
         }
         assert!(same_file_path(&upper, &dir.path().join("./Module.rs")));
     }
+    #[test]
+    fn replace_mode_replaces_whole_graphemes_and_preserves_line_endings() {
+        let mut b = Buffer::empty();
+        b.text = Rope::from_str("e\u{301}👩‍💻!\r\nnext");
+        assert_eq!(b.replacement_len(), Some(2));
+        b.type_text("x", true);
+        assert_eq!(b.text.to_string(), "x👩‍💻!\r\nnext");
+        assert_eq!(b.replacement_len(), Some(3));
+        b.type_text("y", true);
+        assert_eq!(b.text.to_string(), "xy!\r\nnext");
+        b.cursor = 3;
+        assert_eq!(b.replacement_len(), None);
+        b.type_text("z", true);
+        assert_eq!(b.text.to_string(), "xy!z\r\nnext");
+    }
+
+    #[test]
+    fn replace_mode_respects_selection_and_undo() {
+        let mut b = Buffer::empty();
+        b.text = Rope::from_str("before after");
+        b.cursor = 6;
+        b.anchor = Some(0);
+        assert_eq!(b.replacement_len(), None);
+        b.type_text("new", true);
+        assert_eq!(b.text.to_string(), "new after");
+        b.undo();
+        assert_eq!(b.text.to_string(), "before after");
+        assert_eq!(b.selection(), Some((0, 6)));
+        b.anchor = None;
+        b.cursor = 0;
+        b.type_text("X", false);
+        assert_eq!(b.text.to_string(), "Xbefore after");
+    }
+
+    #[test]
+    fn replacement_mark_requires_a_complete_grapheme_boundary() {
+        let mut b = Buffer::empty();
+        b.text = Rope::from_str("e\u{301}x");
+        b.cursor = 1;
+        assert_eq!(b.replacement_len(), None);
+        b.cursor = 2;
+        assert_eq!(b.replacement_len(), Some(1));
+        b.cursor = 3;
+        assert_eq!(b.replacement_len(), None);
+    }
+
     fn settle(b: &mut Buffer) {
         let until = Instant::now() + std::time::Duration::from_secs(5);
         while b.loading.is_some() || b.highlighting.is_some() {

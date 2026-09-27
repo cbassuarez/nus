@@ -26,6 +26,8 @@ winit = "0.30"
 anyhow = "1"
 serde_json = "1"
 regex = "1"
+unicode-width = "0.2"
+unicode-segmentation = "1.13"
 semver = "1"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -33,6 +35,10 @@ tar = "0.4"
 flate2 = "1"
 url = "2.5"
 pulldown-cmark = "0.13"
+# Notes search: an in-memory FTS5 index (notes_index.rs); bundled so FTS5
+# is there whatever the system SQLite was built with.
+rusqlite = { version = "0.40", features = ["bundled"] }
+unicode-normalization = "0.1"
 csv = "1.3"
 serde = { version = "1", features = ["derive"] }
 png = "0.17"
@@ -91,10 +97,10 @@ tray-icon = { version = "0.24", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibilityProtocols", "NSAppearance", "NSButton", "NSControl", "NSEvent", "NSApplication", "NSImage", "NSGraphics", "NSScreen", "NSWindow", "NSView", "NSRunningApplication", "NSWorkspace", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray", "NSDictionary", "NSHTTPCookie", "NSURLRequest", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibilityProtocols", "NSAppearance", "NSButton", "NSControl", "NSEvent", "NSApplication", "NSImage", "NSGraphics", "NSScreen", "NSWindow", "NSView", "NSRunningApplication", "NSWorkspace", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSTrackingArea", "block2"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSGeometry", "NSString", "NSURL", "NSArray", "NSDictionary", "NSHTTPCookie", "NSURLRequest", "NSObject", "NSUUID", "NSUserDefaults"] }
 # Protected video through the system's WebKit and FairPlay (webkit.rs).
-objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKHTTPCookieStore", "WKPreferences", "WKNavigation", "block2", "objc2-app-kit", "objc2-core-foundation"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKHTTPCookieStore", "WKPreferences", "WKNavigation", "WKUserContentController", "WKUserScript", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation", "Win32_System_Power", "Win32_System_SystemInformation"] }

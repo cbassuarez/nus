@@ -289,12 +289,24 @@ waiting dot, children under a rule. Footer is one row: avatar (drop a
 
 **Surface.** Ramps, not a colour: 2–4 stops, angle, loop, aurora drift and
 breath. Signal, tint, opacity (on window / chrome / panes — Windows DX12 is
-opaque, the row says so). Textures: grain, stipple, stitch, linen,
-halftone, scale, still or animated, placed on the **carapace** (masked to
-its rounded stroke, two-tone so it reads on any ramp, ×3 strength for a
-thin band), the chrome, or the panes — never on content or video. Shell:
+opaque, the row says so). Grain remains an independent finish, with scale
+and strength, placed on the **carapace**, chrome, or panes. Saved stipple,
+stitch, linen and halftone looks still load; new choices offer None or Grain.
+The original frame retains its animated texture option. Shell:
 band or frame, width, radius. Presets (Broadsheet, Midnight, Ledger,
 Darkroom) plus `profile/surfaces/*.json`; SAVE PRESET writes one.
+
+**Carapace materials.** LOOK → SURFACE offers Ink pool, Enamel, Interference,
+Single seam, Open corners, Overprint and Edge light alongside Plain. Ink is
+a continuous matte pool with an irregular outline and a few small floating
+blots at one end. Materials support a top band or a perimeter, and grain
+stays inside their silhouettes, including the empty stretches between corners.
+Still, Subtle and Expressive control reaction strength. Work, loading,
+completion and attention are enabled by default; typing and media are opt-in.
+Only focused work supplies continuous activity; background completions and
+requests for attention can signal once or hold an accent. Reported progress
+stays anchored, completion settles, and reduced motion removes travel.
+These choices survive settings reloads and saved themes.
 
 **Theme.** Paper / ink / page tokens per mode, ANSI 16 with a picker,
 families (Solarized, Gruvbox, Nord, from-signal), contrast grade and
@@ -396,7 +408,7 @@ real; links from other launches land in the window last used.
 and OSC 9;4 progress read in nus-vt at the point they occur; bundled
 scripts for PowerShell (-NoExit -EncodedCommand), bash (--rcfile), zsh
 (ZDOTDIR), fish (-C), cmd (PROMPT); nushell has it built in. AUTO / OFF
-under TERMINAL. It buys: a bar cursor at the prompt, new shells where
+under TERMINAL. It buys: a cell cursor at the prompt, new shells where
 the focused one is, the window's name and dateline from the cwd, jump
 between prompts, copy the last output, paste with a band when it's
 risky, DONE / FAILED badges and a ring when a long command ends
@@ -420,9 +432,30 @@ graphics and iTerm2 inline images draw in the shell; the Kitty keyboard
 protocol was already in.
 
 **The command line, lit and predicted.** Tokens colour as you type;
-the history entry that continues your line ghosts after the caret and
-Right / End accepts it. Terminal-side, nothing to install; history per
-profile in profile/history.
+history, Git context and fresh LSP completions can ghost after the caret.
+At the end of the line, Right / Ctrl+F accepts the visible suffix;
+Alt/Option+Right accepts its next shell token. Tab opens Code; Up/Down
+chooses, Tab / Enter inserts without running, and the next Enter runs.
+End keeps its native meaning. Ctrl+R searches history inline; Up/Down at
+the prompt recalls prefix matches and Down returns to the original draft.
+In search, Ctrl+O reveals a current-session command's original output;
+Esc returns to the draft. History persists per profile in profile/history.
+These helpers read a supported prompt's single logical line, including
+soft wraps; other terminal input stays with the shell. Shift+Enter pastes
+a newline when supported, or sends a distinct shifted key through the
+negotiated keyboard protocol; it never falls back to a plain Enter.
+
+**Blueprint is the default appearance.** A fresh profile starts in Blueprint,
+in paper or ink according to the existing OS/mode preference. SETTINGS ·
+TERMINAL · APPLY BLUEPRINT gives an existing profile the same appearance:
+Areal Mono Medium at 14 pt, 1.25 line height and 0.25
+tracking; a 3 px underline cursor, Glide, no blinking; shell colour None,
+syntax colour and command lamps on; Stitch texture at 3%, pitch 5, on
+panes. Its light/dark palette and cyan accent are shared with the
+interface; UI/editor fonts, layout and sounds stay as configured. Every
+setting remains individually adjustable; existing profiles change only
+when the preset is applied. Loading partial, empty or damaged saved settings
+does not treat them as a fresh profile or overwrite their appearance.
 
 **Browser table stakes.** Find in page, downloads (to ~/Downloads, a
 list in the footer, click reveals), permission asks as a band, `<select>`
@@ -567,7 +600,7 @@ opens there. A window's only tab, the quick terminal's, a peek and the
 floating player's stay. Moves between windows are not on the layout
 history; sending back is the way back.
 
-**The caret is Neovide's.** A port of its cursor renderer: four
+**The optional smear is Neovide's.** A port of its cursor renderer: four
 critically damped springs, the leading corners fast and the trailing
 ones slow, drawn as one quad. TRAIL is Neovide's trail_size.
 
@@ -622,9 +655,11 @@ The buffer is ropey; nothing hand-rolled where a crate is the real thing.
 
 **The prompt line has LSP too**, configurable: TERMINAL · PROMPT LSP:
 QUIET (default: dotted underline on a diagnostic, hover for the message,
-completions ride the ghost prediction and Tab accepts) · MENU (a small
-completion list under the caret) · OFF. bash-language-server or PowerShell
-Editor Services by shell.
+fresh completions join the ghost prediction) · MENU (completion choices
+under the caret) · OFF. Tab opens Code, and Tab / Enter inserts its
+selected choice without executing. Suggestions and edits belong to the
+current supported prompt line; stale replies cannot replace a newer
+draft. bash-language-server or PowerShell Editor Services by shell.
 
 **The ports board** (Ctrl+Shift+P; the status-cluster icon; palette
 `ports`; the PORTS folder header) is a centred overlay sheet, ~70% wide,
@@ -867,6 +902,28 @@ focus. Drag any edge or corner to resize with the aspect ratio preserved;
 scroll and pinch amounts scale proportionally, without corner snapping or a
 competing resize animation. The renderer checks the actual drawable size.
 
+**WebKit's pages in PiP (2026-09-26).** A protected service shown by the
+system's WebKit (Netflix, Prime and the rest; `webkit.rs`) has the same PiP as
+any page: nus's window, nus's controls, keys and policies, never the system's
+picture in picture. Its picture can't be lent as a texture — FairPlay won't —
+so the WKWebView itself moves into the window, under the GPU layer (a cleared,
+transparent scene over it) and sized to the window, with only its video (and
+the captions Netflix and Prime draw themselves) left visible. It takes no
+clicks and none of the pointer: the window's drag, resize and controls are
+nus's, and returning, closing, replacing the source or losing the tab puts the
+page back in its pane. The tracker (`assets/video.js`) runs in WebKit's page
+too, asked what it saw four times a second, which gives the controls their
+time and ratio and the transport its target; Netflix seeks go through its own
+player, which stops with an error when `currentTime` is set under it. The
+page's own picture-in-picture button asks for nus's. Pinning to a shell stays
+Chromium-only: a protected picture can't be drawn over a shell.
+
+**Working pages don't sleep.** A tab whose page plays video or sound (as the
+tracker reports it, in Chromium or WebKit), or whose video is up in PiP or
+pinned to a shell, is working: it neither sleeps nor archives, and its idle
+time starts when the playing stops. WebKit's page answers for itself whether
+it is safe to sleep; the about:blank Chromium keeps under it no longer does.
+
 PiP uses a floating window. macOS uses NSFloatingWindowLevel, stays visible on
 deactivation, joins Spaces as a fullscreen auxiliary, and reads NSScreen's
 visibleFrame for Dock/menu-bar exclusion. Windows reads the monitor work area;
@@ -897,6 +954,34 @@ wash, the editor's, and both carets draw from them; the cursor rule's
 INK became THE THEME'S CARET (old prefs still read), SIGNAL and THE
 TAB'S OWN sit over it, and a program's OSC 12 still wins. The wash is
 always 22%; the token is the colour.
+
+**One caret across surfaces.** Shells and Hatch use a square cell; native
+text fields and the editor use a square pipe. Terminal programs keep
+their explicit cursor shapes, and CARET · TERMINAL SHAPE overrides only
+terminal surfaces. Cell inversion reuses the original shaped glyph,
+including its baseline, bearings and ligatures. Native browser content
+and DevTools keep their engine's own editing behavior.
+
+New profiles blink by default: a 1.2-second cycle with a long visible
+hold, short eased fades and a quiet dark interval. Typing, navigation,
+clicking and refocusing reveal it immediately. Sustained input keeps it
+visible; reduced motion and composition keep it steady. Only an active,
+visible caret requests animation frames. Unfocused terminal cells may
+retain a quiet outline, without glow or HDR light.
+
+The crisp core has a restrained local halo, with less energy for a cell
+than a pipe. Paper mode favors contrast. On HDR displays the small core
+requests 1.5× reference-white brightness, limited by current display
+headroom; text, selection and the replacement rule stay at normal light.
+Unknown headroom and SDR displays use ordinary brightness.
+
+Selection keeps the theme's quiet, square wash and gives its moving end
+the same pipe and rhythm. Shell selection remains copy-only. In the
+editor, Insert toggles REPLACE: the pipe stays a pipe, while a separate,
+steady underline marks the next grapheme. Selection and end-of-line hide
+that target mark; replacement never consumes a line ending. Paste and
+completion retain their normal editing semantics. Terminal replacement
+is not guessed from cursor shape or terminal insert-character mode.
 
 **Program colours.** claude, codex and every TUI bring colours picked
 against someone else's background, and land unreadable on ours.
@@ -1693,6 +1778,9 @@ join and no ordering between the panel closing and the next frame.
 
 ## Notes (built 2026-09-26)
 
+*Parts of this first pass (the inbox file, direct saves, stem names,
+backlinks by mention) were replaced by the second pass below.*
+
 A note is a markdown file opened in the editor pane; there is no new pane
 kind. Two homes: **folder** notes in `<folder>/.nus/notes/`, plain text,
 the project's (nus writes `/.nus/` into `.git/info/exclude`, never
@@ -1739,3 +1827,249 @@ the first key, so there is no KEEP and nothing to lose on a crash.
 
 Not yet: margin notes on blocks and passages, a NOTE chip in Ask, quoting a
 page's selection, and a SETTINGS · NOTES section.
+
+## Menus, colours, your fonts, back and waking (2026-09-26)
+
+**A shell has a menu.** Right click in a shell (when the program in it
+hasn't asked for the mouse) opens the same context menu pages use — the
+theme's paper, ink and tint, keys, type-ahead, kept inside the window:
+COPY and PASTE; for the link under the pointer, OPEN BESIDE, IN A NEW TAB,
+COPY ADDRESS; for the block under it, COPY OUTPUT, RUN AGAIN, SHARE AS A
+PAGE, CLIP INTO THE NOTE; then FIND and SPLIT. It replaces right click's
+old paste-or-copy.
+
+**The tab's menu reaches past the sidebar.** It is drawn over the panes,
+as wide as its rows and colours need, and kept inside the window.
+
+**Tab colours are the theme's.** The menu offers the fifteen colours
+shells wear (the signal's family: five hues by three lightnesses, each
+drawn as the pane it makes with its signal), not eight fixed swatches. A
+picked colour is kept by its place in the family, so it follows paper and
+ink and the signal as shells do, and a page and a shell of the same pick
+match exactly. A colour set by hex (rules, remote control, older sessions)
+still works as before.
+
+**Your own fonts.** nus vendors its faces; nothing stops you using yours
+but your licence with the foundry. Installed fonts, and any .ttf, .otf or
+.ttc dropped into `profile/fonts`, are under INSTALLED for the interface,
+terminal and editor.
+
+**Back never closes a tab on a stale answer.** Chromium's `can_go_back`
+trails a navigation in flight and a single-page app's history, so nus
+counts a page's moves itself: back goes back whenever there may be
+somewhere to go, and closes only a tab opened onto its page (a link, a
+popup, the prompt) that has certainly not moved. A sideways wheel is a
+swipe only when the page had no room for it.
+
+**Waking is quicker.** A woken page shows at its first paint, not at the
+end of its load, and resting the pointer on a sleeping tab's row starts
+waking it before the click.
+
+## Resizing, and the strip's double click (2026-09-26)
+
+**Live resize draws every frame.** While you drag an edge the system holds
+the event loop (AppKit's live resize, Windows' sizing loop), so nus's own
+turn — Chromium's pump, the shells' reflow, the redraw — used to wait for
+the release: laggy while dragging, then a settle. Now the frame is drawn in
+the resize event itself, and in Chromium's wake-ups while the resize lasts.
+On macOS the GPU layer presents inside Core Animation's transaction for the
+length of the resize, so the picture moves with the edge, not a frame
+behind it.
+
+**Shells reflow at once; programs hear of it calmly.** The grid follows
+the window every frame; the shell is told its new size (SIGWINCH) at most
+every 50 ms while dragging and once more when the drag ends, so a prompt
+isn't redrawn at every pixel.
+
+**Pages are never stretched.** Until Chromium paints at the new size, the
+last paint is drawn at its own pixels, top left, with the page's paper
+around it — the way browsers resize.
+
+**Double click the strip** and nus does what the system's title bar does:
+on macOS the choice in Desktop & Dock (zoom — AppKit's, which under Stage
+Manager fills the stage beside the strip — minimise, or nothing), in the
+system's double-click time; on Windows maximise and restore; on Linux the
+desktop's `action-double-click-titlebar` (maximise by default). Fullscreen
+windows ignore it.
+
+## Notes, second pass: one note, found again (2026-09-26)
+
+Built from the notes implementation package (storage, sessions, capture,
+search, recall, reuse). Blueprint is the default look.
+
+**One note, one session.** However many places show a note (a split,
+another window, the hatch), they are views of one session, which holds
+the text, the undo and the saving. Each view keeps its own caret and
+scroll. Typing in one shows in the others, a capture lands once and moves
+nobody's caret, and Cmd+Z undoes the note's last step wherever you press
+it (notes_session.rs).
+
+**Saving is the note's, and "Saved" means saved.** Half a second after
+typing stops (or every two seconds while it doesn't), the session hands a
+snapshot to one writer thread. The strip says `saving…`, `saved`,
+`not saved · retry`, `conflict · review`, `read only` or `personal notes
+locked`, and only says saved once the store has committed. An answer for
+an older snapshot never marks newer text saved. Cmd+S saves now, and
+never runs format-on-save on a note.
+
+**Every write goes through one door** (notes_store.rs). A commit takes
+the home's lock and writes only if the note on disk still hashes to what
+the editor started from. The order is: the intent (both versions whole),
+then the head, a read-back check, and the intent retired. A crash at any
+step leaves either the finished note or the intent. At the next open, an
+unfinished draft comes back as unsaved text (`recovered draft`), and a
+note that moved on keeps every version. Nothing chooses by modification
+time. A note changed elsewhere is a conflict. Both versions are kept; in
+the palette, `note conflict` lets you keep yours, take theirs, or see
+theirs beside, and the version you don't pick is kept as a checkpoint.
+History keeps a checkpoint at most every five minutes, a hundred per note,
+thirty days, 256 MiB a home (Details shows the size). Trash is a revision
+plus a tombstone; `notes trash` restores.
+
+**Closing never discards.** Closing a note's last view (its strip ×, its
+tab, its window, quitting) saves it first. If that fails, the note stays
+open and a toast offers Retry or Save Copy (to Personal, since a read-only
+project is the likely cause). Letting go of changes is its own palette
+row, and even then the text is kept as a checkpoint and one undo away.
+
+**Two homes, each with an identity.** `.nus/notes/` in a project: plain
+Markdown, named `<title>--<id>.md`. `profile/notes/`: every file sealed by
+the vault before it touches disk, named by id only. Each home has its own
+id, so a copied project is a different home even with the same notes in
+it, while a moved project keeps its id. Only `.nus/notes/` goes into git's
+local exclude (an older `/.nus/` line is left alone). Projects with notes
+are remembered, sealed, for "All notes". Nothing crawls the disk.
+
+**A note has a header now.** A strict JSON object between `---` lines
+holds the note's id, revision, times, title, tags and sources; unknown
+members are kept. The body is written as you wrote it. A title is not a
+file name: `note title` sets it (empty uses the first line). Older notes
+without a header open, save and search as they are. `migrate this note`
+(or `notes migrate`, which counts first) makes them canonical, copy first,
+and keeps the original's exact bytes and a ledger.
+
+**Add to Note, from anywhere.** One command for a block (its chip, its
+menu), a shell selection (ADD SELECTION TO A NOTE…), a page or its
+selection (the page's menu), a file's selected lines, and a reading-list
+item (Make a note…). What is there is frozen the moment you ask. The
+palette then asks where: the note this project's captures went to last,
+the note open beside (only if it is in this project), a new note here or
+a new personal one (both unfiled until `keep as note`), or a recent note.
+What you type is why it matters, and you can leave it empty. The note
+gets the excerpt under a `<!-- nus:source … -->` marker, and the header
+gets a source record with the capture's hash. An excerpt edited later
+shows `edited excerpt` in the rails instead of passing for the original.
+Blocks keep their last 200 lines (64 KiB), a running block is labelled,
+secrets are masked and counted, and URLs lose their credentials. The
+receipt (Added To … · Open · Undo) leaves you in the work. Undo takes
+back only that capture, and only while it is as it landed. The same
+capture twice lands once.
+
+**Found again.** `notes <words>` searches every note in the project
+you're in, from an in-memory SQLite FTS5 index. It is never on disk, so a
+personal note's words are never written out in the clear, and it is
+rebuilt at start. It covers titles, bodies, tags and sources, and flags,
+paths and URLs match exactly (`--no-ff` is not `--ff-only`, and
+`src/a-b.rs` is not `src/a/b.rs`). `"quoted text"` matches as written.
+Filters: `in:<project>|personal|all`, `tag:`, `source:terminal|web|file|
+reading`, `before:`/`after:` (YYYY-MM-DD), `is:unfiled`. An unknown filter
+is said back, not ignored. Each hit gives the passage, the home and why it
+matched, and opens at the line. Locked personal notes lend nothing.
+
+**Links and backlinks.** `note link <words>` writes `[title](note:<id>)`
+at the caret, which survives renames of the title or the file. A link to
+a note in another home is written with that home's id. POINTS HERE lists
+only written links, never a name that happens to appear in the text.
+
+**Notes here.** A file with notes that cite it says `notes · 2` on its
+strip. `notes` in the palette lists the notes whose sources are exactly
+this file (in this project), this page (fragment and tracking parameters
+aside) or the last command in this shell, and says which.
+
+**Back to the source, and reuse.** `note` with a note open lists its
+sources. A file's lines are found again by their text: at the captured
+line, moved (it says where), in several places (one row each, never a
+guess), or gone. The file opens beside the note, not in its place. A page
+opens its original. A reading item opens the saved copy it pinned, and if
+that copy was refreshed or removed it says so, and the note keeps its
+quote. A command is inserted into the shell, never run: multiline text
+asks first, and a different folder is named. With Ask's editor chip on, a
+note sends its selected passage (else the whole note) under its title.
+`export this note` writes lossless Markdown (header and markers) or clean
+Markdown (captions instead of markers) where you choose.
+
+**Blueprint.** Notes have their own face in SETTINGS · FONTS · NOTES:
+Areal Mono Medium, 14 pt, 1.25 line, 0.25 px column spacing, set in a
+72-character column with margins (both adjustable). There are no line
+numbers, and code keeps the editor's face. Apply Blueprint sets these
+too.
+
+**Sync.** Older personal notes sync as before. Notes in the new format
+stay on this device until sync can carry their history and sources as a
+whole, so a device that only knows whole files never overwrites one.
+Sync no longer replaces a note it could not back up first, and a second
+conflict keeps its own `.lost` copy.
+
+Not yet, and to be verified natively: soft wrap and a Read view (the
+column is set, but long lines still scroll sideways); opening a
+reading-list citation whose item was deleted (it says so rather than
+opening a newer copy); moving the reading list's `note:` items into notes;
+versioned sync of the new format; composed (IME) input in the hatch; and
+every window, crash and screen-reader path in the running app. The logic
+is covered by unit tests of the model, store (crash injection at each
+commit step), sessions, capture, search and migration.
+
+
+## Formatting a note: the margin rail (2026-09-26)
+
+Option K3 from the canvas, with the part of J that works on today's
+editor (notes_format.rs).
+
+**What you see.** A note's Markdown is styled where it stands, and every
+character keeps its cell, so the caret and the mouse stay exact.
+- Headings and `**bold**` use the notes face's bold.
+- `_italic_` is in the signal colour.
+- `` `code` `` and fenced code sit on a faint tint. Nothing inside code
+  is formatting.
+- `==marks==` get a highlighter.
+- Links are the signal colour, underlined, with the address faint.
+- Quotes are dimmed.
+- List markers and checkboxes are in the signal colour; ticked items are
+  struck through.
+- The markers themselves (`#`, `**`, backticks, `>`) stay, faint.
+
+**The rail.** A column of buttons in the empty margin left of the
+72-character column: B, I, code, link, highlight, H1–H3, bullets,
+numbers, checklist, quote. A button lights when the caret's text already
+has that formatting; pressing it again takes the formatting off.
+- ◂ folds the rail to one tab and ▸ unfolds it. The choice is remembered
+  in your preferences. The text never moves when the rail opens or folds,
+  because the rail lives in the margin.
+- When the margin is too narrow or the pane too short (a split, 320 px),
+  the rail becomes a row under the strip. That row folds to `▸ Aa`.
+- Whatever doesn't fit is in the palette under `note format`.
+
+**Keys, in a focused note only.** ⌘⌥ (Ctrl+Alt elsewhere) with:
+- B bold, I italic, E code, K link, M highlight
+- 1–3 headings
+- 7 bullets, 8 numbers, 9 checklist
+- ' quote
+
+⌘↵ ticks the checklist item the caret is on. The app keeps ⌘B, ⌘E, ⌘H and
+⌘K, and ⌥⌘H stays macOS's Hide Others. Off macOS, a Ctrl+Alt key that
+types a character (AltGr) is left as typing.
+
+**Lists write themselves.**
+- ↵ continues a bullet, number, checkbox or quote, and ↵ on an empty item
+  ends it.
+- Numbers below count on from the new item.
+- Tab and ⇧Tab indent a list item by two spaces; outside a list, Tab is
+  the editor's own.
+- A click on `[ ]` ticks it.
+
+Each change is a single splice of the note's own Markdown, so one undo
+takes it back, and nothing you didn't touch is rewritten.
+
+Not yet (waiting on the writing-surface layout): hiding markers, heading
+sizes (a heading is bold, not larger, on the fixed cell grid), soft wrap,
+rich paste and the selection bar.

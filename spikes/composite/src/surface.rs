@@ -40,6 +40,114 @@ impl Shell {
     pub const ALL: [Shell; 4] = [Shell::Band, Shell::Stroke, Shell::Gradient, Shell::Aurora];
 }
 
+/// The carapace's material is independent of its band or perimeter geometry.
+/// Plain preserves the original solid, gradient and aurora treatments.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Material {
+    #[default]
+    Plain,
+    InkPool,
+    Enamel,
+    Interference,
+    SingleSeam,
+    OpenCorners,
+    Overprint,
+    EdgeLight,
+}
+
+impl Material {
+    pub const ALL: [Self; 8] = [Self::Plain, Self::InkPool, Self::Enamel, Self::Interference, Self::SingleSeam, Self::OpenCorners, Self::Overprint, Self::EdgeLight];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Plain => "plain", Self::InkPool => "ink pool", Self::Enamel => "enamel",
+            Self::Interference => "interference", Self::SingleSeam => "single seam",
+            Self::OpenCorners => "open corners", Self::Overprint => "overprint", Self::EdgeLight => "edge light",
+        }
+    }
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Plain => "The original solid, gradient or aurora carapace. Grain remains available below.",
+            Self::InkPool => "Dense, matte ink with irregular pooled edges: a continuous body ending in a few small floating blots.",
+            Self::Enamel => "Deep, smooth color with a rounded glaze and a fine highlight along its edge.",
+            Self::Interference => "A restrained play of color, like light crossing a thin film.",
+            Self::SingleSeam => "A precise join running through the surface. Activity gathers along the seam.",
+            Self::OpenCorners => "Four substantial corner pieces with open stretches between them.",
+            Self::Overprint => "Two impressions of the signal color, slightly offset, with a darker overlap.",
+            Self::EdgeLight => "A close pool of light travelling along a fine edge.",
+        }
+    }
+    /// Stable ids shared with the renderer; saved profiles use the enum names.
+    pub fn render_id(self) -> u32 {
+        match self {
+            Self::Plain => 0, Self::InkPool => 1, Self::Enamel => 2, Self::Interference => 3,
+            Self::SingleSeam => 4, Self::OpenCorners => 5, Self::Overprint => 6, Self::EdgeLight => 7,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Reaction {
+    Still,
+    #[default]
+    Subtle,
+    Expressive,
+}
+
+impl Reaction {
+    pub const ALL: [Self; 3] = [Self::Still, Self::Subtle, Self::Expressive];
+    pub fn name(self) -> &'static str {
+        match self { Self::Still => "still", Self::Subtle => "subtle", Self::Expressive => "expressive" }
+    }
+}
+
+/// Activity sources are independent switches, not competing modes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ActivitySource { Work, Loading, Completion, Attention, Typing, Media }
+
+impl ActivitySource {
+    pub const ALL: [Self; 6] = [Self::Work, Self::Loading, Self::Completion, Self::Attention, Self::Typing, Self::Media];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Work => "work", Self::Loading => "loading", Self::Completion => "completion",
+            Self::Attention => "attention", Self::Typing => "typing", Self::Media => "media",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ReactTo {
+    pub work: bool,
+    pub loading: bool,
+    pub completion: bool,
+    pub attention: bool,
+    pub typing: bool,
+    pub media: bool,
+}
+
+impl Default for ReactTo {
+    fn default() -> Self {
+        Self { work: true, loading: true, completion: true, attention: true, typing: false, media: false }
+    }
+}
+
+impl ReactTo {
+    pub fn enabled(self, source: ActivitySource) -> bool {
+        match source {
+            ActivitySource::Work => self.work, ActivitySource::Loading => self.loading,
+            ActivitySource::Completion => self.completion, ActivitySource::Attention => self.attention,
+            ActivitySource::Typing => self.typing, ActivitySource::Media => self.media,
+        }
+    }
+    pub fn set(&mut self, source: ActivitySource, enabled: bool) {
+        *match source {
+            ActivitySource::Work => &mut self.work, ActivitySource::Loading => &mut self.loading,
+            ActivitySource::Completion => &mut self.completion, ActivitySource::Attention => &mut self.attention,
+            ActivitySource::Typing => &mut self.typing, ActivitySource::Media => &mut self.media,
+        } = enabled;
+    }
+}
+
 /// Where the sidebar lives and how it shows itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Side {
@@ -122,6 +230,9 @@ pub enum TextureKind {
 
 impl TextureKind {
     pub const ALL: [TextureKind; 6] = [TextureKind::None, TextureKind::Grain, TextureKind::Stipple, TextureKind::Stitch, TextureKind::Linen, TextureKind::Halftone];
+    /// Repeating patterns still decode and render in saved looks, but new
+    /// choices offer only the texture that works across every material.
+    pub const OFFERED: [TextureKind; 2] = [TextureKind::None, TextureKind::Grain];
     pub fn name(self) -> &'static str {
         match self {
             TextureKind::None => "none",
@@ -185,6 +296,12 @@ pub struct Surface {
     #[serde(default = "default_opacity_on")]
     pub opacity_on: OpacityOn,
     pub shell: Shell,
+    #[serde(default)]
+    pub material: Material,
+    #[serde(default)]
+    pub reaction: Reaction,
+    #[serde(default)]
+    pub react_to: ReactTo,
     pub shell_width: f32,
     pub shell_radius: f32,
     /// Gradient direction in degrees (0 = left→right).
@@ -233,6 +350,9 @@ impl Default for Surface {
             opacity: 1.0,
             opacity_on: OpacityOn::Panes,
             shell: Shell::Band,
+            material: Material::default(),
+            reaction: Reaction::default(),
+            react_to: ReactTo::default(),
             shell_width: nus_render::theme::metric::BAND,
             shell_radius: 0.0,
             angle: 30.0,
@@ -1236,6 +1356,51 @@ pub(crate) fn first_line(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carapace_migration_preserves_saved_surface_and_grain() {
+        for kind in TextureKind::ALL {
+            let original = Surface { texture_kind: kind, shell: Shell::Aurora, texture: 0.17, texture_scale: 6.0, texture_motion: true, ..Surface::default() };
+            let mut legacy = serde_json::to_value(&original).unwrap();
+            for key in ["material", "reaction", "react_to"] { legacy.as_object_mut().unwrap().remove(key); }
+            let restored: Surface = serde_json::from_value(legacy.clone()).unwrap();
+            assert_eq!(restored.material, Material::Plain);
+            assert_eq!(restored.reaction, Reaction::Subtle);
+            assert_eq!(restored.react_to, ReactTo::default());
+            assert_eq!(restored.texture_kind, kind);
+            let mut stored = serde_json::to_value(&restored).unwrap();
+            for key in ["material", "reaction", "react_to"] { stored.as_object_mut().unwrap().remove(key); }
+            assert_eq!(stored, legacy, "migration changed a saved surface");
+        }
+    }
+
+    #[test]
+    fn carapace_material_reaction_and_sources_roundtrip_with_grain() {
+        for material in Material::ALL {
+            for reaction in Reaction::ALL {
+                let surface = Surface {
+                    material, reaction, texture_kind: TextureKind::Grain, texture: 0.12,
+                    react_to: ReactTo { work: false, loading: true, completion: false, attention: true, typing: true, media: true },
+                    ..Surface::default()
+                };
+                let original = Preset { name: material.name().into(), surface };
+                let stored = serde_json::to_value(&original).unwrap();
+                let restored: Preset = serde_json::from_value(stored.clone()).unwrap();
+                assert_eq!(serde_json::to_value(restored).unwrap(), stored);
+            }
+        }
+    }
+
+    #[test]
+    fn partial_activity_preferences_keep_explicit_choices_and_default_missing_sources() {
+        let mut sources: ReactTo = serde_json::from_value(serde_json::json!({ "work": false, "typing": true })).unwrap();
+        assert_eq!(sources, ReactTo { work: false, typing: true, ..ReactTo::default() });
+        for source in ActivitySource::ALL {
+            let before = sources.enabled(source);
+            sources.set(source, !before);
+            assert_eq!(sources.enabled(source), !before);
+        }
+    }
 
     #[test]
     fn hex_roundtrip() {

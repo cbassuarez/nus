@@ -154,7 +154,7 @@ pub fn stock() -> Vec<StockTheme> {
     let mut v = vec![
         theme(
             "broadsheet",
-            "The broadsheet: white, ink, one red. The default, and the measure of the rest.",
+            "The broadsheet: white, ink, one red. The original paper-and-ink palette.",
             face(0xffffff, 0x141414, 0xffffff, None),
             face(0x141414, 0xece7da, 0xffffff, None),
             Surface::default(),
@@ -349,5 +349,34 @@ mod tests {
         assert_eq!(names.len(), s.len());
         assert_eq!(s.len(), 20);
         assert_eq!(s.iter().filter(|t| t.port).count(), 7);
+    }
+
+    #[test]
+    fn saved_theme_keeps_material_activity_and_grain() {
+        let mut theme = stock().remove(0);
+        theme.surface.material = crate::surface::Material::InkPool;
+        theme.surface.reaction = crate::surface::Reaction::Expressive;
+        theme.surface.react_to.typing = true;
+        theme.surface.react_to.attention = false;
+        theme.surface.texture_kind = TextureKind::Grain;
+        theme.surface.texture = 0.07;
+        let saved = serde_json::to_value(&theme).unwrap();
+        let restored: StockTheme = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), saved);
+    }
+
+    #[test]
+    fn old_themes_gain_material_defaults_without_changing_their_surface() {
+        for theme in stock() {
+            let mut saved = serde_json::to_value(&theme).unwrap();
+            for field in ["material", "reaction", "react_to"] {
+                saved["surface"].as_object_mut().unwrap().remove(field);
+            }
+            let restored: StockTheme = serde_json::from_value(saved).unwrap();
+            assert_eq!(restored.surface.material, crate::surface::Material::Plain);
+            assert_eq!(restored.surface.texture_kind, theme.surface.texture_kind);
+            assert_eq!(restored.surface.texture, theme.surface.texture);
+            assert_eq!(restored.surface.shell, theme.surface.shell);
+        }
     }
 }

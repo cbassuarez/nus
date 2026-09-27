@@ -211,11 +211,15 @@ impl App {
         let link_click = self.behavior.link_click;
         let mut open_file: Option<std::path::PathBuf> = None;
         let mut copy: Option<String> = None;
-        let mut run: Option<String> = None;
-        let mut share: Option<u64> = None;
-        let mut clip: Option<u64> = None;
-        for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+        let mut block_action = None;
+        let mut shell_menu: Option<(Option<u64>, Option<String>, String)> = None;
+        let tab_id = tab.id;
+        for (right, p) in std::iter::once((false, &mut tab.left)).chain(tab.right.as_mut().map(|p| (true, p))) {
             let Pane::Term(t) = p else { continue };
+            if pressed && t.rect.contains(x, y) {
+                t.prompt_edit_pending = None;
+                t.code_menu = None;
+            }
             // The application asked for the mouse: it gets presses in its
             // pane and the release wherever it lands. Shift keeps the click
             // for us (xterm's convention), so selection still works.
@@ -280,13 +284,9 @@ impl App {
             }
             // Block chips: copy / run again.
             if pressed && button == MouseButton::Left {
-                if let Some((r, kind)) = t.chip_hits.iter().find(|(r, _)| r.contains(x, y)).cloned() {
-                    let _ = r;
-                    match kind {
-                        0 => copy = Some(t.block_output_text(t.hover_block)),
-                        2 => share = Some(t.hover_block),
-                        3 => clip = Some(t.hover_block),
-                        _ => run = Some(t.block_cmd_text(t.hover_block)),
+                if let Some((_, kind)) = t.chip_hits.iter().find(|(r, _)| r.contains(x, y)).cloned() {
+                    if let Some(action) = crate::blocks::BlockAction::from_chip(kind) {
+                        block_action = Some((crate::blocks::BlockTarget { tab: tab_id, right, start: t.hover_block }, action));
                     }
                     acted = true;
                     continue;
@@ -380,15 +380,18 @@ impl App {
                 }
                 acted = true;
             } else if pressed && button == MouseButton::Right {
-                // Right click: paste, or copy when something is selected (kitty's way).
-                if t.sel.is_some() {
-                    copy = Some(t.selection_text());
-                    t.sel = None;
-                } else {
-                    self.paste_request = true;
-                }
+                // Right click: the shell's menu — copy and paste, the link
+                // and the block under the pointer (page_menu.rs).
+                let block = t.term.block_at(line).filter(|(_, _, cmd, _)| !cmd.is_empty()).map(|(start, ..)| start);
+                let link = Self::link_at(t, line, col).map(|l| crate::links::normalize(&l.url));
+                let selection = if t.sel.is_some() { t.selection_text() } else { String::new() };
+                shell_menu = Some((block, link, selection));
                 acted = true;
             }
+        }
+        if let Some((block, link, selection)) = shell_menu {
+            self.open_shell_menu((x, y), block, link, selection);
+            return true;
         }
         if let Some(u) = open_url {
             self.open_url(&u, true);
@@ -406,12 +409,8 @@ impl App {
             self.open_file(&p, true);
             return true;
         }
-        if let Some(s) = share {
-            self.share_block(s);
-            return true;
-        }
-        if let Some(s) = clip {
-            self.clip_block(Some(s));
+        if let Some((target, action)) = block_action {
+            self.block_action(target, action);
             return true;
         }
         if middle {
@@ -424,13 +423,6 @@ impl App {
                     let _ = cb.set_text(text);
                 }
                 self.play_event("toggle");
-            }
-        }
-        if let Some(cmd) = run {
-            if !cmd.is_empty() {
-                if let Some(Pane::Term(t)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
-                    let _ = t.pty.write(format!("{cmd}\r").as_bytes());
-                }
             }
         }
         if acted {
@@ -538,6 +530,21 @@ impl App {
                     scene.rect(Rect::new(x, y, (to - from) as f32 * cw, ch), t.selection);
                 }
             }
+            // The live end follows the drag direction and the expanded
+            // word/line zone. Folded and scrolled-away rows have no edge.
+            if focused && p.search.is_none() && !p.ask.as_ref().is_some_and(|ask| ask.focus)
+                && !p.prompt_history.active() && p.confirm_paste.is_none() && p.block_filter.is_none()
+                && p.hints.is_none() && p.link_ask.is_none() && a <= b && cols > 0 {
+
+                let (line, col) = if sel.head >= sel.anchor {
+                    (b.0, b.1.saturating_add(1).min(cols))
+                } else { (a.0, a.1.min(cols)) };
+                if let Some(row) = row_at(line).filter(|row| *row < rows) {
+                    let x = p.origin.0 + col as f32 * cw;
+                    let baseline = p.origin.1 + row as f32 * ch + p.grid.metrics.baseline;
+                    self.draw_selection_edge(scene, x, baseline, p.grid.px, 1.0, self.last_key);
+                }
+            }
         }
         // Search matches: outlined; the current one filled.
         if let Some(s) = &p.search {
@@ -639,7 +646,7 @@ impl App {
             x += self.fonts.draw(scene, inv_l, x, by, "FIND") + self.px(12.0);
             let q = if s.query.is_empty() { "…".to_string() } else { s.query.clone() };
             x += self.fonts.draw(scene, Style { font: self.f.ui, px: self.px(m::UI_PX), color: t.paper, tracking: 0.0 }, x, by, &q);
-            scene.rect(Rect::new(x + self.px(2.0), by - self.px(11.0), self.px(1.5), self.px(14.0)), t.paper);
+            self.draw_line_caret_on(scene, x + self.px(2.0), by, self.px(m::UI_PX), 1.0, self.last_key, ink);
             let count = if s.matches.is_empty() { "NO MATCHES".to_string() } else { format!("{} OF {}", s.current + 1, s.matches.len()) };
             let cw2 = self.fonts.measure(inv, &count);
             let keys = "ENTER NEXT · SHIFT+ENTER BACK · ESC";

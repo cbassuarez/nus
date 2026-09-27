@@ -160,7 +160,7 @@ impl App {
             x += self.fonts.draw(scene, inv_l, x, by, "FIND") + self.px(12.0);
             let q = if f.query.is_empty() { "…".to_string() } else { f.query.clone() };
             x += self.fonts.draw(scene, Style { font: self.f.ui, px: self.px(m::UI_PX), color: t.paper, tracking: 0.0 }, x, by, &q);
-            scene.rect(Rect::new(x + self.px(2.0), by - self.px(11.0), self.px(1.5), self.px(14.0)), t.paper);
+            self.draw_line_caret_on(scene, x + self.px(2.0), by, self.px(m::UI_PX), 1.0, self.last_key, ink);
             let found = w.tab.shared.borrow().find;
             let count = match found {
                 Some((n, _)) if n == 0 && !f.query.is_empty() => "NO MATCHES".to_string(),
@@ -216,9 +216,22 @@ impl App {
         false
     }
 
+    /// Playing, or showing elsewhere: a tab whose page plays video or
+    /// sound (as Chromium's tracker reports it, or WebKit's for a protected
+    /// service) or whose video is up in picture in picture or pinned to a
+    /// shell is working, however long it is since you looked at it.
+    pub(crate) fn tab_working(&self, i: usize) -> bool {
+        let Some(tab) = self.tabs.get(i) else { return false };
+        if self.pip.as_ref().is_some_and(|p| p.tab_id == tab.id) || self.docked.as_ref().is_some_and(|d| d.src_tab == tab.id) {
+            return true;
+        }
+        std::iter::once(&tab.left).chain(tab.right.as_ref()).any(|p| matches!(p, Pane::Web(w) if w.asleep.is_none() && w.tab.playing()))
+    }
+
     /// Idle tabs: sleep pages after a while (blank them, keep the URL),
     /// archive them into "recently closed" after longer. Never the active
-    /// tab, never a pinned one, never a shell.
+    /// tab, never a pinned one, never a shell, never one that is working:
+    /// its idle time starts when the video or sound stops.
     pub(crate) fn tend_idle_tabs(&mut self) {
         if crate::clock::since(self.last_tend).as_secs() < 5 {
             return;
@@ -229,7 +242,12 @@ impl App {
         let archive_after = self.behavior.archive_after_h;
         let mut archive: Vec<usize> = Vec::new();
         let kept: Vec<String> = self.folders.iter().filter(|f| f.kind == crate::folders::Kind::Plain).flat_map(|f| f.items.iter().map(|i| i.url.clone())).collect();
+        let working: Vec<bool> = (0..self.tabs.len()).map(|i| self.tab_working(i)).collect();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
+            if working[i] {
+                tab.last_active = crate::clock::now();
+                continue;
+            }
             if i == self.active || tab.pinned {
                 continue;
             }
@@ -272,10 +290,36 @@ impl App {
         }
     }
 
+    /// A pointer that rests on a sleeping tab's row means a click is
+    /// coming: its page starts waking now, so the renderer and the first
+    /// bytes are on their way before the tab is shown.
+    pub(crate) fn prewake(&mut self) {
+        const REST: std::time::Duration = std::time::Duration::from_millis(120);
+        let Some(i) = self.hover_row else {
+            self.hover_wake = None;
+            return;
+        };
+        match self.hover_wake {
+            Some((j, at)) if j == i => {
+                let asleep = self.tabs.get(i).is_some_and(|t| std::iter::once(&t.left).chain(t.right.as_ref()).any(|p| matches!(p, Pane::Web(w) if w.asleep.is_some())));
+                if asleep && crate::clock::since(at) >= REST {
+                    self.wake_tab(i);
+                    self.dirty = true;
+                }
+            }
+            _ => self.hover_wake = Some((i, crate::clock::now())),
+        }
+    }
+
     /// A sleeping page wakes when it's shown.
     pub(crate) fn wake_tab(&mut self, i: usize) {
         if let Some(tab) = self.tabs.get_mut(i) {
             tab.last_active = crate::clock::now();
+            // Waking starts the page's history over: back must not take
+            // an empty history for a tab's first page and close it.
+            if matches!(&tab.left, Pane::Web(w) if w.asleep.is_some()) {
+                tab.closes_on_back = false;
+            }
             for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
                 if let Pane::Web(w) = p {
                     if let Some(url) = w.asleep.as_ref() {

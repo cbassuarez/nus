@@ -405,6 +405,10 @@ impl App {
     }
 
     pub fn hatch_focus(&mut self, f: bool) {
+        self.hatch_caret_deadline.set(None);
+        self.caret_dragging = false;
+        if !f { self.prompt_composing = false; }
+        if f { self.last_key = crate::clock::now(); }
         let autohide = self.behavior.hatch_autohide;
         if let Some(i) = self.hatch_tab() {
             let tab=&mut self.tabs[i];
@@ -485,6 +489,8 @@ impl App {
     }
 
     pub fn hatch_ime(&mut self, text: &str) {
+        self.last_key = crate::clock::now();
+        self.prompt_composing = false;
         if self.hatch_state.overview { return; }
         self.in_hatch(|a| { if let Some(Pane::Term(t)) = a.tabs.get_mut(a.active).map(|tab| tab.focused()) { let _ = t.pty.write(text.as_bytes()); } });
         self.dirty = true;
@@ -532,6 +538,8 @@ impl App {
 
     pub fn hatch_mouse(&mut self, button: MouseButton, state: ElementState, pos: (f32, f32)) {
         let pressed = state == ElementState::Pressed;
+        if button == MouseButton::Left { self.caret_dragging = pressed; self.last_key = crate::clock::now(); }
+        if pressed { self.last_key = crate::clock::now(); }
         let Some(h) = self.hatch.as_mut() else { return };
         h.pos = pos;
         if !pressed && button == MouseButton::Left {

@@ -350,8 +350,8 @@ impl App {
             if focused {
                 let last = lines.last().map(String::as_str).unwrap_or("");
                 let cx = (x + px(10.0) + self.fonts.measure(st, last)).min(field.right() - px(6.0));
-                let cy = y + px(8.0) + lines.len().min(count).saturating_sub(1) as f32 * px(23.0);
-                scene.vline(cx, cy, px(21.0), px(1.0), self.surface.signal);
+                let baseline = y + px(25.0) + lines.len().min(count).saturating_sub(1) as f32 * px(23.0);
+                self.draw_line_caret(scene, cx, baseline, st.px, 1.0, self.last_key);
             }
             scene.layer(old);
             if field.h > 0.0 {

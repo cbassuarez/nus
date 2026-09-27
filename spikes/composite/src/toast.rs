@@ -48,6 +48,14 @@ pub enum Act {
     UndoHunk(crate::diffs::Hunk, crate::diffs::Do, std::path::PathBuf),
     /// Take a page back from WebKit into Chromium: (tab id, right half).
     LeaveWebKit(u64, bool),
+    /// Open this note beside the work (notes_ui.rs).
+    OpenNote(std::path::PathBuf),
+    /// Take back one capture, while it is as it landed.
+    UndoCapture(crate::notes_store::NoteKey, String),
+    /// Try saving this note again.
+    RetryNote(crate::notes_store::NoteKey),
+    /// Save what this note holds as a new note beside it.
+    SaveNoteCopy(crate::notes_store::NoteKey),
 }
 
 impl Act {
@@ -66,6 +74,10 @@ impl Act {
             Act::LeaveWebKit(..) => ("Open In Chromium", String::new()),
             Act::OpenExternal(_) => ("Open", String::new()),
             Act::RevealPath(_) => ("Show In Folder", String::new()),
+            Act::OpenNote(_) => ("Open", String::new()),
+            Act::UndoCapture(..) => ("Undo", String::new()),
+            Act::RetryNote(_) => ("Retry", String::new()),
+            Act::SaveNoteCopy(_) => ("Save Copy", String::new()),
         }
     }
 }
@@ -76,11 +88,14 @@ pub struct Toast {
     pub words: String,
     pub detail: String,
     pub act: Option<Act>,
+    /// A second chip, after the first (Open · Undo).
+    pub also: Option<Act>,
     /// Signal cell, no timeout, a ×.
     pub problem: bool,
     pub at: Instant,
     pub rect: Rect,
     pub chip: Rect,
+    pub chip2: Rect,
 }
 
 /// Seconds a toast stays; a problem stays until dismissed.
@@ -89,7 +104,7 @@ const HOLD: f32 = 6.0;
 impl App {
     /// A toast: what happened, and what it happened to.
     pub(crate) fn toast(&mut self, icon: Icon, words: impl Into<String>, detail: impl Into<String>, act: Option<Act>) {
-        let t = Toast { icon, words: words.into(), detail: detail.into(), act, problem: false, at: crate::clock::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), chip: Rect::new(0.0, 0.0, 0.0, 0.0) };
+        let t = Toast { icon, words: words.into(), detail: detail.into(), act, also: None, problem: false, at: crate::clock::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), chip: Rect::new(0.0, 0.0, 0.0, 0.0), chip2: Rect::new(0.0, 0.0, 0.0, 0.0) };
         // A problem on screen is not pushed off by good news: it waits.
         if self.toast.as_ref().is_some_and(|s| s.problem) {
             self.toast_held = Some(t);
@@ -101,7 +116,22 @@ impl App {
     /// Something went wrong: the signal cell, a sound, and it stays.
     pub(crate) fn toast_problem(&mut self, words: impl Into<String>, detail: impl Into<String>, act: Option<Act>) {
         self.play_event("error");
-        let t = Toast { icon: icons::WARNING, words: words.into(), detail: detail.into(), act, problem: true, at: crate::clock::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), chip: Rect::new(0.0, 0.0, 0.0, 0.0) };
+        let t = Toast { icon: icons::WARNING, words: words.into(), detail: detail.into(), act, also: None, problem: true, at: crate::clock::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), chip: Rect::new(0.0, 0.0, 0.0, 0.0), chip2: Rect::new(0.0, 0.0, 0.0, 0.0) };
+        self.show_toast(t);
+    }
+
+    /// A toast with two things to do (a capture's Open and Undo; a failed
+    /// save's Retry and Save Copy).
+    pub(crate) fn toast_two(&mut self, icon: Icon, words: impl Into<String>, detail: impl Into<String>, act: Act, also: Act, problem: bool) {
+        if problem {
+            self.play_event("error");
+        }
+        let icon = if problem { icons::WARNING } else { icon };
+        let t = Toast { icon, words: words.into(), detail: detail.into(), act: Some(act), also: Some(also), problem, at: crate::clock::now(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), chip: Rect::new(0.0, 0.0, 0.0, 0.0), chip2: Rect::new(0.0, 0.0, 0.0, 0.0) };
+        if !problem && self.toast.as_ref().is_some_and(|s| s.problem) {
+            self.toast_held = Some(t);
+            return;
+        }
         self.show_toast(t);
     }
 
@@ -157,6 +187,7 @@ impl App {
             return;
         }
         let (icon, words, detail, chip, problem) = (t.icon, t.words.clone(), t.detail.clone(), t.act.as_ref().map(Act::chip), t.problem);
+        let chip2 = t.also.as_ref().map(Act::chip);
         let th = self.theme.clone();
         let strong = self.label_strong();
         let signal = self.surface.signal;
@@ -177,8 +208,10 @@ impl App {
             let kw = if k.is_empty() { 0.0 } else { self.px(6.0) + self.fonts.measure_as_is(strong, k) };
             chip_pad * 2.0 + self.fonts.measure_as_is(strong, w) + kw
         });
+        let chip2_w = chip2.as_ref().map(|(w, _)| chip_pad * 2.0 + self.fonts.measure_as_is(strong, w));
         let fixed = bh + inner
             + chip_w.map_or(0.0, |w| self.px(12.0) + w)
+            + chip2_w.map_or(0.0, |w| self.px(6.0) + w)
             + if problem { inner + xsz } else { 0.0 }
             + if chip.is_some() || problem { inner } else { pad };
         // The detail gives way before the words do.
@@ -231,6 +264,20 @@ impl App {
             }
             tx = chip_rect.right();
         }
+        let mut chip2_rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+        if let (Some((cw, _)), Some(chw)) = (chip2, chip2_w) {
+            tx += self.px(6.0);
+            let ch = bh - self.px(10.0);
+            chip2_rect = Rect::new(tx.round(), (r.y + (bh - ch) / 2.0).round(), chw.round(), ch.round());
+            let hot = chip2_rect.contains(mx, my);
+            if hot {
+                scene.rect(chip2_rect, signal);
+            } else {
+                scene.outline(chip2_rect, self.px(1.0), fade(paper, 0.45));
+            }
+            self.fonts.draw_as_is(scene, Style { color: if hot { white } else { paper }, ..strong }, chip2_rect.x + chip_pad, by, cw);
+            tx = chip2_rect.right();
+        }
         if problem {
             tx += inner;
             let hot = Rect::new(tx - self.px(6.0), r.y, xsz + self.px(12.0), bh).contains(mx, my);
@@ -240,6 +287,7 @@ impl App {
         if let Some(t) = self.toast.as_mut() {
             t.rect = r;
             t.chip = chip_rect;
+            t.chip2 = chip2_rect;
         }
         // It leaves on its own: keep drawing while it is up. A problem
         // stays still once it has risen, and waits for the pointer.
@@ -256,7 +304,8 @@ impl App {
             return false;
         }
         let on_chip = t.chip.contains(x, y);
-        let act = self.toast.take().and_then(|t| t.act).filter(|_| on_chip);
+        let on_chip2 = t.chip2.contains(x, y);
+        let act = self.toast.take().and_then(|t| if on_chip { t.act } else if on_chip2 { t.also } else { None });
         match act {
             Some(Act::GoTab(id)) => {
                 if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
@@ -275,6 +324,10 @@ impl App {
             Some(Act::UndoHunk(hunk, what, cwd)) => self.undo_hunk(hunk, what, cwd),
             Some(Act::OpenExternal(url)) => crate::app::open_with_os(std::path::Path::new(&url)),
             Some(Act::RevealPath(path)) => crate::downloads::reveal(&path, true),
+            Some(Act::OpenNote(path)) => self.open_note(&path, false),
+            Some(Act::UndoCapture(key, id)) => self.undo_capture(&key, &id),
+            Some(Act::RetryNote(key)) => self.retry_note(&key),
+            Some(Act::SaveNoteCopy(key)) => self.save_note_copy(&key),
             Some(Act::LeaveWebKit(id, right)) => {
                 if let Some(t) = self.tabs.iter().find(|t| t.id == id) {
                     let p = if right { t.right.as_ref() } else { Some(&t.left) };

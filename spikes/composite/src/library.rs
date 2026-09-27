@@ -366,6 +366,12 @@ impl App {
         });
         rows
     }
+    /// A reading item's saved copy as it is now (its hash), while the item
+    /// is in the list: notes check a citation against it.
+    pub(crate) fn reading_snapshot(&mut self, key: &str) -> Option<Option<String>> {
+        self.library.ensure();
+        self.library.store.read(key).ok().filter(|e| !e.deleted).map(|e| e.snapshot)
+    }
     pub(crate) fn read_saved(&mut self,key:&str) {
         self.read_saved_mode(key, true);
     }
@@ -754,6 +760,10 @@ impl App {
                 scene.outline(search,px(1.0),self.surface.signal);
                 let text=self.fit(label,&format!("Find: {q}  · Enter next / Shift+Enter previous"),(search.w-px(16.0)).max(1.0));
                 self.fonts.draw(scene,label,search.x+px(8.0),search.y+px(26.0),&text);
+                if h.library_ui.focus==Some(Hit::Find) {
+                    let width=self.fonts.measure(label,&format!("Find: {q}")).min(search.w-px(18.0));
+                    self.draw_line_caret(scene,search.x+px(8.0)+width,search.y+px(26.0),label.px,1.0,self.last_key);
+                }
                 h.library_ui.hits.push((search.intersect(&r),Hit::Find));y+=px(48.0);
             }
             let body_top=(y+px(6.0)).min(r.bottom());
@@ -768,6 +778,18 @@ impl App {
                 reading.reader.saved.viewport=Some(body);reading.reader.saved.scale=rs;
                 if let Some(p)=anchor{if !reading.reader.restore_reading_position(&p,&reading.version){reading.note="Saved copy · reading position restored approximately".into();}}
                 reading.reader.draw(scene,&mut self.fonts,&f,body,rs,ink,dim,paper,self.surface.signal);
+                if h.library_ui.focus.is_none() && !h.library_ui.confirm && reading.reader.saved.find.is_none() {
+                    if let Some((_, end))=reading.reader.saved.selection.filter(|(a,b)|a!=b) {
+                        if let Some((_,rect,style))=reading.reader.saved.drawn.iter().find(|(line,_,_)|*line==end.line) {
+                            if let Some(prefix)=reading.reader.lines.get(end.line).and_then(|line|line.text.get(..end.byte)) {
+                                let x=rect.x+self.fonts.measure(*style,prefix);
+                                let baseline=rect.y+style.px*1.05;
+                                scene.layer(Some(body));
+                                self.draw_selection_edge(scene,x,baseline,style.px,1.0,self.last_key);
+                            }
+                        }
+                    }
+                }
                 scene.layer(Some(r));
                 if !h.library_ui.confirm{for (rect,hit) in &reading.reader.saved.hits{h.library_ui.hits.push((*rect,match hit{TextHit::Link(u)=>Hit::Link(u.clone()),TextHit::Code(i)=>Hit::Code(*i)}));}}
             }else{
@@ -794,6 +816,10 @@ impl App {
         scene.hline(search.x,search.bottom()-px(3.0),search.w,px(1.0),if h.library_ui.focus==Some(Hit::Search){self.surface.signal}else{dim});
         let text=self.fit(label,if h.input.is_empty(){"Search title or source"}else{&h.input},(width-px(20.0)).max(1.0));
         self.fonts.draw(scene,Style{color:if h.input.is_empty(){dim}else{ink},..label},x+px(10.0),y+px(28.0),&text);
+        if h.library_ui.focus==Some(Hit::Search) {
+            let width=if h.input.is_empty(){0.0}else{self.fonts.measure(label,&text)};
+            self.draw_line_caret(scene,x+px(10.0)+width,y+px(28.0),label.px,1.0,self.last_key);
+        }
         h.library_ui.hits.push((search.intersect(&r),Hit::Search));y+=px(56.0);
         if self.library.undo.is_some(){y=self.library_controls(scene,h,&[(Hit::Undo,"Undo removal".into())],y);}
         if !self.library.status.is_empty(){let message=self.fit(label,&self.library.status,width);self.fonts.draw(scene,Style{color:dim,..label},x,y+px(14.0),&message);y+=px(28.0);}

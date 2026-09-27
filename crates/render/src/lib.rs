@@ -17,6 +17,6 @@ pub mod theme;
 pub use gpu::{Gpu, Target, TextureBinder};
 pub use grid::{CursorLook, GridRenderer};
 pub use policy::Policy;
-pub use scene::{AtomLook, AtomMode, Bind, Color, Instance, Layer, Rect, Scene};
+pub use scene::{AtomLook, AtomMode, Bind, CarapaceLook, Color, Instance, Layer, Rect, Scene};
 pub use text::{FontId, FontSystem, Metrics, Style};
 pub use theme::{Mode, Theme};

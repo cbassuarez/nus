@@ -36,6 +36,7 @@ mod shell;
 mod termui;
 mod predict;
 mod webui;
+mod web_preview;
 mod welcome;
 mod page_signal;
 mod install;
@@ -74,6 +75,10 @@ mod distribution;
 mod work;
 mod lsp_host;
 mod prompt_lsp;
+mod prompt_code;
+mod prompt_history;
+mod caret;
+mod blueprint;
 mod ports;
 mod hatch;
 mod hatch_work;
@@ -135,12 +140,23 @@ mod power;
 mod touch;
 mod news;
 mod notes;
+mod notes_anchor;
+mod notes_capture;
+mod notes_format;
+mod notes_import;
+mod notes_index;
+mod notes_model;
+mod notes_query;
+mod notes_session;
+mod notes_store;
 mod notes_ui;
+mod window_resize;
 mod diffs;
 mod phone;
 mod private;
 mod widevine;
 mod webkit;
+mod webkit_store;
 mod security;
 mod secrets;
 mod protected_state;
@@ -153,6 +169,8 @@ mod files;
 mod procs;
 mod start;
 mod surface;
+mod carapace;
+mod carapace_activity;
 mod theme_edit;
 
 use std::process::ExitCode;
@@ -221,6 +239,21 @@ struct Host {
 }
 
 impl Host {
+    /// Quitting waits for every note to be saved. One that cannot be (a
+    /// full disk, a read-only folder, a conflict) holds the quit, and the
+    /// window you were in says which and offers Retry and Save Copy.
+    fn notes_hold_quit(&mut self) -> bool {
+        let left = notes_session::flush_all();
+        let Some((key, title, status)) = left.into_iter().next() else { return false };
+        let i = self.focused.and_then(|id| self.app_index(id)).unwrap_or(0);
+        if let Some(a) = self.apps.get_mut(i) {
+            a.note_unsaved(&key, &title, status);
+            a.dirty = true;
+            a.window.request_redraw();
+        }
+        true
+    }
+
     fn app_index(&self, id: WindowId) -> Option<usize> {
         if let Some(i)=self.apps.iter().position(|a|a.menu_drawer.window.as_ref().is_some_and(|d|d.window.id()==id)){return Some(i);}
         self.apps.iter().position(|a| a.window.id() == id || a.little.as_ref().is_some_and(|l| l.window.id() == id) || a.pip.as_ref().is_some_and(|p| p.window.id() == id) || a.hatch.as_ref().is_some_and(|h| h.window.id() == id) || a.hatch_state.badge.as_ref().is_some_and(|b| b.window.id()==id) || a.hatch_state.shade.as_ref().is_some_and(|b| b.window.id()==id))
@@ -464,6 +497,8 @@ impl ApplicationHandler<UserEvent> for Host {
         // AppKit's native Quit can terminate inside the event pump, before
         // main reaches its normal shutdown path.
         self.dock.prepare_quit();
+        // So can unsaved notes' last chance: save what the disk takes.
+        let _ = notes_session::flush_all();
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -484,7 +519,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 menu.activate_for_check(command);
             }
             UserEvent::ApplicationCommand(command) => {
-                if command == application_menu::Command::Quit { _el.exit(); return; }
+                if command == application_menu::Command::Quit { if !self.notes_hold_quit() { _el.exit(); } return; }
                 if self.apps.is_empty() { self.spawn_window(_el, None); }
                 let i=self.focused.and_then(|id|self.app_index(id)).unwrap_or(0);
                 if let Some(a)=self.apps.get_mut(i) {
@@ -501,7 +536,7 @@ impl ApplicationHandler<UserEvent> for Host {
                     if action==1 {a.window.set_minimized(true);} else {a.toggle_fullscreen();}
                 }
             }
-            UserEvent::HatchQuit => _el.exit(),
+            UserEvent::HatchQuit => if !self.notes_hold_quit() { _el.exit() },
             UserEvent::MenuDrawer(anchor) => {
                 let anchor=anchor.or_else(||self.tray.as_ref().and_then(|t|t.anchor()));
                 let i=self.apps.iter().position(|a|a.menu_drawer.window.as_ref().is_some_and(|d|d.visible)).or_else(||self.focused.and_then(|id|self.apps.iter().position(|a|a.window.id()==id))).unwrap_or(0);
@@ -553,7 +588,13 @@ impl ApplicationHandler<UserEvent> for Host {
                     }}
                 }}}
             },
-            UserEvent::BrowserWork => {},
+            // Chromium has work. Mid-resize the system holds the loop, so
+            // the page's new paint is drawn from here or not until you let go.
+            UserEvent::BrowserWork => {
+                for a in self.apps.iter_mut().filter(|a| a.live_resizing) {
+                    a.live_resize_frame();
+                }
+            }
             UserEvent::Wake => {
                 for a in self.apps.iter_mut() {
                     a.dirty = true;
@@ -654,6 +695,14 @@ impl ApplicationHandler<UserEvent> for Host {
                     .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
                     .with_resizable(crate::hatch_native::wayland()).with_visible(false).with_active(false)
                     .with_inner_size(winit::dpi::LogicalSize::new(480.0,270.0));
+                #[cfg(target_os = "macos")]
+                {
+                    use winit::platform::macos::WindowAttributesExtMacOS;
+                    // Protected video is a native WebKit view beneath the
+                    // transparent controls. Accept the first transport click
+                    // even when another window currently owns keyboard focus.
+                    attrs = attrs.with_transparent(true).with_accepts_first_mouse(true);
+                }
                 if let Ok(pos)=self.apps[owner].window.outer_position(){attrs=attrs.with_position(pos);}
                 match event_loop.create_window(attrs) {
                     Ok(window)=>{let adapter=accesskit_winit::Adapter::with_event_loop_proxy(event_loop,&window,self.proxy.clone());self.access.push((window.id(),adapter,0));Some(Arc::new(window))},
@@ -776,6 +825,15 @@ impl ApplicationHandler<UserEvent> for Host {
                 WindowEvent::Resized(s) => a.hatch_resized(s.width, s.height),
                 WindowEvent::ScaleFactorChanged { .. } => {let s=a.hatch.as_ref().unwrap().window.inner_size();a.hatch_resized(s.width,s.height);},
                 WindowEvent::Ime(winit::event::Ime::Commit(text)) => a.hatch_ime(&text),
+                WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
+                    a.prompt_composing = !text.is_empty();
+                    a.last_key = clock::now();
+                    a.dirty = true;
+                }
+                WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                    a.prompt_composing = false;
+                    a.dirty = true;
+                }
                 WindowEvent::CursorLeft {..} => {if let Some(h)=&mut a.hatch{h.pos=(-1.0,-1.0);}},
                 WindowEvent::ModifiersChanged(m) => a.hatch_modifiers(m.state()),
                 WindowEvent::KeyboardInput { event, .. } => a.hatch_key(&event),
@@ -842,7 +900,13 @@ impl ApplicationHandler<UserEvent> for Host {
                     a.save_session();
                     return;
                 }
+                // Its notes saved first: one that cannot be keeps the
+                // window, with a word why (notes_ui.rs).
+                if !a.notes_let_window_close() {
+                    return;
+                }
                 if self.apps.len() == 1 {
+                    if self.notes_hold_quit() { return; }
                     event_loop.exit();
                 } else {
                     let a = self.apps.remove(i);
@@ -853,7 +917,10 @@ impl ApplicationHandler<UserEvent> for Host {
                     }
                 }
             }
-            WindowEvent::Resized(s) => a.resize(s.width, s.height),
+            WindowEvent::Resized(s) => {
+                a.resize(s.width, s.height);
+                a.live_resize_frame();
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => a.set_scale(scale_factor as f32),
             WindowEvent::Moved(p) => a.window_moved(p.x, p.y),
             WindowEvent::ThemeChanged(t) => {
@@ -867,6 +934,23 @@ impl ApplicationHandler<UserEvent> for Host {
             }
             WindowEvent::Focused(f) => a.focus_changed(f),
             WindowEvent::ModifiersChanged(m) => a.modifiers(m.state()),
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
+                a.last_key = clock::now();
+                a.prompt_composing = !text.is_empty();
+                if let Some(t) = a.focused_term() { t.prompt_edit_pending = None; t.code_menu = None; }
+                a.dirty = true;
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                a.last_key = clock::now();
+                if !text.is_empty() { a.carapace.typed = a.carapace.typed.wrapping_add(1); }
+                if let Some(t) = a.focused_term() { t.prompt_history.paste(&text); }
+                a.prompt_composing = false;
+                a.dirty = true;
+            }
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                a.prompt_composing = false;
+                a.dirty = true;
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 a.key(&event);
                 a.dirty = true;
@@ -1069,9 +1153,14 @@ fn main() -> ExitCode {
         let arrival=host.apps.iter().any(|a|a.arriving());
         let maintenance=Duration::from_millis(if arrival || (animated && !background) {2} else {50});
         let maintenance=host.apps.iter().filter_map(|a|a.browser_frame_wait()).fold(maintenance,Duration::min);
+        let maintenance=host.apps.iter().filter_map(|a|a.caret_frame_wait()).fold(maintenance,Duration::min);
         let wait=browser_runtime::wait(maintenance).max(Duration::from_millis(1));
         event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now()+wait));
         let status = event_loop.pump_app_events(Some(wait), &mut host);
+        // The loop is ours again: any resize the system was running is over.
+        for a in host.apps.iter_mut().filter(|a| a.live_resizing) {
+            a.end_live_resize();
+        }
         if let PumpStatus::Exit(code) = status {
             host.release_finish_work();
             break code;
@@ -1167,6 +1256,11 @@ fn main() -> ExitCode {
         }
     };
     host.dock.prepare_quit();
+    // Notes unsaved when the loop ended some other way: saved now, as far
+    // as the disk allows.
+    for (_, title, status) in notes_session::flush_all() {
+        tracing::warn!("notes: {title} was not saved at quit: {status:?}");
+    }
     // The quit shows at once: the saving, syncing and Chromium's close
     // below can take seconds, and a window still up looks like a quit that
     // didn't happen.

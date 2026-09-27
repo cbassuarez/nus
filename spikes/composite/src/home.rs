@@ -666,6 +666,13 @@ impl App {
         let backdrop = if art { self.art.as_ref().map(|a| a.backdrop).unwrap_or_default() } else { crate::art::Backdrop::Theme };
         let dark = backdrop == crate::art::Backdrop::Dark;
         let ink = backdrop.foreground(t.mode, ink, t.paper);
+        // Art declares its brightness independently of the chrome theme.
+        // Resolve the caret against that surface, like the text above.
+        let caret_background = match backdrop {
+            crate::art::Backdrop::Dark => [0.0, 0.0, 0.0, 1.0],
+            crate::art::Backdrop::Light => [1.0, 1.0, 1.0, 1.0],
+            crate::art::Backdrop::Theme => paper,
+        };
         // The line: a caret in signal, the input in mono, a rule beneath.
         let px = self.px(20.0);
         let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
@@ -709,32 +716,22 @@ impl App {
         let shown = self.fit(mono, tail, room);
         let tx = x0 + caret_w;
         let edges: Vec<f32> = (start..=n).map(|k| tx + width(start, k)).take_while(|e| *e <= tx + room + px).collect();
-        // The selection: ink under paper, as a selected row is.
+        // A quiet, stable selection wash preserves the text's own ink.
         if let Some((a, b)) = p.cur.range(&p.input) {
             let (a, b) = (a.max(start), b.max(start));
             if let (Some(&ea), Some(&eb)) = (edges.get(a - start), edges.get((b - start).min(edges.len().saturating_sub(1)))) {
                 let band = Rect::new(ea, y0 - px * 0.82, (eb - ea).max(0.0), px * 1.08);
-                self.draw_lit(scene, mono, tx, y0, &shown, dark);
-                scene.rect(band, fade(ink, up));
-                let picked = &p.input[crate::field::byte_at(&p.input, a)..crate::field::byte_at(&p.input, b.min(start + edges.len() - 1))];
-                // Clipped to the band: a glyph's overhang must not paint
-                // paper over the ink letter beside it.
-                let outer = scene.clip();
-                scene.layer(Some(outer.map(|c| c.intersect(&band)).unwrap_or(band)));
-                self.draw_lit(scene, Style { color: fade(self.on_fill(ink), up), ..mono }, ea, y0, picked, dark);
-                scene.layer(outer);
-            } else {
-                self.draw_lit(scene, mono, tx, y0, &shown, dark);
+                scene.rect(band, fade(self.theme.selection, up));
             }
-        } else {
-            self.draw_lit(scene, mono, tx, y0, &shown, dark);
         }
+        self.draw_lit(scene, mono, tx, y0, &shown, dark);
         let tw = edges.get(at - start).map(|e| e - tx).unwrap_or(0.0);
         p.line = Some(LineGeom { rect: Rect::new(x0, y0 - px * 1.2, line_w, px * 1.8), start, edges });
-        // The caret; a selection shows instead.
-        if focused && p.cur.range(&p.input).is_none() {
-            // As CURSOR says, like every other caret (app.rs, draw_line_caret).
-            self.draw_line_caret(scene, x0 + caret_w + tw + self.px(1.0), y0, px, up, p.since);
+        // The active edge follows the shared caret; the range wash stays still.
+        if focused {
+            let x = x0 + caret_w + tw + self.px(1.0);
+            // The same pipe marks insertion or the active selection edge.
+            self.draw_line_caret_on(scene, x, y0, px, up, p.since, caret_background);
         }
         scene.hline(x0, y0 + self.px(12.0), line_w, self.px(m::HAIRLINE), fade(ink, 0.45 * up));
         // Rows beneath: the palette's, for what is typed. Under the plate

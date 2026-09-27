@@ -474,7 +474,7 @@ impl App {
                 let shown = a.fit(ui, &value, b.w - a.px(if secret { 150.0 } else { 24.0 }));
                 tx += a.fonts.draw(s, Style { tracking: if secret { a.px(2.0) } else { 0.0 }, ..ui }, tx, b.y + a.px(22.0), &shown);
                 if on {
-                    s.rect(Rect::new(tx + a.px(1.0), b.y + a.px(9.0), a.px(8.0), a.px(16.0)), ink);
+                    a.draw_line_caret(s, tx + a.px(1.0), b.y + a.px(22.0), ui.px, 1.0, a.last_key);
                 }
                 if secret {
                     let tag = "SECURE INPUT";

@@ -108,6 +108,11 @@ impl App {
     /// chose for a tab stays theirs.
     pub(crate) fn recolor_shells(&mut self) {
         for i in 0..self.tabs.len() {
+            // A colour picked from the family follows the theme too.
+            if self.tabs[i].picked.is_some() {
+                self.relook_tab(i);
+                continue;
+            }
             if self.tabs[i].tint.is_some() || self.tabs[i].parent.is_some() || !matches!(self.tabs[i].left, Pane::Term(_)) {
                 continue;
             }

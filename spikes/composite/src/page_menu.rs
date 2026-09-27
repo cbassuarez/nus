@@ -24,6 +24,25 @@ pub enum Source {
     /// A dropdown from a settings button: each row's value (None types
     /// one instead), and which row is the current one.
     Choose { field: crate::assistants::Field, values: Vec<Option<String>>, current: Option<usize> },
+    /// A shell's right click: the block and the link under the pointer,
+    /// and what was selected.
+    Shell { block: Option<u64>, link: Option<String>, selection: String },
+}
+
+/// The shell menu's rows.
+mod shell {
+    pub const COPY: i32 = 1;
+    pub const PASTE: i32 = 2;
+    pub const LINK_BESIDE: i32 = 10;
+    pub const LINK_TAB: i32 = 11;
+    pub const LINK_COPY: i32 = 12;
+    pub const OUTPUT: i32 = 20;
+    pub const RUN: i32 = 21;
+    pub const SHARE: i32 = 22;
+    pub const CLIP: i32 = 23;
+    pub const NOTE_SELECTION: i32 = 24;
+    pub const FIND: i32 = 30;
+    pub const SPLIT: i32 = 31;
 }
 
 pub struct PageMenu {
@@ -95,6 +114,41 @@ impl App {
         self.show_context_menu(PageMenu::new(id, right, at, items, Source::Reading { entry, actions }));
     }
 
+    /// A shell's right click, at `at`: copy and paste; the link under the
+    /// pointer; the block under it (its output, again, as a page, into
+    /// the note); find and a page beside. The pane it is over takes focus.
+    pub(crate) fn open_shell_menu(&mut self, at: (f32, f32), block: Option<u64>, link: Option<String>, selection: String) {
+        let Some(tab) = self.tabs.get_mut(self.active) else { return; };
+        let right = matches!(&tab.right, Some(Pane::Term(t)) if t.rect.contains(at.0, at.1));
+        tab.focus_right = right;
+        let id = tab.id;
+        let mut items: Vec<model::Item> = vec![
+            (shell::COPY, "COPY".into(), !selection.trim().is_empty()),
+            (shell::PASTE, "PASTE".into(), true),
+        ];
+        if link.is_some() {
+            items.push((-1, String::new(), false));
+            items.push((shell::LINK_BESIDE, "OPEN LINK BESIDE".into(), true));
+            items.push((shell::LINK_TAB, "OPEN LINK IN A NEW TAB".into(), true));
+            items.push((shell::LINK_COPY, "COPY LINK ADDRESS".into(), true));
+        }
+        if block.is_some() {
+            items.push((-2, String::new(), false));
+            items.push((shell::OUTPUT, "COPY THIS BLOCK'S OUTPUT".into(), true));
+            items.push((shell::RUN, "RUN THIS COMMAND AGAIN".into(), true));
+            items.push((shell::SHARE, "SHARE THIS BLOCK AS A PAGE".into(), true));
+            items.push((shell::CLIP, "ADD THIS BLOCK TO A NOTE…".into(), true));
+        }
+        if !selection.trim().is_empty() && !crate::private::enabled() {
+            items.push((-4, String::new(), false));
+            items.push((shell::NOTE_SELECTION, "ADD SELECTION TO A NOTE…".into(), true));
+        }
+        items.push((-3, String::new(), false));
+        items.push((shell::FIND, "FIND".into(), true));
+        items.push((shell::SPLIT, "SPLIT · A PAGE BESIDE".into(), true));
+        self.show_context_menu(PageMenu::new(id, right, at, items, Source::Shell { block, link, selection }));
+    }
+
     /// A dropdown under a settings button: `rows` are (label, value), a
     /// None value asks for one to be typed.
     pub(crate) fn open_choose_menu(&mut self, field: crate::assistants::Field, at: (f32, f32), rows: Vec<(String, Option<String>, bool)>, current: Option<usize>) {
@@ -112,6 +166,7 @@ impl App {
         let mut edits=Vec::new();
         let mut saves=Vec::new();
         let mut said = Vec::new();
+        let mut notes = Vec::new();
         let mut menu: Option<PageMenu> = None;
         for tab in &self.tabs {
             for (right, pane) in [(false, &tab.left)].into_iter().chain(tab.right.as_ref().map(|p| (true, p))) {
@@ -120,6 +175,9 @@ impl App {
                 opens.append(&mut shared.opens);
                 if let Some(path)=shared.edit_source.take(){edits.push(path);}
                 if std::mem::take(&mut shared.save_reading){saves.push((tab.id,right));}
+                if let Some((url, quote)) = shared.note_capture.take() {
+                    notes.push((tab.id, right, url, shared.title.clone(), quote, w.container.clone()));
+                }
                 if let Some(word) = shared.said.take() { said.push(word); }
                 if let Some(req) = shared.menu.take() {
                     if Some(tab.id) != active || w.reader.is_some() {
@@ -136,6 +194,13 @@ impl App {
         for path in edits {self.open_file(&path,true);}
         for (id,right) in saves {if let Some(i)=self.tabs.iter().position(|t|t.id==id){self.tabs[i].focus_right=right;self.activate(i);self.save_reading();}}
         for (url, beside) in opens { self.open_url(&url, !beside); }
+        for (id, right, url, title, quote, container) in notes {
+            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                self.tabs[i].focus_right = right;
+                self.activate(i);
+                self.capture_page_selection(url, title, quote, container);
+            }
+        }
         for (words, detail) in said {
             if words == "PIP" { self.run(crate::app::Action::Pip); }
             else { self.toast(nus_render::text::icons::COPY, words, detail, None); }
@@ -202,6 +267,29 @@ impl App {
                 Some(Some(value)) => self.set_preference(field, value),
                 Some(None) => self.edit_preference(field),
                 None => {}
+            },
+            Source::Shell { block, link, selection } => {
+                let copy = |text: &str| if let Ok(mut cb) = arboard::Clipboard::new() { let _ = cb.set_text(text.to_string()); };
+                match id {
+                    shell::COPY => copy(&selection),
+                    shell::PASTE => self.paste_into_shell(),
+                    shell::LINK_BESIDE => if let Some(url) = link { self.open_url(&url, false) },
+                    shell::LINK_TAB => if let Some(url) = link { self.open_url(&url, true) },
+                    shell::LINK_COPY => if let Some(url) = link { copy(&url) },
+                    shell::OUTPUT | shell::RUN | shell::SHARE | shell::CLIP => if let Some(start) = block {
+                        let action = match id {
+                            shell::OUTPUT => crate::blocks::BlockAction::CopyOutput,
+                            shell::RUN => crate::blocks::BlockAction::RunAgain,
+                            shell::SHARE => crate::blocks::BlockAction::Share,
+                            _ => crate::blocks::BlockAction::Clip,
+                        };
+                        self.block_action(crate::blocks::BlockTarget { tab: menu.tab, right: menu.right, start }, action);
+                    },
+                    shell::NOTE_SELECTION => self.note_act(crate::notes_ui::NoteAct::CaptureShellSelection(selection)),
+                    shell::FIND => self.run(crate::app::Action::Application(crate::application_menu::Command::Find)),
+                    shell::SPLIT => self.run(crate::app::Action::ToggleSplit),
+                    _ => {}
+                }
             },
         }
         self.dirty = true;
@@ -301,6 +389,7 @@ impl App {
                 Source::Reading { .. } => matches!(pane, Pane::Home(h) if h.library),
                 Source::Choose { .. } => matches!(pane, Pane::Settings(_)),
                 Source::Page(_) | Source::Media(_) => matches!(pane, Pane::Web(w) if w.reader.is_none()),
+                Source::Shell { .. } => matches!(pane, Pane::Term(_)),
             })
     }
 
@@ -313,6 +402,11 @@ impl App {
             (menu.at, menu.scroll, menu.selected, menu.keyboard, menu.reveal, menu.rise.value());
         let labels: Vec<String> = items.iter().map(|(_, text, _)| text.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
         let shortcuts: Vec<String> = items.iter().map(|(id, _, _)| {
+            if matches!(menu.source, Source::Shell { .. }) {
+                // A terminal's copy and paste: ⌘ on macOS, Ctrl+Shift elsewhere.
+                let shift = !cfg!(target_os = "macos");
+                return match *id { shell::COPY => crate::app::key("C", shift), shell::PASTE => crate::app::key("V", shift), _ => String::new() };
+            }
             if !matches!(menu.source, Source::Page(_)) { return String::new(); }
             match *id { browser::CMD_COPY_PAGE => crate::app::key("C", true),
                 113 => crate::app::key("C", false), 114 => crate::app::key("V", false),
@@ -324,6 +418,17 @@ impl App {
             match &menu.source {
                 Source::Media(_) => Some(icons::DOWNLOAD),
                 Source::Choose { current, .. } => (usize::try_from(*id).ok() == *current).then_some(icons::CHECK),
+                Source::Shell { .. } => match *id {
+                    shell::COPY | shell::LINK_COPY | shell::OUTPUT => Some(icons::COPY),
+                    shell::LINK_BESIDE => Some(icons::SWAP),
+                    shell::LINK_TAB => Some(icons::TO_TAB),
+                    shell::RUN => Some(icons::RELOAD),
+                    shell::SHARE => Some(icons::SHARE),
+                    shell::CLIP => Some(icons::PENCIL),
+                    shell::FIND => Some(icons::SEARCH),
+                    shell::SPLIT => Some(icons::TILES),
+                    _ => None,
+                },
                 Source::Reading { actions, .. } => {
                     use crate::library::MenuAction;
                     match usize::try_from(*id).ok().and_then(|i| actions.get(i)).copied().flatten() {
