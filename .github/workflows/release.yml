@@ -107,7 +107,7 @@ jobs:
           cargo test --locked --release --workspace
           cargo build --locked --release -p nus-cli
           cargo test --locked --release --manifest-path spikes/composite/Cargo.toml --bin composite
-          cargo build --locked --release --manifest-path spikes/composite/Cargo.toml --bins
+          cargo build --locked --release --manifest-path spikes/composite/Cargo.toml --bins --lib
           if [[ "$RUNNER_OS" == macOS ]]; then
             cargo build --locked --release -p nus-render --example icon
           fi
@@ -126,6 +126,7 @@ jobs:
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then
             python scripts/package-release.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET" --stage-only
+            python scripts/stamp-windows-bootstrap.py spikes/composite/target/release/composite.exe dist/windows-stage/nus.exe
           else
             python scripts/package-release.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
           fi
@@ -141,6 +142,23 @@ jobs:
           else
             "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --version
           fi
+      - name: Exercise packaged browsing and native failure screens
+        if: runner.os != 'Windows'
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          python -m pip install Pillow==11.3.0
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            python scripts/check-browser.py --app dist/nus.app --out dist/browser-check
+          else
+            xvfb-run -a python scripts/check-browser.py --app "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --out dist/browser-check
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: failure() && runner.os != 'Windows'
+        with:
+          name: browser-failure-${{ matrix.target }}
+          path: dist/browser-check/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: runner.os != 'Windows'
         with:
@@ -196,6 +214,7 @@ jobs:
           certificate-profile-name: nus-public
           files: |
             ${{ github.workspace }}\dist\windows-stage\nus.exe
+            ${{ github.workspace }}\dist\windows-stage\nus.dll
             ${{ github.workspace }}\dist\windows-stage\nus-hold.exe
             ${{ github.workspace }}\dist\windows-stage\bin\nus.exe
           file-digest: SHA256
@@ -222,6 +241,15 @@ jobs:
         run: python scripts/package-release.py --tag "$RELEASE_TAG" --target windows-x86_64 --finalize-staged
       - name: Verify signed executable and runtime loader
         run: dist/windows-stage/nus.exe --version
+      - name: Exercise signed browser and native failure screens
+        run: |
+          python -m pip install Pillow==11.3.0
+          python scripts/check-browser.py --app dist/windows-stage/nus.exe --out dist/browser-check
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: failure()
+        with:
+          name: browser-failure-windows
+          path: dist/browser-check/
       - name: Install, launch and uninstall silently
         shell: pwsh
         run: |

@@ -56,5 +56,5 @@ jobs:
         shell: bash
         run: |
           source scripts/env.sh
-          cargo build --locked --manifest-path spikes/composite/Cargo.toml --bins
+          cargo build --locked --manifest-path spikes/composite/Cargo.toml --bins --lib
           cargo test --locked --manifest-path spikes/composite/Cargo.toml --bin composite

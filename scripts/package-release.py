@@ -21,7 +21,7 @@ MAC_SIGNING = ['MACOS_CERTIFICATE', 'MACOS_CERTIFICATE_PASSWORD', 'MACOS_SIGN_ID
 # --finalize-staged verifies everything and packages. Nothing else is signed.
 WINDOWS_STAGE = 'dist/windows-stage'
 WINDOWS_INSTALLER = 'dist/windows-installer'
-WINDOWS_SIGNED = ['nus.exe', 'nus-hold.exe', 'bin/nus.exe']
+WINDOWS_SIGNED = ['nus.exe', 'nus.dll', 'nus-hold.exe', 'bin/nus.exe']
 WINDOWS_INSTRUCTIONS = 'Extract the entire folder, then open nus.exe. Keep its DLLs and locales together.\nThe shell CLI is bin/nus.exe. Settings live in %LOCALAPPDATA%/nus/installs/<channel>/<installation>/profile.\n'
 configured = lambda names: all(os.environ.get(n) for n in names)
 
@@ -125,7 +125,11 @@ def main():
             if notice.name.startswith(('OFL-', 'License-')): shutil.copy2(notice, licenses/notice.name)
         shutil.copy2(ROOT/'assets/icons/LICENSE',licenses/'icons.txt')
         if windows:
-            shutil.copy2(build/'composite.exe', stage/'nus.exe')
+            # The matching CEF bootstrap supplies sandbox services in every
+            # process and loads the same-named client DLL. A standalone Rust
+            # EXE cannot provide Chromium's sandbox broker.
+            shutil.copy2(cef/'bootstrap.exe', stage/'nus.exe')
+            shutil.copy2(build/'composite.dll', stage/'nus.dll')
             shutil.copy2(ROOT/'target/release/nus-hold.exe', stage/'nus-hold.exe')
             shutil.copy2(ROOT/'target/release/nus.exe', stage/'bin/nus.exe')
             # The MSVC runtime is required on clean machines, not only runners.
@@ -145,7 +149,7 @@ def main():
             shutil.copy2(ROOT/'assets/icon/nus-256.png', stage/'nus.png')
             (stage/'nus.desktop').write_text('[Desktop Entry]\nType=Application\nName=nus\nComment=A terminal and browser in one workspace\nExec=nus\nIcon=nus\nTerminal=false\nCategories=Development;TerminalEmulator;WebBrowser;\n')
             signing = 'checksum'
-            instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA and NSS.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\nTo add a desktop entry, copy nus.desktop to ~/.local/share/applications,\nset Exec and Icon to the absolute extracted paths, and keep the folder in place.\n'
+            instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA and NSS.\nChromium also needs user namespaces allowed by the system and AppArmor policy,\nor an administrator-installed sandbox helper. The archive does not install a privileged helper.\nIf the sandbox is unavailable, nus explains the problem in the page; sandboxing stays enabled.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\nTo add a desktop entry, copy nus.desktop to ~/.local/share/applications,\nset Exec and Icon to the absolute extracted paths, and keep the folder in place.\n'
         shutil.copy2(ROOT/'LICENSE', stage/'LICENSE')
         if args.stage_only:
             print(f'Staged unsigned Windows payload at {stage}; sign {", ".join(WINDOWS_SIGNED)}, then run --finalize-staged.')

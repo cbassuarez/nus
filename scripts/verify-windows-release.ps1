@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 # result. Every nus-owned executable, and the installer when given, must carry
 # a valid, timestamped signature (Artifact Signing certificates last days, so an
 # untimestamped one expires) from the same signer.
-$files=@('nus.exe','nus-hold.exe','bin/nus.exe' | ForEach-Object { Join-Path $Directory $_ })
+$files=@('nus.exe','nus.dll','nus-hold.exe','bin/nus.exe' | ForEach-Object { Join-Path $Directory $_ })
 if ($Installer) { $files+=$Installer }
 $signer=$null
 foreach ($path in $files) {

@@ -3,7 +3,8 @@
 The Release workflow builds three native packages: Apple Silicon Macs,
 Windows x86-64, and Linux x86-64. Intel Macs are not a target. Native runners fetch the CEF version pinned by
 the submodule, test both workspaces, build the app and CLI, package the complete
-runtime, and check that the packaged executable can start its loader.
+runtime, and exercise packaged HTTP browsing, JavaScript, rendered pixels and
+native timeout/crash/hang recovery before publication.
 
 ## Channels
 
@@ -80,13 +81,13 @@ Windows matrix job builds and tests, then `package-release.py --stage-only`
 leaves the unsigned payload in `dist/windows-stage`. A separate `sign-windows`
 job, the only one with `id-token: write`, runs in the `windows-signing`
 environment (variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
-`AZURE_SUBSCRIPTION_ID`) and signs exactly `nus.exe`, `nus-hold.exe` and
-`bin/nus.exe` with RFC 3161 timestamps; bundled CEF, Widevine and MSVC binaries
+`AZURE_SUBSCRIPTION_ID`) and signs exactly `nus.exe` (the CEF bootstrap), `nus.dll` (the application),
+`nus-hold.exe` and `bin/nus.exe` with RFC 3161 timestamps; bundled CEF, Widevine and MSVC binaries
 are never signed as ours. `--build-installer` runs
 `verify-windows-release.ps1`, which requires a valid, timestamped signature on
-all three, then compiles `scripts/windows-installer.iss` with the runner's Inno
+all four, then compiles `scripts/windows-installer.iss` with the runner's Inno
 Setup into `nus-<version>-windows-x86_64-setup.exe`; that is signed the same
-way. `--finalize-staged` verifies all four signatures (one signer) and only
+way. `--finalize-staged` verifies all five signatures (one signer) and only
 then writes `Signing: authenticode`, the ZIP, both hashes and the record. The
 job then installs silently, updates over it, launches the installed copy, and uninstalls. Every Windows package from the Release workflow is signed,
 including build-only runs; if signing fails there is no Windows package. Local
@@ -145,7 +146,17 @@ Welcome shows once per version per channel. Legacy `nus/profile` data is offered
 explicit settings import and is not overwritten. Browsing data is not imported.
 Source checkouts continue to use their local `profile` directory.
 Linux packages target glibc 2.35+ and need the desktop libraries listed in their
-README. They preserve Chromium's sandbox; they do not silently add `--no-sandbox`.
+README. Chromium requires working user namespaces (including AppArmor permission)
+or an administrator-installed sandbox helper; extraction does not install a
+privileged helper. nus checks this before starting CEF and shows a native error
+if the sandbox is unavailable. It does not silently add `--no-sandbox`.
+
+`python scripts/check-browser.py --app <package> --out <new-directory>` requires
+Pillow and a usable desktop GPU. It keeps an isolated profile, Chromium log,
+screenshots and JSON results. Use `--software` on macOS to exercise the BGRA
+upload path used on Windows/Linux; macOS defaults to shared GPU textures.
+Windows/Linux currently trade shared-texture zero-copy performance for reliable
+BGRA upload, keeping Chromium's GPU compositing enabled.
 
 Transient workflow artifacts expire in three days. Published releases are
 versioned downloads and are retained deliberately. There is no per-commit binary

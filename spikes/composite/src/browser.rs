@@ -41,6 +41,7 @@ pub struct Shared {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    pub(crate) navigation_at: Option<std::time::Instant>,
     pub requested_url: String,
     pub(crate) failed_url: Option<String>,
     /// 0..1 from on_loading_progress_change.
@@ -257,6 +258,31 @@ pub fn web_scheme(url: &str) -> bool {
 }
 
 impl Shared {
+    /// Error pages remain operable even when Chromium has no live renderer.
+    /// The index is a navigable HTML document, not an error transcript.
+    pub(crate) fn transcript(&self) -> Option<&crate::interstitial::Page> {
+        self.interstitial.as_ref().filter(|p| p.kind != crate::interstitial::Kind::Index)
+            .or(self.overlay.as_ref())
+    }
+
+    fn check_navigation_deadline(&mut self, now: std::time::Instant, can_back: bool) {
+        if self.suspended || self.native.is_some() || self.native_ask.is_some()
+            || self.download_waiting || self.download_only || self.dialog.is_some()
+            || self.interstitial.is_some() || self.painted_committed { return; }
+        let Some(at) = self.navigation_at else { return };
+        if now.saturating_duration_since(at) < std::time::Duration::from_secs(30) { return; }
+        self.interstitial = Some(if self.committed {
+            crate::interstitial::Page::browser_failed(&self.url, "The page arrived, but the browser could not draw it. Try again. If this continues, restart nus and check your graphics driver.")
+        } else {
+            crate::interstitial::Page::unreachable(&self.url, "ERR_TIMED_OUT", can_back)
+        });
+        self.overlay = None;
+        self.loading = false;
+        self.progress = 1.0;
+        self.navigation_at = None;
+        self.paints += 1;
+    }
+
     fn reset_favicon(&mut self) {
         self.favicon_epoch = self.favicon_epoch.wrapping_add(1);
         self.favicon = None;
@@ -320,6 +346,9 @@ impl Shared {
         self.interstitial=None;self.inject=false;
         if self.overlay.as_ref().is_some_and(|o|o.kind!=crate::interstitial::Kind::Sleep) {self.overlay=None;}
         self.failed_url=None;
+        self.navigation_at=Some(crate::clock::now());
+        self.committed=false;self.painted_committed=false;
+        self.ping=None;self.answered=None;
         self.address(url);self.requested_url=url.into();self.loading=true;self.progress=0.0;
     }
 }
@@ -1042,6 +1071,9 @@ wrap_app! {
             _process_type: Option<&CefStringUtf16>,
             command_line: Option<&mut CommandLine>,
         ) {
+            // Chromium deliberately launches some service roles unsandboxed.
+            // Only sanitize the browser's user switches; preserve child policy.
+            if _process_type.is_some_and(|p| !p.to_string().is_empty()) { return; }
             let Some(cl) = command_line else { return };
             for flag in ["no-sandbox","disable-gpu-sandbox","disable-seccomp-filter-sandbox","disable-namespace-sandbox","single-process","in-process-gpu","disable-site-isolation-trials"] {cl.remove_switch(Some(&flag.into()));}
             cl.append_switch(Some(&"site-per-process".into()));
@@ -1106,10 +1138,19 @@ wrap_browser_process_handler! {
     }
 }
 
+fn software_frame_size(w: i32, h: i32, limit: u32) -> Option<(u32, u32, usize)> {
+    let (w, h) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+    if w == 0 || h == 0 || w > limit || h > limit { return None; }
+    let length = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    (length <= isize::MAX as usize).then_some((w, h, length))
+}
+
 #[derive(Clone)]
 pub struct Osr {
     pub shared: SharedRef,
     pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub software: StdRc<RefCell<[Option<wgpu::Texture>; 2]>>,
     pub bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
 }
 
@@ -1212,13 +1253,46 @@ wrap_render_handler! {
         fn on_paint(
             &self,
             _browser: Option<&mut Browser>,
-            _type_: PaintElementType,
+            type_: PaintElementType,
             _dirty: Option<&[Rect]>,
-            _buffer: *const u8,
-            _w: ::std::os::raw::c_int,
-            _h: ::std::os::raw::c_int,
+            buffer: *const u8,
+            w: ::std::os::raw::c_int,
+            h: ::std::os::raw::c_int,
         ) {
-            tracing::warn!("software paint path hit; accelerated OSR unavailable");
+            if self.osr.shared.borrow().suspended || buffer.is_null() { return; }
+            let Some((width, height, length)) = software_frame_size(w, h, self.osr.device.limits().max_texture_dimension_2d) else { return };
+            let popup = type_ != PaintElementType::VIEW;
+            let mut textures = self.osr.software.borrow_mut();
+            let slot = &mut textures[usize::from(popup)];
+            if slot.as_ref().is_none_or(|t| t.width() != width || t.height() != height) {
+                *slot = Some(self.osr.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("CEF BGRA frame"),
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                }));
+            }
+            let texture = slot.as_ref().unwrap();
+            // CEF owns width*height*4 BGRA bytes for this callback. write_texture
+            // copies them now; no borrowed Chromium memory escapes the callback.
+            let pixels = unsafe { std::slice::from_raw_parts(buffer, length) };
+            self.osr.queue.write_texture(
+                texture.as_image_copy(), pixels,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
+                texture.size(),
+            );
+            let bind = (self.osr.bind_texture)(texture);
+            let mut s = self.osr.shared.borrow_mut();
+            if popup { s.select.bind = Some(bind); }
+            else {
+                s.bind = Some(bind);
+                s.paint_size = (width, height);
+                if s.committed { s.painted_committed = true; }
+            }
+            s.paints += 1;
+            crate::browser_runtime::wake();
         }
     }
 }
@@ -1397,6 +1471,9 @@ wrap_dev_tools_message_observer! {
                 // The watch's question, answered: the page is alive.
                 let mut s = self.o.shared.borrow_mut();
                 if s.ping.is_some_and(|(id, _)| id == message_id) {
+                    // A failed evaluation (e.g. no renderer/context yet) is
+                    // not a heartbeat. Leave its deadline running.
+                    if success == 0 { return; }
                     s.ping = None;
                     s.answered = Some(crate::clock::now());
                     if s.hung.is_none() && s.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Hung) {
@@ -2167,7 +2244,7 @@ wrap_request_handler! {
             s.ping=None;
             let code=error_string.map(|e|e.to_string()).filter(|e|!e.is_empty()&&e.parse::<i64>().is_err()).unwrap_or_else(||format!("exit code {error_code}"));
             s.interstitial=Some(crate::interstitial::Page::crashed(&url,oom,&code,killed));
-            s.inject=true;s.blank=true;s.loading=false;s.paints+=1;
+            s.inject=false;s.blank=false;s.loading=false;s.navigation_at=None;s.paints+=1;
             crate::browser_runtime::wake();
         }
         fn on_render_process_unresponsive(&self,_browser:Option<&mut Browser>,callback:Option<&mut UnresponsiveProcessCallback>)->::std::os::raw::c_int {
@@ -2313,8 +2390,8 @@ wrap_jsdialog_handler! {
 }
 
 /// The handlers a page's browser answers to, all bound to its `Shared`.
-fn make_client(shared: &SharedRef, device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, container: &str) -> Client {
-    let osr = Osr { shared: shared.clone(), device, bind_texture };
+fn make_client(shared: &SharedRef, device: wgpu::Device, queue: wgpu::Queue, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, container: &str) -> Client {
+    let osr = Osr { shared: shared.clone(), device, queue, software: Default::default(), bind_texture };
     ClientBuilder::new(
         RenderBuilder::new(osr),
         DisplayBuilder::new(Display { shared: shared.clone() }),
@@ -2331,11 +2408,11 @@ fn make_client(shared: &SharedRef, device: wgpu::Device, bind_texture: StdRc<dyn
 
 /// Makes the page (and its client) for a window a page opens. The new
 /// page can open windows of its own the same way.
-fn popup_factory(device: wgpu::Device, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, container: String) -> StdRc<dyn Fn() -> (Client, SharedRef)> {
+fn popup_factory(device: wgpu::Device, queue: wgpu::Queue, bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>, container: String) -> StdRc<dyn Fn() -> (Client, SharedRef)> {
     StdRc::new(move || {
         let shared: SharedRef = StdRc::new(RefCell::new(Shared { size: (100.0, 100.0), scale: 1.0, ..Default::default() }));
-        let client = make_client(&shared, device.clone(), bind_texture.clone(), &container);
-        shared.borrow_mut().popup_factory = Some(popup_factory(device.clone(), bind_texture.clone(), container.clone()));
+        let client = make_client(&shared, device.clone(), queue.clone(), bind_texture.clone(), &container);
+        shared.borrow_mut().popup_factory = Some(popup_factory(device.clone(), queue.clone(), bind_texture.clone(), container.clone()));
         (client, shared)
     })
 }
@@ -2391,9 +2468,21 @@ impl BrowserTab {
         url: &str,
         shared: SharedRef,
         device: wgpu::Device,
+        queue: wgpu::Queue,
         bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
     ) -> Option<BrowserTab> {
-        Self::create_in(url, shared, device, bind_texture, crate::containers::PERSONAL)
+        Self::create_in(url, shared, device, queue, bind_texture, crate::containers::PERSONAL)
+    }
+
+    fn unavailable(url: &str, shared: SharedRef, message: &str) -> BrowserTab {
+        {
+            let mut s = shared.borrow_mut();
+            s.url = url.into(); s.requested_url = url.into(); s.loading = false;
+            s.navigation_at = None;
+            s.interstitial = Some(crate::interstitial::Page::browser_failed(url, message));
+            s.paints += 1;
+        }
+        BrowserTab { browser: None, shared, _observer: None }
     }
 
     /// `create`, in a container's request context (its own cookie jar).
@@ -2401,10 +2490,14 @@ impl BrowserTab {
         url: &str,
         shared: SharedRef,
         device: wgpu::Device,
+        queue: wgpu::Queue,
         bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
         container: &str,
     ) -> Option<BrowserTab> {
-        if !crate::browser_runtime::ensure() { return None; }
+        shared.borrow_mut().navigation(url);
+        if !crate::browser_runtime::ensure() {
+            return Some(Self::unavailable(url, shared, &crate::browser_runtime::failure()));
+        }
         // A `nus://` address: a blank document, and the page (or command) on it.
         let internal = crate::interstitial::internal(url);
         let original_url = internal.as_ref().map(|_| url.to_string());
@@ -2420,7 +2513,10 @@ impl BrowserTab {
         }
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
-            shared_texture_enabled: 1,
+            // The Windows/Linux importer can return an empty texture when
+            // sharing fails. Use Chromium's BGRA frames until that interop has
+            // a validated recovery path; GPU page compositing remains enabled.
+            shared_texture_enabled: i32::from(cfg!(target_os = "macos") && std::env::var_os("NUS_SOFTWARE_PAINT").is_none()),
             external_begin_frame_enabled: 1,
             ..Default::default()
         };
@@ -2428,15 +2524,17 @@ impl BrowserTab {
             windowless_frame_rate: 60,
             ..Default::default()
         };
-        let mut client = make_client(&shared, device.clone(), bind_texture.clone(), container);
-        let factory = popup_factory(device, bind_texture, container.to_string());
+        let mut client = make_client(&shared, device.clone(), queue.clone(), bind_texture.clone(), container);
+        let factory = popup_factory(device, queue, bind_texture, container.to_string());
         shared.borrow_mut().popup_factory = Some(factory);
         // The container's context: the global one for PERSONAL, else its own
         // cookie jar and cache under profile/containers.
-        let mut context = crate::containers::context(container)?;
+        let Some(mut context) = crate::containers::context(container) else {
+            return Some(Self::unavailable(url, shared, "The browser could not open this container's storage. Restart nus and try again."));
+        };
         if crate::private::enabled() && !CefString::from(&context.cache_path()).to_string().is_empty() {
             tracing::error!("Refusing a persistent browser context in incognito");
-            return None;
+            return Some(Self::unavailable(url, shared, "The browser refused storage that was not private. Close this window and try a new private window."));
         }
         let t0 = crate::clock::now();
         let browser = browser_host_create_browser_sync(
@@ -2446,7 +2544,10 @@ impl BrowserTab {
             Some(&settings),
             None,
             Some(&mut context),
-        )?;
+        );
+        let Some(browser) = browser else {
+            return Some(Self::unavailable(url, shared, "The browser could not create a page process. Restart nus; if this continues, reinstall the complete package."));
+        };
         if !crate::private::enabled() { tracing::info!("create_browser_sync {url} took {}ms", crate::clock::since(t0).as_millis()); }
         let tab = BrowserTab::attach(browser, shared);
         if let Some(url) = native_url { tab.native_load(&url); }
@@ -2687,6 +2788,13 @@ impl BrowserTab {
     pub fn close_devtools(&self) { if let Some(host) = self.host() { host.close_dev_tools(); } }
 
     pub fn load(&self, url: &str) {
+        if self.browser.is_none() {
+            let mut s = self.shared.borrow_mut();
+            s.url = url.into();
+            s.interstitial = Some(crate::interstitial::Page::browser_failed(url, &crate::browser_runtime::failure()));
+            s.interstitial_acts.push("retry".into());
+            return;
+        }
         if self.native_load(url) {
             return;
         }
@@ -2915,8 +3023,13 @@ impl BrowserTab {
             if wait {
                 // Asked again from now: another stretch before it shows.
                 if let Some(p) = s.ping.as_mut() { p.1 = crate::clock::now(); }
+                if s.navigation_at.is_some() { s.navigation_at = Some(crate::clock::now()); }
             } else {
                 s.stopping = true;
+                let url = s.url.clone();
+                s.interstitial = Some(crate::interstitial::Page::crashed(&url, false, "", true));
+                s.loading = false;
+                s.navigation_at = None;
             }
             s.hung.take()
         };
@@ -2934,6 +3047,14 @@ impl BrowserTab {
     /// `HUNG_AFTER` without one the hung transcript comes up over it.
     /// Chromium's own hang signal (on input) raises it too.
     pub fn watch(&self) {
+        let can_back = self.can_go_back();
+        let expired = {
+            let mut s = self.shared.borrow_mut();
+            let had_error = s.interstitial.is_some();
+            s.check_navigation_deadline(crate::clock::now(), can_back);
+            !had_error && s.interstitial.is_some()
+        };
+        if expired { if let Some(b) = &self.browser { b.stop_load(); } }
         const EVERY: std::time::Duration = std::time::Duration::from_secs(3);
         const HUNG_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
         if self.browser.is_none() { return; }
@@ -3132,6 +3253,10 @@ impl BrowserTab {
     }
 
     pub fn reload(&self) {
+        if self.browser.is_none() {
+            self.shared.borrow_mut().interstitial_acts.push("retry".into());
+            return;
+        }
         {
             let mut s = self.shared.borrow_mut();
             if s.native.is_some() { s.reset_favicon(); s.loading = true; return s.native.as_ref().unwrap().reload(); }
@@ -3260,5 +3385,75 @@ mod navigation_tests {
         assert_eq!(s.url,"http://127.0.0.1:1/missing");assert!(s.loading);assert_eq!(s.progress,0.0);
         s.address("chrome-error://chromewebdata/");assert_eq!(s.url,"http://127.0.0.1:1/missing");
         s.address("https://example.org/redirected");assert_eq!(s.url,"https://example.org/redirected");
+    }
+}
+
+#[cfg(test)]
+mod browser_failure_tests {
+    use super::*;
+    use crate::interstitial::Kind;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn silent_navigation_gets_a_native_timeout_and_retry_resets_it() {
+        let mut s = Shared::default();
+        s.navigation("https://silent.test/");
+        let at = Instant::now();
+        s.navigation_at = Some(at);
+        s.check_navigation_deadline(at + Duration::from_secs(29), false);
+        assert!(s.transcript().is_none());
+        s.check_navigation_deadline(at + Duration::from_secs(30), false);
+        assert_eq!(s.transcript().unwrap().kind, Kind::Unreachable);
+        assert!(!s.loading);
+        assert!(s.transcript().unwrap().acts.iter().any(|a| a.verb == "retry"));
+        s.navigation("https://working.test/");
+        assert!(s.transcript().is_none());
+        assert!(s.loading && s.navigation_at.is_some());
+        assert!(!s.committed && !s.painted_committed);
+    }
+
+    #[test]
+    fn missing_pixels_differ_from_slow_subresources() {
+        let at = Instant::now();
+        let mut s = Shared { url: "https://paint.test/".into(), committed: true,
+            navigation_at: Some(at), ..Default::default() };
+        s.check_navigation_deadline(at + Duration::from_secs(31), true);
+        assert_eq!(s.transcript().unwrap().kind, Kind::Crash);
+        assert!(s.transcript().unwrap().body.contains("could not draw"));
+        s.navigation("https://paint.test/");
+        s.navigation_at = Some(at);
+        s.committed = true;
+        s.painted_committed = true;
+        s.check_navigation_deadline(at + Duration::from_secs(120), true);
+        assert!(s.loading && s.transcript().is_none());
+    }
+
+    #[test]
+    fn downloads_and_suspended_pages_are_not_navigation_timeouts() {
+        for suspended in [false, true] {
+            let at = Instant::now();
+            let mut s = Shared { suspended, download_waiting: !suspended,
+                navigation_at: Some(at), ..Default::default() };
+            s.check_navigation_deadline(at + Duration::from_secs(120), false);
+            assert!(s.transcript().is_none());
+        }
+    }
+
+    #[test]
+    fn failed_creation_keeps_an_operable_native_page_without_a_browser() {
+        let shared = StdRc::new(RefCell::new(Shared::default()));
+        let tab = BrowserTab::unavailable("https://start.test/", shared, "Sandbox unavailable");
+        assert!(tab.browser.is_none());
+        assert_eq!(tab.shared.borrow().transcript().unwrap().body, "Sandbox unavailable");
+        tab.reload();
+        assert_eq!(tab.tend_interstitial(), vec!["retry"]);
+    }
+
+    #[test]
+    fn software_frames_validate_dimensions_and_byte_count() {
+        assert_eq!(software_frame_size(3, 2, 4096), Some((3, 2, 24)));
+        for (w, h) in [(0, 1), (1, 0), (-1, 10), (4097, 2), (2, 4097)] {
+            assert_eq!(software_frame_size(w, h, 4096), None);
+        }
     }
 }

@@ -190,6 +190,15 @@ impl App {
                 let s = w.tab.shared.borrow();
                 s.title == rest && s.paints > 0
             },
+            "awaitpaint" => {
+                let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };
+                let s = w.tab.shared.borrow();
+                s.bind.is_some() && s.painted_committed && !s.loading && s.transcript().is_none()
+            },
+            "awaittranscript" => {
+                let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };
+                w.tab.shared.borrow().transcript().is_some_and(|p| p.kind.slug() == rest)
+            },
             "awaitreply" => {
                 let id = self.shot.as_ref().and_then(|s| s.reply).expect("eval first");
                 let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { panic!("awaitreply needs page") };
@@ -258,7 +267,7 @@ impl App {
             eprintln!("shot: {step}");
         }
         match verb {
-            "awaitbundle" | "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" | "awaitdialog" => {},
+            "awaitbundle" | "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" | "awaitdialog" | "awaitpaint" | "awaittranscript" => {},
             "benchbegin" => {
                 assert!(crate::perf::enabled() && !crate::clock::recording(), "benchmark requires real-clock NUS_PERF");
                 let s = self.shot.as_mut().unwrap();
@@ -946,6 +955,10 @@ impl App {
             "perfreset" => crate::perf::reset(),
             "perfstats" => eprintln!("PERF {} {}", rest, crate::perf::snapshot()),
             "assertpresented" => assert!(self.frames > 0, "no frame has been presented"),
+            "browsercrash" => {
+                let Pane::Web(w) = self.tabs[self.active].focused_ref() else { panic!("browsercrash needs a page") };
+                w.tab.devtools("Page.crash", serde_json::json!({}));
+            },
             "asserteditorready" => {
                 let b = self.focused_editor().and_then(|e| e.buf()).expect("editor buffer");
                 assert!(b.ready(), "file is still loading: {:?}", b.load_error);

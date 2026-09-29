@@ -167,9 +167,11 @@ class ReleaseTests(unittest.TestCase):
         redist=self.root/'redist'
         payloads={
             'vendor/cef/libcef.dll':b'cef',
+            'vendor/cef/bootstrap.exe':b'sandbox bootstrap',
             'vendor/cef/icudtl.dat':b'icu',
             'vendor/cef/locales/en-US.pak':b'locale',
             'spikes/composite/target/release/composite.exe':b'desktop',
+            'spikes/composite/target/release/composite.dll':b'desktop dll',
             'target/release/nus-hold.exe':b'hold',
             'target/release/nus.exe':b'cli',
             'redist/x64/Microsoft.VC145.CRT/vcruntime140.dll':b'crt',
@@ -202,13 +204,23 @@ class ReleaseTests(unittest.TestCase):
         with patch.dict('os.environ',self.windows_payloads()):
             calls=self.package('--stage-only')
         stage=self.root/'dist/windows-stage'
-        for name in ['nus.exe','nus-hold.exe','bin/nus.exe','libcef.dll','vcruntime140.dll','locales/en-US.pak','LICENSE']:
+        for name in ['nus.exe','nus.dll','nus-hold.exe','bin/nus.exe','libcef.dll','vcruntime140.dll','locales/en-US.pak','LICENSE']:
             self.assertTrue((stage/name).is_file(),name)
+        self.assertEqual((stage/'nus.exe').read_bytes(),b'sandbox bootstrap')
+        self.assertEqual((stage/'nus.dll').read_bytes(),b'desktop dll')
         # Metadata that claims a signature must not exist before signing.
         self.assertFalse((stage/'README.txt').exists())
         self.assertFalse((stage/'nus-package.json').exists())
         self.assertEqual(list((self.root/'dist/release').iterdir()),[])
         self.assertEqual(calls,[])
+
+    def test_windows_stage_requires_both_sandbox_bootstrap_and_client_dll(self):
+        for missing in ['vendor/cef/bootstrap.exe', 'spikes/composite/target/release/composite.dll']:
+            with self.subTest(missing=missing), patch.dict('os.environ',self.windows_payloads()):
+                (self.root/missing).unlink()
+                with self.assertRaises(FileNotFoundError):
+                    self.package('--stage-only')
+                self.assertEqual(list((self.root/'dist/release').iterdir()),[])
 
     def test_windows_installer_is_built_only_from_verified_executables(self):
         with patch.dict('os.environ',self.windows_payloads()):

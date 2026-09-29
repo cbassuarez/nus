@@ -7,8 +7,59 @@ use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
 static READY: AtomicBool = AtomicBool::new(false);
+static ATTEMPTED: AtomicBool = AtomicBool::new(false);
 static PROXY: OnceLock<EventLoopProxy<crate::UserEvent>> = OnceLock::new();
 static DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
+static FAILURE: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(target_os = "windows")]
+static SANDBOX: std::sync::atomic::AtomicPtr<u8> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(target_os = "windows")]
+pub fn set_sandbox_info(info: *mut u8) { SANDBOX.store(info, Ordering::Release); }
+pub fn sandbox_info() -> *mut u8 {
+    #[cfg(target_os = "windows")]
+    { SANDBOX.load(Ordering::Acquire) }
+    #[cfg(not(target_os = "windows"))]
+    { std::ptr::null_mut() }
+}
+pub fn failure() -> String {
+    FAILURE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        .unwrap_or_else(|| "The browser engine could not start.".into())
+}
+fn fail(message: String) -> bool {
+    tracing::error!("{message}");
+    *FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn linux_sandbox() -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    static CHECK: OnceLock<Result<(), String>> = OnceLock::new();
+    CHECK.get_or_init(|| {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let helper = std::env::var_os("CHROME_DEVEL_SANDBOX").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| exe.with_file_name("chrome-sandbox"));
+        if std::fs::metadata(helper).is_ok_and(|m| m.is_file() && m.uid() == 0 && m.mode() & 0o4777 == 0o4755) {
+            return Ok(());
+        }
+        // Chromium needs user, PID and network namespaces. Test in a short-lived
+        // child, with the installed executable's own AppArmor policy.
+        let mut child = std::process::Command::new(exe).arg("--nus-check-userns")
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+                _ => { let _ = child.kill(); let _ = child.wait(); break; }
+            }
+        }
+        Err("Linux blocked the browser sandbox. This installation needs permission to create user namespaces (including its AppArmor policy), or a correctly installed chrome-sandbox helper. Ask your system administrator to configure the sandbox, then restart nus.".into())
+    }).clone()
+}
 pub fn ready() -> bool {
     READY.load(Ordering::Acquire)
 }
@@ -105,6 +156,15 @@ pub fn ensure() -> bool {
     if ready() {
         return true;
     }
+    #[cfg(target_os = "windows")]
+    if sandbox_info().is_null() {
+        return fail("The Windows browser sandbox is missing. Open nus.exe from the complete installed package, with nus.dll beside it. Reinstall nus if either file is missing.".into());
+    }
+    #[cfg(target_os = "linux")]
+    if let Err(message) = linux_sandbox() { return fail(message); }
+    // CEF initialization is process-wide and must not be retried after a
+    // partial failure. Keep the native explanation available until restart.
+    if ATTEMPTED.swap(true, Ordering::AcqRel) { return false; }
     let started = Instant::now();
     self::load_library();
     use cef::*;
@@ -136,7 +196,7 @@ pub fn ensure() -> bool {
         Some(args.as_main_args()),
         Some(&settings),
         Some(&mut app),
-        std::ptr::null_mut(),
+        sandbox_info(),
     ) == 1;
     if ok {
         READY.store(true, Ordering::Release);
@@ -149,6 +209,8 @@ pub fn ensure() -> bool {
             started.elapsed().as_secs_f64() * 1000.0,
         );
         schedule(0);
+    } else {
+        return fail(format!("The browser engine could not start (CEF exit code {}). Restart nus; if this continues, reinstall the complete package.", cef::get_exit_code()));
     }
     ok
 }

@@ -39,6 +39,14 @@ impl App {
             (s.interstitial.clone().or_else(|| s.overlay.clone()), s.failed_url.is_some())
         };
         let Some(page) = page else { return };
+        if verb == "retry" && w.tab.browser.is_none() {
+            let container = w.container.clone();
+            if let Some(replacement) = self.new_web_pane_in(&page.url, &container) {
+                if let Some(w) = self.web_pane_by_id(id, right) { *w = replacement; }
+            }
+            self.dirty = true;
+            return;
+        }
         let host = crate::interstitial::host(&page.url);
         let clear_overlay = |w: &mut WebPane| {
             let mut s = w.tab.shared.borrow_mut();
@@ -143,7 +151,7 @@ impl App {
         let Some(tab) = self.tabs.get(self.active) else { return false };
         let (id, right) = (tab.id, tab.focus_right && tab.right.is_some());
         let Some(w) = self.web_pane_by_id(id, right) else { return false };
-        let Some(page) = w.tab.shared.borrow().overlay.clone() else { return false };
+        let Some(page) = w.tab.shared.borrow().transcript().cloned() else { return false };
         let n = page.acts.len().max(1);
         let dialog = page.kind == Kind::Dialog;
         let other_mods = mods.alt_key() || (mods.control_key() && cfg!(target_os = "macos"));
@@ -216,7 +224,7 @@ impl App {
             let id = tab.id;
             for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
                 let Pane::Web(w) = p else { continue };
-                if w.tab.shared.borrow().overlay.is_none() || !w.page.contains(x, y) {
+                if w.tab.shared.borrow().transcript().is_none() || !w.page.contains(x, y) {
                     continue;
                 }
                 let verb = w.overlay_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, v)| v.clone());
@@ -233,7 +241,7 @@ impl App {
     /// The overlay, over the page it's about.
     pub(crate) fn draw_overlay(&mut self, scene: &mut Scene, w: &mut WebPane) {
         w.overlay_hits.clear();
-        let Some(page) = w.tab.shared.borrow().overlay.clone() else { return };
+        let Some(page) = w.tab.shared.borrow().transcript().cloned() else { return };
         // A page's question or a sign-in: only the page held faint here; the
         // sheet hangs from the strip (page_dialog.rs), where a page can't draw.
         if page.kind == Kind::Dialog {

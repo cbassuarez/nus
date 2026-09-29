@@ -1,5 +1,5 @@
-//! Spike 4: one compositor, terminal + browser panes, Broadsheet chrome.
-//! See docs/SPIKES.md.
+// One compositor, terminal + browser panes, Broadsheet chrome.
+// Also included by the Windows bootstrap DLL (lib.rs).
 
 mod access;
 mod overscroll;
@@ -1062,20 +1062,36 @@ fn prepare_app_environment() {
 }
 
 fn main() -> ExitCode {
+    ExitCode::from(run().clamp(0, 255) as u8)
+}
+
+fn run() -> i32 {
+    // This probe is a separate process: never unshare the desktop UI itself.
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some("--nus-check-userns") {
+        return if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWPID | libc::CLONE_NEWNET) } == 0 { 0 } else { 1 };
+    }
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("nus {} ({})", env!("NUS_BUILD_VERSION"), env!("NUS_BUILD_REVISION"));
-        return ExitCode::SUCCESS;
+        return 0;
     }
     if std::env::args().nth(1).as_deref() == Some("--compatibility") {
         println!("{}", serde_json::to_string(&compatibility::contract()).unwrap());
-        return ExitCode::SUCCESS;
+        return 0;
     }
     let child_process = std::env::args().any(|a| a == "--type" || a.starts_with("--type="));
+    // Chromium children must enter CEF before profile, logging, or UI setup.
+    if child_process {
+        browser_runtime::load_library();
+        let args = Args::new();
+        let mut cef_app = browser::AppBuilder::new(browser::AppHandler);
+        return execute_process(Some(args.as_main_args()), Some(&mut cef_app), browser_runtime::sandbox_info()).max(0);
+    }
     let urls = little::urls_from_args();
     perf::start();
     let _private_root = match private::prepare() {
         Ok(root) => root,
-        Err(_) => { eprintln!("Could not create an isolated incognito session."); return ExitCode::FAILURE; }
+        Err(_) => { eprintln!("Could not create an isolated incognito session."); return 1; }
     };
     perf::startup(perf::StartupMark::PrivateReady);
     let mut dock = dock::Dock::bootstrap();
@@ -1093,11 +1109,11 @@ fn main() -> ExitCode {
     if !child_process {
         if let Err(e) = distribution::settle() {
             eprintln!("Could not open the nus data directory: {e}");
-            return ExitCode::FAILURE;
+            return 1;
         }
     }
     if !child_process && !private::enabled() && little::handoff(&urls) {
-        return ExitCode::SUCCESS;
+        return 0;
     }
     let profile_guard = if child_process { None } else {
         match compatibility::start() {
@@ -1109,7 +1125,7 @@ fn main() -> ExitCode {
                         .set_description(format!("nus could not safely open this profile. No settings were loaded.\n\n{e}"))
                         .set_level(rfd::MessageLevel::Error).show();
                 }
-                return ExitCode::FAILURE;
+                return 1;
             }
         }
     };
@@ -1118,14 +1134,6 @@ fn main() -> ExitCode {
         prefs::apply_start_switches();
         #[cfg(target_os = "macos")]
         prepare_app_environment();
-    }
-
-    if child_process {
-        browser_runtime::load_library();
-        let args = Args::new();
-        let mut cef_app = browser::AppBuilder::new(browser::AppHandler);
-        let ret = execute_process(Some(args.as_main_args()), Some(&mut cef_app), std::ptr::null_mut());
-        return ExitCode::from(ret.max(0) as u8);
     }
 
     // The profile lock serializes ownership; a racing launch cannot overwrite instance credentials.
@@ -1312,7 +1320,7 @@ fn main() -> ExitCode {
         // Windows cannot remove the current working directory.
         let _ = std::env::set_current_dir(std::env::temp_dir());
     }
-    ExitCode::from(code as u8)
+    code
 }
 
 /// The bundled desktop mark for secondary windows, before theme recolouring.

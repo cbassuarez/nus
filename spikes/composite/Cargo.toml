@@ -5,6 +5,11 @@ rust-version = "1.89"
 edition = "2021"
 publish = false
 
+[lib]
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
 # Spike 4 — see docs/SPIKES.md. The app skeleton: nus-render compositor,
 # terminal + browser panes, Broadsheet chrome, focus routing.
 

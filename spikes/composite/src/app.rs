@@ -1977,7 +1977,7 @@ impl App {
             ..Default::default()
         }));
         if let Ok(mut config)=shared.borrow().viewer.write(){*config=self.viewer_config();}
-        let tab = BrowserTab::create_in(url, shared, self.device.clone(), self.bind_texture.clone(), container)?;
+        let tab = BrowserTab::create_in(url, shared, self.device.clone(), self.gpu.queue.clone(), self.bind_texture.clone(), container)?;
         Some(self.pane_for(tab, container))
     }
 

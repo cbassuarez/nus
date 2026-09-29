@@ -193,6 +193,15 @@ impl Page {
             vec![act("retry", "Reload", "↵")])
     }
 
+    /// Browser setup and presentation failures cannot rely on a web renderer
+    /// to draw their explanation. The native transcript uses these same acts.
+    pub fn browser_failed(url: &str, detail: &str) -> Page {
+        Page::new(Kind::Crash, Sev::Problem, url,
+            vec!["✕ the browser could not display this page".into()],
+            "This page can't be opened".into(), detail.into(),
+            vec![act("retry", "Try again", "↵"), act("close", "Close this tab", "")])
+    }
+
     pub fn resubmit(url: &str, can_back: bool) -> Page {
         let host = host(url);
         Page::new(Kind::Resubmit, Sev::Problem, url,

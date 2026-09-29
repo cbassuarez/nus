@@ -331,7 +331,7 @@ impl App {
                             scale:old.scale,size:old.size,viewer:old.viewer.clone(),restore_scroll:Some((x,y)),overlay:Some(waking),..Default::default()
                         }));
                         drop(old);
-                        if let Some(tab)=crate::browser::BrowserTab::create_in(url,fresh,self.device.clone(),self.bind_texture.clone(),&w.container) {
+                        if let Some(tab)=crate::browser::BrowserTab::create_in(url,fresh,self.device.clone(),self.gpu.queue.clone(),self.bind_texture.clone(),&w.container) {
                             w.tab=tab;w.asleep=None;w.seen_paints=0;w.woke=Some(crate::clock::now());
                         }
                     }
