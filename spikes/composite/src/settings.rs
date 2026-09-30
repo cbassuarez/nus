@@ -1656,13 +1656,8 @@ impl App {
 
     /// Registration is a `reg query` away; ask once per visit, not per frame.
     pub(crate) fn refresh_register_note(&mut self) {
-        self.register_note = if crate::little::registered() {
-            "registered as a browser · links from other apps open little".into()
-        } else if cfg!(target_os = "windows") {
-            "not registered · links from other apps would open elsewhere".into()
-        } else {
-            "registration needs an app bundle (macOS) or .desktop file (Linux) · v1".into()
-        };
+        crate::default_browser::refresh();
+        self.register_note = crate::default_browser::status().1;
     }
 
     /// A click inside the settings pane. Returns true when it was handled.
@@ -2021,7 +2016,7 @@ impl App {
             Hit::StartOnLaunch(b) => if b { "atlas also at launch".into() } else { "atlas from the planet".into() },
             Hit::StartupSound(b) => if b { "startup sound on".into() } else { "startup sound off".into() },
             Hit::MakeDefault => "make nus the default browser".into(),
-            Hit::Unregister => "unregister nus as a browser".into(),
+            Hit::Unregister => "check current default browser".into(),
             Hit::Widevine => "fetch the Widevine module now".into(),
             Hit::LspTool(i) => self.lsp_tool_words(i).1,
             Hit::ForgetPasswords => "forget every saved password".into(),
@@ -2195,16 +2190,13 @@ impl App {
                 crate::widevine::fetch();
                 self.notice(icons::DOWNLOAD, "Widevine", "asked Chromium for the protected-content module");
             }
-            Hit::MakeDefault => match crate::little::register() {
-                Ok(()) => self.register_note = "registered · pick nus in Windows Settings".into(),
-                Err(e) => {
-                    tracing::warn!("register: {e}");
-                    self.register_note = e;
-                }
+            Hit::MakeDefault => {
+                crate::default_browser::request();
+                self.register_note = crate::default_browser::status().1;
             },
             Hit::Unregister => {
-                let _ = crate::little::unregister();
-                self.register_note = "unregistered".into();
+                // Existing internal tag now means Check Again; no deletion.
+                self.refresh_register_note();
             }
             Hit::Preset(k) => {
                 if let Some(t) = crate::themes::all().get(k).cloned() {
@@ -3096,8 +3088,8 @@ impl App {
         scene.rect(card, t.paper);
         // The art, alive, run at a pane's size and shrunk into the card;
         // its line a small box a third of the way down.
-        // Stars need a closer view to remain distinct in a small preview.
-        let sc = card.w / self.px(if key == "space" { 480.0 } else { 1280.0 });
+        // The same native camera/aspect for preview and full-sized Home.
+        let sc = card.w / self.px(1280.0);
         let cmds = {
             let (w, h) = (card.w / sc, card.h / sc);
             let env = crate::art::Env {
@@ -3127,6 +3119,7 @@ impl App {
             if self.motion.reduced() { art.frame_at(env, 8.0) } else { art.frame(env) }
         };
         let native_sky = cmds.iter().any(|cmd| matches!(cmd, crate::art::Cmd::Atmosphere(..)));
+        let native_space = cmds.iter().any(|cmd| matches!(cmd, crate::art::Cmd::Space(..)));
         let commands = self.draw_art_cmds_scaled(scene, card, cmds, sc);
         self.art_previews.get_mut(key).unwrap().recycle_commands(commands);
         // The line, in miniature.
@@ -3151,7 +3144,7 @@ impl App {
         for (i, line) in crate::reader::wrap(&self.fonts, dim, &sub, r.w).into_iter().take(2).enumerate() {
             self.fonts.draw(scene, dim, r.x, r.y + r.h + self.px(31.0 + i as f32 * 12.0), &line);
         }
-        if !self.motion.reduced() {
+        if !self.motion.reduced() && !native_space {
             if native_sky { self.request_sky_frame(); } else { self.request_art_frame(); }
         }
     }
@@ -3970,7 +3963,7 @@ impl App {
                         Art(crate::art::list().into_iter().enumerate().map(|(i, a)| (a.key.clone(), a.name, if a.path.is_none() { match a.key.as_str() {
                             "pond" => "koi swimming behind the prompt".into(),
                             "memphis" => "colorful shapes in motion".into(),
-                            "space" => "constellations · location optional".into(),
+                            "space" => "Earth / Limb · look outward into Darkroom".into(),
                             "sky" => "sun and clouds · location optional".into(),
                             "brain" => "a live view of running processes".into(),
                             _ => a.says,
@@ -4425,7 +4418,7 @@ impl App {
                 ("".into(), Info("FETCH NOW asks Chromium to install or update Widevine. An installed module does not guarantee a service will play. This does not change WebKit playback on macOS.".into())),
                 (
                     "DEFAULT BROWSER".into(),
-                    Buttons(vec![("MAKE DEFAULT".into(), icons::GLOBE, Hit::MakeDefault), ("UNREGISTER".into(), icons::CLOSE, Hit::Unregister)]),
+                    Buttons(vec![("MAKE DEFAULT".into(), icons::GLOBE, Hit::MakeDefault), ("CHECK AGAIN".into(), icons::GLOBE, Hit::Unregister)]),
                 ),
                 (
                     "".into(),

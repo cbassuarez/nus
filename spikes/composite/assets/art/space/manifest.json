@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "source": "recovered build-bivalent.py inputs; original image/catalogue bytes preserved",
+  "images": {
+    "nus_earth_texture.jpg": {
+      "dimensions": [
+        2048,
+        1024
+      ],
+      "bytes": 243369,
+      "sha256": "735d30d833c8b3db7946a34c2fc408ba275651bc9ebaa14ad94cee6f745e81df"
+    },
+    "nus_earth_detail.jpg": {
+      "dimensions": [
+        2048,
+        1024
+      ],
+      "bytes": 274206,
+      "sha256": "d9d77d50bbdc1f38271ca2a1fe713396d0984774cf55f14dfa7b463f4a89b9db"
+    },
+    "nus_earth_clouds.jpg": {
+      "dimensions": [
+        512,
+        256
+      ],
+      "bytes": 22893,
+      "sha256": "18f8382495c08beaf9ac27a31fdaad7bd8c09b9b2fb47a8debc237bc5892e515"
+    },
+    "nus_earth_cloud_detail.jpg": {
+      "dimensions": [
+        1024,
+        512
+      ],
+      "bytes": 69371,
+      "sha256": "5758bd918eba4c265200e4e4fa1bcac607d42ca9e41c34445352507bf5059c6c"
+    }
+  },
+  "catalogue_sha256": "77370b550a101cbe3259a9a2f8c93bd7833d23fc53ded8b2e90bf8bf74606fd7",
+  "catalogue_stars": 9827,
+  "figures": 88,
+  "segments": 674
+}

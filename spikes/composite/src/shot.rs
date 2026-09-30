@@ -190,6 +190,16 @@ impl App {
                 let s = w.tab.shared.borrow();
                 s.title == rest && s.paints > 0
             },
+            "awaitspace" => {
+                let Some(Pane::Home(h))=self.tabs.get(self.active).map(|t|t.focused_ref()) else {return false;};
+                let ready=self.spaces.stats(h.art_id).is_some_and(|s|s.scene_draws>0)&&h.space_hits.len()==2;
+                match rest {
+                    "ready"=>ready,
+                    "outward"=>ready&&h.space_motion.outward()&&!h.space_motion.transitioning(),
+                    "earth"=>ready&&!h.space_motion.outward()&&!h.space_motion.transitioning(),
+                    _=>panic!("unknown awaitspace state"),
+                }
+            },
             "awaitpaint" => {
                 let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };
                 let s = w.tab.shared.borrow();
@@ -267,7 +277,26 @@ impl App {
             eprintln!("shot: {step}");
         }
         match verb {
-            "awaitbundle" | "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" | "awaitdialog" | "awaitpaint" | "awaittranscript" => {},
+            "space" => {
+                let action=match rest {"turn"=>crate::space::Action::Turn,"hold"=>crate::space::Action::Hold,_=>panic!("space expects turn or hold")};
+                let id=match self.tabs[self.active].focused_ref(){Pane::Home(h)=>h.art_id,_=>panic!("space needs a native Home")};
+                assert!(self.space_action(id,action),"Space controls are not available");
+            },
+            "assertspace" => {
+                let h=match self.tabs[self.active].focused_ref(){Pane::Home(h)=>h,_=>panic!("assertspace needs Home")};
+                let stats=self.spaces.stats(h.art_id).expect("Space native renderer has not drawn");
+                assert_eq!(h.space_hits.len(),2,"native Space controls missing");
+                match rest {
+                    "ready"=>assert!(stats.scene_draws>0),
+                    "held"=>assert!(h.space_motion.held()),
+                    "moving"=>assert!(h.space_motion.transitioning()),
+                    "outward"=>assert!(h.space_motion.outward()&&!h.space_motion.transitioning()),
+                    "earth"=>assert!(!h.space_motion.outward()&&!h.space_motion.transitioning()),
+                    _=>panic!("unknown Space assertion"),
+                }
+                eprintln!("SPACE {:?}: {}",stats,h.space_motion.caption(crate::clock::since(self.started).as_secs_f64()));
+            },
+            "awaitspace" | "awaitbundle" | "awaitfile" | "awaitpage" | "awaitreply" | "awaitportowner" | "awaitdialog" | "awaitpaint" | "awaittranscript" => {},
             "benchbegin" => {
                 assert!(crate::perf::enabled() && !crate::clock::recording(), "benchmark requires real-clock NUS_PERF");
                 let s = self.shot.as_mut().unwrap();
@@ -2609,6 +2638,7 @@ impl App {
             "end" => named(NamedKey::End, KeyCode::End),
             "pageup" => named(NamedKey::PageUp, KeyCode::PageUp),
             "pagedown" => named(NamedKey::PageDown, KeyCode::PageDown),
+            "f6" => named(NamedKey::F6, KeyCode::F6),
             "f10" => named(NamedKey::F10, KeyCode::F10),
             "plus" => Some((WKey::Character("+".into()),KeyCode::Equal)),
             "f12" => named(NamedKey::F12, KeyCode::F12),

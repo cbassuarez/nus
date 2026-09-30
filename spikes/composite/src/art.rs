@@ -23,7 +23,7 @@ pub fn dir() -> PathBuf {
     std::env::current_dir().unwrap_or_default().join("profile").join("art")
 }
 
-/// The four that ship, by their file names.
+/// Built-ins, by persisted key. Native artwork still enters through Luau.
 pub const BUILTIN: [(&str, &str, &str); 5] = [
     ("pond", "the pond", include_str!("../assets/art/pond.luau")),
     ("memphis", "memphis", include_str!("../assets/art/memphis.luau")),
@@ -101,6 +101,8 @@ pub enum Cmd {
     Sky(Rect, f32, f32, f32, f32, [f32; 2], [f32;4]),
     /// A cached native volume: rect, conditions, stable view, command ordinal.
     Atmosphere(Rect, nus_render::sky::SkyParams, u64, usize),
+    /// Recovered Limb / Darkroom artwork; no CEF/WebGL or local star chart.
+    Space(Rect, nus_render::space::SpaceParams, u64, usize),
 }
 
 /// What the canvas knows this frame.
@@ -559,6 +561,28 @@ impl mlua::UserData for Canvas {
             s.push(Cmd::Atmosphere(r, p, view_id, ordinal))?;
             Ok(())
         });
+        // The recovered Space scene. The native Home motion controller supplies
+        // camera time; a preview uses the exact settled opening pose.
+        m.add_method("orbital", |_, c, o: mlua::Table| {
+            let mut s = c.0.borrow_mut();
+            let g = |key: &str, default: f32| o.get::<f32>(key).ok().filter(|x| x.is_finite()).unwrap_or(default);
+            let r = Rect::new(g("x",0.0),g("y",0.0),g("w",s.env.w).max(1.0),g("h",s.env.h).max(1.0));
+            let d = nus_render::space::SpaceParams::default();
+            let p = nus_render::space::SpaceParams {
+                phase:g("phase",d.phase),blend:g("blend",d.blend),time:g("time",0.0),
+                exposure:g("exposure",d.exposure),seed:g("seed",42.0).clamp(0.0,1_000_000.0) as u32,
+                lines:o.get::<bool>("lines").unwrap_or(true),
+                reading_rect:[(s.env.line[0]-r.x)/r.w,(s.env.line[1]-r.y)/r.h,s.env.line[2]/r.w,(s.env.line[3]+s.env.rows)/r.h],
+            }.clean();
+            let (view,ordinal) = (s.env.view_id,s.cmds.len());
+            // Prevent user scripts from issuing a large number of expensive
+            // orbital passes in a single canvas. Normal Space needs exactly one.
+            if s.cmds.iter().filter(|c| matches!(c,Cmd::Space(..))).count() >= 2 {
+                return Err(mlua::Error::runtime("at most two orbital views per art canvas"));
+            }
+            s.push(Cmd::Space(r,p,view,ordinal))?;
+            Ok(())
+        });
         // Explicit artwork brightness wins over the application theme.
         // "paper" remains the theme-following default for existing scripts.
         m.add_method("backdrop", |_, c, which: String| {
@@ -672,6 +696,15 @@ pub struct Art {
     pub reloads: u32,
 }
 
+/// Recognize only the exact retired stock file. Edited user artwork is kept.
+/// No file is deleted: an obsolete stock override remains available on disk.
+fn retired_space(source: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    const RETIRED:[u8;32]=[0x9c,0x0f,0x3e,0x51,0x20,0x9b,0x7d,0x69,0x8f,0x67,0xc7,0xec,0x63,0x86,0x14,0x28,0xc7,0x91,0x8c,0x5c,0xe9,0x31,0x28,0x19,0x80,0x69,0x41,0x66,0x7d,0x66,0x0f,0x95];
+    let digest:[u8;32]=Sha256::digest(source.as_bytes()).into();
+    digest==RETIRED
+}
+
 impl Art {
     /// By key: a built-in, or profile/art/<key>.luau.
     pub fn open(key: &str) -> Art {
@@ -703,6 +736,10 @@ impl Art {
     }
 
     fn load(&mut self, src: &str) {
+        let src = if self.key=="space" && retired_space(src) {
+            tracing::info!("Using redesigned Space; recognized retired stock override preserved on disk");
+            include_str!("../assets/art/space.luau")
+        } else {src};
         // String identities are local to one VM; release them while it is alive.
         self.state.borrow_mut().colors.clear();
         self.state.borrow_mut().signals = None;
@@ -877,6 +914,10 @@ impl App {
                     scene.texture(rr, bind, clip);
                     scene.layer(clip);
                 }
+                Cmd::Space(rr, params, view, ordinal) => {
+                    let rr = Rect::new(rr.x*sc+ox,rr.y*sc+oy,rr.w*sc,rr.h*sc);
+                    self.draw_space_cmd(scene,rr,params,(view,ordinal));
+                }
                 Cmd::Text(x, y, text, px, c, font, align, tracked) => {
                     let size = self.px(px) * sc;
                     let p = at(x, y);
@@ -986,6 +1027,30 @@ pub fn open_dir() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_view_identity_and_pose_survive_resize() {
+        let mut art=Art::open("space");art.load(include_str!("../assets/art/space.luau"));
+        for (w,h) in [(1280.0,800.0),(540.0,760.0)] {
+            let commands=art.frame_at(Env{view_id:91,w,h,..Default::default()},125.0);
+            assert!(matches!(commands.as_slice(),[Cmd::Space(_,p,91,0)] if p.time==0.0 && p.blend==0.0));
+        }
+        assert!(!retired_space(include_str!("../assets/art/space.luau")));
+        assert!(!retired_space("-- name: space\nfunction draw(c) c:rect(0,0,10,10,'#ffffff') end"));
+    }
+    #[test]
+    fn orbital_pass_count_is_bounded() {
+        let mut art=Art::open("space");
+        art.load("function draw(c) for i=1,100 do c:orbital({}) end end");
+        let commands=art.frame_at(Env::default(),0.0);
+        assert_eq!(commands.len(),2);assert!(art.status.as_deref().unwrap().contains("two orbital"));
+    }
+    #[test]
+    fn customized_space_is_not_replaced() {
+        let mut art=Art::open("space");
+        art.load("function draw(c) c:rect(0,0,10,10,'#abcdef') end");
+        assert!(matches!(art.frame_at(Env::default(),0.0).as_slice(),[Cmd::Rect(..)]));
+    }
 
     #[test]
     fn cached_artwork_palette_tracks_theme_without_restarting_script() {
@@ -1133,7 +1198,7 @@ mod tests {
 
 
     #[test]
-    fn the_four_that_ship_draw() {
+    fn the_builtins_draw() {
         for (key, _, _) in BUILTIN {
             let mut art = Art::open(key);
             assert!(art.status.is_none(), "{key}: {:?}", art.status);
@@ -1190,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn space_marks_and_labels_respect_current_prompt_rows_at_narrow_widths() {
+    fn space_native_scene_receives_current_prompt_rows_at_narrow_widths() {
         let mut art = Art::open("space");
         art.load(include_str!("../assets/art/space.luau"));
         for (w, h, line, rows) in [
@@ -1200,8 +1265,12 @@ mod tests {
         ] {
             let commands = art.frame_at(Env { w, h, line, rows, pointer: Some((w / 2.0, 190.0)), typed: "a".into(), ..Default::default() }, 8.0);
             assert!(art.status.is_none(), "{:?}", art.status);
-            assert!(commands.iter().any(|c| matches!(c, Cmd::Rect(_, _, radius) if *radius > 0.0)), "stars remain outside the reading area");
-            assert_art_reading_area_clear(&commands, line, rows, [w, h]);
+            assert_eq!(commands.len(),1,"Space must not retain the old chart");
+            let Cmd::Space(r,p,_,_) = &commands[0] else {panic!("Space lacks the native orbital pass")};
+            assert_eq!((r.w,r.h),(w,h));
+            assert_eq!(p.reading_rect,[line[0]/w,line[1]/h,line[2]/w,(line[3]+rows)/h]);
+            assert_eq!(p.blend,0.0);assert_eq!(p.time,0.0);
+            assert_eq!(art.backdrop,Backdrop::Dark);
         }
     }
 
@@ -1320,8 +1389,7 @@ mod tests {
                 assert!(commands.iter().any(|c|matches!(c,Cmd::Atmosphere(..))), "sky has no atmosphere layer");
                 assert_ne!(art.backdrop, Backdrop::Theme);
             } else {
-                assert!(commands.iter().filter(|c|matches!(c,Cmd::Rect(..))).count() > 40, "space has no star field");
-                assert!(commands.iter().any(|c|matches!(c,Cmd::Line(..))), "space has no constellation map");
+                assert!(matches!(commands.as_slice(),[Cmd::Space(..)]), "Space must use Limb/Darkroom, not the retired local chart");
             }
             assert_eq!(art.state.borrow().env.place, place, "art must not invent a user location");
             if place.is_none() {

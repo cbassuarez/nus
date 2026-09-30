@@ -1,0 +1,10 @@
+{
+  "credit": "NASA/Goddard Space Flight Center, Reto Stoeckli; Blue Marble Clouds",
+  "published": "2002-02-11",
+  "source": "https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57747/cloud_combined_8192.tif",
+  "preview_source": "https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57747/cloud_combined_2048.jpg",
+  "description": "Historical satellite cloud composite. Source description combines two days visible imagery and a third day thermal infrared imagery over the poles. Not live weather.",
+  "processing": "Grayscale Lanczos global512x256 JPEG45, regional1024x512 JPEG65, bounds west=-45 east=45 south=20 north=56. Original cloud structures preserved.",
+  "simulation": "Raised 9km shell, soft directional shadows, initial longitude offset and slow uniform eastward drift; no meteorological forecast.",
+  "source_sha256": "d137775d8966ab8d443fd5126dc6e7ad72072bc1ed50555c5818d221735daf0f"
+}

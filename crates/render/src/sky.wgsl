@@ -15,7 +15,8 @@ struct Params {
     cache: vec4<f32>,      // reference time, reprojection plane km, noise offset, unused
     cache_wind: vec4<f32>, // low cloud displacement at cache generation, km
     reading: vec4<f32>,    // top-left normalized x, y, width, height
-    protection: vec4<f32>, // reading strength
+    reading_footer: vec4<f32>,
+    protection: vec4<f32>, // legacy strength, min/max luminance, outside feather
 }
 @group(0) @binding(0) var<uniform> u: Params;
 @group(0) @binding(1) var noise_texture: texture_3d<f32>;

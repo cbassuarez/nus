@@ -1,0 +1,31 @@
+# Run only in an isolated NUS_SHOT profile. This uses app handlers, not OS input.
+wait 800
+key escape
+home
+homelook art space
+window 1280 800
+wait 1500
+assertspace ready
+assertspace earth
+shot space-home-earth
+key f6
+key tab
+key enter
+assertspace held
+shot space-home-held
+key left
+key enter
+assertspace moving
+awaitspace outward
+assertspace outward
+shot space-home-darkroom
+window 540 780
+wait 500
+assertspace ready
+shot space-home-narrow
+key escape
+hometype ? a real native prompt
+wait 200
+shot space-home-typing
+homeclear
+quit

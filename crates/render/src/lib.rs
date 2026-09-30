@@ -12,6 +12,8 @@ pub mod oklch;
 pub mod policy;
 pub mod scene;
 pub mod sky;
+pub mod space;
+pub mod space_motion;
 pub mod text;
 pub mod theme;
 

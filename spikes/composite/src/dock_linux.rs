@@ -62,7 +62,8 @@ fn publish(data: &Path, exe: &Path, signal: Color) -> io::Result<()> {
         let rgba = if mercury{crate::mercury::icon(256)}else{dock_icon::render(256, signal, crate::app_icon::face())};
         atomic_write(&path, &nus_render::icon::png(&rgba, 256, 256))?;
     }
-    let entry = apps.join(format!("{APP_ID}.desktop"));
+    let app_id = crate::default_browser::app_id();
+    let entry = apps.join(format!("{app_id}.desktop"));
     let existing = std::fs::read_to_string(&entry).ok().or_else(|| {
         // Preserve distributor launch flags/actions when making a user override.
         let dirs = std::env::var_os("XDG_DATA_DIRS")
@@ -70,11 +71,15 @@ fn publish(data: &Path, exe: &Path, signal: Color) -> io::Result<()> {
         std::env::split_paths(&dirs)
             .filter(|p| p.is_absolute())
             .find_map(|p| {
-                std::fs::read_to_string(p.join("applications").join(format!("{APP_ID}.desktop")))
+                std::fs::read_to_string(p.join("applications").join(format!("{app_id}.desktop")))
                     .ok()
             })
     });
-    let text=match existing {Some(text)=>set_icon(&text,&path),None=>format!("[Desktop Entry]\nType=Application\nName=nus\nComment=A browser and terminal workspace\nExec={} %U\nIcon={}\nTerminal=false\nStartupWMClass={APP_ID}\nCategories=Development;WebBrowser;\n",exec_argument(exe),entry_value(&path.to_string_lossy()))};
+    // No PATH-based or nus-desktop launcher generated as an icon side effect.
+    // The registration service owns the installed entry's Exec and MIME types.
+    let _ = exe;
+    let Some(existing) = existing else { return Ok(()); };
+    let text = set_icon(&existing, &path);
     atomic_write(&entry, text.as_bytes())
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -135,7 +140,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("nus-dock-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("applications")).unwrap();
-        let entry = root.join(format!("applications/{APP_ID}.desktop"));
+        let entry = root.join(format!("applications/{}.desktop", crate::default_browser::app_id()));
         std::fs::write(&entry,"[Desktop Entry]\nName=nus\nExec=nus --custom %U\nIcon=old\n[Desktop Action New]\nIcon=action-icon\nExec=nus --new\n").unwrap();
         publish(&root, Path::new("/opt/nus"), [0.8, 0.1, 0.2, 1.0]).unwrap();
         let a = std::fs::read_to_string(&entry).unwrap();

@@ -3,6 +3,7 @@ use crate::app::App;
 
 #[derive(Default)]
 pub struct TrafficLights {
+    pub(crate) shell: crate::window_shell::State,
     #[cfg(target_os = "macos")]
     native: Option<native::Controls>,
 }
@@ -13,6 +14,7 @@ impl TrafficLights {
         {
             Self {
                 native: native::Controls::new(window, proxy),
+                shell: Default::default(),
             }
         }
         #[cfg(not(target_os = "macos"))]
@@ -395,12 +397,12 @@ mod native {
         // Match nus's existing fullscreen behavior: its strip omits the lights.
         let fullscreen = app.window.fullscreen().is_some();
         for button in buttons {
-            let hidden = fullscreen || !app.strip_shown() || app.arriving();
+            let hidden = fullscreen || !(app.strip_shown() || app.window_shell_active());
             if button.isHidden() != hidden {
                 button.setHidden(hidden);
             }
         }
-        let visible = !fullscreen && app.strip_shown() && !app.arriving();
+        let visible = !fullscreen && (app.strip_shown() || app.window_shell_active());
         if controls.accessible.replace(Some(visible)) != Some(visible) {
             // AccessKit owns the content view's children. Expose the real native
             // widgets alongside that view instead of creating duplicate AX nodes.
@@ -419,7 +421,7 @@ mod native {
             return;
         }
 
-        let strip = app.strip_rect();
+        let strip = app.window_shell_rect();
         let scale = app.scale as f64;
         let height = strip.bottom() as f64 / scale;
         // Host only the existing header. Native buttons keep their own sizes.

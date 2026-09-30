@@ -696,6 +696,106 @@ impl Scene {
         self.push(i);
     }
 
+    /// A uniform reading surface inside `rect`, feathering only outside it.
+    /// This convenience form uses the normal target's blending convention.
+    pub fn reading_field(&mut self, rect: Rect, feather: f32, color: Color) {
+        self.reading_fields(
+            [(rect, feather), (Rect::new(0.0, 0.0, 0.0, 0.0), 0.0)],
+            color,
+            None,
+        );
+    }
+
+    /// Draw two reading regions with equal strength and max-union coverage.
+    ///
+    /// `legacy_linear_surface` is retained for source compatibility with the
+    /// first reading-field API. It no longer changes RGB or alpha on HDR output:
+    /// a translucent color must never become an opaque local paper there.
+    /// Use an opaque `color` explicitly when a local paper is required.
+    /// The current layer and clip are retained. Coordinates are physical px.
+    pub fn reading_fields(
+        &mut self,
+        fields: [(Rect, f32); 2],
+        color: Color,
+        _legacy_linear_surface: Option<Color>,
+    ) {
+        self.reading_fields_weighted(fields.map(|(r, feather)| (r, feather, 1.0)), color);
+    }
+
+    /// A single reading material with independently weighted regions.
+    /// Each tuple is (core, outward feather in px, opacity multiplier).
+    /// Final alpha = color.a * max(mask_0 * weight_0, mask_1 * weight_1).
+    /// Weights are clamped to [0, 1]; zero/invalid regions contribute nothing.
+    /// In particular, a faint footer cannot double-darken the reading area.
+    /// Output color-space conversion changes RGB only, never these opacities.
+    pub fn reading_fields_weighted(
+        &mut self,
+        fields: [(Rect, f32, f32); 2],
+        color: Color,
+    ) {
+        if color.iter().any(|v| !v.is_finite()) || color[3] <= 0.0 {
+            return;
+        }
+        let valid = |r: Rect| {
+            r.w > 0.0
+                && r.h > 0.0
+                && [r.x, r.y, r.w, r.h, r.right(), r.bottom()]
+                    .iter()
+                    .all(|v| v.is_finite())
+        };
+        let empty = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut regions = [(empty, 0.0, 0.0); 2];
+        let mut count = 0usize;
+        let mut bounds: Option<Rect> = None;
+        for (core, feather, weight) in fields {
+            if !valid(core) || !feather.is_finite() || !weight.is_finite() || weight <= 0.0 {
+                continue;
+            }
+            let feather = feather.max(0.0);
+            let outer = core.inset(-feather);
+            if !valid(outer) {
+                continue;
+            }
+            let union = match bounds {
+                None => outer,
+                Some(old) => {
+                    let x = old.x.min(outer.x);
+                    let y = old.y.min(outer.y);
+                    Rect::new(
+                        x,
+                        y,
+                        old.right().max(outer.right()) - x,
+                        old.bottom().max(outer.bottom()) - y,
+                    )
+                }
+            };
+            // Do not append partial point data when the combined bounds overflow.
+            if !valid(union) {
+                return;
+            }
+            bounds = Some(union);
+            regions[count] = (core, feather, weight.min(1.0));
+            count += 1;
+        }
+        let Some(bounds) = bounds else { return };
+        let Ok(start) = u32::try_from(self.points.len()) else { return };
+        if start.checked_add((count * 3) as u32).is_none() {
+            return;
+        }
+        let mut instance = Instance::rect(bounds, color.map(|v| v.clamp(0.0, 1.0)));
+        instance.kind = 23;
+        instance.extra = start;
+        instance.color2 = count as u32;
+        for &(core, feather, weight) in &regions[..count] {
+            self.points.push([core.x - bounds.x, core.y - bounds.y]);
+            self.points.push([core.w, core.h]);
+            // The third record's previously reserved y component is the
+            // opacity multiplier. No change to the 64-byte Instance ABI.
+            self.points.push([feather, weight]);
+        }
+        self.push(instance);
+    }
+
     /// Draw a sub-rectangle (`uv` = u0, v0, u1, v1) of an external texture.
     pub fn texture_uv(
         &mut self,
@@ -813,6 +913,127 @@ impl Scene {
     /// Finish the frame (closes the open layer). Call before rendering.
     pub fn finish(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod reading_field_tests {
+    use super::*;
+
+    const VEIL: Color = [0.0, 0.0, 0.0, 0.10];
+    const EMPTY: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+
+    #[test]
+    fn reading_field_keeps_the_instance_abi_and_one_clip() {
+        let mut scene = Scene::new();
+        let clip = Rect::new(0.0, 0.0, 500.0, 300.0);
+        let core = Rect::new(50.0, 40.0, 200.0, 60.0);
+        scene.layer(Some(clip));
+        scene.reading_field(core, 20.0, VEIL);
+        assert_eq!(scene.clip(), Some(clip));
+        scene.rect(Rect::new(60.0, 60.0, 3.0, 10.0), [1.0; 4]);
+        scene.finish();
+        assert_eq!(std::mem::size_of::<Instance>(), 64);
+        assert_eq!(scene.layers().len(), 1);
+        assert_eq!(scene.layers()[0].clip, Some(clip));
+        assert_eq!(scene.instances()[0].kind, 23);
+        assert_eq!(scene.instances()[0].color2, 1);
+        assert_eq!(scene.instances()[0].pos, [30.0, 20.0]);
+        assert_eq!(scene.instances()[0].size, [240.0, 100.0]);
+        assert_eq!(scene.points(), &[[20.0, 20.0], [200.0, 60.0], [20.0, 1.0]]);
+    }
+
+    #[test]
+    fn reading_pair_ignores_legacy_opaque_hdr_paper() {
+        let mut scene = Scene::new();
+        let linear = [0.293372, 0.301934, 0.311917, 1.0];
+        scene.reading_fields(
+            [(Rect::new(20.0, 20.0, 200.0, 100.0), 56.0),
+             (Rect::new(10.0, 110.0, 240.0, 28.0), 20.0)],
+            VEIL,
+            Some(linear),
+        );
+        assert_eq!(scene.instances().len(), 1);
+        assert_eq!(scene.points().len(), 6);
+        let instance = &scene.instances()[0];
+        assert_eq!(instance.color2, 2);
+        assert_eq!(instance.color, VEIL);
+        assert_eq!(instance.uv, [0.0; 4]);
+        assert_eq!(instance.phase, 0.0);
+        assert_eq!(scene.points()[2][1], 1.0);
+        assert_eq!(scene.points()[5][1], 1.0);
+    }
+
+    #[test]
+    fn empty_hidden_footer_and_invalid_inputs_do_not_append_points() {
+        let mut scene = Scene::new();
+        scene.reading_fields([(EMPTY, 20.0), (EMPTY, 56.0)], VEIL, None);
+        let core = Rect::new(10.0, 10.0, 80.0, 30.0);
+        scene.reading_field(core, f32::NAN, VEIL);
+        scene.reading_field(core, 20.0, [f32::NAN, 0.0, 0.0, 1.0]);
+        scene.reading_field(core, 20.0, [0.0; 4]);
+        scene.reading_field(Rect::new(f32::MAX, 0.0, f32::MAX, 10.0), 20.0, VEIL);
+        assert!(scene.instances().is_empty());
+        assert!(scene.points().is_empty());
+        scene.reading_fields([(core, 0.0), (EMPTY, 20.0)], VEIL, None);
+        assert_eq!(scene.instances().len(), 1);
+        assert_eq!(scene.instances()[0].pos, [10.0, 10.0]);
+        assert_eq!(scene.instances()[0].size, [80.0, 30.0]);
+        assert_eq!(scene.points()[2], [0.0, 1.0]);
+    }
+
+    #[test]
+    fn reading_and_footer_have_independent_strength_in_one_instance() {
+        let mut scene = Scene::new();
+        scene.reading_fields_weighted(
+            [(Rect::new(20.0, 20.0, 200.0, 100.0), 56.0, 1.0),
+             (Rect::new(10.0, 110.0, 240.0, 28.0), 20.0, 0.3)],
+            VEIL,
+        );
+        assert_eq!(scene.instances().len(), 1);
+        assert_eq!(scene.instances()[0].color[3], 0.10);
+        assert_eq!(scene.points().len(), 6);
+        assert_eq!(scene.points()[2], [56.0, 1.0]);
+        assert_eq!(scene.points()[5], [20.0, 0.3]);
+    }
+
+    #[test]
+    fn invalid_or_zero_weights_are_absent_and_large_weights_are_clamped() {
+        let core = Rect::new(10.0, 10.0, 40.0, 20.0);
+        for weight in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut scene = Scene::new();
+            scene.reading_fields_weighted([(core, 4.0, weight), (EMPTY, 0.0, 1.0)], VEIL);
+            assert!(scene.instances().is_empty());
+            assert!(scene.points().is_empty());
+        }
+        let mut scene = Scene::new();
+        scene.reading_fields_weighted([(core, -4.0, 2.0), (EMPTY, 0.0, 1.0)], VEIL);
+        assert_eq!(scene.points()[2], [0.0, 1.0]);
+        assert_eq!(scene.instances()[0].pos, [10.0, 10.0]);
+    }
+
+    #[test]
+    fn zero_weight_footer_does_not_expand_bounds_and_full_opacity_is_explicit() {
+        let mut scene = Scene::new();
+        let core = Rect::new(10.0, 10.0, 40.0, 20.0);
+        scene.reading_fields_weighted(
+            [(core, 0.0, 1.0), (Rect::new(-1000.0, -1000.0, 4000.0, 4000.0), 50.0, 0.0)],
+            [0.25, 0.25, 0.25, 1.0],
+        );
+        assert_eq!(scene.instances()[0].pos, [10.0, 10.0]);
+        assert_eq!(scene.instances()[0].size, [40.0, 20.0]);
+        assert_eq!(scene.instances()[0].color[3], 1.0);
+        assert_eq!(scene.points().len(), 3);
+    }
+
+    #[test]
+    fn reading_points_follow_existing_polygon_points() {
+        let mut scene = Scene::new();
+        scene.poly(&[[0.0, 0.0], [10.0, 0.0], [5.0, 10.0]], [1.0; 4]);
+        let start = scene.points().len();
+        scene.reading_field(Rect::new(20.0, 20.0, 30.0, 30.0), 5.0, VEIL);
+        assert_eq!(scene.instances().last().unwrap().extra as usize, start);
+        assert_eq!(scene.points().len(), start + 3);
     }
 }
 

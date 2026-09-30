@@ -1,0 +1,24 @@
+{
+  "catalogue": "ESA Hipparcos Main Catalogue (1997), I/239/hip_main, V < 6.6",
+  "frame": "ICRS; coordinate epoch J1991.25; no proper-motion propagation",
+  "fields": "little-endian uint16 RA/65535*360 degrees, int16 Dec/32767*90 degrees, int16 V/100, int16 B-V/1000 (-32768 missing)",
+  "starCount": 9827,
+  "constellationCount": 88,
+  "lineSegments": 674,
+  "positionQuantizationArcseconds": {
+    "ra_max_error": 9.888,
+    "dec_max_error": 4.944
+  },
+  "catalogueSource": "https://cdsarc.cds.unistra.fr/viz-bin/cat/I/239",
+  "catalogueQuery": "https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I%2F239%2Fhip_main&-out=HIP%2CRAICRS%2CDEICRS%2CVmag%2CB-V&-out.max=20000&Vmag=%3C6.6",
+  "catalogueRights": "https://cds.unistra.fr/vizier-org/licences_vizier.html",
+  "linesSource": "https://github.com/Stellarium/stellarium-skycultures/blob/master/western/index.json",
+  "linesLicense": "CC BY-SA; Stellarium team. Only line paths/name data used, no illustrations. Stick figures are a Western convention, not IAU-defined boundary geometry.",
+  "linesLicenseSource": "https://github.com/Stellarium/stellarium-skycultures/blob/master/western/description.md#license",
+  "downloadedUTC": "2026-09-30",
+  "sourceSHA256": {
+    "hipparcos.tsv": "4bdc69b7b9f7d1bcd099c8afd85fc647acaddf5db88675c35b4ce4125297084f",
+    "western.json": "a861accd345249a185a5ecfc2a516f34291c0aa52f4bb8d8337ffc53e9cef6b9",
+    "western-description.md": "dfac2bb33ce1bbd0082601b2fad90182c085b15bbdeeb3b49490dc7ad7b804e1"
+  }
+}

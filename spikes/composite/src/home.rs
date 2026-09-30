@@ -27,6 +27,12 @@ use nus_render::theme::metric as m;
 pub struct HomePane {
     /// Stable across movement/resizing; separate Home panes own separate art caches.
     pub art_id: u64,
+    /// Independent motion state for each native Space Home; never a global camera.
+    pub space_motion: crate::space::Motion,
+    pub space_drawn: Option<u64>,
+    pub space_draft: String,
+    pub space_hits: Vec<(Rect, crate::space::Action)>,
+    pub space_focus: Option<usize>,
     /// Hold artwork text polarity while a draft is being composed.
     pub reading_backdrop: Option<(String, crate::art::Backdrop)>,
     pub library: bool,
@@ -137,7 +143,7 @@ pub struct Latch {
 impl HomePane {
     pub fn new() -> HomePane {
         static NEXT_ART_ID: AtomicU64 = AtomicU64::new(1);
-        HomePane { art_id: NEXT_ART_ID.fetch_add(1, Ordering::Relaxed), reading_backdrop: None, library_ui: Default::default(), library: false, reading: None, library_scroll: 0.0, library_reach: 0.0, rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, row_start: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new(), shown: None, cur: Default::default(), line: None, dragging: false, clicked: None }
+        HomePane { art_id: NEXT_ART_ID.fetch_add(1, Ordering::Relaxed), reading_backdrop: None, space_motion: Default::default(), space_drawn: None, space_draft: String::new(), space_hits: Vec::new(), space_focus: None, library_ui: Default::default(), library: false, reading: None, library_scroll: 0.0, library_reach: 0.0, rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, row_start: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new(), shown: None, cur: Default::default(), line: None, dragging: false, clicked: None }
     }
 }
 
@@ -471,6 +477,7 @@ impl App {
     /// Keys on the prompt. Returns true when it took the key.
     pub(crate) fn home_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         if self.library_key(ev) {return true;}
+        if self.space_key(ev) {return true;}
         use winit::keyboard::{Key as K, NamedKey};
         if ev.state != winit::event::ElementState::Pressed {
             return false;
@@ -483,6 +490,7 @@ impl App {
         }
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| t.focused()) else { return false };
         // The line's own editing: typing, erasing, paste, copy (field.rs).
+        h.space_motion.typed(crate::clock::since(self.started).as_secs_f64());
         let took = crate::field::edit_at(&mut h.input, &mut h.cur, ev, mods, 2000);
         if took.changed() {
             h.sel = if h.input.trim().is_empty() {0} else {1};
@@ -531,9 +539,16 @@ impl App {
     /// A click on a row.
     pub(crate) fn home_click(&mut self, x: f32, y: f32) -> bool {
         if self.library_click(x,y){return true;}
+        if self.space_controls_available() {
+            let hit=self.tabs.get(self.active).and_then(|t|match t.focused_ref() {
+                Pane::Home(h)=>h.space_hits.iter().find(|(r,_)|r.contains(x,y)).map(|(_,a)|(h.art_id,*a)),_=>None,
+            });
+            if let Some((id,action))=hit {return self.space_action(id,action);}
+        }
         let i = self.active;
         let pad = self.touch_pad();
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| t.focused()) else { return false };
+        h.space_focus=None;
         // The route keys sit over the paper, so they answer first.
         if let Some(&(_, key)) = h.keys.iter().find(|(r, _)| r.contains(x, y)) {
             match key {
@@ -614,6 +629,8 @@ impl App {
     /// The prompt, drawn: the line alone, or under the plate.
     pub(crate) fn draw_home(&mut self, scene: &mut Scene, p: &mut HomePane, focused: bool) {
         let _timing = crate::perf::scope("home_draw");
+        p.space_hits.clear();
+        p.space_drawn=None;
         if p.library {self.draw_library(scene,p);return;}
         let t = self.theme.clone();
         let r = p.rect;
@@ -621,6 +638,8 @@ impl App {
         scene.rect(r, paper);
         let plate = self.behavior.home_look == HomeLook::Plate;
         let art = self.behavior.home_look == HomeLook::Art;
+        let space_art = art && self.behavior.home_art=="space";
+        if !space_art {p.space_focus=None;}
         let (mut y0, up) = if plate { self.draw_plate_icon(scene, p) } else { (r.y + r.h * if self.behavior.prompt.top { 0.18 } else { 0.34 }, 1.0) };
         let px = self.px(20.0);
         let line_w = (r.w * if self.behavior.prompt.wide { 0.84 } else { 0.62 }).max(self.px(320.0)).min((r.w - self.px(56.0)).max(0.0));
@@ -646,28 +665,33 @@ impl App {
         let row_h = self.px(if self.behavior.prompt.compact {25.0} else {34.0});
         let heights:Vec<f32> = rows.iter().map(|row|if self.saved_detail(row).is_some() && self.behavior.prompt.saved_preview && !self.behavior.prompt.compact {self.px(54.0)} else {row_h}).collect();
         let rows_y=y0+self.px(30.0)+if news_n>0 {self.px(26.0)} else {0.0};
-        let (start,visible)=crate::home_contrast::visible_rows(&heights,sel,p.row_start,x0,rows_y,line_w,foot_y-self.px(8.0),news_n,self.px(8.0));
+        let (start,visible)=crate::home_contrast::visible_rows(&heights,sel,p.row_start,x0,rows_y,line_w,foot_y-if space_art {self.space_footer_height(r)}else{self.px(8.0)},news_n,self.px(8.0));
         p.row_start=start;
         let prompt=Rect::new(x0,y0-px*1.2,line_w,px*1.2+self.px(14.0));
         let bottom=if plate && p.input.trim().is_empty() {prompt.bottom()} else {visible.last().map_or(prompt.bottom(),|(rr,_)|rr.bottom())};
         let top=private.as_ref().map_or(prompt.y,|(head,_)|head-self.px(44.0));
         let reading=Rect::new(x0-self.px(14.0),top-self.px(5.0),line_w+self.px(28.0),bottom-top+self.px(10.0));
-        let footer=if self.behavior.prompt.hints && private.is_none() {Rect::new(r.x+self.px(16.0),foot_y-self.px(18.0),(r.w-self.px(32.0)).max(0.0),self.px(28.0))} else {Rect::default()};
+        let footer=if self.behavior.prompt.hints && private.is_none() {Rect::new(r.x+self.px(16.0),foot_y-self.px(18.0),(r.w-self.px(32.0)).max(0.0),self.px(28.0))} else {Rect::new(0.0,0.0,0.0,0.0)};
         let palette = if art {
             self.draw_home_art(scene,p,prompt,reading,footer)
         } else {
             p.reading_backdrop=None;
             let palette=crate::home_contrast::Palette::new(crate::art::Backdrop::Theme,paper,t.ink,t.dim,self.surface.signal);
             if palette.surface!=paper {
-                scene.reading_field(reading,self.px(56.0),palette.veil);
-                scene.reading_field(footer,self.px(20.0),palette.veil);
+                let clip=scene.clip();
+                scene.layer(Some(clip.map_or(r,|c|r.intersect(&c))));
+                scene.reading_fields(
+                    [(reading,self.px(56.0)),(footer,self.px(20.0))],
+                    palette.veil,Some(palette.surface),
+                );
+                scene.layer(clip);
             }
             palette
         };
         let ink=palette.primary;
-        // Protection now carries contrast; extra copies of every glyph would
-        // soften small text and spend atlas/instance work unnecessarily.
-        let dark=false;
+        // Text/selection stay opaque independently of the artwork veil. A faint
+        // veil is not a per-pixel contrast guarantee; do not fade the glyphs
+        // with it or add duplicate glyph draws that soften small typography.
         let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
         if let Some((head_y,lines))=private {
             let label=Style {font:self.f.strong,px:self.px(16.0),color:ink,tracking:0.0};
@@ -715,9 +739,9 @@ impl App {
         if p.input.is_empty() {
             let hint=Style {color:fade(palette.secondary,up),px:self.px(16.0),..mono};
             let text=self.fit(hint,"Search the web or enter a URL",room-self.px(8.0));
-            self.draw_lit(scene,hint,tx+self.px(8.0),y0,&text,dark);
+            self.fonts.draw(scene,hint,tx+self.px(8.0),y0,&text);
         }
-        self.draw_lit(scene, mono, tx, y0, &shown, dark);
+        self.fonts.draw(scene, mono, tx, y0, &shown);
         if let Some(band)=selection_band {
             let clip=scene.clip();scene.layer(Some(clip.map_or(band,|c|band.intersect(&c))));
             self.fonts.draw(scene,Style {color:fade(palette.selected,up),..mono},tx,y0,&shown);
@@ -726,10 +750,10 @@ impl App {
         let tw = edges.get(at - start).map(|e| e - tx).unwrap_or(0.0);
         p.line = Some(LineGeom { rect: Rect::new(x0, y0 - px * 1.2, line_w, px * 1.8), start, edges });
         // The active edge follows the shared caret; the range wash stays still.
-        if focused {
+        if focused && p.space_focus.is_none() {
             let x = x0 + caret_w + tw + self.px(1.0);
             // The same pipe marks insertion or the active selection edge.
-            self.draw_home_caret(scene, x, y0, px, up, p.since, palette.caret(self.caret_color(),selection_band.is_some()),palette.surface);
+            self.draw_home_caret(scene, x, y0, px, up, p.since, palette.caret(self.caret_color(),selection_band.is_some_and(|b|b.contains(x,y0-1.0))),palette.surface);
         }
         scene.hline(x0, y0 + self.px(12.0), line_w, self.px(m::HAIRLINE), fade(palette.secondary, up));
         p.hits.clear();
@@ -738,14 +762,13 @@ impl App {
         if plate && p.input.trim().is_empty() {
             self.draw_stops(scene, p, &rows, sel, up);
         } else {
-            let mut y = y0 + self.px(30.0);
+            let y = y0 + self.px(30.0);
             let (mx, my) = self.mouse;
             if news_n > 0 {
                 // The caption: since when, and how it goes.
                 let since = self.news.since.filter(|s| crate::journal::now().saturating_sub(*s) < 7 * 86400).map(|s| format!("SINCE {}", crate::journal::when(s).to_uppercase())).unwrap_or_else(|| "SINCE LAST TIME".into());
                 let cap = Style { color: fade(palette.accent, up), px: self.px(10.0), tracking: self.px(1.2), ..label };
-                self.draw_lit(scene, cap, x0, y + self.px(18.0), &format!("WHILE YOU WERE AWAY · {since} · ESC DISMISSES"), dark);
-                y += self.px(26.0);
+                self.fonts.draw(scene, cap, x0, y + self.px(18.0), &format!("WHILE YOU WERE AWAY · {since} · ESC DISMISSES"));
             }
             for (rr,k) in visible {
                 let row=&rows[k];
@@ -762,9 +785,9 @@ impl App {
                 }
                 let base = y + row_h / 2.0 + self.px(4.0);
                 let num_w = self.px(28.0);
-                self.draw_lit(scene, dim, x0, base, &row.num, dark);
+                self.fonts.draw(scene, dim, x0, base, &row.num);
                 let text = self.fit(label, &row.text, line_w - num_w);
-                self.draw_lit(scene, Style { color: fade(if hot {ink} else {palette.secondary},up), ..label }, x0 + num_w, base, &text, dark);
+                self.fonts.draw(scene, Style { color: fade(if hot {ink} else {palette.secondary},up), ..label }, x0 + num_w, base, &text);
                 p.hits.push((rr, k));
             }
         }
@@ -774,6 +797,7 @@ impl App {
         if self.behavior.prompt.hints {
             self.draw_home_keys(scene, p, foot_y, up, palette, sel, rows.len());
         }
+        if space_art {self.draw_space_controls(scene,p,palette.primary);}
         let _ = dim;
     }
 
@@ -862,25 +886,16 @@ impl App {
         }
     }
 
-    /// Text over an art: with `dark`, an ink shadow a pixel under the words.
-    fn draw_lit(&mut self, scene: &mut Scene, st: Style, x: f32, y: f32, text: &str, dark: bool) -> f32 {
-        if dark {
-            // Two passes: a soft one two pixels down, a crisp one beneath.
-            let d = self.px(1.0);
-            let soft = Style { color: [0.0, 0.0, 0.0, 0.35 * st.color[3]], ..st };
-            let crisp = Style { color: [0.0, 0.0, 0.0, 0.6 * st.color[3]], ..st };
-            self.fonts.draw(scene, soft, x + d * 2.0, y + d * 2.0, text);
-            self.fonts.draw(scene, soft, x - d, y + d, text);
-            self.fonts.draw(scene, crisp, x + d, y + d, text);
-        }
-        self.fonts.draw(scene, st, x, y, text)
+    /// The same native pipe and cadence, with a color resolved for this art.
+    fn draw_home_caret(&self, scene:&mut Scene, x:f32, baseline:f32, size:f32, alpha:f32, since:Instant, color:nus_render::Color, background:nus_render::Color) {
+        if !self.caret_enabled.get() || (!self.window_focused && !self.painting_hatch) || alpha<=0.0 {return;}
+        let weight=self.px(self.cursor.weight.clamp(1.0,6.0)).max(1.0);
+        let r=Rect::new(x.round(),(baseline-size*0.8).round(),weight,(size*0.98).round().max(1.0));
+        let opacity=self.caret_sample(since).opacity;
+        let glow=self.cursor.glow.clamp(0.0,1.0)*if nus_render::policy::luminance(background)>0.5 {0.2} else {1.0};
+        if opacity>0.0 {scene.caret(r,fade(color,alpha*opacity),glow,self.cursor.hdr_gain);}
     }
-}
 
-impl App {
-    /// The art, running behind the line: the pane is its canvas, the
-    /// line's box (and the rows' reach while typing) is what it keeps
-    /// clear of, the pointer and the typing and the taps are its inputs.
     fn draw_home_art(&mut self, scene: &mut Scene, p: &mut HomePane, prompt: Rect, reading: Rect, footer: Rect) -> crate::home_contrast::Palette {
         let key = self.behavior.home_art.clone();
         if self.art.as_ref().map(|a| a.key != key).unwrap_or(true) {
@@ -926,33 +941,55 @@ impl App {
         if p.reading_backdrop.as_ref().is_none_or(|(old,_)|*old!=key) || !hold {p.reading_backdrop=Some((key.clone(),requested));}
         let backdrop=p.reading_backdrop.as_ref().map_or(requested,|(_,b)|*b);
         let seed=backdrop.foreground(t.mode,t.ink,t.paper);
-        let palette=crate::home_contrast::Palette::new(backdrop,self.paper(),seed,t.dim,self.surface.signal);
-        // Only the stock single atmosphere can enforce the whole final image.
-        // Custom scripts may paint on top, so they use the composited fallback.
+        let palette=crate::home_contrast::Palette::for_art(backdrop,self.paper(),seed,t.dim,self.surface.signal);
+        // Preserve native sky's scheduling policy, but let the compositor own
+        // reading protection for every background. There is no second sky-only
+        // protection ABI to keep in sync with Home's current layout.
         let native_sky=key=="sky" && cmds.len()==1 && matches!(cmds[0],crate::art::Cmd::Atmosphere(..));
         if native_sky {
-            for cmd in &mut cmds {if let crate::art::Cmd::Atmosphere(rr,params,_,_)=cmd {
-                let local=|area:Rect| if area.w>0.0 && area.h>0.0 {[(area.x-r.x-rr.x)/rr.w,(area.y-r.y-rr.y)/rr.h,area.w/rr.w,area.h/rr.h]} else {[0.0;4]};
-                params.reading_rect=local(reading);params.reading_footer=local(footer);
-                params.reading_luminance=palette.bounds;params.reading_feather=self.px(56.0)/rr.h.max(1.0);
+            for cmd in &mut cmds {if let crate::art::Cmd::Atmosphere(_,params,_,_)=cmd {
+                params.reading_rect=[0.0;4];
                 params.reading_strength=0.0;
             }}
         }
+        let native_space=key=="space" && cmds.iter().any(|c|matches!(c,crate::art::Cmd::Space(..)));
+        if native_space {
+            let now=crate::clock::since(self.started).as_secs_f64();
+            let eligible=self.space_controls_available() && self.art_budget()!=crate::power::Budget::Still;
+            p.space_motion.environment(now,eligible,self.prompt_composing,reduced);
+            if p.space_draft!=p.input {p.space_motion.typed(now);p.space_draft.clone_from(&p.input);}
+            let frame=p.space_motion.frame(now);
+            for cmd in &mut cmds {if let crate::art::Cmd::Space(_,params,_,_)=cmd {
+                params.phase=frame.phase;params.blend=frame.blend;params.time=frame.time;
+            }}
+            p.space_drawn=Some(self.frames);
+        } else {p.space_focus=None;}
         let commands = self.draw_art_cmds(scene, r, cmds);
         self.art.as_mut().unwrap().recycle_commands(commands);
-        if !native_sky {
-            let clip=scene.clip();scene.layer(Some(clip.map_or(r,|c|r.intersect(&c))));
-            scene.reading_field(reading,self.px(56.0),palette.veil);
-            scene.reading_field(footer,self.px(20.0),palette.veil);
-            scene.layer(clip);
-        }
+        let clip=scene.clip();scene.layer(Some(clip.map_or(r,|c|r.intersect(&c))));
+        // One weighted material: 10% under the prompt/results, 3% under the
+        // footer, with no additive seam and no target-dependent opaque paper.
+        scene.reading_fields_weighted(
+            [(reading,self.px(56.0),1.0),
+             (footer,self.px(20.0),crate::home_contrast::ART_FOOTER_WEIGHT)],
+            palette.veil,
+        );
+        scene.layer(clip);
         if let Some(err) = status {
             let dim = Style { color: self.surface.signal, ..self.label() };
             let line = format!("ART · {} · {}", key.to_uppercase(), err);
             self.fonts.draw(scene, dim, r.x + self.px(28.0), r.bottom() - self.px(48.0), &line);
         }
         // Alive: keep drawing — as the power budget allows (power.rs).
-        if !reduced {
+        if native_space {
+            let now=crate::clock::since(self.started).as_secs_f64();
+            if let Some(wake)=p.space_motion.next_wake(now) {
+                let cadence=if self.art_budget()==crate::power::Budget::Half {1.0/30.0}else{1.0/60.0};
+                let delay=if p.space_motion.transitioning() {(wake-now).max(cadence)}else{(wake-now).max(0.001)};
+                let at=crate::clock::now()+std::time::Duration::from_secs_f64(delay);
+                self.art_deadline=Some(self.art_deadline.map_or(at,|old|old.min(at)));
+            }
+        } else if !reduced {
             if native_sky && crate::clock::since(self.last_key) < crate::sky::TYPING_HOLD {
                 if self.art_budget() != crate::power::Budget::Still {
                     let at = self.last_key + crate::sky::TYPING_HOLD;

@@ -64,15 +64,26 @@ impl App {
 
     /// Home supplies the artwork's foreground, independently of the app theme.
     pub(crate) fn draw_saved_row_ink(&mut self, scene: &mut Scene, r: Rect, row: &PaletteRow, selected: bool, preview: bool, fg: nus_render::Color) {
+        self.draw_saved_row_colors(scene,r,row,selected,preview,fg,None,1.0);
+    }
+
+    pub(crate) fn draw_saved_row_home(&mut self, scene:&mut Scene, r:Rect, row:&PaletteRow, preview:bool, palette:crate::home_contrast::Palette, up:f32) {
+        self.draw_saved_row_colors(scene,r,row,false,preview,palette.primary,Some(palette),up);
+    }
+
+    fn draw_saved_row_colors(&mut self, scene:&mut Scene, r:Rect, row:&PaletteRow, selected:bool, preview:bool, fg:nus_render::Color, home:Option<crate::home_contrast::Palette>, up:f32) {
         let Some((detail, verb)) = self.saved_detail(row) else { return };
-        let signal = if selected { fg } else { self.surface.signal };
-        if !selected { scene.rect(r, crate::app::fade(self.surface.signal, 0.045)); }
+        let signal = crate::app::fade(home.map_or(if selected {fg} else {self.surface.signal},|p|p.accent),up);
+        if !selected && home.is_none() { scene.rect(r, crate::app::fade(self.surface.signal, 0.045)); }
+        let detail_ink=crate::app::fade(home.map_or(crate::app::fade(fg,0.67),|p|p.secondary),up);
+        let badge_ink=crate::app::fade(home.map_or(crate::app::fade(fg,0.7),|p|p.secondary),up);
+        let fg=crate::app::fade(fg,up);
         scene.vline(r.x, r.y+self.px(6.0),r.h-self.px(12.0),self.px(2.0),signal);
         // Folded bookmark, with the same proportions at every density.
         let x=r.x+self.px(15.0);let y=r.y+(r.h-self.px(15.0))/2.0;
         scene.poly(&[[x,y],[x+self.px(10.0),y],[x+self.px(10.0),y+self.px(15.0)],[x+self.px(5.0),y+self.px(11.0)],[x,y+self.px(15.0)]],signal);
         let tx=r.x+self.px(39.0);
-        let badge=Style {color:crate::app::fade(fg,0.7),px:self.px(9.0),..self.label()};
+        let badge=Style {color:badge_ink,px:self.px(9.0),..self.label()};
         let vw=self.fonts.measure(badge,verb);
         self.fonts.draw(scene,badge,r.right()-self.px(14.0)-vw,r.y+r.h/2.0+self.px(3.0),verb);
         let available=(r.w-self.px(67.0)-vw).max(0.0);
@@ -80,7 +91,7 @@ impl App {
         let base=r.y+if preview {self.px(20.0)} else {r.h/2.0+self.px(4.0)};
         self.fonts.draw(scene,title,tx,base,&self.fit(title,&row.text,available));
         if preview {
-            let code=Style{font:self.f.term,px:self.px(11.0),color:crate::app::fade(fg,0.67),tracking:0.0};
+            let code=Style{font:self.f.term,px:self.px(11.0),color:detail_ink,tracking:0.0};
             self.fonts.draw(scene,code,tx,base+self.px(18.0),&self.fit(code,&detail,available));
         }
     }

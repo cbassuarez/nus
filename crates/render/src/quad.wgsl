@@ -696,6 +696,30 @@ fn carapace(in: VsOut) -> vec4<f32> {
 // params.y = thickness). 3 and 4 blend toward color2 along a diagonal
 // gradient when color2.a > 0; `phase` slides it (aurora).
 fn shade(in: VsOut) -> vec4<f32> {
+    if in.kind == 23u {
+        // One or two rectangular cores; coverage only feathers OUTSIDE them.
+        // Weighted max-union avoids double alpha where the footer meets results.
+        // The reading area and footer can have different opacity, in one draw.
+        var coverage = 0.0;
+        for (var region = 0u; region < min(in.raw2, 2u); region = region + 1u) {
+            let at = in.extra + region * 3u;
+            let origin = points[at];
+            let size = points[at + 1u];
+            let feather = points[at + 2u].x;
+            let weight = clamp(points[at + 2u].y, 0.0, 1.0);
+            let half_size = size * 0.5;
+            let outside = max(abs(in.local - origin - half_size) - half_size, vec2(0.0));
+            let distance = length(outside);
+            var mask = select(0.0, 1.0, distance <= 0.0);
+            if feather > 0.0 {
+                mask = 1.0 - smoothstep(0.0, feather, distance);
+            }
+            coverage = max(coverage, mask * weight);
+        }
+        // fs_main converts RGB for extended-linear output; alpha stays the
+        // requested alpha on every target. Never substitute an opaque paper.
+        return vec4(in.color.rgb, in.color.a * coverage);
+    }
     if in.kind == 22u {
         return carapace(in);
     }

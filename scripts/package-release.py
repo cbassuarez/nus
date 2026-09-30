@@ -147,9 +147,10 @@ def main():
             (stage/'nus').write_text('#!/bin/sh\nset -eu\ndir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport LD_LIBRARY_PATH="$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$dir/nus-desktop" "$@"\n')
             (stage/'nus').chmod(0o755)
             shutil.copy2(ROOT/'assets/icon/nus-256.png', stage/'nus.png')
-            (stage/'nus.desktop').write_text('[Desktop Entry]\nType=Application\nName=nus\nComment=A terminal and browser in one workspace\nExec=nus\nIcon=nus\nTerminal=false\nCategories=Development;TerminalEmulator;WebBrowser;\n')
+            shutil.copy2(ROOT/'scripts/install-linux-browser-entry.sh', stage/'install-desktop.sh')
+            (stage/'install-desktop.sh').chmod(0o755)
             signing = 'checksum'
-            instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA, NSS and libxkbcommon-x11 (X11).\nChromium also needs user namespaces allowed by the system and AppArmor policy,\nor an administrator-installed sandbox helper. The archive does not install a privileged helper.\nIf the sandbox is unavailable, nus explains the problem in the page; sandboxing stays enabled.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\nTo add a desktop entry, copy nus.desktop to ~/.local/share/applications,\nset Exec and Icon to the absolute extracted paths, and keep the folder in place.\n'
+            instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA, NSS and libxkbcommon-x11 (X11).\nChromium also needs user namespaces allowed by the system and AppArmor policy,\nor an administrator-installed sandbox helper. The archive does not install a privileged helper.\nIf the sandbox is unavailable, nus explains the problem in the page; sandboxing stays enabled.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\nTo install the browser launcher, keep this folder in a stable location and run ./install-desktop.sh.\nThis registers HTTP/HTTPS handling without changing your defaults. Choose Make Default in nus to change them.\n'
         shutil.copy2(ROOT/'LICENSE', stage/'LICENSE')
         if args.stage_only:
             print(f'Staged unsigned Windows payload at {stage}; sign {", ".join(WINDOWS_SIGNED)}, then run --finalize-staged.')

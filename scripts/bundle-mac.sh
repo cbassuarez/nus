@@ -60,6 +60,10 @@ ditto "$framework" "$app/Contents/Frameworks/Chromium Embedded Framework.framewo
 plist() { # plist <path> <executable> <identifier> <is-helper>
   local helper_keys=""
   [[ "$4" == 1 ]] && helper_keys="<key>LSUIElement</key><string>1</string>"
+  local browser_keys=""
+  if [[ "$4" == 0 ]]; then
+    browser_keys='<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>dev.nus.web</string><key>CFBundleTypeRole</key><string>Viewer</string><key>CFBundleURLSchemes</key><array><string>http</string><string>https</string></array></dict></array>'
+  fi
   local icon_key="<key>CFBundleIconFile</key><string>$name.icns</string>"
   cat > "$1" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -85,6 +89,7 @@ plist() { # plist <path> <executable> <identifier> <is-helper>
   <key>NSBluetoothAlwaysUsageDescription</key><string>A page in nus asked to use Bluetooth.</string>
   <key>NSWebBrowserPublicKeyCredentialUsageDescription</key><string>A page in nus asked to use a passkey.</string>
   $helper_keys
+  $browser_keys
 </dict></plist>
 PLIST
 }

@@ -90,3 +90,16 @@ The file's first lines say what it is:
 
 Be quiet: a few hundred primitives a frame is plenty; low alphas; slow
 motion; nothing on the line.
+
+
+### Native orbital scene
+
+`c:orbital({})` draws the shared, cached Limb / Darkroom renderer. It is the
+implementation behind the existing `space` key, not a separate built-in choice.
+Options `x,y,w,h` default to the full canvas; `phase` defaults to the recovered
+opening camera; `blend` is 0 for Earth and 1 for Darkroom; `time` defaults to 0;
+`exposure=1`, `seed=42`, `lines=true`. At most two orbital commands per canvas.
+The native Home owns the Space turn/hold/typing clock. Settings uses the static
+opening pose. `c.prompt` and the current result rows attenuate catalogue stars
+and exclude native labels; this does not add another opaque text-backdrop layer.
+Maps are historical composites, not live imagery. See `space/NOTICE.md`.

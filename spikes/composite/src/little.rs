@@ -208,6 +208,8 @@ impl App {
             self.window.focus_window();
             return;
         }
+        // A requested URL is more important than a decorative introduction.
+        if self.splash.is_some() { self.finish_arrival(); self.splash = None; }
         if let Some(p) = url.strip_prefix("file://") {
             self.open_file(std::path::Path::new(p), false);
             self.window.focus_window();
@@ -224,7 +226,12 @@ impl App {
             l.window.focus_window();
             return;
         }
-        self.little_request = Some(url.to_string());
+        if self.little_request.is_some() {
+            // Do not overwrite an earlier URL whose window is still being made.
+            self.open_url_by_other(url);
+        } else {
+            self.little_request = Some(url.to_string());
+        }
     }
 
     pub fn attach_little(&mut self, window: Arc<Window>, url: &str) {

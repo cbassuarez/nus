@@ -46,6 +46,13 @@ mod compatibility;
 mod themes;
 mod appearance;
 mod macos;
+mod startup_policy;
+mod window_shell;
+mod window_placement;
+mod default_browser;
+mod external_open;
+#[cfg(target_os = "macos")]
+mod external_open_macos;
 mod dock;
 mod downloads;
 mod sidebar;
@@ -143,6 +150,7 @@ mod toast;
 mod page_menu;
 mod art;
 mod sky;
+mod space;
 mod weather;
 mod forge;
 mod power;
@@ -337,6 +345,9 @@ impl Host {
         // The window comes up as the prefs say: last place, maximized,
         // fullscreen, or centred at 1440×900.
         let prefs = prefs::Prefs::load();
+        let saved_rect = prefs.window_rect.filter(|&(x,y,w,h)|
+            w > 0 && h > 0 && w <= 32768 && h <= 32768
+                && x.unsigned_abs() < (1 << 24) && y.unsigned_abs() < (1 << 24));
         let secondary = from.is_some();
         let start = if secondary { settings::WindowStart::Centered } else { prefs.behavior.as_ref().map(|b| b.window_start).unwrap_or(settings::WindowStart::Last) };
         // The icon from the first frame: Broadsheet ink and signal until
@@ -357,7 +368,7 @@ impl Host {
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
         match start {
             settings::WindowStart::Last => {
-                if let Some((x, y, w, h)) = prefs.window_rect {
+                if let Some((x, y, w, h)) = saved_rect {
                     attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y)).with_inner_size(winit::dpi::PhysicalSize::new(w, h));
                 }
             }
@@ -387,7 +398,7 @@ impl Host {
         #[cfg(target_os="linux")]
         {
             // The same ID on Wayland and X11 links the window to its launcher.
-            attrs=winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs,"dev.nus.app","nus");
+            attrs=winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs,default_browser::app_id(),"nus");
         }
         let attrs = crate::macos::main_window_attributes(attrs);
         let window = match event_loop.create_window(attrs) {
@@ -415,6 +426,9 @@ impl Host {
                     a.register_window();
                 }
                 // Prepare the complete shell before making the window visible.
+                window_placement::place(&window, start, saved_rect.is_some(), secondary);
+                let initial_size = window.inner_size();
+                a.resize(initial_size.width, initial_size.height);
                 a.redraw();
                 if self.made == 0 { self.dock.finish_launch(); }
                 window.set_visible(true);
@@ -542,7 +556,9 @@ impl ApplicationHandler<UserEvent> for Host {
             UserEvent::WindowControl(id,action) => {
                 if action==0 {self.window_event(_el,id,WindowEvent::CloseRequested);}
                 else if let Some(a)=self.apps.iter_mut().find(|a|a.window.id()==id) {
-                    if action==1 {a.window.set_minimized(true);} else {a.toggle_fullscreen();}
+                    if action==1 {a.window.set_minimized(true);}
+                    else if action==3 {window_resize::zoom(&a.window);}
+                    else if action==2 {a.toggle_fullscreen();}
                 }
             }
             UserEvent::HatchQuit => if !self.notes_hold_quit() { _el.exit() },
@@ -909,6 +925,8 @@ impl ApplicationHandler<UserEvent> for Host {
             }
             return;
         }
+        // Window-only controls precede every nus-owned content modal.
+        if a.route_window_shell(&event) { return; }
         match event {
             WindowEvent::CloseRequested => {
                 // Keep the owning App/PTYs alive; closing a window is not Quit.
@@ -950,7 +968,10 @@ impl ApplicationHandler<UserEvent> for Host {
                     a.follow_system_appearance(mode == nus_render::Mode::Ink);
                 }
             }
-            WindowEvent::Focused(f) => a.focus_changed(f),
+            WindowEvent::Focused(f) => {
+                a.focus_changed(f);
+                if f { default_browser::refresh(); }
+            },
             WindowEvent::ModifiersChanged(m) => a.modifiers(m.state()),
             WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
                 a.last_key = clock::now();
@@ -1073,6 +1094,14 @@ fn main() -> ExitCode {
 }
 
 fn run() -> i32 {
+    let invocation: Vec<String> = std::env::args().skip(1).collect();
+    let external = match external_open::arguments(&invocation) {
+        Ok(urls) => urls,
+        Err(error) => { eprintln!("nus: {error}"); return 2; }
+    };
+    if external.is_none() {
+        if let Some(code) = default_browser::maintenance(&invocation) { return code; }
+    }
     // This probe is a separate process: never unshare the desktop UI itself.
     #[cfg(target_os = "linux")]
     if std::env::args().nth(1).as_deref() == Some("--nus-check-userns") {
@@ -1086,7 +1115,7 @@ fn run() -> i32 {
         println!("{}", serde_json::to_string(&compatibility::contract()).unwrap());
         return 0;
     }
-    let child_process = std::env::args().any(|a| a == "--type" || a.starts_with("--type="));
+    let child_process = external.is_none() && std::env::args().any(|a| a == "--type" || a.starts_with("--type="));
     // Chromium children must enter CEF before profile, logging, or UI setup.
     if child_process {
         browser_runtime::load_library();
@@ -1094,7 +1123,10 @@ fn run() -> i32 {
         let mut cef_app = browser::AppBuilder::new(browser::AppHandler);
         return execute_process(Some(args.as_main_args()), Some(&mut cef_app), browser_runtime::sandbox_info()).max(0);
     }
-    let urls = little::urls_from_args();
+    let urls = external.unwrap_or_else(little::urls_from_args);
+    // Receive cold-launch Apple events before Dock/environment preparation pumps AppKit.
+    #[cfg(target_os = "macos")]
+    let _external_receiver = external_open_macos::install();
     perf::start();
     let _private_root = match private::prepare() {
         Ok(root) => root,
@@ -1165,12 +1197,15 @@ fn run() -> i32 {
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
     browser_runtime::set_proxy(proxy.clone());
+    default_browser::init();
     let mut host = Host { proxy, apps: Vec::new(), access: Vec::new(), made: 0, focused: None, inbound: inbound_tx, tray: None, application_menu: None, work_at: None, hatch_owner: None, dock, finish: finish_work::FinishWork::new(finish_work_native::native()) };
     let mut urls_rx = Some(urls_rx);
     let _ = port;
     let mut launch_acknowledged = false;
     let code = loop {
         browser_runtime::pump();
+        default_browser::poll();
+        if !host.apps.is_empty() { external_open::pump(&host.inbound); }
         let background=!host.apps.is_empty() && host.apps.iter().all(|a| a.hatch_state.main_hidden && a.hatch.as_ref().is_none_or(|h|!h.visible) && a.little.is_none() && a.pip.is_none());
         // Input, CEF deadlines and worker completions wake idle maintenance.
         // Preserve the existing animated cadence; a positive pump timeout also

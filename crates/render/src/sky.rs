@@ -43,6 +43,13 @@ pub struct SkyParams {
     pub fov_y: f32,
     /// Normalized top-left xywh; zero size disables prompt protection.
     pub reading_rect: [f32; 4],
+    /// Second protected core, in the same top-left normalized coordinates.
+    pub reading_footer: [f32; 4],
+    /// Inclusive WCAG relative-luminance bounds; [0, 1] leaves colors unchanged.
+    pub reading_luminance: [f32; 2],
+    /// Fade distance outside each core, as a fraction of viewport height.
+    pub reading_feather: f32,
+    /// Legacy artistic veil, used only with unconstrained luminance bounds.
     pub reading_strength: f32,
 }
 impl Default for SkyParams {
@@ -68,6 +75,9 @@ impl Default for SkyParams {
             view_elevation: 33.0_f32.to_radians(),
             fov_y: 56.0_f32.to_radians(),
             reading_rect: [0.0; 4],
+            reading_footer: [0.0; 4],
+            reading_luminance: [0.0, 1.0],
+            reading_feather: 0.04,
             reading_strength: 0.0,
         }
     }
@@ -98,9 +108,15 @@ impl SkyParams {
                 *v = finite(*v, 0.0).clamp(-120.0, 120.0);
             }
         }
-        for v in &mut self.reading_rect {
-            *v = finite(*v, 0.0).clamp(0.0, 1.0);
+        for rect in [&mut self.reading_rect, &mut self.reading_footer] {
+            for v in rect {
+                *v = finite(*v, 0.0).clamp(0.0, 1.0);
+            }
         }
+        self.reading_luminance[0] = finite(self.reading_luminance[0], 0.0).clamp(0.0, 1.0);
+        self.reading_luminance[1] = finite(self.reading_luminance[1], 1.0)
+            .clamp(self.reading_luminance[0], 1.0);
+        self.reading_feather = finite(self.reading_feather, 0.04).clamp(0.0, 1.0);
         self.reading_strength = finite(self.reading_strength, 0.0).clamp(0.0, 0.35);
         self
     }
@@ -139,6 +155,7 @@ struct Uniforms {
     cache: [f32; 4],
     cache_wind: [f32; 4],
     reading: [f32; 4],
+    reading_footer: [f32; 4],
     protection: [f32; 4],
 }
 struct Timing {
@@ -668,7 +685,13 @@ impl SkyRenderer {
                 0.0,
             ],
             reading: p.reading_rect,
-            protection: [p.reading_strength, 0.0, 0.0, 0.0],
+            reading_footer: p.reading_footer,
+            protection: [
+                p.reading_strength,
+                p.reading_luminance[0],
+                p.reading_luminance[1],
+                p.reading_feather,
+            ],
         }
     }
     /// Blocking diagnostic only. Production rendering never maps a timing
@@ -754,6 +777,9 @@ fn present_changed(a: SkyParams, b: SkyParams) -> bool {
         || camera_diff(a, b)
         || a.seed != b.seed
         || a.reading_rect != b.reading_rect
+        || a.reading_footer != b.reading_footer
+        || a.reading_luminance != b.reading_luminance
+        || a.reading_feather != b.reading_feather
         || a.reading_strength != b.reading_strength
         || [
             a.low_cover - b.low_cover,

@@ -26,6 +26,8 @@ pub enum Target {
     Import(crate::me::CardHit),
     /// A page dialog's command, by index.
     PageDialog(usize),
+    Space(u64, crate::space::Action),
+    SpacePrompt(u64),
     None,
 }
 
@@ -283,6 +285,28 @@ impl App {
                     focus = id;
                 }
                 n.add_action(Action::Focus);
+                if let Pane::Home(h)=p {
+                    if !h.library && !h.space_hits.is_empty() && self.space_controls_available()
+                        && h.space_drawn.is_some_and(|at|at==self.frames || at.saturating_add(1)==self.frames) {
+                        let prompt_id=fresh(&mut map,Target::SpacePrompt(h.art_id));
+                        let mut prompt=Node::new(Role::TextInput);
+                        prompt.set_label("the prompt");prompt.set_value(h.input.clone());
+                        prompt.set_bounds(bounds(h.line.as_ref().map_or(h.rect,|g|g.rect)));
+                        prompt.add_action(Action::Focus);
+                        let mut kids=vec![prompt_id];nodes.push((prompt_id,prompt));
+                        n=Node::new(Role::Group);n.set_label(format!("Space · Limb / Darkroom · {}",h.space_motion.caption(crate::clock::since(self.started).as_secs_f64())));n.set_bounds(bounds(h.rect));
+                        if is_right==focus_right {focus=prompt_id;}
+                        for (k,(r,action)) in h.space_hits.iter().enumerate() {
+                            let cid=fresh(&mut map,Target::Space(h.art_id,*action));let mut c=Node::new(Role::Button);
+                            c.set_label(h.space_motion.action_label(*action));c.set_bounds(bounds(*r));
+                            c.add_action(Action::Click);c.add_action(Action::Focus);
+                            if *action==crate::space::Action::Hold {c.set_toggled(if h.space_motion.held(){accesskit::Toggled::True}else{accesskit::Toggled::False});}
+                            if is_right==focus_right && h.space_focus==Some(k) {focus=cid;}
+                            nodes.push((cid,c));kids.push(cid);
+                        }
+                        n.set_children(kids);
+                    }
+                }
                 // Settings controls hang off the settings pane.
                 if let Pane::Settings(settings) = p {
                     let states = self.setting_states(settings.section);
@@ -494,6 +518,9 @@ impl App {
             self.dirty=true;return;
         }
         match (req.action, target) {
+            (Action::Click, Target::Space(id, action)) => {self.space_action(id,action);},
+            (Action::Focus, Target::Space(id, action)) => {self.space_focus_control(id,Some(action));},
+            (Action::Focus, Target::SpacePrompt(id)) => {self.space_focus_control(id,None);},
             (Action::Click, Target::Crumb(hit)) => self.crumb_action(hit),
             (Action::Click, Target::Row(i)) => {
                 self.selected.clear();

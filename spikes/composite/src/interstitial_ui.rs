@@ -39,6 +39,9 @@ impl App {
             (s.transcript().or(s.interstitial.as_ref()).cloned(), s.failed_url.is_some())
         };
         let Some(page) = page else { return };
+        // Dispatch only actions offered by the current native transcript. In
+        // particular, a stale action must not activate a hidden security choice.
+        if page.kind != Kind::Index && !page.acts.iter().any(|action| action.verb == verb) { return; }
         if verb == "retry" && w.tab.browser.is_none() {
             let container = w.container.clone();
             if let Some(replacement) = self.new_web_pane_in(&page.url, &container) {
@@ -155,9 +158,14 @@ impl App {
         let Some(page) = w.tab.shared.borrow().transcript().cloned() else { return false };
         let n = page.acts.len().max(1);
         let dialog = page.kind == Kind::Dialog;
+        let action_tab = page.fields.is_empty()
+            && matches!(ev.logical_key, Key::Named(NamedKey::Tab))
+            && !mods.control_key() && !mods.super_key() && !mods.alt_key();
         let other_mods = mods.alt_key() || (mods.control_key() && cfg!(target_os = "macos"));
-        // Only a dialog answers to modifiers, and only these; the rest pass.
-        if (!mods.is_empty() && !dialog) || other_mods {
+        // Preserve application shortcuts, but Shift by itself is ordinary
+        // typing. A blocking transcript must also consume shifted characters.
+        let application_chord = mods.control_key() || mods.super_key() || mods.alt_key();
+        if (!dialog && application_chord) || other_mods {
             return false;
         }
         let paste = chord && matches!(&ev.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v"));
@@ -199,10 +207,15 @@ impl App {
                 return true;
             }
         }
+        if action_tab {
+            w.overlay_sel = (w.overlay_sel + if back { n - 1 } else { 1 }) % n;
+            self.dirty = true;
+            return true;
+        }
         if !matches!(ev.logical_key, Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp | NamedKey::Enter | NamedKey::Escape)) {
-            // While a page's question stands, its keys are the dialog's:
-            // nothing typed reaches the page underneath.
-            return dialog && mods.is_empty();
+            // Blocking native transcripts, not only dialogs, own ordinary keys.
+            // Do not type into a web page that the user cannot currently see.
+            return !application_chord;
         }
         let verb = match &ev.logical_key {
             Key::Named(NamedKey::ArrowDown) => { w.overlay_sel = (w.overlay_sel + 1) % n; None }
@@ -269,8 +282,13 @@ impl App {
         let t = self.theme.clone();
         let ink = t.ink;
         let paper = self.paper();
+        let paper = [paper[0], paper[1], paper[2], 1.0];
+        let parent_clip = scene.clip();
+        let clip = parent_clip.map_or(r, |parent| parent.intersect(&r));
+        scene.layer(Some(clip));
+        // A browser failure must not reveal stale site pixels through a theme's
+        // transparent paper. Draw the native surface within the enclosing clip.
         scene.rect(r, paper);
-        scene.layer(Some(r));
         let ui = self.ui();
         let strong = self.ui_strong();
         let dim = Style { color: t.dim, ..ui };
@@ -284,11 +302,10 @@ impl App {
         let top = y - line_h * 0.7;
         let prompt = Style { color: self.surface.signal, ..ui };
         let pw = self.fonts.draw(scene, prompt, tx, y, "»") + self.fonts.measure(ui, " ");
-        for (k, l) in crate::reader::wrap(&self.fonts, ui, &page.command, width - pw).iter().enumerate() {
-            self.fonts.draw(scene, ui, tx + pw, y + k as f32 * line_h, l);
-            y += if k > 0 { line_h } else { 0.0 };
+        for l in crate::reader::wrap(&self.fonts, ui, &page.command, width - pw) {
+            self.fonts.draw(scene, ui, tx + pw, y, &l);
+            y += line_h;
         }
-        y += line_h;
         for (i, l) in page.log.iter().enumerate() {
             // Detail lines keep their columns; only an overlong one wraps.
             let lines = if self.fonts.measure(ui, l) <= width { vec![l.clone()] } else { crate::reader::wrap(&self.fonts, ui, l, width) };
@@ -344,7 +361,10 @@ impl App {
                 self.fonts.draw(scene, Style { color: c, ..ui }, tx, y, &format!("» {}", a.verb));
                 let words = if a.key.is_empty() { a.label.clone() } else { format!("{} · {}", a.label, a.key) };
                 self.fonts.draw(scene, Style { color: if on { c } else { t.dim }, ..dim }, tx + verb_w + self.px(18.0), y, &words);
-                hits.push((row, a.verb.clone()));
+                let target = row.intersect(&clip);
+                if target.w > 0.0 && target.h > 0.0 {
+                    hits.push((target, a.verb.clone()));
+                }
                 y += line_h;
             }
         } else {
@@ -360,6 +380,6 @@ impl App {
         if let Some(c) = rule {
             scene.rect(Rect::new(x0, top, self.px(3.0), y - top - line_h * 0.3), c);
         }
-        scene.layer(None);
+        scene.layer(parent_clip);
     }
 }

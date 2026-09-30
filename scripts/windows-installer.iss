@@ -97,7 +97,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\nus.exe"; Tasks: desktopicon
 ; argument as a page, but a file argument in the editor.
 Root: HKCU; Subkey: "Software\Classes\{#UrlProgId}"; ValueType: string; ValueName: ""; ValueData: "{#AppName} URL"; Flags: uninsdeletekey; Tasks: browser
 Root: HKCU; Subkey: "Software\Classes\{#UrlProgId}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\nus.exe,0"; Tasks: browser
-Root: HKCU; Subkey: "Software\Classes\{#UrlProgId}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\nus.exe"" ""%1"""; Tasks: browser
+Root: HKCU; Subkey: "Software\Classes\{#UrlProgId}"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Tasks: browser
+Root: HKCU; Subkey: "Software\Classes\{#UrlProgId}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\nus.exe"" --open-external -- ""%1"""; Tasks: browser
 Root: HKCU; Subkey: "Software\Clients\StartMenuInternet\{#BrowserKey}"; ValueType: string; ValueName: ""; ValueData: "{#AppName}"; Flags: uninsdeletekey; Tasks: browser
 Root: HKCU; Subkey: "Software\Clients\StartMenuInternet\{#BrowserKey}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\nus.exe,0"; Tasks: browser
 Root: HKCU; Subkey: "Software\Clients\StartMenuInternet\{#BrowserKey}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\nus.exe"""; Tasks: browser

@@ -1169,6 +1169,7 @@ pub struct App {
     /// The art behind the prompt, running (art.rs); the picker's cards, alive.
     pub art: Option<crate::art::Art>,
     pub(crate) skies: crate::sky::Skies,
+    pub(crate) spaces: crate::space::Spaces,
     pub art_previews: std::collections::HashMap<String, crate::art::Art>,
     /// The app icon for settings' picture cards, by (size, band progress in
     /// hundredths, ink, signal): the plate's own texture holds one at a time.
@@ -1557,6 +1558,7 @@ impl App {
             page_menu: None,
             art: None,
             skies: Default::default(),
+            spaces: Default::default(),
             art_previews: std::collections::HashMap::new(),
             pic_icons: std::collections::HashMap::new(),
             procs: None,
@@ -2340,6 +2342,8 @@ impl App {
         // AppKit can relayout its titlebar after a resize/fullscreen animation,
         // even when our GPU scene has no reason to redraw.
         self.sync_traffic_lights();
+        self.poll_default_browser_ui();
+        self.tend_space_visibility();
         // First arrival owns input and the visible surface. Defer background
         // discovery, profile polling and maintenance until it hands over.
         if self.arriving() { self.dirty=true; return; }
@@ -4171,6 +4175,7 @@ impl App {
         self.dirty = false;
         let arrival_frame = self.arriving();
         self.build();
+        self.draw_window_shell();
         self.sync_traffic_lights();
         self.sync_webkit();
         self.scene.finish();
@@ -9292,6 +9297,7 @@ impl App {
         self.memory_tended = crate::clock::now();
         self.trim_language_servers();
         self.skies.trim();
+        self.spaces.trim();
         for art in self.art.iter_mut().chain(self.art_previews.values_mut()) {
             art.trim_scratch();
         }
@@ -9996,7 +10002,7 @@ impl App {
         if button == MouseButton::Left { self.caret_dragging = pressed; self.last_key = crate::clock::now(); }
         if pressed { self.last_key = crate::clock::now(); self.dismiss_tip(); }
         if self.splash.as_ref().is_some_and(|s|s.arrival) {
-            if pressed && button == MouseButton::Left {self.finish_arrival();self.splash=None;self.dirty=true;}
+            // Only the live Skip action (or existing keyboard shortcut) ends arrival.
             return;
         }
         if pressed && self.behavior.pip_policy.click_app {self.close_pip();}
