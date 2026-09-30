@@ -400,10 +400,10 @@ impl App {
             let mut k = chars.len();
             while k > 1 && self.fonts.measure(style, &chars[..k].iter().collect::<String>()) > max_w { k -= 1; }
             let rest: String = chars[k..].iter().collect();
-            return vec![chars[..k].iter().collect(), self.fit(style, rest.trim(), max_w)];
+            return vec![chars[..k].iter().collect(), self.fit(style, rest.trim(), max_w).into_owned()];
         }
         let rest = words[used..].join(" ");
-        if rest.is_empty() { vec![first] } else { vec![first, self.fit(style, &rest, max_w)] }
+        if rest.is_empty() { vec![first] } else { vec![first, self.fit(style, rest, max_w).into_owned()] }
     }
     fn pin_stride(&self) -> f32 {
         self.px(if self.pins.editing { 36.0 } else if self.sidebar_icons() { 44.0 } else { 80.0 })

@@ -426,8 +426,7 @@ impl Gpu {
     pub fn render(&mut self, target: &mut Target, scene: &Scene, clear: [f32; 4]) -> bool {
         // Track live headroom and Windows' SDR-white setting while moving
         // displays or changing brightness, without polling OS APIs per frame.
-        if target.hdr() && target.hdr_checked.elapsed().as_secs_f32() > 1.0
-        {
+        if target.hdr() && target.hdr_checked.elapsed().as_secs_f32() > 1.0 {
             target.update_white_scale(&self.adapter);
         }
         let frame = match target.surface.get_current_texture() {
@@ -585,7 +584,12 @@ impl Gpu {
         ));
         scene.rect(crate::Rect::new(0.0, 20.0, 8.0, 4.0), [1.0; 4]);
         scene.caret(crate::Rect::new(32.0, 20.0, 4.0, 4.0), [1.0; 4], 0.75, 3.0);
-        scene.caret(crate::Rect::new(48.0, 20.0, 4.0, 4.0), [1.0, 1.0, 1.0, 0.0], 0.75, 3.0);
+        scene.caret(
+            crate::Rect::new(48.0, 20.0, 4.0, 4.0),
+            [1.0, 1.0, 1.0, 0.0],
+            0.75,
+            3.0,
+        );
         scene.finish();
         self.upload_instances(&scene);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -662,7 +666,9 @@ impl Gpu {
         // truly empty. Positive float16 bit patterns preserve numeric order.
         let (caret, halo, off) = (red_at(32, 20), red_at(30, 22), red_at(50, 22));
         if caret != 0x3e00 || !(1..0x3c00).contains(&halo) || off != 0 {
-            return Err(anyhow!("caret HDR cap/halo/blink mismatch: {caret:04x}/{halo:04x}/{off:04x}"));
+            return Err(anyhow!(
+                "caret HDR cap/halo/blink mismatch: {caret:04x}/{halo:04x}/{off:04x}"
+            ));
         }
         let peak = data
             .as_chunks::<8>()
@@ -860,8 +866,16 @@ impl Gpu {
             let (sw, sh) = size;
             pass.set_immediates(
                 0,
-                bytemuck::cast_slice(&[sw as f32, sh as f32, scene.corner_radius, hdr_scale,
-                    hdr_headroom, 0.0, 0.0, 0.0]),
+                bytemuck::cast_slice(&[
+                    sw as f32,
+                    sh as f32,
+                    scene.corner_radius,
+                    hdr_scale,
+                    hdr_headroom,
+                    0.0,
+                    0.0,
+                    0.0,
+                ]),
             );
             pass.set_vertex_buffer(0, self.instances.slice(..));
             pass.set_bind_group(1, &self.points_bind, &[]);
@@ -963,7 +977,10 @@ fn srgb_linear(value: f32) -> f32 {
 }
 
 fn usable_headroom(value: Option<f32>) -> f32 {
-    value.filter(|v| v.is_finite()).unwrap_or(1.0).clamp(1.0, 3.0)
+    value
+        .filter(|v| v.is_finite())
+        .unwrap_or(1.0)
+        .clamp(1.0, 3.0)
 }
 
 #[cfg(test)]
@@ -972,7 +989,13 @@ mod tests {
 
     #[test]
     fn unknown_or_unusable_display_headroom_never_boosts_caret_light() {
-        for value in [None, Some(f32::NAN), Some(f32::INFINITY), Some(-1.0), Some(0.5)] {
+        for value in [
+            None,
+            Some(f32::NAN),
+            Some(f32::INFINITY),
+            Some(-1.0),
+            Some(0.5),
+        ] {
             assert_eq!(usable_headroom(value), 1.0);
         }
         assert_eq!(usable_headroom(Some(1.5)), 1.5);

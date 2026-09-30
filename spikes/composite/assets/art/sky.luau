@@ -1,42 +1,58 @@
 -- name: the sky
--- says: the sky over this machine, now — the sun where it is, clouds on the wind
+-- says: an immense sky above your place — layered clouds, sunlight, and weather
 
--- The sky: one call to the canvas's own weather. The sun's height and
--- bearing come from the clock and the place (the same arithmetic the star
--- chart uses), so the light is morning light in the morning, the dusk
--- goes warm, and at night there is a moon and stars. The clouds are a
--- noise field lit from the sun, drifting; the cover eases over the hours
--- so no two afternoons are the same. Pointer input leaves the sky undisturbed.
-
+-- Geometry is procedural. Place supplies the dated Sun and Moon. Connected
+-- weather is separately opt-in; it supplies forecast conditions, never a
+-- photograph or a reconstruction of the exact clouds outside the window.
 local D = math.pi / 180
-local seed = { 3.71, 1.39 }
+local seed = 42
+
+local function direction(alt, az)
+  return { math.cos(alt) * math.sin(az), math.sin(alt), math.cos(alt) * math.cos(az) }
+end
+
+local function wind(w, fallback, scale)
+  if w and w.speed ~= nil and w.direction ~= nil then
+    local a = w.direction * D
+    -- Forecast bearings say where wind comes FROM; the volume moves downwind.
+    return { -math.sin(a) * w.speed, -math.cos(a) * w.speed }
+  end
+  return { fallback[1] * scale, fallback[2] * scale }
+end
 
 function draw(c)
   local place = c:place()
-  local ms = c:now()
-  -- An illustrated afternoon works without location access. Only an
-  -- explicitly chosen place turns this into the user's local sky.
-  local alt, az = 25 * D, 0.4
-  local ephemeris = nil
+  local weather = c:weather()
+  local alt, az = 25 * D, 225 * D
+  local moon, illumination, waxing = { 0, -1, 0 }, 0, true
+  local bearing = math.pi
   if place then
-    ephemeris = c:celestial(ms, place.lat, place.lon)
-    alt, az = ephemeris.sun.alt, ephemeris.sun.az
+    local e = c:celestial(c:now(), place.lat, place.lon)
+    alt, az = e.sun.alt, e.sun.az
+    moon = direction(e.moon.alt, e.moon.az)
+    illumination, waxing = e.illumination, e.waxing
+    if place.lat < 0 then bearing = 0 end
   end
-  -- Facing the equator: from the north, east is on the left; from the
-  -- south, the sun crosses the northern sky and east is on the right.
-  local x = -math.sin(az)
-  if place and place.lat < 0 then x = -x end
-  -- The cover eases over the hours; the wind stays steady through pointer input.
-  local hours = ms / 3600000
-  local cover = 0.2 + 0.22 * (0.5 + 0.5 * math.sin(hours * 0.7 + seed[1]))
+
+  local low, middle, high, precipitation, haze = 0.43, 0.03, 0.18, 0, 0.08
+  local low_wind, middle_wind, high_wind = { -7, -2 }, { -10, -3 }, { -15, -4 }
+  if weather then
+    low = weather.low or weather.cover or low
+    middle, high = weather.middle or middle, weather.high or high
+    precipitation = weather.precipitation or 0
+    haze = math.max(weather.fog or 0, math.max(0, (weather.humidity or 0.5) - 0.65) * 0.6)
+    low_wind = wind(weather.wind_low, low_wind, 1)
+    -- Upper winds remain modeled when the provider has no measurements there.
+    middle_wind = wind(weather.wind_middle, low_wind, 1.4)
+    high_wind = wind(weather.wind_high, low_wind, 1.8)
+  end
+  local stratus = math.clamp((low - 0.64) / 0.26, 0, 1)
+  if precipitation > 0.1 then stratus = math.max(stratus, 0.7) end
   c:backdrop(if alt > -0.05 then "light" else "dark")
-  local mx, ma, light, waxing = 0, -1, 0, 1
-  if ephemeris then
-    mx = -math.sin(ephemeris.moon.az)
-    if place.lat < 0 then mx = -mx end
-    ma, light = math.sin(ephemeris.moon.alt), ephemeris.illumination
-    waxing = if ephemeris.waxing then 1 else 0
-  end
-  c:sky({ az = x, alt = math.sin(alt), cover = cover, wind = 1, seed = seed,
-    moon_az = mx, moon_alt = ma, moon_light = light, moon_waxing = waxing })
+  c:atmosphere({ sun = direction(alt, az), moon = moon,
+    moon_light = illumination, moon_waxing = waxing, bearing = bearing,
+    low = low, middle = middle, high = high, stratus = stratus,
+    precipitation = precipitation, haze = haze,
+    wind_low = low_wind, wind_middle = middle_wind, wind_high = high_wind,
+    seed = seed, prompt_light = 0.14 })
 end

@@ -15,6 +15,7 @@
 //! Drawn from the tokens, like every other surface: paper, ink, one signal.
 
 use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nus_render::text::Style;
 use nus_render::{Rect, Scene};
@@ -24,6 +25,10 @@ use crate::settings::HomeLook;
 use nus_render::theme::metric as m;
 
 pub struct HomePane {
+    /// Stable across movement/resizing; separate Home panes own separate art caches.
+    pub art_id: u64,
+    /// Hold artwork text polarity while a draft is being composed.
+    pub reading_backdrop: Option<(String, crate::art::Backdrop)>,
     pub library: bool,
     pub library_ui: crate::library::Ui,
     pub reading: Option<crate::library::Reading>,
@@ -32,6 +37,7 @@ pub struct HomePane {
     pub rect: Rect,
     pub input: String,
     pub sel: usize,
+    pub row_start: usize,
     pub hits: Vec<(Rect, usize)>,
     pub since: Instant,
     /// The splash drew the plate's band already; it is not drawn in again.
@@ -46,7 +52,7 @@ pub struct HomePane {
     /// The rows as last drawn, for the line they were drawn for. Gathered
     /// before the frame takes the tabs (rows name other tabs), and what a
     /// click or Enter picks from, so the row taken is the row seen.
-    pub shown: Option<(String, Vec<PaletteRow>)>,
+    pub shown: Option<(String, crate::prompt::Rows)>,
     /// The line's caret and selection (field.rs).
     pub cur: crate::field::Cursor,
     /// The line as last drawn, for the pointer: where it sits, the first
@@ -130,15 +136,11 @@ pub struct Latch {
 
 impl HomePane {
     pub fn new() -> HomePane {
-        HomePane { library_ui: Default::default(), library: false, reading: None, library_scroll: 0.0, library_reach: 0.0, rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new(), shown: None, cur: Default::default(), line: None, dragging: false, clicked: None }
+        static NEXT_ART_ID: AtomicU64 = AtomicU64::new(1);
+        HomePane { art_id: NEXT_ART_ID.fetch_add(1, Ordering::Relaxed), reading_backdrop: None, library_ui: Default::default(), library: false, reading: None, library_scroll: 0.0, library_reach: 0.0, rect: Rect::new(0.0, 0.0, 1.0, 1.0), input: String::new(), sel: 0, row_start: 0, hits: Vec::new(), since: crate::clock::now(), handed: false, taps: Vec::new(), places: None, keys: Vec::new(), shown: None, cur: Default::default(), line: None, dragging: false, clicked: None }
     }
 }
 
-/// What a line means: a page, or a command for a shell.
-fn is_url(s: &str) -> bool {
-    let q = s.trim();
-    q.contains("://") || q.starts_with("localhost") || (q.contains('.') && !q.contains(' ') && !q.starts_with('.') && !q.contains('\\') && !q.contains('/'))
-}
 
 impl App {
     /// The existing Newsreader n, with a small vector fedora. Inherits the page ink.
@@ -153,8 +155,8 @@ impl App {
 
     /// The rows under the line: the palette's, for what is typed; a short
     /// list of places to go when nothing is — under the plate, the stops.
-    fn home_rows(&self, input: &str, _places: &[PaletteRow]) -> Vec<PaletteRow> {
-        self.prompt_rows(input)
+    fn home_rows(&self, input: &str) -> crate::prompt::Rows {
+        self.prompt_rows_shared(input)
     }
 
     fn news_count(&self, _input: &str) -> usize { 0 }
@@ -164,25 +166,18 @@ impl App {
     /// `Resume · …` are made from the others — without them the rows
     /// drawn and the rows a click picks from would differ by those.
     pub(crate) fn gather_home_rows(&mut self) {
+        let _timing = crate::perf::scope("home_rows");
         let Some(tab) = self.tabs.get(self.active) else { return };
-        let mut want = Vec::new();
-        for p in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
-            if let Pane::Home(h) = p {
-                if !h.library {
-                    want.push(h.input.clone());
-                }
-            }
-        }
-        let rows: Vec<_> = want.into_iter().map(|input| {
-            let r = self.home_rows(&input, &[]);
-            (input, r)
-        }).collect();
+        let rows = [Some(&tab.left), tab.right.as_ref()].map(|pane| match pane {
+            Some(Pane::Home(h)) if !h.library => Some(self.home_rows(&h.input)),
+            _ => None,
+        });
         let tab = &mut self.tabs[self.active];
-        let mut rows = rows.into_iter();
-        for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
-            if let Pane::Home(h) = p {
-                if !h.library {
-                    h.shown = rows.next();
+        for (pane, rows) in std::iter::once(&mut tab.left).chain(tab.right.as_mut()).zip(rows) {
+            if let (Pane::Home(h), Some(rows)) = (pane, rows) {
+                match &mut h.shown {
+                    Some((input, shown)) if *input == h.input => *shown = rows,
+                    shown => *shown = Some((h.input.clone(), rows)),
                 }
             }
         }
@@ -237,15 +232,6 @@ impl App {
             }
         }
         out
-    }
-
-    /// The pane's places, gathered on first use and refreshed every so often.
-    fn home_places(&self, p: &mut HomePane) -> Vec<PaletteRow> {
-        let stale = p.places.as_ref().map(|(at, _)| crate::clock::since(at).as_secs() >= 20).unwrap_or(true);
-        if stale && self.behavior.home_look == HomeLook::Plate {
-            p.places = Some((crate::clock::now(), self.places()));
-        }
-        p.places.as_ref().map(|(_, v)| v.to_vec()).unwrap_or_default()
     }
 
     /// Launch and the new-tab command share the same destination. Only launch
@@ -429,14 +415,13 @@ impl App {
     fn home_commit(&mut self) {
         if self.tabs.get(self.active).is_some_and(|t|matches!(&t.left,Pane::Home(h) if h.library)) {self.library_commit();return;}
         let i = self.active;
-        let Some(Pane::Home(h)) = self.tabs.get(i).map(|t| &t.left) else { return };
+        let Some(Pane::Home(h)) = self.tabs.get(i).map(|t| t.focused_ref()) else { return };
         let input = h.input.trim().to_string();
         if crate::private::enabled() && input.is_empty() { return; }
         let sel = h.sel;
-        let places = h.places.as_ref().map(|(_, v)| v.to_vec()).unwrap_or_default();
         let rows = match &h.shown {
             Some((line, rows)) if line.trim() == input => rows.clone(),
-            _ => self.home_rows(&input, &places),
+            _ => self.home_rows(&input),
         };
         // Acting on anything is having seen the news.
         if self.news.since.is_some() {
@@ -448,10 +433,10 @@ impl App {
             {
                 let action = row.action.clone();
                 let before = self.tabs.len();
-                self.run(action);
+                let separate = self.dispatch_prompt_action(action);
                 // The prompt gives way when something else came up.
-                if self.tabs.len() > before || self.active != i {
-                    if let Some(k) = self.tabs.get(i).filter(|t| matches!(t.left, Pane::Home(_))).map(|_| i) {
+                if !separate && (self.tabs.len() > before || self.active != i) {
+                    if let Some(k) = self.tabs.get(i).filter(|t| matches!(t.left, Pane::Home(_)) && t.right.is_none()).map(|_| i) {
                         self.tabs.remove(k);
                         self.tab_removed(k);
                         if self.active > k {
@@ -467,35 +452,13 @@ impl App {
             }
         }
         if input.starts_with('@') {self.notice(nus_render::text::icons::ASSISTANT,"Choose An Assistant","@claude, @codex or @ollama, then your prompt");return;}
-        if self.fresh && !input.is_empty() && std::path::Path::new(&input).is_dir() {
-            self.open_folder(&input);
-            return;
+        // Unknown nonempty input never silently falls through to shell execution.
+        if !input.is_empty() { return; }
+        if self.behavior.lead == crate::settings::Lead::Browser { self.open_start(); return; }
+        if let Ok(p) = self.new_term_pane(false, self.behavior.default_profile) {
+            if let Some(tab) = self.tabs.get_mut(i) { *tab.focused() = Pane::Term(p); }
         }
-        if input.is_empty() && self.behavior.lead == crate::settings::Lead::Browser {
-            self.open_start();
-            return;
-        }
-        let profile = self.behavior.default_profile;
-        let replacement = if is_url(&input) {
-            let url = crate::links::normalize(&input);
-            let url = if url.contains("://") { url } else { format!("https://{url}") };
-            self.new_web_pane(&url).map(Pane::Web)
-        } else {
-            match self.new_term_pane(false, profile) {
-                Ok(mut t) => {
-                    if !input.is_empty() {
-                        t.type_at_prompt = Some(format!("{input}\r"));
-                        t.type_origin = Some(crate::finish_work::Origin::NusAction);
-                    }
-                    Some(Pane::Term(t))
-                }
-                Err(_) => None,
-            }
-        };
-        if let (Some(p), Some(tab)) = (replacement, self.tabs.get_mut(i)) {
-            tab.left = p;
-            tab.focus_right = false;
-        }
+
         self.play_event("toggle");
         self.layout();
         self.dirty = true;
@@ -518,16 +481,18 @@ impl App {
         if mods.alt_key() && !mods.control_key() && matches!(ev.logical_key, K::Named(NamedKey::ArrowLeft)) && self.home_latch_back() {
             return true;
         }
-        let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
+        let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| t.focused()) else { return false };
         // The line's own editing: typing, erasing, paste, copy (field.rs).
         let took = crate::field::edit_at(&mut h.input, &mut h.cur, ev, mods, 2000);
         if took.changed() {
-            h.sel = 0;
+            h.sel = if h.input.trim().is_empty() {0} else {1};
+            h.row_start = 0;
         }
         if took.taken() {
             self.dirty = true;
             return true;
         }
+        if matches!(ev.logical_key, K::Named(NamedKey::Enter)) { self.home_commit(); return true; }
         if mods.control_key() || mods.alt_key() || mods.super_key() {
             return false;
         }
@@ -538,7 +503,7 @@ impl App {
                 return true;
             }
             // Tab walks the rows like the arrows; Shift+Tab back.
-            K::Named(NamedKey::ArrowDown) | K::Named(NamedKey::Tab) if !(shift && matches!(ev.logical_key, K::Named(NamedKey::Tab))) => h.sel += 1, // clamped when drawn
+            K::Named(NamedKey::ArrowDown) | K::Named(NamedKey::Tab) if !(shift && matches!(ev.logical_key, K::Named(NamedKey::Tab))) => h.sel = if h.sel == 0 && !h.input.trim().is_empty() {2} else {h.sel+1}, // clamped when drawn
             K::Named(NamedKey::ArrowUp) | K::Named(NamedKey::Tab) => h.sel = h.sel.saturating_sub(1),
             K::Named(NamedKey::Escape) => {
                 if h.input.is_empty() {
@@ -568,7 +533,7 @@ impl App {
         if self.library_click(x,y){return true;}
         let i = self.active;
         let pad = self.touch_pad();
-        let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| &mut t.left) else { return false };
+        let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| t.focused()) else { return false };
         // The route keys sit over the paper, so they answer first.
         if let Some(&(_, key)) = h.keys.iter().find(|(r, _)| r.contains(x, y)) {
             match key {
@@ -626,7 +591,7 @@ impl App {
 
     /// The pointer moved with the line pressed: the selection follows.
     pub(crate) fn home_drag(&mut self, x: f32) {
-        let Some(Pane::Home(h)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) else { return };
+        let Some(Pane::Home(h)) = self.tabs.get_mut(self.active).map(|t| t.focused()) else { return };
         if !h.dragging {
             return;
         }
@@ -648,52 +613,73 @@ impl App {
 
     /// The prompt, drawn: the line alone, or under the plate.
     pub(crate) fn draw_home(&mut self, scene: &mut Scene, p: &mut HomePane, focused: bool) {
+        let _timing = crate::perf::scope("home_draw");
         if p.library {self.draw_library(scene,p);return;}
         let t = self.theme.clone();
         let r = p.rect;
-        let ink = t.ink;
         let paper = self.paper();
         scene.rect(r, paper);
         let plate = self.behavior.home_look == HomeLook::Plate;
         let art = self.behavior.home_look == HomeLook::Art;
-        // Under the plate the line sits beneath the icon and comes up once
-        // the band closes; alone, it sits a third of the way down.
         let (mut y0, up) = if plate { self.draw_plate_icon(scene, p) } else { (r.y + r.h * if self.behavior.prompt.top { 0.18 } else { 0.34 }, 1.0) };
-        if art {
-            self.draw_home_art(scene, p, y0);
-        }
-        // Match the artwork's brightness independently of the chrome theme.
-        let backdrop = if art { self.art.as_ref().map(|a| a.backdrop).unwrap_or_default() } else { crate::art::Backdrop::Theme };
-        let dark = backdrop == crate::art::Backdrop::Dark;
-        let ink = backdrop.foreground(t.mode, ink, t.paper);
-        // Art declares its brightness independently of the chrome theme.
-        // Resolve the caret against that surface, like the text above.
-        let caret_background = match backdrop {
-            crate::art::Backdrop::Dark => [0.0, 0.0, 0.0, 1.0],
-            crate::art::Backdrop::Light => [1.0, 1.0, 1.0, 1.0],
-            crate::art::Backdrop::Theme => paper,
-        };
-        // The line: a caret in signal, the input in mono, a rule beneath.
         let px = self.px(20.0);
-        let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
-        let line_w = (r.w * if self.behavior.prompt.wide { 0.84 } else { 0.62 }).max(self.px(320.0)).min(r.w - self.px(56.0));
+        let line_w = (r.w * if self.behavior.prompt.wide { 0.84 } else { 0.62 }).max(self.px(320.0)).min((r.w - self.px(56.0)).max(0.0));
         let x0 = r.x + (r.w - line_w) / 2.0;
-        if crate::private::enabled() {
-            let label = Style { font: self.f.strong, px: self.px(16.0), color: ink, tracking: 0.0 };
-            let note = Style { font: self.f.ui, px: self.px(12.0), color: ink, tracking: 0.0 };
-            let text_x=x0+self.px(66.0);
+        // Private copy can move the prompt; finish that geometry before art.
+        let private = if crate::private::enabled() {
+            let note = Style { font: self.f.ui, px: self.px(12.0), color: t.ink, tracking: 0.0 };
             let lines:Vec<String>=crate::private::NOTE.iter().flat_map(|text|crate::reader::wrap(&self.fonts,note,text,(line_w-self.px(66.0)).max(self.px(160.0)))).collect();
             let note_h=self.px(26.0+lines.len() as f32*18.0);
             let head_y=(y0-note_h-self.px(36.0)).max(r.y+self.px(68.0));
             y0=y0.max(head_y+note_h+self.px(30.0));
-            let mark = Rect::new(x0, head_y-self.px(42.0), self.px(52.0), self.px(58.0));
-            self.draw_private_mark(scene,mark,ink,t.paper);
-            self.fonts.draw(scene,label,text_x,head_y,"INCOGNITO");
-            for (i,text) in lines.iter().enumerate() {
-                self.fonts.draw(scene,note,text_x,head_y+self.px(26.0)+i as f32*self.px(18.0),text);
+            Some((head_y,lines))
+        } else {None};
+        let _ = self.news_rows();
+        let news_n = self.news_count(&p.input);
+        let rows = match &p.shown {
+            Some((line, rows)) if *line == p.input => rows.clone(),
+            _ => self.home_rows(&p.input),
+        };
+        let sel = if !p.input.trim().is_empty() && !rows.is_empty() {p.sel.max(1).min(rows.len())} else {p.sel.min(rows.len())};
+        p.sel = sel;
+        let foot_y = r.bottom() - self.px(26.0);
+        let row_h = self.px(if self.behavior.prompt.compact {25.0} else {34.0});
+        let heights:Vec<f32> = rows.iter().map(|row|if self.saved_detail(row).is_some() && self.behavior.prompt.saved_preview && !self.behavior.prompt.compact {self.px(54.0)} else {row_h}).collect();
+        let rows_y=y0+self.px(30.0)+if news_n>0 {self.px(26.0)} else {0.0};
+        let (start,visible)=crate::home_contrast::visible_rows(&heights,sel,p.row_start,x0,rows_y,line_w,foot_y-self.px(8.0),news_n,self.px(8.0));
+        p.row_start=start;
+        let prompt=Rect::new(x0,y0-px*1.2,line_w,px*1.2+self.px(14.0));
+        let bottom=if plate && p.input.trim().is_empty() {prompt.bottom()} else {visible.last().map_or(prompt.bottom(),|(rr,_)|rr.bottom())};
+        let top=private.as_ref().map_or(prompt.y,|(head,_)|head-self.px(44.0));
+        let reading=Rect::new(x0-self.px(14.0),top-self.px(5.0),line_w+self.px(28.0),bottom-top+self.px(10.0));
+        let footer=if self.behavior.prompt.hints && private.is_none() {Rect::new(r.x+self.px(16.0),foot_y-self.px(18.0),(r.w-self.px(32.0)).max(0.0),self.px(28.0))} else {Rect::default()};
+        let palette = if art {
+            self.draw_home_art(scene,p,prompt,reading,footer)
+        } else {
+            p.reading_backdrop=None;
+            let palette=crate::home_contrast::Palette::new(crate::art::Backdrop::Theme,paper,t.ink,t.dim,self.surface.signal);
+            if palette.surface!=paper {
+                scene.reading_field(reading,self.px(56.0),palette.veil);
+                scene.reading_field(footer,self.px(20.0),palette.veil);
             }
+            palette
+        };
+        let ink=palette.primary;
+        // Protection now carries contrast; extra copies of every glyph would
+        // soften small text and spend atlas/instance work unnecessarily.
+        let dark=false;
+        let mono = Style { font: self.f.ui, px, color: fade(ink, up), tracking: 0.0 };
+        if let Some((head_y,lines))=private {
+            let label=Style {font:self.f.strong,px:self.px(16.0),color:ink,tracking:0.0};
+            let note=Style {font:self.f.ui,px:self.px(12.0),color:palette.secondary,tracking:0.0};
+            let text_x=x0+self.px(66.0);
+            self.draw_private_mark(scene,Rect::new(x0,head_y-self.px(42.0),self.px(52.0),self.px(58.0)),ink,palette.surface);
+            self.fonts.draw(scene,label,text_x,head_y,"INCOGNITO");
+            for (i,text) in lines.iter().enumerate() {self.fonts.draw(scene,note,text_x,head_y+self.px(26.0)+i as f32*self.px(18.0),text);}
         }
-        let caret_w = self.draw_lit(scene, Style { color: fade(self.surface.signal, up), ..mono }, x0, y0, "»", dark) + self.px(12.0);
+        let route_icon = self.live_key(&p.input).map(|k|k.look().0).unwrap_or(nus_render::text::icons::SEARCH);
+        self.fonts.draw_icon(scene,route_icon,self.px(18.0),x0,y0-self.px(15.0),fade(ink,up));
+        let caret_w = self.px(32.0);
         // The line scrolls to keep the caret in view.
         let room = line_w - caret_w - px;
         let n = p.input.chars().count();
@@ -716,86 +702,77 @@ impl App {
         let shown = self.fit(mono, tail, room);
         let tx = x0 + caret_w;
         let edges: Vec<f32> = (start..=n).map(|k| tx + width(start, k)).take_while(|e| *e <= tx + room + px).collect();
-        // A quiet, stable selection wash preserves the text's own ink.
+        // Opaque reverse selection has its own contrast-correct text.
+        let mut selection_band=None;
         if let Some((a, b)) = p.cur.range(&p.input) {
             let (a, b) = (a.max(start), b.max(start));
             if let (Some(&ea), Some(&eb)) = (edges.get(a - start), edges.get((b - start).min(edges.len().saturating_sub(1)))) {
                 let band = Rect::new(ea, y0 - px * 0.82, (eb - ea).max(0.0), px * 1.08);
-                scene.rect(band, fade(self.theme.selection, up));
+                scene.rect(band, fade(palette.selection, up));
+                selection_band=Some(band);
             }
         }
+        if p.input.is_empty() {
+            let hint=Style {color:fade(palette.secondary,up),px:self.px(16.0),..mono};
+            let text=self.fit(hint,"Search the web or enter a URL",room-self.px(8.0));
+            self.draw_lit(scene,hint,tx+self.px(8.0),y0,&text,dark);
+        }
         self.draw_lit(scene, mono, tx, y0, &shown, dark);
+        if let Some(band)=selection_band {
+            let clip=scene.clip();scene.layer(Some(clip.map_or(band,|c|band.intersect(&c))));
+            self.fonts.draw(scene,Style {color:fade(palette.selected,up),..mono},tx,y0,&shown);
+            scene.layer(clip);
+        }
         let tw = edges.get(at - start).map(|e| e - tx).unwrap_or(0.0);
         p.line = Some(LineGeom { rect: Rect::new(x0, y0 - px * 1.2, line_w, px * 1.8), start, edges });
         // The active edge follows the shared caret; the range wash stays still.
         if focused {
             let x = x0 + caret_w + tw + self.px(1.0);
             // The same pipe marks insertion or the active selection edge.
-            self.draw_line_caret_on(scene, x, y0, px, up, p.since, caret_background);
+            self.draw_home_caret(scene, x, y0, px, up, p.since, palette.caret(self.caret_color(),selection_band.is_some()),palette.surface);
         }
-        scene.hline(x0, y0 + self.px(12.0), line_w, self.px(m::HAIRLINE), fade(ink, 0.45 * up));
-        // Rows beneath: the palette's, for what is typed. Under the plate
-        // with nothing typed, the rows are the stops on the band.
-        let places = self.home_places(p);
-        let _ = self.news_rows();
-        let news_n = self.news_count(&p.input);
-        let rows = match &p.shown {
-            Some((line, rows)) if *line == p.input => rows.clone(),
-            _ => self.home_rows(&p.input, &places),
-        };
+        scene.hline(x0, y0 + self.px(12.0), line_w, self.px(m::HAIRLINE), fade(palette.secondary, up));
         p.hits.clear();
-        let sel = p.sel.min(rows.len());
-        p.sel = sel;
         let label = self.label();
-        let dim = Style { color: fade(if backdrop != crate::art::Backdrop::Theme { fade(ink, 0.75) } else { t.dim }, up), ..label };
-        let foot_y = r.bottom() - self.px(26.0);
+        let dim = Style { color: fade(palette.secondary, up), ..label };
         if plate && p.input.trim().is_empty() {
             self.draw_stops(scene, p, &rows, sel, up);
         } else {
-            let row_h = self.px(if self.behavior.prompt.compact { 25.0 } else { 34.0 });
             let mut y = y0 + self.px(30.0);
             let (mx, my) = self.mouse;
             if news_n > 0 {
                 // The caption: since when, and how it goes.
                 let since = self.news.since.filter(|s| crate::journal::now().saturating_sub(*s) < 7 * 86400).map(|s| format!("SINCE {}", crate::journal::when(s).to_uppercase())).unwrap_or_else(|| "SINCE LAST TIME".into());
-                let cap = Style { color: fade(self.surface.signal, up), px: self.px(10.0), tracking: self.px(1.2), ..label };
+                let cap = Style { color: fade(palette.accent, up), px: self.px(10.0), tracking: self.px(1.2), ..label };
                 self.draw_lit(scene, cap, x0, y + self.px(18.0), &format!("WHILE YOU WERE AWAY · {since} · ESC DISMISSES"), dark);
                 y += self.px(26.0);
             }
-            for (k, row) in rows.iter().enumerate() {
-                let row_h = if self.saved_detail(row).is_some() && self.behavior.prompt.saved_preview && !self.behavior.prompt.compact { self.px(54.0) } else { row_h };
-                if y + row_h > foot_y - self.px(8.0) {
-                    break;
-                }
-                if news_n > 0 && k == news_n {
-                    // A rule between the news and the usual rows.
-                    scene.hline(x0, y + self.px(2.0), line_w, self.px(m::HAIRLINE), fade(ink, 0.25 * up));
-                    y += self.px(8.0);
-                }
-                let rr = Rect::new(x0, y, line_w, row_h);
+            for (rr,k) in visible {
+                let row=&rows[k];
+                let y=rr.y; let row_h=rr.h;
+                if news_n>0 && k==news_n {scene.hline(x0,y-self.px(6.0),line_w,self.px(m::HAIRLINE),fade(palette.secondary,up));}
                 let hot = k + 1 == sel || rr.contains(mx, my);
                 if self.saved_detail(row).is_some() {
-                    self.draw_saved_row(scene,rr,row,false,self.behavior.prompt.saved_preview && !self.behavior.prompt.compact);
-                    if hot { scene.outline(rr,self.px(1.0),fade(self.surface.signal,0.5*up)); }
-                    p.hits.push((rr,k)); y += row_h; continue;
+                    self.draw_saved_row_home(scene,rr,row,self.behavior.prompt.saved_preview && !self.behavior.prompt.compact,palette,up);
+                    if hot { scene.outline(rr,self.px(1.0),fade(palette.accent,up)); }
+                    p.hits.push((rr,k)); continue;
                 }
                 if k + 1 == sel {
-                    scene.rect(Rect::new(x0 - self.px(10.0), y + self.px(6.0), self.px(2.0), row_h - self.px(12.0)), fade(self.surface.signal, up));
+                    scene.rect(Rect::new(x0 - self.px(10.0), y + self.px(6.0), self.px(2.0), row_h - self.px(12.0)), fade(palette.accent, up));
                 }
                 let base = y + row_h / 2.0 + self.px(4.0);
                 let num_w = self.px(28.0);
                 self.draw_lit(scene, dim, x0, base, &row.num, dark);
                 let text = self.fit(label, &row.text, line_w - num_w);
-                self.draw_lit(scene, Style { color: fade(ink, if hot { 1.0 } else { 0.75 } * up), ..label }, x0 + num_w, base, &text, dark);
+                self.draw_lit(scene, Style { color: fade(if hot {ink} else {palette.secondary},up), ..label }, x0 + num_w, base, &text, dark);
                 p.hits.push((rr, k));
-                y += row_h;
             }
         }
         // The routes at the foot: marks, not a sentence. The one Enter
         // would take is lit; LAYOUT · ROUTE KEYS turns them off.
         p.keys.clear();
         if self.behavior.prompt.hints {
-            self.draw_home_keys(scene, p, foot_y, up, ink, sel, rows.len());
+            self.draw_home_keys(scene, p, foot_y, up, palette, sel, rows.len());
         }
         let _ = dim;
     }
@@ -819,6 +796,7 @@ impl App {
         if std::path::Path::new(q).is_dir() || std::path::Path::new(q).is_file() {
             return Some(Key::Path);
         }
+        if crate::prompt::looks_like_url(q) { return Some(Key::Page); }
         Some(match self.behavior.prompt.route {
             crate::prompt::Route::Assistant => Key::Ask,
             crate::prompt::Route::Web => Key::Page,
@@ -833,11 +811,12 @@ impl App {
     /// applies; the live one takes the signal and a rule under it. The
     /// pointer names a mark; a click puts its prefix on the line, so the
     /// row teaches the typing rather than describing it.
-    fn draw_home_keys(&mut self, scene: &mut Scene, p: &mut HomePane, foot_y: f32, up: f32, ink: [f32; 4], sel: usize, rows_n: usize) {
+    fn draw_home_keys(&mut self, scene: &mut Scene, p: &mut HomePane, foot_y: f32, up: f32, palette: crate::home_contrast::Palette, sel: usize, rows_n: usize) {
         if crate::private::enabled() { p.keys.clear(); return; }
         let r = p.rect;
+        let ink=palette.primary;
         let live = if sel > 0 { Some(Key::Rows) } else { self.live_key(&p.input) };
-        let mut cells = vec![Key::Shell, Key::Page, Key::Ask];
+        let mut cells = vec![Key::Page, Key::Shell, Key::Ask];
         // The path mark earns its place only when the line names one.
         if live == Some(Key::Path) {
             cells.push(Key::Path);
@@ -846,25 +825,30 @@ impl App {
             cells.push(Key::Rows);
         }
         let isz = self.px(14.0);
-        let gap = self.px(30.0);
+        let gap = self.px(22.0);
+        let label=Style {px:self.px(11.0),color:ink,..self.label()};
+        let caption=|k:Key| match k {Key::Page=>"Search / URL",Key::Shell=>"Terminal",Key::Ask=>"Assistant",Key::Path=>"Project",Key::Rows=>"Actions"};
+        let widths:Vec<f32>=cells.iter().map(|k|isz+self.px(7.0)+self.fonts.measure(label,caption(*k))).collect();
         let n = cells.len() as f32;
-        let total = n * isz + (n - 1.0) * gap;
+        let labels = widths.iter().sum::<f32>()+(n-1.0)*gap <= r.w-self.px(40.0);
+        let total = if labels {widths.iter().sum::<f32>()} else {n*isz} + (n - 1.0) * gap;
         if total > r.w - self.px(40.0) {
             return;
         }
         let mut x = r.x + ((r.w - total) / 2.0).round();
         let y = (foot_y - isz).round();
         let (mx, my) = self.mouse;
-        let signal = self.surface.signal;
+        let signal = palette.accent;
         let reach_pad = self.px(10.0);
-        for cell in cells {
+        for (index,cell) in cells.into_iter().enumerate() {
             let (icon, words) = cell.look();
-            let cr = Rect::new(x, y, isz, isz);
+            let cr = Rect::new(x, y, if labels {widths[index]} else {isz}, isz);
             let reach = crate::touch::grown(cr, reach_pad);
             let hot = reach.contains(mx, my);
             let on = live == Some(cell);
-            let color = if on { signal } else if hot { ink } else { fade(ink, 0.34) };
+            let color = if on { signal } else if hot { ink } else { palette.secondary };
             self.fonts.draw_icon(scene, icon, isz, cr.x, cr.y, fade(color, up));
+            if labels { self.fonts.draw(scene,Style {color:fade(color,up),..label},x+isz+self.px(7.0),y+isz-self.px(2.0),caption(cell)); }
             if on {
                 // The same rule the rows use for the one that is picked.
                 scene.rect(Rect::new(cr.x, cr.y + isz + self.px(5.0), isz, self.px(2.0)), fade(signal, up));
@@ -874,7 +858,7 @@ impl App {
                 self.dirty = true;
             }
             p.keys.push((reach, cell));
-            x += isz + gap;
+            x += cr.w + gap;
         }
     }
 
@@ -897,26 +881,21 @@ impl App {
     /// The art, running behind the line: the pane is its canvas, the
     /// line's box (and the rows' reach while typing) is what it keeps
     /// clear of, the pointer and the typing and the taps are its inputs.
-    fn draw_home_art(&mut self, scene: &mut Scene, p: &mut HomePane, y0: f32) {
+    fn draw_home_art(&mut self, scene: &mut Scene, p: &mut HomePane, prompt: Rect, reading: Rect, footer: Rect) -> crate::home_contrast::Palette {
         let key = self.behavior.home_art.clone();
         if self.art.as_ref().map(|a| a.key != key).unwrap_or(true) {
             self.art = Some(crate::art::Art::open(&key));
         }
         let r = p.rect;
         let t = self.theme.clone();
-        let px = self.px(20.0);
-        let line_w = (r.w * if self.behavior.prompt.wide { 0.84 } else { 0.62 }).max(self.px(320.0)).min(r.w - self.px(56.0));
-        let x0 = r.x + (r.w - line_w) / 2.0;
-        // The rows' reach below the line, from the last frame's rows.
-        let line_bottom = y0 - px * 0.78 + px * 0.95 + self.px(14.0);
-        let rows = p.hits.last().map(|(rr, _)| (rr.bottom() - line_bottom).max(0.0)).unwrap_or(0.0);
         let (mx, my) = self.mouse;
         let pointer = if r.contains(mx, my) { Some((mx - r.x, my - r.y)) } else { None };
         let env = crate::art::Env {
+            view_id: p.art_id,
             w: r.w,
             h: r.h,
-            line: [x0 - r.x, y0 - px * 0.78 - r.y, line_w, px * 0.95 + self.px(14.0)],
-            rows,
+            line: [reading.x-r.x, reading.y-r.y, reading.w, prompt.bottom()-reading.y],
+            rows: (reading.bottom()-prompt.bottom()).max(0.0),
             pointer,
             typed: p.input.clone(),
             taps: std::mem::take(&mut p.taps),
@@ -924,15 +903,17 @@ impl App {
             paper: self.paper(),
             ink: t.ink,
             signal: self.surface.signal,
+                signals: self.theme_edit.art,
             dim: t.dim,
             tint: t.tint,
             place: self.place(),
+            weather: if key == "sky" { crate::weather::sample(self.behavior.sky_weather, self.place()) } else { None },
                 pieces: Vec::new(),
             procs: Some(self.procs_shared()),
             scale: self.scale,
         };
         let reduced = self.motion.reduced();
-        let (cmds, status) = {
+        let (mut cmds, status) = {
             let art = self.art.as_mut().unwrap();
             art.tend();
             // Keep the completed composition visible when animation is disabled;
@@ -940,16 +921,50 @@ impl App {
             let cmds = if reduced { art.frame_at(env, 8.0) } else { art.frame(env) };
             (cmds, art.status.clone())
         };
-        self.draw_art_cmds(scene, r, cmds);
+        let requested=self.art.as_ref().unwrap().backdrop;
+        let hold=!p.input.is_empty() || crate::clock::since(self.last_key)<crate::sky::TYPING_HOLD;
+        if p.reading_backdrop.as_ref().is_none_or(|(old,_)|*old!=key) || !hold {p.reading_backdrop=Some((key.clone(),requested));}
+        let backdrop=p.reading_backdrop.as_ref().map_or(requested,|(_,b)|*b);
+        let seed=backdrop.foreground(t.mode,t.ink,t.paper);
+        let palette=crate::home_contrast::Palette::new(backdrop,self.paper(),seed,t.dim,self.surface.signal);
+        // Only the stock single atmosphere can enforce the whole final image.
+        // Custom scripts may paint on top, so they use the composited fallback.
+        let native_sky=key=="sky" && cmds.len()==1 && matches!(cmds[0],crate::art::Cmd::Atmosphere(..));
+        if native_sky {
+            for cmd in &mut cmds {if let crate::art::Cmd::Atmosphere(rr,params,_,_)=cmd {
+                let local=|area:Rect| if area.w>0.0 && area.h>0.0 {[(area.x-r.x-rr.x)/rr.w,(area.y-r.y-rr.y)/rr.h,area.w/rr.w,area.h/rr.h]} else {[0.0;4]};
+                params.reading_rect=local(reading);params.reading_footer=local(footer);
+                params.reading_luminance=palette.bounds;params.reading_feather=self.px(56.0)/rr.h.max(1.0);
+                params.reading_strength=0.0;
+            }}
+        }
+        let commands = self.draw_art_cmds(scene, r, cmds);
+        self.art.as_mut().unwrap().recycle_commands(commands);
+        if !native_sky {
+            let clip=scene.clip();scene.layer(Some(clip.map_or(r,|c|r.intersect(&c))));
+            scene.reading_field(reading,self.px(56.0),palette.veil);
+            scene.reading_field(footer,self.px(20.0),palette.veil);
+            scene.layer(clip);
+        }
         if let Some(err) = status {
             let dim = Style { color: self.surface.signal, ..self.label() };
             let line = format!("ART · {} · {}", key.to_uppercase(), err);
             self.fonts.draw(scene, dim, r.x + self.px(28.0), r.bottom() - self.px(48.0), &line);
         }
         // Alive: keep drawing — as the power budget allows (power.rs).
-        if !reduced && self.art_wants_frame() {
-            self.dirty = true;
+        if !reduced {
+            if native_sky && crate::clock::since(self.last_key) < crate::sky::TYPING_HOLD {
+                if self.art_budget() != crate::power::Budget::Still {
+                    let at = self.last_key + crate::sky::TYPING_HOLD;
+                    self.art_deadline = Some(self.art_deadline.map_or(at, |pending| pending.min(at)));
+                }
+            } else if native_sky {
+                self.request_sky_frame();
+            } else {
+                self.request_art_frame();
+            }
         }
+        palette
     }
 }
 
@@ -958,12 +973,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sky_view_identity_belongs_to_home_not_its_rectangle() {
+        let mut first = HomePane::new();
+        let second = HomePane::new();
+        let id = first.art_id;
+        first.rect = Rect::new(210.0, 40.0, 720.0, 900.0);
+        assert_eq!(first.art_id, id);
+        assert_ne!(first.art_id, second.art_id);
+        assert_eq!(first.art_id >> 63, 0, "preview cards reserve the upper namespace");
+    }
+
+    #[test]
     fn urls_and_commands() {
-        assert!(is_url("https://nus.dev"));
-        assert!(is_url("localhost:8000"));
-        assert!(is_url("docs.rs"));
-        assert!(!is_url("cargo test -p nus-vt"));
-        assert!(!is_url("./scripts/run.sh"));
-        assert!(!is_url("C:\\Users\\seb"));
+        assert!(crate::prompt::looks_like_url("https://nus.dev"));
+        assert!(crate::prompt::looks_like_url("localhost:8000"));
+        assert!(crate::prompt::looks_like_url("docs.rs"));
+        assert!(!crate::prompt::looks_like_url("cargo test -p nus-vt"));
+        assert!(!crate::prompt::looks_like_url("./scripts/run.sh"));
+        assert!(!crate::prompt::looks_like_url("C:\\Users\\seb"));
     }
 }

@@ -1,7 +1,7 @@
 //! The power budget: what the app may spend on things that are only
 //! pretty. An art behind the prompt redraws every frame while the window
-//! is looked at and the machine is plugged in; on battery it takes every
-//! other frame, and while the window is unfocused it stands still. The
+//! is looked at and the machine is plugged in; on battery it requests a
+//! frame every 1/30 second, and while unfocused it stands still. The
 //! same budget is what the plate and the sky read. Nothing here shows in
 //! the UI: it is a policy, kept in one place so the next screen or the
 //! next chip changes one file.
@@ -53,13 +53,7 @@ fn probe_battery() -> bool {
 
 #[cfg(target_os = "macos")]
 fn probe_battery() -> bool {
-    // pmset says "Now drawing from 'Battery Power'" — the one line we need.
-    std::process::Command::new("pmset")
-        .args(["-g", "batt"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("'Battery Power'"))
-        .unwrap_or(false)
+    crate::finish_work_native::on_battery()
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -73,7 +67,7 @@ fn probe_battery() -> bool {
 pub enum Budget {
     /// Every frame.
     Full,
-    /// Every other frame: on battery.
+    /// 30 frames per second: on battery.
     Half,
     /// Still: the window is not being looked at.
     Still,
@@ -92,13 +86,19 @@ impl crate::app::App {
         }
     }
 
-    /// Whether an art should ask for another frame after this one: the
-    /// budget, and on half budget every other frame.
-    pub(crate) fn art_wants_frame(&self) -> bool {
+    /// A skipped request is not a slower clock: it can stop animation until
+    /// an unrelated event arrives. Schedule the next battery frame explicitly.
+    pub(crate) fn request_art_frame(&mut self) {
         match self.art_budget() {
-            Budget::Full => true,
-            Budget::Half => self.frames % 2 == 0,
-            Budget::Still => false,
+            Budget::Full => self.dirty = true,
+            // Count from the start of the frame, so heavier artwork does not
+            // add its rendering time to the intended 30 Hz interval.
+            Budget::Half => self.art_deadline = Some(self.art_frame_started + Duration::from_nanos(1_000_000_000 / 30)),
+            Budget::Still => {},
         }
+    }
+
+    pub(crate) fn art_frame_wait(&self) -> Option<Duration> {
+        self.art_deadline.map(|at| at.saturating_duration_since(crate::clock::now()))
     }
 }

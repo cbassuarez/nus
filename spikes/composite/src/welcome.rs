@@ -383,7 +383,7 @@ impl App {
             for line in crate::reader::wrap(&self.fonts,ui,lede,width) {self.fonts.draw(scene,dim,x,y,&line);y+=self.px(20.0);}
             y+=self.px(12.0);
             for row in rows {
-                let title=self.fit(strong,&row.title.caps(),width);
+                let title=self.fit(strong,row.title.caps(),width);
                 self.fonts.draw(scene,strong,x,y,&title);y+=self.px(22.0);
                 if !row.chord.is_empty() { self.fonts.draw(scene,Style{color:signal,..label},x,y,&row.chord); y+=self.px(21.0); }
                 for line in crate::reader::wrap(&self.fonts,ui,&row.what,width) {self.fonts.draw(scene,dim,x,y,&line);y+=self.px(20.0);}
@@ -412,7 +412,8 @@ impl App {
         if modal {*started=crate::clock::now();}
         let elapsed=crate::clock::since(started).as_secs_f32();
         let cmds=art.frame_at(env,if reduced || modal {3.0} else {elapsed});
-        self.draw_art_cmds_scaled(scene,r,cmds,sc);
+        let commands=self.draw_art_cmds_scaled(scene,r,cmds,sc);
+        self.welcome_art.as_mut().unwrap().1.recycle_commands(commands);
         if !reduced && !modal && (elapsed<3.0 || self.welcome_anim_until.is_some_and(|until|until>crate::clock::now())) {self.dirty=true;}
         self.welcome_hits.iter_mut().for_each(|(hit,_)| *hit=hit.intersect(&r));
         self.welcome_hits.retain(|(hit,_)|hit.w>0.0 && hit.h>0.0);

@@ -92,6 +92,22 @@ freeing all instances or rendering/presenting a GPU frame.
 
 Generated terminal fixtures are validated once before timing. They are preferred over captured sessions because they are deterministic, reviewable and free of user data. Add a sanitized captured trace only when it protects behavior that cannot be expressed by a generated fixture.
 
+## Home animation pacing
+
+Run `python3 scripts/perf-home.py /path/to/nus.app --out /tmp/nus-home-check`
+against an optimized macOS bundle. `--art memphis` narrows the workload. The
+probe uses an isolated profile, real clocks, and enabled motion; it retains
+executable hashes, power-source information, raw logs, screenshots and timings.
+It measures both entrance and ongoing motion. Avoid compilation or other
+artificial background work during a comparison and record intentional load.
+
+`frame_interval` measures spacing between app frame starts; `frame_build_submit`
+measures the CPU path through submission. Neither measures physical display
+scanout. `home_rows`, `home_draw`, `art_script` and `art_commands` separate the
+home work. Ignore long frame intervals on deliberately idle/static surfaces.
+The `over_16_67_ms` counter is a 60 Hz reference, not a dropped-frame count for
+the battery artwork policy, which targets 30 Hz.
+
 ## Native performance
 
 Set `NUS_PERF=1` to enable bounded, in-memory instrumentation. With the variable unset, timing scopes do not take timestamps and no samples are retained.
@@ -290,3 +306,14 @@ wake-up. `--mode idle` and `--mode mercury-idle` measure ten-second loop activit
 and RSS. These are UI loop turns, not kernel wakeups; process-tree RSS counts
 shared pages more than once. `scripts/check-mercury.py` verifies the claim scene
 still flows while the Dock construction resolves to identical still artwork.
+
+### Heap regression checks
+
+The [September 29 heap follow-up](performance/2026-09-29-heap.md) records bounded
+artwork/prompt/text-cache changes, scoped allocation counts and native results.
+`cargo test -p nus-render --test allocation_counts` checks allocation-free warmed
+text lookups. Composite's ignored artwork diagnostics accept a prior Memphis
+source through `NUS_ART_REFERENCE` and can capture selected allocation stacks.
+`python3 scripts/check-heap-ui.py /path/to/nus.app` checks native cache invalidation
+and memory-pressure recovery in an isolated profile. Allocation request bytes
+are not retained memory or physical footprint.

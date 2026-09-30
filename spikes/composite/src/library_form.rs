@@ -331,7 +331,7 @@ impl App {
                     })
                     .collect()
             } else {
-                vec![self.fit(st, text, (width - px(20.0)).max(1.0))]
+                vec![self.fit(st, text, (width - px(20.0)).max(1.0)).into_owned()]
             };
             let count = ((height - px(10.0)) / px(23.0)).floor().max(1.0) as usize;
             for (j, line) in lines

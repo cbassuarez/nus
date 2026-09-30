@@ -11,6 +11,7 @@ pub mod mercury;
 pub mod oklch;
 pub mod policy;
 pub mod scene;
+pub mod sky;
 pub mod text;
 pub mod theme;
 
@@ -18,5 +19,6 @@ pub use gpu::{Gpu, Target, TextureBinder};
 pub use grid::{CursorLook, GridRenderer};
 pub use policy::Policy;
 pub use scene::{AtomLook, AtomMode, Bind, CarapaceLook, Color, Instance, Layer, Rect, Scene};
+pub use sky::{SkyParams, SkyRenderer, SkyStats};
 pub use text::{FontId, FontSystem, Metrics, Style};
 pub use theme::{Mode, Theme};

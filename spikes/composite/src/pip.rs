@@ -39,6 +39,11 @@ use crate::browser::Video;
 #[path="pip_geometry.rs"] mod geometry;
 #[path="pip_native.rs"] mod native;
 
+// Swept skip marks: the value sits below the arrowhead, with its baseline
+// at y=20 alongside the opposite tail. The two marks are exact mirrors.
+const SKIP_BACK: (&str, &str) = ("pip-swept-back", r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="black" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20v-7a4 4 0 0 0-4-4H4M9 14 4 9l5-5"/></svg>"#);
+const SKIP_FORWARD: (&str, &str) = ("pip-swept-forward", r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="black" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20v-7a4 4 0 0 1 4-4h12M15 14l5-5-5-5"/></svg>"#);
+
 /// Logical-pixel rectangle on the desktop.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LRect {
@@ -247,12 +252,11 @@ impl Pip {
         let (width,height)=(w as f64/scale,h as f64/scale);
         // Both dimensions round independently to physical pixels. Keep
         // exact logical geometry without chasing subpixel differences.
-        if (w as f64-h as f64*self.aspect).abs()>(1.0+self.aspect)*0.5+0.01 {
+        if (w as f64-h as f64*self.aspect).abs()>(1.0+self.aspect)*0.5+0.01
+            || (self.cur.w*scale-w as f64).abs()>1.0 || (self.cur.h*scale-h as f64).abs()>1.0 {
             let corrected=geometry::native_resize(self.cur,width,height,self.aspect,self.area);
             self.cur.w=width;self.cur.h=height;
             self.apply_rect(corrected);
-        } else if (self.cur.w*scale-w as f64).abs()>1.0 || (self.cur.h*scale-h as f64).abs()>1.0 {
-            self.cur.w=width;self.cur.h=width/self.aspect;
         }
     }
 
@@ -427,7 +431,7 @@ impl App {
     pub fn playing_video(&self, tab: usize) -> Option<bool> {
         for right in [false, true] {
             if let Some(v) = self.pane_video(tab, right) {
-                if !v.paused && !v.ended {
+                if !v.paused && !v.ended && v.audible {
                     return Some(right);
                 }
             }
@@ -522,22 +526,15 @@ impl App {
         // deliver pointer entry and a press before the next redraw; that first
         // press must hit the control, not start dragging the window.
         let hits = self.draw_pip_controls(&mut scene, picture, scale, alpha, video.as_ref());
-        let mut carapace = self.carapace_look(band, 0.0);
-        carapace.band = true;
-        carapace.grain_scale = (self.surface.texture_scale * scale).max(0.25);
         let pip = self.pip.as_mut().unwrap();
         pip.hits = hits;
         if pip.key_focus.is_some_and(|hit| !pip.hits.iter().any(|(_, drawn)| *drawn == hit)) {
             pip.key_focus = None;
         }
-        // Texture lives on the carapace only; the video stays clean.
-        if band > 0.0 && self.surface.material != crate::surface::Material::Plain {
-            scene.push(nus_render::Instance::carapace(Rect::new(0.0, 0.0, w, h), carapace));
-        } else if band > 0.0 {
+        // PiP uses a simple optional top stripe, never the main window's
+        // decorative corner brackets around the picture.
+        if band > 0.0 {
             scene.rect(Rect::new(0.0, 0.0, w, band), self.surface.signal);
-            if let (Some(kind), true) = (self.surface.texture_kind.shader_kind(), self.surface.texture > 0.0) {
-                scene.push(nus_render::Instance::texture_kind(Rect::new(0.0, 0.0, w, band), kind, [1.0, 1.0, 1.0, self.surface.texture], self.surface.texture_scale * scale, 0.0));
-            }
         }
         if pip.focused {
             let t = (m::FLOATING * scale).round();
@@ -583,18 +580,62 @@ impl App {
         let narrow = r.w < px(320.0);
         let seekable=v.is_some_and(|v|v.dur.is_finite()&&v.dur>0.0);
 
-        // One mark, centred on (cx, cy), with a lit square behind it when
-        // the pointer is on it.
+        // Hover lights and slightly enlarges the mark itself, never a panel
+        // over the picture. Keyboard focus retains its explicit outline.
         let mark = |app: &mut App, scene: &mut Scene, icon: (&'static str, &'static str), size: f32, cx: f32, cy: f32, hit: Hit, hits: &mut Vec<(Rect, Hit)>| {
             let b = Rect::new(cx - size / 2.0, cy - size / 2.0, size, size);
             let reach = crate::touch::grown(b, px(10.0));
             let focused=app.pip.as_ref().is_some_and(|p|p.key_focus==Some(hit));
             let hot = reach.contains(mx, my) || focused;
-            if hot {
-                scene.rect(reach, a(paper, 0.16));
-                if focused {scene.push(nus_render::Instance::stroke(reach,0.0,px(1.0),a(paper,0.9),None,0.0));}
+            if focused {scene.push(nus_render::Instance::stroke(reach,0.0,px(1.0),a(paper,0.9),None,0.0));}
+            let color = a(paper, if hot { 1.0 } else { 0.86 });
+            let zoom = if hot { 1.18 } else { 1.0 };
+            let paint_icon = |app: &mut App, scene: &mut Scene, side: f32| {
+                // Reuse the resting atlas entry: hovering needs no SVG
+                // rasterization, new texture, or intermediate blur surface.
+                if let Some(g) = app.fonts.icon(icon, side) {
+                    let w = g.width as f32 * zoom;
+                    let h = g.height as f32 * zoom;
+                    let x = cx - w / 2.0;
+                    let y = cy - h / 2.0;
+                    if hot {
+                        // Dense, fading rings make a broad halo rather than
+                        // merely thickening the stroke. Draw the sharp mark last.
+                        const DIRECTIONS: [(f32, f32); 16] = [
+                            (1.0,0.0),(0.924,0.383),(0.707,0.707),(0.383,0.924),
+                            (0.0,1.0),(-0.383,0.924),(-0.707,0.707),(-0.924,0.383),
+                            (-1.0,0.0),(-0.924,-0.383),(-0.707,-0.707),(-0.383,-0.924),
+                            (0.0,-1.0),(0.383,-0.924),(0.707,-0.707),(0.924,-0.383),
+                        ];
+                        for (radius, opacity) in [(5.5, 0.045), (3.0, 0.075), (1.25, 0.10)] {
+                            for (dx, dy) in DIRECTIONS {
+                                scene.push(nus_render::Instance::glyph(x + dx * radius * scale, y + dy * radius * scale, w, h, g.uv, a(paper, opacity)));
+                            }
+                        }
+                    }
+                    scene.push(nus_render::Instance::glyph(x, y, w, h, g.uv, color));
+                }
+            };
+            if matches!(hit, Hit::Back | Hit::Forward) {
+                // Give the arrow and its value room within the existing hit
+                // target; transport centres and pointer/focus bounds stay put.
+                let side = (size * 4.0 / 3.0).round();
+                paint_icon(app, scene, side);
+                let side = side * zoom;
+                let x = cx - side / 2.0;
+                let y = cy - side / 2.0;
+                let amount = app.behavior.pip_skip_seconds.clamp(1, 120).to_string();
+                let mut value = Style { font: app.f.ui, px: side / 3.0, color, tracking: 0.0 };
+                let width = app.fonts.measure(value, &amount);
+                // Keep three-digit intervals clear of the opposite tail.
+                let available = side * 13.0 / 24.0;
+                if width > available { value.px *= available / width; }
+                let width = app.fonts.measure(value, &amount);
+                let tx = if hit == Hit::Back { x + side * 4.0 / 24.0 } else { x + side * 20.0 / 24.0 - width };
+                app.fonts.draw(scene, value, tx.round(), y + side * 20.0 / 24.0, &amount);
+            } else {
+                paint_icon(app, scene, size);
             }
-            app.fonts.draw_icon(scene, icon, size, b.x, b.y, a(paper, if hot { 1.0 } else { 0.86 }));
             hits.push((reach, hit));
         };
 
@@ -623,7 +664,7 @@ impl App {
             mark(self,scene,icons::TERMINAL,isz,rx+isz/2.0,top,Hit::Dock,&mut hits);
         }
 
-        // Middle: ten back, play or pause, ten on.
+        // Middle: skip back, play or pause, skip forward.
         let paused = v.map(|v| v.paused).unwrap_or(true);
         let cy = r.y + r.h / 2.0;
         let big = px(if narrow { 26.0 } else { 34.0 });
@@ -631,17 +672,8 @@ impl App {
         let gap = px(if narrow { 34.0 } else { 46.0 });
         let cx = r.x + r.w / 2.0;
         mark(self, scene, if paused { icons::PLAY_FILL } else { icons::PAUSE_FILL }, big, cx, cy, Hit::Play, &mut hits);
-        mark(self, scene, icons::BACK_10, small, cx - gap, cy, Hit::Back, &mut hits);
-        mark(self, scene, icons::FORWARD_10, small, cx + gap, cy, Hit::Forward, &mut hits);
-        // The ten, inside each arrow, the way every other player writes it.
-        {
-            let ten = Style { font: self.f.ui, px: px(7.5), color: a(paper, 0.9), tracking: 0.0 };
-            let amount=self.behavior.pip_skip_seconds.clamp(1,120).to_string();
-            let tw = self.fonts.measure(ten, &amount);
-            for x in [cx - gap, cx + gap] {
-                self.fonts.draw(scene, ten, (x - tw / 2.0).round(), (cy + px(3.0)).round(), &amount);
-            }
-        }
+        mark(self, scene, SKIP_BACK, small, cx - gap, cy, Hit::Back, &mut hits);
+        mark(self, scene, SKIP_FORWARD, small, cx + gap, cy, Hit::Forward, &mut hits);
 
         // Foot: elapsed, the scrubber, the run time, and the speaker.
         let foot = r.bottom() - px(18.0);
@@ -729,8 +761,8 @@ impl App {
         }
         if ev.repeat && toggles_playback(&ev.logical_key) { return; }
         let (tab, right) = (pip.tab, pip.right);
-        let back=format!("__nus.seek(-{})",self.behavior.pip_skip_seconds.clamp(1,120));
-        let forward=format!("__nus.seek({})",self.behavior.pip_skip_seconds.clamp(1,120));
+        let back=format!("__nus.skip(-{})",self.behavior.pip_skip_seconds.clamp(1,120));
+        let forward=format!("__nus.skip({})",self.behavior.pip_skip_seconds.clamp(1,120));
         let cmd = match &ev.logical_key {
             WKey::Named(NamedKey::ArrowLeft) => back.as_str(),
             WKey::Named(NamedKey::ArrowRight) => forward.as_str(),
@@ -863,8 +895,8 @@ impl App {
     fn pip_act(&mut self, hit: Hit) {
         let Some(pip) = self.pip.as_ref() else { return };
         let (tab, right) = (pip.tab, pip.right);
-        let back=format!("__nus.seek(-{})",self.behavior.pip_skip_seconds.clamp(1,120));
-        let forward=format!("__nus.seek({})",self.behavior.pip_skip_seconds.clamp(1,120));
+        let back=format!("__nus.skip(-{})",self.behavior.pip_skip_seconds.clamp(1,120));
+        let forward=format!("__nus.skip({})",self.behavior.pip_skip_seconds.clamp(1,120));
         let cmd = match hit {
             Hit::Play => "__nus.toggle()",
             Hit::Back => back.as_str(),
@@ -912,7 +944,7 @@ impl App {
         let Some(p)=self.pip.as_mut() else {return;};
         if p.scrubbing || p.pressed {return;}
         p.area=native::work_area(&p.window);
-        p.apply_rect(geometry::zoom(p.cur,factor,p.area,(0.5,0.5)));
+        p.apply_rect(geometry::zoom(p.cur,factor,p.area,geometry::quadrant_anchor(p.cur,p.area)));
     }
 
     pub fn pip_scale_changed(&mut self) {
@@ -932,6 +964,16 @@ impl App {
         }
     }
 
+    pub(crate) fn pip_notice_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(pip) = self.pip.as_ref() else { return false };
+        let Some(tab) = self.tabs.get(self.active).filter(|t| t.id == pip.tab_id) else { return false };
+        let pane = if pip.right { tab.right.as_ref() } else { Some(&tab.left) };
+        let Some(crate::app::Pane::Web(w)) = pane else { return false };
+        if !w.page.contains(x, y) || !w.tab.shared.borrow().native.as_ref().is_some_and(|n| n.in_pip()) { return false; }
+        self.return_from_pip();
+        true
+    }
+
     /// Bring the video's tab back and close PiP.
     pub fn return_from_pip(&mut self) {
         if self.pip.is_some() {
@@ -939,7 +981,9 @@ impl App {
         }
         if let Some(p) = self.pip.take() {
             let tab = p.tab;
+            let right = p.right;
             drop(p);
+            if let Some(t) = self.tabs.get_mut(tab) { t.focus_right = right && t.right.is_some(); }
             self.hatch_state.main_hidden=false;
             self.window.set_visible(true);self.window.set_minimized(false);
             self.window.focus_window();

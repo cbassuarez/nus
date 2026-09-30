@@ -9,7 +9,8 @@ use crate::fonts::{Family as FontFamily, Weight};
 use crate::settings::{Behavior, Blink, CursorColor, CursorMotion, CursorPrefs, CursorShapePref};
 use crate::shell_colors::ShellTint;
 use crate::surface::{Surface, TextureKind, TextureOn};
-use crate::theme_edit::{Family as PaletteFamily, ModeEdit, ThemeEdit};
+use crate::theme_edit::ThemeEdit;
+#[cfg(test)]
 use nus_render::theme::hex;
 
 fn configure(
@@ -19,24 +20,13 @@ fn configure(
     palette: &mut ThemeEdit,
 ) {
     // Use the bundled palette rather than a user's saved theme with the same
-    // name. Its window geometry, loading bar and sounds are not part of this
-    // terminal preset.
+    // name. The caller installs the complete appearance after these explicit
+    // terminal defaults; ordinary theme selection applies the authored visual pairing.
     let blueprint = crate::themes::stock()
         .into_iter()
         .find(|theme| theme.name == "blueprint")
         .expect("the bundled Blueprint palette exists");
-    let face = |face: &crate::themes::Face, accent| ModeEdit {
-        paper: Some(face.paper),
-        ink: Some(face.ink),
-        page: Some(face.page),
-        ansi: face.ansi,
-        caret: Some(hex(accent)),
-        selection: Some(hex(accent)),
-    };
-    palette.paper = face(&blueprint.paper, 0x137a8a);
-    palette.ink = face(&blueprint.ink, 0x2fb8d8);
-    palette.family = PaletteFamily::Imported;
-    palette.saturation = 1.0;
+    *palette = blueprint.palette();
 
     behavior.term_font = FontFamily::ArealMono;
     behavior.term_weight = Weight::Medium;
@@ -63,8 +53,8 @@ fn configure(
     surface.signal = blueprint.surface.signal;
     surface.base = None;
     surface.tint = 0.0;
-    surface.texture_kind = TextureKind::Stitch;
-    surface.texture = 0.03;
+    surface.texture_kind = TextureKind::None;
+    surface.texture = 0.0;
     surface.texture_scale = 5.0;
     surface.texture_on = TextureOn::Panes;
     surface.texture_motion = false;
@@ -78,12 +68,22 @@ pub(crate) fn fresh_preferences() -> crate::prefs::Prefs {
     let mut surface = Surface::default();
     let mut palette = ThemeEdit::default();
     configure(&mut behavior, &mut cursor, &mut surface, &mut palette);
+    let theme = crate::themes::stock().into_iter().find(|t| t.name == "blueprint").unwrap();
+    surface = theme.surface.clone();
+    let visual=theme.visual.as_ref().unwrap();
+    visual.apply_behavior_visuals(&mut behavior);
+    visual.apply_cursor(&mut cursor);
+    behavior.follow_os_theme = false;
     crate::prefs::Prefs {
         schema: crate::prefs::SCHEMA,
         behavior: Some(behavior),
         cursor: Some(cursor),
+        motion: Some(crate::anim::Motion { register:visual.motion, ..Default::default() }),
+        header: Some(crate::settings::HeaderPrefs { masthead:visual.masthead, ..Default::default() }),
         surface: Some(surface),
         theme: Some(palette),
+        load_bar: Some(crate::anim::LoadBar { style: theme.bar, color: theme.bar_color, ..Default::default() }),
+        tab_colours: Some(theme.tab_colours.clone()),
         preset_name: Some("blueprint".into()),
         ..Default::default()
     }
@@ -97,10 +97,10 @@ impl App {
             &mut self.surface,
             &mut self.theme_edit,
         );
-        self.preset_name = "blueprint".into();
+        let theme = crate::themes::stock().into_iter().find(|t| t.name == "blueprint").unwrap();
+        self.apply_theme(&theme);
         self.apply_fonts();
-        // Rebuild in the current face. This also refreshes existing terminal
-        // palettes and shell tints, without changing follow-OS or the mode.
+        // Refresh existing terminals after applying the explicit font defaults.
         self.rebuild_theme();
         self.save_prefs();
         self.dirty = true;
@@ -136,14 +136,14 @@ mod tests {
         assert_eq!(cursor.motion, CursorMotion::Glide);
         assert_eq!(cursor.blink, Blink::Never);
         assert_eq!(cursor.color, CursorColor::Theme);
-        assert_eq!(surface.texture_kind, TextureKind::Stitch);
-        assert_eq!(surface.texture, 0.03);
+        assert_eq!(surface.texture_kind, TextureKind::None);
+        assert_eq!(surface.texture, 0.0);
         assert_eq!(surface.texture_scale, 5.0);
         assert_eq!(surface.texture_on, TextureOn::Panes);
         assert!(!surface.texture_motion);
         for (mode, paper, ink, caret) in [
-            (Mode::Paper, 0xe6eef7, 0x0b2a4a, 0x137a8a),
-            (Mode::Ink, 0x0b2a4a, 0xdbe7f3, 0x2fb8d8),
+            (Mode::Paper, 0x1f5fbf, 0xffffff, 0xffffff),
+            (Mode::Ink, 0x1f5fbf, 0xffffff, 0xffffff),
         ] {
             let theme = palette.build(mode, surface.signal);
             assert_eq!(surface.paper(theme.paper), hex(paper));

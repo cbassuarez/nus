@@ -50,6 +50,14 @@ pub struct ModeEdit {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThemeEdit {
+    /// Saved palette source, independent of the resolved foreground polarity.
+    #[serde(default)]
+    pub source_ink: Option<bool>,
+    #[serde(default)]
+    pub art: Option<[Color; 6]>,
+    /// Keep automatic shell coloring in accents rather than replacing this background.
+    #[serde(default)]
+    pub uniform: bool,
     pub ink: ModeEdit,
     pub paper: ModeEdit,
     #[serde(default = "default_family")]
@@ -68,7 +76,7 @@ fn default_sat() -> f32 {
 
 impl Default for ThemeEdit {
     fn default() -> Self {
-        ThemeEdit { ink: ModeEdit::default(), paper: ModeEdit::default(), family: Family::Broadsheet, saturation: 1.0 }
+        ThemeEdit { source_ink: None, art: None, uniform: false, ink: ModeEdit::default(), paper: ModeEdit::default(), family: Family::Broadsheet, saturation: 1.0 }
     }
 }
 
@@ -156,16 +164,26 @@ pub fn grade(ratio: f32) -> &'static str {
 }
 
 impl ThemeEdit {
+    pub fn source_mode(&self, fallback: Mode) -> Mode {
+        match self.source_ink { Some(true) => Mode::Ink, Some(false) => Mode::Paper, None => fallback }
+    }
     fn edit(&self, mode: Mode) -> &ModeEdit {
-        if mode == Mode::Ink { &self.ink } else { &self.paper }
+        if self.source_mode(mode) == Mode::Ink { &self.ink } else { &self.paper }
     }
     pub fn edit_mut(&mut self, mode: Mode) -> &mut ModeEdit {
-        if mode == Mode::Ink { &mut self.ink } else { &mut self.paper }
+        if self.source_mode(mode) == Mode::Ink { &mut self.ink } else { &mut self.paper }
     }
 
     /// Broadsheet's theme for `mode`, with the edits applied and the
     /// derived tokens (dim, tint, hot, scrim) following.
+    pub fn build_face(&self, mode: Mode, signal: Color) -> Theme {
+        let mut copy = self.clone();
+        copy.source_ink = Some(mode == Mode::Ink);
+        copy.build(mode, signal)
+    }
+
     pub fn build(&self, mode: Mode, signal: Color) -> Theme {
+        let mode = self.source_mode(mode);
         let mut t = if mode == Mode::Ink { Theme::ink() } else { Theme::paper() };
         let e = self.edit(mode);
         if let Some(p) = e.paper {
@@ -228,7 +246,8 @@ pub fn legible(mut t: Theme, paper: Color) -> Theme {
     t.dim = keep(t.dim, 4.5);
     t.caret = keep(t.caret, 3.0);
     t.selection = keep(t.selection, 3.0);
-    let dark = nus_render::policy::luminance(paper) < 0.18;
+    let dark = nus_render::policy::luminance(t.ink) > nus_render::policy::luminance(paper);
+    t.mode = if dark { Mode::Ink } else { Mode::Paper };
     // The washes are the ink at a whisper, so they follow it.
     t.tint = Theme::with_alpha(t.ink, t.tint[3]);
     t.hot = Theme::with_alpha(t.ink, t.hot[3]);
@@ -376,6 +395,25 @@ fn parse_base16(name: &str, text: &str) -> Option<Imported> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_palette_survives_surface_crossing_and_edits() {
+        let mut e = ThemeEdit::default();
+        e.source_ink = Some(false);
+        e.paper.paper = Some(hex(0xe6eef7));
+        e.paper.ink = Some(hex(0x0b2a4a));
+        e.ink.paper = Some(hex(0x101010));
+        let rendered = legible(e.build(Mode::Paper, hex(0xffffff)), hex(0x1f5fbf));
+        assert_eq!(rendered.mode, Mode::Ink);
+        e.edit_mut(rendered.mode).caret = Some(hex(0xffcc55));
+        assert_eq!(e.paper.caret, Some(hex(0xffcc55)));
+        assert_eq!(e.ink.caret, None);
+        let again = e.build(rendered.mode, hex(0xffffff));
+        assert_eq!(again.paper, hex(0xe6eef7), "rebuild never selects another source face");
+        let restored: ThemeEdit = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+        assert_eq!(restored.build(Mode::Ink, hex(0xffffff)).paper, again.paper);
+        assert_eq!(restored.build_face(Mode::Ink, hex(0xffffff)).paper, hex(0x101010));
+    }
 
     #[test]
     fn a_black_page_keeps_its_words() {

@@ -1443,7 +1443,7 @@ impl App {
         }
         y+=self.px(35.0);
         if let Some(f)=&self.board.filter {
-            let text=self.fit(mono,&format!("/ {f}"),r.w-2.0*pad-self.px(4.0));
+            let text=self.fit(mono,format!("/ {f}"),r.w-2.0*pad-self.px(4.0));
             let width=self.fonts.draw(scene,mono,r.x+pad,y+self.px(14.0),&text);
             self.draw_line_caret(scene,r.x+pad+width,y+self.px(14.0),mono.px,1.0,self.last_key);
             y+=self.px(26.0);
@@ -1713,7 +1713,7 @@ impl App {
                             }
                         };
                         if confirm.as_ref() == Some(k) {
-                            let q = self.fit(strong,&format!("Stop {} ({})?", row.process, row.pid),r.w-pad*2.0);
+                            let q = self.fit(strong,format!("Stop {} ({})?", row.process, row.pid),r.w-pad*2.0);
                             self.fonts.draw(scene,Style{color:ansi(1),..strong},ax,ly+self.px(16.0),&q);ly+=self.px(24.0);
                             for line in crate::reader::wrap(&self.fonts,dim,"Requests a stop. After 3 seconds, force-stops the same process if it is still running.",r.w-pad*2.0){self.fonts.draw(scene,dim,lx,ly+self.px(16.0),&line);ly+=self.px(20.0);}
                             ax=lx;

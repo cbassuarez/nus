@@ -171,7 +171,7 @@ class ReleaseTests(unittest.TestCase):
             'vendor/cef/icudtl.dat':b'icu',
             'vendor/cef/locales/en-US.pak':b'locale',
             'spikes/composite/target/release/composite.exe':b'desktop',
-            'spikes/composite/target/release/composite.dll':b'desktop dll',
+            'spikes/composite/target/release/nus_app.dll':b'desktop dll',
             'target/release/nus-hold.exe':b'hold',
             'target/release/nus.exe':b'cli',
             'redist/x64/Microsoft.VC145.CRT/vcruntime140.dll':b'crt',
@@ -215,7 +215,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(calls,[])
 
     def test_windows_stage_requires_both_sandbox_bootstrap_and_client_dll(self):
-        for missing in ['vendor/cef/bootstrap.exe', 'spikes/composite/target/release/composite.dll']:
+        for missing in ['vendor/cef/bootstrap.exe', 'spikes/composite/target/release/nus_app.dll']:
             with self.subTest(missing=missing), patch.dict('os.environ',self.windows_payloads()):
                 (self.root/missing).unlink()
                 with self.assertRaises(FileNotFoundError):

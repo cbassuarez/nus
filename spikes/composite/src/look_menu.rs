@@ -4,7 +4,7 @@ use nus_render::text::icons;
 
 impl App {
     pub(crate) fn footer_theme_names(&self) -> Vec<String> {
-        self.behavior.footer_themes.clone().unwrap_or_else(|| crate::themes::all().into_iter().filter(|t|!t.port).take(9).map(|t|t.name).collect())
+        self.behavior.footer_themes.clone().unwrap_or_else(|| crate::themes::all().into_iter().filter(|t|t.authored).map(|t|t.name).collect())
     }
 
     pub(crate) fn draw_look_menu(&mut self, scene: &mut Scene, sb: Rect) {
@@ -37,9 +37,11 @@ impl App {
             if tile.bottom()<=grid.y || tile.y>=grid.bottom() {continue;}
             let swatch=Rect::new(tile.x,tile.y,tile.w,self.px(32.0));
             if let Some((index,theme))=themes.get(slot) {
-                let ramp=theme.surface.ramp(theme.ink.ink);
+                let resolved=theme.resolved();
+                let ramp=[resolved.paper];
                 scene.push(nus_render::Instance::rounded_stops(swatch,0.0,&ramp,theme.surface.angle,0.0,false));
                 scene.outline(swatch,self.px(1.0),ink);
+                self.fonts.draw(scene,Style{color:resolved.ink,px:self.px(13.0),..self.label()},swatch.x+self.px(8.0),swatch.y+self.px(22.0),"Aa");
                 let style=Style{px:self.px(9.0),..self.label()};
                 let name=self.fit(style,&theme.name,tile.w-self.px(3.0));
                 self.fonts.draw(scene,style,tile.x+self.px(1.0),tile.y+self.px(46.0),&name);

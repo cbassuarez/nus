@@ -4,19 +4,17 @@
 //!   · the surface — signal, ramp stops, base tint, texture (kind, scale,
 //!     strength, where, motion), carapace (shell, width, radius), angle,
 //!     drift, breath, opacity;
-//!   · two faces — paper and ink — each with paper / ink / page tokens and
-//!     a contrast-graded ANSI 16, so "follow OS" switches inside the theme;
+//!   · one authored appearance with a contrast-graded ANSI 16; legacy
+//!     paper / ink fields preserve imported variants and saved palettes;
 //!   · a caret and a selection colour per face (the ink unless said);
 //!   · the cursor's colour rule (the theme's caret, signal, the tab's own);
 //!   · the loading bar's style and colour;
-//!   · a sound signature: cues for the events that carry character
-//!     (launch, ready, tab switch, bell), the rest left to the user;
 //!   · a tab-colour rule the default rules.luau reads (`ctx.tab_colours`):
 //!     "family" (tints and shades of the signal), "wheel" (round the hue
 //!     wheel from the signal), "same" (every tab the signal).
 //!
-//! Not in a theme, by design: fonts, header structure, motion register,
-//! keys — those are yours, not the look's. Saved themes use the same
+//! Visual roles are curated in appearance::VisualStyle. Behavior, shortcuts,
+//! sounds, accessibility overrides and loading animation stay independent. Saved themes use the same
 //! shape, in profile/themes/<name>.json; ports arrive through the theme
 //! import path and are listed here with a nus surface each.
 
@@ -44,6 +42,13 @@ pub struct Face {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StockTheme {
+    #[serde(default)]
+    pub visual: Option<crate::appearance::VisualStyle>,
+    /// One authored appearance; paper/ink fields remain the import wire format.
+    #[serde(default)]
+    pub authored: bool,
+    #[serde(default)]
+    pub art: Option<[Color; 6]>,
     pub name: String,
     /// One line: what it is, where it's from.
     pub story: String,
@@ -99,6 +104,7 @@ fn surface(signal: u32, stops: &[u32], shell: Shell, width: f32, radius: f32, te
 
 fn theme(name: &str, story: &str, paper: Face, ink: Face, surface: Surface, cursor: CursorColor, bar: BarStyle, bar_color: BarColor, sounds: &[(&str, &str)], tab_colours: &str, prefers_ink: bool) -> StockTheme {
     StockTheme {
+        visual: None, authored: false, art: None,
         name: name.into(),
         story: story.into(),
         port: false,
@@ -149,7 +155,7 @@ const DRACULA: [u32; 16] = [0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0x
 const ALUCARD: [u32; 16] = [0x3c3c3c, 0xcb3a2a, 0x14710a, 0x846e15, 0x644ac9, 0xa3144d, 0x036a96, 0x1f1f1f, 0x6c664b, 0xcb3a2a, 0x14710a, 0x846e15, 0x644ac9, 0xa3144d, 0x036a96, 0x000000];
 
 /// The stock set: thirteen originals, then seven ports.
-pub fn stock() -> Vec<StockTheme> {
+pub fn legacy() -> Vec<StockTheme> {
     use CursorColor as C;
     let mut v = vec![
         theme(
@@ -286,6 +292,75 @@ pub fn stock() -> Vec<StockTheme> {
     v
 }
 
+/// The curated originals have one authored appearance. Keeping both legacy
+/// face fields equal lets older readers display them without inventing a twin.
+pub fn stock() -> Vec<StockTheme> {
+    static STOCK: std::sync::OnceLock<Vec<StockTheme>> = std::sync::OnceLock::new();
+    STOCK.get_or_init(curated_stock).clone()
+}
+
+fn curated_stock() -> Vec<StockTheme> {
+    use crate::surface::{Material, Reaction};
+    let specs = [
+        ("blueprint", "Cobalt, chalk and gold. The drawing room, with open white corners.", 0x1f5fbf, 0xffffff, 0xffffff, 0xffce54, [0xffb4bc,0xb8e8bd,0xffdf91,0xb8d9ff,0xe0ceff,0xa9e7ed], Material::OpenCorners),
+        ("canopy", "Forest, cream and lime. A quiet botanical workspace.", 0x125746, 0xf0f4cf, 0xe5ee89, 0xe5ee89, [0xffc6b8,0xc8efb7,0xffe09a,0xadcee9,0xe2bcef,0x88c6a1], Material::Enamel),
+        ("carbon", "True OLED black, cool white and ice-blue focus. Color carries syntax and status.", 0x000000, 0xf2f4f8, 0x83d7ff, 0x83d7ff, [0xff9699,0x9ddcab,0xffd18a,0x83d7ff,0xc7b3ff,0x8edbd6], Material::SingleSeam),
+        ("citron", "Citron stock, aubergine ink and orange. Bold cut-paper geometry.", 0xefcf4b, 0x342532, 0x85331f, 0x51304d, [0x8c2138,0x285032,0x693700,0x294c87,0x68386c,0x20585b], Material::Overprint),
+        ("folio", "Apricot paper, walnut text and oxblood marks. A working copy for long-form editing.", 0xefd0a8, 0x3f2a24, 0x822e40, 0x763b42, [0x97302e,0x30542e,0x744014,0x365980,0x624680,0x245f63], Material::SingleSeam),
+        ("indigo", "Indigo, ivory and honey. Distinct syntax colors for coding and debugging.", 0x292543, 0xedeaf4, 0xf2d08c, 0xd1b4f3, [0xf3a7b9,0xabd7a0,0xf2d08c,0xa6c5f4,0xd1b4f3,0xa5d6de], Material::SingleSeam),
+        ("iris", "Lilac, plum and rust. Fine orbital lines and colored afterimages.", 0xc6b2e4, 0x392448, 0x853b23, 0x51325d, [0x8c244e,0x285237,0x724117,0x304f80,0x634087,0x245e61], Material::Interference),
+        ("lagoon", "Aqua, petrol and coral. Clean tidal contours around the work.", 0x89d7ca, 0x143d48, 0x862f28, 0x1c5965, [0x8d2944,0x205634,0x754018,0x285080,0x603767,0x25606c], Material::Enamel),
+        ("ledger", "Celadon, forest and cobalt. Clear hierarchy for logs and dense information.", 0xd4dfa9, 0x263c29, 0x36588a, 0x385c43, [0x953646,0x265c3c,0x77461a,0x36588a,0x703d69,0x2b684d], Material::SingleSeam),
+        ("vermilion", "Lacquer red, cream and pink. The print shop, in two impressions.", 0xa92e34, 0xfff3db, 0xffe28b, 0xffe28b, [0xffc4c9,0xd5f0b2,0xffe28b,0xc1dcff,0xf0cfff,0xb9e5df], Material::Overprint),
+    ];
+    let mut result = Vec::new();
+    for (name, story, bg, fg, signal, selection, colors, material) in specs {
+        let dark = nus_render::policy::luminance(hex(fg)) > nus_render::policy::luminance(hex(bg));
+        let mut sixteen = [fg; 16];
+        sixteen[0] = bg;
+        sixteen[8] = if dark { 0x888888 } else { 0x686868 };
+        for i in 0..6 { sixteen[i + 1] = colors[i]; sixteen[i + 9] = colors[i]; }
+        let a = sixteen.map(|v| hex(v));
+        let mut a = a;
+        for i in 1..16 { if i != 8 { a[i] = nus_render::oklch::readable(a[i], hex(bg), 4.52); } }
+        let mut f = face(bg, fg, bg, Some(a));
+        f.caret = Some(hex(if name == "blueprint" { 0xffffff } else { signal }));
+        f.selection = Some(hex(selection));
+        let quiet = matches!(name, "carbon" | "indigo" | "folio" | "ledger");
+        let s = Surface { material, reaction: if quiet { Reaction::Still } else { Reaction::Expressive },
+            ..surface(signal, &[], Shell::Stroke, if name == "blueprint" { 3.0 } else { 1.5 }, 0.0, TextureKind::None, 0.0, 1.0) };
+        let mut t = theme(name, story, f.clone(), f, s, CursorColor::Theme, BarStyle::Rule, BarColor::Signal, &[], "family", dark);
+        if name == "blueprint" {
+            t.bar = BarStyle::Radiance; t.tab_colours = "wheel".into();
+            t.surface.drift = 0.05; t.surface.breath = 0.2; t.surface.angle = 30.0;
+            t.surface.texture_scale = 5.0;
+            t.surface.stops = [0x2fb8d8, 0x0b2a4a, 0x7fc4ff].map(hex).to_vec();
+        }
+        t.authored = true;
+        t.visual = Some(crate::appearance::VisualStyle::curated(name));
+        t.art = Some(if name == "blueprint" { nus_render::theme::signal::ALL } else { [colors[0], colors[3], colors[2], colors[1], colors[4], colors[5]].map(hex) });
+        result.push(t);
+    }
+    result.extend(legacy().into_iter().filter(|t| t.port));
+    result
+}
+
+impl StockTheme {
+    pub fn source_mode(&self) -> nus_render::Mode {
+        if self.prefers_ink { nus_render::Mode::Ink } else { nus_render::Mode::Paper }
+    }
+    pub fn palette(&self) -> crate::theme_edit::ThemeEdit {
+        let face = |f: &Face| crate::theme_edit::ModeEdit { paper: Some(f.paper), ink: Some(f.ink), page: Some(f.page), ansi: f.ansi, caret: f.caret, selection: f.selection };
+        crate::theme_edit::ThemeEdit { source_ink: Some(self.prefers_ink), art: self.art, uniform: self.authored,
+            paper: face(&self.paper), ink: face(&self.ink), family: crate::theme_edit::Family::Imported, saturation: 1.0 }
+    }
+    pub fn resolved(&self) -> nus_render::Theme {
+        let t = self.palette().build(self.source_mode(), self.surface.signal);
+        let paper = self.surface.paper(t.paper);
+        crate::theme_edit::legible(t, paper)
+    }
+}
+
 fn themes_dir() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_default().join("profile").join("themes")
 }
@@ -293,6 +368,18 @@ fn themes_dir() -> std::path::PathBuf {
 /// Stock, then the user's saved themes (files win on a name clash).
 pub fn all() -> Vec<StockTheme> {
     let mut v = stock();
+    // Retired names remain available when an existing profile references them.
+    // Read only appearance keys; do not load Prefs recursively here.
+    let settings = themes_dir().parent().unwrap().join("settings.json");
+    if let Ok(data) = std::fs::read(settings) {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
+            let mut names: Vec<&str> = value["behavior"]["footer_themes"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
+            if let Some(name) = value["preset_name"].as_str() { names.push(name); }
+            for old in legacy() {
+                if names.contains(&old.name.as_str()) && !v.iter().any(|t| t.name == old.name) { v.push(old); }
+            }
+        }
+    }
     if let Ok(rd) = std::fs::read_dir(themes_dir()) {
         let mut mine: Vec<StockTheme> = rd
             .flatten()
@@ -308,6 +395,11 @@ pub fn all() -> Vec<StockTheme> {
     v
 }
 
+/// Keep old names usable without adding every retired look to the catalog.
+pub fn find(name: &str) -> Option<StockTheme> {
+    all().into_iter().chain(legacy()).find(|t| t.name.eq_ignore_ascii_case(name))
+}
+
 pub fn save(t: &StockTheme) -> std::io::Result<()> {
     std::fs::create_dir_all(themes_dir())?;
     let safe: String = t.name.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' }).collect();
@@ -318,6 +410,32 @@ pub fn save(t: &StockTheme) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::theme_edit::contrast;
+
+    #[test]
+    fn curated_collection_has_ten_complete_looks_and_balanced_polarity() {
+        let originals: Vec<_> = stock().into_iter().filter(|t| !t.port).collect();
+        assert_eq!(originals.len(), 10);
+        assert_eq!(originals.iter().filter(|t| t.resolved().mode == nus_render::Mode::Ink).count(), 5);
+        for t in &originals {
+            assert!(t.authored);
+            assert_eq!(t.paper, t.ink, "{} has one authored appearance", t.name);
+            assert!(t.art.is_some());
+            let resolved = t.resolved();
+            assert!(contrast(resolved.ink, resolved.paper) >= 4.5);
+            assert!(contrast(resolved.dim, resolved.paper) >= 4.49);
+            let selected = crate::surface::mix(resolved.paper, resolved.selection, resolved.selection[3]);
+            assert!(contrast(resolved.ink, selected) >= 4.5, "{} selected text", t.name);
+            for i in 1..=6 { assert!(contrast(crate::theme_edit::from_rgb(resolved.ansi[i]), resolved.paper) >= 4.49, "{} syntax {i}", t.name); }
+        }
+        let carbon = originals.iter().find(|t| t.name == "carbon").unwrap().resolved();
+        assert_eq!(carbon.paper, hex(0));
+        assert!(contrast(carbon.ink, carbon.paper) > 19.0);
+        let blueprint = originals.iter().find(|t| t.name == "blueprint").unwrap();
+        assert_eq!(blueprint.resolved().paper, hex(0x1f5fbf));
+        assert_eq!(blueprint.surface.signal, hex(0xffffff));
+        assert_eq!(blueprint.surface.material, crate::surface::Material::OpenCorners);
+        assert_eq!(blueprint.surface.texture, 0.0);
+    }
 
     #[test]
     fn every_face_reads() {
@@ -347,7 +465,7 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), s.len());
-        assert_eq!(s.len(), 20);
+        assert_eq!(s.len(), 17);
         assert_eq!(s.iter().filter(|t| t.port).count(), 7);
     }
 

@@ -129,7 +129,7 @@ def main():
             # process and loads the same-named client DLL. A standalone Rust
             # EXE cannot provide Chromium's sandbox broker.
             shutil.copy2(cef/'bootstrap.exe', stage/'nus.exe')
-            shutil.copy2(build/'composite.dll', stage/'nus.dll')
+            shutil.copy2(build/'nus_app.dll', stage/'nus.dll')
             shutil.copy2(ROOT/'target/release/nus-hold.exe', stage/'nus-hold.exe')
             shutil.copy2(ROOT/'target/release/nus.exe', stage/'bin/nus.exe')
             # The MSVC runtime is required on clean machines, not only runners.
@@ -149,7 +149,7 @@ def main():
             shutil.copy2(ROOT/'assets/icon/nus-256.png', stage/'nus.png')
             (stage/'nus.desktop').write_text('[Desktop Entry]\nType=Application\nName=nus\nComment=A terminal and browser in one workspace\nExec=nus\nIcon=nus\nTerminal=false\nCategories=Development;TerminalEmulator;WebBrowser;\n')
             signing = 'checksum'
-            instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA and NSS.\nChromium also needs user namespaces allowed by the system and AppArmor policy,\nor an administrator-installed sandbox helper. The archive does not install a privileged helper.\nIf the sandbox is unavailable, nus explains the problem in the page; sandboxing stays enabled.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\nTo add a desktop entry, copy nus.desktop to ~/.local/share/applications,\nset Exec and Icon to the absolute extracted paths, and keep the folder in place.\n'
+            instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA, NSS and libxkbcommon-x11 (X11).\nChromium also needs user namespaces allowed by the system and AppArmor policy,\nor an administrator-installed sandbox helper. The archive does not install a privileged helper.\nIf the sandbox is unavailable, nus explains the problem in the page; sandboxing stays enabled.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\nTo add a desktop entry, copy nus.desktop to ~/.local/share/applications,\nset Exec and Icon to the absolute extracted paths, and keep the folder in place.\n'
         shutil.copy2(ROOT/'LICENSE', stage/'LICENSE')
         if args.stage_only:
             print(f'Staged unsigned Windows payload at {stage}; sign {", ".join(WINDOWS_SIGNED)}, then run --finalize-staged.')

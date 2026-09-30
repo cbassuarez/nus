@@ -154,11 +154,15 @@ const TRACKER: &str = concat!(
     r#"(()=>{const n=window.__nus;if(!n||n.__webkit)return;n.__webkit=true;
 const nf=()=>{try{const p=window.netflix.appContext.state.playerApp.getAPI().videoPlayer;const ids=p.getAllPlayerSessionIds();return p.getVideoPlayerBySessionId(ids.find(i=>i.startsWith('watch'))||ids[0])||null}catch(_){return null}};
 const seek=n.seek,seekTo=n.seekTo,step=n.step,toggle=n.toggle;
-n.toggle=()=>{const p=nf();if(!p)return toggle();return n.command(()=>p.isPaused()?p.play():p.pause(),'play-failed')};
+n.toggle=()=>{n.cancelSkip();const p=nf();if(!p)return toggle();return n.command(()=>p.isPaused()?p.play():p.pause(),'play-failed')};
 const nfSeek=(p,t)=>{if(!Number.isFinite(t))throw new Error('Invalid position');const d=p.getDuration();return p.seek(Math.max(0,Number.isFinite(d)&&d>0?Math.min(d,t):t))};
-n.seek=d=>{const p=nf();if(!p)return seek(d);if(Number.isFinite(d))return n.command(()=>nfSeek(p,p.getCurrentTime()+d*1000),'seek-failed')};
-n.seekTo=f=>{const p=nf();if(!p)return seekTo(f);if(Number.isFinite(f))return n.command(()=>{const d=p.getDuration();if(!(Number.isFinite(d)&&d>0))throw new Error('No duration');return nfSeek(p,f*d)},'seek-failed')};
-n.step=f=>{const p=nf();if(!p)return step(f);if(Number.isFinite(f))return n.command(()=>{p.pause();return nfSeek(p,p.getCurrentTime()+f*1000/30)},'seek-failed')};
+n.seek=d=>{n.cancelSkip();const p=nf();if(!p)return seek(d);if(Number.isFinite(d))return n.command(()=>nfSeek(p,p.getCurrentTime()+d*1000),'seek-failed')};
+n.seekTo=f=>{n.cancelSkip();const p=nf();if(!p)return seekTo(f);if(Number.isFinite(f))return n.command(()=>{const d=p.getDuration();if(!(Number.isFinite(d)&&d>0))throw new Error('No duration');return nfSeek(p,f*d)},'seek-failed')};
+n.step=f=>{n.cancelSkip();const p=nf();if(!p)return step(f);if(Number.isFinite(f))return n.command(()=>{p.pause();return nfSeek(p,p.getCurrentTime()+f*1000/30)},'seek-failed')};
+n.skipPlayer=()=>{const p=nf();if(!p)return null;return {
+key:p,time:()=>p.getCurrentTime()/1000,paused:()=>p.isPaused(),
+clamp:t=>{const d=p.getDuration()/1000;return Math.max(0,Number.isFinite(d)&&d>0?Math.min(d,t):t)},
+seek:t=>nfSeek(p,t*1000),play:()=>p.play(),valid:()=>nf()===p}};
 const ask=()=>{window.__nusWantPip=1};
 const proto=HTMLVideoElement.prototype,mode=proto.webkitSetPresentationMode;
 proto.requestPictureInPicture=function(){ask();return Promise.reject(new DOMException('Picture in picture opens in nus','NotAllowedError'))};

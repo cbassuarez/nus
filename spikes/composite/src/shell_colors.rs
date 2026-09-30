@@ -86,7 +86,11 @@ impl App {
     /// The color for a slot under the current theme.
     pub(crate) fn shell_color(&self, slot: Option<u8>) -> Option<Overrides> {
         let dark = self.theme.mode == nus_render::Mode::Ink;
-        slot.map(|s| family(self.surface.signal, dark)[s as usize % SLOTS].clone())
+        slot.map(|s| {
+            let mut color = family(self.surface.signal, dark)[s as usize % SLOTS].clone();
+            if self.theme_edit.uniform { color.bg = None; }
+            color
+        })
     }
 
     /// A shell's terminal reads its colors against the pane it is drawn

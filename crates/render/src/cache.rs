@@ -1,4 +1,5 @@
 //! Bounded second-chance caches: evict cold entries without flushing hot text.
+use std::borrow::Borrow;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 struct Entry<V> {
@@ -28,7 +29,10 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
         self.clock = VecDeque::new();
         self.weight = 0;
     }
-    pub fn get(&mut self, key: &K) -> Option<&V> {
+    pub fn get<Q: ?Sized + Hash + Eq>(&mut self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
         let e = self.map.get_mut(key)?;
         e.hot = true;
         Some(&e.value)

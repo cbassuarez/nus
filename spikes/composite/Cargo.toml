@@ -6,6 +6,9 @@ edition = "2021"
 publish = false
 
 [lib]
+# Distinct from the executable so parallel MSVC/LTO builds cannot share
+# intermediate object names. The packaged CEF entry point remains nus.dll.
+name = "nus_app"
 crate-type = ["cdylib"]
 test = false
 doctest = false

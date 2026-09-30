@@ -42,10 +42,9 @@ local function place(px, py, cx, cy, rot, sc)
   return cx + x * cr - y * sr, cy + x * sr + y * cr
 end
 
-local function squigglePts(p, phase, k)
-  -- k: a point list for the outline in the piece's own box (origin at its centre).
+local function squigglePts(p, phase)
   local n = 64
-  local top, bottom = {}, {}
+  local pts = p.contour or {}
   for i = 0, n do
     local t = i / n
     local x = t * p.w - p.w / 2
@@ -54,15 +53,18 @@ local function squigglePts(p, phase, k)
     local len = math.sqrt(1 + dy * dy)
     local w = (p.weight / 2) * (0.25 + 0.75 * math.sin(math.pi * t))
     local nx, ny = -dy / len, 1 / len
-    top[#top + 1] = { x + nx * w, y + ny * w }
-    table.insert(bottom, 1, { x - nx * w, y - ny * w })
+    local top, bottom = i + 1, (n + 1) * 2 - i
+    pts[top] = pts[top] or {}; pts[bottom] = pts[bottom] or {}
+    pts[top][1], pts[top][2] = x + nx * w, y + ny * w
+    pts[bottom][1], pts[bottom][2] = x - nx * w, y - ny * w
   end
-  for _, q in bottom do top[#top + 1] = q end
-  return top
+  p.contour = pts
+  return pts
 end
 
 local function polyOf(p, phase)
   if p.kind == "squiggle" then return squigglePts(p, phase) end
+  if p.contour then return p.contour end
   local s = p.s or 0
   local pts = {}
   if p.kind == "circle" then
@@ -79,8 +81,24 @@ local function polyOf(p, phase)
   elseif p.kind == "sticker" then
     for i = 0, 47 do local a = i / 48 * TAU; pts[#pts + 1] = { math.cos(a) * s / 2, math.sin(a) * s / 2 } end
   end
+  p.contour = pts
   return pts
 end
+
+-- Fixed contours and working point tables belong to the piece, not a frame.
+for _, p in pieces do
+  polyOf(p, 0)
+  p.out = {}
+  p.band = { {}, {}, {}, {} }
+  if p.kind == "zigzag" then
+    local teeth = math.max(3, math.floor(p.w / (p.h * 1.2) + 0.5))
+    for k = 0, teeth * 2 do
+      p.contour[k + 1] = { k / (teeth * 2) * p.w - p.w / 2,
+        if k % 2 == 1 then -p.h / 2 + p.stroke / 2 else p.h / 2 - p.stroke / 2 }
+    end
+  end
+end
+local signals
 
 local function drawPiece(c, p, t, sc, ink, paper, white, pointer)
   local s = pop((t - 0.25 - p.at) / 0.36)
@@ -96,13 +114,15 @@ local function drawPiece(c, p, t, sc, ink, paper, white, pointer)
   local scale = s * nod * (1 + 0.04 * lift) * sc
   local rot = p.rot * math.pi / 180
   local off = (8 * land + 10 * lift) * sc
-  local col = c.signals[p.col or "red"]
+  local col = signals[p.col or "red"]
   local phase = t * 0.45
+  local cr, sr = math.cos(rot), math.sin(rot)
   local function put(pts, ox, oy)
-    local out = {}
+    local out = p.out
     for i, q in pts do
-      local x, y = place(q[1], q[2], cx + ox - lift * 6, cy + oy - lift * 6, rot, scale)
-      out[i] = { x, y }
+      local x, y = q[1] * scale, q[2] * scale
+      local at = out[i] or {}; out[i] = at
+      at[1], at[2] = cx + ox - lift * 6 + x * cr - y * sr, cy + oy - lift * 6 + x * sr + y * cr
     end
     return out
   end
@@ -124,13 +144,7 @@ local function drawPiece(c, p, t, sc, ink, paper, white, pointer)
     return
   end
   if p.kind == "zigzag" then
-    local teeth = math.max(3, math.floor(p.w / (p.h * 1.2) + 0.5))
-    local pts = {}
-    for k = 0, teeth * 2 do
-      local zx = k / (teeth * 2) * p.w - p.w / 2
-      local zy = if k % 2 == 1 then -p.h / 2 + p.stroke / 2 else p.h / 2 - p.stroke / 2
-      pts[#pts + 1] = { zx, zy }
-    end
+    local pts = p.contour
     local out = put(pts, 0, 0)
     for i = 1, #out - 1 do c:line(out[i][1], out[i][2], out[i + 1][1], out[i + 1][2], p.stroke * scale, col) end
     return
@@ -149,13 +163,13 @@ local function drawPiece(c, p, t, sc, ink, paper, white, pointer)
       -- Clip the parallelogram to the box's left and right edges.
       local x0, x1 = math.max(x, -p.w / 2), math.min(x + p.h + band, p.w / 2)
       if x1 > x0 then
-        local pts = {}
+        local pts = p.band
         local top0, top1 = x + p.h, x + p.h + band
         local bot0, bot1 = x, x + band
-        pts[1] = { clamp(bot0, -p.w / 2, p.w / 2), p.h / 2 }
-        pts[2] = { clamp(top0, -p.w / 2, p.w / 2), -p.h / 2 }
-        pts[3] = { clamp(top1, -p.w / 2, p.w / 2), -p.h / 2 }
-        pts[4] = { clamp(bot1, -p.w / 2, p.w / 2), p.h / 2 }
+        pts[1][1], pts[1][2] = clamp(bot0, -p.w / 2, p.w / 2), p.h / 2
+        pts[2][1], pts[2][2] = clamp(top0, -p.w / 2, p.w / 2), -p.h / 2
+        pts[3][1], pts[3][2] = clamp(top1, -p.w / 2, p.w / 2), -p.h / 2
+        pts[4][1], pts[4][2] = clamp(bot1, -p.w / 2, p.w / 2), p.h / 2
         c:poly(put(pts, 0, 0), col)
       end
       x += period
@@ -169,11 +183,12 @@ local function drawPiece(c, p, t, sc, ink, paper, white, pointer)
   c:poly(o, fill)
   for i = 1, #o do local a, b = o[i], o[i % #o + 1]; c:line(a[1], a[2], b[1], b[2], 2 * sc, ink) end
   if p.kind == "sticker" then
-    c:text(cx - lift * 6, cy - lift * 6 + p.s * 0.18 * scale, "»", p.s * 0.5 * scale, c.signals.red, 1, { font = "strong", align = "center" })
+    c:text(cx - lift * 6, cy - lift * 6 + p.s * 0.18 * scale, "»", p.s * 0.5 * scale, signals.red, 1, { font = "strong", align = "center" })
   end
 end
 
 function draw(c)
+  signals = signals or c.signals
   -- Onboarding places the very same vector pieces among its sections.
   -- No thumbnail, texture, or duplicate geometry definition.
   local placed = c:pieces()
@@ -221,5 +236,6 @@ function draw(c)
       if math.abs(tp.x - p.x * sc) <= w / 2 + 8 and math.abs(tp.y - p.y * sc) <= h / 2 + 8 then p.lift = c.t; break end
     end
   end
-  for _, p in pieces do drawPiece(c, p, c.t, sc, ink, paper, white, c.pointer) end
+  local pointer = c.pointer
+  for _, p in pieces do drawPiece(c, p, c.t, sc, ink, paper, white, pointer) end
 end

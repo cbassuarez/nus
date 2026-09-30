@@ -1,0 +1,2329 @@
+{
+  "purpose": "Native Sky acceptance; full raw artifacts remain in recorded temporary directories",
+  "records": {
+    "visual/manifest.json": {
+      "schema": 1,
+      "captured_at": "2026-09-30T02:18:22.635740+00:00",
+      "executable": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus",
+      "executable_sha256": "67c8e902e44b4b9f3c68602f83af5ece73ec39eebb189f32c16b0c71f8950b2f",
+      "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=7012451)\t12%; discharging; 0:25 remaining present: true\n",
+      "logical_size": [
+        1440,
+        900
+      ],
+      "visual_review_required": true,
+      "measurement_limits": "Fixed wall-clock/reduced-motion visual checks. Not animation, GPU time, or battery evidence. Fixture weather is illustrative.",
+      "cases": [
+        {
+          "clock": "2026-09-22T19:00:00Z",
+          "place": null,
+          "logical_size": [
+            480,
+            720
+          ],
+          "purpose": "Built-in, no location; narrow paper, ink, and typed prompt",
+          "clock_ms": 1790103600000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual/illustrated",
+          "reduced_motion": true,
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/illustrated/screens/narrow-typed-paper.png",
+              "width": 960,
+              "height": 1440,
+              "bytes": 1121803,
+              "sha256": "59928f566943319b1f7a628a5eddfa7c90423c10bc98a78f42e4db94ab6bc346"
+            },
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/illustrated/screens/sky-ink-paper.png",
+              "width": 960,
+              "height": 1440,
+              "bytes": 1104197,
+              "sha256": "ed6a4d08890f23103ab003628236eb2a830cd29d90c7e78504b60a2a21c4ca6f"
+            },
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/illustrated/screens/sky-paper.png",
+              "width": 960,
+              "height": 1440,
+              "bytes": 1141134,
+              "sha256": "4926645a986886ddd436a9000e7a2e7c8847ac81da01ed2ce0a6d84f7929b3b5"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 5.19
+        },
+        {
+          "clock": "2026-09-22T13:00:00Z",
+          "place": [
+            40,
+            -105
+          ],
+          "purpose": "Built-in, Colorado near sunrise; sun roughly 1.5 degrees high",
+          "clock_ms": 1790082000000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual/sunrise",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/sunrise/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 3187395,
+              "sha256": "67550f84ae260d85bd6142f50bae7450a8fdb451faa2cce57e64be8101467544"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.689
+        },
+        {
+          "clock": "2026-09-23T00:55:00Z",
+          "place": [
+            40,
+            -105
+          ],
+          "purpose": "Built-in, Colorado near sunset; sun roughly 0.5 degrees below horizon",
+          "clock_ms": 1790124900000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual/sunset",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/sunset/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 3275228,
+              "sha256": "152430af6b3d864c7a2d4242e90429d463fac913ecb46901f8331a85e0857953"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.73
+        },
+        {
+          "clock": "2026-09-23T07:00:00Z",
+          "place": [
+            40,
+            -105
+          ],
+          "purpose": "Built-in local night, paper and ink; sun roughly 50 degrees below horizon",
+          "clock_ms": 1790146800000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual/night",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/night/screens/sky-ink-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2864004,
+              "sha256": "765dd96aa1e0a9181bb9c564a1d61e207eb2af571d855ff05f1fd3a8e4d0f347"
+            },
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/night/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2920278,
+              "sha256": "9cd0e667535f1ce6e00cf1f67533a7cfbf3e7e64a301a02eced6222db171c937"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 3.053
+        },
+        {
+          "clock": "2026-09-22T19:00:00Z",
+          "place": null,
+          "purpose": "Explicit native atmosphere fixture, unbroken layered cloud",
+          "fixture": {
+            "low": 0.92,
+            "middle": 0.88,
+            "high": 0.65,
+            "stratus": 0.95,
+            "precipitation": 0,
+            "base": 0.8,
+            "haze": 0.65
+          },
+          "clock_ms": 1790103600000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual/overcast",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "fixture",
+          "fixture_sha256": "bf7937b232796214a4af5c3796c050240c918173a58676bf13edc93782e9b151",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/overcast/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2395587,
+              "sha256": "3036c78cb42ee3c009f2ce2b710b42aceacdbe259a12d976629399834fcc19aa"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.724
+        },
+        {
+          "clock": "2026-09-22T19:00:00Z",
+          "place": null,
+          "purpose": "Explicit native atmosphere fixture, dense low cloud and rain",
+          "fixture": {
+            "low": 0.98,
+            "middle": 0.88,
+            "high": 0.76,
+            "stratus": 0.9,
+            "precipitation": 8,
+            "base": 0.5,
+            "haze": 0.9
+          },
+          "clock_ms": 1790103600000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual/rain",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "fixture",
+          "fixture_sha256": "a66875f2f6add82256482beac97dffbd0620bcb7434e1b5f2dbdf741772ff55a",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual/rain/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2760877,
+              "sha256": "d248a12208a12175dc7606e4b3dc32da0ad6f1af8f2f054303ddc08ed2803697"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.733
+        }
+      ],
+      "executable_sha256_after": "67c8e902e44b4b9f3c68602f83af5ece73ec39eebb189f32c16b0c71f8950b2f",
+      "executable_unchanged": true
+    },
+    "visual-final/manifest.json": {
+      "schema": 1,
+      "captured_at": "2026-09-30T02:31:06.902322+00:00",
+      "executable": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus",
+      "executable_sha256": "a983153acb05fe282e16fc3f14891b576fa3feb10a691af4e60729dab94da2cb",
+      "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7012451)\t9%; charging; (no estimate) present: true\n",
+      "logical_size": [
+        1440,
+        900
+      ],
+      "visual_review_required": true,
+      "measurement_limits": "Fixed wall-clock/reduced-motion visual checks. Not animation, GPU time, or battery evidence. Fixture weather is illustrative.",
+      "cases": [
+        {
+          "clock": "2026-09-22T19:00:00Z",
+          "place": null,
+          "logical_size": [
+            480,
+            720
+          ],
+          "purpose": "Built-in, no location; narrow paper, ink, and typed prompt",
+          "clock_ms": 1790103600000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/illustrated",
+          "reduced_motion": true,
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/illustrated/screens/narrow-typed-paper.png",
+              "width": 960,
+              "height": 1440,
+              "bytes": 1142070,
+              "sha256": "9c080b94a10271ea61df9b85bd0087ef732968a0a152c6368d9df4522397651e"
+            },
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/illustrated/screens/sky-ink-paper.png",
+              "width": 960,
+              "height": 1440,
+              "bytes": 1118877,
+              "sha256": "ad00c43480a87017c6631deee15117a7665b134835434f22836434f1594a6ba9"
+            },
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/illustrated/screens/sky-paper.png",
+              "width": 960,
+              "height": 1440,
+              "bytes": 1141187,
+              "sha256": "9931bbb0405d0bec721896a397d49241fbd6596a37c9129776099f0e8181db86"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 4.986
+        },
+        {
+          "clock": "2026-09-22T13:00:00Z",
+          "place": [
+            40,
+            -105
+          ],
+          "purpose": "Built-in, Colorado near sunrise; sun roughly 1.5 degrees high",
+          "clock_ms": 1790082000000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/sunrise",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/sunrise/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 3179109,
+              "sha256": "52420113b6fd35523e52470757d95fc95ab93dd054deee49b34e350e8b8f46fe"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.705
+        },
+        {
+          "clock": "2026-09-23T00:55:00Z",
+          "place": [
+            40,
+            -105
+          ],
+          "purpose": "Built-in, Colorado near sunset; sun roughly 0.5 degrees below horizon",
+          "clock_ms": 1790124900000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/sunset",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/sunset/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 3268261,
+              "sha256": "373f3bc576a97c54364b3902e50330fa871784c977270c7ac4d9c4281dd7b276"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.67
+        },
+        {
+          "clock": "2026-09-23T07:00:00Z",
+          "place": [
+            40,
+            -105
+          ],
+          "purpose": "Built-in local night, paper and ink; sun roughly 50 degrees below horizon",
+          "clock_ms": 1790146800000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/night",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "built-in",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/night/screens/sky-ink-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2858797,
+              "sha256": "1e67ffa134fb5f233ffdf3165dd4b0dd7c82d41933c063aa07ae94a5e78db713"
+            },
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/night/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2915349,
+              "sha256": "73aec6dd01e19bf9e44a3a88d88f19d620218898591dc73ca4d4d8d407bdece6"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 3.109
+        },
+        {
+          "clock": "2026-09-22T19:00:00Z",
+          "place": null,
+          "purpose": "Explicit native atmosphere fixture, unbroken layered cloud",
+          "fixture": {
+            "low": 0.92,
+            "middle": 0.88,
+            "high": 0.65,
+            "stratus": 0.95,
+            "precipitation": 0,
+            "base": 0.8,
+            "haze": 0.65
+          },
+          "clock_ms": 1790103600000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/overcast",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "fixture",
+          "fixture_sha256": "bf7937b232796214a4af5c3796c050240c918173a58676bf13edc93782e9b151",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/overcast/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2291822,
+              "sha256": "2e68530d6db17fdd642dab4b5e567af2de2dc51ad2f57b9d0bd5ea79c00a2f2e"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.722
+        },
+        {
+          "clock": "2026-09-22T19:00:00Z",
+          "place": null,
+          "purpose": "Explicit native atmosphere fixture, dense low cloud and rain",
+          "fixture": {
+            "low": 0.98,
+            "middle": 0.88,
+            "high": 0.76,
+            "stratus": 0.9,
+            "precipitation": 8,
+            "base": 0.5,
+            "haze": 0.9
+          },
+          "clock_ms": 1790103600000,
+          "directory": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/rain",
+          "reduced_motion": true,
+          "logical_size": [
+            1440,
+            900
+          ],
+          "weather_network_enabled": false,
+          "route": "fixture",
+          "fixture_sha256": "a66875f2f6add82256482beac97dffbd0620bcb7434e1b5f2dbdf741772ff55a",
+          "exit_code": 0,
+          "screenshots": [
+            {
+              "path": "/private/tmp/nus-sky-native-candidate-20260930/visual-final/rain/screens/sky-paper.png",
+              "width": 2880,
+              "height": 1800,
+              "bytes": 2623568,
+              "sha256": "a7d5b9d2b6357db8d35bc3719e563fef6cc8834eee4118df38ee8467e9766837"
+            }
+          ],
+          "status": "captured-native-assertions-passed",
+          "elapsed_s": 2.72
+        }
+      ],
+      "executable_sha256_after": "a983153acb05fe282e16fc3f14891b576fa3feb10a691af4e60729dab94da2cb",
+      "executable_unchanged": true
+    },
+    "perf/metrics.json": {
+      "sky-entrance": {
+        "art_commands": {
+          "count": 28,
+          "max_ms": 3.7272920000000003,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.0028339999999999997,
+          "p95_ms": 0.210083,
+          "p99_ms": 3.7272920000000003
+        },
+        "art_script": {
+          "count": 28,
+          "max_ms": 0.103042,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.035084,
+          "p95_ms": 0.06579199999999999,
+          "p99_ms": 0.103042
+        },
+        "frame_build_submit": {
+          "count": 29,
+          "max_ms": 4.6601669999999995,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.347667,
+          "p95_ms": 2.824083,
+          "p99_ms": 4.6601669999999995
+        },
+        "frame_interval": {
+          "count": 28,
+          "max_ms": 883.8327499999999,
+          "over_16_67_ms": 20,
+          "p50_ms": 16.868375,
+          "p95_ms": 372.930625,
+          "p99_ms": 883.8327499999999
+        },
+        "home_draw": {
+          "count": 29,
+          "max_ms": 4.291208,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.055417,
+          "p95_ms": 0.260291,
+          "p99_ms": 4.291208
+        },
+        "home_rows": {
+          "count": 29,
+          "max_ms": 0.031833,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.002125,
+          "p95_ms": 0.030583000000000003,
+          "p99_ms": 0.031833
+        },
+        "sky_present_cpu_submit": {
+          "count": 10,
+          "max_ms": 0.37366699999999997,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.186834,
+          "p95_ms": 0.37366699999999997,
+          "p99_ms": 0.37366699999999997
+        },
+        "sky_present_interval": {
+          "count": 9,
+          "max_ms": 1827.7472500000001,
+          "over_16_67_ms": 9,
+          "p50_ms": 42.887958,
+          "p95_ms": 1827.7472500000001,
+          "p99_ms": 1827.7472500000001
+        },
+        "sky_volume_interval": {
+          "count": 1,
+          "max_ms": 1827.74675,
+          "over_16_67_ms": 1,
+          "p50_ms": 1827.74675,
+          "p95_ms": 1827.74675,
+          "p99_ms": 1827.74675
+        },
+        "ui_turn_work": {
+          "count": 123,
+          "max_ms": 4.8245,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.10070799999999999,
+          "p95_ms": 0.516791,
+          "p99_ms": 2.946208
+        }
+      },
+      "sky": {
+        "art_commands": {
+          "count": 272,
+          "max_ms": 0.309042,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.14629199999999998,
+          "p95_ms": 0.194834,
+          "p99_ms": 0.21475
+        },
+        "art_script": {
+          "count": 272,
+          "max_ms": 0.081959,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.029458,
+          "p95_ms": 0.040125,
+          "p99_ms": 0.049542
+        },
+        "frame_build_submit": {
+          "count": 272,
+          "max_ms": 6.78075,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.326125,
+          "p95_ms": 0.404042,
+          "p99_ms": 4.760458000000001
+        },
+        "frame_interval": {
+          "count": 271,
+          "max_ms": 890.158125,
+          "over_16_67_ms": 258,
+          "p50_ms": 42.807583,
+          "p95_ms": 42.935874999999996,
+          "p99_ms": 269.4725
+        },
+        "home_draw": {
+          "count": 272,
+          "max_ms": 0.347375,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.18837500000000001,
+          "p95_ms": 0.246875,
+          "p99_ms": 0.272125
+        },
+        "home_rows": {
+          "count": 272,
+          "max_ms": 0.061500000000000006,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.001708,
+          "p95_ms": 0.025166,
+          "p99_ms": 0.029917
+        },
+        "input_handler": {
+          "count": 1,
+          "max_ms": 0.04825,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.04825,
+          "p95_ms": 0.04825,
+          "p99_ms": 0.04825
+        },
+        "sky_present_cpu_submit": {
+          "count": 238,
+          "max_ms": 0.212666,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.149208,
+          "p95_ms": 0.192125,
+          "p99_ms": 0.199125
+        },
+        "sky_present_interval": {
+          "count": 237,
+          "max_ms": 933.1239999999999,
+          "over_16_67_ms": 237,
+          "p50_ms": 42.834375,
+          "p95_ms": 48.37425,
+          "p99_ms": 58.335249999999995
+        },
+        "sky_volume_interval": {
+          "count": 21,
+          "max_ms": 1112.149667,
+          "over_16_67_ms": 21,
+          "p50_ms": 512.1851670000001,
+          "p95_ms": 932.243833,
+          "p99_ms": 1112.149667
+        },
+        "ui_turn_work": {
+          "count": 609,
+          "max_ms": 6.8505,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.06999999999999999,
+          "p95_ms": 0.49549999999999994,
+          "p99_ms": 0.585708
+        }
+      }
+    },
+    "perf-recheck/metrics.json": {
+      "sky-entrance": {
+        "art_commands": {
+          "count": 29,
+          "max_ms": 4.0131250000000005,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.002417,
+          "p95_ms": 0.247917,
+          "p99_ms": 4.0131250000000005
+        },
+        "art_script": {
+          "count": 29,
+          "max_ms": 0.096834,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.027375,
+          "p95_ms": 0.052792,
+          "p99_ms": 0.096834
+        },
+        "frame_build_submit": {
+          "count": 30,
+          "max_ms": 18.528125,
+          "over_16_67_ms": 1,
+          "p50_ms": 0.281458,
+          "p95_ms": 4.919625000000001,
+          "p99_ms": 18.528125
+        },
+        "frame_interval": {
+          "count": 29,
+          "max_ms": 850.220833,
+          "over_16_67_ms": 22,
+          "p50_ms": 17.2175,
+          "p95_ms": 370.775208,
+          "p99_ms": 850.220833
+        },
+        "home_draw": {
+          "count": 30,
+          "max_ms": 4.531375,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.042624999999999996,
+          "p95_ms": 0.316416,
+          "p99_ms": 4.531375
+        },
+        "home_rows": {
+          "count": 30,
+          "max_ms": 0.027333,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.0015409999999999998,
+          "p95_ms": 0.026958,
+          "p99_ms": 0.027333
+        },
+        "sky_present_cpu_submit": {
+          "count": 11,
+          "max_ms": 0.367292,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.16279200000000002,
+          "p95_ms": 0.367292,
+          "p99_ms": 0.367292
+        },
+        "sky_present_interval": {
+          "count": 10,
+          "max_ms": 1782.364125,
+          "over_16_67_ms": 10,
+          "p50_ms": 42.811707999999996,
+          "p95_ms": 1782.364125,
+          "p99_ms": 1782.364125
+        },
+        "sky_volume_interval": {
+          "count": 1,
+          "max_ms": 1782.3639170000001,
+          "over_16_67_ms": 1,
+          "p50_ms": 1782.3639170000001,
+          "p95_ms": 1782.3639170000001,
+          "p99_ms": 1782.3639170000001
+        },
+        "ui_turn_work": {
+          "count": 115,
+          "max_ms": 18.648042,
+          "over_16_67_ms": 1,
+          "p50_ms": 0.06966599999999999,
+          "p95_ms": 0.489375,
+          "p99_ms": 5.025875
+        }
+      },
+      "sky": {
+        "art_commands": {
+          "count": 352,
+          "max_ms": 0.336917,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.130708,
+          "p95_ms": 0.175334,
+          "p99_ms": 0.194834
+        },
+        "art_script": {
+          "count": 352,
+          "max_ms": 0.058499999999999996,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.027375,
+          "p95_ms": 0.036000000000000004,
+          "p99_ms": 0.043084000000000004
+        },
+        "frame_build_submit": {
+          "count": 352,
+          "max_ms": 15.463375,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.301334,
+          "p95_ms": 0.38283399999999995,
+          "p99_ms": 6.690875
+        },
+        "frame_interval": {
+          "count": 351,
+          "max_ms": 50.713375,
+          "over_16_67_ms": 311,
+          "p50_ms": 42.4155,
+          "p95_ms": 42.916166,
+          "p99_ms": 42.950416999999995
+        },
+        "home_draw": {
+          "count": 352,
+          "max_ms": 0.38225,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.170917,
+          "p95_ms": 0.22279200000000002,
+          "p99_ms": 0.2385
+        },
+        "home_rows": {
+          "count": 352,
+          "max_ms": 0.037917000000000006,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.001583,
+          "p95_ms": 0.023709,
+          "p99_ms": 0.027541
+        },
+        "sky_present_cpu_submit": {
+          "count": 273,
+          "max_ms": 0.20274999999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.13699999999999998,
+          "p95_ms": 0.174,
+          "p99_ms": 0.18483400000000003
+        },
+        "sky_present_interval": {
+          "count": 272,
+          "max_ms": 59.554500000000004,
+          "over_16_67_ms": 272,
+          "p50_ms": 42.859583,
+          "p95_ms": 54.610708,
+          "p99_ms": 59.449417
+        },
+        "sky_volume_interval": {
+          "count": 22,
+          "max_ms": 541.857875,
+          "over_16_67_ms": 22,
+          "p50_ms": 528.114583,
+          "p95_ms": 541.7027909999999,
+          "p99_ms": 541.857875
+        },
+        "ui_turn_work": {
+          "count": 704,
+          "max_ms": 15.514750000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.08600000000000001,
+          "p95_ms": 0.4725,
+          "p99_ms": 1.4731670000000001
+        }
+      }
+    },
+    "perf-final/metrics.json": {
+      "sky-entrance": {
+        "art_commands": {
+          "count": 95,
+          "max_ms": 4.554749999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.002125,
+          "p95_ms": 0.148792,
+          "p99_ms": 4.554749999999999
+        },
+        "art_script": {
+          "count": 95,
+          "max_ms": 0.19808299999999998,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.031708,
+          "p95_ms": 0.10975,
+          "p99_ms": 0.19808299999999998
+        },
+        "frame_build_submit": {
+          "count": 96,
+          "max_ms": 18.003167,
+          "over_16_67_ms": 1,
+          "p50_ms": 4.017667,
+          "p95_ms": 8.716583,
+          "p99_ms": 18.003167
+        },
+        "frame_interval": {
+          "count": 95,
+          "max_ms": 849.987458,
+          "over_16_67_ms": 21,
+          "p50_ms": 8.52875,
+          "p95_ms": 54.19375,
+          "p99_ms": 849.987458
+        },
+        "home_draw": {
+          "count": 96,
+          "max_ms": 5.238375,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.055417,
+          "p95_ms": 0.256625,
+          "p99_ms": 5.238375
+        },
+        "home_rows": {
+          "count": 96,
+          "max_ms": 0.131583,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.001291,
+          "p95_ms": 0.007625,
+          "p99_ms": 0.131583
+        },
+        "sky_present_cpu_submit": {
+          "count": 11,
+          "max_ms": 0.383833,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.13920800000000003,
+          "p95_ms": 0.383833,
+          "p99_ms": 0.383833
+        },
+        "sky_present_interval": {
+          "count": 10,
+          "max_ms": 1787.253042,
+          "over_16_67_ms": 10,
+          "p50_ms": 42.8875,
+          "p95_ms": 1787.253042,
+          "p99_ms": 1787.253042
+        },
+        "sky_volume_interval": {
+          "count": 1,
+          "max_ms": 1787.2528750000001,
+          "over_16_67_ms": 1,
+          "p50_ms": 1787.2528750000001,
+          "p95_ms": 1787.2528750000001,
+          "p99_ms": 1787.2528750000001
+        },
+        "ui_turn_work": {
+          "count": 141,
+          "max_ms": 18.126375,
+          "over_16_67_ms": 1,
+          "p50_ms": 1.8480409999999998,
+          "p95_ms": 8.255291999999999,
+          "p99_ms": 11.249708
+        }
+      },
+      "sky": {
+        "art_commands": {
+          "count": 282,
+          "max_ms": 0.9946670000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.154417,
+          "p95_ms": 0.589459,
+          "p99_ms": 0.781542
+        },
+        "art_script": {
+          "count": 282,
+          "max_ms": 0.161,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.034499999999999996,
+          "p95_ms": 0.099834,
+          "p99_ms": 0.126917
+        },
+        "frame_build_submit": {
+          "count": 282,
+          "max_ms": 8.230417000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.36404200000000003,
+          "p95_ms": 1.3885830000000001,
+          "p99_ms": 1.723583
+        },
+        "frame_interval": {
+          "count": 281,
+          "max_ms": 43.729333000000004,
+          "over_16_67_ms": 281,
+          "p50_ms": 42.883792,
+          "p95_ms": 43.332791,
+          "p99_ms": 43.525292
+        },
+        "home_draw": {
+          "count": 282,
+          "max_ms": 1.344042,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.208,
+          "p95_ms": 0.7492920000000001,
+          "p99_ms": 0.9371670000000001
+        },
+        "home_rows": {
+          "count": 282,
+          "max_ms": 0.126416,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.001792,
+          "p95_ms": 0.032208,
+          "p99_ms": 0.062041
+        },
+        "sky_present_cpu_submit": {
+          "count": 281,
+          "max_ms": 0.9883750000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.152125,
+          "p95_ms": 0.5838329999999999,
+          "p99_ms": 0.773792
+        },
+        "sky_present_interval": {
+          "count": 280,
+          "max_ms": 43.997,
+          "over_16_67_ms": 280,
+          "p50_ms": 42.856375,
+          "p95_ms": 43.686459,
+          "p99_ms": 43.918042
+        },
+        "sky_volume_interval": {
+          "count": 23,
+          "max_ms": 516.131208,
+          "over_16_67_ms": 23,
+          "p50_ms": 513.824167,
+          "p95_ms": 515.9899999999999,
+          "p99_ms": 516.131208
+        },
+        "ui_turn_work": {
+          "count": 565,
+          "max_ms": 8.277332999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.30112500000000003,
+          "p95_ms": 1.523667,
+          "p99_ms": 2.020209
+        }
+      }
+    },
+    "perf-final/provenance.json": {
+      "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "executable": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus",
+      "sha256": "a983153acb05fe282e16fc3f14891b576fa3feb10a691af4e60729dab94da2cb",
+      "art": [
+        "sky"
+      ],
+      "seconds_per_art": 12.0,
+      "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7012451)\t11%; charging; 2:04 remaining present: true\n"
+    },
+    "cpu-sampling.json": {
+      "exit_code": 0,
+      "method": "ps cumulative CPU seconds for uniquely pathed app and descendants; one core = 100%; tree RSS includes shared pages; steady sampling wall-window 5..15.5s excludes startup and final screenshot",
+      "samples": [
+        {
+          "elapsed_s": 0.5840220829995815,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.13,
+              "rss_kib": 96848,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            },
+            {
+              "pid": 55882,
+              "ppid": 55832,
+              "cpu_s": 0.01,
+              "rss_kib": 1088,
+              "comm": "lsof"
+            }
+          ],
+          "cpu_s": 0.14,
+          "rss_tree_kib": 97936
+        },
+        {
+          "elapsed_s": 1.153757542000676,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.24,
+              "rss_kib": 135952,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.24,
+          "rss_tree_kib": 135952
+        },
+        {
+          "elapsed_s": 1.7181568749983853,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.28,
+              "rss_kib": 139376,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.28,
+          "rss_tree_kib": 139376
+        },
+        {
+          "elapsed_s": 2.258221083000535,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.32,
+              "rss_kib": 139408,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.32,
+          "rss_tree_kib": 139408
+        },
+        {
+          "elapsed_s": 2.806322291999095,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.37,
+              "rss_kib": 142928,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.37,
+          "rss_tree_kib": 142928
+        },
+        {
+          "elapsed_s": 3.3720091249997495,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.37,
+              "rss_kib": 142928,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.37,
+          "rss_tree_kib": 142928
+        },
+        {
+          "elapsed_s": 3.958944000001793,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.39,
+              "rss_kib": 143088,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.39,
+          "rss_tree_kib": 143088
+        },
+        {
+          "elapsed_s": 4.554711042001145,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.41,
+              "rss_kib": 143184,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.41,
+          "rss_tree_kib": 143184
+        },
+        {
+          "elapsed_s": 5.120894625000801,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.44,
+              "rss_kib": 143344,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.44,
+          "rss_tree_kib": 143344
+        },
+        {
+          "elapsed_s": 5.673567541998636,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.46,
+              "rss_kib": 143392,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.46,
+          "rss_tree_kib": 143392
+        },
+        {
+          "elapsed_s": 6.203590042001451,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.49,
+              "rss_kib": 143744,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.49,
+          "rss_tree_kib": 143744
+        },
+        {
+          "elapsed_s": 6.730527832998632,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.51,
+              "rss_kib": 143776,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.51,
+          "rss_tree_kib": 143776
+        },
+        {
+          "elapsed_s": 7.259075082998606,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.54,
+              "rss_kib": 143952,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.54,
+          "rss_tree_kib": 143952
+        },
+        {
+          "elapsed_s": 7.791710958001204,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.56,
+              "rss_kib": 144112,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.56,
+          "rss_tree_kib": 144112
+        },
+        {
+          "elapsed_s": 8.319597124998836,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.56,
+              "rss_kib": 144192,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.56,
+          "rss_tree_kib": 144192
+        },
+        {
+          "elapsed_s": 8.850098208000418,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.57,
+              "rss_kib": 144208,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.57,
+          "rss_tree_kib": 144208
+        },
+        {
+          "elapsed_s": 9.383339583000634,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.59,
+              "rss_kib": 144256,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.59,
+          "rss_tree_kib": 144256
+        },
+        {
+          "elapsed_s": 9.916570875000616,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.61,
+              "rss_kib": 144320,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            },
+            {
+              "pid": 56179,
+              "ppid": 55832,
+              "cpu_s": 0.01,
+              "rss_kib": 2416,
+              "comm": "(ps)"
+            }
+          ],
+          "cpu_s": 0.62,
+          "rss_tree_kib": 146736
+        },
+        {
+          "elapsed_s": 10.447297833001358,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.63,
+              "rss_kib": 144336,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.63,
+          "rss_tree_kib": 144336
+        },
+        {
+          "elapsed_s": 10.974237292000907,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.64,
+              "rss_kib": 144416,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.64,
+          "rss_tree_kib": 144416
+        },
+        {
+          "elapsed_s": 11.505172707999009,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.66,
+              "rss_kib": 144432,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.66,
+          "rss_tree_kib": 144432
+        },
+        {
+          "elapsed_s": 12.036471208000876,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.67,
+              "rss_kib": 144464,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.67,
+          "rss_tree_kib": 144464
+        },
+        {
+          "elapsed_s": 12.567170250000345,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.69,
+              "rss_kib": 144496,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.69,
+          "rss_tree_kib": 144496
+        },
+        {
+          "elapsed_s": 13.099409250000463,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.71,
+              "rss_kib": 144576,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.71,
+          "rss_tree_kib": 144576
+        },
+        {
+          "elapsed_s": 13.629735667000205,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.72,
+              "rss_kib": 144592,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.72,
+          "rss_tree_kib": 144592
+        },
+        {
+          "elapsed_s": 14.159376167001028,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.74,
+              "rss_kib": 144656,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.74,
+          "rss_tree_kib": 144656
+        },
+        {
+          "elapsed_s": 14.687523542001145,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.76,
+              "rss_kib": 144656,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.76,
+          "rss_tree_kib": 144656
+        },
+        {
+          "elapsed_s": 15.217294000001857,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.77,
+              "rss_kib": 144720,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.77,
+          "rss_tree_kib": 144720
+        },
+        {
+          "elapsed_s": 15.746705582998402,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.79,
+              "rss_kib": 144720,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.79,
+          "rss_tree_kib": 144720
+        },
+        {
+          "elapsed_s": 16.277050542001234,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.81,
+              "rss_kib": 144768,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.81,
+          "rss_tree_kib": 144768
+        },
+        {
+          "elapsed_s": 16.80527945799986,
+          "processes": [
+            {
+              "pid": 55832,
+              "ppid": 55827,
+              "cpu_s": 0.82,
+              "rss_kib": 144768,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.82,
+          "rss_tree_kib": 144768
+        }
+      ],
+      "steady_cpu": {
+        "wall_s": 10.096399375001056,
+        "cpu_s": 0.33,
+        "one_core_pct": 3.268491941959908,
+        "first": 5.120894625000801,
+        "last": 15.217294000001857
+      }
+    },
+    "cpu-sampling-recheck.json": {
+      "exit_code": 0,
+      "method": "ps cumulative CPU seconds for uniquely pathed app and descendants; one core = 100%; tree RSS includes shared pages; steady sampling wall-window 5..15.5s excludes startup and final screenshot",
+      "samples": [
+        {
+          "elapsed_s": 0.5608108329979586,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.15,
+              "rss_kib": 109632,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.15,
+          "rss_tree_kib": 109632
+        },
+        {
+          "elapsed_s": 1.0921143749983457,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.22,
+              "rss_kib": 139984,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.22,
+          "rss_tree_kib": 139984
+        },
+        {
+          "elapsed_s": 1.6228849170001922,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.23,
+              "rss_kib": 139472,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.23,
+          "rss_tree_kib": 139472
+        },
+        {
+          "elapsed_s": 2.15371149999919,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.25,
+              "rss_kib": 139632,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.25,
+          "rss_tree_kib": 139632
+        },
+        {
+          "elapsed_s": 2.684669499998563,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.26,
+              "rss_kib": 143408,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.26,
+          "rss_tree_kib": 143408
+        },
+        {
+          "elapsed_s": 3.21801287499693,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.27,
+              "rss_kib": 143440,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.27,
+          "rss_tree_kib": 143440
+        },
+        {
+          "elapsed_s": 3.748740041999554,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.28,
+              "rss_kib": 143488,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.28,
+          "rss_tree_kib": 143488
+        },
+        {
+          "elapsed_s": 4.279289707999851,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.3,
+              "rss_kib": 143552,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            },
+            {
+              "pid": 57773,
+              "ppid": 57584,
+              "cpu_s": 0.02,
+              "rss_kib": 2816,
+              "comm": "(ps)"
+            }
+          ],
+          "cpu_s": 0.32,
+          "rss_tree_kib": 146368
+        },
+        {
+          "elapsed_s": 4.809086624998599,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.32,
+              "rss_kib": 143888,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.32,
+          "rss_tree_kib": 143888
+        },
+        {
+          "elapsed_s": 5.33668279199992,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.34,
+              "rss_kib": 144144,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.34,
+          "rss_tree_kib": 144144
+        },
+        {
+          "elapsed_s": 5.867335124999954,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.36,
+              "rss_kib": 144288,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.36,
+          "rss_tree_kib": 144288
+        },
+        {
+          "elapsed_s": 6.397806291999586,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.38,
+              "rss_kib": 144480,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.38,
+          "rss_tree_kib": 144480
+        },
+        {
+          "elapsed_s": 6.928664457998821,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.4,
+              "rss_kib": 144560,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.4,
+          "rss_tree_kib": 144560
+        },
+        {
+          "elapsed_s": 7.458979291997821,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.42,
+              "rss_kib": 144608,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.42,
+          "rss_tree_kib": 144608
+        },
+        {
+          "elapsed_s": 7.986415291998128,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.44,
+              "rss_kib": 144704,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.44,
+          "rss_tree_kib": 144704
+        },
+        {
+          "elapsed_s": 8.516562166998483,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.46,
+              "rss_kib": 144768,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.46,
+          "rss_tree_kib": 144768
+        },
+        {
+          "elapsed_s": 9.046431624999968,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.48,
+              "rss_kib": 144832,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.48,
+          "rss_tree_kib": 144832
+        },
+        {
+          "elapsed_s": 9.579880499997671,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.5,
+              "rss_kib": 144848,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.5,
+          "rss_tree_kib": 144848
+        },
+        {
+          "elapsed_s": 10.11132520799947,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.52,
+              "rss_kib": 144928,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.52,
+          "rss_tree_kib": 144928
+        },
+        {
+          "elapsed_s": 10.641804166996735,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.54,
+              "rss_kib": 144960,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.54,
+          "rss_tree_kib": 144960
+        },
+        {
+          "elapsed_s": 11.172423249998246,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.56,
+              "rss_kib": 144960,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.56,
+          "rss_tree_kib": 144960
+        },
+        {
+          "elapsed_s": 11.702927916998306,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.58,
+              "rss_kib": 145120,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.58,
+          "rss_tree_kib": 145120
+        },
+        {
+          "elapsed_s": 12.233273624999129,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.6,
+              "rss_kib": 145168,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.6,
+          "rss_tree_kib": 145168
+        },
+        {
+          "elapsed_s": 12.763977332997456,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.62,
+              "rss_kib": 145264,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.62,
+          "rss_tree_kib": 145264
+        },
+        {
+          "elapsed_s": 13.294222707998415,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.64,
+              "rss_kib": 145280,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.64,
+          "rss_tree_kib": 145280
+        },
+        {
+          "elapsed_s": 13.825122624999494,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.65,
+              "rss_kib": 145328,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.65,
+          "rss_tree_kib": 145328
+        },
+        {
+          "elapsed_s": 14.35603566699865,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.67,
+              "rss_kib": 145328,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.67,
+          "rss_tree_kib": 145328
+        },
+        {
+          "elapsed_s": 14.886292291997961,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.69,
+              "rss_kib": 145328,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.69,
+          "rss_tree_kib": 145328
+        },
+        {
+          "elapsed_s": 15.417280707999453,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.71,
+              "rss_kib": 145328,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.71,
+          "rss_tree_kib": 145328
+        },
+        {
+          "elapsed_s": 15.94705441699989,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.73,
+              "rss_kib": 145472,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.73,
+          "rss_tree_kib": 145472
+        },
+        {
+          "elapsed_s": 16.478512292000232,
+          "processes": [
+            {
+              "pid": 57584,
+              "ppid": 57579,
+              "cpu_s": 0.75,
+              "rss_kib": 145584,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.75,
+          "rss_tree_kib": 145584
+        }
+      ],
+      "steady_cpu": {
+        "wall_s": 10.080597915999533,
+        "cpu_s": 0.36999999999999994,
+        "one_core_pct": 3.670417202264861,
+        "first": 5.33668279199992,
+        "last": 15.417280707999453
+      }
+    },
+    "cpu-sampling-final.json": {
+      "exit_code": 0,
+      "method": "ps cumulative CPU seconds for uniquely pathed app and descendants; one core = 100%; tree RSS includes shared pages; steady sampling wall-window 5..15.5s excludes startup and final screenshot",
+      "samples": [
+        {
+          "elapsed_s": 0.5605792079986713,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.15,
+              "rss_kib": 105824,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.15,
+          "rss_tree_kib": 105824
+        },
+        {
+          "elapsed_s": 1.0966330000010203,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.24,
+              "rss_kib": 138656,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.24,
+          "rss_tree_kib": 138656
+        },
+        {
+          "elapsed_s": 1.627025166999374,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.25,
+              "rss_kib": 139744,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.25,
+          "rss_tree_kib": 139744
+        },
+        {
+          "elapsed_s": 2.1756165420010802,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.27,
+              "rss_kib": 139792,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.27,
+          "rss_tree_kib": 139792
+        },
+        {
+          "elapsed_s": 2.726392125001439,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.3,
+              "rss_kib": 143664,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.3,
+          "rss_tree_kib": 143664
+        },
+        {
+          "elapsed_s": 3.2770289170002798,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.35,
+              "rss_kib": 143952,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            },
+            {
+              "pid": 69187,
+              "ppid": 69011,
+              "cpu_s": 0.0,
+              "rss_kib": 192,
+              "comm": "ps"
+            }
+          ],
+          "cpu_s": 0.35,
+          "rss_tree_kib": 144144
+        },
+        {
+          "elapsed_s": 3.8265344999999797,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.43,
+              "rss_kib": 144720,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.43,
+          "rss_tree_kib": 144720
+        },
+        {
+          "elapsed_s": 4.362840292000328,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.47,
+              "rss_kib": 145120,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.47,
+          "rss_tree_kib": 145120
+        },
+        {
+          "elapsed_s": 4.89760829199804,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.49,
+              "rss_kib": 145280,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.49,
+          "rss_tree_kib": 145280
+        },
+        {
+          "elapsed_s": 5.432561417001125,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.51,
+              "rss_kib": 145280,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.51,
+          "rss_tree_kib": 145280
+        },
+        {
+          "elapsed_s": 5.978540416999749,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.54,
+              "rss_kib": 145328,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.54,
+          "rss_tree_kib": 145328
+        },
+        {
+          "elapsed_s": 6.512580667000293,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.57,
+              "rss_kib": 145536,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.57,
+          "rss_tree_kib": 145536
+        },
+        {
+          "elapsed_s": 7.041144916998746,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.59,
+              "rss_kib": 145600,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.59,
+          "rss_tree_kib": 145600
+        },
+        {
+          "elapsed_s": 7.582398874998034,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.62,
+              "rss_kib": 145696,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.62,
+          "rss_tree_kib": 145696
+        },
+        {
+          "elapsed_s": 8.128462791999482,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.66,
+              "rss_kib": 145728,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.66,
+          "rss_tree_kib": 145728
+        },
+        {
+          "elapsed_s": 8.673389083000075,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.7,
+              "rss_kib": 145760,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.7,
+          "rss_tree_kib": 145760
+        },
+        {
+          "elapsed_s": 9.215580083000532,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.72,
+              "rss_kib": 145760,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.72,
+          "rss_tree_kib": 145760
+        },
+        {
+          "elapsed_s": 9.74341233299856,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.74,
+              "rss_kib": 145872,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.74,
+          "rss_tree_kib": 145872
+        },
+        {
+          "elapsed_s": 10.27616987500005,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.76,
+              "rss_kib": 145872,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.76,
+          "rss_tree_kib": 145872
+        },
+        {
+          "elapsed_s": 10.810355207999237,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.78,
+              "rss_kib": 145920,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.78,
+          "rss_tree_kib": 145920
+        },
+        {
+          "elapsed_s": 11.342717749997973,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.8,
+              "rss_kib": 145920,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.8,
+          "rss_tree_kib": 145920
+        },
+        {
+          "elapsed_s": 11.8821879169991,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.82,
+              "rss_kib": 145920,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.82,
+          "rss_tree_kib": 145920
+        },
+        {
+          "elapsed_s": 12.422070874999918,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.84,
+              "rss_kib": 145936,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.84,
+          "rss_tree_kib": 145936
+        },
+        {
+          "elapsed_s": 12.968601417000173,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.87,
+              "rss_kib": 145936,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.87,
+          "rss_tree_kib": 145936
+        },
+        {
+          "elapsed_s": 13.52067850000094,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.91,
+              "rss_kib": 145968,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.91,
+          "rss_tree_kib": 145968
+        },
+        {
+          "elapsed_s": 14.070854666999367,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.93,
+              "rss_kib": 145968,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.93,
+          "rss_tree_kib": 145968
+        },
+        {
+          "elapsed_s": 14.62121437499809,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 0.97,
+              "rss_kib": 146016,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 0.97,
+          "rss_tree_kib": 146016
+        },
+        {
+          "elapsed_s": 15.169097458001488,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 1.01,
+              "rss_kib": 146016,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 1.01,
+          "rss_tree_kib": 146016
+        },
+        {
+          "elapsed_s": 15.707860833001178,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 1.03,
+              "rss_kib": 146016,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 1.03,
+          "rss_tree_kib": 146016
+        },
+        {
+          "elapsed_s": 16.241600207999,
+          "processes": [
+            {
+              "pid": 69011,
+              "ppid": 69006,
+              "cpu_s": 1.05,
+              "rss_kib": 146048,
+              "comm": "/private/tmp/nus-sky-native-candidate-20260930/nus.app/Contents/MacOS/nus"
+            }
+          ],
+          "cpu_s": 1.05,
+          "rss_tree_kib": 146048
+        }
+      ],
+      "steady_cpu": {
+        "wall_s": 9.736536041000363,
+        "cpu_s": 0.5,
+        "one_core_pct": 5.135296556131562,
+        "first": 5.432561417001125,
+        "last": 15.169097458001488
+      }
+    }
+  },
+  "offscreen_measurements_before_horizon_fade": "adapter=AdapterInfo { name: \"Apple M4 Pro\", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"\", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: Some(true), limit_bucket: None } timestamps=true\nrenderer_init_cpu_ms=134.646\npipeline_init_cpu_ms=133.527 noise_upload_cpu_ms=0.887\ncapture=broken volume_ms=Some(14.546790999999999) present_ms=None\ncapture=clear volume_ms=Some(14.344291) present_ms=None\ncapture=overcast volume_ms=Some(11.313417) present_ms=None\ncapture=rain volume_ms=Some(13.196207999999999) present_ms=None\ncapture=sunset volume_ms=Some(12.846124999999999) present_ms=None\ncapture=moon volume_ms=Some(10.530792) present_ms=None\nheld_49_calls_gpu_draws=0 reuses=49\nvolume_gpu n=6 median_ms=11.7417 p95_ms=12.5803 max_ms=12.5803\npresent_gpu n=3 median_ms=0.0633 p95_ms=12.9896 max_ms=12.9896\nsubmission_cpu n=52 median_ms=0.0531 p95_ms=0.1540 max_ms=0.2049\nvolume_submit_to_completion n=6 median_ms=12.5241 p95_ms=13.9171 max_ms=13.9171\npresent_submit_to_completion n=46 median_ms=0.2825 p95_ms=0.7270 max_ms=1.2033\nunresolved_zero_present_timestamps=49; nonzero timestamp samples may be coalesced and are not a complete distribution\nstats=SkyStats { volume_draws: 15, present_draws: 69, reuses: 50, volume_size: (768, 492), output_size: (1093, 700), texture_bytes: 7131824, cpu_submit_ms: 0.046792, init_pipeline_cpu_ms: 133.527334, init_noise_cpu_ms: 0.886584, gpu_volume_ms: Some(11.961915999999999), gpu_present_ms: Some(12.989583) }\nTimings describe these GPU passes, not energy, display cadence, or whole-app cost.\n",
+  "offscreen_hashes_before_horizon_fade": "9647b0694f6c64a6f69e2f26e2a7f4c7e21fea864d511999b04a83a955c98c2b  target/release/examples/sky\n5cca1038c84d270d8377de7688595f933668b039385be1c0fa77582c3171bfb2  crates/render/src/sky.rs\n8ae0c960cca8de78d7492e9f3d1f63c9782a7b8164596561888d50c1d407c004  crates/render/src/sky.wgsl\nc5303fa3a41336e4f1f85dfc95bc89307a640e4793d51e43f00a658547befcad  crates/render/src/sky-noise-42.rgba\n"
+}

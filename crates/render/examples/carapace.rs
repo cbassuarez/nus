@@ -62,13 +62,13 @@ fn verify(gpu: &mut Gpu) {
                     "material {material} escaped its rect"
                 );
                 assert!(
-                    rest.chunks_exact(4).any(|p| p[3] > 0),
+                    rest.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
                     "material {material} disappeared at width {width}"
                 );
                 let grain = pixels(gpu, CarapaceLook { grain: 0.3, ..look }, None);
                 assert!(
-                    rest.chunks_exact(4)
-                        .zip(grain.chunks_exact(4))
+                    rest.as_chunks::<4>().0.iter()
+                        .zip(grain.as_chunks::<4>().0.iter())
                         .all(|(a, b)| a[3] == b[3]),
                     "grain altered the silhouette: material {material}, width {width}, radius {radius}"
                 );
@@ -173,7 +173,7 @@ fn verify(gpu: &mut Gpu) {
         if material == 4 {
             for y in 0..SIZE.1 {
                 for x in 0..SIZE.0 {
-                    if x < 214 || x > 227 || y >= 20 {
+                    if !(214..=227).contains(&x) || y >= 20 {
                         let i = ((y * SIZE.0 + x) * 4) as usize;
                         assert_eq!(
                             &a[i..i + 4],

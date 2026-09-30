@@ -8,17 +8,39 @@ pub fn stream_aspect(width: f64, height: f64) -> Option<f64> {
         && ratio.is_finite() && ratio > 0.0).then_some(ratio)
 }
 
-/// Keep the chosen width and center when metadata changes the stream shape.
+/// The center identifies the quadrant containing most of this rectangle.
+/// Coordinates are relative to the current monitor's usable desktop area.
+pub fn quadrant_anchor(r: LRect, area: LRect) -> (f64, f64) {
+    (if r.x + r.w / 2.0 < area.x + area.w / 2.0 { 0.0 } else { 1.0 },
+     if r.y + r.h / 2.0 < area.y + area.h / 2.0 { 0.0 } else { 1.0 })
+}
+
+/// Limit growth at the fixed corner instead of moving it to fit the screen.
+fn anchored_size(r: LRect, width: f64, aspect: f64, area: LRect, anchor: (f64, f64), minimum: f64) -> LRect {
+    let m = 16.0_f64.min(area.w.min(area.h) * 0.05).max(0.0);
+    let (x, y) = (r.x + r.w * anchor.0, r.y + r.h * anchor.1);
+    let room = |point: f64, start: f64, end: f64, a: f64| {
+        let before = if a > 0.0 { (point - start) / a } else { f64::INFINITY };
+        let after = if a < 1.0 { (end - point) / (1.0 - a) } else { f64::INFINITY };
+        before.min(after).max(1.0)
+    };
+    let max_w = room(x, area.x + m, area.x + area.w - m, anchor.0)
+        .min(room(y, area.y + m, area.y + area.h - m, anchor.1) * aspect).max(1.0);
+    let w = width.clamp(minimum.min(max_w), max_w);
+    let h = w / aspect;
+    LRect { x: x - w * anchor.0, y: y - h * anchor.1, w, h }
+}
+
+/// Keep the quadrant's corner when metadata changes the stream shape.
 pub fn with_aspect(r: LRect, aspect: f64, area: LRect) -> LRect {
-    let h = r.w / aspect;
-    fit(LRect { y: r.y + (r.h - h) / 2.0, h, ..r }, area, 16.0)
+    anchored_size(r, r.w, aspect, area, quadrant_anchor(r, area), 1.0)
 }
 
 /// Native resize proposals may change either dimension. Honor the dimension
 /// that moved most, then restore the stream ratio before the next gesture.
 pub fn native_resize(previous: LRect, w: f64, h: f64, aspect: f64, area: LRect) -> LRect {
     let w = if (w - previous.w).abs() >= (h - previous.h).abs() * aspect { w } else { h * aspect };
-    fit(LRect { w, h: w / aspect, ..previous }, area, 16.0)
+    anchored_size(previous, w, aspect, area, quadrant_anchor(previous, area), 1.0)
 }
 
 pub fn fit(mut r: LRect, area: LRect, margin: f64) -> LRect {
@@ -35,19 +57,15 @@ pub fn fit(mut r: LRect, area: LRect, margin: f64) -> LRect {
 pub fn zoom(r: LRect, factor: f64, area: LRect, anchor: (f64, f64)) -> LRect {
     if !factor.is_finite() || factor <= 0.0 { return r; }
     let aspect = r.w / r.h.max(1.0);
-    let max_w = (area.w - 32.0).min((area.h - 32.0) * aspect).max(1.0);
-    let min_w = 240.0_f64.min(max_w);
-    let w = (r.w * factor).clamp(min_w, max_w);
-    let h = w / aspect;
-    fit(LRect { x: r.x + (r.w - w) * anchor.0, y: r.y + (r.h - h) * anchor.1, w, h }, area, 16.0)
+    anchored_size(r, r.w * factor, aspect, area, anchor, 240.0_f64.min(240.0 * aspect))
 }
 
-/// Opposite corner remains fixed during an edge/corner drag.
+/// Drag direction controls size; the quadrant corner stays fixed.
 pub fn resize(r: LRect, delta: (f64, f64), edge: (i8, i8), area: LRect) -> LRect {
     let dx = delta.0 * edge.0 as f64;
     let dy = delta.1 * edge.1 as f64 * r.w / r.h.max(1.0);
     let change = if edge.0 == 0 {dy} else if edge.1 == 0 || dx.abs() >= dy.abs() {dx} else {dy};
-    let anchor = (if edge.0 < 0 {1.0} else if edge.0 > 0 {0.0} else {0.5}, if edge.1 < 0 {1.0} else if edge.1 > 0 {0.0} else {0.5});
+    let anchor = quadrant_anchor(r, area);
     zoom(r, (r.w + change).max(1.0) / r.w.max(1.0), area, anchor)
 }
 
@@ -74,6 +92,32 @@ mod tests {
         }
     }
     #[test]
+    fn quadrant_corners_hold_for_grow_shrink_drag_and_native_resize() {
+        let a = LRect { x: -1800.0, y: -1000.0, w: 1600.0, h: 900.0 };
+        for (x,y,anchor) in [(-1750.0,-950.0,(0.0,0.0)),(-700.0,-950.0,(1.0,0.0)),
+            (-1750.0,-420.0,(0.0,1.0)),(-700.0,-420.0,(1.0,1.0))] {
+            let r=LRect{x,y,w:480.0,h:270.0};
+            assert_eq!(quadrant_anchor(r,a),anchor);
+            let fixed=(r.x+r.w*anchor.0,r.y+r.h*anchor.1);
+            for sized in [zoom(r,1.2,a,anchor),zoom(r,0.8,a,anchor),zoom(r,100.0,a,anchor),
+                native_resize(r,600.0,350.0,16.0/9.0,a),with_aspect(r,9.0/16.0,a),
+                resize(r,(30.0,20.0),(1,1),a)] {
+                assert!((sized.x+sized.w*anchor.0-fixed.0).abs()<1e-9);
+                assert!((sized.y+sized.h*anchor.1-fixed.1).abs()<1e-9);
+                assert!(sized.x>=a.x && sized.y>=a.y && sized.x+sized.w<=a.x+a.w && sized.y+sized.h<=a.y+a.h);
+            }
+        }
+    }
+    #[test]
+    fn portrait_gestures_do_not_jump_to_a_landscape_minimum_width() {
+        let a=LRect{x:0.0,y:0.0,w:1600.0,h:900.0};
+        let r=LRect{x:1300.0,y:24.0,w:225.0,h:400.0};
+        let anchor=quadrant_anchor(r,a);
+        let grown=zoom(r,1.01,a,anchor);
+        assert!((grown.w-227.25).abs()<1e-9);
+        assert!(zoom(grown,0.99,a,anchor).w<grown.w);
+    }
+    #[test]
     fn only_valid_intrinsic_dimensions_replace_the_ratio() {
         assert_eq!(stream_aspect(1080.0,1920.0),Some(9.0/16.0));
         for (w,h) in [(0.0,0.0),(1.0,0.0),(-1.0,1.0),(f64::NAN,1.0),(1.0,f64::INFINITY)] {
@@ -89,7 +133,7 @@ mod tests {
         assert_eq!(zoom(r,1.0,area(),(0.5,0.5)),r);
         assert_eq!(zoom(r,f64::NAN,area(),(0.5,0.5)),r);
         let resized=resize(r,(20.0,10.0),(1,1),area());
-        assert_eq!((resized.x,resized.y),(r.x,r.y));
+        assert_eq!((resized.x+resized.w,resized.y),(r.x+r.w,r.y));
     }
     #[test]
     fn every_size_fits_negative_origin_and_small_work_areas() {

@@ -1130,7 +1130,7 @@ impl App {
                 },
                 ..muted
             };
-            let status = self.fit(status_style, &d.status(), tw);
+            let status = self.fit(status_style, d.status(), tw);
             self.fonts
                 .draw(scene, status_style, tx, y + px(70.0), &status);
             if d.active() {
@@ -1327,7 +1327,7 @@ impl App {
                 let y = y + self.px(46.0 + i as f32 * 44.0);
                 let name = self.fit(st, &d.name, w - self.px(24.0));
                 self.fonts.draw(scene, st, x + self.px(12.0), y, &name);
-                let note = self.fit(st, &d.status(), w - self.px(24.0));
+                let note = self.fit(st, d.status(), w - self.px(24.0));
                 self.fonts.draw(
                     scene,
                     Style {

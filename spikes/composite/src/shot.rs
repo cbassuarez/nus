@@ -464,12 +464,73 @@ impl App {
             }
             "theme" => {
                 let want = rest.to_lowercase();
-                if let Some(t) = crate::themes::all().into_iter().find(|t| t.name.to_lowercase() == want) {
+                if let Some(t) = crate::themes::find(&want) {
                     self.apply_theme(&t);
                 } else {
                     eprintln!("shot: no theme named {rest}");
                 }
             }
+            "appearancecheck" => {
+                let functional = |b:&crate::settings::Behavior| {
+                    let mut value=serde_json::to_value(b).unwrap();
+                    for key in ["ui_font","ui_weight","term_font","term_weight","typography","home_look","home_art","follow_os_theme"] {value.as_object_mut().unwrap().remove(key);}
+                    value
+                };
+                let behavior=functional(&self.behavior);
+                let reduce = self.motion.reduce;
+                self.load_bar.style=crate::anim::BarStyle::Rule;
+                self.load_bar.color=crate::anim::BarColor::Tab;
+                self.load_bar.thickness=4.0;self.load_bar.chase=3.0;
+                let loading=serde_json::to_value(&self.load_bar).unwrap();
+                let sounds = serde_json::to_value(&self.sound.prefs).unwrap();
+                for t in crate::themes::stock().into_iter().filter(|t| t.authored) {
+                    self.apply_theme(&t);
+                    assert!(!self.behavior.follow_os_theme);
+                    assert_eq!(self.paper(), t.resolved().paper, "{} background", t.name);
+                    assert_eq!(self.theme.mode, t.resolved().mode);
+                    assert!(self.shell_color(Some(1)).unwrap().bg.is_none(), "automatic shell tint must not replace the theme");
+                    assert_eq!(functional(&self.behavior), behavior, "theme changed functional preferences");
+                    assert_eq!(self.motion.reduce, reduce);
+                    assert_eq!(serde_json::to_value(&self.load_bar).unwrap(),loading,"theme changed loading animation");
+                    assert_eq!(serde_json::to_value(crate::appearance::VisualStyle::capture(self)).unwrap(),serde_json::to_value(t.visual.as_ref().unwrap()).unwrap());
+                    assert_eq!(serde_json::to_value(&self.sound.prefs).unwrap(), sounds);
+                }
+                self.apply_theme(&crate::themes::find("carbon").unwrap());
+                self.behavior.typography.notes_size=17.0;
+                let caret = nus_render::theme::hex(0xff9699);
+                self.theme_edit.edit_mut(self.theme.mode).caret = Some(caret);
+                self.rebuild_theme();
+                self.follow_system_appearance(false);
+                assert_eq!(self.theme.mode, nus_render::Mode::Paper);
+                self.follow_system_appearance(true);
+                assert_eq!(self.preset_name, "carbon");
+                assert_eq!(self.paper(), nus_render::theme::hex(0));
+                assert_eq!(self.theme.caret, caret);
+                assert_eq!(self.behavior.typography.notes_size,17.0);
+                self.behavior.follow_os_theme = false;
+                self.save_prefs();
+                self.apply_prefs(crate::prefs::Prefs::load());
+                assert_eq!(self.paper(), nus_render::theme::hex(0));
+                assert_eq!(self.theme.caret, caret);
+                assert_eq!(self.behavior.typography.notes_size,17.0);
+                let indigo = crate::themes::all().iter().position(|t| t.name == "indigo").unwrap();
+                self.choose_system_theme(true, indigo);
+                self.follow_system_appearance(true);
+                assert_eq!(self.preset_name, "indigo", "enabling follow OS must honor the selected system theme");
+                let mut old = crate::themes::legacy().into_iter().find(|t| t.name == "blueprint").unwrap();
+                old.prefers_ink = false;
+                old.surface.base = Some(nus_render::theme::hex(0x1f5fbf)); old.surface.tint = 1.0;
+                self.apply_theme(&old);
+                assert_eq!(self.theme.mode, nus_render::Mode::Ink);
+                assert_eq!(self.theme_edit.source_ink, Some(false));
+                self.theme_edit.edit_mut(self.theme.mode).caret = Some(caret);
+                self.rebuild_theme();
+                assert_eq!(self.theme_edit.paper.caret, Some(caret));
+                assert!(self.paper().iter().zip(nus_render::theme::hex(0x1f5fbf)).all(|(a,b)| (a-b).abs()<0.00001));
+                self.apply_theme(&crate::themes::find("blueprint").unwrap());
+                eprintln!("APPEARANCE CHECK PASS: ten looks, system choices, edited snapshot, source polarity, visual curation, behavior and loading preservation");
+            }
+            "themeeditor" => self.open_file(std::path::Path::new(rest), true),
             "board" => self.open_board(),
             "portactionscheck" => {
                 assert!(std::env::var_os("NUS_PORTS_FIXTURE").is_some());
@@ -585,6 +646,8 @@ impl App {
                 let named=match rest {"left"=>NamedKey::ArrowLeft,"right"=>NamedKey::ArrowRight,"up"=>NamedKey::ArrowUp,"down"=>NamedKey::ArrowDown,"home"=>NamedKey::Home,"end"=>NamedKey::End,"enter"=>NamedKey::Enter,"escape"=>NamedKey::Escape,"tab"=>NamedKey::Tab,"space"=>NamedKey::Space,_=>panic!("unknown PiP key")};
                 self.pip_key(&crate::app::KeyIn{physical_key:PhysicalKey::Code(KeyCode::ArrowLeft),logical_key:Key::Named(named),text:None,state:ElementState::Pressed,repeat:false});
             },
+            "videocommand"=>{if let Pane::Web(w)=&self.tabs[self.active].left {w.tab.media(rest);}},
+            "assertautopip"=>assert_eq!(self.playing_video(self.active).is_some(),rest=="eligible"),
             "videostart"=>{if let Pane::Web(w)=&self.tabs[self.active].left {w.tab.media("__nus.command(v=>{v.pause();v.currentTime=30},'seek-failed')");}},
             "assertvideotime"=>{let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};let v=w.tab.video().expect("video");assert!((v.t-rest.parse::<f64>().unwrap()).abs()<0.2,"video time {}",v.t);},
             "assertnativevideo"=>{
@@ -594,6 +657,13 @@ impl App {
             },
             "assertnativepip"=>{let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};let state=w.tab.shared.borrow();let native=state.native.as_ref().expect("WebKit page");assert_eq!(native.in_pip(),rest=="on","native PiP attachment");},
             "assertvideostate"=>{let Pane::Web(w)=&self.tabs[self.active].left else{panic!("web expected")};let v=w.tab.video().expect("video");assert!(match rest {"paused"=>v.paused,"playing"=>!v.paused&&!v.ended,"muted"=>v.muted,"unmuted"=>!v.muted,_=>panic!("unknown video state")},"video state: paused={} ended={} muted={}",v.paused,v.ended,v.muted);},
+            "pipskipburst"=>{
+                for _ in 0..20 { for hit in [crate::pip::Hit::Forward,crate::pip::Hit::Back] {
+                    let p=self.pip.as_ref().expect("PiP");let (r,_)=p.hits.iter().find(|(_,h)|*h==hit).expect("skip control");
+                    self.pip_cursor_moved((r.x+r.w/2.0) as f64,(r.y+r.h/2.0) as f64);
+                    self.pip_mouse(MouseButton::Left,ElementState::Pressed);self.pip_mouse(MouseButton::Left,ElementState::Released);
+                }}
+            },
             "pipclick"=>{
                 use crate::pip::Hit;
                 let hit=match rest {"play"=>Hit::Play,"back"=>Hit::Back,"forward"=>Hit::Forward,"mute"=>Hit::Mute,"return"=>Hit::ToTab,"close"=>Hit::Close,_=>panic!("unknown PiP control")};
@@ -644,6 +714,28 @@ impl App {
                 let rect=h.library_ui.hits.iter().find(|(_,hit)|matches!(hit,crate::library::Hit::Row(k) if *k==id)).unwrap().0;
                 self.mouse_moved(rect.x+rect.w/2.0,rect.y+rect.h/2.0);
                 self.mouse_button(MouseButton::Right,ElementState::Pressed);self.mouse_button(MouseButton::Right,ElementState::Released);
+            },
+            "pipcornerset"=>{
+                let p=self.pip.as_ref().expect("PiP");let a=p.area;
+                let w=(a.w*0.3).min(a.h*0.4*p.aspect);let h=w/p.aspect;
+                let x=if rest.ends_with("r"){a.x+a.w-24.0-w}else{a.x+24.0};
+                let y=if rest.starts_with("b"){a.y+a.h-24.0-h}else{a.y+24.0};
+                self.pip_place(crate::pip::LRect{x,y,w,h});
+            },
+            "pipcornerassert"=>{
+                let p=self.pip.as_ref().expect("PiP");let a=p.area;let scale=p.window.scale_factor();
+                let pos=p.window.outer_position().unwrap();let size=p.window.inner_size();
+                let right=rest.ends_with("r");let bottom=rest.starts_with("b");
+                let want_x=if right{a.x+a.w-24.0}else{a.x+24.0};
+                let want_y=if bottom{a.y+a.h-24.0}else{a.y+24.0};
+                let x=pos.x as f64/scale+if right{size.width as f64/scale}else{0.0};
+                let y=pos.y as f64/scale+if bottom{size.height as f64/scale}else{0.0};
+                assert!((x-want_x).abs()<2.0 && (y-want_y).abs()<2.0,"PiP corner moved: {rest} ({x},{y}) expected ({want_x},{want_y})");
+            },
+            "pipnoticeclick"=>{
+                let Pane::Web(w)=self.tabs[self.active].focused_ref() else{panic!("web expected")};
+                let (x,y)=(w.page.x+w.page.w/2.0,w.page.y+w.page.h/2.0);
+                self.mouse_moved(x,y);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);
             },
             "pipcheck"=>{
                 let before=self.pip.as_ref().expect("PiP exists").cur;self.pip_wheel(winit::event::MouseScrollDelta::LineDelta(0.0,0.0));assert_eq!(self.pip.as_ref().unwrap().cur,before,"zero scroll changed PiP");
@@ -1510,6 +1602,34 @@ impl App {
             "footerdrag"=>{let sb=self.sidebar_rect();let y=sb.bottom()-self.sidebar_footer_h();self.mouse_moved(sb.x+sb.w*0.5,y);self.mouse_button(MouseButton::Left,ElementState::Pressed);assert_eq!(self.sidebar_resize,Some(crate::sidebar::Resize::Footer));self.mouse_moved(sb.x+sb.w*0.5,y-self.px(12.0));self.mouse_button(MouseButton::Left,ElementState::Released);assert!(self.sidebar_rules.footer_row>32.0);}
             "gridcheck"=>{let tab=&self.tabs[self.active];let Some(right)=&tab.right else{panic!("expected split")};let a=tab.left.rect();let b=right.rect();assert_eq!(a.y,b.y);assert_eq!(a.bottom(),b.bottom());for p in [&tab.left,right]{let r=p.rect();assert_eq!(r.x,r.x.round());assert_eq!(r.y,r.y.round());match p{Pane::Term(t)=>assert_eq!(t.origin.1-self.px(16.0),r.y+self.header_h()),Pane::Web(w)=>{assert_eq!(w.page.y,r.y+self.header_h());assert_eq!(w.page.bottom()+self.px(nus_render::theme::metric::PANE_FOOTER),r.bottom());},_=>{}}}}
             "assertsection"=>{let Pane::Settings(p)=&self.tabs[self.active].left else{panic!("not settings")};assert_eq!(p.section,rest.parse::<usize>().unwrap());assert!(!self.me_card.open,"hidden Welcome intercepted navigation");},
+            "promptcachecheck" => {
+                use std::rc::Rc;
+                self.prompt_cache.borrow_mut().clear();
+                let first = self.prompt_rows_shared("");
+                assert!(Rc::ptr_eq(&first, &self.prompt_rows_shared("")), "warm rows must be shared");
+                let query = self.prompt_rows_shared("settings");
+                assert!(Rc::ptr_eq(&first, &self.prompt_rows_shared("")), "split query evicted first pane");
+                assert!(Rc::ptr_eq(&query, &self.prompt_rows_shared("settings")));
+                let before = self.behavior.prompt.clone();
+                self.behavior.prompt.saved.push("cache probe".into());
+                assert!(!Rc::ptr_eq(&first, &self.prompt_rows_shared("")), "changed settings reused stale rows");
+                self.behavior.prompt = before;
+                let first = self.prompt_rows_shared("");
+                let name = self.tabs[self.active].name.replace("Renamed cache probe".into());
+                assert!(!Rc::ptr_eq(&first, &self.prompt_rows_shared("")), "renamed tab reused stale rows");
+                self.tabs[self.active].name = name;
+                let first = self.prompt_rows_shared("");
+                self.behavior.ask_backend.push_str(" cache probe");
+                assert!(!Rc::ptr_eq(&first, &self.prompt_rows_shared("")), "backend change reused stale rows");
+                self.behavior.ask_backend.truncate(self.behavior.ask_backend.len() - " cache probe".len());
+                if self.tabs.len() > 1 {
+                    let first = self.prompt_rows_shared("");
+                    self.tabs.swap(0, 1);
+                    assert!(!Rc::ptr_eq(&first, &self.prompt_rows_shared("")), "tab order reused stale row indices");
+                    self.tabs.swap(0, 1);
+                }
+                self.prompt_cache.borrow_mut().clear();
+            },
             "promptcheck"=>{
                 use crate::app::Action;
                 let c=self.behavior.prompt.clone();
@@ -1525,6 +1645,56 @@ impl App {
                     if preset==crate::prompt::Preset::Minimal{assert!(rows.is_empty());}
                 }
                 self.behavior.prompt=c;
+            },
+            "homelast" => {let n=self.tabs.get(self.active).and_then(|t|if let Pane::Home(h)=t.focused_ref(){Some(self.prompt_rows(&h.input).len())}else{None}).unwrap();if let Pane::Home(h)=self.tabs[self.active].focused(){h.sel=n;}self.dirty=true;},
+            "homevisible" => {let Pane::Home(h)=self.tabs[self.active].focused_ref() else{panic!("home")};assert!(h.hits.iter().any(|(_,k)|*k+1==h.sel),"selected home row is not visible");},
+            "homeparitycheck" => {
+                use crate::app::{Action,PaletteMode,Pane};
+                use winit::keyboard::ModifiersState as M;
+                self.behavior.prompt=crate::prompt::Config::preset(crate::prompt::Preset::Mixed);
+                self.open_home();
+                let home_id=self.tabs[self.active].id;
+                for query in ["weather tomorrow","example.com/path?q=1","> echo ready","@codex explain this","settings","downloads","home"] {
+                    let a=self.prompt_rows(query);let b=self.palette_rows(PaletteMode::Go,query);
+                    assert_eq!(a.iter().map(|r|&r.action).collect::<Vec<_>>(),b.iter().map(|r|&r.action).collect::<Vec<_>>());
+                }
+                let empty=self.prompt_rows("");
+                assert!(matches!(&empty[0].action,Action::PromptInput(s) if s=="? "));
+                assert!(matches!(&empty[1].action,Action::PromptInput(s) if s=="https://"));
+                assert!(!empty.iter().any(|r|matches!(r.action,Action::AssistantDraft(..))));
+                for route in crate::prompt::Route::ALL {
+                    self.behavior.prompt.route=route;
+                    assert!(matches!(&self.prompt_rows("example.com/path")[0].action,Action::NewBrowser(url) if url=="http://example.com/path"));
+                    assert!(matches!(&self.prompt_rows("? example.com/path")[0].action,Action::NewBrowser(url) if url=="https://www.google.com/search?q=example.com%2Fpath"));
+                }
+                self.behavior.prompt.route=crate::prompt::Route::Automatic;
+                self.insert_prompt_input("search from home".into());
+                self.open_palette(PaletteMode::Go);
+                assert_eq!(self.palette.as_ref().unwrap().1,"search from home");self.palette=None;
+                self.insert_prompt_input("https://example.invalid/parity".into());
+                // Shift+Enter queues a new window through actual app key dispatch.
+                self.shot_key("shift+enter");
+                assert_eq!(self.new_window_urls.last().map(String::as_str),Some("https://example.invalid/parity"));
+                assert!(self.tabs.iter().any(|t|t.id==home_id && matches!(t.left,Pane::Home(_))));
+                self.new_window_urls.clear();self.new_window_request=false;
+                self.insert_prompt_input("editing".into());
+                self.shot_key(if cfg!(target_os="macos") {"cmd+a"} else {"ctrl+a"});
+                self.shot_key("x");
+                assert!(matches!(self.tabs[self.active].focused_ref(),Pane::Home(h) if h.input=="x"));
+                self.mods=M::empty();
+                self.insert_prompt_input("settings".into());self.home_commit_pub();
+                assert!(matches!(self.tabs[self.active].focused_ref(),Pane::Settings(_)));
+                self.open_home();
+                // Input on a right-hand home pane must never edit/replace the left pane.
+                let left_id=self.tabs[self.active].id;
+                self.tabs[self.active].right=Some(Pane::Home(crate::home::HomePane::new()));self.tabs[self.active].focus_right=true;
+                self.insert_prompt_input("right pane".into());
+                self.shot_key("z");
+                assert!(matches!(&self.tabs[self.active].left,Pane::Home(h) if h.input.is_empty()));
+                assert!(matches!(self.tabs[self.active].focused_ref(),Pane::Home(h) if h.input=="right panez"));
+                assert_eq!(self.tabs[self.active].id,left_id);
+                self.tabs[self.active].right=None;self.tabs[self.active].focus_right=false;self.layout();
+                eprintln!("HOME PARITY PASS: routing, web discovery, keyboard modifiers, draft handoff, editing, focused pane");
             },
             "savedfixture"=>{
                 let c=&mut self.behavior.prompt;
@@ -1656,6 +1826,11 @@ impl App {
             "updatereview" => {crate::updates::preview_warning();self.dirty=true;},
             "bundle"=>self.bundle_toggle(rest),
             "assertbundle"=>{let b=crate::bundles::list().into_iter().find(|b|b.id==rest).unwrap();assert_eq!(self.bundle_state(&b),crate::bundles::State::Installed);for entry in &b.entrypoints{let stem=std::path::Path::new(entry).file_stem().unwrap().to_str().unwrap();assert!(crate::bundles::resolve(stem).is_some());}},
+            "asserttoastinpage"=>{
+                let t=self.toast.as_ref().expect("toast");
+                let Pane::Web(w)=self.tabs[self.active].focused_ref() else {panic!("web page")};
+                assert!(t.rect.y>=w.page.y && t.rect.bottom()<=w.page.bottom(), "toast must be inside the page viewport");
+            },
             "asserttoast"=>{let t=self.toast.as_ref().expect("toast expected");assert!(format!("{} {}",t.words,t.detail).contains(rest),"toast: {} {}",t.words,t.detail);},
             "noticefixture"=>self.notice(nus_render::text::icons::CHECK,rest,""),
             "toastfixture"=>{

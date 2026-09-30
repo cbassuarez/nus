@@ -86,6 +86,16 @@ assert.equal(reports.at(-1).v,null,'unknown frame offset never crops unrelated t
 assert.equal(reports.at(-1).playing,true);assert.equal(reports.at(-1).drm,true,'unmapped crop still reports protection and playback');
 console.log('PASS nested frames: same-origin discovery, command target, composed crop geometry, detach and cross-origin boundary');
 
+// Automatic PiP eligibility excludes silent preview rollers; manual PiP still
+// uses the same selected video and transport.
+v=video({paused:false,muted:true});videos=[v];transport.report();
+assert.equal(reports.at(-1).v.audible,false);
+v.muted=false;v.volume=0;transport.report();assert.equal(reports.at(-1).v.audible,false);
+v.volume=1;transport.report();assert.equal(reports.at(-1).v.audible,true);
+v.webkitAudioDecodedByteCount=0;transport.report();assert.equal(reports.at(-1).v.audible,false);
+v.webkitAudioDecodedByteCount=1024;transport.report();assert.equal(reports.at(-1).v.audible,true);
+console.log('PASS automatic PiP excludes muted, zero-volume and known audio-free previews');
+
 (async()=>{
   v=video({play(){return Promise.reject(Object.assign(new Error('denied'),{name:'NotAllowedError'}));}});videos=[v];transport.report();
   transport.toggle();await Promise.resolve();assert.equal(reports.at(-1).controlError,'play-blocked','play rejection reaches native UI');
@@ -142,7 +152,7 @@ console.log('PASS nested frames: same-origin discovery, command target, composed
   const topDoc=doc(), wrapper=new Element(topDoc,topDoc.body), first=new NativeVideo(topDoc,wrapper), second=new NativeVideo(topDoc,wrapper);
   wrapper.classList.add('__nus-pip-branch');
   let selected=second, reports=0, delegated=[],fallbacks=[],failures=[];
-  const native={selectedVideo:()=>selected,report:()=>reports++,command(action,failure){delegated.push(failure);try{return action(selected)}catch(_){failures.push(failure)}}};
+  const native={selectedVideo:()=>selected,report:()=>reports++,cancelSkip(){},command(action,failure){delegated.push(failure);try{return action(selected)}catch(_){failures.push(failure)}}};
   for(const name of ['toggle','seek','seekTo','step']) native[name]=(...args)=>fallbacks.push([name,...args]);
   const window={__nus:native};
   vm.runInNewContext(nativeSource,{window,document:topDoc,HTMLVideoElement:NativeVideo,DOMException});

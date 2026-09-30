@@ -156,7 +156,7 @@ impl App {
                 self.fonts.draw(&mut h.scene,label,r.x+px(26.0),y+px(25.0),&title);
                 self.fonts.draw(&mut h.scene,muted,r.right()-status_w-px(8.0),y+px(25.0),&status);
                 let suffix=match (item.status,item.exit) { (Status::Failed,Some(code))=>format!(" · exit {code}"),(Status::Finished,None)=>" · exit status unavailable".into(),_=>String::new() };
-                let detail=self.fit(muted,&format!("{} · {}{}",item.space,item.cwd,suffix),r.w-px(34.0));
+                let detail=self.fit(muted,format!("{} · {}{}",item.space,item.cwd,suffix),r.w-px(34.0));
                 self.fonts.draw(&mut h.scene,muted,r.x+px(26.0),y+px(47.0),&detail);
                 h.scene.hline(r.x,y+row_h-px(1.0),r.w,px(1.0),crate::surface::mix(paper,ink,0.15));
                 h.hits.push((r,Hit::Job(item.target)));

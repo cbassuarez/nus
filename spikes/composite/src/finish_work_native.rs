@@ -35,6 +35,21 @@ pub fn native() -> Box<dyn Platform> {
     Box::new(Native::default())
 }
 
+/// Query IOKit's power-source snapshot without launching a child process on
+/// the UI thread. The caller controls caching/poll frequency.
+#[cfg(target_os = "macos")]
+pub(crate) fn on_battery() -> bool {
+    // SAFETY: the Copy result is owned here; the source type is borrowed only
+    // while that snapshot is alive. Release the snapshot exactly once.
+    unsafe {
+        let blob = mac::IOPSCopyPowerSourcesInfo();
+        if blob.is_null() { return false; }
+        let battery = mac::is(mac::IOPSGetProvidingPowerSourceType(blob), "Battery Power");
+        mac::CFRelease(blob);
+        battery
+    }
+}
+
 // ── macOS ────────────────────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]

@@ -362,7 +362,7 @@ impl App {
             }
         }).unwrap_or_default();
         let strong = self.label_strong();
-        let text = self.fit(strong, &title.caps(), self.px(200.0));
+        let text = self.fit(strong, title.caps(), self.px(200.0));
         let w = self.fonts.measure(strong, &text) + self.px(24.0);
         let ghost = Rect::new(mx + self.px(12.0), my - self.px(12.0), w, self.px(26.0));
         scene.layer(None);

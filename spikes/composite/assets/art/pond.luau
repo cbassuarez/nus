@@ -370,7 +370,18 @@ function draw(c)
   local red = if paper then "#cf3a2a" else "#c8102e"
   local redCore = if paper then "#e2604a" else "#e0432f"
   for _, f in fish do drawFish(c, f, ink, body, finCol, edge, red, redCore, "#141413") end
-  -- Rings.
+  -- The same shore protects the whole reading area, including rows that
+  -- appeared this frame. Fade each short arc before it reaches the shore.
+  local l = c.prompt
+  local x0, x1 = l.x - 40, l.x + l.w + 40
+  local y0, y1 = l.y - 40, l.y + l.h + c.rows + 24
+  local function clear(ax, ay, bx, by)
+    local dx = math.max(x0 - math.max(ax, bx), 0, math.min(ax, bx) - x1)
+    local dy = math.max(y0 - math.max(ay, by), 0, math.min(ay, by) - y1)
+    local t = clamp(math.sqrt(dx * dx + dy * dy) / 36, 0, 1)
+    return t * t * (3 - 2 * t)
+  end
+  -- Rings retain their position and timing; only the near-shore arcs vanish.
   for _, r in ripples do
     local age = c.t - r.t
     for n = 0, 2 do
@@ -378,13 +389,14 @@ function draw(c)
       if a >= 0 then
         local rad = 14 + a * 90 * r.k
         local al = math.max(0, 0.5 - a * 0.18) * r.k
-        local pts = {}
-        for k = 0, 35 do
-          local th = k / 36 * TAU
-          pts[#pts + 1] = { r.x + math.cos(th) * rad, r.y + math.sin(th) * rad * 0.45 }
+        local ax, ay = r.x + rad, r.y
+        for k = 1, 48 do
+          local th = k / 48 * TAU
+          local bx, by = r.x + math.cos(th) * rad, r.y + math.sin(th) * rad * 0.45
+          local alpha = al * 0.4 * clear(ax, ay, bx, by)
+          if alpha > 0.005 then c:line(ax, ay, bx, by, 1, ink, alpha) end
+          ax, ay = bx, by
         end
-        pts[#pts + 1] = pts[1]
-        c:curve(pts, 1, ink, al * 0.4)
       end
     end
   end

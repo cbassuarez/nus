@@ -76,6 +76,7 @@ struct Launch {
 
 thread_local! {
     static DATA: RefCell<BTreeMap<&'static str, Samples>> = RefCell::new(BTreeMap::new());
+    static INTERVALS: RefCell<BTreeMap<&'static str, Instant>> = RefCell::new(BTreeMap::new());
     static LAUNCH: RefCell<Option<Launch>> = const { RefCell::new(None) };
 }
 
@@ -130,6 +131,16 @@ pub fn record(name: &'static str, ms: f64) {
     }
 }
 
+/// Spacing between actual frames, distinct from CPU time spent building them.
+pub fn interval(name: &'static str) {
+    if enabled() {
+        let now = Instant::now();
+        if let Some(previous) = INTERVALS.with(|v| v.borrow_mut().insert(name, now)) {
+            record(name, now.duration_since(previous).as_secs_f64() * 1000.0);
+        }
+    }
+}
+
 pub struct Scope(&'static str, Option<Instant>);
 pub fn scope(name: &'static str) -> Scope {
     Scope(name, enabled().then(Instant::now))
@@ -163,6 +174,7 @@ pub fn snapshot() -> serde_json::Value {
 /// reset-relative timestamp into a fake startup measurement.
 pub fn reset() {
     DATA.with(|d| d.borrow_mut().clear());
+    INTERVALS.with(|d| d.borrow_mut().clear());
 }
 
 /// Explicit test-time sample only. RSS includes shared resident pages in each

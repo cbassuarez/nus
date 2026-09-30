@@ -58,9 +58,13 @@ impl App {
 
     /// Bookmark edge and action label survive even in compact mode.
     pub(crate) fn draw_saved_row(&mut self, scene: &mut Scene, r: Rect, row: &PaletteRow, selected: bool, preview: bool) {
+        let fg = if selected { self.on_fill(self.theme.ink) } else { self.theme.ink };
+        self.draw_saved_row_ink(scene, r, row, selected, preview, fg);
+    }
+
+    /// Home supplies the artwork's foreground, independently of the app theme.
+    pub(crate) fn draw_saved_row_ink(&mut self, scene: &mut Scene, r: Rect, row: &PaletteRow, selected: bool, preview: bool, fg: nus_render::Color) {
         let Some((detail, verb)) = self.saved_detail(row) else { return };
-        let t = self.theme.clone();
-        let fg = if selected { self.on_fill(t.ink) } else { t.ink };
         let signal = if selected { fg } else { self.surface.signal };
         if !selected { scene.rect(r, crate::app::fade(self.surface.signal, 0.045)); }
         scene.vline(r.x, r.y+self.px(6.0),r.h-self.px(12.0),self.px(2.0),signal);

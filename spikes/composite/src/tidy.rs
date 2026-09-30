@@ -371,7 +371,7 @@ impl App {
             // The tabs, dim, up to four.
             for &ti in g.tabs.iter().take(4) {
                 if let Some(tab) = self.tabs.get(ti) {
-                    let title = self.fit(dim, &format!("{}  {}", self.tab_label(ti), tab.title()), r.w - 2.0 * pad - self.px(20.0));
+                    let title = self.fit(dim, format!("{}  {}", self.tab_label(ti), tab.title()), r.w - 2.0 * pad - self.px(20.0));
                     self.fonts.draw(scene, Style { color: fade(t.dim, if done.is_some() { 0.6 } else { 1.0 }), ..ui }, r.x + pad + self.px(14.0), y + self.px(13.0), &title);
                 }
                 y += self.px(18.0);

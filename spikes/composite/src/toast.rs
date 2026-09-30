@@ -179,6 +179,27 @@ impl App {
         }
     }
 
+    fn toast_area(&self) -> Rect {
+        let c = self.content_rect();
+        if let Some(crate::app::Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) {
+            let x = c.x.max(w.page.x);
+            let y = c.y.max(w.page.y);
+            return Rect::new(x, y, (c.right().min(w.page.right()) - x).max(0.0),
+                (c.bottom().min(w.page.bottom()) - y).max(0.0));
+        }
+        c
+    }
+
+    /// WebKit sits above the GPU surface. Reserve the toast's resting band
+    /// for its entire animation, so its hit targets and pixels stay exposed.
+    pub(crate) fn toast_native_top(&self, page: Rect) -> Option<f32> {
+        let t = self.toast.as_ref()?;
+        if !t.problem && crate::clock::since(t.at).as_secs_f32() > HOLD { return None; }
+        let area = self.toast_area();
+        if page.right() <= area.x || page.x >= area.right() { return None; }
+        Some(area.bottom() - self.header_h() - self.px(m::HEADER_PAD_Y) * 3.0)
+    }
+
     /// The slip, rising from the foot of the content; it sinks back when
     /// its time is up.
     pub(crate) fn draw_toast(&mut self, scene: &mut Scene) {
@@ -196,7 +217,7 @@ impl App {
         let signal = self.surface.signal;
         let leave = if !problem && age > HOLD - 0.3 { ((HOLD - age) / 0.3).clamp(0.0, 1.0) } else { 1.0 };
         let rise = self.toast_anim.value() * leave;
-        let c = self.content_rect();
+        let c = self.toast_area();
         let bh = self.header_h();
         let pad = self.px(m::HEADER_PAD_X);
         let inner = self.px(10.0);
@@ -222,7 +243,7 @@ impl App {
         let words = self.fit_as_is(strong, &words, room);
         let ww = self.fonts.measure_as_is(strong, &words);
         let droom = room - ww - gap;
-        let detail = if detail.is_empty() || droom < self.px(48.0) { String::new() } else { self.fit_as_is(strong, &detail, droom) };
+        let detail = if detail.is_empty() || droom < self.px(48.0) { std::borrow::Cow::Borrowed("") } else { self.fit_as_is(strong, &detail, droom) };
         let dw = if detail.is_empty() { 0.0 } else { gap + self.fonts.measure_as_is(strong, &detail) };
         let w = (fixed + ww + dw).round();
         let x = (c.x + (c.w - w) / 2.0).round();

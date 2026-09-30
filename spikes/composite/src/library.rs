@@ -758,7 +758,7 @@ impl App {
             if let Some(q)=reading.reader.saved.find.as_ref(){
                 let search=Rect::new(r.x+px(16.0),y,(r.w-px(32.0)).max(1.0),px(40.0));
                 scene.outline(search,px(1.0),self.surface.signal);
-                let text=self.fit(label,&format!("Find: {q}  · Enter next / Shift+Enter previous"),(search.w-px(16.0)).max(1.0));
+                let text=self.fit(label,format!("Find: {q}  · Enter next / Shift+Enter previous"),(search.w-px(16.0)).max(1.0));
                 self.fonts.draw(scene,label,search.x+px(8.0),search.y+px(26.0),&text);
                 if h.library_ui.focus==Some(Hit::Find) {
                     let width=self.fonts.measure(label,&format!("Find: {q}")).min(search.w-px(18.0));
@@ -847,7 +847,7 @@ impl App {
             self.fonts.draw(scene,self.ui_strong(),x+px(10.0),row.y+px(27.0),&title);
             let state=if e.words==0 && e.snapshot.is_none(){"Link only".into()}else{format!("~{} min · {} · saved text",e.words.div_ceil(220),if e.finished{"finished"}else if e.progress>0.0{"continue reading"}else{"unread"})};
             let source=url::Url::parse(&e.source).ok().and_then(|u|u.host_str().map(str::to_owned)).unwrap_or_else(||if e.source.starts_with("file:"){Path::new(e.source.trim_start_matches("file:")).file_name().unwrap_or_default().to_string_lossy().to_string()}else{"Note".into()});
-            let text=self.fit(label,&format!("{state} · {source}"),(width-px(20.0)).max(1.0));
+            let text=self.fit(label,format!("{state} · {source}"),(width-px(20.0)).max(1.0));
             self.fonts.draw(scene,Style{color:dim,..label},x+px(10.0),row.y+px(53.0),&text);
             scene.hline(x,row.bottom()-px(1.0),width,px(1.0),self.theme.tint);
             let clipped=row.intersect(&area).intersect(&r);

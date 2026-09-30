@@ -74,26 +74,34 @@ function draw(c)
   local text = c.ink
   local signal = if paper then "#c8102e" else "#e8604a"
   local line = c.prompt
+  -- All layout uses the current frame's line and result extent. A narrow
+  -- side column disappears before its numbers can spill into the prompt.
+  local zoneTop, zoneBot = line.y - 40, line.y + line.h + c.rows + 24
+  local zoneLeft, zoneRight = line.x - 30, line.x + line.w + 30
   local procs = c:processes()
-  c:text(W - 36, 56, "kernel · " .. (if procs.ready then fmt(procs.ctx) .. " ctx/s · " .. fmt(procs.syscalls) .. " syscalls/s · " .. fmt(procs.threads) .. " threads · " .. fmt(procs.handles) .. " handles" else "listening…"), 10.5, text, 0.38, { align = "right" })
+  local counters = "kernel · " .. (if procs.ready then fmt(procs.ctx) .. " ctx/s · " .. fmt(procs.syscalls) .. " syscalls/s · " .. fmt(procs.threads) .. " threads · " .. fmt(procs.handles) .. " handles" else "listening…")
+  if 60 <= zoneTop or 42 >= zoneBot or W - 36 <= zoneLeft or W - 36 - c:measure(counters, 10.5) >= zoneRight then
+    c:text(W - 36, 56, counters, 10.5, text, 0.38, { align = "right" })
+  end
   if not procs.ready then return end
   local left, mine, desk = build(procs.list)
   -- Layout: the columns, the middle one above the line then below its rows.
   local cols = {
     { x = 36, w = line.x - 36 - 30, y0 = 78, y1 = H - 50 },
-    { x = line.x + 10, w = line.w - 20, y0 = 78, y1 = line.y - 40, more0 = line.y + line.h + 20 + c.rows + 10, more1 = H - 50 },
+    { x = line.x + 10, w = line.w - 20, y0 = 78, y1 = zoneTop, more0 = zoneBot + 10, more1 = H - 50 },
     { x = line.x + line.w + 30, w = W - (line.x + line.w + 30) - 36, y0 = 78, y1 = H - 50 },
   }
-  local zoneTop, zoneBot = line.y - 40, line.y + line.h + 20 + c.rows + 4
   local placedRows = {}
   local function lay(rows, ci)
     local col = cols[ci]
+    if col.w < 90 then return end
     local y, stage = col.y0, 0
     for _, r in rows do
       if ci == 2 and stage == 0 and y + rowH > col.y1 then stage = 1; y = col.more0 end
       if ci == 2 and stage == 1 and y + rowH > col.more1 then break end
       if ci ~= 2 and y + rowH > col.y1 then break end
       r.x, r.y, r.w = col.x, y, col.w
+      r.inset = math.min(r.depth * indent, math.max(0, col.w - 120))
       placedRows[#placedRows + 1] = r
       y += rowH
     end
@@ -117,8 +125,8 @@ function draw(c)
   for _, r in placedRows do
     local par = byPid[r.p.ppid]
     if par and par ~= r then
-      local px = par.x + par.depth * indent + 4
-      local cxx = r.x + r.depth * indent - 6
+      local px = par.x + par.inset + 4
+      local cxx = r.x + r.inset - 6
       local on = lit[r.p.pid] and lit[par.p.pid]
       local a = if on then 0.55 else 0.13
       local y0, y1 = par.y + 4, r.y - 1
@@ -148,18 +156,20 @@ function draw(c)
     if lit[p.pid] then a = 0.9 end
     if #typed > 0 and string.sub(string.lower(p.name), 1, #typed) == typed then a = 0.95 end
     s.alpha += (a - s.alpha) * math.min(1, c.dt * 6)
-    local x, base = r.x + r.depth * indent, r.y + 13
+    local x, base = r.x + r.inset, r.y + 13
     local cpu = if p.cpu >= 9.95 then string.format("%d", p.cpu) else string.format("%.1f", p.cpu)
     local mem = if p.mem >= 1000 then string.format("%.1fG", p.mem / 1000) else string.format("%dM", p.mem)
     local figures = string.format("%d %s%% %s", p.pid, cpu, mem)
+    local figuresWidth = c:measure(figures, 10.5)
+    if figuresWidth > r.w then continue end
     -- The name, cut to what fits beside the figures.
-    local room = r.x + r.w - c:measure(figures, 10.5) - 10 - x
+    local room = r.x + r.w - figuresWidth - 10 - x
     local name = p.name
     local fits = math.floor(room / c:measure("m", 10.5))
     if fits < #name then name = if fits > 2 then string.sub(name, 1, fits - 1) .. "…" else "" end
     c:text(x, base, name, 10.5, text, s.alpha)
     c:text(r.x + r.w, base, figures, 10.5, text, s.alpha * 0.7, { align = "right" })
-    local bar = clamp(p.cpu / 100, 0, 1) * (r.w - r.depth * indent - 4)
+    local bar = clamp(p.cpu / 100, 0, 1) * (r.w - r.inset - 4)
     if p.cpu > 20 then
       c:rect(x, r.y + 17, math.max(2, bar), 1.5, signal, 0.4 + flare * 0.5)
     else
@@ -174,14 +184,14 @@ function draw(c)
     if age > 0.7 or not from or not to then
       table.remove(pulses, i)
     else
-      local sx, sy = from.x + from.depth * indent + 4, from.y + 4
-      local ex, ey = to.x + to.depth * indent - 6, to.y - 1
+      local sx, sy = from.x + from.inset + 4, from.y + 4
+      local ex, ey = to.x + to.inset - 6, to.y - 1
       local v, h = ey - sy, ex - sx
       local len = math.abs(v) + math.abs(h)
       local d = clamp(age / 0.5, 0, 1) * len
       local hx, hy
       if d <= math.abs(v) then hx, hy = sx, sy + (if v < 0 then -d else d) else hx, hy = sx + (if h < 0 then -(d - math.abs(v)) else d - math.abs(v)), ey end
-      if not (hy > zoneTop - 6 and hy < zoneBot + 6 and hx > line.x - 30 and hx < line.x + line.w + 30) then
+      if not (hy > zoneTop - 6 and hy < zoneBot + 6 and hx > zoneLeft and hx < zoneRight) then
         c:rect(hx - 1.5, hy - 1.5, 3, 3, signal, 0.9 * clamp(1.2 - age * 1.5, 0, 1))
       end
     end

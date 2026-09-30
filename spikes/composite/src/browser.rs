@@ -261,8 +261,8 @@ impl Shared {
     /// Error pages remain operable even when Chromium has no live renderer.
     /// The index is a navigable HTML document, not an error transcript.
     pub(crate) fn transcript(&self) -> Option<&crate::interstitial::Page> {
-        self.interstitial.as_ref().filter(|p| p.kind != crate::interstitial::Kind::Index)
-            .or(self.overlay.as_ref())
+        self.overlay.as_ref().or_else(|| self.interstitial.as_ref()
+            .filter(|p| p.kind != crate::interstitial::Kind::Index))
     }
 
     fn check_navigation_deadline(&mut self, now: std::time::Instant, can_back: bool) {
@@ -723,6 +723,8 @@ pub struct Video {
     pub paused: bool,
     pub ended: bool,
     pub muted: bool,
+    /// Eligible for automatic PiP; silent previews stay on their page.
+    pub audible: bool,
     pub t: f64,
     pub dur: f64,
 }
@@ -860,6 +862,7 @@ pub fn read_report(payload: &str) -> Report {
             paused: b("paused"),
             ended: b("ended"),
             muted: b("muted"),
+            audible: b("audible"),
             t: f("t"),
             dur: f("dur"),
         })
@@ -881,6 +884,19 @@ pub fn read_report(payload: &str) -> Report {
 #[cfg(test)]
 mod report_tests {
     use super::{read_report, Report, Shared};
+
+    #[test]
+    fn overlays_take_precedence_over_native_errors_and_index() {
+        use crate::interstitial::{Page, Kind};
+        let mut s = Shared { interstitial: Some(Page::index()), ..Default::default() };
+        assert!(s.transcript().is_none());
+        s.overlay = Some(Page::permission("https://example.test", "camera"));
+        assert_eq!(s.transcript().unwrap().kind, Kind::Permission);
+        s.interstitial = Some(Page::unreachable("https://example.test", "ERR_FAILED", false));
+        assert_eq!(s.transcript().unwrap().kind, Kind::Permission);
+        s.overlay = None;
+        assert_eq!(s.transcript().unwrap().kind, Kind::Unreachable);
+    }
 
     #[test]
     fn the_tracker_report_says_what_plays_where() {
@@ -1146,11 +1162,17 @@ fn software_frame_size(w: i32, h: i32, limit: u32) -> Option<(u32, u32, usize)> 
 }
 
 #[derive(Clone)]
+pub struct SoftwareFrame {
+    texture: wgpu::Texture,
+    bind: Arc<wgpu::BindGroup>,
+}
+
+#[derive(Clone)]
 pub struct Osr {
     pub shared: SharedRef,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub software: StdRc<RefCell<[Option<wgpu::Texture>; 2]>>,
+    pub software: StdRc<RefCell<[Option<SoftwareFrame>; 2]>>,
     pub bind_texture: StdRc<dyn Fn(&wgpu::Texture) -> Arc<wgpu::BindGroup>>,
 }
 
@@ -1264,17 +1286,20 @@ wrap_render_handler! {
             let popup = type_ != PaintElementType::VIEW;
             let mut textures = self.osr.software.borrow_mut();
             let slot = &mut textures[usize::from(popup)];
-            if slot.as_ref().is_none_or(|t| t.width() != width || t.height() != height) {
-                *slot = Some(self.osr.device.create_texture(&wgpu::TextureDescriptor {
+            if slot.as_ref().is_none_or(|frame| frame.texture.width() != width || frame.texture.height() != height) {
+                let texture = self.osr.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("CEF BGRA frame"),
                     size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                     mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
                     format: wgpu::TextureFormat::Bgra8Unorm,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
-                }));
+                });
+                let bind = (self.osr.bind_texture)(&texture);
+                *slot = Some(SoftwareFrame { texture, bind });
             }
-            let texture = slot.as_ref().unwrap();
+            let frame = slot.as_ref().unwrap();
+            let texture = &frame.texture;
             // CEF owns width*height*4 BGRA bytes for this callback. write_texture
             // copies them now; no borrowed Chromium memory escapes the callback.
             let pixels = unsafe { std::slice::from_raw_parts(buffer, length) };
@@ -1283,7 +1308,7 @@ wrap_render_handler! {
                 wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
                 texture.size(),
             );
-            let bind = (self.osr.bind_texture)(texture);
+            let bind = frame.bind.clone();
             let mut s = self.osr.shared.borrow_mut();
             if popup { s.select.bind = Some(bind); }
             else {

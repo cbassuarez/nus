@@ -433,7 +433,7 @@ impl App {
                 let Some(name) = s("name") else {
                     return Ok(json!({ "themes": stock.iter().map(|t| t.name.clone()).collect::<Vec<_>>() }));
                 };
-                match stock.iter().find(|t| t.name.eq_ignore_ascii_case(&name)) {
+                match crate::themes::find(&name) {
                     Some(t) => {
                         let t = t.clone();
                         self.apply_theme(&t);
@@ -446,9 +446,9 @@ impl App {
             "look" => {
                 let mode = s("mode");
                 match mode.as_deref() {
-                    Some("ink") => self.set_mode(nus_render::Mode::Ink),
-                    Some("paper") => self.set_mode(nus_render::Mode::Paper),
-                    Some(other) => return Err(format!("mode is ink or paper, not {other}")),
+                    Some("ink" | "dark") => self.apply_setting(crate::settings::Hit::Theme(Some(true)), 0.0),
+                    Some("paper" | "light") => self.apply_setting(crate::settings::Hit::Theme(Some(false)), 0.0),
+                    Some(other) => return Err(format!("mode is light or dark (legacy paper/ink aliases), not {other}")),
                     None => {}
                 }
                 if let Some(sig) = s("signal").and_then(|h| crate::surface::parse_hex(&h)) {

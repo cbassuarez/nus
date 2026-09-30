@@ -150,7 +150,7 @@ pub fn encode_query(q: &str) -> String {
     }
     out
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceConfig {
     pub source: Source,
     pub home: bool,
@@ -161,7 +161,7 @@ pub struct SourceConfig {
 fn three() -> u8 {
     3
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub sources: Vec<SourceConfig>,
@@ -188,13 +188,22 @@ impl Default for Config {
     }
 }
 impl Config {
+    /// Only upgrade the exact former default source arrangement; retain custom
+    /// source choices, saved commands, routes and search-engine preferences.
+    pub fn migrate_default_sources(&mut self) {
+        use Source::*;
+        let old_home = [Saved, Projects, Sessions, Assistants, Activity];
+        let old_order = [Saved, Projects, Sessions, Assistants, Activity, Shell, Web, Layouts, Actions, Settings];
+        let old: Vec<_> = old_order.into_iter().map(|source| SourceConfig {source,home:old_home.contains(&source),search:true,count:3}).collect();
+        if self.route == Route::Automatic && self.sources == old { self.sources = Self::preset(Preset::Mixed).sources; }
+    }
     pub fn preset(p: Preset) -> Self {
         use Source::*;
         let home: &[Source] = match p {
             Preset::Shell => &[Saved, Projects, Shell, Sessions],
             Preset::Web => &[Saved, Web, Sessions],
             Preset::Assistants => &[Saved, Assistants, Activity, Projects],
-            Preset::Mixed => &[Saved, Projects, Sessions, Assistants, Activity],
+            Preset::Mixed => &[Web, Saved, Projects, Sessions, Shell, Activity],
             Preset::Minimal => &[],
         };
         let search: &[Source] = match p {
@@ -299,18 +308,12 @@ pub fn shell_syntax(q: &str) -> bool {
 }
 
 pub fn looks_like_url(q: &str) -> bool {
-    q.contains("://")
-        || q.starts_with("localhost")
-        || (q.contains('.')
-            && !q.contains(' ')
-            && !q.starts_with('.')
-            && !q.contains('/')
-            && !q.contains('\\'))
+    pinnable(q)
 }
 /// An address worth pinning: a scheme, localhost, or a dotted host, with
 /// whatever path, query or fragment follows it (`github.com/me/repo`).
-/// Stricter `looks_like_url` refuses paths so a typed filename at the
-/// prompt is never taken for a site; after `pin ` there is no such doubt.
+/// Existing files and directories are resolved before URL routing at the
+/// prompt; explicit relative paths never look like a host.
 pub fn pinnable(q: &str) -> bool {
     if q.is_empty() || q.contains(char::is_whitespace) || q.contains('\\') {
         return false;
@@ -346,6 +349,54 @@ fn category(a: &Action) -> Source {
         _ => Source::Actions,
     }
 }
+pub(crate) type Rows = std::rc::Rc<[PaletteRow]>;
+
+// Compare the rendered title piece by piece without building a temporary String.
+// Exact comparisons avoid hash collisions and scattered revision invalidation.
+pub(crate) struct TitleMatch<'a>(pub &'a str);
+impl std::fmt::Write for TitleMatch<'_> {
+    fn write_str(&mut self, part: &str) -> std::fmt::Result {
+        self.0 = self.0.strip_prefix(part).ok_or(std::fmt::Error)?;
+        Ok(())
+    }
+}
+struct TabStamp { id: u64, title: String, right: bool, cwd: [Option<String>; 2] }
+impl TabStamp {
+    fn cwd(tab: &crate::app::Tab) -> [Option<&str>; 2] {
+        fn cwd(p: Option<&Pane>) -> Option<&str> {
+            match p { Some(Pane::Term(t)) => t.cwd.as_deref(), _ => None }
+        }
+        [cwd(Some(&tab.left)), cwd(tab.right.as_ref())]
+    }
+    fn new(tab: &crate::app::Tab) -> Self {
+        Self { id: tab.id, title: tab.title(), right: tab.focus_right, cwd: Self::cwd(tab).map(|v|v.map(str::to_owned)) }
+    }
+    fn matches(&self, tab: &crate::app::Tab) -> bool {
+        self.id == tab.id && self.right == tab.focus_right && tab.title_matches(&self.title)
+            && self.cwd.each_ref().map(|v|v.as_deref()) == Self::cwd(tab)
+    }
+}
+pub(crate) struct PromptCache {
+    at: std::time::Instant,
+    input: String,
+    config: Config,
+    active: usize,
+    backend: String,
+    assistants: crate::assistants::Config,
+    workspace: Option<std::path::PathBuf>,
+    tabs: Vec<TabStamp>,
+    rows: Rows,
+}
+impl PromptCache {
+    fn matches(&self, app: &App, input: &str) -> bool {
+        self.input == input && self.config == app.behavior.prompt && self.active == app.active
+            && self.backend == app.behavior.ask_backend && self.assistants == app.behavior.assistants
+            && self.workspace == app.workspace && self.tabs.len() == app.tabs.len()
+            && self.tabs.iter().zip(&app.tabs).all(|(a,b)| a.matches(b))
+            && crate::clock::since(self.at) < std::time::Duration::from_millis(500)
+    }
+}
+
 impl App {
     pub(crate) fn palette_rows(&self, mode: PaletteMode, input: &str) -> Vec<PaletteRow> {
         match mode {
@@ -436,7 +487,7 @@ impl App {
             ));
         }
         if let Some(query) = q.strip_prefix('?') {
-            let (url, _) = self.url_or_search(query.trim());
+            let url = self.behavior.prompt.search_url(query.trim());
             return Some(row(
                 format!("Search the web · {}", query.trim()),
                 Action::NewBrowser(url),
@@ -445,6 +496,9 @@ impl App {
         if q.starts_with('@') {
             return None;
         }
+        // An address is explicit intent, regardless of the preferred route for
+        // ordinary words. Shell and assistant prefixes still take precedence.
+        if looks_like_url(q) { return Some(row(format!("Open page · {q}"), Action::NewBrowser(self.url_or_search(q).0))); }
         let route = self.behavior.prompt.route;
         if route == Route::Assistant {
             let id = self.default_assistant();
@@ -489,34 +543,30 @@ impl App {
         ))
     }
     pub(crate) fn prompt_rows(&self, input: &str) -> Vec<PaletteRow> {
-        if crate::private::enabled() { return self.private_rows(input); }
-        // Reading options are commands, regardless of prompt route/source settings.
-        // Never offer the typed command namespace as a shell command or search.
-        if input.trim().to_lowercase().starts_with("reading:") {
-            return self.palette_rows_raw(PaletteMode::Go,input);
+        self.prompt_rows_shared(input).to_vec()
+    }
+    pub(crate) fn prompt_rows_shared(&self, input: &str) -> Rows {
+        if crate::private::enabled() { return self.private_rows(input).into(); }
+        // Reading commands bypass route/source settings.
+        if input.trim().get(..8).is_some_and(|s| s.eq_ignore_ascii_case("reading:")) {
+            return self.palette_rows_raw(PaletteMode::Go, input).into();
         }
-        // Home can animate at display refresh rate. Do not rescan project folders,
-        // saved layouts and command history on each painted frame. Tab identity
-        // and order belong in the key because session actions contain indices.
-        let key = format!(
-            "{input}\n{:?}\n{}\n{:?}\n{:?}\n{}\n{:?}",
-            self.behavior.prompt,
-            self.active,
-            self.behavior.ask_backend,
-            self.behavior.assistants,
-            self.assistant_folder(),
-            self.tabs
-                .iter()
-                .map(|t| (t.id, t.title()))
-                .collect::<Vec<_>>()
-        );
-        if let Some((at, previous, rows)) = self.prompt_cache.borrow().as_ref() {
-            if previous == &key && crate::clock::since(at) < std::time::Duration::from_millis(500) {
-                return rows.clone();
-            }
+        if let Some(cached) = self.prompt_cache.borrow().iter().find(|c| c.matches(self, input)) {
+            return cached.rows.clone();
         }
-        let rows = self.build_prompt_rows(input);
-        *self.prompt_cache.borrow_mut() = Some((crate::clock::now(), key, rows.clone()));
+        let rows: Rows = self.build_prompt_rows(input).into();
+        let entry = PromptCache {
+            at: crate::clock::now(), input: input.into(), config: self.behavior.prompt.clone(),
+            active: self.active, backend: self.behavior.ask_backend.clone(),
+            assistants: self.behavior.assistants.clone(), workspace: self.workspace.clone(),
+            tabs: self.tabs.iter().map(TabStamp::new).collect(), rows: rows.clone(),
+        };
+        // Two entries let split Home panes keep independent queries without
+        // evicting each other every frame. External sources still refresh at 500ms.
+        let mut cache = self.prompt_cache.borrow_mut();
+        cache.retain(|c| c.input != input);
+        if cache.len() == 2 { cache.pop_front(); }
+        cache.push_back(entry);
         rows
     }
     fn build_prompt_rows(&self, input: &str) -> Vec<PaletteRow> {
@@ -652,7 +702,13 @@ impl App {
                         }
                     }
                 }
-                Source::Web => items = self.history_rows(q, true, 8),
+                Source::Web => {
+                    if empty {
+                        items.push(row("Search the web · type a question or keywords".into(), Action::PromptInput("? ".into())));
+                        items.push(row("Visit a website · type an address".into(), Action::PromptInput("https://".into())));
+                    }
+                    items.extend(self.history_rows(q, true, 8));
+                },
                 Source::Activity => {
                     items = self
                         .news
@@ -791,7 +847,10 @@ mod tests {
     fn urls_do_not_eat_relative_commands() {
         assert!(looks_like_url("nus.dev"));
         assert!(looks_like_url("localhost:3000"));
+        assert!(looks_like_url("example.com/path?q=1"));
         assert!(!looks_like_url("./script.sh"));
+        assert!(!looks_like_url("src/main.rs"));
+        assert!(!looks_like_url("../example.com/path"));
         assert!(!looks_like_url("cargo test"));
     }
     #[test]
@@ -808,4 +867,68 @@ mod tests {
 /// `shell`, `new shell`, `terminal`, `new terminal`: a new shell, by name.
 pub(crate) fn is_new_shell(q: &str) -> bool {
     matches!(q.trim().to_lowercase().as_str(), "shell" | "new shell" | "terminal" | "new terminal")
+}
+
+/// Browser modifiers are shared by the home prompt and every palette mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Destination { Current, Tab, Window }
+pub(crate) fn destination(mods: winit::keyboard::ModifiersState, mac: bool) -> Destination {
+    if mods.shift_key() { Destination::Window }
+    else if if mac { mods.super_key() } else { mods.alt_key() || mods.control_key() } { Destination::Tab }
+    else { Destination::Current }
+}
+impl App {
+    /// True means an explicitly requested separate destination: keep the home
+    /// pane that initiated it. Ordinary actions use the common action runner.
+    pub(crate) fn dispatch_prompt_action(&mut self, action: Action) -> bool {
+        if let Action::NewBrowser(url) | Action::OpenInPane(url) = &action {
+            if !url.is_empty() {
+                match destination(self.mods, cfg!(target_os="macos")) {
+                    Destination::Window => { self.new_window_urls.push(url.clone()); self.new_window_request=true; return true; }
+                    Destination::Tab => { self.open_url(url,true); return true; }
+                    Destination::Current => {}
+                }
+            }
+        }
+        self.run(action); false
+    }
+    pub(crate) fn insert_prompt_input(&mut self, input: String) {
+        if let Some(Pane::Home(h)) = self.tabs.get_mut(self.active).map(|t|t.focused()) {
+            if !h.library { h.input=input; h.cur=Default::default(); h.sel=0; h.row_start=0; self.dirty=true; return; }
+        }
+        self.open_palette(PaletteMode::Go);
+        self.palette=Some((PaletteMode::Go,input));
+    }
+}
+#[cfg(test)] mod destination_tests {
+    use super::*;
+    use winit::keyboard::ModifiersState as M;
+    #[test] fn browser_modifiers_match_on_all_platforms() {
+        assert_eq!(destination(M::empty(),true),Destination::Current);
+        assert_eq!(destination(M::SUPER,true),Destination::Tab);
+        assert_eq!(destination(M::CONTROL,false),Destination::Tab);
+        assert_eq!(destination(M::ALT,false),Destination::Tab);
+        assert_eq!(destination(M::CONTROL,true),Destination::Current);
+        assert_eq!(destination(M::SHIFT|M::SUPER,true),Destination::Window);
+        assert_eq!(destination(M::SHIFT|M::CONTROL,false),Destination::Window);
+    }
+    #[test] fn mixed_prioritizes_web_without_changing_custom_choices() {
+        let c=Config::preset(Preset::Mixed);
+        assert_eq!(c.sources[0].source,Source::Web);
+        assert!(c.sources.iter().any(|s|s.source==Source::Assistants && s.search && !s.home));
+        let mut custom=Config::preset(Preset::Assistants); let original=custom.clone();
+        custom.migrate_default_sources(); assert_eq!(custom,original);
+    }
+    #[test] fn legacy_default_upgrade_preserves_saved_commands_and_search_settings() {
+        use Source::*;
+        let mut c=Config::default();
+        c.sources=[Saved,Projects,Sessions,Assistants,Activity,Shell,Web,Layouts,Actions,Settings].into_iter()
+            .map(|source|SourceConfig{source,home:[Saved,Projects,Sessions,Assistants,Activity].contains(&source),search:true,count:3}).collect();
+        c.saved=vec!["> cargo test".into()];c.engine=SearchEngine::Kagi;c.home_limit=5;
+        let mut customized=c.clone();customized.sources[0].count=4;
+        let unchanged=customized.clone();customized.migrate_default_sources();assert_eq!(customized,unchanged);
+        c.migrate_default_sources();
+        assert_eq!(c.sources,Config::default().sources);
+        assert_eq!(c.saved,["> cargo test"]);assert_eq!(c.engine,SearchEngine::Kagi);assert_eq!(c.home_limit,5);
+    }
 }

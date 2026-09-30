@@ -1,0 +1,857 @@
+{
+  "date": "2026-09-29",
+  "units": "milliseconds",
+  "scope": "Native optimized macOS app frame-start intervals on battery, not display scanout or GPU timings. Single runs; no synthetic background load.",
+  "baseline_memphis": {
+    "evidence_directory": "/tmp/nus-motion-memphis-before-clean",
+    "provenance": {
+      "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "executable": "/private/tmp/nus-browser-fix.app/Contents/MacOS/nus",
+      "sha256": "e469ccd004b18e9bd937a70d1594b2dfe49afbd458567882b563dafa00269c72",
+      "art": [
+        "memphis"
+      ],
+      "seconds_per_art": 10,
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=7012451)\t69%; discharging; 2:17 remaining present: true\n"
+    },
+    "metrics": {
+      "memphis-entrance": {
+        "art_commands": {
+          "count": 33,
+          "max_ms": 0.335667,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.01375,
+          "p95_ms": 0.165959,
+          "p99_ms": 0.335667
+        },
+        "art_script": {
+          "count": 33,
+          "max_ms": 1.69575,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.7463329999999999,
+          "p95_ms": 1.1555,
+          "p99_ms": 1.69575
+        },
+        "frame_build_submit": {
+          "count": 34,
+          "max_ms": 18.321917,
+          "over_16_67_ms": 1,
+          "p50_ms": 4.622542,
+          "p95_ms": 14.785792,
+          "p99_ms": 18.321917
+        },
+        "frame_interval": {
+          "count": 33,
+          "max_ms": 829.602583,
+          "over_16_67_ms": 15,
+          "p50_ms": 14.590250000000001,
+          "p95_ms": 661.601167,
+          "p99_ms": 829.602583
+        },
+        "home_draw": {
+          "count": 34,
+          "max_ms": 14.059541999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.810916,
+          "p95_ms": 1.832333,
+          "p99_ms": 14.059541999999999
+        },
+        "home_rows": {
+          "count": 34,
+          "max_ms": 0.121375,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.017249999999999998,
+          "p95_ms": 0.078542,
+          "p99_ms": 0.121375
+        },
+        "ui_turn_work": {
+          "count": 117,
+          "max_ms": 18.400375,
+          "over_16_67_ms": 1,
+          "p50_ms": 0.16491699999999998,
+          "p95_ms": 12.677333,
+          "p99_ms": 15.032209
+        }
+      },
+      "memphis": {
+        "art_commands": {
+          "count": 181,
+          "max_ms": 0.058708,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.023416,
+          "p95_ms": 0.036625000000000005,
+          "p99_ms": 0.057917
+        },
+        "art_script": {
+          "count": 181,
+          "max_ms": 2.430458,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.084583,
+          "p95_ms": 1.587333,
+          "p99_ms": 2.102459
+        },
+        "frame_build_submit": {
+          "count": 181,
+          "max_ms": 20.064375,
+          "over_16_67_ms": 3,
+          "p50_ms": 4.211333000000001,
+          "p95_ms": 12.253542,
+          "p99_ms": 17.214625
+        },
+        "frame_interval": {
+          "count": 180,
+          "max_ms": 661.727542,
+          "over_16_67_ms": 82,
+          "p50_ms": 9.763291,
+          "p95_ms": 372.459083,
+          "p99_ms": 661.31125
+        },
+        "home_draw": {
+          "count": 181,
+          "max_ms": 16.133499999999998,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.1544999999999999,
+          "p95_ms": 1.767042,
+          "p99_ms": 13.343708
+        },
+        "home_rows": {
+          "count": 181,
+          "max_ms": 0.136041,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.017709,
+          "p95_ms": 0.065542,
+          "p99_ms": 0.099042
+        },
+        "ui_turn_work": {
+          "count": 568,
+          "max_ms": 20.322833,
+          "over_16_67_ms": 3,
+          "p50_ms": 0.158875,
+          "p95_ms": 10.153167,
+          "p99_ms": 14.084042
+        }
+      }
+    },
+    "warmup_ms": 2200
+  },
+  "baseline_other_art": {
+    "evidence_directory": "/var/folders/68/_bgz9y8x01l2_tf4889_jhdw0000gn/T/nus-settings-check-39xmsdhj",
+    "sha256": "e469ccd004b18e9bd937a70d1594b2dfe49afbd458567882b563dafa00269c72",
+    "metrics": {
+      "pond": {
+        "art_commands": {
+          "count": 166,
+          "max_ms": 0.104,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.043125,
+          "p95_ms": 0.08479099999999999,
+          "p99_ms": 0.10120799999999999
+        },
+        "art_script": {
+          "count": 166,
+          "max_ms": 4.3935830000000005,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.9912089999999998,
+          "p95_ms": 2.924375,
+          "p99_ms": 3.839167
+        },
+        "frame_build_submit": {
+          "count": 166,
+          "max_ms": 18.244875,
+          "over_16_67_ms": 1,
+          "p50_ms": 5.014,
+          "p95_ms": 11.707165999999999,
+          "p99_ms": 16.028166
+        },
+        "frame_interval": {
+          "count": 165,
+          "max_ms": 662.273542,
+          "over_16_67_ms": 67,
+          "p50_ms": 9.122708,
+          "p95_ms": 369.94854100000003,
+          "p99_ms": 660.4306250000001
+        },
+        "home_draw": {
+          "count": 166,
+          "max_ms": 13.200417000000002,
+          "over_16_67_ms": 0,
+          "p50_ms": 2.0930839999999997,
+          "p95_ms": 3.129458,
+          "p99_ms": 8.628292
+        },
+        "home_rows": {
+          "count": 166,
+          "max_ms": 0.150167,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.015458999999999999,
+          "p95_ms": 0.074459,
+          "p99_ms": 0.1495
+        },
+        "ui_turn_work": {
+          "count": 549,
+          "max_ms": 18.371125,
+          "over_16_67_ms": 1,
+          "p50_ms": 0.16404200000000002,
+          "p95_ms": 9.108208,
+          "p99_ms": 12.235583
+        }
+      },
+      "space": {
+        "art_commands": {
+          "count": 144,
+          "max_ms": 0.11804200000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.027208,
+          "p95_ms": 0.07175,
+          "p99_ms": 0.102833
+        },
+        "art_script": {
+          "count": 144,
+          "max_ms": 10.230042,
+          "over_16_67_ms": 0,
+          "p50_ms": 4.926959,
+          "p95_ms": 8.176417,
+          "p99_ms": 10.18675
+        },
+        "frame_build_submit": {
+          "count": 144,
+          "max_ms": 25.147833000000002,
+          "over_16_67_ms": 1,
+          "p50_ms": 6.239166,
+          "p95_ms": 10.548583,
+          "p99_ms": 15.660958999999998
+        },
+        "frame_interval": {
+          "count": 143,
+          "max_ms": 660.095541,
+          "over_16_67_ms": 62,
+          "p50_ms": 11.101625,
+          "p95_ms": 654.397959,
+          "p99_ms": 658.967708
+        },
+        "home_draw": {
+          "count": 144,
+          "max_ms": 24.373666,
+          "over_16_67_ms": 1,
+          "p50_ms": 4.983917,
+          "p95_ms": 8.999666999999999,
+          "p99_ms": 15.338334
+        },
+        "home_rows": {
+          "count": 144,
+          "max_ms": 0.26279199999999997,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.008875000000000001,
+          "p95_ms": 0.052625,
+          "p99_ms": 0.24662499999999998
+        },
+        "ui_turn_work": {
+          "count": 517,
+          "max_ms": 25.455458,
+          "over_16_67_ms": 1,
+          "p50_ms": 0.203833,
+          "p95_ms": 8.691666000000001,
+          "p99_ms": 10.998791
+        }
+      },
+      "sky": {
+        "art_commands": {
+          "count": 166,
+          "max_ms": 0.002833,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.00075,
+          "p95_ms": 0.001625,
+          "p99_ms": 0.0025
+        },
+        "art_script": {
+          "count": 166,
+          "max_ms": 0.24958400000000003,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.041875,
+          "p95_ms": 0.09225000000000001,
+          "p99_ms": 0.13366699999999998
+        },
+        "frame_build_submit": {
+          "count": 166,
+          "max_ms": 20.656000000000002,
+          "over_16_67_ms": 10,
+          "p50_ms": 8.615875,
+          "p95_ms": 17.403291000000003,
+          "p99_ms": 19.788916
+        },
+        "frame_interval": {
+          "count": 165,
+          "max_ms": 660.70375,
+          "over_16_67_ms": 61,
+          "p50_ms": 15.746709000000001,
+          "p95_ms": 368.004125,
+          "p99_ms": 656.127333
+        },
+        "home_draw": {
+          "count": 166,
+          "max_ms": 7.430625,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.09225000000000001,
+          "p95_ms": 0.185417,
+          "p99_ms": 7.099042
+        },
+        "home_rows": {
+          "count": 166,
+          "max_ms": 0.579875,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.020208,
+          "p95_ms": 0.1385,
+          "p99_ms": 0.37270800000000004
+        },
+        "ui_turn_work": {
+          "count": 514,
+          "max_ms": 20.802666000000002,
+          "over_16_67_ms": 11,
+          "p50_ms": 0.22024999999999997,
+          "p95_ms": 15.867625,
+          "p99_ms": 18.459208
+        }
+      },
+      "line": {
+        "frame_build_submit": {
+          "count": 53,
+          "max_ms": 9.589875,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.72175,
+          "p95_ms": 1.294833,
+          "p99_ms": 9.589875
+        },
+        "frame_interval": {
+          "count": 52,
+          "max_ms": 661.1633340000001,
+          "over_16_67_ms": 40,
+          "p50_ms": 16.96275,
+          "p95_ms": 660.8156250000001,
+          "p99_ms": 661.1633340000001
+        },
+        "home_draw": {
+          "count": 53,
+          "max_ms": 0.352125,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.056582999999999994,
+          "p95_ms": 0.12141700000000001,
+          "p99_ms": 0.352125
+        },
+        "home_rows": {
+          "count": 53,
+          "max_ms": 0.225875,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.030125,
+          "p95_ms": 0.209834,
+          "p99_ms": 0.225875
+        },
+        "ui_turn_work": {
+          "count": 259,
+          "max_ms": 9.834624999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.209459,
+          "p95_ms": 1.282292,
+          "p99_ms": 1.791958
+        }
+      }
+    },
+    "warmup_ms": 1500,
+    "seconds_per_art": 10,
+    "power": "Battery Power"
+  },
+  "final": {
+    "evidence_directory": "/tmp/nus-motion-final",
+    "provenance": {
+      "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "executable": "/private/tmp/nus-browser-fix.app/Contents/MacOS/nus",
+      "sha256": "5c1bf77e43c7ea1588b7cefd4305093897b6fe1e47181d103d7b38f31a10f73b",
+      "art": [
+        "memphis",
+        "pond",
+        "space",
+        "sky"
+      ],
+      "seconds_per_art": 10,
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=7012451)\t65%; discharging; 2:00 remaining present: true\n"
+    },
+    "metrics": {
+      "memphis-entrance": {
+        "art_commands": {
+          "count": 74,
+          "max_ms": 0.27975,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.013083,
+          "p95_ms": 0.146709,
+          "p99_ms": 0.27975
+        },
+        "art_script": {
+          "count": 74,
+          "max_ms": 2.338208,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.7192919999999999,
+          "p95_ms": 1.948834,
+          "p99_ms": 2.338208
+        },
+        "frame_build_submit": {
+          "count": 75,
+          "max_ms": 6.352250000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.3178750000000001,
+          "p95_ms": 3.179042,
+          "p99_ms": 6.352250000000001
+        },
+        "frame_interval": {
+          "count": 74,
+          "max_ms": 56.964124999999996,
+          "over_16_67_ms": 69,
+          "p50_ms": 34.299334,
+          "p95_ms": 34.827458,
+          "p99_ms": 56.964124999999996
+        },
+        "home_draw": {
+          "count": 75,
+          "max_ms": 3.201542,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.786583,
+          "p95_ms": 2.3422080000000003,
+          "p99_ms": 3.201542
+        },
+        "home_rows": {
+          "count": 75,
+          "max_ms": 0.170625,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.021292,
+          "p95_ms": 0.079542,
+          "p99_ms": 0.170625
+        },
+        "ui_turn_work": {
+          "count": 147,
+          "max_ms": 6.4429170000000004,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.33891699999999997,
+          "p95_ms": 3.07025,
+          "p99_ms": 4.037417
+        }
+      },
+      "memphis": {
+        "art_commands": {
+          "count": 345,
+          "max_ms": 0.09825,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.022833,
+          "p95_ms": 0.047125,
+          "p99_ms": 0.06525
+        },
+        "art_script": {
+          "count": 345,
+          "max_ms": 2.636167,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.146167,
+          "p95_ms": 2.1488750000000003,
+          "p99_ms": 2.53125
+        },
+        "frame_build_submit": {
+          "count": 345,
+          "max_ms": 9.80675,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.779917,
+          "p95_ms": 3.280917,
+          "p99_ms": 4.8879589999999995
+        },
+        "frame_interval": {
+          "count": 344,
+          "max_ms": 35.184209,
+          "over_16_67_ms": 318,
+          "p50_ms": 34.213416,
+          "p95_ms": 34.891125,
+          "p99_ms": 35.151542
+        },
+        "home_draw": {
+          "count": 345,
+          "max_ms": 2.777041,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.2251670000000001,
+          "p95_ms": 2.278625,
+          "p99_ms": 2.659416
+        },
+        "home_rows": {
+          "count": 345,
+          "max_ms": 0.212583,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.020166999999999997,
+          "p95_ms": 0.053042,
+          "p99_ms": 0.12925
+        },
+        "ui_turn_work": {
+          "count": 688,
+          "max_ms": 9.923582999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.610166,
+          "p95_ms": 3.126458,
+          "p99_ms": 4.177625
+        }
+      },
+      "pond-entrance": {
+        "art_commands": {
+          "count": 75,
+          "max_ms": 0.078083,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.023292,
+          "p95_ms": 0.07150000000000001,
+          "p99_ms": 0.078083
+        },
+        "art_script": {
+          "count": 75,
+          "max_ms": 3.826666,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.3780839999999999,
+          "p95_ms": 3.382083,
+          "p99_ms": 3.826666
+        },
+        "frame_build_submit": {
+          "count": 75,
+          "max_ms": 5.102665999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.811666,
+          "p95_ms": 4.545708,
+          "p99_ms": 5.102665999999999
+        },
+        "frame_interval": {
+          "count": 74,
+          "max_ms": 34.905417,
+          "over_16_67_ms": 70,
+          "p50_ms": 34.168834000000004,
+          "p95_ms": 34.828458,
+          "p99_ms": 34.905417
+        },
+        "home_draw": {
+          "count": 75,
+          "max_ms": 3.9539170000000006,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.4461249999999999,
+          "p95_ms": 3.4991250000000003,
+          "p99_ms": 3.9539170000000006
+        },
+        "home_rows": {
+          "count": 75,
+          "max_ms": 0.35300000000000004,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.01475,
+          "p95_ms": 0.0745,
+          "p99_ms": 0.35300000000000004
+        },
+        "ui_turn_work": {
+          "count": 147,
+          "max_ms": 5.437417,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.1724999999999999,
+          "p95_ms": 4.221084,
+          "p99_ms": 5.053583000000001
+        }
+      },
+      "pond": {
+        "art_commands": {
+          "count": 340,
+          "max_ms": 0.188083,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.031958,
+          "p95_ms": 0.069541,
+          "p99_ms": 0.090083
+        },
+        "art_script": {
+          "count": 340,
+          "max_ms": 4.534834,
+          "over_16_67_ms": 0,
+          "p50_ms": 2.027542,
+          "p95_ms": 3.878083,
+          "p99_ms": 4.31975
+        },
+        "frame_build_submit": {
+          "count": 340,
+          "max_ms": 7.493584,
+          "over_16_67_ms": 0,
+          "p50_ms": 2.6699580000000003,
+          "p95_ms": 4.874833000000001,
+          "p99_ms": 5.740792
+        },
+        "frame_interval": {
+          "count": 339,
+          "max_ms": 35.47641599999999,
+          "over_16_67_ms": 315,
+          "p50_ms": 34.295625,
+          "p95_ms": 35.040583,
+          "p99_ms": 35.233582999999996
+        },
+        "home_draw": {
+          "count": 340,
+          "max_ms": 4.67025,
+          "over_16_67_ms": 0,
+          "p50_ms": 2.111709,
+          "p95_ms": 4.030958,
+          "p99_ms": 4.4625
+        },
+        "home_rows": {
+          "count": 340,
+          "max_ms": 0.39675000000000005,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.017,
+          "p95_ms": 0.060625000000000005,
+          "p99_ms": 0.161708
+        },
+        "ui_turn_work": {
+          "count": 676,
+          "max_ms": 7.546042,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.132,
+          "p95_ms": 4.954834,
+          "p99_ms": 5.780208999999999
+        }
+      },
+      "space-entrance": {
+        "art_commands": {
+          "count": 73,
+          "max_ms": 0.804458,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.026041,
+          "p95_ms": 0.037833,
+          "p99_ms": 0.804458
+        },
+        "art_script": {
+          "count": 73,
+          "max_ms": 9.356875,
+          "over_16_67_ms": 0,
+          "p50_ms": 5.825167,
+          "p95_ms": 7.9072499999999994,
+          "p99_ms": 9.356875
+        },
+        "frame_build_submit": {
+          "count": 73,
+          "max_ms": 9.794166,
+          "over_16_67_ms": 0,
+          "p50_ms": 6.114625,
+          "p95_ms": 8.157917000000001,
+          "p99_ms": 9.794166
+        },
+        "frame_interval": {
+          "count": 72,
+          "max_ms": 34.715416,
+          "over_16_67_ms": 68,
+          "p50_ms": 34.290209000000004,
+          "p95_ms": 34.650791,
+          "p99_ms": 34.715416
+        },
+        "home_draw": {
+          "count": 73,
+          "max_ms": 9.465582999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 5.904416,
+          "p95_ms": 7.956292,
+          "p99_ms": 9.465582999999999
+        },
+        "home_rows": {
+          "count": 73,
+          "max_ms": 0.049875,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.011291,
+          "p95_ms": 0.043542,
+          "p99_ms": 0.049875
+        },
+        "ui_turn_work": {
+          "count": 144,
+          "max_ms": 10.128417,
+          "over_16_67_ms": 0,
+          "p50_ms": 1.895959,
+          "p95_ms": 7.653208,
+          "p99_ms": 8.472125
+        }
+      },
+      "space": {
+        "art_commands": {
+          "count": 323,
+          "max_ms": 0.047125,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.026708,
+          "p95_ms": 0.035666,
+          "p99_ms": 0.044042000000000005
+        },
+        "art_script": {
+          "count": 323,
+          "max_ms": 10.152458,
+          "over_16_67_ms": 0,
+          "p50_ms": 5.8925410000000005,
+          "p95_ms": 7.689125,
+          "p99_ms": 9.238334
+        },
+        "frame_build_submit": {
+          "count": 323,
+          "max_ms": 10.675084,
+          "over_16_67_ms": 0,
+          "p50_ms": 6.173125,
+          "p95_ms": 8.014417,
+          "p99_ms": 9.468499999999999
+        },
+        "frame_interval": {
+          "count": 322,
+          "max_ms": 35.011458000000005,
+          "over_16_67_ms": 307,
+          "p50_ms": 34.1905,
+          "p95_ms": 34.668,
+          "p99_ms": 34.850334
+        },
+        "home_draw": {
+          "count": 323,
+          "max_ms": 10.276708000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 5.9645,
+          "p95_ms": 7.797499999999999,
+          "p99_ms": 9.283708
+        },
+        "home_rows": {
+          "count": 323,
+          "max_ms": 0.12725,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.010166999999999999,
+          "p95_ms": 0.035792,
+          "p99_ms": 0.055542
+        },
+        "ui_turn_work": {
+          "count": 647,
+          "max_ms": 10.816583,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.16025,
+          "p95_ms": 7.907875,
+          "p99_ms": 9.08925
+        }
+      },
+      "sky-entrance": {
+        "art_commands": {
+          "count": 76,
+          "max_ms": 0.022667000000000003,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.000833,
+          "p95_ms": 0.002084,
+          "p99_ms": 0.022667000000000003
+        },
+        "art_script": {
+          "count": 76,
+          "max_ms": 4.327542,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.040208,
+          "p95_ms": 0.123667,
+          "p99_ms": 4.327542
+        },
+        "frame_build_submit": {
+          "count": 76,
+          "max_ms": 4.591125,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.5295,
+          "p95_ms": 2.66525,
+          "p99_ms": 4.591125
+        },
+        "frame_interval": {
+          "count": 75,
+          "max_ms": 35.275458,
+          "over_16_67_ms": 65,
+          "p50_ms": 34.315542,
+          "p95_ms": 35.054916999999996,
+          "p99_ms": 35.275458
+        },
+        "home_draw": {
+          "count": 76,
+          "max_ms": 4.389041,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.085375,
+          "p95_ms": 0.239042,
+          "p99_ms": 4.389041
+        },
+        "home_rows": {
+          "count": 76,
+          "max_ms": 0.10195800000000001,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.020542,
+          "p95_ms": 0.052833,
+          "p99_ms": 0.10195800000000001
+        },
+        "ui_turn_work": {
+          "count": 150,
+          "max_ms": 4.646833,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.26425,
+          "p95_ms": 1.755208,
+          "p99_ms": 4.543374999999999
+        }
+      },
+      "sky": {
+        "art_commands": {
+          "count": 344,
+          "max_ms": 0.023041,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.00075,
+          "p95_ms": 0.002167,
+          "p99_ms": 0.0027080000000000003
+        },
+        "art_script": {
+          "count": 344,
+          "max_ms": 0.289958,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.039459,
+          "p95_ms": 0.115125,
+          "p99_ms": 0.144833
+        },
+        "frame_build_submit": {
+          "count": 344,
+          "max_ms": 15.578415999999999,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.487667,
+          "p95_ms": 2.989042,
+          "p99_ms": 12.035208
+        },
+        "frame_interval": {
+          "count": 343,
+          "max_ms": 35.809666,
+          "over_16_67_ms": 307,
+          "p50_ms": 34.317040999999996,
+          "p95_ms": 34.969625,
+          "p99_ms": 35.144375
+        },
+        "home_draw": {
+          "count": 344,
+          "max_ms": 1.129667,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.08125,
+          "p95_ms": 0.224375,
+          "p99_ms": 0.343417
+        },
+        "home_rows": {
+          "count": 344,
+          "max_ms": 0.237042,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.020041,
+          "p95_ms": 0.053417,
+          "p99_ms": 0.15
+        },
+        "ui_turn_work": {
+          "count": 684,
+          "max_ms": 15.672708,
+          "over_16_67_ms": 0,
+          "p50_ms": 0.24454199999999998,
+          "p95_ms": 1.615583,
+          "p99_ms": 11.695667
+        }
+      }
+    },
+    "warmup_ms": 2200
+  },
+  "excluded": [
+    {
+      "evidence_directory": "/tmp/nus-motion-memphis-before",
+      "reason": "Brief overlap with test compilation; replaced by clean baseline."
+    }
+  ],
+  "intermediate": {
+    "evidence_directory": "/tmp/nus-motion-after",
+    "reason": "Timer initially started after artwork drawing. Final implementation counts from frame start."
+  }
+}

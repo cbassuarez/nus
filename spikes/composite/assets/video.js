@@ -43,7 +43,7 @@
       if (r) p = { x: r.x, y: r.y, w: r.w, h: r.h, vw: r.vw, vh: r.vh,
             dx: r.dx || 0, dy: r.dy || 0, dw: r.dw ?? 1, dh: r.dh ?? 1,
             videoWidth: v.videoWidth, videoHeight: v.videoHeight,
-            paused: v.paused, ended: v.ended, muted: v.muted, t: v.currentTime, dur: Number.isFinite(v.duration) ? v.duration : 0 };
+            paused: v.paused, ended: v.ended, muted: v.muted, audible: !v.muted && v.volume > 0 && (v.webkitAudioDecodedByteCount === undefined || v.webkitAudioDecodedByteCount > 0 || v.audioTracks?.length > 0), t: v.currentTime, dur: Number.isFinite(v.duration) ? v.duration : 0 };
     }
     const media = [], seen = new Set();
     let playing = false;
@@ -152,7 +152,7 @@
   }
   // Browser-owned transport ignores page control visibility and PiP hints.
   // Clamp to the seekable range for DVR streams, including gaps in a range.
-  function seekTarget(v, target, direction) {
+  function clampSeek(v, target, direction) {
     const ranges=v.seekable;
     if (ranges?.length) {
       target=Math.max(ranges.start(0),Math.min(ranges.end(ranges.length-1),target));
@@ -164,10 +164,69 @@
     } else {
       target=Math.max(0,Number.isFinite(v.duration) ? Math.min(v.duration,target) : target);
     }
-    v.currentTime=target;
+    return target;
+  }
+  function seekTarget(v,target,direction) { v.currentTime=clampSeek(v,target,direction); }
+  // PiP skip bursts carry their intended destination while the player's
+  // reported clock catches up. Never flood a buffering player with clicks.
+  let skipQueue=null;
+  function cancelSkip() {
+    const q=skipQueue; skipQueue=null;
+    if (!q) return;
+    clearTimeout(q.timer); clearTimeout(q.expiry);
+    q.v.removeEventListener?.('seeked',q.settled);
+    q.doc?.removeEventListener?.('pointerdown',q.interrupted,true);
+    q.doc?.removeEventListener?.('keydown',q.interrupted,true);
+  }
+  function skip(delta) {
+    if (!Number.isFinite(delta) || delta===0) return;
+    const v=V(); if (!v) { cancelSkip(); return; }
+    const driver=window.__nus.skipPlayer?.(v) || {
+      key:v, time:()=>v.currentTime, paused:()=>v.paused,
+      clamp:(t,d)=>clampSeek(v,t,d), seek:t=>{v.currentTime=t;}, play:()=>v.play(), valid:()=>true,
+    };
+    const src=v.currentSrc || v.src || '', now=Date.now();
+    let q=skipQueue;
+    if (!q || q.v!==v || q.driver.key!==driver.key || q.src!==src) {
+      cancelSkip();
+      q={v,src,driver,target:Number.isFinite(driver.time())?driver.time():0,
+         resume:!driver.paused()&&!v.ended,first:now,timer:null,expiry:null,doc:v.ownerDocument || document};
+      skipQueue=q;
+      q.valid=()=>skipQueue===q && v.isConnected && V()===v && (v.currentSrc || v.src || '')===src && driver.valid();
+      q.restore=()=>{
+        if (q.valid() && q.resume && !q.restored && !v.ended && driver.paused()) {
+          q.restored=true;
+          command(()=>driver.play(),'play-failed');
+        }
+      };
+      q.settled=()=>{if(skipQueue!==q)return;if (!q.valid()) {cancelSkip();return;} q.restore(); if(!q.timer)cancelSkip();};
+      // A real page interaction or an explicit nus transport command wins
+      // over any delayed resume from a previous skip.
+      q.interrupted=e=>{if(e.isTrusted)cancelSkip();};
+      v.addEventListener?.('seeked',q.settled);
+      q.doc?.addEventListener?.('pointerdown',q.interrupted,true);
+      q.doc?.addEventListener?.('keydown',q.interrupted,true);
+    }
+    try { q.target=driver.clamp(q.target+delta,delta); }
+    catch (_) { cancelSkip(); command(()=>{throw new Error('seek target unavailable');},'seek-failed'); return; }
+    clearTimeout(q.timer);
+    q.timer=setTimeout(()=>{
+      q.timer=null;
+      if(!q.valid()){cancelSkip();return;}
+      q.first=Date.now(); q.restored=false;
+      clearTimeout(q.expiry);q.expiry=setTimeout(()=>{if(skipQueue===q)cancelSkip();},10000);
+      command(()=>{
+        try {
+          const result=driver.seek(q.target);
+          if(result?.then)return result.then(()=>q.restore(),error=>{if(skipQueue===q)cancelSkip();throw error;});
+          q.restore();
+        } catch(error) { if(skipQueue===q)cancelSkip(); throw error; }
+      },'seek-failed');
+    },Math.max(0,Math.min(100,250-(now-q.first))));
   }
   function seek(delta) {
     if (!Number.isFinite(delta)) return;
+    cancelSkip();
     command(v => seekTarget(v,(Number.isFinite(v.currentTime) ? v.currentTime : 0)+delta,delta),'seek-failed');
   }
   // Observe access requests only: an access grant does not establish that a
@@ -200,15 +259,17 @@
     selectedVideo: V,
     command,
     seek,
-    seekTo(f) { if (Number.isFinite(f)) command(v => {
+    skip,
+    cancelSkip,
+    seekTo(f) { cancelSkip(); if (Number.isFinite(f)) command(v => {
       if (!(Number.isFinite(v.duration) && v.duration > 0)) return;
       const target=Math.max(0,Math.min(1,f))*v.duration;
       seekTarget(v,target,target-v.currentTime);
     },'seek-failed'); },
-    toggle() { command(v => v.paused || v.ended ? v.play() : v.pause(),'play-failed'); },
+    toggle() { cancelSkip(); command(v => v.paused || v.ended ? v.play() : v.pause(),'play-failed'); },
     vol(d) { if (Number.isFinite(d)) command(v => {v.volume=Math.max(0,Math.min(1,v.volume+d));},'volume-failed'); },
     mute() { command(v => {v.muted=!v.muted;},'volume-failed'); },
-    step(f) { if (Number.isFinite(f)) command(v => {v.pause();seekTarget(v,v.currentTime+f/30,f);},'seek-failed'); },
+    step(f) { cancelSkip(); if (Number.isFinite(f)) command(v => {v.pause();seekTarget(v,v.currentTime+f/30,f);},'seek-failed'); },
     reveal() { const v = V(); if (v) v.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); report(); },
   };
   watchKeySystemAccess();

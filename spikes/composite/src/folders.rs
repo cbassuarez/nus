@@ -431,7 +431,7 @@ impl App {
                     let title = self.fit(st, &it.title, right - x - dw - self.px(8.0));
                     let tw = self.fonts.draw(scene, st, x, base, &title);
                     if dw > 0.0 {
-                        let d = self.fit(dst, &it.detail.caps(), right - (x + tw + self.px(8.0)));
+                        let d = self.fit(dst, it.detail.caps(), right - (x + tw + self.px(8.0)));
                         self.fonts.draw(scene, dst, x + tw + self.px(8.0), base, &d);
                     }
                     self.side_hits.push((Rect::new(cell.x, cell.y, right - cell.x, cell.h), SideHit::FolderItem(fi, k)));

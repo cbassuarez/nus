@@ -1,0 +1,76 @@
+{
+  "passed": true,
+  "binary_sha256": "b3a4d9c19c1eda61513299bb9a6cb29b8017b739e1ba4e34993046dd86592d56",
+  "themes": [
+    "blueprint",
+    "canopy",
+    "carbon",
+    "citron",
+    "folio",
+    "indigo",
+    "iris",
+    "lagoon",
+    "ledger",
+    "vermilion"
+  ],
+  "captures": [
+    "work-ledger-ink.png",
+    "home-carbon-ink.png",
+    "home-canopy-ink.png",
+    "home-folio-ink.png",
+    "home-vermilion-ink.png",
+    "home-blueprint-ink.png",
+    "home-iris-ink.png",
+    "theme-behavior-narrow-ink.png",
+    "theme-behavior-ink.png",
+    "home-lagoon-ink.png",
+    "work-indigo-ink.png",
+    "home-indigo-ink.png",
+    "home-citron-ink.png",
+    "work-carbon-ink.png",
+    "theme-picker-ink.png",
+    "home-ledger-ink.png",
+    "work-folio-ink.png"
+  ],
+  "date_local": "2026-09-29",
+  "platform": "macOS Apple Silicon",
+  "scope": "Curated theme collection and complete system appearances",
+  "native_evidence_directory": "/var/folders/68/_bgz9y8x01l2_tf4889_jhdw0000gn/T/nus-themes-dwx81adu",
+  "test_bundle": "/tmp/nus-theme-bundle.pKuT2d/nus.app",
+  "app_tests": {
+    "passed": 605,
+    "failed": 0,
+    "ignored": 3,
+    "log": "/tmp/nus-themes-tests-final.log"
+  },
+  "renderer_tests": {
+    "passed": 40,
+    "failed": 0,
+    "log": "/tmp/nus-themes-render-tests.log"
+  },
+  "release_build": {
+    "passed": true,
+    "log": "/tmp/nus-themes-build-complete.log"
+  },
+  "native_checks": [
+    "All ten originals render and keep automatic shell tint out of their backgrounds",
+    "Theme changes preserve personal typography, motion and sounds",
+    "Edited Carbon survives light/dark transitions and preference reload",
+    "An explicitly selected system theme survives enabling Follow OS",
+    "Legacy tinted Paper source remains editable after resolving to light text",
+    "Editor, terminal, theme picker and narrow settings hit bounds"
+  ],
+  "heap_recovery": {
+    "passed": true,
+    "evidence_directory": "/var/folders/68/_bgz9y8x01l2_tf4889_jhdw0000gn/T/nus-heap-ui-v_9zpvx7",
+    "binary_sha256": "3f8a130c3ea76ac65aacee9a4750b86f070db135a2a6690e921aff1344cabba2",
+    "note": "Run before final card preview and fresh-profile metadata changes; artwork implementation unchanged afterward."
+  },
+  "limitations": [
+    "Native acceptance was run on macOS, not Windows or Linux.",
+    "System appearance transitions invoked the same app handler without changing the host OS setting.",
+    "Contrast assertions cover resolved theme tokens; external web/program colors and user opacity settings can differ.",
+    "The running dist/nus.app and its profile were not replaced or relaunched."
+  ],
+  "preview": "/Users/seb/.codex/visualizations/2026/09/29/01a0ef4e-f475-7370-a6be-be5819243584/nus-themes-native.png"
+}

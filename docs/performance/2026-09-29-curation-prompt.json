@@ -1,0 +1,110 @@
+{
+  "date_local": "2026-09-29",
+  "scope": "Complete visual recipes and shared home/palette prompt",
+  "platform": "macOS Apple Silicon",
+  "passed": true,
+  "loading": "Theme installation preserves loading style, color source, thickness and chase settings.",
+  "app_tests": {
+    "passed": 608,
+    "failed": 0,
+    "ignored": 3,
+    "log": "/tmp/nus-curation-tests-native-final3.log"
+  },
+  "release_build": {
+    "passed": true,
+    "log": "/tmp/nus-curation-build-final3.log",
+    "binary_sha256": "3bd15825cd7830bc29b6a1abf622e6ac02689f9d84fb695afafcec5675f37040"
+  },
+  "home_native": {
+    "passed": true,
+    "binary_sha256": "e3079efc72f91bb4e193dee871eb113c1cb67c962b457576b444231f028cbaea",
+    "platform": "macOS",
+    "checks": [
+      "shared routes",
+      "new tab and normal URL navigation",
+      "new-window intent",
+      "Cmd-K draft handoff",
+      "selection editing",
+      "focused home pane",
+      "selected-row visibility"
+    ],
+    "evidence_directory": "/var/folders/68/_bgz9y8x01l2_tf4889_jhdw0000gn/T/nus-home-prompt-0z7wyava"
+  },
+  "themes_native": {
+    "passed": true,
+    "binary_sha256": "630f54d1f1a10768457fb5a06841b00acc941b886a57910239aed2e323559624",
+    "themes": [
+      "blueprint",
+      "canopy",
+      "carbon",
+      "citron",
+      "folio",
+      "indigo",
+      "iris",
+      "lagoon",
+      "ledger",
+      "vermilion"
+    ],
+    "captures": [
+      "work-ledger-ink.png",
+      "home-carbon-ink.png",
+      "home-canopy-ink.png",
+      "home-folio-ink.png",
+      "home-vermilion-ink.png",
+      "home-blueprint-ink.png",
+      "home-iris-ink.png",
+      "theme-behavior-narrow-ink.png",
+      "theme-behavior-ink.png",
+      "home-lagoon-ink.png",
+      "work-indigo-ink.png",
+      "home-indigo-ink.png",
+      "home-citron-ink.png",
+      "work-carbon-ink.png",
+      "theme-picker-ink.png",
+      "home-ledger-ink.png",
+      "work-folio-ink.png"
+    ],
+    "evidence_directory": "/var/folders/68/_bgz9y8x01l2_tf4889_jhdw0000gn/T/nus-themes-4u6ikqjy",
+    "checks": [
+      "Ten full visual recipes match installed state",
+      "Loading, functional and accessibility preferences preserved",
+      "Edited type and color survive system transitions and persistence",
+      "Legacy tinted source remains editable",
+      "Settings bounds and terminal/editor rendering"
+    ]
+  },
+  "heap_native": {
+    "passed": true,
+    "evidence_directory": "/var/folders/68/_bgz9y8x01l2_tf4889_jhdw0000gn/T/nus-heap-ui-3c20vxm1",
+    "binary_sha256": "630f54d1f1a10768457fb5a06841b00acc941b886a57910239aed2e323559624",
+    "checks": [
+      "Prompt cache invalidation",
+      "Saved command routing",
+      "Artwork recovery after critical memory pressure",
+      "Unicode input at narrow size"
+    ]
+  },
+  "provenance": "Theme and heap native checks precede the final route-icon and Home Ctrl-K alias changes; prompt native checks and all app tests were repeated afterward. Binary hashes distinguish those builds.",
+  "earlier_failed_runs": [
+    {
+      "log": "/var/folders/68/_bgz9y8x01l2_tf4889_jhdw0000gn/T/nus-home-prompt-5mh7k6ia/run.log",
+      "reason": "Prompt URL path regression and incorrect HTTPS expectation; corrected with explicit search routing and regression coverage."
+    },
+    {
+      "log": "/tmp/nus-curation-tests-final2.log",
+      "reason": "Three existing TLS tests could not bind within the sandbox. Full suite passed with loopback access."
+    }
+  ],
+  "limitations": [
+    "Native rendering and navigation were verified on macOS only; Windows/Linux modifier mappings have unit coverage.",
+    "System appearance checks invoke the app handler rather than changing the host OS setting.",
+    "This is functional and visual regression evidence, not a new performance benchmark."
+  ],
+  "previews": [
+    "/Users/seb/.codex/visualizations/2026/09/29/01a0ef4e-f475-7370-a6be-be5819243584/nus-home-search.png",
+    "/Users/seb/.codex/visualizations/2026/09/29/01a0ef4e-f475-7370-a6be-be5819243584/nus-folio-curated.png",
+    "/Users/seb/.codex/visualizations/2026/09/29/01a0ef4e-f475-7370-a6be-be5819243584/nus-carbon-curated.png"
+  ],
+  "dist_app_and_profile_untouched": true,
+  "committed": false
+}

@@ -154,9 +154,7 @@ local FIG = {
 -- The faint field, fixed on the sky.
 local faint = {}
 for i = 1, 420 do faint[i] = { rnd(0, 24), math.asin(rnd(-1, 1)) / D, rnd(4.6, 6.0), rnd(0, TAU) } end
-local streaks = {}
 local started = nil
-local lastFrame = nil
 local pos = {}
 
 -- Sidereal time in hours at a longitude (east positive) for unix ms.
@@ -167,11 +165,6 @@ local function lst(ms, lon)
 end
 
 function draw(c)
-  -- Repeated fixed-time samples are reduced-motion frames. Do not leave
-  -- a randomly spawned meteor hanging forever across the prompt.
-  local animated = lastFrame ~= nil and c.t > lastFrame
-  lastFrame = c.t
-  if not animated then streaks = {} end
   local W, H = c.w, c.h
   local cx, cy = W / 2, H / 2
   local K = math.max(1, math.min(W, H) / 2 - 28) / 90
@@ -202,26 +195,34 @@ function draw(c)
     local r = (90 - alt / D) * K
     return cx - r * math.sin(az), cy - r * math.cos(az), alt / D
   end
-  local function inLine(x, y, pad)
-    local l = c.prompt
-    return x > l.x - pad and x < l.x + l.w + pad and y > l.y - 30 - pad and y < l.y + l.h + c.rows + pad
+  -- Measure the full mark, not just its centre, against this frame's
+  -- prompt and rows. Celestial positions never move to accommodate text.
+  local l = c.prompt
+  local x0, x1, y0, y1 = l.x - 24, l.x + l.w + 24, l.y - 40, l.y + l.h + c.rows + 24
+  local function clearBox(ax, ay, bx, by)
+    local dx = math.max(x0 - bx, 0, ax - x1)
+    local dy = math.max(y0 - by, 0, ay - y1)
+    local t = clamp(math.sqrt(dx * dx + dy * dy) / 36, 0, 1)
+    return t * t * (3 - 2 * t)
   end
-  -- How clear of the line a point is: 0 on it, 1 a margin away.
-  local function clear(x, y)
-    local l = c.prompt
-    local x0, x1, y0, y1 = l.x - 16, l.x + l.w + 16, l.y - 40, l.y + l.h + c.rows + 8
-    local dx = math.max(x0 - x, 0, x - x1)
-    local dy = math.max(y0 - y, 0, y - y1)
-    return clamp(math.sqrt(dx * dx + dy * dy) / 36, 0, 1)
+  local function clear(x, y, radius)
+    local r = radius or 0
+    return clearBox(x - r, y - r, x + r, y + r)
+  end
+  local function label(x, y, value, size, col, alpha, options)
+    local width = c:measure(value, size) * (if options and options.caps then 1.14 else 1) + 4
+    local left = if options and options.align == "center" then x - width / 2 else x
+    local a = alpha * clearBox(left, y - size * 1.2, left + width, y + size * 0.3)
+    if a > 0.01 then c:text(x, y, value, size, col, a, options) end
   end
   -- A hairline in pieces, each fading as it nears the line.
   local function hair(x1, y1, x2, y2, w, col, alpha)
-    local n = 6
+    local n = math.max(1, math.ceil(math.sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2) / 20))
     for k = 0, n - 1 do
       local t0, t1 = k / n, (k + 1) / n
       local ax, ay = x1 + (x2 - x1) * t0, y1 + (y2 - y1) * t0
       local bx, by = x1 + (x2 - x1) * t1, y1 + (y2 - y1) * t1
-      local a = alpha * clear((ax + bx) / 2, (ay + by) / 2)
+      local a = alpha * clearBox(math.min(ax, bx) - w / 2, math.min(ay, by) - w / 2, math.max(ax, bx) + w / 2, math.max(ay, by) + w / 2)
       if a > 0.01 then c:line(ax, ay, bx, by, w, col, a) end
     end
   end
@@ -245,15 +246,14 @@ function draw(c)
   ring(30 * K, 0.1, true)
   local dim = "#8294b6"
   for _, m in { { cx, cy - R - 8, "N" }, { cx, cy + R + 16, "S" }, { cx - R - 12, cy + 4, "E" }, { cx + R + 12, cy + 4, "W" } } do
-    local a = 0.9 * clear(m[1], m[2])
-    if a > 0.01 then c:text(m[1], m[2], m[3], 10, dim, a, { align = "center" }) end
+    label(m[1], m[2], m[3], 10, dim, 0.9, { align = "center" })
   end
 
   -- The faint field.
   for i, f in faint do
     local x, y, alt = at(f[1], f[2])
     if alt > 0 then
-      local a = (0.12 + 0.12 * (6 - f[3])) * (0.85 + 0.15 * math.sin(c.t * 1.1 + f[4])) * clamp(alt / 8, 0, 1) * clear(x, y)
+      local a = (0.12 + 0.12 * (6 - f[3])) * (0.85 + 0.15 * math.sin(c.t * 1.1 + f[4])) * clamp(alt / 8, 0, 1) * clear(x, y, 0.7)
       if a > 0.01 then c:circle(x, y, 0.7, star, a) end
     end
   end
@@ -287,13 +287,13 @@ function draw(c)
       local alpha = clamp((10 ^ (-0.4 * mag)) ^ 0.32, 0.08, 0.98) * tw * horizon
       local lit = #typed > 0 and string.sub(string.lower(s[1]), 1, #typed) == typed
       if lit then alpha = 1 end
-      alpha *= clear(p[1], p[2])
+      alpha *= clear(p[1], p[2], rad)
       local col = if s[5] then warm else star
       if alpha > 0.01 then c:circle(p[1], p[2], rad, col, alpha) end
       if (mag < 1.2 or lit) and alpha > 0.01 then
         local L = rad * 3.4
-        c:line(p[1] - L, p[2], p[1] + L, p[2], 0.7, col, alpha * 0.4)
-        c:line(p[1], p[2] - L, p[1], p[2] + L, 0.7, col, alpha * 0.4)
+        hair(p[1] - L, p[2], p[1] + L, p[2], 0.7, col, alpha * 0.4)
+        hair(p[1], p[2] - L, p[1], p[2] + L, 0.7, col, alpha * 0.4)
       end
       if c.pointer and mag < 3.2 then
         local dx, dy = p[1] - c.pointer.x, p[2] - c.pointer.y
@@ -305,15 +305,15 @@ function draw(c)
   -- The names of the figures, in small caps, off the line.
   for _, fig in FIG do
     local p = pos[byName[fig.at]]
-    if p and p[3] >= 6 and not inLine(p[1], p[2], 20) then
+    if p and p[3] >= 6 then
       local lit = #typed > 0 and string.sub(string.lower(fig.name), 1, #typed) == typed
-      c:text(p[1], p[2] + 16, string.upper(fig.name), 9, star, if lit then 0.9 else 0.36, { align = "center", caps = true })
+      label(p[1], p[2] + 16, string.upper(fig.name), 9, star, if lit then 0.9 else 0.36, { align = "center", caps = true })
     end
   end
   -- The nearest bright star names itself under the pointer.
   if nearest and nd < 60 * 60 then
     local s, p = CAT[nearest], pos[nearest]
-    c:text(p[1] + 9, p[2] - 9, string.format("%s · %.1f", s[1], s[4]), 10, star, 0.85)
+    label(p[1] + 9, p[2] - 9, string.format("%s · %.1f", s[1], s[4]), 10, star, 0.85)
   end
   -- Pointer input explores labels, never restarts or invents celestial events.
   -- The Moon uses the same dated ephemeris as the atmospheric sky.
@@ -321,12 +321,13 @@ function draw(c)
     local ephemeris = c:celestial(now, lat, lon)
     local moon = ephemeris.moon
     local mx, my, altitude = at(moon.ra, moon.dec)
-    if altitude > 0 and clear(mx, my) > 0.1 then
+    local moonClear = clear(mx, my, 11)
+    if altitude > 0 and moonClear > 0.01 then
       local radius = 7
       local light = 2 * ephemeris.illumination - 1
       local side = if ephemeris.waxing then 1 else -1
-      c:circle(mx, my, radius + 4, "#d0ddff", 0.06 * ephemeris.illumination)
-      c:circle(mx, my, radius, "#182239", 0.9)
+      c:circle(mx, my, radius + 4, "#d0ddff", 0.06 * ephemeris.illumination * moonClear)
+      c:circle(mx, my, radius, "#182239", 0.9 * moonClear)
       -- Orthographic illuminated sphere: a curved terminator, not a mask wipe.
       for iy = -7, 7 do
         local yy = iy / radius
@@ -336,23 +337,23 @@ function draw(c)
           if math.abs(xx) <= edge then
             local zz = math.sqrt(math.max(0, 1 - xx * xx - yy * yy))
             if xx * side * math.sqrt(math.max(0, 1 - light * light)) + zz * light > 0 then
-              c:rect(mx + ix, my + iy, 1, 1, "#ececf1", clear(mx, my))
+              c:rect(mx + ix, my + iy, 1, 1, "#ececf1", moonClear)
             end
           end
         end
       end
-      c:text(mx + 14, my + 4, string.format("Moon · %d%%", math.floor(ephemeris.illumination * 100 + 0.5)), 10, star, 0.7 * clear(mx, my))
+      label(mx + 14, my + 4, string.format("Moon · %d%%", math.floor(ephemeris.illumination * 100 + 0.5)), 10, star, 0.7)
     end
   end
   -- The chart's card: where and when.
   if not place then
-    c:text(32, H - 86, "Illustrated northern sky", 10, star, 0.45, { caps = true })
+    label(32, H - 86, "Illustrated northern sky", 10, star, 0.45, { caps = true })
     return
   end
   local lh = math.floor(LST)
   local lm = math.floor((LST - lh) * 60)
   local ns = if lat >= 0 then "N" else "S"
   local ew = if lon >= 0 then "E" else "W"
-  c:text(32, H - 62, string.format("%.1f° %s · %.1f° %s", math.abs(lat), ns, math.abs(lon), ew), 10, star, 0.45, { caps = true })
-  c:text(32, H - 46, string.format("LST %dh %02dm%s", lh, lm, if SPEED ~= 1 then string.format(" · %d×", SPEED) else ""), 10, star, 0.45, { caps = true })
+  label(32, H - 62, string.format("%.1f° %s · %.1f° %s", math.abs(lat), ns, math.abs(lon), ew), 10, star, 0.45, { caps = true })
+  label(32, H - 46, string.format("LST %dh %02dm%s", lh, lm, if SPEED ~= 1 then string.format(" · %d×", SPEED) else ""), 10, star, 0.45, { caps = true })
 end

@@ -44,6 +44,7 @@ mod page_signal;
 mod install;
 mod compatibility;
 mod themes;
+mod appearance;
 mod macos;
 mod dock;
 mod downloads;
@@ -73,6 +74,9 @@ mod app_icon;
 mod editor;
 mod editor_work;
 mod perf;
+#[cfg(test)]
+#[path = "../../../test-support/count_alloc.rs"]
+mod count_alloc;
 mod distribution;
 mod work;
 mod lsp_host;
@@ -94,6 +98,7 @@ mod hands;
 mod replay;
 mod links;
 mod home;
+mod home_contrast;
 mod field;
 mod webkeys;
 mod swipe;
@@ -137,6 +142,8 @@ mod plate;
 mod toast;
 mod page_menu;
 mod art;
+mod sky;
+mod weather;
 mod forge;
 mod power;
 mod touch;
@@ -940,7 +947,7 @@ impl ApplicationHandler<UserEvent> for Host {
                         winit::window::Theme::Light => nus_render::Mode::Paper,
                         winit::window::Theme::Dark => nus_render::Mode::Ink,
                     };
-                    a.set_mode(mode);
+                    a.follow_system_appearance(mode == nus_render::Mode::Ink);
                 }
             }
             WindowEvent::Focused(f) => a.focus_changed(f),
@@ -1173,6 +1180,7 @@ fn run() -> i32 {
         let maintenance=Duration::from_millis(if arrival || (animated && !background) {2} else {50});
         let maintenance=host.apps.iter().filter_map(|a|a.browser_frame_wait()).fold(maintenance,Duration::min);
         let maintenance=host.apps.iter().filter_map(|a|a.caret_frame_wait()).fold(maintenance,Duration::min);
+        let maintenance=host.apps.iter().filter_map(|a|a.art_frame_wait()).fold(maintenance,Duration::min);
         let wait=browser_runtime::wait(maintenance).max(Duration::from_millis(1));
         event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now()+wait));
         let status = event_loop.pump_app_events(Some(wait), &mut host);

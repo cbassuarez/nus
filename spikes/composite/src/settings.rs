@@ -16,6 +16,12 @@ use nus_render::Style;
 use nus_render::theme::metric as m;
 use nus_render::{Color, Rect, Scene};
 
+/// Preview cards keep their renderer when scrolling, hovering, or resizing.
+/// The upper bit separates their stable art-key hashes from Home pane IDs.
+fn art_preview_view_id(key: &str) -> u64 {
+    key.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)) | (1_u64 << 63)
+}
+
 /// Where links a page opens go (target=_blank, window.open).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Links {
@@ -600,6 +606,9 @@ pub struct Behavior {
     /// Where this machine is, for the sky: [lat, lon]; none = not configured; never inferred.
     #[serde(default)]
     pub place: Option<[f32; 2]>,
+    /// Explicit consent to send the chosen Place to MET Norway for Sky weather.
+    #[serde(default)]
+    pub sky_weather: bool,
     /// None uses the curated nine; a list is the user's footer collection.
     #[serde(default)]
     pub footer_themes: Option<Vec<String>>,
@@ -999,6 +1008,7 @@ impl Default for Behavior {
             phone: false,
             home_art: default_home_art(),
             place: None,
+            sky_weather: false,
             footer_themes: None,
             download_rename: Default::default(),
             ui_font: Default::default(), ui_weight: Default::default(), term_font: Default::default(), term_weight: Default::default(),
@@ -1126,6 +1136,9 @@ pub enum Hit {
     Workspace(workspace::Hit),
     Section(usize),
     Theme(Option<bool>),
+    ThemePinned,
+    ThemeVariant(bool),
+    SystemTheme(bool, usize),
     Signal(Color),
     Base(Option<Color>),
     Shell(Shell),
@@ -1350,6 +1363,7 @@ pub enum Hit {
     AskArt,
     OpenArtFolder,
     PlaceEdit,
+    SkyWeather(bool),
     FooterTheme(usize),
     FooterDefaults,
     Search,
@@ -1773,9 +1787,12 @@ impl App {
             Hit::Workspace(h) => workspace::label(h),
             Hit::Section(k) | Hit::Tile(k) => SECTIONS[k].0.to_lowercase(),
             Hit::Back => "back to settings".into(),
+            Hit::ThemePinned => "keep the selected theme".into(),
+            Hit::ThemeVariant(dark) => format!("{} variant", if dark { "dark" } else { "light" }),
+            Hit::SystemTheme(dark, i) => format!("{} system theme {}", if dark { "dark" } else { "light" }, crate::themes::all().get(i).map(|t| t.name.as_str()).unwrap_or("")),
             Hit::Theme(None) => "theme follows the OS".into(),
-            Hit::Theme(Some(true)) => "ink theme".into(),
-            Hit::Theme(Some(false)) => "paper theme".into(),
+            Hit::Theme(Some(true)) => "dark system choice".into(),
+            Hit::Theme(Some(false)) => "light system choice".into(),
             Hit::Signal(c) => format!("signal {}", surface::hex(c)),
             Hit::Base(None) => "no base".into(),
             Hit::Base(Some(c)) => format!("base {}", surface::hex(c)),
@@ -1970,6 +1987,7 @@ impl App {
             Hit::AskArt => "asking for an art".into(),
             Hit::OpenArtFolder => "the art folder".into(),
             Hit::PlaceEdit => "location".into(),
+            Hit::SkyWeather(on) => if on { "use local weather from MET Norway" } else { "keep sky weather illustrated" }.into(),
             Hit::FooterTheme(i) => format!("footer theme {}", crate::themes::all().get(i).map(|t|t.name.as_str()).unwrap_or("")),
             Hit::FooterDefaults => "reset footer themes".into(),
             Hit::Search => "Search settings".into(),
@@ -2033,16 +2051,22 @@ impl App {
                     self.refresh_register_note();
                 }
             }
-            Hit::Theme(None) => {
-                self.behavior.follow_os_theme = true;
-                if let Some(theme) = self.window.theme() {
-                    self.set_mode(if theme == winit::window::Theme::Dark { nus_render::Mode::Ink } else { nus_render::Mode::Paper });
-                }
-            },
-            Hit::Theme(Some(ink)) => {
+            Hit::ThemePinned => { self.behavior.follow_os_theme = false; }
+            Hit::SystemTheme(dark, i) => self.choose_system_theme(dark, i),
+            Hit::ThemeVariant(dark) => {
+                self.remember_appearance();
                 self.behavior.follow_os_theme = false;
-                self.set_mode(if ink { nus_render::Mode::Ink } else { nus_render::Mode::Paper });
-                self.refresh_icon();
+                self.theme_edit.source_ink = Some(dark);
+                self.rebuild_theme();
+                self.remember_appearance();
+            }
+            Hit::Theme(None) => {
+                let dark = self.window.theme().is_some_and(|t| t == winit::window::Theme::Dark);
+                self.follow_system_appearance(dark);
+            },
+            Hit::Theme(Some(dark)) => {
+                self.follow_system_appearance(dark);
+                self.behavior.follow_os_theme = false;
             }
             Hit::Signal(c) => {
                 self.surface.signal = c;
@@ -2590,6 +2614,10 @@ impl App {
             Hit::AskArt => self.ask_for_art(),
             Hit::OpenArtFolder => crate::art::open_dir(),
             Hit::PlaceEdit => self.open_palette(crate::app::PaletteMode::Place),
+            Hit::SkyWeather(on) => {
+                self.behavior.sky_weather = on;
+                if !on { crate::weather::revoke(); }
+            }
             Hit::FooterTheme(i) => {
                 if let Some(theme) = crate::themes::all().get(i) {
                     let mut names = self.footer_theme_names();
@@ -3073,6 +3101,7 @@ impl App {
         let cmds = {
             let (w, h) = (card.w / sc, card.h / sc);
             let env = crate::art::Env {
+                view_id: art_preview_view_id(key),
                 w,
                 h,
                 line: [w * 0.2, h * 0.34, w * 0.6, self.px(40.0)],
@@ -3084,9 +3113,11 @@ impl App {
                 paper: t.paper,
                 ink: t.ink,
                 signal: self.surface.signal,
+                signals: self.theme_edit.art,
                 dim: t.dim,
                 tint: t.tint,
                 place: self.place(),
+                weather: if key == "sky" { crate::weather::sample(self.behavior.sky_weather, self.place()) } else { None },
                 pieces: Vec::new(),
                 procs: Some(self.procs_shared()),
                 scale: self.scale,
@@ -3095,11 +3126,15 @@ impl App {
             art.tend();
             if self.motion.reduced() { art.frame_at(env, 8.0) } else { art.frame(env) }
         };
-        self.draw_art_cmds_scaled(scene, card, cmds, sc);
+        let native_sky = cmds.iter().any(|cmd| matches!(cmd, crate::art::Cmd::Atmosphere(..)));
+        let commands = self.draw_art_cmds_scaled(scene, card, cmds, sc);
+        self.art_previews.get_mut(key).unwrap().recycle_commands(commands);
         // The line, in miniature.
         let lx = card.x + card.w * 0.2;
         let ly = card.y + card.h * 0.34 + self.px(10.0);
-        let line_ink = self.art_previews.get(key).map(|a| a.backdrop).unwrap_or_default().foreground(t.mode, ink, t.paper);
+        let backdrop = self.art_previews.get(key).map(|a| a.backdrop).unwrap_or_default();
+        let line_ink = if key == "sky" { backdrop.sky_foreground(t.mode, ink, t.paper) }
+            else { backdrop.foreground(t.mode, ink, t.paper) };
         scene.hline(lx, ly, card.w * 0.6, self.px(m::HAIRLINE), fade(line_ink, 0.5));
         scene.rect(Rect::new(lx, ly - self.px(6.0), self.px(3.0), self.px(5.0)), self.surface.signal);
         scene.outline(card, self.px(m::STRUCTURE), ink);
@@ -3110,14 +3145,14 @@ impl App {
         }
         let label = self.label();
         let dim = Style { color: t.dim, ..label };
-        let nm = self.fit(label, &name.to_uppercase(), r.w);
+        let nm = self.fit(label, name.to_uppercase(), r.w);
         self.fonts.draw(scene, Style { color: ink, ..label }, r.x, r.y + r.h + self.px(18.0), &nm);
         let sub = if says.is_empty() { if builtin { "ships with nus".to_string() } else { "yours".to_string() } } else { says.to_string() };
         for (i, line) in crate::reader::wrap(&self.fonts, dim, &sub, r.w).into_iter().take(2).enumerate() {
             self.fonts.draw(scene, dim, r.x, r.y + r.h + self.px(31.0 + i as f32 * 12.0), &line);
         }
-        if !self.motion.reduced() && self.art_wants_frame() {
-            self.dirty = true;
+        if !self.motion.reduced() {
+            if native_sky { self.request_sky_frame(); } else { self.request_art_frame(); }
         }
     }
 
@@ -3156,8 +3191,15 @@ impl App {
             let chip = self.px(12.0);
             scene.rect(Rect::new(card.x + self.px(12.0), card.bottom() - strip_h + (strip_h - chip) / 2.0, chip, chip), signal);
             scene.outline(Rect::new(card.x + self.px(12.0), card.bottom() - strip_h + (strip_h - chip) / 2.0, chip, chip), self.px(1.0), ink);
-            // The two faces as tiny pages: paper with an ink line, ink with a paper line.
+            // Complete appearances get one text specimen. Legacy two-face
+            // callers still display both palettes.
             if let Some((pp, pi, ip, ii)) = faces {
+                if pp == ip && pi == ii {
+                    self.fonts.draw(scene, Style { color: pi, px: self.px(24.0), ..self.label() }, card.x + self.px(12.0), card.y + self.px(33.0), "Aa");
+                    for k in 0..3 {
+                        scene.rect(Rect::new(card.right()-self.px(37.0), card.y+self.px(13.0+k as f32*7.0), self.px(if k==2 {15.0} else {25.0}), self.px(2.0)), pi);
+                    }
+                } else {
                 let pw = self.px(22.0);
                 let ph = self.px(28.0);
                 let mut fx = card.right() - self.px(12.0) - pw;
@@ -3169,6 +3211,7 @@ impl App {
                         scene.rect(Rect::new(pr.x + self.px(4.0), pr.y + self.px(6.0) + k as f32 * self.px(6.0), pw - self.px(8.0) - if k == 2 { self.px(6.0) } else { 0.0 }, self.px(2.0)), fg);
                     }
                     fx -= pw + self.px(6.0);
+                }
                 }
             }
         }
@@ -3339,7 +3382,6 @@ impl App {
     fn rows_for_raw(&self, section: usize, look_tab: usize) -> Vec<(String, Control)> {
         use Control::*;
         let hex = surface::hex;
-        let ink = self.theme.mode == nus_render::Mode::Ink;
         match section {
             SEC_VIEWERS => self.viewer_settings(),
             SEC_MENU=>{
@@ -3376,25 +3418,34 @@ impl App {
                     LOOK_PRESETS => {
                         let themes = crate::themes::all();
                         let card = |k: usize, t: &crate::themes::StockTheme| -> (String, Vec<Color>, Color, f32, Hit, bool, Option<(Color, Color, Color, Color)>) {
-                            let ramp = t.surface.ramp(t.ink.ink);
-                            (t.name.clone(), ramp, t.surface.signal, t.surface.angle, Hit::Preset(k), t.name == self.preset_name, Some((t.paper.paper, t.paper.ink, t.ink.paper, t.ink.ink)))
+                            let resolved = t.resolved();
+                            let ramp = vec![resolved.paper];
+                            (t.name.clone(), ramp, t.surface.signal, t.surface.angle, Hit::Preset(k), t.name == self.preset_name, Some((resolved.paper, resolved.ink, resolved.paper, resolved.ink)))
                         };
                         let mut originals: Vec<_> = themes.iter().enumerate().filter(|(_, t)| !t.port).map(|(k, t)| card(k, t)).collect();
                         originals.push(("save as…".into(), Vec::new(), self.surface.signal, 0.0, Hit::SavePreset, false, None));
                         let ports: Vec<_> = themes.iter().enumerate().filter(|(_, t)| t.port).map(|(k, t)| card(k, t)).collect();
                         let current = themes.iter().find(|t| t.name == self.preset_name).map(|t| t.story.clone()).unwrap_or_else(|| "edited from a theme · SAVE AS keeps it".into());
-                        vec![
+                        let mut rows = vec![
                             ("THEMES".into(), Cards(originals)),
                             ("".into(), Info(current)),
-                            ("PORTS".into(), Cards(ports)),
+                            ("STANDARDS".into(), Cards(ports)),
                             ("FOOTER THEME SLOTS".into(), Info("Nine visible slots in a 3 × 3 grid. Select themes below to add or remove them; scroll the footer picker to reach additional rows.".into())),
                             ("SHOW IN FOOTER".into(), Cards(themes.iter().enumerate().map(|(i,t)| {
                                 let mut c = card(i,t); c.4 = Hit::FooterTheme(i); c.5 = self.footer_theme_names().contains(&t.name); c
                             }).collect())),
-                            ("".into(), Buttons(vec![("RESTORE DEFAULT NINE".into(),icons::UNDO,Hit::FooterDefaults)])),
-                            ("".into(), Info("a theme is the whole look: both faces' tokens and sixteens, the carapace, the cursor, the bar, a few sounds · saved ones live in profile/themes".into())),
+                            ("".into(), Buttons(vec![("RESTORE DEFAULT THEMES".into(),icons::UNDO,Hit::FooterDefaults)])),
+                            ("".into(), Info("A theme sets colors, type, spacing, cursor, artwork, frame and visual motion. Behavior, accessibility overrides, sounds and loading stay yours. Saved looks live in profile/themes.".into())),
                             ("".into(), Buttons(vec![("OPEN THEMES FOLDER".into(), icons::FOLDER, Hit::OpenThemes)])),
-                        ]
+                        ];
+                        if themes.iter().any(|t| t.name == self.preset_name && t.port) {
+                            let source = self.theme_edit.source_mode(self.theme.mode) == nus_render::Mode::Ink;
+                            rows.insert(2, ("PALETTE VARIANT".into(), Choice(vec![
+                                ("LIGHT".into(), Hit::ThemeVariant(false), !source),
+                                ("DARK".into(), Hit::ThemeVariant(true), source),
+                            ])));
+                        }
+                        rows
                     }
                     LOOK_SURFACE => {
                 let ink = self.theme.ink;
@@ -3580,7 +3631,7 @@ impl App {
                     list.iter().map(|&v| { let c = nus_render::theme::hex(v); (Some(c), mk(c), (c[0] - cur[0]).abs() < 0.004 && (c[1] - cur[1]).abs() < 0.004 && (c[2] - cur[2]).abs() < 0.004) }).collect()
                 };
                 let ansi: Vec<Color> = (0..16).map(|i| crate::theme_edit::from_rgb(t.ansi[i])).collect();
-                let edit = if ink_mode { self.theme_edit.ink.clone() } else { self.theme_edit.paper.clone() };
+                let edit = if self.theme_edit.source_mode(t.mode) == nus_render::Mode::Ink { self.theme_edit.ink.clone() } else { self.theme_edit.paper.clone() };
                 // What a caret or a selection might be: the ink, the signal, the brights.
                 let marks: Vec<Color> = std::iter::once(t.ink).chain(std::iter::once(self.surface.signal)).chain(surface::family(self.surface.signal)).chain((9..16).map(|i| ansi[i])).collect();
                 let sel = self.ansi_sel.min(15);
@@ -3609,8 +3660,8 @@ impl App {
                 let _ = (&sw, &row, &cands);
                 let hx = surface::hex;
                 let tiles: Vec<(String, Option<Color>, String, Hit, bool)> = vec![
-                    ("PAPER".into(), Some(t.paper), hx(t.paper), Hit::TokSel(TokSel::Paper), self.tok_sel == TokSel::Paper),
-                    ("INK".into(), Some(t.ink), hx(t.ink), Hit::TokSel(TokSel::Ink), self.tok_sel == TokSel::Ink),
+                    ("BACKGROUND".into(), Some(t.paper), hx(t.paper), Hit::TokSel(TokSel::Paper), self.tok_sel == TokSel::Paper),
+                    ("TEXT".into(), Some(t.ink), hx(t.ink), Hit::TokSel(TokSel::Ink), self.tok_sel == TokSel::Ink),
                     ("PAGE".into(), Some(t.page), hx(t.page), Hit::TokSel(TokSel::Page), self.tok_sel == TokSel::Page),
                     ("DIM".into(), Some(t.dim), format!("{} · derived", hx(t.dim)), Hit::TokSel(self.tok_sel), false),
                     ("CARET".into(), Some(t.caret), if edit.caret.is_some() { hx(t.caret) } else { format!("{} · the ink", hx(t.caret)) }, Hit::TokSel(TokSel::Caret), self.tok_sel == TokSel::Caret),
@@ -3629,7 +3680,7 @@ impl App {
                     _ => Vec::new(),
                 };
                 let mut v: Vec<(String, Control)> = vec![
-                    (format!("{} TOKENS", if ink_mode { "INK" } else { "PAPER" }), Tokens(tiles, true)),
+                    ("THEME COLORS".into(), Tokens(tiles, true)),
                 ];
                 let picker = |v: &mut Vec<(String, Control)>, what: String, me: &Self| {
                     let (h, sa, l) = surface::to_hsl(me.tok_color());
@@ -3641,13 +3692,13 @@ impl App {
                     picker(&mut v, format!("{:?}", self.tok_sel), self);
                     v.push(("TRAY".into(), Tokens(tray.clone(), false)));
                     match self.tok_sel {
-                        TokSel::Caret if edit.caret.is_some() => v.push(("".into(), Choice(vec![("FOLLOW THE INK".into(), Hit::TokCaret(None), false)]))),
-                        TokSel::Selection if edit.selection.is_some() => v.push(("".into(), Choice(vec![("FOLLOW THE INK".into(), Hit::TokSelection(None), false)]))),
+                        TokSel::Caret if edit.caret.is_some() => v.push(("".into(), Choice(vec![("FOLLOW TEXT COLOR".into(), Hit::TokCaret(None), false)]))),
+                        TokSel::Selection if edit.selection.is_some() => v.push(("".into(), Choice(vec![("FOLLOW TEXT COLOR".into(), Hit::TokSelection(None), false)]))),
                         _ => {}
                     }
                 }
                 v.push(("CONTRAST".into(), Info(format!("ink on paper {:.1}:1 {} · dim {:.1}:1 {} · signal {:.1}:1 {}", c_ink, grade(c_ink), c_dim, grade(c_dim), c_sig, grade(c_sig)))));
-                v.push(("".into(), Info(format!("dim, tint and hot follow paper and ink · editing the {} theme; TYPE & MOTION switches", if ink_mode { "ink" } else { "paper" }))));
+                v.push(("".into(), Info("Secondary text and hover colors follow the resolved background and text. Edits stay with this theme.".into())));
                 v.push(("".into(), Buttons(vec![("RESET TOKENS".into(), icons::WARNING, Hit::TokReset)])));
                 v.push(("ANSI".into(), Tokens(ansi_tiles, false)));
                 if editing_ansi {
@@ -3677,10 +3728,12 @@ impl App {
                     "THEME".into(),
                     Choice(vec![
                         ("FOLLOW OS".into(), Hit::Theme(None), self.behavior.follow_os_theme),
-                        ("PAPER".into(), Hit::Theme(Some(false)), !self.behavior.follow_os_theme && !ink),
-                        ("INK".into(), Hit::Theme(Some(true)), !self.behavior.follow_os_theme && ink),
+                        ("SELECTED THEME".into(), Hit::ThemePinned, !self.behavior.follow_os_theme),
                     ]),
                 ),
+                ("LIGHT SYSTEM THEME".into(), Choice(self.system_theme_options(false))),
+                ("DARK SYSTEM THEME".into(), Choice(self.system_theme_options(true))),
+                ("".into(), Info("Follow system switches between these complete looks. Choosing a theme directly keeps it selected. Behavior, accessibility overrides and loading remain yours.".into())),
                 (
                     "MOTION".into(),
                     Slider(
@@ -3943,7 +3996,16 @@ impl App {
                             b.place.is_some(),
                         )]),
                     ),
-                    ("".into(), Info("Sky and Space show illustrated skies by default. Add latitude and longitude to show your local sky. Location stays on this machine and is never inferred. Clear it any time.".into())),
+                    ("".into(), Info("Sky and Space use your chosen location locally for the sun, moon, and stars. Location is never inferred and stays on this machine unless you enable local weather below. Clear it any time.".into())),
+                    (
+                        "SKY WEATHER".into(),
+                        Choice(vec![
+                            ("ILLUSTRATED · OFF".into(), Hit::SkyWeather(false), !b.sky_weather),
+                            ("USE LOCAL WEATHER".into(), Hit::SkyWeather(true), b.sky_weather),
+                        ]),
+                    ),
+                    ("".into(), Info("Local weather sends your chosen coordinates, rounded to 0.001°, and your IP address to MET Norway. No location is sent while this is off. Updates run in the background while Sky is in use. If a refresh fails, Sky keeps the last cached forecast; before any forecast arrives it uses an illustrated sky. Turning this off clears the cache.".into())),
+                    ("".into(), Info("Based on forecast data from MET Norway (api.met.no), under CC BY 4.0 (creativecommons.org/licenses/by/4.0/). Sky adapts the conditions into procedural clouds; it does not reproduce the exact clouds outside.".into())),
                     (
                         key("N", false),
                         Pics(vec![
@@ -4338,7 +4400,7 @@ impl App {
                     Choice(vec![
                         ("SIGNAL".into(), Hit::BarColor(BarColor::Signal), self.load_bar.color == BarColor::Signal),
                         ("TAB".into(), Hit::BarColor(BarColor::Tab), self.load_bar.color == BarColor::Tab),
-                        ("INK".into(), Hit::BarColor(BarColor::Ink), self.load_bar.color == BarColor::Ink),
+                        ("TEXT".into(), Hit::BarColor(BarColor::Ink), self.load_bar.color == BarColor::Ink),
                     ]),
                 ),
                 (
@@ -4499,7 +4561,7 @@ impl App {
             SEC_SAVED => self.saved_settings(),
             10 => {
                 // What the rules do right now: three shells, a stack child, a page.
-                let theme = if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" };
+                let theme = if self.theme.mode == nus_render::Mode::Ink { "light text" } else { "dark text" };
                 let mk = |kind: &str, index: usize, host: &str, parent: Option<&surface::Overrides>| {
                     let shell_color = if kind == "terminal" && self.behavior.shell_tint != crate::shell_colors::ShellTint::None { self.shell_color(Some((index * 4 % crate::shell_colors::SLOTS) as u8)) } else { None };
                     self.rules.new_tab(&surface::TabCtx { kind, index, profile: "powershell", space: &self.space_name, space_signal: self.surface.signal, theme, host, parent, tab_colours: &self.tab_colours, shell_color })
@@ -4700,7 +4762,7 @@ impl App {
     /// One-line hint under each tile.
     fn tile_hint(&self, k: usize) -> String {
         match k {
-            0 => format!("{} · {} · {}", self.preset_name.to_lowercase(), if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }, self.surface.shell.name()),
+            0 => format!("{} · {} · {}", self.preset_name.to_lowercase(), if self.theme.mode == nus_render::Mode::Ink { "light text" } else { "dark text" }, self.surface.shell.name()),
             1 => if self.sound.prefs.enabled { format!("on · {}%", (self.sound.prefs.volume * 100.0).round()) } else { "off".into() },
             2 => format!("start page: {}", match self.behavior.then {
                 Then::Palette => "command palette", Then::Prompt => "home prompt", Then::HomePage => "home page", Then::Layout => "custom layout",
@@ -4765,7 +4827,7 @@ impl App {
             self.fonts.draw_icon(scene, *icon, isz, tile.x + self.px(16.0), tile.y + self.px(16.0), ink);
             let base = tile.y + self.px(16.0) + isz + self.px(22.0);
             self.fonts.draw(scene, strong, tile.x + self.px(16.0), base, name);
-            let hint = self.fit(dim, &self.tile_hint(k), tw - self.px(32.0));
+            let hint = self.fit(dim, self.tile_hint(k), tw - self.px(32.0));
             self.fonts.draw(scene, dim, tile.x + self.px(16.0), base + self.px(18.0), &hint);
             self.settings_hits.push((tile.intersect(&r), Hit::Tile(k)));
             }
@@ -4784,7 +4846,7 @@ impl App {
         let search=Rect::new(r.x+self.px(12.0),r.y+self.px(8.0),r.w-self.px(24.0),self.px(32.0));
         scene.outline(search,self.px(1.0),t.dim);
         self.fonts.draw_icon(scene,icons::SEARCH,self.px(14.0),search.x+self.px(10.0),search.y+self.px(8.0),ink);
-        let hint=self.fit(label,&format!("Search settings · {}",key("F",false)),search.w-self.px(50.0));
+        let hint=self.fit(label,format!("Search settings · {}",key("F",false)),search.w-self.px(50.0));
         self.fonts.draw(scene,label,search.x+self.px(32.0),search.y+self.px(21.0),&hint);
         self.settings_hits.push((search,Hit::Search));
         r.y+=self.px(48.0);r.h-=self.px(48.0);
@@ -5022,7 +5084,7 @@ impl App {
                 Control::Intelligence => {
                     let w = maxw.min(self.px(520.0));
                     self.draw_intel_ring(scene, Rect::new(cx, y + cap_h, w, self.px(72.0)));
-                    let line = self.fit(dim, &self.intel_sends(), maxw);
+                    let line = self.fit(dim, self.intel_sends(), maxw);
                     self.fonts.draw(scene, dim, cx, y + cap_h + self.px(98.0), &line);
                 }
                 Control::FontProof | Control::PromptProof => {self.draw_type_proof(scene,Rect::new(cx,y+cap_h,maxw,self.px(206.0)),matches!(control,Control::PromptProof));}
@@ -5568,6 +5630,34 @@ mod search;
 fn default_pip_skip() -> u16 { 10 }
 
 #[cfg(test)]
+mod sky_view_identity_tests {
+    use super::*;
+    #[test]
+    fn preview_identity_is_stable_and_separate_from_home_panes() {
+        let sky = art_preview_view_id("sky");
+        assert_eq!(sky, art_preview_view_id(&String::from("sky")));
+        assert_ne!(sky, art_preview_view_id("my-sky"));
+        assert_eq!(sky >> 63, 1);
+    }
+}
+
+#[cfg(test)]
+mod sky_weather_preferences_tests {
+    use super::*;
+    #[test]
+    fn weather_requires_explicit_consent_even_with_a_saved_place() {
+        let previous: Behavior = serde_json::from_value(serde_json::json!({"place":[10.0,20.0]})).unwrap();
+        assert!(!previous.sky_weather);
+        assert!(!Behavior::default().sky_weather);
+        let enabled: Behavior = serde_json::from_value(serde_json::json!({"sky_weather":true,"place":[10.0,20.0]})).unwrap();
+        assert!(enabled.sky_weather);
+        let saved = serde_json::to_value(enabled).unwrap();
+        assert_eq!(saved["sky_weather"], true);
+        assert_eq!(saved["place"], serde_json::json!([10.0,20.0]));
+    }
+}
+
+#[cfg(test)]
 mod pip_preferences_tests {
     use super::*;
     #[test]
@@ -5636,7 +5726,7 @@ impl App {
             ("".into(),Info("Open supported local files as documents from Files or a file URL. Turn a format off to use its source. Right-click a document to Edit source. Changes apply to open viewers.".into()))];
         for k in Kind::ALL {let on=match k{Kind::Markdown=>p.markdown,Kind::Json=>p.json,Kind::Csv=>p.csv,Kind::Text=>p.text};rows.push((k.label().to_uppercase(),toggle(on,S::Format(k,true),S::Format(k,false))));}
         rows.extend([
-            ("THEME".into(),Choice([(Theme::Follow,"FOLLOW APP"),(Theme::Paper,"PAPER"),(Theme::Ink,"INK")].into_iter().map(|(v,n)|(n.into(),Hit::Viewer(S::Theme(v)),p.theme==v)).collect())),
+            ("THEME".into(),Choice([(Theme::Follow,"FOLLOW APP"),(Theme::Paper,"LIGHT"),(Theme::Ink,"DARK")].into_iter().map(|(v,n)|(n.into(),Hit::Viewer(S::Theme(v)),p.theme==v)).collect())),
             ("BODY FONT".into(),Choice([(Font::Serif,"SERIF"),(Font::Sans,"SANS"),(Font::Mono,"MONO")].into_iter().map(|(v,n)|(n.into(),Hit::Viewer(S::Font(v)),p.font==v)).collect())),
             ("TEXT SIZE".into(),Choice([14,16,18,20,24,28].into_iter().map(|v|(format!("{v}"),Hit::Viewer(S::Size(v)),p.text_size==v)).collect())),
             ("PAGE WIDTH".into(),Choice([640,860,1100,1400].into_iter().map(|v|(format!("{v}"),Hit::Viewer(S::Width(v)),p.width==v)).collect())),

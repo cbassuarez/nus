@@ -111,13 +111,16 @@ impl Instance {
     /// so holes, floating blots, and open spans remain genuinely transparent.
     pub fn carapace(r: Rect, look: CarapaceLook) -> Instance {
         let finite = |v: f32, fallback: f32| {
-            if v.is_finite() { v } else { fallback }
+            if v.is_finite() {
+                v
+            } else {
+                fallback
+            }
         };
         let color = |c: Color| c.map(|v| finite(v, 0.0).clamp(0.0, 1.0));
         let short = finite(r.w.min(r.h), 0.0).max(0.0);
         let energy = finite(look.energy, 0.0).clamp(0.0, 1.0);
-        let grain =
-            (finite(look.grain, 0.0).clamp(0.0, 0.3) * (255.0 / 0.3)).round() as u32;
+        let grain = (finite(look.grain, 0.0).clamp(0.0, 0.3) * (255.0 / 0.3)).round() as u32;
         let scale = (finite(look.grain_scale, 1.0).clamp(0.25, 256.0) * 64.0).round() as u32;
         let mut i = Self::rect(r, color(look.signal));
         i.kind = 22;
@@ -150,13 +153,32 @@ impl Instance {
         // As the pipe widens into a cell, lower halo density continuously so
         // its larger perimeter does not turn a quiet point into a bright box.
         let density = ((r.h * 0.12) / r.w.max(1.0)).clamp(0.0, 1.0).sqrt();
-        let glow = if glow.is_finite() { glow.clamp(0.0, 1.0) * density } else { 0.0 };
-        let gain = if gain.is_finite() { gain.clamp(1.0, 3.0) } else { 1.0 };
+        let glow = if glow.is_finite() {
+            glow.clamp(0.0, 1.0) * density
+        } else {
+            0.0
+        };
+        let gain = if gain.is_finite() {
+            gain.clamp(1.0, 3.0)
+        } else {
+            1.0
+        };
         let spread = (r.h / 12.0).clamp(0.75, 3.0);
-        let pad = if glow > 0.0 { (spread * 3.0).ceil() } else { 1.0 };
-        let mut i = Self::rect(r.inset(-pad), color.map(|v| {
-            if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
-        }));
+        let pad = if glow > 0.0 {
+            (spread * 3.0).ceil()
+        } else {
+            1.0
+        };
+        let mut i = Self::rect(
+            r.inset(-pad),
+            color.map(|v| {
+                if v.is_finite() {
+                    v.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            }),
+        );
         i.kind = 20;
         i.uv = [pad, glow, 0.0, 0.0];
         i.phase = gain;
@@ -720,7 +742,9 @@ impl Scene {
     /// Shared pipe/cell material. Selection fills and replacement indicators
     /// remain ordinary SDR shapes; only the small active caret emits light.
     pub fn caret(&mut self, r: Rect, color: Color, glow: f32, hdr_gain: f32) {
-        if r.w > 0.0 && r.h > 0.0 && color[3] > 0.0
+        if r.w > 0.0
+            && r.h > 0.0
+            && color[3] > 0.0
             && [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite())
         {
             self.push(Instance::caret(r, color, glow, hdr_gain));

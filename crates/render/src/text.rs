@@ -158,11 +158,66 @@ pub struct FontSystem {
     fallback_chars: std::cell::RefCell<HashMap<char, Option<FontId>>>,
     /// Measured widths by (font, px, tracking, text): the sidebar measures
     /// the same strings every frame. Cold entries are evicted incrementally.
-    widths: std::cell::RefCell<crate::cache::Cache<(u16, u32, u32, String), f32>>,
+    widths: std::cell::RefCell<crate::cache::Cache<TextKey<std::rc::Rc<str>>, f32>>,
     shaped: std::cell::RefCell<ShapedCache>,
+    // Static tracked labels share their case-transformed text across measure/draw.
+    labels: std::cell::RefCell<crate::cache::Cache<std::rc::Rc<str>, std::rc::Rc<str>>>,
 }
 
-type ShapedCache = crate::cache::Cache<(u16, u32, String), std::sync::Arc<[ShapedGlyph]>>;
+type ShapedCache = crate::cache::Cache<TextKey<std::rc::Rc<str>>, std::sync::Arc<[ShapedGlyph]>>;
+
+// Borrow a compound key without allocating its text. Both forms hash/compare
+// the complete font, size, tracking and text identity; eviction stays bounded.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TextKey<S> {
+    style: [u32; 3],
+    text: S,
+}
+trait TextIdentity {
+    fn parts(&self) -> ([u32; 3], &str);
+}
+impl<S: AsRef<str>> TextIdentity for TextKey<S> {
+    fn parts(&self) -> ([u32; 3], &str) {
+        (self.style, self.text.as_ref())
+    }
+}
+impl std::hash::Hash for dyn TextIdentity + '_ {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.parts(), state);
+    }
+}
+impl PartialEq for dyn TextIdentity + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts() == other.parts()
+    }
+}
+impl Eq for dyn TextIdentity + '_ {}
+impl<'a> std::borrow::Borrow<dyn TextIdentity + 'a> for TextKey<std::rc::Rc<str>> {
+    fn borrow(&self) -> &(dyn TextIdentity + 'a) {
+        self
+    }
+}
+impl TextKey<&str> {
+    fn owned(&self) -> TextKey<std::rc::Rc<str>> {
+        TextKey {
+            style: self.style,
+            text: self.text.into(),
+        }
+    }
+}
+
+enum LabelText {
+    Shared(std::rc::Rc<str>),
+    Uncached(String),
+}
+impl AsRef<str> for LabelText {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Shared(s) => s,
+            Self::Uncached(s) => s,
+        }
+    }
+}
 
 /// Font ids at or above this index the `extra` (fallback) faces.
 const EXTRA_BASE: u16 = 0x8000;
@@ -208,6 +263,7 @@ impl FontSystem {
     pub fn reclaim_caches(&self) {
         self.widths.borrow_mut().clear();
         self.shaped.borrow_mut().clear();
+        self.labels.borrow_mut().clear();
     }
 
     pub fn new() -> FontSystem {
@@ -226,6 +282,7 @@ impl FontSystem {
             fallback_chars: std::cell::RefCell::new(HashMap::new()),
             widths: std::cell::RefCell::new(crate::cache::Cache::new(4096, 4096)),
             shaped: std::cell::RefCell::new(crate::cache::Cache::new(1024, 8192)),
+            labels: std::cell::RefCell::new(crate::cache::Cache::new(512, 64 * 1024)),
         }
     }
 
@@ -465,14 +522,17 @@ impl FontSystem {
         if text.len() > 512 {
             return self.shape_uncached(font, px, text).into();
         }
-        let key = (font.0, px.to_bits(), text.to_owned());
-        if let Some(glyphs) = self.shaped.borrow_mut().get(&key) {
+        let key = TextKey {
+            style: [font.0 as u32, px.to_bits(), 0],
+            text,
+        };
+        if let Some(glyphs) = self.shaped.borrow_mut().get(&key as &dyn TextIdentity) {
             return glyphs.clone();
         }
         let glyphs: std::sync::Arc<[ShapedGlyph]> = self.shape_uncached(font, px, text).into();
         self.shaped
             .borrow_mut()
-            .insert(key, glyphs.clone(), glyphs.len());
+            .insert(key.owned(), glyphs.clone(), glyphs.len());
         glyphs
     }
 
@@ -595,7 +655,8 @@ impl FontSystem {
     pub fn draw(&mut self, scene: &mut Scene, s: Style, x: f32, baseline: f32, text: &str) -> f32 {
         // Labels (the tracked style) read in Caps, never ALLCAPS.
         if s.tracking > 0.0 {
-            self.draw_as_is(scene, s, x, baseline, &caps(text))
+            let label = self.label_text(text);
+            self.draw_as_is(scene, s, x, baseline, label.as_ref())
         } else {
             self.draw_as_is(scene, s, x, baseline, text)
         }
@@ -634,10 +695,30 @@ impl FontSystem {
         pen - x
     }
 
+    fn label_text(&self, text: &str) -> LabelText {
+        // Long/one-off content does not displace labels or retain a large key.
+        if text.len() > 512 {
+            return LabelText::Uncached(caps(text));
+        }
+        if let Some(label) = self.labels.borrow_mut().get(text) {
+            return LabelText::Shared(label.clone());
+        }
+        let transformed = caps(text);
+        let key: std::rc::Rc<str> = text.into();
+        let label = if transformed == text {
+            key.clone()
+        } else {
+            transformed.into()
+        };
+        let weight = text.len() + label.len();
+        self.labels.borrow_mut().insert(key, label.clone(), weight);
+        LabelText::Shared(label)
+    }
+
     /// Width of `text` without drawing it.
     pub fn measure(&self, s: Style, text: &str) -> f32 {
         if s.tracking > 0.0 {
-            self.measure_as_is(s, &caps(text))
+            self.measure_as_is(s, self.label_text(text).as_ref())
         } else {
             self.measure_as_is(s, text)
         }
@@ -645,13 +726,11 @@ impl FontSystem {
 
     /// Width of `text` as `draw_as_is` lays it out.
     pub fn measure_as_is(&self, s: Style, text: &str) -> f32 {
-        let key = (
-            s.font.0,
-            s.px.to_bits(),
-            s.tracking.to_bits(),
-            text.to_string(),
-        );
-        if let Some(w) = self.widths.borrow_mut().get(&key) {
+        let key = TextKey {
+            style: [s.font.0 as u32, s.px.to_bits(), s.tracking.to_bits()],
+            text,
+        };
+        if let Some(w) = self.widths.borrow_mut().get(&key as &dyn TextIdentity) {
             return *w;
         }
         let w = self
@@ -661,7 +740,7 @@ impl FontSystem {
             .sum();
         let mut cache = self.widths.borrow_mut();
         if text.len() <= 256 {
-            cache.insert(key, w, 1);
+            cache.insert(key.owned(), w, 1);
         }
         w
     }
@@ -901,6 +980,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn label_cache_is_bounded_shared_and_reclaimable() {
+        let fonts = FontSystem::new();
+        for i in 0..2000 {
+            fonts.label_text(&format!("LABEL {i:04} {}", "X".repeat(300)));
+        }
+        assert!(fonts.labels.borrow().len() <= 512);
+        assert!(fonts.labels.borrow().weight() <= 64 * 1024);
+        let LabelText::Shared(a) = fonts.label_text("NEW TAB") else {
+            panic!()
+        };
+        let LabelText::Shared(b) = fonts.label_text("NEW TAB") else {
+            panic!()
+        };
+        assert!(std::rc::Rc::ptr_eq(&a, &b));
+        assert_eq!(&*a, "New Tab");
+        let count = fonts.labels.borrow().len();
+        assert!(matches!(
+            fonts.label_text(&"X".repeat(513)),
+            LabelText::Uncached(_)
+        ));
+        assert_eq!(fonts.labels.borrow().len(), count);
+        fonts.reclaim_caches();
+        assert_eq!(fonts.labels.borrow().len(), 0);
+        assert_eq!(fonts.labels.borrow().weight(), 0);
+        assert_eq!(&*a, "New Tab", "a live drawing reference survives eviction");
+    }
+
+    #[test]
     fn owned_font_bytes_are_released_with_the_font_system() {
         let mut fonts = FontSystem::new();
         let id = fonts
@@ -980,6 +1087,39 @@ mod tests {
     }
 }
 
+/// Fit UI text without copying a label that already fits. When truncating,
+/// retain one candidate buffer throughout the same character-count bisection
+/// used by the UI, including its exact-fit tolerance and ellipsis behavior.
+pub fn fit_text<'a>(
+    text: impl Into<std::borrow::Cow<'a, str>>,
+    max_w: f32,
+    measure: impl Fn(&str) -> f32,
+) -> std::borrow::Cow<'a, str> {
+    let text = text.into();
+    if measure(&text) <= max_w + 0.01 {
+        return text;
+    }
+    let mut chars = Vec::with_capacity(text.chars().count());
+    chars.extend(text.chars());
+    let mut candidate = String::with_capacity(text.len() + '…'.len_utf8());
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        candidate.clear();
+        candidate.extend(&chars[..mid]);
+        candidate.push('…');
+        if measure(&candidate) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    candidate.clear();
+    candidate.extend(&chars[..lo]);
+    candidate.push('…');
+    candidate.into()
+}
+
 /// ALLCAPS words become Caps: "NEW TAB" → "New Tab", "CTRL+SHIFT+D" →
 /// "Ctrl+Shift+D", "OSC 52" → "Osc 52". A word with any lowercase letter
 /// is left alone (names, paths, domains); so are digits and symbols.
@@ -988,8 +1128,8 @@ pub fn caps(text: &str) -> String {
     for word in text.split_inclusive(char::is_whitespace) {
         let body = word.trim_end_matches(char::is_whitespace);
         let tail = &word[body.len()..];
-        let letters: Vec<char> = body.chars().filter(|c| c.is_alphabetic()).collect();
-        let all_caps = !letters.is_empty() && letters.iter().all(|c| c.is_uppercase());
+        let mut letters = body.chars().filter(|c| c.is_alphabetic()).peekable();
+        let all_caps = letters.peek().is_some() && letters.all(|c| c.is_uppercase());
         if !all_caps {
             out.push_str(word);
             continue;
@@ -1065,10 +1205,34 @@ mod git_icon_tests {
     /// The git glyphs parse and leave ink at the size the UI uses.
     #[test]
     fn git_icons_render() {
-        for (name, svg) in [GIT_BRANCH, GIT_COMMIT, GIT_MERGE, GIT_PR, GIT_DIFF, PUSH, PULL, FETCH, STASH, UNDO_COMMIT, CHECK_CIRCLE, X_CIRCLE, CIRCLE_DASHED, FILES, CREDIT_CARD, MAP_PIN, PASSWORD, KEY] {
-            let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for (name, svg) in [
+            GIT_BRANCH,
+            GIT_COMMIT,
+            GIT_MERGE,
+            GIT_PR,
+            GIT_DIFF,
+            PUSH,
+            PULL,
+            FETCH,
+            STASH,
+            UNDO_COMMIT,
+            CHECK_CIRCLE,
+            X_CIRCLE,
+            CIRCLE_DASHED,
+            FILES,
+            CREDIT_CARD,
+            MAP_PIN,
+            PASSWORD,
+            KEY,
+        ] {
+            let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default())
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
             let mut pm = resvg::tiny_skia::Pixmap::new(26, 26).unwrap();
-            resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(26.0 / 256.0, 26.0 / 256.0), &mut pm.as_mut());
+            resvg::render(
+                &tree,
+                resvg::tiny_skia::Transform::from_scale(26.0 / 256.0, 26.0 / 256.0),
+                &mut pm.as_mut(),
+            );
             let inked = pm.pixels().iter().filter(|p| p.alpha() > 128).count();
             assert!(inked > 20, "{name} drew almost nothing ({inked})");
         }

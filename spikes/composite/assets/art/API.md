@@ -18,8 +18,18 @@ the rows beneath it reach while something is typed.
     c:taps()              {{x=, y=}, …} clicks since the last frame
     c:now()               unix milliseconds
     c:place()             {lat, lon} chosen by the user, or nil; draw a fallback when unset
+    c:weather()           cached forecast conditions when connected weather is enabled,
+                           otherwise nil; never fetches from a script
     c:processes()         {list = {{pid, ppid, name, cpu, mem, threads}, …},
                            ctx, syscalls, threads, handles, ready}
+
+`c.face` describes resolved text polarity: "ink" means light text and
+"paper" means dark text, including when a saved palette has been tinted.
+`c.signals` contains the selected theme's six artwork colors in the order
+shown above. Older/custom themes without an artwork palette use the legacy
+six colors. The table stays alive and updates in place on a theme change,
+so an artwork can retain it without restarting its animation. Treat it as
+read-only; copy entries when an artwork needs private mutable colors.
 
 Colours are "#rrggbb", "#rrggbbaa" or {r=, g=, b=, a=} in 0..1; the
 optional `alpha` multiplies.
@@ -40,6 +50,38 @@ optional `alpha` multiplies.
                                  a whole sky in the shader: az -1 (east, left) … 1 (west, right), alt the sine of the
                                  sun's altitude (night below 0: a moon, stars), cover 0..1, wind 1 = a breeze
     c:backdrop("dark")           light text over dark artwork; "light" for dark text; default "paper" follows the theme
+
+`c:atmosphere(options)` draws the native cached cloud volume. The older `c:sky`
+primitive remains available for saved artwork. Atmosphere options:
+
+    sun, moon            {east, up, north} unit directions (all three axes matter)
+    moon_light           illuminated fraction 0..1; moon_waxing is a boolean
+    bearing, elevation   view angles in radians; bearing clockwise from north
+    fov                  vertical field of view, radians
+    low, middle, high    cloud fractions 0..1 at the three modeled layers
+    stratus              0 sculpted cumulus .. 1 layered ceiling
+    precipitation        next-hour mean precipitation, mm/h
+    base, haze           low cloud base in km; haze 0..1
+    wind_low, wind_middle, wind_high   {east, north} velocity, m/s
+    seed                 stable integer cloud identity
+    prompt_light         subtle local prompt contrast, 0..0.35 (default .14)
+    x, y, w, h           optional canvas rectangle
+
+The weather table has `cover`, `low`, `middle`, `high`, `humidity`, `fog`
+fractions, `visibility` in meters, and `precipitation` in mm for the next hour.
+Unknown fields are nil. Winds are `{speed, direction, height}`: meters/second,
+degrees clockwise from north **from which** wind blows, and meters when known.
+`source`, `valid_at`, `fetched_at`, `stale`, `offline`, and `code` describe the
+forecast's provenance. Times are Unix seconds. The current MET Norway provider
+supplies surface wind; middle/high cloud motion is modeled when upper winds are
+unavailable. Cloud species, shapes, and base heights are procedural rather than
+observed. The same cloud field evolves when the forecast changes.
+
+Connected weather sends the explicitly chosen Place to MET Norway only after
+the user enables it in Start/New Tab. Without that option, astronomy stays local.
+Data attribution: [MET Norway](https://www.met.no/en), adapted from
+[Locationforecast](https://api.met.no/weatherapi/locationforecast/2.0/documentation)
+under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 The file's first lines say what it is:
 

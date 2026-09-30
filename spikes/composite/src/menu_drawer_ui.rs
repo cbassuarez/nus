@@ -170,7 +170,7 @@ impl App {
         if let Some(bind)=self.desktop_icon(){scene.texture(Rect::new(px(13.0),px(15.0),px(26.0),px(26.0)),bind,None);}
         self.fonts.draw(scene,Style{font:self.f.wordmark,px:px(31.0),..label},px(49.0),px(38.0),"nus");
         let close=Rect::new(w-px(40.0),px(10.0),px(30.0),px(32.0));self.drawer_button(scene,p,scale,close,"Close drawer",Hit::Close,false,false);self.fonts.draw_icon(scene,icons::CLOSE,px(15.0),close.x+px(8.0),close.y+px(8.0),ink);
-        let summary=self.fit(small,&Signal::collect(&self.hatch_state.work,&downloads).text(),w-px(28.0));self.fonts.draw(scene,small,px(14.0),px(61.0),&summary);
+        let summary=self.fit(small,Signal::collect(&self.hatch_state.work,&downloads).text(),w-px(28.0));self.fonts.draw(scene,small,px(14.0),px(61.0),&summary);
         scene.hline(px(12.0),px(73.0),w-px(24.0),px(1.0),ink);
         p.viewport=Rect::new(px(8.0),px(79.0),w-px(16.0),h-px(125.0));p.reach=(px(content)-p.viewport.h).max(0.0);p.scroll=p.scroll.clamp(0.0,p.reach);scene.layer(Some(p.viewport));
         let mut y=p.viewport.y+px(4.0)-p.scroll;

@@ -83,6 +83,7 @@ pub enum Action {
     AssistantDraft(u8, String),
     AssistantStart(u8, String),
     PromptShell(String),
+    PromptInput(String),
     PromptPin(String),
     SavedEdit(usize, String),
     SavedName(usize, String),
@@ -875,34 +876,38 @@ impl Tab {
             (None, _) => (&self.left, None),
         }
     }
-    pub(crate) fn title(&self) -> String {
-        if let Some(n) = &self.name {
-            return n.clone();
-        }
-        let name = |p: &Pane| match p {
-            Pane::Term(t) => t.title.clone(),
-            Pane::Web(w) => {
-                let s = w.tab.shared.borrow();
-                if s.title.is_empty() {
-                    s.url.clone()
-                } else {
-                    s.title.clone()
+    fn write_title(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
+        if let Some(n) = &self.name { return out.write_str(n); }
+        fn pane(out: &mut impl std::fmt::Write, p: &Pane) -> std::fmt::Result {
+            match p {
+                Pane::Term(t) => out.write_str(&t.title),
+                Pane::Web(w) => {
+                    let s = w.tab.shared.borrow();
+                    out.write_str(if s.title.is_empty() { &s.url } else { &s.title })
                 }
+                Pane::Settings(_) => out.write_str("settings"),
+                Pane::Hints(_) => out.write_str("welcome"),
+                Pane::Home(h) => out.write_str(if h.library { "Reading list" } else { "home" }),
+                Pane::Editor(e) => out.write_str(&e.title()),
+                Pane::Ports(_) => out.write_str("ports"),
+                Pane::Downloads(_) => out.write_str("downloads"),
             }
-            Pane::Settings(_) => "settings".into(),
-            Pane::Hints(_) => "welcome".into(),
-            Pane::Home(h) if h.library => "Reading list".into(),
-            Pane::Home(_) => "home".into(),
-            Pane::Editor(e) => e.title(),
-            Pane::Ports(_) => "ports".into(),
-            Pane::Downloads(_) => "downloads".into(),
-        };
-        let (main, other) = self.panes();
-        match other {
-            Some(o) => format!("{} | {}", name(main), name(o)),
-            None => name(main),
         }
+        let (main, other) = self.panes();
+        pane(out, main)?;
+        if let Some(o) = other { out.write_str(" | ")?; pane(out, o)?; }
+        Ok(())
     }
+    pub(crate) fn title(&self) -> String {
+        let mut title = String::new();
+        let _ = self.write_title(&mut title);
+        title
+    }
+    pub(crate) fn title_matches(&self, title: &str) -> bool {
+        let mut remaining = crate::prompt::TitleMatch(title);
+        self.write_title(&mut remaining).is_ok() && remaining.0.is_empty()
+    }
+
 }
 
 pub struct App {
@@ -914,7 +919,7 @@ pub struct App {
     pub fonts: FontSystem,
     pub assistants: crate::assistants::State,
     pub system_font_cache: Vec<(String,u16,FontId)>,
-    pub prompt_cache: std::cell::RefCell<Option<(Instant, String, Vec<PaletteRow>)>>,
+    pub prompt_cache: std::cell::RefCell<std::collections::VecDeque<crate::prompt::PromptCache>>,
     pub font_cache: Vec<(crate::fonts::Family,crate::fonts::Weight,FontId)>,
     pub f: Fonts,
     pub scene: Scene,
@@ -979,6 +984,7 @@ pub struct App {
     pub register_note: String,
     pub login_note: String,
     pub theme_edit: crate::theme_edit::ThemeEdit,
+    pub system_themes: crate::appearance::SystemThemes,
     pub ansi_sel: usize,
     pub cursor: crate::settings::CursorPrefs,
     pub header: crate::settings::HeaderPrefs,
@@ -1125,6 +1131,8 @@ pub struct App {
     /// ticking count): App::tick redraws when it comes round, instead of
     /// the drawing asking for every frame. And the slot it last fired.
     pub beat_want: Option<u64>,
+    pub(crate) art_deadline: Option<Instant>,
+    pub(crate) art_frame_started: Instant,
     pub beat_slot: u64,
     /// The launch sequence's "then" has run.
     pub then_done: bool,
@@ -1160,6 +1168,7 @@ pub struct App {
     pub page_menu: Option<crate::page_menu::PageMenu>,
     /// The art behind the prompt, running (art.rs); the picker's cards, alive.
     pub art: Option<crate::art::Art>,
+    pub(crate) skies: crate::sky::Skies,
     pub art_previews: std::collections::HashMap<String, crate::art::Art>,
     /// The app icon for settings' picture cards, by (size, band progress in
     /// hundredths, ink, signal): the plate's own texture holds one at a time.
@@ -1419,6 +1428,7 @@ impl App {
             register_note: String::new(),
             login_note: String::new(),
             theme_edit: crate::theme_edit::ThemeEdit::default(),
+            system_themes: Default::default(),
             ansi_sel: 1,
             cursor: crate::settings::CursorPrefs::default(),
             header: crate::settings::HeaderPrefs::default(),
@@ -1516,6 +1526,8 @@ impl App {
             painting_hatch: false,
             caret_dragging: false,
             beat_want: None,
+            art_deadline: None,
+            art_frame_started: crate::clock::now(),
             beat_slot: 0,
             then_done: false,
             window_rect: None,
@@ -1544,6 +1556,7 @@ impl App {
             home_latch: None,
             page_menu: None,
             art: None,
+            skies: Default::default(),
             art_previews: std::collections::HashMap::new(),
             pic_icons: std::collections::HashMap::new(),
             procs: None,
@@ -1997,7 +2010,7 @@ impl App {
                 let s = w.tab.shared.borrow();
                 let Some(n) = &s.native else { continue };
                 let hidden_half = narrow && split && right != tab.focus_right;
-                let on = k == self.active && !covered && !hidden_half && w.asleep.is_none() && s.overlay.is_none() && w.page.w > 1.0;
+                let on = k == self.active && !covered && !hidden_half && w.asleep.is_none() && s.transcript().is_none() && w.page.w > 1.0;
                 if on {
                     // What of the page nus's own drawing isn't over: the
                     // sliding sidebar takes a strip off one side.
@@ -2005,6 +2018,11 @@ impl App {
                     if let Some(sb) = self.sidebar_over {
                         let (l, r) = (shown.x.max(if sb.x <= shown.x { sb.right() } else { shown.x }), shown.right().min(if sb.right() >= shown.right() { sb.x } else { shown.right() }));
                         shown = Rect::new(l, shown.y, (r - l).max(0.0), shown.h);
+                    }
+                    // Native WebKit is above the GPU scene. Leave room for
+                    // the toast without resizing/reflowing the webpage itself.
+                    if let Some(top) = self.toast_native_top(shown) {
+                        shown.h = shown.h.min((top - shown.y).max(0.0));
                     }
                     n.place(w.page, shown);
                 }
@@ -2510,6 +2528,10 @@ impl App {
             self.dirty = true;
         }
         // A slow clock the last frame asked for: a frame when it turns.
+        if self.art_deadline.is_some_and(|at| crate::clock::now() >= at) {
+            self.art_deadline = None;
+            self.dirty = true;
+        }
         if let Some(ms) = self.beat_want {
             let slot = (crate::clock::since(self.started).as_millis() / ms.max(16) as u128) as u64;
             if slot != self.beat_slot {
@@ -2912,10 +2934,13 @@ impl App {
 
     /// The working directory the focused shell reported, if any.
     pub(crate) fn focused_cwd(&self) -> Option<String> {
+        self.focused_cwd_ref().map(str::to_owned)
+    }
+    pub(crate) fn focused_cwd_ref(&self) -> Option<&str> {
         let tab = self.tabs.get(self.active)?;
-        let panes: Vec<&Pane> = if tab.focus_right && tab.right.is_some() { vec![tab.right.as_ref().unwrap(), &tab.left] } else { std::iter::once(&tab.left).chain(tab.right.as_ref()).collect() };
-        panes.into_iter().find_map(|p| match p {
-            Pane::Term(t) => t.cwd.clone(),
+        let (main, other) = tab.panes();
+        std::iter::once(main).chain(other).find_map(|p| match p {
+            Pane::Term(t) => t.cwd.as_deref(),
             _ => None,
         })
     }
@@ -3285,44 +3310,38 @@ impl App {
         ((x - tx) * cw, (y - ty) * ch)
     }
 
-    /// Put a whole theme on: surface, both faces, cursor colour, bar, sounds.
+    /// Select a complete visual appearance without changing behavior or loading.
     pub(crate) fn apply_theme(&mut self, t: &crate::themes::StockTheme) {
-        use crate::theme_edit::{Family, ModeEdit};
+        self.remember_appearance();
+        self.behavior.follow_os_theme = false;
+        self.install_theme(t);
+        self.remember_appearance();
+        self.save_prefs();
+    }
+
+    pub(crate) fn install_theme(&mut self, t: &crate::themes::StockTheme) {
         self.surface = t.surface.clone();
-        let face = |f: &crate::themes::Face| ModeEdit { paper: Some(f.paper), ink: Some(f.ink), page: Some(f.page), ansi: f.ansi, caret: f.caret, selection: f.selection };
-        self.theme_edit.paper = face(&t.paper);
-        self.theme_edit.ink = face(&t.ink);
-        self.theme_edit.family = Family::Imported;
-        self.theme_edit.saturation = 1.0;
+        self.theme_edit = t.palette();
         self.cursor.color = t.cursor;
-        if let Some(m) = t.cursor_motion {
-            self.cursor.motion = m;
-        }
-        self.load_bar.style = t.bar;
-        self.load_bar.color = t.bar_color;
-        for (event, cue) in &t.sounds {
-            self.sound.prefs.map.insert(event.clone(), cue.clone());
-        }
+        // Loading animation, sounds and accessibility overrides stay independent.
+        if let Some(visual) = &t.visual { visual.apply(self); }
         self.tab_colours = t.tab_colours.clone();
         self.preset_name = t.name.clone();
-        // A theme drawn for one face comes up in that face unless the OS is followed.
-        if !self.behavior.follow_os_theme {
-            let mode = if t.prefers_ink { nus_render::Mode::Ink } else { nus_render::Mode::Paper };
-            self.set_mode(mode);
-        }
         self.rebuild_theme();
         self.refresh_icon();
         self.layout();
-        self.save_prefs();
         self.dirty = true;
     }
 
     /// The look right now as a theme, for SAVE AS.
     pub(crate) fn current_theme(&self, name: &str) -> crate::themes::StockTheme {
-        let paper = self.theme_edit.build(nus_render::Mode::Paper, self.surface.signal);
-        let ink = self.theme_edit.build(nus_render::Mode::Ink, self.surface.signal);
+        let paper = self.theme_edit.build_face(nus_render::Mode::Paper, self.surface.signal);
+        let ink = self.theme_edit.build_face(nus_render::Mode::Ink, self.surface.signal);
         let face = |t: &Theme, e: &crate::theme_edit::ModeEdit| crate::themes::Face { paper: t.paper, ink: t.ink, page: t.page, ansi: Some(t.ansi.map(crate::theme_edit::from_rgb)), caret: e.caret, selection: e.selection };
         crate::themes::StockTheme {
+            visual: Some(crate::appearance::VisualStyle::capture(self)),
+            authored: self.theme_edit.uniform,
+            art: self.theme_edit.art,
             name: name.to_string(),
             story: format!("saved from {} on {}", self.preset_name, chrono_date()),
             port: false,
@@ -3335,12 +3354,13 @@ impl App {
             bar_color: self.load_bar.color,
             sounds: Vec::new(),
             tab_colours: self.tab_colours.clone(),
-            prefers_ink: self.theme.mode == nus_render::Mode::Ink,
+            prefers_ink: self.theme_edit.source_mode(self.theme.mode) == nus_render::Mode::Ink,
         }
     }
 
     /// Rebuild the theme for a mode from Broadsheet plus the user's edits.
     pub(crate) fn set_mode(&mut self, mode: nus_render::Mode) {
+        self.theme_edit.source_ink.get_or_insert(mode == nus_render::Mode::Ink);
         let t = self.theme_edit.build(mode, self.surface.signal);
         self.legible_on = (self.surface.base, self.surface.tint);
         let paper = self.surface.paper(t.paper);
@@ -4030,13 +4050,13 @@ impl App {
     /// grey), the pane's own overrides cleared so it follows the look.
     pub(crate) fn apply_shell_colours(&mut self, fg: Option<nus_vt::palette::Rgb>, bg: Option<nus_vt::palette::Rgb>) {
         if let Some(bg) = bg {
-            let lum = 0.2126 * bg.r as f32 + 0.7152 * bg.g as f32 + 0.0722 * bg.b as f32;
-            let mode = if lum < 128.0 { nus_render::Mode::Ink } else { nus_render::Mode::Paper };
-            if self.theme.mode != mode {
-                self.behavior.follow_os_theme = false;
-                self.set_mode(mode);
-            }
+            self.behavior.follow_os_theme = false;
+            self.surface.base = None;
+            self.surface.tint = 0.0;
+            self.theme_edit.edit_mut(self.theme.mode).paper = Some(crate::theme_edit::from_rgb(bg));
         }
+        if let Some(fg) = fg { self.theme_edit.edit_mut(self.theme.mode).ink = Some(crate::theme_edit::from_rgb(fg)); }
+        self.rebuild_theme();
         if let Some(fg) = fg {
             let (r, g, b) = (fg.r as f32 / 255.0, fg.g as f32 / 255.0, fg.b as f32 / 255.0);
             let max = r.max(g).max(b);
@@ -4147,6 +4167,7 @@ impl App {
             return;
         }
         let _frame = crate::perf::scope("frame_build_submit");
+        crate::perf::interval("frame_interval");
         self.dirty = false;
         let arrival_frame = self.arriving();
         self.build();
@@ -4534,6 +4555,8 @@ impl App {
     fn build(&mut self) {
         self.intel.hits.clear();
         self.beat_want = None;
+        self.art_deadline = None;
+        self.art_frame_started = crate::clock::now();
         self.caret_deadline.set(None);
         self.caret_enabled.set(true);
         self.caret_signal.set(self.tabs.get(self.active).and_then(|t| t.look.signal));
@@ -5067,10 +5090,10 @@ impl App {
         let limit = (((h - 2.0 * margin - self.px(8.0)) / leading).floor() as usize).clamp(1, 8);
         let text = tip.text.caps();
         let wrapped = crate::reader::wrap(&self.fonts, label, &text, max_width - 2.0 * pad);
-        let mut lines: Vec<String> = wrapped.iter().take(limit).map(|s| self.fit(label, s, max_width - 2.0 * pad)).collect();
+        let mut lines: Vec<String> = wrapped.iter().take(limit).map(|s| self.fit(label, s, max_width - 2.0 * pad).into_owned()).collect();
         if lines.is_empty() { return; }
         if wrapped.len() > limit {
-            if let Some(last) = lines.last_mut() { *last = self.fit(label, &format!("{last}…"), max_width - 2.0 * pad); }
+            if let Some(last) = lines.last_mut() { *last = self.fit(label, format!("{last}…"), max_width - 2.0 * pad).into_owned(); }
         }
         let cw = (lines.iter().map(|s| self.fonts.measure(label, s)).fold(0.0, f32::max) + 2.0 * pad).min(max_width);
         let ch = (leading * lines.len() as f32 + self.px(8.0)).min(h - 2.0 * margin);
@@ -5412,7 +5435,7 @@ impl App {
                 self.fonts.draw_icon(scene, nus_render::text::icons::PIN, isz, x, base - isz + self.px(2.0), st.color);
                 x += isz + self.px(8.0);
                 let _ = k;
-                let title = self.fit(st, &tabs[i].title(), cell_w - (x - cx) - self.px(10.0));
+                let title = self.fit(st, tabs[i].title(), cell_w - (x - cx) - self.px(10.0));
                 self.fonts.draw(scene, Style { font: self.f.ui, ..st }, x, base, &title);
                 if k + 1 < g.pinned.len() {
                     scene.vline(cx + cell_w, py, g.pinned_h, self.px(m::HAIRLINE), ink);
@@ -6150,7 +6173,7 @@ impl App {
                     right -= csz + self.px(8.0);
                 }
                 self.fonts.draw(scene, Style { color: t.dim, ..label }, right - tw, base, &tabs);
-                let text = self.fit(st, &e.name.caps(), right - tw - self.px(8.0) - (sb.x + self.px(30.0)));
+                let text = self.fit(st, e.name.caps(), right - tw - self.px(8.0) - (sb.x + self.px(30.0)));
                 self.fonts.draw(scene, st, sb.x + self.px(30.0), base, &text);
                 scene.hline(sb.x, y + row - self.px(m::HAIRLINE), sb.w, self.px(m::HAIRLINE), Theme::with_alpha(ink, 0.18));
                 if self.win_menu {
@@ -6790,7 +6813,7 @@ impl App {
             let x = bx + box_sz + self.px(14.0);
             self.fonts.draw(scene, cs, x, base, &chord);
             let ws = Style { color: if ticked { t.dim } else { ink }, ..ui };
-            let what = self.fit(ws, what, r.right() - pad - x);
+            let what = self.fit(ws, *what, r.right() - pad - x);
             self.fonts.draw(scene, ws, x, base + self.px(20.0), &what);
             scene.hline(r.x + pad, ry + row_h - self.px(m::HAIRLINE), r.w - 2.0 * pad, self.px(m::HAIRLINE), ink);
             self.hint_hits.push((Rect::new(r.x, ry, r.w, row_h), k));
@@ -6986,6 +7009,7 @@ impl App {
                 let painted = if p.still.is_none() { s.paint_size } else { (0, 0) };
                 let media_n = s.media.iter().filter(|mm| !mm.blob).count();
                 let media_any = !s.media.is_empty();
+                let in_pip = s.native.as_ref().is_some_and(|n| n.in_pip());
                 drop(s);
                 let local = is_local(&url);
                 if !p.bare {
@@ -7049,7 +7073,9 @@ impl App {
                 }
                 // Page — or the reader set over it.
                 scene.rect(p.page, t.page);
-                if let Some(reader) = p.reader.as_mut() {
+                if in_pip {
+                    self.draw_pip_notice(scene, p.page);
+                } else if let Some(reader) = p.reader.as_mut() {
                     let rf = self.reader_fonts();
                     let paper = self.paper();
                     reader.draw(scene, &mut self.fonts, &rf, p.page, self.scale, ink, t.dim, paper, self.surface.signal);
@@ -7195,36 +7221,13 @@ impl App {
         scene.layer(None);
     }
 
-    pub(crate) fn fit(&self, style: Style, text: &str, max_w: f32) -> String {
-        self.fit_by(|t| self.fonts.measure(style, t), text, max_w)
+    pub(crate) fn fit<'a>(&self, style: Style, text: impl Into<std::borrow::Cow<'a, str>>, max_w: f32) -> std::borrow::Cow<'a, str> {
+        nus_render::text::fit_text(text, max_w, |t| self.fonts.measure(style, t))
     }
 
     /// `fit` for text drawn with `draw_as_is`, keeping its own case.
-    pub(crate) fn fit_as_is(&self, style: Style, text: &str, max_w: f32) -> String {
-        self.fit_by(|t| self.fonts.measure_as_is(style, t), text, max_w)
-    }
-
-    fn fit_by(&self, measure: impl Fn(&str) -> f32, text: &str, max_w: f32) -> String {
-        // Padding arithmetic can lose a fraction of a pixel. An exact-fit
-        // label should not lose its last letters to an ellipsis.
-        if measure(text) <= max_w + 0.01 {
-            return text.to_string();
-        }
-        // The longest prefix that fits with an ellipsis: width grows with
-        // the prefix, so bisect on the character count.
-        let chars: Vec<char> = text.chars().collect();
-        let (mut lo, mut hi) = (0usize, chars.len());
-        while lo < hi {
-            let mid = (lo + hi).div_ceil(2);
-            let s: String = chars[..mid].iter().collect();
-            if measure(&format!("{s}…")) <= max_w {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        let s: String = chars[..lo].iter().collect();
-        format!("{s}…")
+    pub(crate) fn fit_as_is<'a>(&self, style: Style, text: impl Into<std::borrow::Cow<'a, str>>, max_w: f32) -> std::borrow::Cow<'a, str> {
+        nus_render::text::fit_text(text, max_w, |t| self.fonts.measure_as_is(style, t))
     }
 
     /// What typed words become: the address they are, or a search for
@@ -7700,7 +7703,10 @@ impl App {
                 .filter(|p| p.port >= 1024 && !SYSTEM_PROCS.contains(&p.process.to_lowercase().as_str()))
                 .collect();
         }
-        self.palette = Some((mode, String::new()));
+        let input = if mode == PaletteMode::Go {
+            self.tabs.get(self.active).and_then(|t| if let Pane::Home(h)=t.focused_ref() {(!h.library).then(||h.input.clone())} else {None}).unwrap_or_default()
+        } else {String::new()};
+        self.palette = Some((mode, input));
         self.palette_sel = 0;
         self.palette_scroll = 0.0;
         self.palette_reveal = true;
@@ -7811,6 +7817,7 @@ impl App {
             Action::RefreshReading => self.refresh_reading(),
             Action::ReadingControl(hit) => self.library_action(hit),
             Action::PromptShell(cmd) => self.open_prompt_shell(&cmd),
+            Action::PromptInput(input) => self.insert_prompt_input(input),
             Action::SavedUse(i, run) => self.saved_use(i, run),
             Action::SavedEdit(i, value) => self.saved_edit(i, false, value),
             Action::SavedName(i, value) => self.saved_edit(i, true, value),
@@ -7820,6 +7827,7 @@ impl App {
             Action::AssistantDraft(id,prompt) => self.draft_assistant(id,&prompt),
             Action::AssistantStart(id,prompt) => self.start_assistant(id,&prompt),
             Action::SetPlace(p) => {
+                crate::weather::revoke();
                 self.behavior.place = p;
                 self.save_prefs();
                 self.art = None;
@@ -8315,6 +8323,11 @@ impl App {
             && self.behavior.then == crate::settings::Then::Palette
             && matches!(code, Some(KeyCode::KeyT) | Some(KeyCode::KeyK)) {
             return self.open_palette(PaletteMode::Go);
+        }
+        if pressed && self.palette.is_none() && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Home(h) if !h.library)) {
+            if !cfg!(target_os="macos") && ctrl && !alt && !sup && code==Some(KeyCode::KeyK) { return self.open_palette(PaletteMode::Go); }
+            let editing = crate::field::command(self.mods) && matches!(code, Some(KeyCode::KeyA|KeyCode::KeyC|KeyCode::KeyV|KeyCode::KeyX|KeyCode::ArrowLeft|KeyCode::ArrowRight));
+            if (editing || matches!(ev.logical_key, WKey::Named(NamedKey::Enter))) && self.home_key(ev) { return; }
         }
         if pressed && app {
             // The shell's copy and paste chords, on the prompt: its line.
@@ -9278,6 +9291,11 @@ impl App {
         if crate::clock::since(self.memory_tended).as_secs() < 10 { return; }
         self.memory_tended = crate::clock::now();
         self.trim_language_servers();
+        self.skies.trim();
+        for art in self.art.iter_mut().chain(self.art_previews.values_mut()) {
+            art.trim_scratch();
+        }
+        if let Some((_, art)) = self.welcome_art.as_mut() { art.trim_scratch(); }
         self.hovers.retain(|_, h| h.hot || h.alpha.active() || h.pulse.active() || crate::clock::since(h.since).as_secs() < 30);
         if self.closed.len() > crate::storage::CLOSED_TABS { self.closed.drain(..self.closed.len() - crate::storage::CLOSED_TABS); }
         let urls: std::collections::HashSet<_> = self.tabs.iter().flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref())).filter_map(|p| match p { Pane::Web(w) => Some(w.tab.shared.borrow().url.clone()), _ => None }).collect();
@@ -9382,22 +9400,10 @@ impl App {
             self.dirty = true;
             return;
         }
-        // An address, with the browser's modifiers: Shift+Enter in a new
-        // window; ⌘+Enter (Alt+Enter on Windows and Linux, Ctrl too) in a new tab.
-        if let Action::NewBrowser(url) | Action::OpenInPane(url) = &action {
-            if !url.is_empty() {
-                let tab_chord = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.alt_key() || self.mods.control_key() };
-                if self.mods.shift_key() {
-                    self.new_window_urls.push(url.clone());
-                    self.new_window_request = true;
-                    return;
-                }
-                if tab_chord {
-                    return self.open_url(url, true);
-                }
-            }
+        if let Action::PromptInput(input) = action {
+            self.palette=Some((PaletteMode::Go,input));self.palette_sel=0;self.palette_scroll=0.0;self.dirty=true;return;
         }
-        self.run(action);
+        self.dispatch_prompt_action(action);
     }
 
     /// A page in a new tab right after the current one, which stays in front:
@@ -10376,6 +10382,9 @@ impl App {
             return;
         }
         if pressed && button == MouseButton::Left && self.site_click(x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.palette.is_none() && self.pip_notice_click(x, y) {
             return;
         }
         let Some(tab) = self.tabs.get_mut(self.active) else { return };

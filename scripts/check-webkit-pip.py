@@ -110,8 +110,17 @@ def main():
         steps += [f'tab {address}/{name}', 'wait 9000', 'assertnativevideo',
                   'videostart', 'wait 800', 'assertvideotime 30',
                   'assertvideostate paused', 'assertvideostate muted',
+                  'videocommand __nus.toggle()', 'wait 600', 'assertvideostate playing',
+                  'assertautopip ineligible',
+                  'toastfixture info|Playing Here|Silent previews stay on the page|tab',
+                  'wait 500', 'asserttoastinpage', f'shot webkit-{name}-toast',
+                  'toastpress cell', 'asserttoastgone',
+                  'videostart', 'wait 500',
                   'pip', 'wait 800', 'assertnativepip on', 'piptransportcheck',
-                  f'shotpip webkit-{name}-controls',
+                  f'shotpip webkit-{name}-controls', f'shot webkit-{name}-notice',
+                  'pipskipburst', 'wait 700', 'assertvideostate paused', 'assertvideotime 30',
+                  'pipclick play', 'wait 200', 'pipskipburst', 'wait 800', 'assertvideostate playing',
+                  'videostart', 'wait 500', 'assertvideostate paused', 'assertvideotime 30',
                   'pipclick forward', 'wait 500', 'assertvideotime 47',
                   'pipclick back', 'wait 500', 'assertvideotime 30',
                   'pipkeys right', 'wait 500', 'assertvideotime 47',
@@ -125,7 +134,7 @@ def main():
                   'pipclick return', 'wait 600', 'pipassert closed',
                   'assertnativepip off', 'assertnativevideo', 'assertvideotime 30',
                   'pip', 'wait 600', 'assertnativepip on', 'piptransportcheck',
-                  'pipclick close', 'wait 600', 'pipassert closed', 'assertnativepip off']
+                  'pipnoticeclick', 'wait 600', 'pipassert closed', 'assertnativepip off', 'assertvideotime 30']
     script = directory / 'check.shot'
     script.write_text('\n'.join(steps) + '\n')
     env = dict(os.environ, NUS_SHOT_DIR=str(directory), NUS_SHOT=str(script),
@@ -185,7 +194,9 @@ def main():
         'engine': 'WebKit (assertnativevideo)',
         'fixtures': ['top document', 'same-origin nested frame'],
         'asserted': ['native PiP attachment/return', 'control geometry and rendered overlay',
-                     'play/pause', '17-second click/key seeks', 'scrub', 'mute/unmute',
+                     'muted playback excluded from automatic PiP', 'toast inside page viewport',
+                     'source pane PiP notice captured and clicked to return',
+                     '40 rapid skip presses preserve playing and paused states', 'play/pause', '17-second click/key seeks', 'scrub', 'mute/unmute',
                      'reopen/close preserving playback position'],
         'screenshots': [str(path) for path in screenshots],
         'scope': 'Application-level synthetic input and GPU control-overlay capture. '

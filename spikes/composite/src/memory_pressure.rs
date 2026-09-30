@@ -76,6 +76,9 @@ pub fn footprint_kib(_pid: u32) -> Option<u64> { None }
 impl crate::app::App {
     pub(crate) fn reclaim_memory(&mut self, level: Level) {
         self.fonts.reclaim_caches();
+        self.prompt_cache.borrow_mut().clear();
+        for art in self.art.iter_mut().chain(self.art_previews.values_mut()) { art.reclaim_scratch(); }
+        if let Some((_, art)) = &mut self.welcome_art { art.reclaim_scratch(); }
         self.icon_previews.clear();
         self.pic_icons.clear();
         self.gpu.flush_uploads();

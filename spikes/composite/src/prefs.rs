@@ -15,7 +15,7 @@ use crate::surface::{SidebarRules, Surface};
 /// has a lower number (0 before there was one) and is brought up in
 /// `migrate`; one from a newer nus is read for what this build knows
 /// (store.rs) and the rest is kept through the save.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 /// Keys the last load had to leave out, for a word to the user once.
 static SALVAGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -34,6 +34,7 @@ pub struct Prefs {
     pub sound: Option<crate::sound::SoundPrefs>,
     pub window_rect: Option<(i32, i32, u32, u32)>,
     pub theme: Option<crate::theme_edit::ThemeEdit>,
+    pub system_themes: Option<crate::appearance::SystemThemes>,
     pub cursor: Option<crate::settings::CursorPrefs>,
     pub header: Option<crate::settings::HeaderPrefs>,
     pub window_name: Option<String>,
@@ -140,11 +141,18 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn apply_prefs(&mut self, p: Prefs) {
+    pub(crate) fn apply_prefs(&mut self, mut p: Prefs) {
+        let has_system_choices = p.system_themes.is_some();
+        self.system_themes = p.system_themes.take().unwrap_or_default();
+        if let Some(t) = &mut p.theme {
+            let old_ink = p.theme_mode.as_deref().map(|m| m == "ink").unwrap_or(self.theme.mode == nus_render::Mode::Ink);
+            t.source_ink.get_or_insert(old_ink);
+        }
         crate::downloads::init();
         if !crate::private::enabled() { if let Some(pins)=p.pinned_tabs {self.apply_pins(pins);} }
         crate::browser::BLOCKING.store(p.behavior.as_ref().map(|b| b.block_content).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
         crate::browser::SMOOTH_SCROLL.store(p.behavior.as_ref().map(|b| b.page_smooth_scroll).unwrap_or(true), std::sync::atomic::Ordering::Relaxed);
+        if let Some(b) = p.behavior.as_mut() { b.prompt.migrate_default_sources(); }
         if let Some(b) = p.behavior.as_ref() {
             self.apply_behavior_statics(b);
         }
@@ -220,6 +228,14 @@ impl App {
                 self.set_mode(if mode == "paper" { nus_render::Mode::Paper } else { nus_render::Mode::Ink });
             }
         }
+        self.rebuild_theme();
+        if has_system_choices && self.behavior.follow_os_theme && std::env::var_os("NUS_MODE").is_none() {
+            self.remember_appearance();
+            if let Some(os) = self.window.theme() {
+                let chosen = self.system_themes.choice(os == winit::window::Theme::Dark);
+                self.install_theme(&chosen);
+            }
+        }
         self.apply_fonts();
         *self.prefs_baseline.borrow_mut() = self.prefs_snapshot();
         self.prefs_revision.set(REVISION.load(Ordering::Relaxed));
@@ -257,10 +273,11 @@ impl App {
             sound: Some(self.sound.prefs.clone()),
             window_rect: self.window_rect,
             theme: Some(self.theme_edit.clone()),
+            system_themes: Some(self.system_themes.clone()),
             cursor: Some(self.cursor.clone()),
             header: Some(self.header.clone()),
             tab_colours: Some(self.tab_colours.clone()),
-            theme_mode: Some(if self.theme.mode == nus_render::Mode::Ink { "ink" } else { "paper" }.into()),
+            theme_mode: Some(if self.theme_edit.source_mode(self.theme.mode) == nus_render::Mode::Ink { "ink" } else { "paper" }.into()),
             preset_name: Some(self.preset_name.clone()),
             window_name: if self.ordinal == 0 { self.window_named.clone() } else { None },
         };
@@ -272,6 +289,9 @@ impl App {
         let current = self.prefs_snapshot();
         let mut latest = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| current.clone());
         merge_changes(&self.prefs_baseline.borrow(), &current, &mut latest);
+        latest["schema"] = serde_json::json!(latest["schema"].as_u64().unwrap_or(0).max(SCHEMA as u64));
+        if latest.get("system_themes").is_none_or(serde_json::Value::is_null) { latest["system_themes"] = current["system_themes"].clone(); }
+        if latest["theme"].is_object() && latest["theme"].get("source_ink").is_none() { latest["theme"]["source_ink"] = current["theme"]["source_ink"].clone(); }
         // Secondary windows do not own the main window's name or geometry.
         if self.ordinal != 0 {
             if let Ok(p) = std::fs::read(path()).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).map_err(std::io::Error::other)) {
@@ -336,9 +356,11 @@ mod tests {
         assert!(!path.parent().unwrap().exists());
         let p = read.value;
         assert_eq!(p.preset_name.as_deref(), Some("blueprint"));
+        assert_eq!(p.tab_colours.as_deref(), Some("wheel"));
+        assert_eq!(p.load_bar.as_ref().unwrap().style, crate::anim::BarStyle::Radiance);
         assert!(p.theme_mode.is_none());
         let b = p.behavior.unwrap();
-        assert!(b.follow_os_theme);
+        assert!(!b.follow_os_theme);
         assert_eq!(b.term_font, crate::fonts::Family::ArealMono);
         assert_eq!(b.term_weight, crate::fonts::Weight::Medium);
         assert_eq!(b.typography.terminal_size, 14.0);
@@ -347,8 +369,8 @@ mod tests {
         assert_eq!(cursor.blink, crate::settings::Blink::Never);
         let surface = p.surface.unwrap();
         let palette = p.theme.unwrap();
-        assert_eq!(palette.build(nus_render::Mode::Paper, surface.signal).paper, nus_render::theme::hex(0xe6eef7));
-        assert_eq!(palette.build(nus_render::Mode::Ink, surface.signal).paper, nus_render::theme::hex(0x0b2a4a));
+        assert_eq!(palette.build(nus_render::Mode::Paper, surface.signal).paper, nus_render::theme::hex(0x1f5fbf));
+        assert_eq!(palette.build(nus_render::Mode::Ink, surface.signal).paper, nus_render::theme::hex(0x1f5fbf));
     }
 
     #[test]

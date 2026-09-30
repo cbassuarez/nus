@@ -1,39 +1,70 @@
-# Design — "Blueprint"
+# Design — complete appearances
 
-Blueprint is the default appearance, chosen 2026-09-26. It keeps the
-Broadsheet structure chosen 2026-09-16: rules instead of boxes, one monospace
-face, and the active Space's signal. New profiles start in Blueprint;
-existing profiles keep their saved choices. Other looks remain available
-while removing them is still under consideration.
+Blueprint is the default appearance. The curated collection keeps the
+Broadsheet structure: rules instead of boxes, clear type, and shared tokens
+across chrome, terminals, editing, reading, and home artwork. New profiles
+start in Blueprint; existing profiles keep their saved choices.
 
-## Default appearance
+## Theme collection
 
-The canonical recipe is `spikes/composite/src/blueprint.rs`, used both by
-fresh-profile preferences and SETTINGS · TERMINAL · APPLY BLUEPRINT.
+The ten original themes form one flat list. Five use light text and five
+use dark text. Familiar standards remain available alongside saved themes;
+retired originals remain loadable for existing profiles and imports.
 
-| token | paper (light) | ink (dark) |
-|---|---|---|
-| paper | `#e6eef7` | `#0b2a4a` |
-| ink | `#0b2a4a` | `#dbe7f3` |
-| caret / selection color | `#137a8a` | `#2fb8d8` |
-| signal | `#2fb8d8` | `#2fb8d8` |
+| Theme | Background | Text | Character |
+|---|---|---|---|
+| Blueprint | `#1f5fbf` | `#ffffff` | Cobalt, white rules, open corners |
+| Canopy | `#125746` | `#f0f4cf` | Deep green and warm foliage |
+| Carbon | `#000000` | `#f2f4f8` | OLED black, clear high-contrast text |
+| Citron | `#efcf4b` | `#342532` | Yellow with plum lettering |
+| Folio | `#efd0a8` | `#3f2a24` | Apricot with warm brown lettering |
+| Indigo | `#292543` | `#edeaf4` | Quiet violet with pale text |
+| Iris | `#c6b2e4` | `#392448` | Lavender with aubergine lettering |
+| Lagoon | `#89d7ca` | `#143d48` | Aquamarine with deep blue lettering |
+| Ledger | `#d4dfa9` | `#263c29` | Celery with forest lettering |
+| Vermilion | `#a92e34` | `#fff3db` | Red with warm cream lettering |
 
-Terminal: ABC Areal Mono Medium, 14 pt, line multiplier 1.25, tracking
-0.25 logical px. Underline cursor, 3 px, Glide, never blink. Shell tint
-None; syntax color and command lamps enabled. Stitch texture at 3%, pitch
-5, on panes, still. The palette is shared across the interface; existing
-UI/editor font roles and layout remain independent. Paper/ink follows the
-usual OS or user mode setting. Notes uses this same visual direction.
+Carbon, Indigo, Folio, and Ledger emphasize still surfaces and readable
+editing colors for extended work. They receive no separate UI grouping.
+Each original defines its foreground, background, ANSI colors, cursor,
+selection, material, and artwork palette. Automatic terminal colors keep
+these backgrounds intact and use accents instead. External pages and
+programs may still draw their own backgrounds.
+
+`spikes/composite/src/themes.rs` defines the collection. Blueprint captures
+the user's cobalt appearance: 3 px white open-corner structure, no texture,
+and white signal. Loading animation stays independent of theme selection. `blueprint.rs` supplies fresh-profile
+and explicit APPLY BLUEPRINT terminal defaults: ABC Areal Mono Medium,
+14 pt, 1.25 line height, 0.25 logical px tracking, and a 3 px underline
+cursor with Glide and no blink. Theme selection applies a complete visual recipe: UI, terminal, code and prose
+font pairings, size/leading/tracking/measure, cursor shape and movement, home
+presentation and artwork, masthead, and visual motion register. These are a
+whitelist in `appearance::VisualStyle`, not an import of the Behavior object.
+Loading style, color, thickness and chase, sounds, reduced-motion overrides,
+startup, privacy, routing and shortcuts remain independent. Saved looks and
+system appearance snapshots retain the full visual recipe. Legacy imports
+without that recipe retain the user's existing visual choices.
+
+## Appearance behavior
+
+An original is one complete look; Paper/Ink is no longer a competing
+appearance switch. Follow OS chooses two remembered complete appearances,
+configured as LIGHT SYSTEM THEME and DARK SYSTEM THEME. Direct theme
+selection pins that look. The fallback pair is Folio and Blueprint.
+
+The legacy serialized Paper/Ink palettes remain for saved-theme compatibility
+and light/dark variants of standards. The palette source is stored separately
+from the final text polarity: tinting a saved light palette cobalt must not
+silently select or edit its other palette. Renderer polarity is derived after
+background and contrast resolution. Custom colors survive a system round trip.
 
 ## Principles
 
-1. Rules, not boxes. Hierarchy by weight and case, never by color.
-2. One color on screen: the Space's signal. Everything else is ink on paper.
-3. The terminal keeps its ANSI palette; the chrome stays monochrome around it.
-4. Floating things get a 2px edge and a hard offset shadow. Nothing blurs,
-   nothing is rounded, nothing is translucent.
-5. Chromeless by default: a 6px signal band and a 30px top strip are all the
-   furniture; the sidebar slides in on ⌘⇧S.
+1. Rules and typography establish hierarchy; color supplies identity and meaning.
+2. Every theme is a coherent environment, with shared semantic colors across surfaces.
+3. Main, secondary, and authored syntax colors remain readable on their backgrounds.
+4. Themes use existing material and settings controls; no parallel theme engine.
+5. Themes own the visual composition; functional preferences and loading remain independent.
 
 ## Legacy renderer base tokens
 
@@ -129,3 +160,19 @@ a colour it hardcodes.
 ⌘K go · ⌘T new tab · ⌘1–9 tab · ⌘⌥1–9 space · ⌘⇧S sidebar · ⌥⌘T quick
 terminal · ⌘↵ open detected URL in split · ⌘⇧↵ in new tab · ⌘D split ·
 ⌘W close. (Ctrl on Windows/Linux.)
+
+## One prompt, two surfaces
+
+Home and Cmd/Ctrl-K share routing, result sources and action dispatch. Plain
+words search by default; URLs visit pages, `>` runs a shell command, and `@`
+opens an assistant draft. Explicit addresses remain addresses under every
+preferred route. Both surfaces support Shift+Enter for a new window and
+Cmd+Enter on macOS / Ctrl or Alt+Enter elsewhere for a new tab.
+
+Home shows search and website entry before personal history by default, with
+visible route labels and an empty-field hint. Assistants remain available
+when typing or explicitly choosing an assistant-oriented preset. Only the
+exact previous Mixed source arrangement migrates to the balanced default;
+custom source lists, saved commands and search preferences remain intact.
+Keyboard-selected home results reveal themselves in short panes, field edits
+use the focused pane, and Cmd/Ctrl-K carries a home draft into the palette.

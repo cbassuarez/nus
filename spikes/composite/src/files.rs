@@ -302,7 +302,7 @@ impl App {
         let isz = self.px(13.0);
         self.fonts.draw_icon(scene, if bound { icons::PIN } else { icons::FOLDER_SIMPLE }, isz, sb.x + self.px(m::ROW_PAD_X), base - isz + self.px(2.0), if bound { self.surface.signal } else { ink });
         let nx = sb.x + self.px(m::ROW_PAD_X) + isz + self.px(8.0);
-        let shown = self.fit(label, &name.to_uppercase(), sb.w - (nx - sb.x) - self.px(36.0));
+        let shown = self.fit(label, name.to_uppercase(), sb.w - (nx - sb.x) - self.px(36.0));
         if !icons_only {self.fonts.draw(scene, Style { color: ink, ..label }, nx, base, &shown);}
         let head = Rect::new(sb.x, top, sb.w, head_h);
         let words = match (&root, bound) {

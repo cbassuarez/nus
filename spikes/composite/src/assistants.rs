@@ -40,13 +40,13 @@ pub fn index(name: &str) -> Option<u8> {
         .position(|n| n.eq_ignore_ascii_case(name))
         .map(|i| i as u8)
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Provider {
     pub executable: String,
     pub model: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub providers: [Provider; 3],

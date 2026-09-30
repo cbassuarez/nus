@@ -358,7 +358,7 @@ impl App {
         self.fonts.draw(scene, st, x0 + w - ww, r.y + self.px(26.0), &word);
         self.draw_intel_ring(scene, Rect::new(x0, r.y + self.px(38.0), w, self.px(72.0)));
         let dim = Style { color: t.dim, ..self.ui() };
-        let line = self.fit(dim, &self.intel_sends(), w);
+        let line = self.fit(dim, self.intel_sends(), w);
         self.fonts.draw(scene, dim, x0, r.y + self.px(134.0), &line);
         if self.intel_provider() == 0 {
             self.draw_intel_models(scene, x0, r.y + self.px(176.0));

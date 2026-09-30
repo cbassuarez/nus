@@ -177,7 +177,7 @@ impl App {
             self.fonts.draw(scene,title,bx,y+self.px(22.0),"Review your import.");y+=self.px(49.0);
             if let Some(plan)=&self.me_card.import.plan{
                 for line in crate::reader::wrap(&self.fonts,ui,&plan.summary(),bw){self.fonts.draw(scene,ui,bx,y,&line);y+=self.px(20.0);}
-                if let Plan::Bookmarks(items)=plan {for item in items.iter().take(4){let text=self.fit(dim,&format!("{} · {}",item.title,item.url),bw);self.fonts.draw(scene,dim,bx,y+self.px(12.0),&text);y+=self.px(23.0);}}
+                if let Plan::Bookmarks(items)=plan {for item in items.iter().take(4){let text=self.fit(dim,format!("{} · {}",item.title,item.url),bw);self.fonts.draw(scene,dim,bx,y+self.px(12.0),&text);y+=self.px(23.0);}}
             }
             y+=self.px(20.0);for line in crate::reader::wrap(&self.fonts,dim,"Existing items stay. Duplicate links are skipped. Nothing opens or runs, and your original files are unchanged.",bw){self.fonts.draw(scene,dim,bx,y,&line);y+=self.px(18.0);}
             self.me_button(scene,bx,foot,"IMPORT",true,CardHit::ImportApply);self.me_button(scene,bx+self.px(106.0),foot,"BACK",false,CardHit::Back);

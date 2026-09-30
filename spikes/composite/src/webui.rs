@@ -19,6 +19,24 @@ pub struct Find {
 }
 
 impl App {
+    pub(crate) fn draw_pip_notice(&mut self, scene: &mut Scene, page: Rect) {
+        scene.layer(Some(page));
+        scene.rect(page, self.theme.page);
+        let icon = self.px(32.0);
+        let cy = page.y + page.h * 0.5;
+        self.fonts.draw_icon(scene, nus_render::text::icons::PIP, icon,
+            page.x + (page.w - icon) * 0.5, cy - self.px(56.0), self.theme.dim);
+        for (text, style, y) in [
+            ("Playing in picture in picture", self.ui_strong(), cy),
+            ("Click here to return the video to this page.", self.ui(), cy + self.px(28.0)),
+        ] {
+            let text = self.fit_as_is(style, text, (page.w - self.px(32.0)).max(0.0));
+            let width = self.fonts.measure_as_is(style, &text);
+            self.fonts.draw_as_is(scene, style, page.x + (page.w - width) * 0.5, y, &text);
+        }
+        scene.layer(None);
+    }
+
     /// Ctrl+Shift+F: find in whichever pane has focus.
     pub(crate) fn search_open(&mut self) {
         let Some(tab) = self.tabs.get_mut(self.active) else { return };

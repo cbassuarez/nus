@@ -36,7 +36,7 @@ impl App {
         let Some(w) = self.web_pane_by_id(id, right) else { return };
         let (page, failed) = {
             let s = w.tab.shared.borrow();
-            (s.interstitial.clone().or_else(|| s.overlay.clone()), s.failed_url.is_some())
+            (s.transcript().or(s.interstitial.as_ref()).cloned(), s.failed_url.is_some())
         };
         let Some(page) = page else { return };
         if verb == "retry" && w.tab.browser.is_none() {
@@ -44,6 +44,7 @@ impl App {
             if let Some(replacement) = self.new_web_pane_in(&page.url, &container) {
                 if let Some(w) = self.web_pane_by_id(id, right) { *w = replacement; }
             }
+            self.layout();
             self.dirty = true;
             return;
         }
@@ -220,7 +221,7 @@ impl App {
 
     /// A click on an overlay's command.
     pub(crate) fn overlay_click(&mut self, x: f32, y: f32) -> bool {
-        for tab in &self.tabs {
+        if let Some(tab) = self.tabs.get(self.active) {
             let id = tab.id;
             for (right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
                 let Pane::Web(w) = p else { continue };
