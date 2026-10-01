@@ -274,8 +274,11 @@ jobs:
           $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=path','/LOG=update.log' -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content update.log; throw "Update exited $($p.ExitCode)" }
           if ((Test-Path $client) -or (& $registered)) { throw 'Update left the browser registration it was told to drop' }
-          & "$app\nus.exe" --version
-          if ($LASTEXITCODE -ne 0) { throw 'Installed nus did not start its loader' }
+          # nus.exe is a GUI program: PowerShell's `&` neither waits for it nor
+          # sets $LASTEXITCODE. Wait for it and read its own exit code.
+          $v = Start-Process "$app\nus.exe" -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput version.txt
+          Get-Content version.txt
+          if ($v.ExitCode -ne 0) { throw "Installed nus did not start its loader (exit $($v.ExitCode))" }
           $marker = Get-Content (Join-Path $env:LOCALAPPDATA "nus\installs\$channel\installed-location")
           if ($marker.TrimEnd('\') -ne $app) { throw "Installed location not recorded: $marker" }
           if (-not ((Get-ItemProperty HKCU:\Environment).Path -split ';' -contains "$app\bin")) { throw 'bin was not added to PATH' }
