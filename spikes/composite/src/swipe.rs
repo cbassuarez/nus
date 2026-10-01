@@ -44,6 +44,9 @@ const COOLDOWN: Duration = Duration::from_millis(450);
 /// (momentum), not new fingers.
 pub const MOMENTUM_GAP: Duration = Duration::from_millis(80);
 
+/// The longest a trackpad glide lasts after the fingers lift.
+const GLIDE_MAX: Duration = Duration::from_secs(5);
+
 /// How quickly the drawn swipe follows the fingers (per second).
 const FOLLOW: f32 = 28.0;
 
@@ -159,8 +162,21 @@ impl App {
             let Some(Pane::Web(w)) = pane else { return };
             w.swipe.filter(Swipe::live)
         };
-        // Fired or let go: the rest of the gesture is spent.
-        if let Some(s) = prev.filter(|s| s.fired || s.released) {
+        // Fingers up: until new fingers touch, sideways wheel is the glide,
+        // and the glide is spent, however slowly it arrives. (A cap, in case
+        // a mouse's tilt wheel comes after a trackpad gesture.)
+        let gliding = self.wheel_lifted.is_some_and(|t| now.duration_since(t) < GLIDE_MAX);
+        if gliding && prev.is_none() {
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                if let Some(Pane::Web(w)) = pane {
+                    w.swipe = Some(Swipe { far: 0.0, at: now, fired: false, dest: Dest::Nowhere, fired_at: None, released: true, shown: 0.0, drawn: None });
+                }
+            }
+            return;
+        }
+        // Fired, let go, or the glide after either: the rest is spent.
+        if let Some(s) = prev.filter(|s| s.fired || s.released || gliding) {
             if let Some(tab) = self.tabs.get_mut(self.active) {
                 let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
                 if let Some(Pane::Web(w)) = pane {
