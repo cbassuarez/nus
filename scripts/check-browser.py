@@ -63,8 +63,9 @@ def main():
     shot.write_text('\n'.join([
         'wait 1200', 'home', f'tab {url}/ok', 'awaitpage nus browser fixture', 'awaitpaint',
         'eval window.fixture', 'awaitreply 42', 'wait 300', 'shot browsing',
-        f'tab {url}/stall', 'awaittranscript unreachable', 'wait 200', 'shot timeout',
-        'key enter', 'awaitpage nus browser fixture', 'awaitpaint',
+        # No answer in 30 s: nus says so and keeps waiting (↵); retry is the second command.
+        f'tab {url}/stall', 'awaittranscript slow', 'wait 200', 'shot timeout',
+        'key down', 'key enter', 'awaitpage nus browser fixture', 'awaitpaint',
         'browsercrash', 'awaittranscript crash', 'wait 200', 'shot crash',
         'key enter', 'awaitpage nus browser fixture', 'awaitpaint',
         'eval while(true){}', 'awaittranscript hung', 'wait 200', 'shot hung',
@@ -103,7 +104,7 @@ def main():
         assert counts.get('/stall', 0) >= 3, counts
         (d / 'results.json').write_text(json.dumps({'passed': True, 'requests': counts,
             'page_pixels': teal, 'binary_sha256': native.sha256(exe),
-            'checks': ['HTTP', 'JavaScript', 'page pixels', 'navigation timeout', 'renderer crash', 'renderer hang', 'native keyboard retry']}, indent=2) + '\n')
+            'checks': ['HTTP', 'JavaScript', 'page pixels', 'slow load notice', 'renderer crash', 'renderer hang', 'native keyboard retry']}, indent=2) + '\n')
         print('PASS: packaged browsing, pixels, native timeout/crash/hang screens and retries')
     finally:
         finished.set()

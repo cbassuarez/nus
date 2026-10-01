@@ -5,11 +5,13 @@
 //! live page, a hung renderer, a tab waking from sleep, a microphone or
 //! camera macOS won't give, a download that was blocked.
 //!
-//! All of them read as a shell transcript (the "Transcript" direction):
-//! what nus tried, what happened, then the next commands. A rule down the
-//! left marks how serious it is: signal for danger, ink for a problem,
-//! none at rest. ↵ always takes the safe command; going ahead anyway is a
-//! dim command at the end, never the default.
+//! All of them read as a shell transcript: what nus tried, what happened,
+//! then the next commands. Where nus watched it happen, the page carries a
+//! trace (the "Trace" direction, 2026-10-01): each step it can vouch for,
+//! with how long it took, and the step that failed marked by the rule —
+//! signal for danger, ink for a problem. Pages without a trace keep the
+//! rule down the left. ↵ always takes the safe command; going ahead anyway
+//! is a dim command at the end, never the default.
 //!
 //! Pages that stand in for a site are HTML, written over Chromium's own
 //! error document (or a blank one), so the address bar keeps the address
@@ -36,6 +38,8 @@ pub enum Kind {
     Unreachable,
     Index,
     // Overlays, over a page that is still there.
+    /// A load with no answer yet: said, never stopped.
+    Slow,
     Hung,
     Sleep,
     Permission,
@@ -45,7 +49,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 14] = [Kind::Cert, Kind::Malware, Kind::Clock, Kind::Oom, Kind::Crash, Kind::Permission, Kind::File, Kind::Resubmit, Kind::Sleep, Kind::Portal, Kind::Unreachable, Kind::Hung, Kind::Dialog, Kind::Index];
+    pub const ALL: [Kind; 15] = [Kind::Cert, Kind::Malware, Kind::Clock, Kind::Oom, Kind::Crash, Kind::Permission, Kind::File, Kind::Resubmit, Kind::Sleep, Kind::Portal, Kind::Unreachable, Kind::Slow, Kind::Hung, Kind::Dialog, Kind::Index];
     pub fn slug(self) -> &'static str {
         match self {
             Kind::Cert => "cert",
@@ -57,6 +61,7 @@ impl Kind {
             Kind::Portal => "portal",
             Kind::Unreachable => "unreachable",
             Kind::Index => "index",
+            Kind::Slow => "slow",
             Kind::Hung => "hung",
             Kind::Sleep => "sleep",
             Kind::Permission => "permission",
@@ -69,7 +74,7 @@ impl Kind {
     }
     /// Drawn by nus over the page rather than in place of it.
     pub fn native(self) -> bool {
-        matches!(self, Kind::Hung | Kind::Sleep | Kind::Permission | Kind::File | Kind::Dialog)
+        matches!(self, Kind::Slow | Kind::Hung | Kind::Sleep | Kind::Permission | Kind::File | Kind::Dialog)
     }
 }
 
@@ -97,6 +102,97 @@ fn risky(verb: &str, label: &str) -> Act {
     Act { verb: verb.into(), label: label.into(), key: "", unsafe_: true }
 }
 
+/// How a step of the trace went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    Ok,
+    Fail,
+    /// Still going: nus is waiting on it.
+    Wait,
+    /// Not reached: an earlier step failed.
+    Skip,
+    /// A fact, not a step that passes or fails.
+    Fact,
+}
+
+impl Mark {
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Mark::Ok => "✓",
+            Mark::Fail => "✕",
+            Mark::Wait => "…",
+            Mark::Skip => "—",
+            Mark::Fact => "",
+        }
+    }
+}
+
+/// One line of the trace: a step nus watched, what happened, how long.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub name: String,
+    /// The first line says what happened; the rest are detail.
+    pub what: Vec<String>,
+    pub time: String,
+    pub mark: Mark,
+}
+
+fn step(name: &str, what: Vec<String>, time: String, mark: Mark) -> Step {
+    Step { name: name.into(), what, time, mark }
+}
+
+/// Facts under a label of their own, after the trace ("Last on :5173").
+#[derive(Clone, Debug, PartialEq)]
+pub struct Note {
+    pub label: String,
+    pub lines: Vec<String>,
+}
+
+/// A duration as the trace writes it: 0.4 ms, 12 ms, 1.2 s, 42 min.
+pub fn took(d: std::time::Duration) -> String {
+    let ms = d.as_secs_f64() * 1000.0;
+    if ms < 1.0 {
+        format!("{ms:.1} ms")
+    } else if ms < 1000.0 {
+        format!("{} ms", ms.round() as u64)
+    } else if ms < 10_000.0 {
+        format!("{:.1} s", ms / 1000.0)
+    } else if ms < 120_000.0 {
+        format!("{} s", (ms / 1000.0).round() as u64)
+    } else if ms < 7_200_000.0 {
+        format!("{} min", (ms / 60_000.0).round() as u64)
+    } else {
+        format!("{} h", (ms / 3_600_000.0).round() as u64)
+    }
+}
+
+/// What nus saw of a page before it stopped answering.
+#[derive(Clone, Debug, Default)]
+pub struct Seen {
+    /// The document's HTTP status, and how long the server took to answer.
+    pub server: Option<(i64, std::time::Duration)>,
+    /// From asking for the page to its document loaded.
+    pub loaded: Option<std::time::Duration>,
+}
+
+/// How a page's process ended, and what else nus knows about it.
+#[derive(Clone, Debug, Default)]
+pub struct Ended {
+    pub oom: bool,
+    /// You stopped it, from the page that wasn't responding.
+    pub yours: bool,
+    /// Something outside the page ended it: the system, another program.
+    pub killed: bool,
+    /// Chromium's code for it, and what that means: ("SIGSEGV (11)", "a bad memory access").
+    pub code: Option<(String, String)>,
+    /// How long the page had been open.
+    pub open: Option<std::time::Duration>,
+    /// Other pages that ended with it: they shared its process.
+    pub shared: Vec<String>,
+    /// Earlier ends of this site in this session, oldest first: how long ago.
+    pub before: Vec<std::time::Duration>,
+}
+
 /// A line to type into, on an overlay that asks for words (a prompt, a
 /// sign-in). A secret one shows dots.
 #[derive(Clone, Debug, PartialEq)]
@@ -115,8 +211,13 @@ pub struct Page {
     pub url: String,
     /// The first line of the transcript, after `»`.
     pub command: String,
-    /// What happened, a line at a time; the first is the verdict.
+    /// What happened, a line at a time; the first is the verdict. Pages
+    /// with a trace say it there instead.
     pub log: Vec<String>,
+    /// What nus watched happen, a step at a time.
+    pub trace: Vec<Step>,
+    /// Facts under their own labels, after the trace.
+    pub notes: Vec<Note>,
     pub head: String,
     pub body: String,
     pub acts: Vec<Act>,
@@ -136,7 +237,7 @@ impl Page {
                 a.key = "";
             }
         }
-        Page { kind, sev, url: url.into(), command: format!("open {url}"), log, head, body, acts, token: crate::remote::new_token(), fields: Vec::new(), field: 0 }
+        Page { kind, sev, url: url.into(), command: format!("open {url}"), log, trace: Vec::new(), notes: Vec::new(), head, body, acts, token: crate::remote::new_token(), fields: Vec::new(), field: 0 }
     }
 
     /// The safe way out: back, or when there is nowhere to go back to,
@@ -147,11 +248,12 @@ impl Page {
 
     pub fn cert(url: &str, code: &str, can_back: bool) -> Page {
         let host = host(url);
-        Page::new(Kind::Cert, Sev::Danger, url,
-            vec![format!("✕ {}", cert_words(code)), format!("  error   {code}"), format!("  site    {host}")],
+        let mut p = Page::new(Kind::Cert, Sev::Danger, url, Vec::new(),
             "This connection isn't private".into(),
             format!("{host} couldn't prove it is {host}. Someone could be reading or changing what you send, such as passwords or card numbers."),
-            vec![Page::away(can_back), act("retry", "Try again", "⌘R"), risky("proceed", &format!("Continue to {host} (unsafe)"))])
+            vec![Page::away(can_back), act("retry", "Try again", "⌘R"), risky("proceed", &format!("Continue to {host} (unsafe)"))]);
+        p.trace = load_trace(url, code, &Failure { stage: Stage::Secure, only: None, head: String::new(), body: String::new(), what: cert_words(code).into() });
+        p
     }
 
     /// The clock, when it explains a certificate that isn't valid yet or
@@ -176,30 +278,68 @@ impl Page {
             vec![Page::away(can_back), risky("proceed", &format!("Visit {host} anyway (unsafe)"))])
     }
 
-    pub fn crashed(url: &str, oom: bool, code: &str, killed: bool) -> Page {
+    /// The page's process ended. `e` says how, and what nus knows besides.
+    pub fn crashed(url: &str, e: &Ended) -> Page {
         let host = host(url);
-        if oom {
-            return Page::new(Kind::Oom, Sev::Problem, url,
-                vec!["✕ the page ran out of memory".into(), format!("  site    {host}")],
-                "This page ran out of memory".into(),
-                format!("{host} used more memory than it could have and stopped. Your other tabs are fine. Putting idle tabs to sleep frees room before you reload."),
-                vec![act("retry", "Reload", "↵"), act("sleep-idle", "Sleep idle tabs", "S")]);
+        let after = e.open.filter(|_| !e.yours).map(|d| format!(" after {}", took(d))).unwrap_or_default();
+        let (kind, head, mut body, status) = if e.oom {
+            (Kind::Oom, format!("The page ran out of memory{after}"), format!("{host} used more memory than it could have. nus and your other tabs are fine. Putting idle tabs to sleep frees room before you reload."), "out of memory".to_string())
+        } else if e.yours {
+            (Kind::Crash, "You stopped the page".to_string(), "It had stopped answering, so its process was ended. Reloading starts it again.".to_string(), "stopped by you".to_string())
+        } else if e.killed {
+            (Kind::Crash, format!("The page's process was ended{after}"), "Something outside the page ended it, such as the system freeing memory. nus and your other tabs are fine.".to_string(), "ended from outside".to_string())
+        } else {
+            let how = e.code.as_ref().map(|(_, words)| words.clone()).unwrap_or_else(|| "an error in its renderer".into());
+            (Kind::Crash, format!("The page's process crashed{after}"), format!("It stopped with {how}. nus and your other tabs are fine."), e.code.as_ref().map(|(c, _)| c.clone()).unwrap_or_else(|| "crashed".into()))
+        };
+        if !e.before.is_empty() && !e.yours {
+            body.push_str(" It has ended before in this session, so reloading may end it again.");
         }
-        let why = if killed { "the page's process was stopped".to_string() } else { format!("the page's process stopped · {code}") };
-        Page::new(Kind::Crash, Sev::Problem, url,
-            vec![format!("✕ {why}"), format!("  site    {host}")],
-            "This page can't be opened".into(),
-            if killed { "The page stopped because you ended it, or the system did. Reloading starts it again.".into() } else { "The page's process stopped unexpectedly. Reloading usually works.".into() },
-            vec![act("retry", "Reload", "↵")])
+        let mut acts = Vec::new();
+        if e.shared.is_empty() {
+            acts.push(act("retry", "Reload", "↵"));
+        } else {
+            acts.push(act("retry-all", &format!("Reload all {} pages", e.shared.len() + 1), "↵"));
+            acts.push(act("retry", "Reload only this one", "⌘R"));
+        }
+        if e.oom {
+            acts.push(act("sleep-idle", "Sleep idle tabs", "S"));
+        }
+        if !e.yours {
+            acts.push(act("details", "Copy what happened", "C"));
+        }
+        let mut p = Page::new(kind, Sev::Problem, url, Vec::new(), head, body, acts);
+        p.command = format!("page {url}");
+        p.trace.push(step("process", vec![format!("renderer · {host}")], e.open.map(took).unwrap_or_default(), Mark::Fact));
+        p.trace.push(step("ended", vec![status], String::new(), Mark::Fail));
+        if !e.shared.is_empty() {
+            p.trace.push(step("shared", vec![format!("{} ended with it", e.shared.join(", "))], String::new(), Mark::Fact));
+        }
+        if !e.before.is_empty() {
+            let ago: Vec<String> = e.before.iter().map(|d| format!("{} ago", took(*d))).collect();
+            p.trace.push(step("before", vec![format!("ended {} too", ago.join(", ")), format!("{} this session", ordinal(e.before.len() + 1))], String::new(), Mark::Fact));
+        }
+        p
+    }
+
+    /// You chose to stop it; Chromium hasn't said it's gone yet.
+    pub fn stopping(url: &str) -> Page {
+        let mut p = Page::new(Kind::Crash, Sev::Problem, url, Vec::new(), "Stopping the page".into(),
+            "nus asked Chromium to end the page's process. Reload waits until it has gone.".into(),
+            vec![act("retry", "Reload", "↵")]);
+        p.command = format!("stop {url}");
+        p.trace.push(step("process", vec!["ending".into()], String::new(), Mark::Wait));
+        p
     }
 
     /// Browser setup and presentation failures cannot rely on a web renderer
     /// to draw their explanation. The native transcript uses these same acts.
     pub fn browser_failed(url: &str, detail: &str) -> Page {
-        Page::new(Kind::Crash, Sev::Problem, url,
-            vec!["✕ the browser could not display this page".into()],
-            "This page can't be opened".into(), detail.into(),
-            vec![act("retry", "Try again", "↵"), act("close", "Close this tab", "")])
+        let mut p = Page::new(Kind::Crash, Sev::Problem, url, Vec::new(),
+            "This page can't be shown".into(), detail.into(),
+            vec![act("retry", "Try again", "↵"), act("close", "Close this tab", "")]);
+        p.trace.push(step("browser", vec!["could not display this page".into()], String::new(), Mark::Fail));
+        p
     }
 
     pub fn resubmit(url: &str, can_back: bool) -> Page {
@@ -221,33 +361,125 @@ impl Page {
     }
 
     pub fn unreachable(url: &str, code: &str, can_back: bool) -> Page {
-        let host = host(url);
-        let (verdict, head, body) = match code {
-            "ERR_NAME_NOT_RESOLVED" => (format!("✕ no address found for {host}"), format!("{host} can't be found"), "Check the spelling. If it's right, the site may be gone or your DNS isn't answering.".to_string()),
-            "ERR_INTERNET_DISCONNECTED" => ("✕ you're offline".into(), "You're offline".into(), "Connect to a network and nus will try again.".into()),
-            "ERR_CONNECTION_REFUSED" => (format!("✕ nothing is listening at {host}"), format!("{host} refused to connect"), if is_local(url) { "If this is your server, check that it's running and on this port.".into() } else { "The site may be down, or a firewall is blocking it.".into() }),
-            "ERR_CONNECTION_TIMED_OUT" | "ERR_TIMED_OUT" => (format!("✕ {host} took too long to answer"), format!("{host} took too long to respond"), "The site may be busy or down. Try again in a moment.".into()),
-            "ERR_BLOCKED_BY_CLIENT" => (format!("✕ blocked by content blocking · {host}"), format!("{host} was blocked"), "It's on nus's list of ad and tracking hosts. You can turn blocking off for a site in its panel (the gear in the address row).".into()),
-            "ERR_TOO_MANY_REDIRECTS" => (format!("✕ {host} kept sending the page elsewhere"), format!("{host} redirected too many times"), "The site sends the request round in a loop and never arrives. Clearing this site's cookies often fixes it.".into()),
-            "ERR_EMPTY_RESPONSE" => (format!("✕ {host} answered with nothing"), format!("{host} sent an empty response"), "The server closed the connection without sending a page. Try again in a moment.".into()),
-            "ERR_INVALID_AUTH_CREDENTIALS" => (format!("✕ {host} didn't accept the sign-in"), format!("{host} didn't accept the sign-in"), "The username or password wasn't accepted. Try again to enter them again.".into()),
-            "ERR_INVALID_RESPONSE" => (format!("✕ {host} sent something that isn't a page"), format!("{host} sent an invalid response"), "The server's answer couldn't be read. It may be misconfigured.".into()),
-            "ERR_NETWORK_CHANGED" => ("✕ your network changed".into(), "Your network changed".into(), "The connection dropped while switching networks. Try again.".into()),
-            "ERR_CONNECTION_RESET" | "ERR_CONNECTION_CLOSED" => (format!("✕ {host} dropped the connection"), format!("{host} closed the connection"), "The connection was cut before the page arrived. Try again in a moment.".into()),
-            _ => (format!("✕ couldn't load {host}"), format!("{host} can't be reached"), "The connection failed before the page arrived.".into()),
-        };
-        Page::new(Kind::Unreachable, Sev::Problem, url,
-            vec![verdict, format!("  error   {code}")], head, body,
-            vec![act("retry", "Try again", "↵"), Page::away(can_back)])
+        let f = failure(url, code);
+        let mut p = Page::new(Kind::Unreachable, Sev::Problem, url, Vec::new(), f.head.clone(), f.body.clone(),
+            vec![act("retry", "Try again", "↵"), Page::away(can_back)]);
+        p.trace = load_trace(url, code, &f);
+        p
     }
 
-    pub fn hung(url: &str, secs: u64) -> Page {
+    /// The same address failing the same way: a try of this page again.
+    pub fn same_failure(&self, other: &Page) -> bool {
+        let code = |p: &Page| p.trace.iter().find(|s| s.mark == Mark::Fail).and_then(|s| s.what.get(1).cloned());
+        self.url == other.url && self.kind == other.kind && code(self).is_some() && code(self) == code(other)
+    }
+
+    /// Tried again and failed the same way: the newer time, and the count.
+    pub fn tried_again(&mut self, again: &Page) {
+        let time = again.trace.iter().find(|s| s.mark == Mark::Fail).map(|s| s.time.clone()).unwrap_or_default();
+        if let Some(s) = self.trace.iter_mut().find(|s| s.mark == Mark::Fail) {
+            if !time.is_empty() {
+                s.time = time;
+            }
+            let tries = s.what.iter().find_map(|l| l.strip_prefix("tried ")?.strip_suffix(" times")?.parse::<u32>().ok()).unwrap_or(1) + 1;
+            s.what.retain(|l| !l.starts_with("tried "));
+            s.what.push(format!("tried {tries} times"));
+        }
+    }
+
+    /// How long the failing step took: from asking to the error.
+    pub fn took_to_fail(&mut self, d: std::time::Duration) {
+        if let Some(s) = self.trace.iter_mut().find(|s| s.mark == Mark::Fail) {
+            s.time = took(d);
+        }
+    }
+
+    /// The first line of the failing step, said better (an HTTP status).
+    pub fn failed_as(&mut self, what: String) {
+        if let Some(s) = self.trace.iter_mut().find(|s| s.mark == Mark::Fail) {
+            if let Some(first) = s.what.first_mut() {
+                *first = what;
+            }
+        }
+    }
+
+    /// What last served this refused local port (from ports that remember):
+    /// said under its own label, with its command offered to run again and
+    /// a watch that loads the page when the port answers.
+    pub fn last_on_port(&mut self, last: Option<(&str, &str, &str, std::time::Duration)>) {
+        let port = port_of(&self.url);
+        let mut first = Vec::new();
+        if let Some((process, command, cwd, ago)) = last {
+            self.notes.push(Note { label: format!("Last on :{port}"), lines: vec![format!("{process} · {cwd}"), format!("ran {command}"), format!("gone for {}", took(ago))] });
+            first.push(act("start", &format!("Run {command} again in a new shell"), "↵"));
+        }
+        first.push(act("watch", &format!("Load this page when :{port} answers"), "W"));
+        self.acts.splice(0..0, first);
+        self.default_enter();
+    }
+
+    /// Watching the port: said, and the commands that would start a watch go.
+    pub fn watching(&mut self, said: Option<String>) {
+        let port = port_of(&self.url);
+        self.notes.retain(|n| n.label != "Watching");
+        self.notes.push(Note { label: "Watching".into(), lines: std::iter::once(format!(":{port} · this page loads when it answers")).chain(said).collect() });
+        self.acts.retain(|a| a.verb != "watch" && a.verb != "start");
+        self.default_enter();
+    }
+
+    /// ↵ goes to the first safe command again, after the commands changed.
+    fn default_enter(&mut self) {
+        let default = self.acts.iter().position(|a| !a.unsafe_);
+        for (i, a) in self.acts.iter_mut().enumerate() {
+            if Some(i) == default {
+                a.key = "↵";
+            } else if a.key == "↵" {
+                a.key = if a.verb == "retry" { "⌘R" } else { "" };
+            }
+        }
+    }
+
+    /// What happened, as plain text for a bug report.
+    pub fn details(&self, version: &str) -> String {
+        let mut out = format!("{}\n{}\n{}\n", self.url, self.head, self.body);
+        for s in &self.trace {
+            out.push_str(&format!("{:<10}{}{}\n", s.name, s.what.join(" · "), if s.time.is_empty() { String::new() } else { format!(" · {}", s.time) }));
+        }
+        out.push_str(&format!("nus {version}\n"));
+        out
+    }
+
+    /// The page's script hasn't answered for `secs`.
+    pub fn hung(url: &str, secs: u64, seen: &Seen) -> Page {
         let host = host(url);
-        Page::new(Kind::Hung, Sev::Problem, url,
-            vec![format!("✕ {host} hasn't answered for {secs}s")],
-            "This page isn't responding".into(),
-            "You can wait for it, or stop it. Stopping loses anything unsaved on the page.".into(),
-            vec![act("wait", "Wait", "↵"), act("stop", "Stop the page", "S")])
+        let server = seen.server.map(|(_, d)| format!(": the server answered in {}", took(d))).unwrap_or_default();
+        let mut p = Page::new(Kind::Hung, Sev::Problem, url, Vec::new(),
+            format!("The page's script hasn't let go for {secs} s"),
+            format!("It isn't the network{server}. Something on {host} is running without a pause, so the page can't draw or take your input."),
+            vec![act("wait", "Ask again in 10 s", "↵"), act("stop", "Stop the page · unsaved typing is lost", "S")]);
+        p.command = format!("watch {url}");
+        if let Some((status, d)) = seen.server {
+            p.trace.push(step("server", vec![format!("answered {status}")], took(d), Mark::Ok));
+        }
+        if let Some(d) = seen.loaded {
+            p.trace.push(step("document", vec!["loaded".into()], took(d), Mark::Ok));
+        }
+        p.trace.push(step("script", vec!["no answer to nus".into(), "busy without a pause: a long task or a loop".into()], format!("{secs} s"), Mark::Fail));
+        p
+    }
+
+    /// A load with no answer after `waited`: nus says so, and stops nothing.
+    pub fn slow(url: &str, waited: std::time::Duration) -> Page {
+        let host = host(url);
+        let mut p = Page::new(Kind::Slow, Sev::Rest, url, Vec::new(),
+            format!("{host} hasn't answered in {}", took(waited)),
+            "nus is still waiting and hasn't stopped anything. Slow servers, big uploads and long reports can take this long.".into(),
+            vec![act("wait", "Keep waiting", "↵"), act("retry", "Ask again from the start", "⌘R"), act("stop", "Stop loading", "Esc")]);
+        p.trace = vec![
+            step("request", vec![format!("sent to {host}")], String::new(), Mark::Ok),
+            step("answer", vec!["nothing yet".into()], took(waited), Mark::Wait),
+        ];
+        p
     }
 
     pub fn sleep(url: &str, asleep_for: std::time::Duration, waking: bool) -> Page {
@@ -367,13 +599,23 @@ impl Page {
             Kind::Cert => Page::cert("https://expired.badssl.com/", "NET::ERR_CERT_DATE_INVALID", true),
             Kind::Malware => Page::malware("http://login-paypa1-secure.example/", "profile/dangerous.txt", true),
             Kind::Clock => Page::clock("https://nus.dev/", 3, true),
-            Kind::Oom => Page::crashed("https://figma.com/file/8Hq2/Plot", true, "", false),
-            Kind::Crash => Page::crashed("https://maps.example.com/", false, "STATUS_BREAKPOINT", false),
+            Kind::Oom => Page::crashed("https://figma.com/file/8Hq2/Plot", &Ended { oom: true, open: Some(std::time::Duration::from_secs(25 * 60)), ..Ended::default() }),
+            Kind::Crash => Page::crashed("https://docs.example.com/editor", &Ended {
+                code: Some(("SIGSEGV (11)".into(), "a bad memory access".into())),
+                open: Some(std::time::Duration::from_secs(42 * 60)),
+                shared: vec!["docs.example.com/sheet".into()],
+                before: vec![std::time::Duration::from_secs(11 * 60)],
+                ..Ended::default()
+            }),
             Kind::Resubmit => Page::resubmit("https://shop.example.com/checkout", true),
             Kind::Portal => Page::portal("https://news.ycombinator.com/", "this network"),
             Kind::Unreachable => Page::unreachable("http://localhost:3000/", "ERR_CONNECTION_REFUSED", true),
             Kind::Index => Page::index(),
-            Kind::Hung => Page::hung("https://maps.example.com/", 12),
+            Kind::Slow => Page::slow("https://reports.example.com/q3", std::time::Duration::from_secs(30)),
+            Kind::Hung => Page::hung("https://maps.example.com/route", 12, &Seen {
+                server: Some((200, std::time::Duration::from_millis(300))),
+                loaded: Some(std::time::Duration::from_millis(1100)),
+            }),
             Kind::Sleep => Page::sleep("https://docs.rs/tokio/latest/tokio/", std::time::Duration::from_secs(14 * 60), false),
             Kind::Permission => Page::permission("https://meet.example.com/abc-defg", "microphone"),
             Kind::File => Page::file("https://files.example.net/invoice.pdf.exe", "invoice.pdf.exe", "a program named like a document"),
@@ -395,6 +637,8 @@ impl Page {
             "log": self.log,
             "head": self.head,
             "body": self.body,
+            "trace": self.trace.iter().map(|s| serde_json::json!({ "name": s.name, "what": s.what, "time": s.time, "mark": s.mark.glyph(), "fail": s.mark == Mark::Fail })).collect::<Vec<_>>(),
+            "notes": self.notes.iter().map(|n| serde_json::json!({ "label": n.label, "lines": n.lines })).collect::<Vec<_>>(),
             "acts": self.acts.iter().map(|a| serde_json::json!({ "verb": a.verb, "shown": shown_verb(&a.verb), "what": if a.key.is_empty() { a.label.clone() } else { format!("{} · {}", a.label, a.key) }, "unsafe": a.unsafe_ })).collect::<Vec<_>>(),
             "token": self.token,
             "css": self.css(c),
@@ -405,22 +649,28 @@ impl Page {
 
     fn css(&self, c: Colors) -> String {
         format!(r#"{fonts}
-:root{{--paper:{paper};--ink:{ink};--dim:{dim};--signal:{signal};color-scheme:{scheme}}}
+:root{{--paper:{paper};--ink:{ink};--dim:{dim};--signal:{signal};--edge:{edge};--rule:var(--ink);color-scheme:{scheme}}}
+main.danger{{--rule:var(--signal)}}
 html,body{{margin:0;background:var(--paper);color:var(--ink)}}
 body{{font:14px/1.6 "nus mono",ui-monospace,Menlo,Consolas,monospace;-webkit-font-smoothing:antialiased}}
 main{{display:grid;grid-template-columns:3px minmax(0,1fr);gap:0 22px;padding:44px 48px;max-width:880px}}
 .gut{{background:var(--ink)}}.gut.danger{{background:var(--signal)}}.gut.rest{{background:transparent}}
-.line{{white-space:pre-wrap;overflow-wrap:anywhere}}.p{{color:var(--signal)}}.verdict{{font-weight:500}}
+.line{{white-space:pre-wrap;overflow-wrap:anywhere}}.line.d{{color:var(--dim)}}.p{{color:var(--signal)}}.verdict{{font-weight:500}}
 .gap{{height:18px}}.head{{font-weight:500;font-size:16px}}.body{{max-width:68ch}}
 .cap{{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-bottom:4px}}
 .cmd{{display:grid;grid-template-columns:minmax(18ch,max-content) 1fr;gap:18px;cursor:pointer;padding:1px 6px;margin-left:-6px}}
 .cmd .what{{color:var(--dim)}}.cmd.unsafe .verb{{color:var(--dim)}}
 .cmd:hover{{outline:1px solid var(--ink);outline-offset:-1px}}
 .cmd[aria-selected=true]{{background:var(--ink);color:var(--paper)}}.cmd[aria-selected=true] .what,.cmd[aria-selected=true] .verb{{color:var(--paper)}}
+.steps{{border-bottom:1px solid var(--edge)}}
+.step{{display:grid;grid-template-columns:11ch minmax(0,1fr) 9ch 2ch;gap:0 14px;padding:3px 0 3px 12px;border-top:1px solid var(--edge)}}
+.step .name{{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);line-height:22.4px}}
+.step .t,.step .m{{text-align:right}}.step .t{{color:var(--dim)}}.step .d{{color:var(--dim)}}
+.step.fail{{box-shadow:inset 3px 0 0 var(--rule)}}.step.fail .name{{color:var(--ink)}}.step.fail .first,.step.fail .m{{font-weight:500}}
 .prompt{{display:flex;gap:1ch;align-items:baseline}}
 .prompt input{{flex:1;min-width:0;font:inherit;color:var(--ink);background:transparent;border:0;outline:0;padding:0;caret-color:var(--ink)}}
 @media (max-width:560px){{main{{padding:24px 18px}}}}"#,
-            fonts = font_css(), paper = css(c.paper), ink = css(c.ink), dim = css(c.dim), signal = css(c.signal), scheme = if c.dark { "dark" } else { "light" })
+            fonts = font_css(), paper = css(c.paper), ink = css(c.ink), dim = css(c.dim), signal = css(c.signal), edge = css([c.ink[0], c.ink[1], c.ink[2], 0.14]), scheme = if c.dark { "dark" } else { "light" })
     }
 
     /// The first safe command, which ↵ takes.
@@ -444,11 +694,16 @@ const body=d.body||root.appendChild(d.createElement('body'));
 d.title=P.title;
 const meta=el('meta');meta.name='color-scheme';meta.content=P.scheme;head.appendChild(meta);
 try{const s=new CSSStyleSheet();s.replaceSync(P.css);d.adoptedStyleSheets=[s]}catch(e){head.appendChild(el('style',null,P.css))}
-const main=el('main');main.appendChild(el('div','gut '+P.sev));const col=el('div');main.appendChild(col);body.appendChild(main);
+const main=el('main',P.sev);main.appendChild(el('div','gut '+(P.trace.length?'rest':P.sev)));const col=el('div');main.appendChild(col);body.appendChild(main);
 const line=(cls,text)=>col.appendChild(el('div','line'+(cls?' '+cls:''),text));
 const first=el('div','line');first.append(el('span','p','»'),' '+P.command);col.appendChild(first);
 P.log.forEach((l,i)=>line(i===0?'verdict':'',l));
-col.appendChild(el('div','gap'));line('head',P.head);line('body',P.body);
+if(P.log.length)col.appendChild(el('div','gap'));line('head',P.head);line('body',P.body);
+if(P.trace.length){col.appendChild(el('div','gap'));col.appendChild(el('div','cap','Trace'));const t=el('div','steps');col.appendChild(t);
+ P.trace.forEach(s=>{const r=el('div','step'+(s.fail?' fail':''));const w=el('div');
+  s.what.forEach((l,i)=>w.appendChild(el('div','line'+(i?' d':' first'),l)));
+  r.append(el('span','name',s.name),w,el('span','t',s.time),el('span','m',s.mark));t.appendChild(r)})}
+P.notes.forEach(n=>{col.appendChild(el('div','gap'));col.appendChild(el('div','cap',n.label));n.lines.forEach((l,i)=>line(i?'d':'',l))});
 const run=v=>{try{window.nusInterstitial(JSON.stringify({token:P.token,verb:v}))}catch(e){}};
 const rows=[];
 if(P.acts.length){col.appendChild(el('div','gap'));col.appendChild(el('div','cap','Next'));
@@ -566,7 +821,7 @@ pub fn host(url: &str) -> String {
     if h.is_empty() { url.to_string() } else { h }
 }
 
-fn is_local(url: &str) -> bool {
+pub(crate) fn is_local(url: &str) -> bool {
     let h = host(url);
     h.starts_with("localhost") || h.starts_with("127.") || h == "[::1]" || h.starts_with("0.0.0.0")
 }
@@ -588,6 +843,190 @@ fn civil(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+// ── What failed, a step at a time ────────────────────────────────────
+
+/// The steps of a load, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    Name,
+    Connect,
+    Secure,
+    Request,
+    Answer,
+}
+
+/// A load error, said: the step it failed at and what happened there.
+struct Failure {
+    stage: Stage,
+    /// A trace of this one step alone, under this name: the failure isn't
+    /// part of the load (you're offline; nus blocked the host).
+    only: Option<&'static str>,
+    head: String,
+    body: String,
+    what: String,
+}
+
+/// The port a URL goes to, written or implied by its scheme.
+pub fn port_of(url: &str) -> u16 {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
+    let port = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || authority.starts_with('[') => p.parse().ok(),
+        _ => None,
+    };
+    port.filter(|_| !authority.ends_with(']')).unwrap_or(if url.starts_with("https:") { 443 } else { 80 })
+}
+
+/// What this computer resolves a local host to, for the trace's first step.
+/// Only for local names: those resolve from the hosts file, never the network.
+fn local_addresses(url: &str) -> Option<String> {
+    use std::net::ToSocketAddrs;
+    if !is_local(url) {
+        return None;
+    }
+    let host = host(url);
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let mut seen: Vec<String> = Vec::new();
+    for a in (bare, port_of(url)).to_socket_addrs().ok()? {
+        let ip = a.ip().to_string();
+        if !seen.contains(&ip) {
+            seen.push(ip);
+        }
+    }
+    (!seen.is_empty() && seen != [bare.to_string()]).then(|| format!("{bare} → {}", seen.join(", ")))
+}
+
+fn failure(url: &str, code: &str) -> Failure {
+    let host = host(url);
+    let port = port_of(url);
+    let f = |stage, head: String, body: String, what: String| Failure { stage, only: None, head, body, what };
+    match code {
+        "ERR_NAME_NOT_RESOLVED" | "ERR_NAME_RESOLUTION_FAILED" => f(Stage::Name, format!("{host} can't be found"),
+            "No address came back for it. Check the spelling. If it's right, the site may be gone or your DNS isn't answering.".into(),
+            format!("no address for {host}")),
+        "ERR_INTERNET_DISCONNECTED" => Failure { only: Some("network"), ..f(Stage::Name, "You're offline".into(),
+            "This computer isn't connected to a network. Connect, then try again.".into(), "this computer is offline".into()) },
+        "ERR_BLOCKED_BY_CLIENT" => Failure { only: Some("blocking"), ..f(Stage::Name, format!("{host} was blocked"),
+            "It's on nus's list of ad and tracking hosts, so nus never asked for it. You can turn blocking off for a site in its panel (the gear in the address row).".into(),
+            format!("{host} is on the block list")) },
+        "ERR_CONNECTION_REFUSED" if is_local(url) => f(Stage::Connect, format!("Nothing is listening on {host}:{port}"),
+            format!("The address is right and this computer answered, but no program has port {port} open."),
+            format!("{host}:{port} refused the connection")),
+        "ERR_CONNECTION_REFUSED" => f(Stage::Connect, format!("{host} refused to connect"),
+            format!("{host} answered but turned the connection away. The site may be down, or a firewall is blocking it."),
+            format!("{host}:{port} refused the connection")),
+        "ERR_CONNECTION_TIMED_OUT" => f(Stage::Connect, format!("{host} didn't answer the connection"),
+            "nus found the site, but nothing answered when it tried to connect. The site may be down, or a firewall is dropping the connection.".into(),
+            format!("no answer from {host}:{port}")),
+        "ERR_ADDRESS_UNREACHABLE" => f(Stage::Connect, format!("{host} can't be reached from this network"),
+            "There's no route from this network to the site. A VPN or a network setting may be in the way.".into(),
+            format!("no route to {host}")),
+        "ERR_NETWORK_ACCESS_DENIED" => f(Stage::Connect, format!("This computer didn't let nus connect to {host}"),
+            "A firewall, or the system's network permission for nus, blocked the connection.".into(),
+            "the connection was blocked on this computer".into()),
+        "ERR_NETWORK_CHANGED" => f(Stage::Connect, "Your network changed".into(),
+            "The connection dropped while switching networks. Try again.".into(), "the network changed during the load".into()),
+        "ERR_SSL_PROTOCOL_ERROR" => f(Stage::Secure, format!("{host} couldn't set up a secure connection"),
+            "The site's security setup may be broken or out of date.".into(), "the secure connection failed".into()),
+        "ERR_TIMED_OUT" => f(Stage::Request, format!("{host} took too long to answer"),
+            "nus connected and asked, but no answer came back in time. The site may be busy or down.".into(), "no answer in time".into()),
+        "ERR_CONNECTION_RESET" | "ERR_CONNECTION_CLOSED" => f(Stage::Answer, format!("{host} dropped the connection"),
+            "The connection was cut before the page arrived. Try again in a moment.".into(), format!("{host} closed the connection")),
+        "ERR_EMPTY_RESPONSE" => f(Stage::Answer, format!("{host} sent an empty response"),
+            "The server closed the connection without sending a page. Try again in a moment.".into(), "closed without sending anything".into()),
+        "ERR_INVALID_RESPONSE" => f(Stage::Answer, format!("{host} sent something that isn't a page"),
+            "The server's answer couldn't be read. It may be misconfigured.".into(), "an answer nus couldn't read".into()),
+        "ERR_TOO_MANY_REDIRECTS" => f(Stage::Answer, format!("{host} redirected too many times"),
+            "The site sends the request round in a loop and never arrives. Clearing this site's cookies often fixes it.".into(), "redirected more than 20 times".into()),
+        "ERR_HTTP_RESPONSE_CODE_FAILURE" => f(Stage::Answer, format!("{host} answered with an error and no page"),
+            "The server answered, but with an error status and nothing to show. The problem is on the server.".into(), "an error status with an empty page".into()),
+        "ERR_INVALID_AUTH_CREDENTIALS" => f(Stage::Answer, format!("{host} didn't accept the sign-in"),
+            "The username or password wasn't accepted. Try again to enter them again.".into(), "the sign-in was refused".into()),
+        _ => f(Stage::Request, format!("{host} can't be reached"), "The load failed before the page arrived.".into(), format!("couldn't load {host}")),
+    }
+}
+
+/// The steps of a failed load: those before the failure went through, the
+/// failing one says what happened and Chromium's name for it, the rest
+/// weren't reached.
+fn load_trace(url: &str, code: &str, f: &Failure) -> Vec<Step> {
+    let failed = || vec![f.what.clone(), code.to_string()];
+    if let Some(name) = f.only {
+        return vec![step(name, failed(), String::new(), Mark::Fail)];
+    }
+    let host = host(url);
+    let port = port_of(url);
+    let mut stages = vec![(Stage::Name, "name"), (Stage::Connect, "connect")];
+    if url.starts_with("https:") {
+        stages.push((Stage::Secure, "secure"));
+    }
+    stages.extend([(Stage::Request, "request"), (Stage::Answer, "answer")]);
+    stages.into_iter().map(|(stage, name)| {
+        if stage == f.stage {
+            step(name, failed(), String::new(), Mark::Fail)
+        } else if stage > f.stage {
+            step(name, vec!["not reached".into()], String::new(), Mark::Skip)
+        } else {
+            let what = match stage {
+                Stage::Name => local_addresses(url).unwrap_or_else(|| format!("{host} found")),
+                Stage::Connect => format!("{host}:{port} accepted"),
+                Stage::Secure => "certificate checked".into(),
+                Stage::Request => "sent".into(),
+                Stage::Answer => "arrived".into(),
+            };
+            step(name, vec![what], String::new(), Mark::Ok)
+        }
+    }).collect()
+}
+
+/// 1st, 2nd, 3rd, 4th…
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix} time")
+}
+
+/// Chromium's code for how a renderer ended, and what it means. `name` is
+/// CEF's description when it has one (Windows: `STATUS_BREAKPOINT`); on
+/// macOS and Linux a crash's code is the signal.
+pub fn exit_words(name: &str, code: i32) -> Option<(String, String)> {
+    let named = |n: &str| -> Option<&'static str> {
+        Some(match n {
+            "STATUS_ACCESS_VIOLATION" | "EXCEPTION_ACCESS_VIOLATION" => "a bad memory access",
+            "STATUS_BREAKPOINT" | "EXCEPTION_BREAKPOINT" => "a failed internal check",
+            "STATUS_STACK_BUFFER_OVERRUN" => "a corrupted stack",
+            "STATUS_STACK_OVERFLOW" => "a stack overflow",
+            "STATUS_HEAP_CORRUPTION" => "corrupted memory",
+            "STATUS_OUT_OF_MEMORY" => "too little memory",
+            "STATUS_INVALID_IMAGE_HASH" => "interference from another program",
+            _ => return None,
+        })
+    };
+    if !name.is_empty() && name.parse::<i64>().is_err() {
+        return Some((name.to_string(), named(name).unwrap_or("an error in its renderer").to_string()));
+    }
+    if cfg!(windows) {
+        return (code != 0).then(|| (format!("exit code {code:#x}"), "an error in its renderer".into()));
+    }
+    let (sig, words) = match code {
+        4 => ("SIGILL", "an illegal instruction"),
+        5 => ("SIGTRAP", "a failed internal check"),
+        6 => ("SIGABRT", "an abort"),
+        7 | 10 => ("SIGBUS", "a bad memory access"),
+        9 => ("SIGKILL", "a kill from outside"),
+        11 => ("SIGSEGV", "a bad memory access"),
+        _ if code != 0 => return Some((format!("exit code {code}"), "an error in its renderer".into())),
+        _ => return None,
+    };
+    Some((format!("{sig} ({code})"), words.into()))
 }
 
 // ── Deciding which page ──────────────────────────────────────────────
@@ -621,6 +1060,14 @@ pub fn error_name(code: i32) -> String {
         -338 => "ERR_INVALID_AUTH_CREDENTIALS".into(),
         -320 => "ERR_INVALID_RESPONSE".into(),
         -137 => "ERR_NAME_RESOLUTION_FAILED".into(),
+        -138 => "ERR_NETWORK_ACCESS_DENIED".into(),
+        -104 => "ERR_CONNECTION_FAILED".into(),
+        -108 => "ERR_ADDRESS_INVALID".into(),
+        -27 => "ERR_BLOCKED_BY_RESPONSE".into(),
+        -2 => "ERR_FAILED".into(),
+        -379 => "ERR_HTTP_RESPONSE_CODE_FAILURE".into(),
+        -301 => "ERR_DISALLOWED_URL_SCHEME".into(),
+        -302 => "ERR_UNKNOWN_URL_SCHEME".into(),
         -400 => "ERR_CACHE_MISS".into(),
         -107 => "ERR_SSL_PROTOCOL_ERROR".into(),
         -200 => "NET::ERR_CERT_COMMON_NAME_INVALID".into(),
@@ -637,7 +1084,8 @@ pub fn error_name(code: i32) -> String {
 /// (or years after) is the clock's fault.
 pub fn for_error(url: &str, code: i32, can_back: bool, now: i64, built: i64) -> Page {
     let name = error_name(code);
-    if code == -201 {
+    // Without a build date (built outside git), the clock can't be judged.
+    if code == -201 && built > 0 {
         let behind = (built - now) / 86400;
         if behind >= 1 {
             return Page::clock(url, behind, can_back);
@@ -666,25 +1114,47 @@ pub fn built() -> i64 {
     option_env!("NUS_BUILD_EPOCH").and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
-/// Ask Apple's plain-HTTP probe whether this network intercepts pages.
-/// Some(network) when it does. Blocks up to a few seconds; run it off
+/// The plain-HTTP check this computer's own system uses for sign-in pages,
+/// and what it answers when nothing is in the way.
+fn portal_check() -> (&'static str, &'static str, &'static str) {
+    if cfg!(target_os = "macos") {
+        ("captive.apple.com", "/hotspot-detect.html", "Success")
+    } else if cfg!(windows) {
+        ("www.msftconnecttest.com", "/connecttest.txt", "Microsoft Connect Test")
+    } else {
+        ("nmcheck.gnome.org", "/check_network_status.txt", "NetworkManager is online")
+    }
+}
+
+/// Ask the system's own plain-HTTP check whether this network intercepts
+/// pages. Some(network) when it does. Blocks up to a few seconds; run it off
 /// the UI thread.
 pub fn probe_portal() -> Option<String> {
     use std::io::{Read, Write};
     use std::net::ToSocketAddrs;
-    let addr = ("captive.apple.com", 80).to_socket_addrs().ok()?.next()?;
+    let (host_name, path, expected) = portal_check();
+    let addr = (host_name, 80).to_socket_addrs().ok()?.next()?;
     let mut s = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3)).ok()?;
     s.set_read_timeout(Some(std::time::Duration::from_secs(3))).ok()?;
-    s.write_all(b"GET /hotspot-detect.html HTTP/1.0\r\nHost: captive.apple.com\r\nUser-Agent: CaptiveNetworkSupport\r\n\r\n").ok()?;
+    s.write_all(format!("GET {path} HTTP/1.0\r\nHost: {host_name}\r\nUser-Agent: CaptiveNetworkSupport\r\n\r\n").as_bytes()).ok()?;
     let mut body = Vec::new();
     let _ = s.take(64 * 1024).read_to_end(&mut body);
-    let text = String::from_utf8_lossy(&body);
-    if text.is_empty() || text.contains("<BODY>Success</BODY>") || text.contains("Success") {
-        return None;
-    }
-    // Where the network wanted to send us, when it said.
+    portal_in(&String::from_utf8_lossy(&body), expected)
+}
+
+/// Whether an answer to the sign-in check is a sign-in page. Only a redirect
+/// or a page in place of the expected text is: a proxy's or a filter's
+/// refusal (403, 407, 5xx) or nothing at all says the check was blocked, not
+/// that the network wants a sign-in.
+fn portal_in(text: &str, expected: &str) -> Option<String> {
+    let status: u16 = text.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
     let to = text.lines().find_map(|l| l.strip_prefix("Location:").or_else(|| l.strip_prefix("location:"))).map(|l| host(l.trim()));
-    Some(to.filter(|h| !h.is_empty()).unwrap_or_else(|| "this network".into()))
+    let network = |to: Option<String>| Some(to.filter(|h| !h.is_empty()).unwrap_or_else(|| "this network".into()));
+    match status {
+        301 | 302 | 303 | 307 | 308 if to.is_some() => network(to),
+        200 if !text.contains(expected) => network(None),
+        _ => None,
+    }
 }
 
 /// A camera or microphone macOS itself refuses nus (denied or restricted
@@ -780,12 +1250,87 @@ mod tests {
         assert_eq!(for_error("https://a.test/", -201, true, built - 3 * 86400, built).kind, Kind::Clock);
         assert_eq!(for_error("https://a.test/", -202, true, built, built).kind, Kind::Cert);
         assert_eq!(for_error("https://a.test/", -400, true, built, built).kind, Kind::Resubmit);
+        // Built outside git: no build date, so never blame the clock.
+        assert_eq!(for_error("https://a.test/", -201, true, built, 0).kind, Kind::Cert);
         let p = for_error("http://localhost:3000/", -102, false, built, built);
         assert_eq!(p.kind, Kind::Unreachable);
-        assert!(p.head.contains("refused"));
+        assert_eq!(p.head, "Nothing is listening on localhost:3000");
+        let fail = p.trace.iter().find(|s| s.mark == Mark::Fail).unwrap();
+        assert_eq!((fail.name.as_str(), fail.what[0].as_str()), ("connect", "localhost:3000 refused the connection"));
+        assert_eq!(p.trace[0].mark, Mark::Ok);
+        assert!(p.trace.iter().skip_while(|s| s.mark != Mark::Fail).skip(1).all(|s| s.mark == Mark::Skip));
         // Close isn't first here, so ↵ stays with Try again.
         assert_eq!(p.acts.iter().find(|a| a.verb == "close").map(|a| a.key), Some(""));
         assert_eq!(p.default_act().map(|a| a.key), Some("↵"));
+    }
+
+    #[test]
+    fn an_empty_error_from_the_server_is_not_a_connection_failure() {
+        let p = for_error("http://127.0.0.1:8000/empty500", -379, true, 1, 1);
+        assert_eq!(p.head, "127.0.0.1 answered with an error and no page");
+        let fail = p.trace.iter().find(|s| s.mark == Mark::Fail).unwrap();
+        assert_eq!(fail.name, "answer");
+        assert_eq!(fail.what[1], "ERR_HTTP_RESPONSE_CODE_FAILURE");
+        assert!(p.trace.iter().take_while(|s| s.mark != Mark::Fail).all(|s| s.mark == Mark::Ok));
+    }
+
+    #[test]
+    fn trying_again_and_failing_the_same_way_keeps_the_page() {
+        let mut first = Page::unreachable("http://localhost:5173/", "ERR_CONNECTION_REFUSED", false);
+        first.last_on_port(None);
+        let token = first.token.clone();
+        let again = Page::unreachable("http://localhost:5173/", "ERR_CONNECTION_REFUSED", false);
+        assert!(first.same_failure(&again));
+        first.tried_again(&again);
+        first.tried_again(&again);
+        assert_eq!(first.token, token, "the page's commands keep working");
+        assert!(first.acts.iter().any(|a| a.verb == "watch"));
+        assert!(first.trace.iter().any(|s| s.what.last().is_some_and(|l| l == "tried 3 times")));
+        assert!(!first.same_failure(&Page::unreachable("http://localhost:5173/", "ERR_EMPTY_RESPONSE", false)));
+    }
+
+    #[test]
+    fn steps_and_times_read_plainly() {
+        let p = for_error("https://secure.test/", -201, true, 1, 1);
+        assert_eq!(p.trace.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["name", "connect", "secure", "request", "answer"]);
+        assert_eq!(p.trace[2].mark, Mark::Fail);
+        assert_eq!(port_of("http://localhost:5173/x"), 5173);
+        assert_eq!(port_of("https://a.test/"), 443);
+        assert_eq!(port_of("http://[::1]/"), 80);
+        assert_eq!(port_of("http://[::1]:9000/"), 9000);
+        assert_eq!(took(std::time::Duration::from_micros(400)), "0.4 ms");
+        assert_eq!(took(std::time::Duration::from_millis(1200)), "1.2 s");
+        assert_eq!(took(std::time::Duration::from_secs(12)), "12 s");
+        assert_eq!(took(std::time::Duration::from_secs(42 * 60)), "42 min");
+        assert_eq!(ordinal(2), "2nd time");
+        assert_eq!(ordinal(12), "12th time");
+    }
+
+    #[test]
+    fn only_a_real_sign_in_page_is_a_portal() {
+        let ok = "HTTP/1.0 200 OK\r\n\r\n<HTML><BODY>Success</BODY></HTML>";
+        assert_eq!(portal_in(ok, "Success"), None);
+        assert_eq!(portal_in("HTTP/1.1 302 Found\r\nLocation: https://wifi.cafe.example/login\r\n\r\n", "Success").as_deref(), Some("wifi.cafe.example"));
+        assert_eq!(portal_in("HTTP/1.1 200 OK\r\n\r\n<html><form>Accept the terms</form></html>", "Success").as_deref(), Some("this network"));
+        // A proxy or a filter refusing the check is not a sign-in.
+        assert_eq!(portal_in("HTTP/1.1 403 Forbidden\r\n\r\nBlocked by policy", "Success"), None);
+        assert_eq!(portal_in("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n", "Success"), None);
+        assert_eq!(portal_in("", "Success"), None);
+    }
+
+    #[test]
+    fn a_crash_says_how_it_ended_and_what_went_with_it() {
+        if !cfg!(windows) {
+            assert_eq!(exit_words("", 11), Some(("SIGSEGV (11)".into(), "a bad memory access".into())));
+        }
+        assert_eq!(exit_words("STATUS_BREAKPOINT", 0).unwrap().1, "a failed internal check");
+        let p = Page::sample(Kind::Crash);
+        assert_eq!(p.head, "The page's process crashed after 42 min");
+        assert_eq!(p.default_act().unwrap().verb, "retry-all");
+        assert!(p.trace.iter().any(|s| s.name == "shared"));
+        let mine = Page::crashed("https://a.test/", &Ended { yours: true, ..Ended::default() });
+        assert_eq!(mine.head, "You stopped the page");
+        assert!(!mine.acts.iter().any(|a| a.verb == "details"));
     }
 
     #[test]
@@ -827,6 +1372,7 @@ mod tests {
         p.token = "tok".into();
         let h = p.script();
         assert!(h.contains("\"tok\""));
+        assert!(h.contains("\"trace\":[{"), "the trace goes to the page as data");
         // Text goes in as JSON data, set with textContent: never as markup.
         assert!(h.contains("https://a.test/<script>"));
         assert!(!h.contains("innerHTML") && !h.contains("document.write"));

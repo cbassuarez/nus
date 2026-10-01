@@ -463,6 +463,8 @@ pub struct WebPane {
     pub woke: Option<Instant>,
     /// The overlay transcript's highlighted command, and its rows as drawn.
     pub overlay_sel: usize,
+    /// The transcript `overlay_sel` belongs to: a new one starts at its default.
+    pub overlay_page: String,
     pub overlay_hits: Vec<(Rect, String)>,
 }
 
@@ -2069,6 +2071,7 @@ impl App {
             slept: None,
             woke: None,
             overlay_sel: 0,
+            overlay_page: String::new(),
             overlay_hits: Vec::new(),
             wheel_carry: (0.0, 0.0),
             wheel_precise: false,
@@ -3955,6 +3958,7 @@ impl App {
             let shown = k == self.active;
             for (right, p) in std::iter::once((false, &mut tab.left)).chain(tab.right.as_mut().map(|p| (true, p))) {
                 if let Pane::Web(w) = p {
+                    crate::interstitial_ui::tell_last_on_port(w, &self.board.remembered);
                     interstitial_acts.extend(w.tab.tend_interstitial().into_iter().map(|v| (id, right, v)));
                     if let Some(url) = w.tab.shared.borrow_mut().external.take() {
                         externals.push(url);

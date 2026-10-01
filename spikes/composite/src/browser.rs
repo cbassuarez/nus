@@ -142,6 +142,19 @@ pub struct Shared {
     pub(crate) after_stop: Option<String>,
     /// The `Page.crash` that stop sent: Chromium can refuse it.
     pub(crate) stop_msg: Option<i32>,
+    /// When this document committed: how long a page was open when it ended.
+    pub(crate) opened_at: Option<std::time::Instant>,
+    /// From asking for the page to its document loaded.
+    pub(crate) loaded_in: Option<std::time::Duration>,
+    /// How long the page has not answered, as its hung transcript says.
+    pub(crate) hung_secs: u64,
+    /// How this page's renderer ended, kept so its page can say more as
+    /// other pages' ends come in.
+    pub(crate) ended: Option<EndedAt>,
+    /// A refused local port to watch for this page: host, port, last try.
+    pub(crate) port_watch: Option<(String, u16, std::time::Instant)>,
+    /// The page's facts changed: write it over the error document again.
+    pub(crate) rewrite: bool,
     /// A `nus://crash`-style command, run once the blank page is there.
     pub(crate) debug: Option<crate::interstitial::Internal>,
     /// Asking the network whether it wants a sign-in (a captive portal).
@@ -275,21 +288,62 @@ impl Shared {
             .filter(|p| p.kind != crate::interstitial::Kind::Index))
     }
 
-    fn check_navigation_deadline(&mut self, now: std::time::Instant, can_back: bool) {
+    /// A load that's gone quiet. Nothing answered yet: say so over the page
+    /// and keep waiting, since slow servers and big uploads are not errors.
+    /// The document arrived but never drew: that is nus's failure. True
+    /// when the load should stop.
+    fn check_navigation_deadline(&mut self, now: std::time::Instant) -> bool {
         if self.suspended || self.native.is_some() || self.native_ask.is_some()
             || self.download_waiting || self.download_only || self.dialog.is_some()
-            || self.interstitial.is_some() || self.painted_committed { return; }
-        let Some(at) = self.navigation_at else { return };
-        if now.saturating_duration_since(at) < std::time::Duration::from_secs(30) { return; }
-        self.interstitial = Some(if self.committed {
-            crate::interstitial::Page::browser_failed(&self.url, "The page arrived, but the browser could not draw it. Try again. If this continues, restart nus and check your graphics driver.")
-        } else {
-            crate::interstitial::Page::unreachable(&self.url, "ERR_TIMED_OUT", can_back)
-        });
-        self.overlay = None;
+            || self.interstitial.is_some() || self.overlay.is_some() || self.painted_committed { return false; }
+        let Some(at) = self.navigation_at else { return false };
+        let waited = now.saturating_duration_since(at);
+        if waited < std::time::Duration::from_secs(30) { return false; }
+        self.navigation_at = None;
+        self.paints += 1;
+        if !self.committed {
+            self.overlay = Some(crate::interstitial::Page::slow(&self.url, waited));
+            return false;
+        }
+        self.interstitial = Some(crate::interstitial::Page::browser_failed(&self.url, "The page arrived, but the browser could not draw it. Try again. If this continues, restart nus and check your graphics driver."));
         self.loading = false;
         self.progress = 1.0;
+        true
+    }
+
+    /// A load Chromium dropped (a 204, Stay on this page, Stop): nothing came
+    /// of it, so the page you had is still the page and nothing is late.
+    fn aborted(&mut self, failed: &str, current: &str) {
+        // A newer load took its place: that one's deadline and address stand.
+        if failed != self.requested_url && failed != self.url { return; }
         self.navigation_at = None;
+        if self.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Slow) { self.overlay = None; }
+        let shown = !current.is_empty() && current != "about:blank" && !current.starts_with("chrome-error:");
+        if shown && !self.committed {
+            self.address(current);
+            self.requested_url = current.into();
+            self.committed = true;
+            self.painted_committed = true;
+        }
+        self.paints += 1;
+    }
+
+    /// What nus saw of this page, for the trace when it stops answering.
+    fn seen(&self) -> crate::interstitial::Seen {
+        // The document's answer, timed by Chromium: request to headers.
+        let server = self.log.iter().rev().find(|e| e["kind"] == "response" && e["type"] == "Document").and_then(|res| {
+            let status = res["status"].as_i64().filter(|s| *s > 0)?;
+            let ms = res["ttfb"].as_f64().filter(|ms| *ms >= 0.0)?;
+            Some((status, std::time::Duration::from_secs_f64(ms / 1000.0)))
+        });
+        crate::interstitial::Seen { server, loaded: self.loaded_in }
+    }
+
+    /// The page stopped answering for `secs`: say so over it.
+    fn raise_hung(&mut self, secs: u64) {
+        let url = self.url.clone();
+        self.hung_secs = secs;
+        self.overlay = Some(crate::interstitial::Page::hung(&url, secs, &self.seen()));
         self.paints += 1;
     }
 
@@ -359,7 +413,25 @@ impl Shared {
         self.navigation_at=Some(crate::clock::now());
         self.committed=false;self.painted_committed=false;
         self.ping=None;self.answered=None;
+        self.ended=None;
+        self.port_watch=None;self.loaded_in=None;self.opened_at=None;
         self.address(url);self.requested_url=url.into();self.loading=true;self.progress=0.0;
+    }
+    /// Chromium is taking the main frame somewhere. Its own retry of a page
+    /// that failed (the error page reloads itself while the network may come
+    /// back) keeps nus's page up, so its commands keep working meanwhile;
+    /// the page goes when a document arrives (`arrived`).
+    fn browse(&mut self,url:&str,gesture:bool) {
+        let retry=!gesture&&self.interstitial.as_ref().is_some_and(|p|p.url==url&&matches!(p.kind,crate::interstitial::Kind::Unreachable|crate::interstitial::Kind::Portal));
+        if retry {self.navigation_at=Some(crate::clock::now());return;}
+        self.navigation(url);
+    }
+    /// A document of the site's own committed: nus's page in its place is over.
+    fn arrived(&mut self,url:&str) {
+        if url.is_empty()||url=="about:blank"||url.starts_with("chrome-error:") {return;}
+        if self.interstitial.as_ref().is_some_and(|p|matches!(p.kind,crate::interstitial::Kind::Unreachable|crate::interstitial::Kind::Portal)) {
+            self.interstitial=None;self.inject=false;self.failed_url=None;self.port_watch=None;self.paints+=1;
+        }
     }
     /// A load while a page you stopped is still going. Chromium loses it
     /// when that renderer goes, and its crash would cover the new page, so
@@ -380,6 +452,52 @@ impl Shared {
     }
 }
 
+/// A renderer's end, as one page keeps it: how, when, whose, and the last
+/// other end its page was made with.
+#[derive(Clone, Debug)]
+pub(crate) struct EndedAt {
+    pub(crate) base: crate::interstitial::Ended,
+    pub(crate) at: std::time::Instant,
+    pub(crate) browser: i32,
+    pub(crate) url: String,
+    pub(crate) gen: u64,
+}
+
+/// Renderers that ended this session: when, whose browser, its address.
+static ENDINGS: std::sync::Mutex<Vec<(std::time::Instant, i32, String)>> = std::sync::Mutex::new(Vec::new());
+static ENDINGS_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Ends this close together were one process going.
+const TOGETHER: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn record_ending(at: std::time::Instant, browser: i32, url: &str) {
+    let mut list = ENDINGS.lock().unwrap_or_else(|e| e.into_inner());
+    list.push((at, browser, url.to_string()));
+    let excess = list.len().saturating_sub(64);
+    list.drain(..excess);
+    ENDINGS_SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// An end beside the others: the pages that went with it, and this site's
+/// earlier ends.
+pub(crate) fn with_neighbors(base: &crate::interstitial::Ended, at: std::time::Instant, me: i32, url: &str) -> crate::interstitial::Ended {
+    let list = ENDINGS.lock().unwrap_or_else(|e| e.into_inner());
+    let host = crate::interstitial::host(url);
+    let near = |t: std::time::Instant| t.max(at).saturating_duration_since(t.min(at)) < TOGETHER;
+    let mut e = base.clone();
+    e.shared = list.iter().filter(|(t, id, _)| *id != me && near(*t))
+        .map(|(_, _, u)| u.split_once("://").map_or(u.as_str(), |(_, r)| r).trim_end_matches('/').to_string()).collect();
+    e.before = list.iter().filter(|(t, _, u)| *t < at && !near(*t) && crate::interstitial::host(u) == host)
+        .map(|(t, _, _)| crate::clock::since(*t)).collect();
+    e
+}
+
+/// Whether something now listens on a local port. Local only: no DNS.
+fn port_answers(host: &str, port: u16) -> bool {
+    use std::net::ToSocketAddrs;
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    (bare, port).to_socket_addrs().map(|mut addrs| addrs.any(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(150)).is_ok())).unwrap_or(false)
+}
+
 wrap_load_handler! {
     pub struct LoadBuilder { shared: SharedRef }
     impl LoadHandler {
@@ -391,9 +509,15 @@ wrap_load_handler! {
             s.paints+=1;
         }
         fn on_load_error(&self,browser:Option<&mut Browser>,frame:Option<&mut Frame>,error_code:Errorcode,_error_text:Option<&CefString>,failed_url:Option<&CefString>) {
-            // Aborted navigations include downloads and requests superseded by another URL.
-            if cef::sys::cef_errorcode_t::from(error_code)==cef::sys::cef_errorcode_t::ERR_ABORTED || !frame.is_some_and(|f|f.is_main()!=0) {return;}
+            let Some(frame)=frame.filter(|f|f.is_main()!=0) else {return};
             let Some(url)=failed_url else {return};
+            // Aborted navigations include downloads, 204s, Stay on this page,
+            // and requests superseded by another URL: none of them an error.
+            if cef::sys::cef_errorcode_t::from(error_code)==cef::sys::cef_errorcode_t::ERR_ABORTED {
+                let current=CefString::from(&frame.url()).to_string();
+                self.shared.borrow_mut().aborted(&url.to_string(),&current);
+                return;
+            }
             let code=cef::sys::cef_errorcode_t::from(error_code) as i32;
             let can_back=browser.is_some_and(|b|b.can_go_back()!=0);
             let mut s=self.shared.borrow_mut();
@@ -415,7 +539,21 @@ wrap_load_handler! {
                     return;
                 }
             }
-            s.interstitial=Some(crate::interstitial::for_error(&dest,code,can_back,now,crate::interstitial::built()));
+            let mut page=crate::interstitial::for_error(&dest,code,can_back,now,crate::interstitial::built());
+            if let Some(at)=s.navigation_at.take() {page.took_to_fail(crate::clock::since(at));}
+            // The server did answer, with an error status and no body.
+            if code==-379 {
+                if let Some(status)=s.log.iter().rev().find(|e|e["kind"]=="response"&&e["url"]==dest.as_str()).and_then(|e|e["status"].as_i64()).filter(|st|*st>0) {
+                    page.failed_as(format!("HTTP {status} with an empty page"));
+                }
+            }
+            if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Slow) {s.overlay=None;}
+            // Tried again and failed the same way: the same page, its commands
+            // and its watch, with the try counted.
+            match s.interstitial.as_mut().filter(|old|old.same_failure(&page)) {
+                Some(old) => old.tried_again(&page),
+                None => s.interstitial=Some(page),
+            }
             s.inject=true;
             if crate::interstitial::portal_suspect(code) {
                 let slot=Arc::new(std::sync::Mutex::new(None));
@@ -429,9 +567,14 @@ wrap_load_handler! {
         }
         fn on_load_start(&self,_browser:Option<&mut Browser>,frame:Option<&mut Frame>,_transition_type:TransitionType) {
             // A document of its own: this tab is more than a download.
-            if frame.is_some_and(|f|f.is_main()!=0) {
+            if let Some(frame)=frame.filter(|f|f.is_main()!=0) {
+                let url=CefString::from(&frame.url()).to_string();
                 let mut s=self.shared.borrow_mut();
+                s.arrived(&url);
                 s.committed=true;
+                s.opened_at=Some(crate::clock::now());
+                // It answered after all: the page that said it was slow goes.
+                if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Slow) {s.overlay=None;}
                 // A new document: whatever played DRM video is gone with the old one.
                 s.protected_video=false;
                 // CEF's blank backing document is not the native page's document.
@@ -447,6 +590,9 @@ wrap_load_handler! {
                 return;
             }
             let url=CefString::from(&frame.url()).to_string();
+            if s.interstitial.is_none() && !url.starts_with("chrome-error:") && url!="about:blank" {
+                if let Some(at)=s.navigation_at {s.loaded_in=Some(crate::clock::since(at));}
+            }
             // CEF names an error document by the address that failed.
             let ours=url.starts_with("chrome-error:") || url=="about:blank" || s.failed_url.as_deref()==Some(url.as_str()) || s.interstitial.as_ref().is_some_and(|p|p.url==url);
             if !s.inject || !ours {return;}
@@ -1531,7 +1677,18 @@ wrap_dev_tools_message_observer! {
                 if s.stop_msg == Some(message_id) {
                     s.stop_msg = None;
                     // "Target crashed" once it has gone is the answer it worked.
-                    if success == 0 && s.stopping.is_some() { tracing::warn!("stop: Chromium didn't crash the renderer: {}", result.map(String::from_utf8_lossy).unwrap_or_default()); }
+                    if success == 0 && s.stopping.is_some() {
+                        let why = result.and_then(|r| serde_json::from_slice::<serde_json::Value>(r).ok()).and_then(|v| v["message"].as_str().map(String::from)).unwrap_or_default();
+                        tracing::warn!("stop: Chromium didn't crash the renderer: {why}");
+                        // Say so on the page that isn't responding, rather than claim it stopped.
+                        s.stopping = None;
+                        s.interstitial = None;
+                        let (url, secs, seen) = (s.url.clone(), s.hung_secs, s.seen());
+                        let mut page = crate::interstitial::Page::hung(&url, secs, &seen);
+                        page.notes.push(crate::interstitial::Note { label: "Couldn't stop it".into(), lines: vec![if why.is_empty() { "Chromium didn't end the page's process".into() } else { format!("Chromium said: {why}") }] });
+                        s.overlay = Some(page);
+                        s.paints += 1;
+                    }
                     return;
                 }
             }
@@ -1539,9 +1696,9 @@ wrap_dev_tools_message_observer! {
                 // The watch's question, answered: the page is alive.
                 let mut s = self.o.shared.borrow_mut();
                 if s.ping.is_some_and(|(id, _)| id == message_id) {
-                    // A failed evaluation (e.g. no renderer/context yet) is
-                    // not a heartbeat. Leave its deadline running.
-                    if success == 0 { return; }
+                    // Any answer, a failed evaluation included (no context
+                    // between documents), means the renderer is taking
+                    // messages: a stuck one sends none.
                     s.ping = None;
                     s.answered = Some(crate::clock::now());
                     if s.hung.is_none() && s.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Hung) {
@@ -1598,7 +1755,7 @@ wrap_dev_tools_message_observer! {
                 }
                 "Runtime.exceptionThrown" => Some(serde_json::json!({ "kind": "console", "level": "error", "text": v.pointer("/exceptionDetails/exception/description").or_else(|| v.pointer("/exceptionDetails/text")).and_then(|t| t.as_str()).unwrap_or("exception"), "at": v.get("timestamp") })),
                 "Network.requestWillBeSent" => Some(serde_json::json!({ "kind": "request", "id": v.get("requestId"), "method": v.pointer("/request/method"), "url": v.pointer("/request/url"), "type": v.get("type"), "at": v.get("timestamp") })),
-                "Network.responseReceived" => Some(serde_json::json!({ "kind": "response", "id": v.get("requestId"), "status": v.pointer("/response/status"), "url": v.pointer("/response/url"), "mime": v.pointer("/response/mimeType"), "type": v.get("type"), "at": v.get("timestamp") })),
+                "Network.responseReceived" => Some(serde_json::json!({ "kind": "response", "id": v.get("requestId"), "status": v.pointer("/response/status"), "url": v.pointer("/response/url"), "mime": v.pointer("/response/mimeType"), "type": v.get("type"), "at": v.get("timestamp"), "ttfb": v.pointer("/response/timing/receiveHeadersEnd") })),
                 "Network.loadingFailed" => Some(serde_json::json!({ "kind": "response", "id": v.get("requestId"), "status": 0, "error": v.get("errorText"), "type": v.get("type"), "at": v.get("timestamp") })),
                 _ => None,
             };
@@ -2291,7 +2448,7 @@ wrap_request_handler! {
                 }
                 // A new page starts over: its questions are counted afresh.
                 if let Some(b)=_browser.as_ref() {crate::page_dialog::reset(b.identifier());}
-                self.display.shared.borrow_mut().navigation(&url);
+                self.display.shared.borrow_mut().browse(&url,_gesture!=0);
             }}}
             0
         }
@@ -2304,25 +2461,34 @@ wrap_request_handler! {
         fn on_render_process_terminated(&self,_browser:Option<&mut Browser>,status:TerminationStatus,error_code: ::std::os::raw::c_int,error_string:Option<&CefString>) {
             let status=cef::sys::cef_termination_status_t::from(status);
             if let Some(at)=self.display.shared.borrow().stopping {tracing::info!("stop: renderer ended ({status:?}) {}ms after stop",crate::clock::since(at).as_millis());}
+            let me=_browser.as_ref().map(|b|b.identifier()).unwrap_or(0);
             let mut s=self.display.shared.borrow_mut();
             s.hung=None;
-            if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Hung) {s.overlay=None;}
+            if s.overlay.as_ref().is_some_and(|o|matches!(o.kind,crate::interstitial::Kind::Hung|crate::interstitial::Kind::Slow)) {s.overlay=None;}
             let url=s.url.clone();
             let oom=status==cef::sys::cef_termination_status_t::TS_PROCESS_OOM;
-            let killed=status==cef::sys::cef_termination_status_t::TS_PROCESS_WAS_KILLED || s.stopping.take().is_some();
+            let yours=s.stopping.take().is_some();
+            let name=error_string.map(|e|e.to_string()).unwrap_or_default();
+            let base=crate::interstitial::Ended {
+                oom, yours,
+                killed: status==cef::sys::cef_termination_status_t::TS_PROCESS_WAS_KILLED && !yours,
+                code: (!oom && !yours).then(||crate::interstitial::exit_words(&name,error_code)).flatten(),
+                open: s.opened_at.map(crate::clock::since),
+                ..Default::default()
+            };
+            let at=crate::clock::now();
+            record_ending(at,me,&url);
+            s.interstitial=Some(crate::interstitial::Page::crashed(&url,&with_neighbors(&base,at,me,&url)));
+            s.ended=Some(EndedAt{base,at,browser:me,url,gen:ENDINGS_SEEN.load(std::sync::atomic::Ordering::Relaxed)});
             s.ping=None;
-            let code=error_string.map(|e|e.to_string()).filter(|e|!e.is_empty()&&e.parse::<i64>().is_err()).unwrap_or_else(||format!("exit code {error_code}"));
-            s.interstitial=Some(crate::interstitial::Page::crashed(&url,oom,&code,killed));
             s.inject=false;s.blank=false;s.loading=false;s.navigation_at=None;s.paints+=1;
             crate::browser_runtime::wake();
         }
         fn on_render_process_unresponsive(&self,_browser:Option<&mut Browser>,callback:Option<&mut UnresponsiveProcessCallback>)->::std::os::raw::c_int {
             let Some(cb)=callback else {return 0};
             let mut s=self.display.shared.borrow_mut();
-            let url=s.url.clone();
             s.hung=Some(cb.clone());
-            s.overlay=Some(crate::interstitial::Page::hung(&url,15));
-            s.paints+=1;
+            s.raise_hung(15);
             crate::browser_runtime::wake();
             1
         }
@@ -3023,8 +3189,47 @@ impl BrowserTab {
     /// swap in the Wi-Fi page when the network turned out to want a
     /// sign-in, and hand over what the transcript asked for.
     pub fn tend_interstitial(&self) -> Vec<String> {
-        let resume = self.shared.borrow_mut().resume_after_stop(crate::clock::now());
+        let now = crate::clock::now();
+        let resume = self.shared.borrow_mut().resume_after_stop(now);
         if let Some(url) = resume { self.load(&url); }
+        {
+            // Another page's renderer ended since this one's page was made:
+            // it may have gone with this one, or be this site again.
+            let mut s = self.shared.borrow_mut();
+            let gen = ENDINGS_SEEN.load(std::sync::atomic::Ordering::Relaxed);
+            if let Some(e) = s.ended.as_mut().filter(|e| e.gen != gen) {
+                e.gen = gen;
+                let (base, at, me, url) = (e.base.clone(), e.at, e.browser, e.url.clone());
+                if s.interstitial.as_ref().is_some_and(|p| p.url == url && p.command.starts_with("page ")) {
+                    s.interstitial = Some(crate::interstitial::Page::crashed(&url, &with_neighbors(&base, at, me, &url)));
+                    s.paints += 1;
+                }
+            }
+        }
+        // A refused local port being watched: load the page once it answers.
+        let due = {
+            let mut s = self.shared.borrow_mut();
+            s.port_watch.as_mut().filter(|w| now.saturating_duration_since(w.2) >= std::time::Duration::from_secs(1)).map(|w| { w.2 = now; (w.0.clone(), w.1) })
+        };
+        if let Some((host, port)) = due {
+            if port_answers(&host, port) {
+                let mut s = self.shared.borrow_mut();
+                s.port_watch = None;
+                s.interstitial_acts.push("retry".into());
+            }
+        }
+        let rewrite = {
+            let mut s = self.shared.borrow_mut();
+            std::mem::take(&mut s.rewrite).then(|| s.interstitial.as_ref().map(|p| (p.script(), p.url.clone()))).flatten()
+        };
+        if let Some((script, url)) = rewrite {
+            if let Some(f) = self.browser.as_ref().and_then(|b| b.main_frame()) {
+                let shown = CefString::from(&f.url()).to_string();
+                if shown.starts_with("chrome-error:") || shown == "about:blank" || shown == url {
+                    f.execute_java_script(Some(&script.as_str().into()), Some(&shown.as_str().into()), 0);
+                }
+            }
+        }
         let (blank, portal) = {
             let mut s = self.shared.borrow_mut();
             let blank = std::mem::take(&mut s.blank);
@@ -3088,6 +3293,42 @@ impl BrowserTab {
         }
     }
 
+    /// A load that hasn't answered: keep waiting (asked again in 30 s), or
+    /// stop it. Stopped with no page behind it, the tab says what happened.
+    pub fn answer_slow(&self, wait: bool) {
+        let url = {
+            let mut s = self.shared.borrow_mut();
+            if s.overlay.as_ref().is_some_and(|o| o.kind == crate::interstitial::Kind::Slow) { s.overlay = None; }
+            s.paints += 1;
+            if wait {
+                if !s.committed { s.navigation_at = Some(crate::clock::now()); }
+                return;
+            }
+            s.url.clone()
+        };
+        let behind = self.browser.as_ref().and_then(|b| b.main_frame()).map(|f| CefString::from(&f.url()).to_string())
+            .is_some_and(|u| !u.is_empty() && u != "about:blank" && !u.starts_with("chrome-error:"));
+        if let Some(b) = &self.browser { b.stop_load(); }
+        if !behind {
+            let can_back = self.can_go_back();
+            let mut s = self.shared.borrow_mut();
+            s.interstitial = Some(crate::interstitial::Page::unreachable(&url, "ERR_TIMED_OUT", can_back));
+            s.loading = false;
+            s.navigation_at = None;
+        }
+    }
+
+    /// Load this page when its local port answers: a dev server coming back.
+    pub fn watch_port(&self, said: Option<String>) {
+        let mut s = self.shared.borrow_mut();
+        let Some(url) = s.interstitial.as_ref().map(|p| p.url.clone()) else { return };
+        let host = crate::interstitial::host(&url);
+        s.port_watch = Some((host, crate::interstitial::port_of(&url), crate::clock::now() - std::time::Duration::from_secs(2)));
+        if let Some(p) = s.interstitial.as_mut() { p.watching(said); }
+        s.rewrite = true;
+        s.paints += 1;
+    }
+
     /// The hung renderer: keep waiting, or end it.
     pub fn answer_hung(&self, wait: bool) {
         let cb = {
@@ -3101,7 +3342,7 @@ impl BrowserTab {
             } else {
                 s.stopping = Some(crate::clock::now());
                 let url = s.url.clone();
-                s.interstitial = Some(crate::interstitial::Page::crashed(&url, false, "", true));
+                s.interstitial = Some(crate::interstitial::Page::stopping(&url));
                 s.loading = false;
                 s.navigation_at = None;
             }
@@ -3127,13 +3368,7 @@ impl BrowserTab {
     /// `HUNG_AFTER` without one the hung transcript comes up over it.
     /// Chromium's own hang signal (on input) raises it too.
     pub fn watch(&self) {
-        let can_back = self.can_go_back();
-        let expired = {
-            let mut s = self.shared.borrow_mut();
-            let had_error = s.interstitial.is_some();
-            s.check_navigation_deadline(crate::clock::now(), can_back);
-            !had_error && s.interstitial.is_some()
-        };
+        let expired = self.shared.borrow_mut().check_navigation_deadline(crate::clock::now());
         if expired { if let Some(b) = &self.browser { b.stop_load(); } }
         const EVERY: std::time::Duration = std::time::Duration::from_secs(3);
         const HUNG_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
@@ -3143,9 +3378,7 @@ impl BrowserTab {
             if s.interstitial.is_some() || s.suspended { return; }
             match s.ping {
                 Some((_, at)) if crate::clock::since(at) >= HUNG_AFTER && s.overlay.is_none() => {
-                    let url = s.url.clone();
-                    s.overlay = Some(crate::interstitial::Page::hung(&url, crate::clock::since(at).as_secs()));
-                    s.paints += 1;
+                    s.raise_hung(crate::clock::since(at).as_secs());
                     false
                 }
                 Some(_) => false,
@@ -3492,6 +3725,63 @@ mod browser_failure_tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn a_load_that_came_to_nothing_leaves_the_page_and_no_deadline() {
+        let at = Instant::now();
+        let mut s = Shared::default();
+        s.navigation("https://page.test/");
+        s.committed = true;
+        s.painted_committed = true;
+        s.navigation("https://page.test/nocontent");
+        s.navigation_at = Some(at);
+        s.aborted("https://page.test/nocontent", "https://page.test/");
+        assert_eq!(s.url, "https://page.test/");
+        assert!(s.navigation_at.is_none() && s.committed && s.painted_committed);
+        assert!(!s.check_navigation_deadline(at + Duration::from_secs(60)));
+        assert!(s.transcript().is_none());
+        // A newer load took over: its deadline and address stand.
+        s.navigation("https://page.test/next");
+        s.aborted("https://page.test/older", "https://page.test/");
+        assert_eq!(s.url, "https://page.test/next");
+        assert!(s.navigation_at.is_some());
+    }
+
+    #[test]
+    fn chromiums_own_retry_keeps_the_page_until_a_document_arrives() {
+        let url = "http://localhost:5173/";
+        let failed = || Some(crate::interstitial::Page::unreachable(url, "ERR_CONNECTION_REFUSED", false));
+        let mut s = Shared::default();
+        s.navigation(url);
+        s.interstitial = failed();
+        s.browse(url, false);
+        assert!(s.interstitial.is_some(), "the error page reloading itself keeps nus's page");
+        s.arrived("chrome-error://chromewebdata/");
+        assert!(s.interstitial.is_some());
+        s.arrived(url);
+        assert!(s.interstitial.is_none(), "the site's own document arrived");
+        s.interstitial = failed();
+        s.browse(url, true);
+        assert!(s.interstitial.is_none(), "a click is a new load");
+        s.interstitial = failed();
+        s.browse("http://localhost:3000/", false);
+        assert!(s.interstitial.is_none(), "somewhere else is a new load");
+    }
+
+    #[test]
+    fn pages_that_ended_together_and_before_are_named() {
+        let base = crate::interstitial::Ended::default();
+        let t0 = crate::clock::now();
+        record_ending(t0, 9001, "https://site.test/editor");
+        record_ending(t0 + Duration::from_millis(300), 9002, "https://site.test/sheet");
+        let e = with_neighbors(&base, t0, 9001, "https://site.test/editor");
+        assert_eq!(e.shared, ["site.test/sheet"]);
+        assert!(e.before.is_empty());
+        record_ending(t0 + Duration::from_secs(600), 9001, "https://site.test/editor");
+        let later = with_neighbors(&base, t0 + Duration::from_secs(600), 9001, "https://site.test/editor");
+        assert!(later.shared.is_empty());
+        assert_eq!(later.before.len(), 2, "both earlier ends of this site");
+    }
+
+    #[test]
     fn a_load_while_a_stopped_page_is_still_going_waits_for_it_to_go() {
         let mut s = Shared::default();
         let at = Instant::now();
@@ -3533,11 +3823,13 @@ mod browser_failure_tests {
         s.navigation("https://silent.test/");
         let at = Instant::now();
         s.navigation_at = Some(at);
-        s.check_navigation_deadline(at + Duration::from_secs(29), false);
+        assert!(!s.check_navigation_deadline(at + Duration::from_secs(29)));
         assert!(s.transcript().is_none());
-        s.check_navigation_deadline(at + Duration::from_secs(30), false);
-        assert_eq!(s.transcript().unwrap().kind, Kind::Unreachable);
-        assert!(!s.loading);
+        // Said, never stopped: the load goes on, and can still arrive.
+        assert!(!s.check_navigation_deadline(at + Duration::from_secs(30)));
+        assert_eq!(s.transcript().unwrap().kind, Kind::Slow);
+        assert!(s.loading && s.interstitial.is_none());
+        assert_eq!(s.transcript().unwrap().default_act().unwrap().verb, "wait");
         assert!(s.transcript().unwrap().acts.iter().any(|a| a.verb == "retry"));
         s.navigation("https://working.test/");
         assert!(s.transcript().is_none());
@@ -3550,14 +3842,14 @@ mod browser_failure_tests {
         let at = Instant::now();
         let mut s = Shared { url: "https://paint.test/".into(), committed: true,
             navigation_at: Some(at), ..Default::default() };
-        s.check_navigation_deadline(at + Duration::from_secs(31), true);
+        s.check_navigation_deadline(at + Duration::from_secs(31));
         assert_eq!(s.transcript().unwrap().kind, Kind::Crash);
         assert!(s.transcript().unwrap().body.contains("could not draw"));
         s.navigation("https://paint.test/");
         s.navigation_at = Some(at);
         s.committed = true;
         s.painted_committed = true;
-        s.check_navigation_deadline(at + Duration::from_secs(120), true);
+        s.check_navigation_deadline(at + Duration::from_secs(120));
         assert!(s.loading && s.transcript().is_none());
     }
 
@@ -3567,7 +3859,7 @@ mod browser_failure_tests {
             let at = Instant::now();
             let mut s = Shared { suspended, download_waiting: !suspended,
                 navigation_at: Some(at), ..Default::default() };
-            s.check_navigation_deadline(at + Duration::from_secs(120), false);
+            s.check_navigation_deadline(at + Duration::from_secs(120));
             assert!(s.transcript().is_none());
         }
     }

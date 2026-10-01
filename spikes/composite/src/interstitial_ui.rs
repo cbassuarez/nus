@@ -8,7 +8,38 @@ use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene};
 
 use crate::app::{fade, App, Pane, WebPane};
-use crate::interstitial::{Kind, Page, Sev};
+use crate::interstitial::{Kind, Mark, Page, Sev};
+
+/// The highlighted command starts at a new transcript's default: a choice
+/// made on the page before it (↓ to retry) must not carry to this one.
+pub(crate) fn follow_page(w: &mut WebPane, page: &Page) {
+    if w.overlay_page != page.token {
+        w.overlay_page = page.token.clone();
+        w.overlay_sel = page.acts.iter().position(|a| !a.unsafe_).unwrap_or(0);
+    }
+}
+
+/// A refused local port's page: what last served it, from ports that
+/// remember, and the commands to start it again or watch for it. Once.
+pub(crate) fn tell_last_on_port(w: &mut WebPane, remembered: &[crate::ports::Remembered]) {
+    let mut s = w.tab.shared.borrow_mut();
+    let Some(p) = s.interstitial.as_mut() else { return };
+    let refused = p.trace.iter().any(|st| st.mark == Mark::Fail && st.what.get(1).is_some_and(|c| c == "ERR_CONNECTION_REFUSED"));
+    let told = p.acts.iter().any(|a| a.verb == "watch") || p.notes.iter().any(|n| n.label == "Watching");
+    if p.kind != Kind::Unreachable || !refused || told || !crate::interstitial::is_local(&p.url) {
+        return;
+    }
+    let port = crate::interstitial::port_of(&p.url);
+    let now = crate::journal::now();
+    let last = remembered.iter().find(|m| m.port == port).map(|m| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cwd = if !home.is_empty() && m.cwd.starts_with(&home) { format!("~{}", &m.cwd[home.len()..]) } else { m.cwd.clone() };
+        (m.process.clone(), m.command.clone(), cwd, std::time::Duration::from_secs(now.saturating_sub(m.last_seen)))
+    });
+    p.last_on_port(last.as_ref().map(|(a, b, c, d)| (a.as_str(), b.as_str(), c.as_str(), *d)));
+    s.rewrite = true;
+    s.paints += 1;
+}
 
 /// The waking transcript stands until the woken page paints a document
 /// of its own — its first paint, not the end of its load: the rest of
@@ -42,6 +73,51 @@ impl App {
         // Dispatch only actions offered by the current native transcript. In
         // particular, a stale action must not activate a hidden security choice.
         if page.kind != Kind::Index && !page.acts.iter().any(|action| action.verb == verb) { return; }
+        match verb {
+            // The pages whose renderer ended with this one, reloaded with it.
+            "retry-all" => {
+                let at = w.tab.shared.borrow().ended.as_ref().map(|e| e.at);
+                let others = at.map(|at| self.ended_with(at, id, right)).unwrap_or_default();
+                self.interstitial_act(id, right, "retry");
+                for (other, on_right) in others {
+                    self.interstitial_act(other, on_right, "retry");
+                }
+                return;
+            }
+            "details" => {
+                let text = page.details(&format!("{} ({})", env!("NUS_BUILD_VERSION"), env!("NUS_BUILD_REVISION")));
+                match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                    Ok(()) => self.notice(nus_render::text::icons::COPY, "Copied What Happened", crate::interstitial::host(&page.url)),
+                    Err(_) => self.notice_problem("Could Not Copy", "the clipboard isn't available"),
+                }
+                self.dirty = true;
+                return;
+            }
+            // Its saved command, again, in a new shell: never typed into an
+            // existing one (see ports' RUN SAVED COMMAND). The page waits for
+            // the port and loads when it answers.
+            "start" => {
+                let port = crate::interstitial::port_of(&page.url);
+                let Some(m) = self.board.remembered.iter().find(|m| m.port == port).cloned() else { return };
+                let profile = self.behavior.default_profile;
+                match self.new_term_pane_at(false, profile, Some(m.cwd.clone())) {
+                    Ok(mut t) => {
+                        t.type_at_prompt = Some(format!("{}\r", m.command));
+                        t.type_origin = Some(crate::finish_work::Origin::NusAction);
+                        let tab = self.make_tab(Pane::Term(t), None);
+                        self.tabs.push(tab);
+                        let said = format!("{} started in tab {}", m.process, self.tab_label(self.tabs.len() - 1));
+                        if let Some(w) = self.web_pane_by_id(id, right) {
+                            w.tab.watch_port(Some(said));
+                        }
+                    }
+                    Err(_) => self.notice_problem("Could Not Open Terminal", format!("for port {port}")),
+                }
+                self.dirty = true;
+                return;
+            }
+            _ => {}
+        }
         if verb == "retry" && w.tab.browser.is_none() {
             let container = w.container.clone();
             if let Some(replacement) = self.new_web_pane_in(&page.url, &container) {
@@ -78,7 +154,9 @@ impl App {
                 crate::interstitial::allow(format!("site:{host}"));
                 w.tab.load(&page.url);
             }
+            "wait" | "stop" if page.kind == Kind::Slow => w.tab.answer_slow(verb == "wait"),
             "wait" | "stop" => w.tab.answer_hung(verb == "wait"),
+            "watch" => w.tab.watch_port(None),
             // The page's own question, or a sign-in: answered, and gone.
             "ok" | "leave" | "reload" | "signin" if page.kind == Kind::Dialog => w.tab.answer_dialog(true, &page.fields),
             "cancel" | "stay" if page.kind == Kind::Dialog => w.tab.answer_dialog(false, &page.fields),
@@ -111,6 +189,25 @@ impl App {
             _ => {}
         }
         self.dirty = true;
+    }
+
+    /// Pages whose renderer ended within a moment of `at`, other than this one.
+    fn ended_with(&self, at: std::time::Instant, id: u64, right: bool) -> Vec<(u64, bool)> {
+        let mut out = Vec::new();
+        for tab in &self.tabs {
+            for (on_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|p| (true, p))) {
+                let Pane::Web(w) = p else { continue };
+                if (tab.id, on_right) == (id, right) {
+                    continue;
+                }
+                let s = w.tab.shared.borrow();
+                let together = s.ended.as_ref().is_some_and(|e| e.at.max(at).saturating_duration_since(e.at.min(at)) < std::time::Duration::from_secs(2));
+                if together && s.interstitial.as_ref().is_some_and(|p| matches!(p.kind, Kind::Crash | Kind::Oom)) {
+                    out.push((tab.id, on_right));
+                }
+            }
+        }
+        out
     }
 
     /// Every idle page but this tab's, asleep now (the out-of-memory page).
@@ -156,6 +253,7 @@ impl App {
         let (id, right) = (tab.id, tab.focus_right && tab.right.is_some());
         let Some(w) = self.web_pane_by_id(id, right) else { return false };
         let Some(page) = w.tab.shared.borrow().transcript().cloned() else { return false };
+        follow_page(w, &page);
         let n = page.acts.len().max(1);
         let dialog = page.kind == Kind::Dialog;
         let action_tab = page.fields.is_empty()
@@ -273,6 +371,7 @@ impl App {
             self.draw_transcript(scene, w.page, &p, w.overlay_sel, &mut w.overlay_hits);
             return;
         }
+        follow_page(w, &page);
         w.overlay_sel = w.overlay_sel.min(page.acts.len().saturating_sub(1));
         self.draw_transcript(scene, w.page, &page, w.overlay_sel, &mut w.overlay_hits);
     }
@@ -314,14 +413,85 @@ impl App {
                 y += line_h;
             }
         }
-        y += line_h * 0.8;
-        for w in crate::reader::wrap(&self.fonts, strong, &page.head, width) {
-            self.fonts.draw(scene, strong, tx, y, &w);
-            y += line_h;
+        // With a trace, the verdict is the headline: a size up, right under the command.
+        let traced = !page.trace.is_empty();
+        let head = if traced { Style { px: strong.px * 16.0 / 13.0, ..strong } } else { strong };
+        y += if page.log.is_empty() { line_h * 0.3 } else { line_h * 0.8 };
+        for w in crate::reader::wrap(&self.fonts, head, &page.head, width) {
+            self.fonts.draw(scene, head, tx, y, &w);
+            y += line_h * if traced { 1.15 } else { 1.0 };
         }
         for w in crate::reader::wrap(&self.fonts, ui, &page.body, width.min(self.px(68.0 * 8.4))) {
             self.fonts.draw(scene, ui, tx, y, &w);
             y += line_h;
+        }
+        // The trace: a ruled row a step, the failing one marked by the rule.
+        if traced {
+            y += line_h * 0.8;
+            self.fonts.draw(scene, label, tx, y, "TRACE");
+            y += line_h * 0.5;
+            let edge = fade(ink, 0.14);
+            let rule_color = if page.sev == Sev::Danger { self.surface.signal } else { ink };
+            let pad = self.px(4.0);
+            let name_w = self.px(96.0);
+            let time_w = self.px(72.0);
+            let mark_w = self.px(16.0);
+            let gap = self.px(14.0);
+            let what_x = tx + self.px(12.0) + name_w + gap;
+            let what_w = (tx + width - mark_w - gap - time_w - gap - what_x).max(self.px(80.0));
+            for st in &page.trace {
+                let fail = st.mark == Mark::Fail;
+                scene.rect(Rect::new(tx, y, width, self.px(1.0)), edge);
+                let top = y;
+                y += pad + line_h * 0.72;
+                let first = y;
+                let name_style = Style { color: if fail { ink } else { t.dim }, ..self.label() };
+                self.fonts.draw(scene, name_style, tx + self.px(12.0), y, &st.name.to_uppercase());
+                for (i, line) in st.what.iter().enumerate() {
+                    let style = if i == 0 { if fail { strong } else { ui } } else { dim };
+                    for w in crate::reader::wrap(&self.fonts, style, line, what_w) {
+                        self.fonts.draw(scene, style, what_x, y, &w);
+                        y += line_h;
+                    }
+                }
+                if !st.time.is_empty() {
+                    let tw = self.fonts.measure(dim, &st.time);
+                    self.fonts.draw(scene, dim, tx + width - mark_w - gap - tw, first, &st.time);
+                }
+                // The mark, drawn as nus's own icons: Plex Mono has no ✓.
+                let size = ui.px * 0.95;
+                let icon = match st.mark {
+                    Mark::Ok => Some(nus_render::text::icons::CHECK),
+                    Mark::Fail => Some(nus_render::text::icons::CLOSE),
+                    Mark::Skip => Some(nus_render::text::icons::MINUS),
+                    Mark::Wait | Mark::Fact => None,
+                };
+                if let Some(icon) = icon {
+                    let color = if st.mark == Mark::Skip { t.dim } else { ink };
+                    self.fonts.draw_icon(scene, icon, size, tx + width - size, first - size * 0.82, color);
+                } else if st.mark == Mark::Wait {
+                    let gw = self.fonts.measure(ui, "…");
+                    self.fonts.draw(scene, ui, tx + width - gw, first, "…");
+                }
+                y += pad - line_h * 0.72;
+                if fail {
+                    scene.rect(Rect::new(tx, top, self.px(3.0), y - top), rule_color);
+                }
+            }
+            scene.rect(Rect::new(tx, y, width, self.px(1.0)), edge);
+            y += line_h * 0.72;
+        }
+        for note in &page.notes {
+            y += line_h * 0.8;
+            self.fonts.draw(scene, label, tx, y, &note.label.to_uppercase());
+            y += line_h;
+            for (i, line) in note.lines.iter().enumerate() {
+                let style = if i == 0 { ui } else { dim };
+                for w in crate::reader::wrap(&self.fonts, style, line, width) {
+                    self.fonts.draw(scene, style, tx, y, &w);
+                    y += line_h;
+                }
+            }
         }
         // Lines to type on: the label, then what's there, a caret on the one
         // being typed into. A secret one shows a dot a character.
@@ -375,8 +545,9 @@ impl App {
             scene.rect(Rect::new(tx + pw, y - ui.px * 0.8, cw, ui.px), fade(ink, 0.8));
             y += line_h;
         }
-        // The rule down the left: signal for danger, ink for a problem.
-        let rule = match page.sev { Sev::Danger => Some(self.surface.signal), Sev::Problem => Some(ink), Sev::Rest => None };
+        // The rule down the left: signal for danger, ink for a problem. A
+        // traced page carries it on the step that failed instead.
+        let rule = match page.sev { _ if traced => None, Sev::Danger => Some(self.surface.signal), Sev::Problem => Some(ink), Sev::Rest => None };
         if let Some(c) = rule {
             scene.rect(Rect::new(x0, top, self.px(3.0), y - top - line_h * 0.3), c);
         }
