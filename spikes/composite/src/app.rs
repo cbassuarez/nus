@@ -1984,11 +1984,23 @@ impl App {
         self.new_web_pane_in(url, &c)
     }
 
+    /// The logical size a page opened now will most likely be laid out at
+    /// (a tab of its own), so it is born at its size rather than resized
+    /// before its first frame. layout() still gives the exact size.
+    fn new_page_size(&self) -> (f32, f32) {
+        let c = self.content_rect();
+        let (scale, bare) = (self.scale.max(0.1), self.focus);
+        let url_row = if bare { 0.0 } else { self.header_h() };
+        let tools_row = if bare { 0.0 } else { (m::PANE_FOOTER * scale).round() };
+        let h = (c.h.round() - url_row - tools_row).max(1.0);
+        ((c.w.round() / scale).floor().max(1.0), (h / scale).floor().max(1.0))
+    }
+
     /// A page in a named container.
     pub(crate) fn new_web_pane_in(&mut self, url: &str, container: &str) -> Option<WebPane> {
         let shared: SharedRef = Rc::new(std::cell::RefCell::new(Shared {
             scale: self.scale,
-            size: (100.0, 100.0),
+            size: self.new_page_size(),
             ..Default::default()
         }));
         if let Ok(mut config)=shared.borrow().viewer.write(){*config=self.viewer_config();}

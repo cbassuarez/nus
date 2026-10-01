@@ -61,6 +61,12 @@ pub struct Shared {
     pub target_msg: i32,
     /// Logical size CEF should render at; app sets it, view_rect reads it.
     pub size: (f32, f32),
+    /// macOS: a size asked for before the first frame, applied after it.
+    /// Shared-texture frames come from a capturer sized when the page is
+    /// shown, and CEF holds every later resize until a frame arrives at the
+    /// new size; resized before its first frame, a page never gets one and
+    /// stays in its birth size, shrunk to fit.
+    pub held_size: Option<(f32, f32)>,
     pub scale: f32,
     /// Page zoom is re-rasterized by Chromium at each intermediate size.
     /// Never animate the previously painted page texture.
@@ -3111,18 +3117,22 @@ impl BrowserTab {
     }
 
     pub fn resized(&self, w: f32, h: f32) {
+        let host = self.host();
         {
             let mut s = self.shared.borrow_mut();
             if s.size == (w, h) {
+                s.held_size = None;
                 return;
             }
+            if cfg!(target_os = "macos") && host.is_some() && s.paints == 0 {
+                s.held_size = Some((w, h));
+                return;
+            }
+            s.held_size = None;
             s.size = (w, h);
         }
-        if let Some(h) = self.host() {
+        if let Some(h) = host {
             h.was_resized();
-            // macOS takes shared-texture frames from Chromium's capturer, which
-            // only sends on damage: a page already painted keeps its old size
-            // (shrunk into the old surface) until something asks for a frame.
             h.invalidate(cef::PaintElementType::VIEW);
         }
     }
@@ -3175,9 +3185,15 @@ impl BrowserTab {
     }
 
     pub fn begin_frame(&self) {
-        if let Some(h) = self.host() {
-            h.send_external_begin_frame();
+        let Some(h) = self.host() else { return };
+        let held = {
+            let mut s = self.shared.borrow_mut();
+            if s.paints > 0 { s.held_size.take() } else { None }
+        };
+        if let Some((w, hh)) = held {
+            self.resized(w, hh);
         }
+        h.send_external_begin_frame();
     }
 
     pub fn mouse_move(&self, x: i32, y: i32, mods: u32, leave: bool) {
