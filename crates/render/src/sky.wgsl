@@ -1,5 +1,8 @@
 // Ground sky: a slowly refreshed cloud volume, then a cheap world-space reprojection.
 // All directions use East, Up, North. Weather constrains modeled cloud shapes.
+// With the real sky on, the Hipparcos stars, planets and constellation figures are
+// laid into the target first (star_vs/line_vs) and the clouds are composited over
+// them: the presentation pass writes (colour, 1 - how much of the star layer shows).
 struct Params {
     resolution: vec4<f32>, // output width, height, aspect, volume overscan
     sun: vec4<f32>,        // EUN direction, lunar illumination
@@ -17,6 +20,13 @@ struct Params {
     reading: vec4<f32>,    // top-left normalized x, y, width, height
     reading_footer: vec4<f32>,
     protection: vec4<f32>, // legacy strength, min/max luminance, outside feather
+    rot0: vec4<f32>,       // J2000 equatorial -> East row; w = 1 when the real star sky is on
+    rot1: vec4<f32>,       // ... Up
+    rot2: vec4<f32>,       // ... North
+    body: vec4<f32>,       // Sun radius, Moon radius (rad; 0 = default), Sun's visible fraction, corona
+    shadow: vec4<f32>,     // Earth's shadow axis EUN, umbra radius (rad; 0 = no lunar eclipse)
+    lunar: vec4<f32>,      // penumbra radius, moonlight glow, constellation reveal, unused
+    ecl_north: vec4<f32>,  // ecliptic north EUN
 }
 @group(0) @binding(0) var<uniform> u: Params;
 @group(0) @binding(1) var noise_texture: texture_3d<f32>;
@@ -33,6 +43,25 @@ struct VertexOut { @builtin(position) position: vec4<f32>, @location(0) uv: vec2
     return out;
 }
 fn sat(v: f32) -> f32 { return clamp(v, 0.0, 1.0); }
+fn stars_on() -> bool { return u.rot0.w > 0.5; }
+fn sun_radius() -> f32 { return select(0.00465, u.body.x, u.body.x > 0.0); }
+fn moon_radius() -> f32 { return select(0.00465, u.body.y, u.body.y > 0.0); }
+// Sunlight left while the Moon crosses the Sun: the sky's mood follows the light, not the altitude.
+fn eclipse_light() -> f32 { return pow(clamp(u.body.z, 0.0, 1.0), 0.55); }
+// The Sun's altitude as the sky feels it: an eclipse's dimming is a dip toward twilight.
+fn sun_y() -> f32 {
+    if u.body.z >= 0.999 { return u.sun.y; }
+    return min(u.sun.y, mix(-0.075, u.sun.y, eclipse_light()));
+}
+// 0 outside totality, 1 at totality: the sunset all the way round the horizon.
+fn totality_ring() -> f32 { return smoothstep(0.94, 1.0, 1.0 - clamp(u.body.z, 0.0, 1.0)); }
+// The angle between two unit vectors, accurate when it is a few thousandths of a radian
+// (acos of a dot product runs out of float precision long before a Sun's width).
+fn angle_to(a: vec3<f32>, b: vec3<f32>) -> f32 { return atan2(length(cross(a, b)), dot(a, b)); }
+// How much of the whole sky's brightness an eclipse leaves: dusk at totality.
+fn eclipse_dim() -> f32 { return mix(0.26, 1.0, smoothstep(0.0, 0.6, eclipse_light())); }
+// The Moon's light on the sky: its phase, less what the Earth's shadow takes.
+fn moon_light() -> f32 { return select(u.sun.w, u.lunar.y, stars_on()); }
 fn noise(p: vec3<f32>) -> vec4<f32> { return textureSampleLevel(noise_texture, noise_sampler, p, 0.0); }
 fn n3(p: vec3<f32>) -> f32 { return noise(p).r; }
 fn rain() -> f32 { return 1.0 - exp(-u.air.x * 0.45); }
@@ -81,7 +110,7 @@ fn phase_hg(mu: f32, g: f32) -> f32 {
     return (1.0 - g2) / pow(max(0.04, 1.0 + g2 - 2.0 * g * mu), 1.5);
 }
 fn sky_color(d: vec3<f32>) -> vec3<f32> {
-    let sy = u.sun.y; let day = smoothstep(-0.15, 0.12, sy);
+    let sy = sun_y(); let day = smoothstep(-0.15, 0.12, sy);
     let dusk = exp(-pow((sy - 0.035) * 5.2, 2.0));
     let horizon_amount = pow(1.0 - sat(d.y), 3.0); let mu = dot(d, u.sun.xyz);
     var zenith = mix(vec3(0.0015, 0.0035, 0.011), vec3(0.025, 0.155, 0.395), day);
@@ -89,6 +118,10 @@ fn sky_color(d: vec3<f32>) -> vec3<f32> {
     let toward = pow(sat(mu * 0.5 + 0.5), 5.0);
     horizon = mix(horizon, vec3(0.98, 0.40, 0.13), dusk * (0.26 + 0.60 * toward));
     zenith = mix(zenith, vec3(0.10, 0.135, 0.275), dusk * 0.24);
+    // Totality: a sunset on every side, and a deep blue overhead.
+    let ring = totality_ring();
+    horizon = mix(horizon, vec3(0.95, 0.42, 0.16) * 0.80, ring * 0.62);
+    zenith = mix(zenith, vec3(0.045, 0.06, 0.15), ring * 0.55);
     var sky = mix(zenith, horizon, horizon_amount);
     sky += vec3(1.0, 0.67, 0.37) * pow(sat(mu), 16.0) * 0.15 * day;
     sky += vec3(1.0, 0.90, 0.70) * pow(sat(mu), 80.0) * 0.11 * day;
@@ -97,8 +130,8 @@ fn sky_color(d: vec3<f32>) -> vec3<f32> {
     sky = mix(sky, horizon, haze);
     // Moonlight is a faint directional halo, never an invented opposite Sun.
     sky += vec3(0.018, 0.025, 0.042) * pow(sat(dot(d, u.moon.xyz)), 120.0)
-        * u.sun.w * smoothstep(-0.02, 0.10, u.moon.y) * (1.0 - day);
-    return sky;
+        * moon_light() * smoothstep(-0.02, 0.10, u.moon.y) * (1.0 - day);
+    return sky * eclipse_dim();
 }
 fn light_direction() -> vec3<f32> {
     return select(u.moon.xyz, u.sun.xyz, u.sun.y > -0.055);
@@ -117,11 +150,11 @@ fn shadow(point: vec3<f32>, direction: vec3<f32>) -> f32 {
     let hi = min(45.0, (cloud_top() - origin.y) / rd.y);
     let ds = (hi - lo) / 88.0;
     var distance = lo + 0.5 * ds; var sum = vec3(0.0); var transmission = 1.0;
-    let day = smoothstep(-0.12, 0.10, u.sun.y);
-    let warm = exp(-pow((u.sun.y - 0.03) * 4.5, 2.0));
+    let day = smoothstep(-0.12, 0.10, sun_y());
+    let warm = exp(-pow((sun_y() - 0.03) * 4.5, 2.0));
     let light_dir = light_direction();
     let sun_color = mix(vec3(1.0, 0.96, 0.87), vec3(1.0, 0.36, 0.105), warm * 0.88);
-    let moon_strength = u.sun.w * smoothstep(-0.02, 0.10, u.moon.y) * 0.06 * (1.0 - day);
+    let moon_strength = moon_light() * smoothstep(-0.02, 0.10, u.moon.y) * 0.06 * (1.0 - day);
     let solar = day * (1.12 + warm * 0.72) + moon_strength;
     let source_color = mix(vec3(0.55, 0.70, 1.0), sun_color, day);
     let mu = dot(rd, light_dir);
@@ -150,7 +183,7 @@ fn shadow(point: vec3<f32>, direction: vec3<f32>) -> f32 {
 }
 fn upper_layers(rd: vec3<f32>, background: vec3<f32>) -> vec4<f32> {
     var sky = background; var transmission = 1.0;
-    let day = smoothstep(-0.11, 0.13, u.sun.y); let warm = exp(-pow(u.sun.y * 5.0, 2.0));
+    let day = smoothstep(-0.11, 0.13, sun_y()); let warm = exp(-pow(sun_y() * 5.0, 2.0));
     let tint = mix(vec3(0.85, 0.91, 1.0), vec3(1.0, 0.54, 0.29), warm * 0.80) * (0.018 + 0.95 * day);
     if u.weather.z > 0.001 {
         var p = rd.xz / max(0.12, rd.y);
@@ -179,7 +212,7 @@ fn upper_layers(rd: vec3<f32>, background: vec3<f32>) -> vec4<f32> {
 fn moon_disc(rd: vec3<f32>) -> vec3<f32> {
     if u.moon.y < -0.01 { return vec3(0.0); }
     let delta = rd - u.moon.xyz * dot(rd, u.moon.xyz);
-    let radius = 0.00465;
+    let radius = moon_radius();
     let q = length(delta) / radius;
     if q > 1.08 || dot(rd, u.moon.xyz) < 0.0 { return vec3(0.0); }
     let z = sqrt(max(0.0, 1.0 - q * q));
@@ -189,9 +222,47 @@ fn moon_disc(rd: vec3<f32>) -> vec3<f32> {
     let phase_z = 2.0 * u.sun.w - 1.0;
     let normal_light = dot(delta / radius, tangent) * sqrt(max(0.0, 1.0 - phase_z * phase_z)) + z * phase_z;
     let lit = smoothstep(-0.018, 0.020, normal_light) * (1.0 - smoothstep(0.94, 1.04, q));
-    return vec3(0.70, 0.75, 0.83) * lit;
+    var tone = vec3(0.70, 0.75, 0.83);
+    if u.shadow.w > 0.0 {
+        // The Earth's shadow across the disc: a soft penumbra, then the umbra, its
+        // edge blurred by the atmosphere and its heart a dim copper.
+        let d = acos(clamp(dot(rd, u.shadow.xyz), -1.0, 1.0));
+        let ru = u.shadow.w; let rp = u.lunar.x;
+        let soft = 0.10 * radius;
+        let umbra = 1.0 - smoothstep(ru - soft, ru + soft, d);
+        let pen = 1.0 - smoothstep(ru, rp, d);
+        let depth = clamp((ru - d) / ru, 0.0, 1.0);
+        let copper = vec3(0.62, 0.20, 0.075) * mix(0.62, 0.17, clamp(depth * 1.7, 0.0, 1.0));
+        tone = mix(tone * (1.0 - 0.45 * pen), copper, umbra * 0.94);
+    }
+    return tone * lit;
 }
 fn hash(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+// The corona: pearly and bright at the limb, drawn out into streamers along the
+// Sun's equator, with the polar plumes of an active Sun. Shaped by the angle round
+// the Sun, so it hangs the same way whatever the camera does.
+fn corona(rd: vec3<f32>) -> vec3<f32> {
+    let amount = u.body.w;
+    if amount <= 0.001 { return vec3(0.0); }
+    let sr = sun_radius();
+    let r = angle_to(rd, u.sun.xyz) / sr;
+    if r < 0.9 || r > 16.0 { return vec3(0.0); }
+    let c = dot(rd, u.sun.xyz);
+    let axis = normalize(u.ecl_north.xyz - u.sun.xyz * dot(u.ecl_north.xyz, u.sun.xyz));
+    let side = cross(u.sun.xyz, axis);
+    let delta = rd - u.sun.xyz * c;
+    let theta = atan2(dot(delta, side), dot(delta, axis));
+    // Equatorial belt (across the axis), polar plumes (along it), a few irregular rays.
+    let belt = pow(abs(sin(theta)), 2.2);
+    let plume = pow(abs(cos(theta)), 14.0);
+    let rays = 0.5 + 0.5 * (0.55 * sin(7.0 * theta + 1.3) + 0.30 * sin(13.0 * theta + 4.1) + 0.15 * sin(23.0 * theta + 0.4));
+    let reach = 1.0 + 3.2 * belt + 1.6 * plume + 0.9 * rays;
+    let inner = 1.35 * exp(-(r - 1.0) * 1.9);
+    let outer = 0.55 * pow(max(r, 1.0), -3.1) * reach * (0.45 + 0.9 * rays);
+    let rim = smoothstep(0.9, 1.04, r);
+    let tint = mix(vec3(1.0, 0.97, 0.92), vec3(0.86, 0.92, 1.0), smoothstep(1.5, 5.0, r));
+    return tint * (inner + outer) * rim * amount * 0.9;
+}
 @fragment fn present_main(in: VertexOut) -> @location(0) vec4<f32> {
     let rd = ray(in.uv, 1.0);
     let upper = upper_layers(rd, sky_color(rd));
@@ -204,11 +275,24 @@ fn hash(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43
     let old_uv = vec2(old_xy.x * 0.5 + 0.5, 0.5 - old_xy.y * 0.5);
     let cloud = textureSampleLevel(cloud_texture, cloud_sampler, old_uv, 0.0);
     let T = cloud.a * upper.a;
-    let disk = smoothstep(cos(0.0049), cos(0.0040), dot(rd, u.sun.xyz)) * smoothstep(-0.15, 0.12, u.sun.y);
+    let sr = sun_radius(); let mr = moon_radius();
+    // The Moon in front of the Sun: 1 where its disc covers, 0 where the Sun's light gets through.
+    let cover = (1.0 - smoothstep(mr * 0.988, mr * 1.012, angle_to(rd, u.moon.xyz))) * smoothstep(-0.2, 0.0, u.moon.y);
+    let sun_ang = angle_to(rd, u.sun.xyz);
+    let sun_up = smoothstep(-0.15, 0.12, u.sun.y);
+    let disk = (1.0 - smoothstep(sr * 0.90, sr * 1.04, sun_ang)) * sun_up * (1.0 - cover);
     var col = cloud.rgb + upper.rgb * cloud.a + vec3(6.0, 4.5, 2.8) * disk * T * smoothstep(0.035, 0.20, T);
+    // Around the thinning Sun: its glare, then (at totality) the corona, both behind the Moon's disc.
+    if u.body.z < 0.999 {
+        let vis = clamp(u.body.z, 0.0, 1.0);
+        let reach = sun_ang / sr;
+        let glow = exp(-reach * 0.85) * sqrt(vis) * (1.0 - smoothstep(0.0, 0.6, vis)) * 0.7;
+        col += vec3(1.0, 0.86, 0.62) * glow * T * sun_up * (1.0 - cover * 0.92);
+        col += corona(rd) * T * sun_up * (1.0 - cover);
+    }
     col += moon_disc(rd) * T;
-    let night = 1.0 - smoothstep(-0.15, -0.035, u.sun.y);
-    if night > 0.001 {
+    let night = 1.0 - smoothstep(-0.15, -0.035, sun_y());
+    if night > 0.001 && !stars_on() {
         // The legacy decorative night points remain stable in world direction.
         let angles = vec2(atan2(rd.x, rd.z), asin(clamp(rd.y, -1.0, 1.0)));
         let cell = floor(angles * 240.0);
@@ -217,12 +301,12 @@ fn hash(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43
         col += vec3(point_star * exp(-dot(local, local) * 45.0) * night * T * 0.30);
     }
     let bank = rain() * smoothstep(0.05, 0.35, rd.x) * pow(1.0 - sat(rd.y), 3.0);
-    col = mix(col, vec3(0.20, 0.26, 0.32) * (0.28 + 0.72 * smoothstep(-0.12, 0.10, u.sun.y)), bank * 0.32);
+    col = mix(col, vec3(0.20, 0.26, 0.32) * (0.28 + 0.72 * smoothstep(-0.12, 0.10, sun_y())), bank * 0.32);
     // Extinction hides the finite volume's 45 km boundary at shallow angles.
     // Otherwise a view reaching the horizon exposes a hard cache edge/streaks.
     let horizon_start = clamp((cloud_base() - 0.045) / 45.0 + 0.015, 0.025, 0.16);
     let horizon_visibility = smoothstep(horizon_start, horizon_start + 0.045, rd.y);
-    let air_day = smoothstep(-0.12, 0.10, u.sun.y);
+    let air_day = smoothstep(-0.12, 0.10, sun_y());
     let horizon_air = mix(sky_color(rd), vec3(0.44, 0.51, 0.59) * (0.24 + 0.70 * air_day), u.weather.w * 0.5 + rain() * 0.3);
     col = mix(horizon_air, col, horizon_visibility);
     col = pow(vec3(1.0) - exp(-max(col, vec3(0.0)) * 1.23), vec3(0.454545));
@@ -236,5 +320,109 @@ fn hash(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43
         let tone = select(vec3(1.0), vec3(0.025, 0.035, 0.055), u.sun.y < -0.05);
         col = mix(col, tone, veil);
     }
-    return vec4(col, 1.0);
+    // Stars were laid down first. What stands between us and them is cloud and the haze
+    // at the horizon; the pipeline blends  colour + stars * (1 - alpha).
+    var star_pass = 0.0;
+    if stars_on() { star_pass = T * horizon_visibility * (1.0 - 0.85 * bank); }
+    return vec4(col, 1.0 - star_pass);
+}
+
+// ── the star layer ──────────────────────────────────────────────────────
+
+struct StarIn { @location(0) direction: vec3<f32>, @location(1) magnitude: f32, @location(2) bv: f32 }
+struct StarOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) point: vec2<f32>,
+    @location(1) @interpolate(flat) color: vec3<f32>,
+    @location(2) @interpolate(flat) light: f32,
+    @location(3) @interpolate(flat) radius: f32,
+}
+fn corner(i: u32) -> vec2<f32> {
+    return array<vec2<f32>, 6>(vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0))[i];
+}
+fn to_eun(d: vec3<f32>) -> vec3<f32> { return vec3(dot(u.rot0.xyz, d), dot(u.rot1.xyz, d), dot(u.rot2.xyz, d)); }
+// Normalised device coordinates (x, y) and depth along the view axis.
+fn project(d: vec3<f32>) -> vec3<f32> {
+    let z = dot(d, u.forward.xyz);
+    let t = max(z, 0.0001) * u.right.w;
+    return vec3(dot(d, u.right.xyz) / (t * u.resolution.z), dot(d, u.up.xyz) / t, z);
+}
+// The faintest star the sky will show: the dark limit, spoiled by twilight, by the Sun
+// itself, and by moonlight (most of all near the Moon).
+fn limiting_magnitude(d: vec3<f32>) -> f32 {
+    let alt = degrees(asin(clamp(sun_y(), -1.0, 1.0)));
+    var lim = -0.5 - 0.4 * max(alt, 0.0);
+    if alt < 0.0 { lim = 6.6 - 7.1 * pow(clamp((alt + 18.0) / 18.0, 0.0, 1.0), 0.8); }
+    let moon_up = smoothstep(-0.05, 0.12, u.moon.y);
+    let near = 1.0 - smoothstep(0.0, 0.7, acos(clamp(dot(d, u.moon.xyz), -1.0, 1.0)));
+    return lim - u.lunar.y * moon_up * (1.2 + 2.2 * near);
+}
+fn airmass(sin_alt: f32) -> f32 {
+    let s = max(sin_alt, 0.0);
+    return 1.0 / (s + 0.025 * exp(-11.0 * s));
+}
+@vertex fn star_vs(s: StarIn, @builtin(vertex_index) i: u32) -> StarOut {
+    var o: StarOut;
+    o.position = vec4(-2.0, -2.0, 0.0, 1.0);
+    o.point = corner(i); o.color = vec3(1.0); o.light = 0.0; o.radius = 0.5;
+    if !stars_on() { return o; }
+    let d = to_eun(s.direction);
+    if d.y < -0.012 { return o; }
+    let q = project(d);
+    if q.z <= 0.02 || abs(q.x) > 1.1 || abs(q.y) > 1.1 { return o; }
+    // Air between us and the star: the lower, the fainter.
+    let mag = s.magnitude + 0.20 * airmass(d.y);
+    let vis = smoothstep(0.0, 1.5, limiting_magnitude(d) - mag);
+    if vis <= 0.001 { return o; }
+    let flux = pow(10.0, -0.4 * (mag - 1.0));
+    let pixel = clamp(u.resolution.y / 760.0, 0.75, 1.5);
+    let radius = max(0.95, (0.55 + min(1.5, pow(flux, 0.31) * 0.62)) * pixel);
+    let size = clamp(radius * 8.0, 4.0, 32.0);
+    o.position = vec4(q.xy + (o.point - vec2(0.5)) * size * 2.0 / u.resolution.xy, 0.0, 1.0);
+    o.radius = radius / size;
+    o.light = clamp(pow(flux, 0.33) * 3.0, 0.5, 3.4) * vis * 0.9;
+    o.color = mix(vec3(0.63, 0.77, 1.0), vec3(0.97, 0.98, 1.0), smoothstep(-0.3, 0.35, s.bv));
+    o.color = mix(o.color, vec3(1.0, 0.76, 0.49), smoothstep(0.35, 1.5, s.bv));
+    return o;
+}
+@fragment fn star_fs(in: StarOut) -> @location(0) vec4<f32> {
+    let d = length(in.point - vec2(0.5)) / in.radius;
+    let profile = exp(-d * d * 1.15) + 0.035 * exp(-d * d * 0.16);
+    return vec4(in.color * profile * in.light, 0.0);
+}
+
+// Constellation figures, drawn a stroke at a time: each figure's segments follow one another
+// as the reveal runs from 0 to 1, a pencil along the line.
+struct LineIn { @location(0) a: vec3<f32>, @location(1) b: vec3<f32>, @location(2) seg: vec2<f32> }
+struct LineOut { @builtin(position) position: vec4<f32>, @location(0) @interpolate(flat) alpha: f32 }
+@vertex fn line_vs(s: LineIn, @builtin(vertex_index) i: u32) -> LineOut {
+    var o: LineOut;
+    o.position = vec4(-2.0, -2.0, 0.0, 1.0); o.alpha = 0.0;
+    let reveal = u.lunar.z;
+    if !stars_on() || reveal <= 0.0 { return o; }
+    let local = clamp((reveal - s.seg.x) / s.seg.y, 0.0, 1.0);
+    if local <= 0.0 { return o; }
+    var a = to_eun(s.a); var b = to_eun(s.b);
+    if a.y < -0.02 && b.y < -0.02 { return o; }
+    var za = dot(a, u.forward.xyz); var zb = dot(b, u.forward.xyz);
+    if za <= 0.02 && zb <= 0.02 { return o; }
+    if za < 0.02 { a = mix(a, b, (0.02 - za) / (zb - za)); }
+    if zb < 0.02 { b = mix(b, a, (0.02 - zb) / (za - zb)); }
+    let pa = (project(a).xy * 0.5 + 0.5) * u.resolution.xy;
+    var pb = (project(b).xy * 0.5 + 0.5) * u.resolution.xy;
+    pb = mix(pa, pb, local);
+    let dir = pb - pa;
+    let len = max(length(dir), 0.0001);
+    let normal = vec2(-dir.y, dir.x) / len;
+    let c = corner(i);
+    let p = mix(pa, pb, c.x) + normal * (c.y - 0.5) * 1.3;
+    o.position = vec4(p / u.resolution.xy * 2.0 - 1.0, 0.0, 1.0);
+    // Visible in daylight too, but best against a dark sky.
+    let dark = clamp((limiting_magnitude(a) + 1.0) / 6.0, 0.3, 1.0);
+    o.alpha = 0.34 * dark * smoothstep(-0.02, 0.10, min(a.y, b.y)) * smoothstep(0.0, 0.08, reveal);
+    return o;
+}
+@fragment fn line_fs(in: LineOut) -> @location(0) vec4<f32> {
+    if in.alpha < 0.002 { discard; }
+    return vec4(vec3(0.58, 0.72, 0.96) * in.alpha, 0.0);
 }

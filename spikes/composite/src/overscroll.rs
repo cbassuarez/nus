@@ -11,7 +11,13 @@
 //!
 //! Sideways, the same report (`x` and the distance) is what lets a swipe
 //! go back or forward (swipe.rs): a wheel something on the page could
-//! still scroll is the page's, never a navigation.
+//! still scroll is the page's, never a navigation. The script says `r`
+//! once it is listening, so a page without it (still loading, an error
+//! page, a PDF) never keeps a swipe waiting for a word it cannot send.
+//!
+//! Only a page that scrolls stretches: a root with nothing to scroll that
+//! way, or held still by `overflow: hidden` (an app, an open dialog), has
+//! no end to pull past.
 use std::time::Instant;
 
 /// Injected into every document with the other page scripts.
@@ -39,14 +45,21 @@ addEventListener('wheel',e=>{try{
   return}
  if(!dy)return;
  for(let el=e.target instanceof Element?e.target:null;el&&el!==html&&el!==body;el=el.parentElement||(el.getRootNode()&&el.getRootNode().host)||null){if(scrolls(el,dy))return}
- if([html,body].some(el=>el&&getComputedStyle(el).overscrollBehaviorY==='none'))return;
+ if([html,body].some(el=>el&&(getComputedStyle(el).overscrollBehaviorY==='none'||/(hidden|clip)/.test(getComputedStyle(el).overflowY))))return;
  const root=document.scrollingElement||html;
+ if(root.scrollHeight<=innerHeight+1)return;
  if(dy<0?root.scrollTop<=0:root.scrollTop+innerHeight>=root.scrollHeight-1)nusOverscroll(String(dy));
 }catch(_){}},{passive:true});
+nusOverscroll('r');addEventListener('load',()=>nusOverscroll('r'));addEventListener('pageshow',()=>nusOverscroll('r'));
 }catch(_){}})()"#;
 
-/// How long after the last report the page counts as let go.
+/// How long after the last report the page counts as let go, where the
+/// wheel has no phases to say so (a Windows touchpad).
 const LET_GO_MS: u128 = 90;
+
+/// After the fingers lift, momentum may still hit the end: the page gives
+/// for this long from the first such report, then the rest is spent.
+const IMPACT_MS: u128 = 120;
 
 /// One page's stretch.
 #[derive(Default)]
@@ -57,11 +70,24 @@ pub struct Bounce {
     shown: f32,
     last: Option<Instant>,
     tick: Option<Instant>,
+    /// The fingers are up: only momentum is arriving.
+    lifted: bool,
+    /// The first momentum report past the end since they lifted.
+    impact: Option<Instant>,
 }
 
 impl Bounce {
     /// A report from the page: `dy` more past the end.
     pub fn push(&mut self, dy: f32) {
+        if self.lifted {
+            // Momentum running into the end: one give, not a page held
+            // stretched for as long as the glide lasts.
+            let now = crate::clock::now();
+            let at = *self.impact.get_or_insert(now);
+            if now.duration_since(at).as_millis() > IMPACT_MS {
+                return;
+            }
+        }
         // Turning around lets go of what was pulled the other way.
         if dy.signum() != self.pull.signum() && self.pull != 0.0 {
             self.pull = 0.0;
@@ -79,11 +105,15 @@ impl Bounce {
             self.pull = 0.0;
             self.last = None;
         }
+        if self.lifted && self.impact.is_some_and(|t| now.duration_since(t).as_millis() > IMPACT_MS) {
+            self.pull = 0.0;
+            self.last = None;
+        }
         let target = rubber(self.pull, reach);
         let dt = self.tick.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(1.0 / 60.0).min(0.1);
         self.tick = Some(now);
-        // Following the fingers is quick; the spring back is gentler.
-        let rate = if self.last.is_some() { 30.0 } else { 12.0 };
+        // Following the fingers is immediate; the spring back is quick.
+        let rate = if self.last.is_some() { 45.0 } else { 18.0 };
         self.shown += (target - self.shown) * (1.0 - (-rate * dt).exp());
         if (target - self.shown).abs() < 0.25 {
             self.shown = target;
@@ -97,6 +127,20 @@ impl Bounce {
 
     pub fn stop(&mut self) {
         *self = Bounce::default();
+    }
+
+    /// The fingers lifted: spring back now, not after the glide ends.
+    pub fn let_go(&mut self) {
+        self.pull = 0.0;
+        self.last = None;
+        self.lifted = true;
+        self.impact = None;
+    }
+
+    /// Fingers down for a new gesture.
+    pub fn touch(&mut self) {
+        self.lifted = false;
+        self.impact = None;
     }
 }
 
@@ -112,7 +156,20 @@ fn rubber(pull: f32, reach: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::rubber;
+    use super::{rubber, Bounce};
+
+    #[test]
+    fn lifting_springs_back_and_the_glide_gives_only_once() {
+        let mut b = Bounce::default();
+        b.push(80.0);
+        assert!(b.pull > 0.0);
+        b.let_go();
+        assert_eq!(b.pull, 0.0, "fingers up: no pull left to hold the page");
+        b.push(40.0);
+        assert_eq!(b.pull, 40.0, "momentum into the end still gives");
+        b.touch();
+        assert!(!b.lifted && b.impact.is_none(), "new fingers start fresh");
+    }
 
     #[test]
     fn the_band_resists_and_never_passes_its_reach() {

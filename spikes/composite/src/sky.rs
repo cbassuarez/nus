@@ -87,6 +87,12 @@ impl Skies {
         params.low_cover = view.conditions.low_cover;
         params.mid_cover = view.conditions.mid_cover;
         params.high_cover = view.conditions.high_cover;
+        // An eclipse parts the modelled clouds for the show, at once rather than at the weather's pace.
+        let clear = params.celestial.map_or(0.0, |c| c.clear_sky);
+        if clear > 0.0 {
+            params.low_cover = view.conditions.low_cover * (1.0 - 0.85 * clear);
+            params.high_cover *= 1.0 - 0.85 * clear;
+        }
         params.stratus = view.conditions.stratus;
         params.precipitation_mm_h = view.conditions.precipitation_mm_h;
         params.cloud_base_km = view.conditions.cloud_base_km;

@@ -13,6 +13,9 @@ nus bundles or ports work by others, all under permissive licenses:
 - neoscroll.nvim's easing curves (ported in scrolling.rs) — MIT — https://github.com/karb94/neoscroll.nvim
 - EasyList (ad blocking rules) — GPL-3.0 / CC BY-SA 3.0 dual — https://easylist.to
 - adblock-rust — MPL-2.0 — https://github.com/brave/adblock-rust
+- Hipparcos catalogue (ESA, via CDS VizieR) and the IAU Catalog of Star Names — free to use with credit — https://cds.unistra.fr, https://www.iau.org/public/themes/naming_stars/
+- Stellarium Western constellation figures — CC BY-SA — https://github.com/Stellarium/stellarium-skycultures
+- J. Meeus's algorithms, VSOP87 (Bretagnon & Francou) and E. M. Standish's planetary elements (computed in crates/astro, no code copied)
 - Contributor Covenant 2.1 (CODE_OF_CONDUCT.md) — CC BY 4.0
 
 Everything else is © 2026 Sebastian Suarez Solis, MIT — see LICENSE.

@@ -44,7 +44,8 @@ def main():
             if self.path == '/stall' and counts[self.path] == 1:
                 finished.wait(90)  # no headers: a responsive renderer cannot resolve this navigation
                 return
-            body = b'<!doctype html><title>nus browser fixture</title><style>html,body{margin:0;min-height:100vh;background:rgb(17,177,131);color:white;font:24px sans-serif}</style><h1>Browser pixels arrived</h1><input value="editable"><script>window.fixture=6*7</script>'
+            title = b'nus browser fixture two' if self.path == '/two' else b'nus browser fixture'
+            body = b'<!doctype html><title>' + title + b'</title><style>html,body{margin:0;min-height:100vh;background:rgb(17,177,131);color:white;font:24px sans-serif}</style><h1>Browser pixels arrived</h1><input value="editable"><script>window.fixture=6*7</script>'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
@@ -63,6 +64,16 @@ def main():
     shot.write_text('\n'.join([
         'wait 1200', 'home', f'tab {url}/ok', 'awaitpage nus browser fixture', 'awaitpaint',
         'eval window.fixture', 'awaitreply 42', 'wait 300', 'shot browsing',
+        # Back by swipe. Fingers lifted short of the distance let it go: the
+        # glide after must not navigate. A full swipe goes back once; its
+        # glide is spent (a second back would close this new tab).
+        # Typed, not scripted: Chromium skips history a script adds without a gesture.
+        f'url {url}/two', 'awaitpage nus browser fixture two', 'awaitpaint',
+        'wheel 0.5 0.5 20 0 start', 'wheel 0.5 0.5 20 0 end', *['wheel 0.5 0.5 60 0'] * 8,
+        'wait 700', 'awaitpage nus browser fixture two',
+        'wheel 0.5 0.5 40 0 start', *['wheel 0.5 0.5 40 0'] * 11, 'awaitpage nus browser fixture',
+        *['wheel 0.5 0.5 40 0'] * 6, 'wheel 0.5 0.5 0 0 end', 'wait 700',
+        'awaitpage nus browser fixture', 'awaitpaint',
         # No answer in 30 s: nus says so and keeps waiting (↵); retry is the second command.
         f'tab {url}/stall', 'awaittranscript slow', 'wait 200', 'shot timeout',
         'key down', 'key enter', 'awaitpage nus browser fixture', 'awaitpaint',

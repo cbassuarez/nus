@@ -99,8 +99,9 @@ pub enum Cmd {
     Text(f32, f32, String, f32, Color, u8, u8, bool),
     /// A sky over the rect: (az -1..1, sin alt, cover, wind, seed).
     Sky(Rect, f32, f32, f32, f32, [f32; 2], [f32;4]),
-    /// A cached native volume: rect, conditions, stable view, command ordinal.
-    Atmosphere(Rect, nus_render::sky::SkyParams, u64, usize),
+    /// A cached native volume: rect, conditions, stable view, command ordinal, and whether
+    /// the art asked for the real sky (the app then fills in stars, planets and eclipses).
+    Atmosphere(Rect, nus_render::sky::SkyParams, u64, usize, bool),
     /// Recovered Limb / Darkroom artwork; no CEF/WebGL or local star chart.
     Space(Rect, nus_render::space::SpaceParams, u64, usize),
 }
@@ -128,6 +129,9 @@ pub struct Env {
     pub dim: Color,
     pub tint: Color,
     pub place: Option<(f32, f32)>,
+    /// The sky's time in unix ms when the app keeps one (the clock a viewer may have
+    /// turned); otherwise `c:now()` reads the machine's.
+    pub now_ms: Option<f64>,
     pub weather: Option<crate::weather::WeatherSnapshot>,
     pub procs: Option<crate::procs::Shared>,
     /// Logical px per… the pane's scale, so an art can size hairlines.
@@ -558,7 +562,8 @@ impl mlua::UserData for Canvas {
                 ..d
             };
             let (view_id, ordinal) = (s.env.view_id, s.cmds.len());
-            s.push(Cmd::Atmosphere(r, p, view_id, ordinal))?;
+            let astro = o.get::<bool>("astro").unwrap_or(false) && s.env.place.is_some();
+            s.push(Cmd::Atmosphere(r, p, view_id, ordinal, astro))?;
             Ok(())
         });
         // The recovered Space scene. The native Home motion controller supplies
@@ -597,7 +602,10 @@ impl mlua::UserData for Canvas {
             t.set("illumination",sky.illumination)?;t.set("waxing",sky.waxing)?;Ok(t)
         });
         // The clock, in unix milliseconds; NUS_CLOCK pins it (for photographs of a night sky at noon).
-        m.add_method("now", |_, _, ()| {
+        m.add_method("now", |_, c, ()| {
+            if let Some(ms) = c.0.borrow().env.now_ms {
+                return Ok(ms);
+            }
             if let Some(ms) = std::env::var("NUS_CLOCK").ok().and_then(|v| v.parse::<f64>().ok()) {
                 return Ok(ms);
             }
@@ -904,7 +912,7 @@ impl App {
                     let time = if self.motion.reduced() { 8.0 } else { crate::clock::since(self.started).as_secs_f32() };
                     scene.sky(rr, az, alt, cover, wind, time, seed, moon);
                 }
-                Cmd::Atmosphere(rr, params, view_id, ordinal) => {
+                Cmd::Atmosphere(rr, params, view_id, ordinal, _) => {
                     let rr = Rect::new(rr.x * sc + ox, rr.y * sc + oy, rr.w * sc, rr.h * sc);
                     let reduced = self.motion.reduced();
                     let moving = !reduced && self.art_budget() != crate::power::Budget::Still
@@ -913,6 +921,8 @@ impl App {
                     let clip = scene.clip();
                     scene.texture(rr, bind, clip);
                     scene.layer(clip);
+                    // Names and quiet lines belong to the sky's own layer, under the prompt.
+                    self.draw_sky_overlay(scene, rr, view_id);
                 }
                 Cmd::Space(rr, params, view, ordinal) => {
                     let rr = Rect::new(rr.x*sc+ox,rr.y*sc+oy,rr.w*sc,rr.h*sc);
@@ -1303,7 +1313,7 @@ mod tests {
         let mut art = Art::open("sky");
         art.load("function draw(c) c:atmosphere({}) c:atmosphere({}) end");
         let collect = |commands: Vec<Cmd>| commands.into_iter().filter_map(|cmd| match cmd {
-            Cmd::Atmosphere(rect, _, view, ordinal) => Some((rect.w, rect.h, view, ordinal)), _ => None,
+            Cmd::Atmosphere(rect, _, view, ordinal, _) => Some((rect.w, rect.h, view, ordinal)), _ => None,
         }).collect::<Vec<_>>();
         let env = Env { view_id: 41, w: 800.0, h: 600.0, ..Default::default() };
         let initial = collect(art.frame_at(env.clone(), 8.0));

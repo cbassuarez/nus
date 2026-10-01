@@ -13,4 +13,5 @@ path = "src/main.rs"
 
 [dependencies]
 nus-compat = { path = "../compat" }
+nus-astro = { path = "../astro" }
 serde_json.workspace = true

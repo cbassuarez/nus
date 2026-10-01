@@ -16,7 +16,7 @@ the rows beneath it reach while something is typed.
     c.pointer             {x, y} or nil
     c.typed               what is typed on the line
     c:taps()              {{x=, y=}, …} clicks since the last frame
-    c:now()               unix milliseconds
+    c:now()               unix milliseconds (the sky's own clock on Home: the viewer may have turned it)
     c:place()             {lat, lon} chosen by the user, or nil; draw a fallback when unset
     c:weather()           cached forecast conditions when connected weather is enabled,
                            otherwise nil; never fetches from a script
@@ -64,6 +64,8 @@ primitive remains available for saved artwork. Atmosphere options:
     base, haze           low cloud base in km; haze 0..1
     wind_low, wind_middle, wind_high   {east, north} velocity, m/s
     seed                 stable integer cloud identity
+    astro                true: with a Place, nus lays the real sky in (stars, planets, an exact Sun
+                         and Moon, eclipses) and overrides sun/moon above on Home
     prompt_light         subtle local prompt contrast, 0..0.35 (default .14)
     x, y, w, h           optional canvas rectangle
 

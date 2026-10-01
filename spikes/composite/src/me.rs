@@ -368,11 +368,14 @@ pub struct MeCard {
     pub terms_reach: f32,
     /// Set once the fall has begun (the frame it started on).
     pub leave_from: Option<std::time::Instant>,
+    /// The masthead number is being pressed, since when (skyview.rs: the sky it was made under).
+    pub badge_held: Option<std::time::Instant>,
 }
 
 impl Default for MeCard {
     fn default() -> Self {
         MeCard {
+            badge_held: None,
             import: Default::default(),
             mercury_reveal: None,
             mercury_art: None,
@@ -942,10 +945,14 @@ impl App {
             return false;
         }
         if state != ElementState::Pressed || button != MouseButton::Left {
+            self.me_card.badge_held = None;
             return true;
         }
         let pad = self.touch_pad();
         if let Some((_, h)) = self.me_card.hits.iter().find(|(r, _)| crate::touch::grown(*r, pad).contains(x, y)).copied() {
+            if h == CardHit::Badge && self.behavior.eggs.badge {
+                self.me_card.badge_held = Some(crate::clock::now());
+            }
             self.me_hit(h);
         } else if !self.me_card.rect.contains(x, y) && !self.me_card.first {
             self.close_me_card();
@@ -1202,6 +1209,17 @@ impl App {
             let tip = format!("{} with nus · since {}", me.day_word(), me.created);
             self.me_tip(hover_key("me-badge", 0), br, tip);
             self.me_card.hits.push((br, CardHit::Badge));
+            // Held: the sky this build was made under (skyview.rs).
+            if let Some(since) = self.me_card.badge_held {
+                let held = crate::clock::since(since).as_secs_f32();
+                if held > 0.4 {
+                    self.draw_build_sky(scene, br, r, ((held - 0.4) / 0.3).min(1.0));
+                    self.dirty = true;
+                } else {
+                    // Wake the frame loop to see the press become a hold.
+                    self.dirty = true;
+                }
+            }
         }
         scene.hline(r.x, r.y + head_h - self.px(m::STRUCTURE), r.w, self.px(m::STRUCTURE), ink);
 

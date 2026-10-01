@@ -889,6 +889,35 @@ impl App {
                 };
                 self.dirty = true;
             }
+            // The sky (skyview.rs): turn its clock, jump it, draw the figures, check what a click named.
+            "skyturn" => self.sky_view.turn(rest.parse::<f64>().expect("minutes") * 60_000.0),
+            "skyjump" => self.sky_jump(rest.parse::<f64>().expect("unix ms")),
+            "skyhome" => self.sky_view.home(),
+            // The masthead number held down for a second (the sky of this build), and eclipse waiting.
+            "mebadgehold" => {
+                self.me_card.badge_held = crate::clock::now().checked_sub(std::time::Duration::from_millis(1100));
+                self.dirty = true;
+            }
+            "assertwaiting" => {
+                let waiting = self.sky_waiting();
+                assert_eq!(waiting, rest == "yes", "nus will wait: expected {rest}, it is {waiting}");
+                eprintln!("SKY WAITING: {waiting}");
+            }
+            "assertskytravel" => {
+                let travelling = self.sky_view.travelling();
+                assert_eq!(travelling, rest == "yes", "the sky clock: expected travelling {rest}");
+            }
+            "skyfigures" => self.sky_view.force_figures = rest == "on",
+            "assertskylabel" => {
+                let said = self.sky_view.last_label.clone().unwrap_or_default();
+                assert!(said.to_lowercase().contains(&rest.to_lowercase()), "the sky said {said:?}, wanted {rest:?}");
+                eprintln!("SKY LABEL: {said}");
+            }
+            "assertskynote" => {
+                let said = self.sky_view.last_notes.join(" | ");
+                assert!(said.to_lowercase().contains(&rest.to_lowercase()), "the sky's notes were {said:?}, wanted {rest:?}");
+                eprintln!("SKY NOTE: {said}");
+            }
             "link" => {
                 use winit::keyboard::{Key, NamedKey};
                 let k = if rest == "deny" { Key::Named(NamedKey::Escape) } else { Key::Named(NamedKey::Enter) };
@@ -1231,6 +1260,20 @@ impl App {
             }
             // A left click at window pixels, or (clickdt) at a fraction of
             // the focused page's DevTools panel.
+            // `wheel fx fy dx dy [start|end]`: a trackpad step over the focused
+            // page at (fx, fy) of it, with the phase a real gesture carries.
+            "wheel" => {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                let f: Vec<f32> = parts.iter().take(4).filter_map(|n| n.parse().ok()).collect();
+                assert_eq!(f.len(), 4, "wheel fx fy dx dy [start|end]");
+                let phase = parts.get(4).copied();
+                let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { panic!("wheel needs a page") };
+                let r = w.page;
+                self.mouse_moved(r.x + r.w * f[0], r.y + r.h * f[1]);
+                if phase == Some("start") { self.wheel_phase(winit::event::TouchPhase::Started); }
+                self.wheel(winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(f[2] as f64, f[3] as f64)));
+                if phase == Some("end") { self.wheel_phase(winit::event::TouchPhase::Ended); }
+            }
             "click" | "clickdt" => {
                 let f: Vec<f32> = rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
                 let (x, y) = if verb == "clickdt" {

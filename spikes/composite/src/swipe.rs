@@ -4,9 +4,17 @@
 //! right) or forward, once, and the arrow fills. The mouse's own back
 //! and forward buttons and Alt+←/→ take the same road (`navigate`).
 //!
+//! A swipe moves as the fingers do: the page is asked once per gesture
+//! whether it has room sideways, and from its answer on (or straight away,
+//! when it has no script to answer with) the rest goes to the swipe
+//! without waiting. Fingers lifted short of the distance let it go, so the
+//! glide after cannot fire it; once fired, the rest of the gesture and a
+//! short cooldown are spent, so one swipe is one navigation.
+//!
 //! Back on a page with nowhere to go closes a tab that was opened onto
-//! that page — a link's new tab, a popup, one from the prompt — and
-//! returns to the tab before it, the way a browser does. Only then: a
+//! that page — a link's new tab, a popup, one from the prompt, a new tab
+//! (its page or the Home it shows) — and returns to the tab before it, the
+//! way a browser does. Only then: a
 //! page that may have history (Chromium's answer trails navigations, so
 //! nus counts the page's moves itself) goes back, and a tab whose history
 //! was lost to sleep or a restart stays.
@@ -15,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use nus_render::{Rect, Scene};
 
-use crate::app::{fade, App, Pane, WebPane};
+use crate::app::{fade, App, Pane, Tab, WebPane};
 use crate::settings::SwipeLook;
 
 /// How long after the last movement the overlay lingers.
@@ -27,6 +35,17 @@ const GAP: Duration = Duration::from_millis(250);
 /// How long sideways wheel waits for the page's word that it had no room
 /// for it; unclaimed, it was the page's.
 pub const HOLD: Duration = Duration::from_millis(200);
+
+/// After a swipe fires, sideways wheel is spent for at least this long,
+/// gaps in a glide or not: one swipe, one navigation.
+const COOLDOWN: Duration = Duration::from_millis(450);
+
+/// A wheel gesture starting this soon after fingers lifted is the glide
+/// (momentum), not new fingers.
+pub const MOMENTUM_GAP: Duration = Duration::from_millis(80);
+
+/// How quickly the drawn swipe follows the fingers (per second).
+const FOLLOW: f32 = 28.0;
 
 /// What a swipe that far would do, read when it moves (the tabs are not
 /// to hand while the page draws).
@@ -61,6 +80,27 @@ pub struct Swipe {
     pub at: Instant,
     pub fired: bool,
     pub dest: Dest,
+    /// When it fired: the cooldown runs from here.
+    pub fired_at: Option<Instant>,
+    /// Fingers lifted short of the distance: the rest is spent and the
+    /// mark eases away.
+    pub released: bool,
+    /// The drawn progress (0..1), easing toward the swipe's.
+    pub shown: f32,
+    pub drawn: Option<Instant>,
+}
+
+impl Swipe {
+    /// Still one gesture: moving, or cooling down after it fired.
+    fn live(&self) -> bool {
+        crate::clock::since(&self.at) < GAP || self.fired_at.is_some_and(|t| crate::clock::since(&t) < COOLDOWN)
+    }
+}
+
+/// Back on this tab's first page closes it: a tab opened onto that page
+/// (or a new tab), on its own, not pinned, and not the last.
+pub(crate) fn closes_on_back(tab: &Tab, right: bool, tabs: usize) -> bool {
+    tab.closes_on_back && !right && tab.right.is_none() && !tab.pinned && !tab.hatch && tabs > 1
 }
 
 impl App {
@@ -76,7 +116,7 @@ impl App {
         let Some(Pane::Web(w)) = pane else { return Dest::Nowhere };
         match back {
             true if w.tab.may_go_back() => Dest::Back,
-            true if tab.closes_on_back && !right && tab.right.is_none() && !tab.pinned && !tab.hatch && self.tabs.len() > 1 => Dest::CloseTab,
+            true if closes_on_back(tab, right, self.tabs.len()) => Dest::CloseTab,
             false if w.tab.can_go_forward() => Dest::Forward,
             _ => Dest::Nowhere,
         }
@@ -94,6 +134,8 @@ impl App {
             match w.swipe_pending {
                 Some((sx, _)) if free > 0 => {
                     w.swipe_pending = None;
+                    // The page had no room: the rest of this gesture is the swipe's.
+                    w.swipe_free = Some(now);
                     steps.push((right, sx));
                 }
                 Some((_, at)) if now.duration_since(at) >= HOLD => w.swipe_pending = None,
@@ -115,30 +157,75 @@ impl App {
             let Some(tab) = self.tabs.get(self.active) else { return };
             let pane = if right { tab.right.as_ref() } else { Some(&tab.left) };
             let Some(Pane::Web(w)) = pane else { return };
-            w.swipe.filter(|s| crate::clock::since(&s.at) < GAP)
+            w.swipe.filter(Swipe::live)
         };
-        let (far, fired) = match prev {
-            Some(s) if s.fired => (s.far, true),
-            Some(s) => (s.far + sx, false),
-            None => (sx, false),
-        };
+        // Fired or let go: the rest of the gesture is spent.
+        if let Some(s) = prev.filter(|s| s.fired || s.released) {
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+                if let Some(Pane::Web(w)) = pane {
+                    w.swipe = Some(Swipe { at: now, ..s });
+                }
+            }
+            return;
+        }
+        let far = prev.map_or(sx, |s| s.far + sx);
         let back = far > 0.0;
-        let dest = match prev {
-            Some(s) if s.fired => s.dest,
-            _ => self.swipe_dest(right, back),
-        };
-        let fire = !fired && far.abs() >= reach;
+        let dest = self.swipe_dest(right, back);
+        let fire = far.abs() >= reach;
         let far = if fire { far.signum() * reach } else { far };
         if let Some(tab) = self.tabs.get_mut(self.active) {
             let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
             if let Some(Pane::Web(w)) = pane {
-                w.swipe = Some(Swipe { far, at: now, fired: fired || fire, dest });
+                let (shown, drawn) = prev.map_or((0.0, None), |s| (s.shown, s.drawn));
+                w.swipe = Some(Swipe { far, at: now, fired: fire, dest, fired_at: fire.then_some(now), released: false, shown, drawn });
             }
         }
         self.dirty = true;
+        if fire {
+            tracing::info!("swipe fired: {dest:?} (far {far:.0} of {reach:.0})");
+        }
         if fire && dest != Dest::Nowhere {
             self.navigate(right, back);
         }
+    }
+
+    /// The trackpad's own word on a wheel gesture: new fingers start one
+    /// (the glide after a lift does not), and lifted fingers let the page
+    /// spring back and let go of a swipe short of its distance.
+    pub(crate) fn wheel_phase(&mut self, phase: winit::event::TouchPhase) {
+        use winit::event::TouchPhase;
+        let now = crate::clock::now();
+        let glide = self.wheel_lifted.is_some_and(|t| now.duration_since(t) < MOMENTUM_GAP);
+        let lifted = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
+        match phase {
+            TouchPhase::Started if glide => return,
+            TouchPhase::Started => self.wheel_lifted = None,
+            _ if lifted => self.wheel_lifted = Some(now),
+            _ => return,
+        }
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
+            let Pane::Web(w) = p else { continue };
+            if lifted {
+                w.bounce.let_go();
+                // Short of the distance, or not yet started (the page was still
+                // answering): the glide that follows is spent either way.
+                match w.swipe.as_mut() {
+                    Some(s) if s.fired => {}
+                    Some(s) => s.released = true,
+                    None => w.swipe = Some(Swipe { far: 0.0, at: now, fired: false, dest: Dest::Nowhere, fired_at: None, released: true, shown: 0.0, drawn: None }),
+                }
+                w.swipe_pending = None;
+            } else {
+                w.bounce.touch();
+                w.swipe_free = None;
+                if w.swipe.is_some_and(|s| !s.fired_at.is_some_and(|t| now.duration_since(t) < COOLDOWN)) {
+                    w.swipe = None;
+                }
+            }
+        }
+        self.dirty = true;
     }
 
     /// Back or forward on the active tab's page (the right pane when
@@ -147,6 +234,15 @@ impl App {
         let i = self.active;
         let Some(tab) = self.tabs.get(i) else { return };
         let pane = if right { tab.right.as_ref() } else { Some(&tab.left) };
+        // Home opened as a new tab: back closes it, as a new tab's page does.
+        if matches!(pane, Some(Pane::Home(_))) {
+            if back && closes_on_back(tab, right, self.tabs.len()) {
+                self.selected.clear();
+                self.close_tabs(true);
+                self.dirty = true;
+            }
+            return;
+        }
         let Some(Pane::Web(w)) = pane else { return };
         if back {
             // Chromium's own answer can trail a navigation that just
@@ -155,7 +251,7 @@ impl App {
             // that was opened onto this page and has certainly not moved.
             if w.tab.may_go_back() {
                 w.tab.back();
-            } else if tab.closes_on_back && !right && tab.right.is_none() && !tab.pinned && !tab.hatch && self.tabs.len() > 1 {
+            } else if closes_on_back(tab, right, self.tabs.len()) {
                 // The first page of a tab of its own: the tab goes, and the
                 // one before it comes back. Reopen-closed brings it again.
                 self.selected.clear();
@@ -175,7 +271,10 @@ impl App {
         let Some(sw) = w.swipe else { return };
         let idle = crate::clock::since(&sw.at);
         if idle > LINGER {
-            w.swipe = None;
+            // Kept, undrawn, while it cools down: a late glide cannot fire again.
+            if !sw.fired_at.is_some_and(|t| crate::clock::since(&t) < COOLDOWN) {
+                w.swipe = None;
+            }
             return;
         }
         let look = self.behavior.swipe_look;
@@ -187,7 +286,20 @@ impl App {
         let signal = self.surface.signal;
         let dim = self.theme.dim;
         let reach = self.swipe_reach();
-        let progress = (sw.far.abs() / reach).clamp(0.0, 1.0);
+        // Drawn progress eases toward the swipe's, so bursts of wheel read
+        // as one movement; let go, it eases back to nothing.
+        let target = if sw.released { 0.0 } else { (sw.far.abs() / reach).clamp(0.0, 1.0) };
+        let now = crate::clock::now();
+        let dt = sw.drawn.map_or(1.0 / 60.0, |t| now.duration_since(t).as_secs_f32()).min(0.1);
+        let mut shown = sw.shown + (target - sw.shown) * (1.0 - (-FOLLOW * dt).exp());
+        if (target - shown).abs() < 0.002 || self.motion.reduced() {
+            shown = target;
+        }
+        if let Some(s) = w.swipe.as_mut() {
+            s.shown = shown;
+            s.drawn = Some(now);
+        }
+        let progress = shown;
         let fired = sw.fired;
         let live = sw.dest != Dest::Nowhere;
         let fade_out = 1.0 - (idle.as_secs_f32() / LINGER.as_secs_f32()).clamp(0.0, 1.0);

@@ -195,6 +195,8 @@ pub struct Shared {
     pub(crate) overscroll: f32,
     /// Sideways wheel events the page had no room for, since nus last looked.
     pub(crate) overscroll_side: u32,
+    /// This document's overscroll script is listening (overscroll.rs).
+    pub(crate) overscroll_ready: bool,
     /// The page's JavaScript worlds by id, and the site each belongs to,
     /// as Chromium reports them: where a password report came from.
     pub(crate) contexts: std::collections::HashMap<i64, String>,
@@ -575,6 +577,8 @@ wrap_load_handler! {
                 s.opened_at=Some(crate::clock::now());
                 // It answered after all: the page that said it was slow goes.
                 if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Slow) {s.overlay=None;}
+                // A new document: its overscroll script says when it listens.
+                s.overscroll_ready=false;
                 // A new document: whatever played DRM video is gone with the old one.
                 s.protected_video=false;
                 // CEF's blank backing document is not the native page's document.
@@ -1843,6 +1847,10 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             if v.get("name").and_then(|n| n.as_str()) == Some("nusOverscroll") {
+                if v.get("payload").and_then(|p| p.as_str()) == Some("r") {
+                    self.o.shared.borrow_mut().overscroll_ready = true;
+                    return;
+                }
                 if v.get("payload").and_then(|p| p.as_str()).is_some_and(|p| p.starts_with('x')) {
                     self.o.shared.borrow_mut().overscroll_side += 1;
                     crate::browser_runtime::wake();

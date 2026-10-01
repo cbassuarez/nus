@@ -705,6 +705,9 @@ pub struct Behavior {
     pub hatch_notify: bool,
     #[serde(default)]
     pub menu_drawer: crate::menu_drawer::Config,
+    /// The quiet extras (skyview.rs): which are on, and whether the chord has been found.
+    #[serde(default)]
+    pub eggs: crate::skyview::Eggs,
     /// Ghost the history entry that continues what's typed; Right/End accepts.
     #[serde(default = "default_true")]
     pub predict: bool,
@@ -1058,6 +1061,7 @@ impl Default for Behavior {
             hatch_dim: false,
             hatch_notify: false,
             menu_drawer: crate::menu_drawer::Config::default(),
+            eggs: crate::skyview::Eggs::default(),
             predict: true,
             block_content: true,
             sleep_after_min: 30,
@@ -1134,6 +1138,8 @@ pub enum Hit {
     ProfileFolder,
     Report(crate::support::Kind),
     Workspace(workspace::Hit),
+    /// EXPERIMENTS: one quiet extra, on or off (skyview.rs).
+    Egg(crate::skyview::Egg, bool),
     Section(usize),
     Theme(Option<bool>),
     ThemePinned,
@@ -1385,7 +1391,7 @@ pub enum Hit {
 
 /// The sections, grouped by what they're about: how nus looks, how it
 /// feels, what you work in, and the machine.
-pub const GROUPS: [(&str, std::ops::Range<usize>); 8] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("COMMANDS",19..20), ("SYSTEM", 9..12), ("DESKTOP", 17..19), ("YOU", 12..15), ("PERSONALIZE", 15..17)];
+pub const GROUPS: [(&str, std::ops::Range<usize>); 9] = [("LOOK", 0..1), ("FEEL", 1..5), ("WORK", 5..9), ("COMMANDS",19..20), ("SYSTEM", 9..12), ("DESKTOP", 17..19), ("YOU", 12..15), ("PERSONALIZE", 15..17), ("EXPERIMENTS", 20..21)];
 
 /// The look studio's tabs.
 pub const LOOK_TABS: [&str; 6] = ["PRESETS", "SURFACE", "TOKENS", "TYPE & MOTION", "CARET", "APP ICON"];
@@ -1409,7 +1415,7 @@ pub enum TokSel {
     Ansi(usize),
 }
 
-pub const SECTIONS: [(&str, (&str, &str)); 20] = [
+pub const SECTIONS: [(&str, (&str, &str)); 21] = [
     ("LOOK", icons::PALETTE),
     ("SOUND", icons::SPEAKER),
     ("START/NEW TAB", icons::ROCKET),
@@ -1430,8 +1436,11 @@ pub const SECTIONS: [(&str, (&str, &str)); 20] = [
     ("MENU & TRAY", icons::SQUARES),
     ("FILE VIEWERS", icons::BOOK),
     ("SAVED COMMANDS", icons::COMMAND),
+    ("EXPERIMENTS", icons::PLANET),
 ];
 pub const SEC_SAVED: usize = 19;
+/// Found with a chord on the Home prompt; on the list from then on.
+pub const SEC_EXPERIMENTS: usize = 20;
 
 pub const SEC_VIEWERS: usize = 18;
 pub const SEC_MENU: usize = 17;
@@ -1780,6 +1789,7 @@ impl App {
     pub(crate) fn setting_label(&self, hit: Hit) -> String {
         match hit {
             Hit::Workspace(h) => workspace::label(h),
+            Hit::Egg(e, on) => format!("{} {}", e.label().to_lowercase(), if on { "on" } else { "off" }),
             Hit::Section(k) | Hit::Tile(k) => SECTIONS[k].0.to_lowercase(),
             Hit::Back => "back to settings".into(),
             Hit::ThemePinned => "keep the selected theme".into(),
@@ -2036,6 +2046,7 @@ impl App {
     pub(crate) fn apply_setting(&mut self, hit: Hit, x: f32) {
         match hit {
             Hit::Workspace(h) => self.apply_workspace_setting(h),
+            Hit::Egg(e, on) => self.behavior.eggs.set(e, on),
             Hit::Section(k) => {
                 if k == SEC_ASSISTANTS { self.assistants.refresh(self.behavior.assistants.clone()); }
                 if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
@@ -3109,6 +3120,7 @@ impl App {
                 dim: t.dim,
                 tint: t.tint,
                 place: self.place(),
+                now_ms: None,
                 weather: if key == "sky" { crate::weather::sample(self.behavior.sky_weather, self.place()) } else { None },
                 pieces: Vec::new(),
                 procs: Some(self.procs_shared()),
@@ -3362,7 +3374,9 @@ impl App {
     }
 
     fn rows_for_at(&self, section: usize, look_tab: usize) -> Vec<(String,Control)> {
-        let mut rows = self.visual_settings(section, self.rows_for_raw(section, look_tab));
+        // The experiments are plain switches: ON and OFF as chips, with a line saying what each does.
+        let raw = self.rows_for_raw(section, look_tab);
+        let mut rows = if section == SEC_EXPERIMENTS { raw } else { self.visual_settings(section, raw) };
         rows.retain(|(k, c)| !(k.is_empty() && matches!(c, Control::Info(s) if s.is_empty())));
         match section {
             2 => sectioned(rows, &[("WINDOW AT LAUNCH", "WHEN NUS LAUNCHES"), ("TERMINAL OR BROWSER", "START PAGE · AT LAUNCH AND EVERY NEW TAB"), (key("N", false).as_str(), "NEW WINDOWS"), ("LINKS FROM OTHER APPS", "FROM OTHER APPS")]),
@@ -3376,6 +3390,15 @@ impl App {
         use Control::*;
         let hex = surface::hex;
         match section {
+            SEC_EXPERIMENTS => {
+                let mut rows: Vec<(String, Control)> = vec![("".into(), Info("Small things, each a switch. They are quiet on purpose: nothing here interrupts work, and every one answers only when asked or left alone.".into()))];
+                for e in crate::skyview::Egg::ALL {
+                    let on = self.behavior.eggs.get(e);
+                    rows.push((e.label().into(), Choice(vec![("ON".into(), Hit::Egg(e, true), on), ("OFF".into(), Hit::Egg(e, false), !on)])));
+                    rows.push(("".into(), Info(e.says().into())));
+                }
+                rows
+            }
             SEC_VIEWERS => self.viewer_settings(),
             SEC_MENU=>{
                 use crate::menu_drawer::{SignalStyle,Density};
@@ -4775,6 +4798,7 @@ impl App {
             SEC_FONTS => "interface · terminal · editor".into(),
             SEC_PROMPT => "presets · sources · layout".into(),
             SEC_SAVED => format!("{} saved · visibility · behavior", self.behavior.prompt.saved.len()),
+            SEC_EXPERIMENTS => "small things, each a switch".into(),
             _ => "github releases".into(),
         }
     }
@@ -4799,7 +4823,7 @@ impl App {
         let isz = self.px(22.0);
         let mut slot = 0usize;
         let mut gy = y;
-        for (gname, range) in GROUPS.iter() {
+        for (gname, range) in GROUPS.iter().filter(|(g, _)| *g != "EXPERIMENTS" || self.behavior.eggs.found) {
             // A group caption, then its tiles on a fresh row.
             if slot % cols != 0 {
                 slot += cols - slot % cols;
@@ -4885,7 +4909,7 @@ impl App {
         let isz = self.px(14.0);
         let (mx, my) = self.mouse;
         let mut y = r.y;
-        for (gi, (gname, range)) in GROUPS.iter().enumerate().filter(|_| !tiles) {
+        for (gi, (gname, range)) in GROUPS.iter().enumerate().filter(|(_, (g, _))| !tiles && (*g != "EXPERIMENTS" || self.behavior.eggs.found)) {
             // Group caption: small, dim, no rule of its own.
             if gi > 0 {
                 y += self.px(6.0);

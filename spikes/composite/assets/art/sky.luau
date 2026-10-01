@@ -54,5 +54,7 @@ function draw(c)
     low = low, middle = middle, high = high, stratus = stratus,
     precipitation = precipitation, haze = haze,
     wind_low = low_wind, wind_middle = middle_wind, wind_high = high_wind,
-    seed = seed, prompt_light = 0.14 })
+    seed = seed, prompt_light = 0.14,
+    -- With a place, nus lays the real sky in: the stars, the planets, an eclipse.
+    astro = place ~= nil })
 end

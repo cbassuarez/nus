@@ -311,10 +311,15 @@ impl App {
             }
             Then::Prompt | Then::Restore => {}
         }
-        // There is only ever one home: a new tab goes back to it.
+        // There is only ever one home: a new tab goes back to it, and
+        // back from there closes it again, as a new tab's page does.
         if !launch {
             self.palette = None;
-            return self.open_home();
+            self.open_home();
+            if let Some(t) = self.tabs.get_mut(self.active).filter(|t| matches!(t.left, Pane::Home(_)) && t.right.is_none()) {
+                t.closes_on_back = true;
+            }
+            return;
         }
         self.show_start_pane(Pane::Home(HomePane::new()), launch);
     }
@@ -333,7 +338,9 @@ impl App {
         if launch {
             self.replace_birth(pane);
         } else {
-            let tab = self.make_tab(pane, None);
+            // A new tab: back on its first page closes it (swipe.rs).
+            let mut tab = self.make_tab(pane, None);
+            tab.closes_on_back = true;
             self.tabs.push(tab);
             self.activate(self.tabs.len() - 1);
             self.layout();
@@ -478,6 +485,7 @@ impl App {
     pub(crate) fn home_key(&mut self, ev: &crate::app::KeyIn) -> bool {
         if self.library_key(ev) {return true;}
         if self.space_key(ev) {return true;}
+        if self.sky_key(ev) {return true;}
         use winit::keyboard::{Key as K, NamedKey};
         if ev.state != winit::event::ElementState::Pressed {
             return false;
@@ -485,8 +493,15 @@ impl App {
         let i = self.active;
         let mods = self.mods;
         // Alt+← is back, as on a page: to where the nus button was pressed.
-        if mods.alt_key() && !mods.control_key() && matches!(ev.logical_key, K::Named(NamedKey::ArrowLeft)) && self.home_latch_back() {
-            return true;
+        if mods.alt_key() && !mods.control_key() && matches!(ev.logical_key, K::Named(NamedKey::ArrowLeft)) {
+            if self.home_latch_back() {
+                return true;
+            }
+            // A Home opened as a new tab: back closes it (swipe.rs).
+            if self.tabs.get(i).is_some_and(|t| crate::swipe::closes_on_back(t, false, self.tabs.len())) {
+                self.navigate(false, true);
+                return true;
+            }
         }
         let Some(Pane::Home(h)) = self.tabs.get_mut(i).map(|t| t.focused()) else { return false };
         // The line's own editing: typing, erasing, paste, copy (field.rs).
@@ -905,6 +920,12 @@ impl App {
         let t = self.theme.clone();
         let (mx, my) = self.mouse;
         let pointer = if r.contains(mx, my) { Some((mx - r.x, my - r.y)) } else { None };
+        // The sky wants the clicks too (to name what was clicked), and keeps its own clock.
+        let sky_taps = if key == "sky" { p.taps.clone() } else { Vec::new() };
+        if key == "space" {
+            self.sky_view.space_taps.extend(p.taps.iter().copied());
+        }
+        let sky_now = if key == "sky" { Some(self.sky_now_ms()) } else { None };
         let env = crate::art::Env {
             view_id: p.art_id,
             w: r.w,
@@ -922,6 +943,7 @@ impl App {
             dim: t.dim,
             tint: t.tint,
             place: self.place(),
+            now_ms: sky_now,
             weather: if key == "sky" { crate::weather::sample(self.behavior.sky_weather, self.place()) } else { None },
                 pieces: Vec::new(),
             procs: Some(self.procs_shared()),
@@ -936,7 +958,9 @@ impl App {
             let cmds = if reduced { art.frame_at(env, 8.0) } else { art.frame(env) };
             (cmds, art.status.clone())
         };
-        let requested=self.art.as_ref().unwrap().backdrop;
+        // The real sky: stars, planets, an eclipse, and what a click on them says.
+        let sky_backdrop = if key == "sky" { self.sky_apply(&mut cmds, p.art_id, &sky_taps) } else { None };
+        let requested=sky_backdrop.unwrap_or(self.art.as_ref().unwrap().backdrop);
         let hold=!p.input.is_empty() || crate::clock::since(self.last_key)<crate::sky::TYPING_HOLD;
         if p.reading_backdrop.as_ref().is_none_or(|(old,_)|*old!=key) || !hold {p.reading_backdrop=Some((key.clone(),requested));}
         let backdrop=p.reading_backdrop.as_ref().map_or(requested,|(_,b)|*b);
@@ -947,7 +971,7 @@ impl App {
         // protection ABI to keep in sync with Home's current layout.
         let native_sky=key=="sky" && cmds.len()==1 && matches!(cmds[0],crate::art::Cmd::Atmosphere(..));
         if native_sky {
-            for cmd in &mut cmds {if let crate::art::Cmd::Atmosphere(_,params,_,_)=cmd {
+            for cmd in &mut cmds {if let crate::art::Cmd::Atmosphere(_,params,_,_,_)=cmd {
                 params.reading_rect=[0.0;4];
                 params.reading_strength=0.0;
             }}

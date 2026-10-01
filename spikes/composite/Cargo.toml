@@ -24,6 +24,7 @@ nus-compat = { path = "../../crates/compat" }
 nus-vt = { path = "../../crates/vt" }
 nus-pty = { path = "../../crates/pty" }
 nus-render = { path = "../../crates/render" }
+nus-astro = { path = "../../crates/astro" }
 nus-lsp = { path = "../../crates/lsp" }
 nus-sync = { path = "../../crates/sync" }
 nus-vault = { path = "../../crates/vault" }

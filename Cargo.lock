@@ -2202,6 +2202,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nus-astro"
+version = "0.0.2"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "nus-browser"
 version = "0.0.2"
 dependencies = [
@@ -2217,6 +2225,7 @@ dependencies = [
 name = "nus-cli"
 version = "0.0.2"
 dependencies = [
+ "nus-astro",
  "nus-compat",
  "serde_json",
 ]
@@ -2292,6 +2301,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "fontdb",
  "naga",
+ "nus-astro",
  "nus-vt",
  "pollster",
  "resvg",

@@ -429,9 +429,16 @@ impl crate::Host {
         }
         let target = self.focused.and_then(|id| self.apps.iter().position(|a| a.window.id() == id)).unwrap_or(0);
         if let Some(a) = self.apps.get_mut(target) {
+            // NUS WILL WAIT: "Finish Work Complete" is a finished-work notice; it holds off
+            // while an eclipse is total where you are (skyview.rs).
+            let waiting = a.sky_waiting();
             for e in events {
                 if let Some((words, detail)) = notice(e) {
-                    a.notice(nus_render::text::icons::COFFEE, words, detail);
+                    if waiting && e == Event::Complete {
+                        a.sky_defer(crate::skyview::Deferred::Notice(words.to_string(), detail));
+                    } else {
+                        a.notice(nus_render::text::icons::COFFEE, words, detail);
+                    }
                 }
             }
         }

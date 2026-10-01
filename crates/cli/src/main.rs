@@ -17,6 +17,7 @@
 //!   nus hook claude|codex           an assistant's hook, reporting to its pane (hook.rs)
 //!   nus hook install claude|codex   add those hooks to the assistant's config
 //!   nus credential get              git's credential helper: the forge sign-in, when allowed
+//!   nus sky|moon|tonight [--place LAT,LON]   the almanac, computed here (sky.rs)
 //!   nus version
 //!
 //! It finds the running instance through `profile/instance` next to the
@@ -180,6 +181,7 @@ fn print_ls(v: &Value) {
 mod mcp;
 
 mod hook;
+mod sky;
 
 /// git's credential protocol: `key=value` lines on stdin up to a blank
 /// line; for `get`, answer with `username=` and `password=` when nus has
@@ -211,6 +213,14 @@ fn credential(op: Option<&str>) -> ExitCode {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The almanac needs no running nus: sky, moon and tonight are computed here.
+    if let Some(which) = args
+        .first()
+        .map(String::as_str)
+        .filter(|a| matches!(*a, "sky" | "moon" | "tonight"))
+    {
+        return sky::run(which, &args[1..]);
+    }
     // An assistant's hook: quick, quiet, and always a success to the caller.
     if args.first().map(String::as_str) == Some("hook") {
         return hook::run(&args[1..]);

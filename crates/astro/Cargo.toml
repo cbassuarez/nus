@@ -1,0 +1,17 @@
+[package]
+name = "nus-astro"
+description = "A small, honest almanac: Sun, Moon, planets, eclipses, seasons — computed on the device, no network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+# Only for the machine's UTC offset, so times read as the clock on the wall does.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time"] }

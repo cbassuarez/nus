@@ -25,3 +25,10 @@ Port: recovered nus bivalent-renderer.js, constellations-renderer.js and
 limb-darkroom-template.html into native Rust/wgpu/WGSL. The image bytes and
 packed catalogue are unchanged. No NASA/Stellarium endorsement is implied.
 The three adjacent provenance JSON files preserve the supplied source records.
+
+Star names: IAU Catalog of Star Names (IAU Working Group on Star Names).
+Parallaxes: Hipparcos new reduction (van Leeuwen 2007, CDS I/311); spectral
+types: Hipparcos Main Catalogue (CDS I/239). Both via CDS VizieR.
+Sky positions of the Sun, Moon and planets (the sky art): computed on the device
+from J. Meeus, Astronomical Algorithms; VSOP87 (Bretagnon & Francou); and
+E. M. Standish's approximate planetary elements (JPL). Nothing is looked up.

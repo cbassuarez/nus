@@ -84,6 +84,10 @@ pub enum Action {
     AssistantStart(u8, String),
     PromptShell(String),
     PromptInput(String),
+    /// The almanac's words onto the clipboard (skyview.rs).
+    SkyCopy(String),
+    /// Turn the sky's clock to a moment and let the Home show it (skyview.rs).
+    SkyJump(f64),
     PromptPin(String),
     SavedEdit(usize, String),
     SavedName(usize, String),
@@ -456,6 +460,9 @@ pub struct WebPane {
     /// Sideways wheel waiting on the page's word that it had no room for
     /// it (overscroll.rs): only that becomes a swipe.
     pub swipe_pending: Option<(f32, Instant)>,
+    /// The page answered, this gesture, that it had no room sideways: the
+    /// rest of the gesture goes straight to the swipe.
+    pub swipe_free: Option<Instant>,
     /// When it went to sleep, for the waking transcript.
     pub slept: Option<Instant>,
     /// When it was woken: a page back within a moment never shows the
@@ -1171,6 +1178,8 @@ pub struct App {
     /// The art behind the prompt, running (art.rs); the picker's cards, alive.
     pub art: Option<crate::art::Art>,
     pub(crate) skies: crate::sky::Skies,
+    /// The sky's own clock and what it is doing for the person looking (skyview.rs).
+    pub(crate) sky_view: crate::skyview::SkyView,
     pub(crate) spaces: crate::space::Spaces,
     pub art_previews: std::collections::HashMap<String, crate::art::Art>,
     /// The app icon for settings' picture cards, by (size, band progress in
@@ -1335,6 +1344,8 @@ pub struct App {
     /// The last press on the top strip, for its double click.
     pub strip_press: Option<(Instant, (f32, f32))>,
     pub last_begin_frame: Instant,
+    /// When trackpad fingers last lifted (swipe.rs `wheel_phase`).
+    pub wheel_lifted: Option<Instant>,
     pub frames: u64,
 }
 
@@ -1560,6 +1571,7 @@ impl App {
             page_menu: None,
             art: None,
             skies: Default::default(),
+            sky_view: Default::default(),
             spaces: Default::default(),
             art_previews: std::collections::HashMap::new(),
             pic_icons: std::collections::HashMap::new(),
@@ -1657,6 +1669,7 @@ impl App {
             pty_told: None,
             strip_press: None,
             last_begin_frame: crate::clock::now(),
+            wheel_lifted: None,
             frames: 0,
         };
         app.ordinal = ordinal;
@@ -2079,6 +2092,7 @@ impl App {
             bounce_y: 0.0,
             swipe: None,
             swipe_pending: None,
+            swipe_free: None,
             load_since: None,
             load_reported: 0.0,
             devtools: None,
@@ -7839,6 +7853,11 @@ impl App {
             Action::ReadingControl(hit) => self.library_action(hit),
             Action::PromptShell(cmd) => self.open_prompt_shell(&cmd),
             Action::PromptInput(input) => self.insert_prompt_input(input),
+            Action::SkyCopy(text) => {
+                crate::field::set_clipboard(&text);
+                self.toast(nus_render::text::icons::PLANET, "Copied", "the almanac's words", None);
+            }
+            Action::SkyJump(ms) => self.sky_jump(ms),
             Action::SavedUse(i, run) => self.saved_use(i, run),
             Action::SavedEdit(i, value) => self.saved_edit(i, false, value),
             Action::SavedName(i, value) => self.saved_edit(i, true, value),
@@ -10034,6 +10053,7 @@ impl App {
             let under = self.tabs.get(self.active).and_then(|t| {
                 [(false, Some(&t.left)), (true, t.right.as_ref())].into_iter().find_map(|(right, p)| match p {
                     Some(Pane::Web(w)) if w.rect.contains(x, y) => Some(right),
+                    Some(Pane::Home(h)) if h.rect.contains(x, y) => Some(right),
                     _ => None,
                 })
             });
@@ -10616,6 +10636,7 @@ impl App {
             MouseScrollDelta::PixelDelta(p) => p.x as f32,
         };
         if self.library_wheel(x, y, dx_px, dy_px) { return; }
+        if self.sky_wheel(x, y, dy_px) { return; }
         let wheel_lines = self.behavior.wheel_lines as f32;
         let easing = self.behavior.scroll_easing;
         let shift = self.mods.shift_key();
@@ -10773,8 +10794,17 @@ impl App {
                 w.tab.wheel(lx as i32, ly as i32, cef_flags, dx, dy);
                 // Held until the page says it had no room for it: a
                 // sideways scroller (a carousel, a wide table) keeps its wheel.
+                // Once it has said so this gesture, or when it has no script
+                // to say anything with yet, the swipe moves now.
                 if sideways {
                     let now = crate::clock::now();
+                    let answered = w.swipe_free.is_some_and(|t| now.duration_since(t) < crate::swipe::HOLD);
+                    if answered || !w.tab.shared.borrow().overscroll_ready {
+                        w.swipe_free = Some(now);
+                        w.swipe_pending = None;
+                        self.swipe_step(right, sx);
+                        return;
+                    }
                     let held = w.swipe_pending.filter(|(_, at)| now.duration_since(*at) < crate::swipe::HOLD).map(|(d, _)| d).unwrap_or(0.0);
                     w.swipe_pending = Some((held + sx, now));
                 }

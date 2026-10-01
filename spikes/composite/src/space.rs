@@ -97,6 +97,8 @@ impl App {
                     self.fonts.draw(scene,Style{color:[0.68,0.75,0.82,alpha],..style},x,y+style.px,name);
                     accepted+=1;if accepted==3 {break;}
                 }
+                // A click on a named star names it, in the star layer (skyview.rs).
+                self.draw_space_names(scene,r,p,stats.output_size,key.0);
             }
             Err(error)=>{
                 scene.rect(r,[0.012,0.02,0.03,1.0]);

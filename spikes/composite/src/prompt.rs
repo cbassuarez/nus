@@ -578,7 +578,8 @@ impl App {
         } else {
             config.search_limit.clamp(1, 12)
         } as usize;
-        let mut out = Vec::new();
+        // `sky`, `moon`, `tonight`, `eclipse`: the almanac answers first (skyview.rs).
+        let mut out = self.almanac_rows(q);
         // Explicit routes are always usable, even if that suggestion source is hidden.
         let explicit = q.starts_with(['>', '?', '@'])
             || q.eq_ignore_ascii_case("home")

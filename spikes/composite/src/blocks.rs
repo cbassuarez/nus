@@ -421,7 +421,10 @@ impl App {
                 }
                 p.lamp_hits.push((hit, b.start));
                 if hot {
-                    self.tip_words(hit, if folded { "unfold" } else { "fold this block's output" });
+                    let words = if folded { "unfold" } else { "fold this block's output" };
+                    // A dry word for an exit status that has a meaning worth knowing (manners.rs).
+                    let said = b.exit.filter(|_| !b.running && self.behavior.eggs.manners).and_then(|code| crate::manners::exit_words(code).map(|w| format!("{words} · exit {code}: {w}")));
+                    self.tip_words(hit, said.as_deref().unwrap_or(words));
                 }
             }
         }

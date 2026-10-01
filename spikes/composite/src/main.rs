@@ -63,6 +63,7 @@ mod saved_commands;
 mod import_flow;
 mod assistants;
 mod look_menu;
+mod manners;
 mod windows;
 mod tiles;
 mod peek;
@@ -150,6 +151,7 @@ mod toast;
 mod page_menu;
 mod art;
 mod sky;
+mod skyview;
 mod space;
 mod weather;
 mod forge;
@@ -309,12 +311,35 @@ impl Host {
             if let Some(d)=a.menu_drawer.window.as_ref().filter(|d|d.visible){d.window.request_redraw();}
             a.hatch_state.island_open=island_open;
             if newest.is_some_and(|n|n!=i){a.hide_hatch_inner(false);}
+            // NUS WILL WAIT (skyview.rs): while an eclipse is total here, a finished command
+            // notice holds off, and comes the moment it is over.
+            let waiting = i == 0 && a.sky_waiting();
             if i == 0 && a.behavior.hatch_notify {
                 if let Some(item) = hatch_work::completion(&a.hatch_state.work, &work) {
-                    a.hatch_state.completion = Some((item.clone(), std::time::Instant::now()));
-                    self.dock.attention(&a.window,a.motion.reduced(),app_focused);
+                    if waiting {
+                        a.sky_defer(skyview::Deferred::Completion(item.clone()));
+                    } else {
+                        a.hatch_state.completion = Some((item.clone(), std::time::Instant::now()));
+                        self.dock.attention(&a.window,a.motion.reduced(),app_focused);
+                    }
                 } else if hatch_work::needs_attention(&a.hatch_state.work,&work) {
-                    self.dock.attention(&a.window,a.motion.reduced(),app_focused);
+                    if waiting {
+                        a.sky_defer(skyview::Deferred::Attention);
+                    } else {
+                        self.dock.attention(&a.window,a.motion.reduced(),app_focused);
+                    }
+                }
+            }
+            if i == 0 && !waiting {
+                for held in a.sky_released() {
+                    match held {
+                        skyview::Deferred::Completion(item) => {
+                            a.hatch_state.completion = Some((item, std::time::Instant::now()));
+                            self.dock.attention(&a.window,a.motion.reduced(),app_focused);
+                        }
+                        skyview::Deferred::Attention => self.dock.attention(&a.window,a.motion.reduced(),app_focused),
+                        skyview::Deferred::Notice(words, detail) => a.notice(nus_render::text::icons::COFFEE, words, detail),
+                    }
                 }
             }
             if a.hatch_state.work!=work {
@@ -1001,7 +1026,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 a.mouse_button(button, state);
                 a.dirty = true;
             }
-            WindowEvent::MouseWheel { delta,phase,.. } => {a.wheel(delta);if phase==winit::event::TouchPhase::Ended{a.timeline_detent();}},
+            WindowEvent::MouseWheel { delta,phase,.. } => {a.wheel_phase(phase);a.wheel(delta);if phase==winit::event::TouchPhase::Ended{a.timeline_detent();}},
             WindowEvent::Touch(t) => a.touch(t.id, t.phase, t.location.x as f32, t.location.y as f32),
             WindowEvent::RedrawRequested => a.redraw(),
             _ => {}

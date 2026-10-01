@@ -90,6 +90,8 @@ impl App {
         let query=query.as_str();
         let mut found=Vec::new();
         for (section,(name,_)) in SECTIONS.iter().enumerate() {
+            // The experiments are not on the list until the chord has found them.
+            if section==SEC_EXPERIMENTS && !self.behavior.eggs.found {continue;}
             for tab in 0..if section==SEC_LOOK {LOOK_TABS.len()} else {1} {
                 let context=if section==SEC_LOOK {format!("{name} · {}",LOOK_TABS[tab])} else {name.to_string()};
                 let rows=self.rows_for_at(section,tab);

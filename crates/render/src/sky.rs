@@ -14,10 +14,54 @@ const OVERSCAN: f32 = 1.12;
 const PRESENT_INTERVAL: f32 = 1.0 / 24.0;
 const VOLUME_INTERVAL: f32 = 0.5;
 
+/// A planet or other moving point of light, already East/Up/North.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mark {
+    pub direction: [f32; 3],
+    pub magnitude: f32,
+    /// B−V colour index: negative blue, ~0.6 white-yellow, above 1 orange.
+    pub bv: f32,
+}
+
+/// The real sky: the Hipparcos stars and constellation figures turned to this
+/// place and time, the planets, and the Sun and Moon as they meet. Absent, the
+/// sky keeps its decorative night.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Celestial {
+    /// J2000 equatorial → East/Up/North, row-major.
+    pub rotation: [[f32; 3]; 3],
+    pub planets: [Option<Mark>; MAX_PLANETS],
+    /// Angular radii of the Sun and Moon as seen from here, radians.
+    pub sun_radius: f32,
+    pub moon_radius: f32,
+    /// Fraction of the Sun's disc still showing; 1 when no eclipse is under way.
+    pub sun_visible: f32,
+    /// How much of the corona to show, 0..1 (total eclipse only).
+    pub corona: f32,
+    pub ecliptic_north: [f32; 3],
+    /// The Earth's shadow axis at the Moon's distance and its radii; a zero
+    /// umbra radius means the Moon is clear of it.
+    pub shadow_direction: [f32; 3],
+    pub umbra_radius: f32,
+    pub penumbra_radius: f32,
+    /// How much moonlight spoils the dark, 0..1.
+    pub moon_glow: f32,
+    /// Constellation figures, drawn a stroke at a time: 0 hidden, 1 complete.
+    pub lines: f32,
+    /// How far modelled clouds part for the show (an eclipse), 0..1. The caller applies it
+    /// after the weather has eased, so it takes effect at once; the renderer only repaints for it.
+    pub clear_sky: f32,
+}
+
+/// Seven naked-eye-and-telescopic planets fit in the catalogue's spare rows.
+pub const MAX_PLANETS: usize = 7;
+
 /// Directions are normalized East, Up, North vectors. Wind is the direction
 /// the air moves *toward*, in east/north metres per second (not a wind bearing).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkyParams {
+    /// The real star sky, when this has a place and a time.
+    pub celestial: Option<Celestial>,
     pub sun_direction: [f32; 3],
     pub moon_direction: [f32; 3],
     pub moon_illumination: f32,
@@ -55,6 +99,7 @@ pub struct SkyParams {
 impl Default for SkyParams {
     fn default() -> Self {
         Self {
+            celestial: None,
             sun_direction: unit([0.6755, 0.475, 0.64], [0.0, 1.0, 0.0]),
             moon_direction: [0.0, -1.0, 0.0],
             moon_illumination: 0.0,
@@ -118,6 +163,25 @@ impl SkyParams {
             finite(self.reading_luminance[1], 1.0).clamp(self.reading_luminance[0], 1.0);
         self.reading_feather = finite(self.reading_feather, 0.04).clamp(0.0, 1.0);
         self.reading_strength = finite(self.reading_strength, 0.0).clamp(0.0, 0.35);
+        if let Some(c) = &mut self.celestial {
+            c.rotation = c.rotation.map(|row| row.map(|v| finite(v, 0.0)));
+            for mark in c.planets.iter_mut().flatten() {
+                mark.direction = unit(mark.direction, [0.0, -1.0, 0.0]);
+                mark.magnitude = finite(mark.magnitude, 99.0);
+                mark.bv = finite(mark.bv, 0.6);
+            }
+            c.sun_radius = finite(c.sun_radius, 0.0).clamp(0.0, 0.05);
+            c.moon_radius = finite(c.moon_radius, 0.0).clamp(0.0, 0.05);
+            c.sun_visible = finite(c.sun_visible, 1.0).clamp(0.0, 1.0);
+            c.corona = finite(c.corona, 0.0).clamp(0.0, 1.0);
+            c.ecliptic_north = unit(c.ecliptic_north, [0.0, 1.0, 0.0]);
+            c.shadow_direction = unit(c.shadow_direction, [0.0, -1.0, 0.0]);
+            c.umbra_radius = finite(c.umbra_radius, 0.0).clamp(0.0, 0.2);
+            c.penumbra_radius = finite(c.penumbra_radius, 0.0).clamp(0.0, 0.3);
+            c.moon_glow = finite(c.moon_glow, 0.0).clamp(0.0, 1.0);
+            c.lines = finite(c.lines, 0.0).clamp(0.0, 1.0);
+            c.clear_sky = finite(c.clear_sky, 0.0).clamp(0.0, 1.0);
+        }
         self
     }
 }
@@ -157,7 +221,27 @@ struct Uniforms {
     reading: [f32; 4],
     reading_footer: [f32; 4],
     protection: [f32; 4],
+    rot0: [f32; 4],
+    rot1: [f32; 4],
+    rot2: [f32; 4],
+    body: [f32; 4],
+    shadow: [f32; 4],
+    lunar: [f32; 4],
+    ecl_north: [f32; 4],
 }
+/// One constellation stroke: the two stars, and where it falls in its figure.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Stroke {
+    a: [f32; 3],
+    b: [f32; 3],
+    /// Start of the stroke, and its share, within its figure's 0..1 reveal.
+    order: [f32; 2],
+}
+const STAR_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Float32];
+const STROKE_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
 struct Timing {
     queries: wgpu::QuerySet,
     resolve: wgpu::Buffer,
@@ -189,6 +273,14 @@ pub struct SkyRenderer {
     cloud_bind: wgpu::BindGroup,
     cloud_pipeline: wgpu::RenderPipeline,
     present_pipeline: wgpu::RenderPipeline,
+    star_pipeline: wgpu::RenderPipeline,
+    stroke_pipeline: wgpu::RenderPipeline,
+    star_bind: wgpu::BindGroup,
+    /// The packed catalogue, then the planets' rows (rewritten as they move).
+    stars: wgpu::Buffer,
+    strokes: wgpu::Buffer,
+    star_count: u32,
+    stroke_count: u32,
     targets: Option<Targets>,
     previous: Option<SkyParams>,
     presented: Option<SkyParams>,
@@ -278,7 +370,13 @@ impl SkyRenderer {
             label: Some("ground sky"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
         });
-        let pipeline = |label, entry, bgl: &wgpu::BindGroupLayout, format| {
+        let pipeline = |label,
+                        vertex: &'static str,
+                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                        entry,
+                        bgl: &wgpu::BindGroupLayout,
+                        format,
+                        blend| {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &[Some(bgl)],
@@ -289,8 +387,8 @@ impl SkyRenderer {
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
+                    entry_point: Some(vertex),
+                    buffers,
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -298,7 +396,7 @@ impl SkyRenderer {
                     entry_point: Some(entry),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: None,
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
@@ -312,16 +410,91 @@ impl SkyRenderer {
         };
         let cloud_pipeline = pipeline(
             "sky volume",
+            "vs_main",
+            &[],
             "cloud_main",
             &cloud_bgl,
             wgpu::TextureFormat::Rgba16Float,
+            None,
         );
+        // The presentation lays the sky over whatever the star layer put in the target:
+        // colour + stars × (1 − alpha), alpha kept at the opaque clear.
+        let over_stars = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
         let present_pipeline = pipeline(
             "sky presentation",
+            "vs_main",
+            &[],
             "present_main",
             &present_bgl,
             wgpu::TextureFormat::Rgba8Unorm,
+            Some(over_stars),
         );
+        let star_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sky star layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ..cloud_entries[0]
+            }],
+        });
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            // The opaque base stays opaque; star fragments carry zero alpha.
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let star_pipeline = pipeline(
+            "sky stars",
+            "star_vs",
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<crate::space::Star>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &STAR_ATTRIBUTES,
+            })],
+            "star_fs",
+            &star_bgl,
+            wgpu::TextureFormat::Rgba8Unorm,
+            Some(additive),
+        );
+        let stroke_pipeline = pipeline(
+            "sky constellation strokes",
+            "line_vs",
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Stroke>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &STROKE_ATTRIBUTES,
+            })],
+            "line_fs",
+            &star_bgl,
+            wgpu::TextureFormat::Rgba8Unorm,
+            Some(additive),
+        );
+        let star_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky star inputs"),
+            layout: &star_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        let (stars, star_count, strokes, stroke_count) = star_buffers(device);
         let init_pipeline_cpu_ms = pipeline_started.elapsed().as_secs_f64() * 1000.0;
         let noise_started = Instant::now();
         let noise = make_noise(device, queue, 42);
@@ -366,6 +539,13 @@ impl SkyRenderer {
             cloud_bind,
             cloud_pipeline,
             present_pipeline,
+            star_pipeline,
+            stroke_pipeline,
+            star_bind,
+            stars,
+            strokes,
+            star_count,
+            stroke_count,
             targets: None,
             previous: None,
             presented: None,
@@ -483,6 +663,31 @@ impl SkyRenderer {
         let uniforms = self.uniforms(size, p);
         self.queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniforms));
+        if let Some(c) = &p.celestial {
+            // Planets ride in the catalogue's spare rows, turned back into the J2000 frame the
+            // shader will turn forward again (the rotation is orthonormal: its inverse is its transpose).
+            let rows: [crate::space::Star; MAX_PLANETS] =
+                std::array::from_fn(|i| match c.planets[i] {
+                    Some(m) => crate::space::Star {
+                        direction: std::array::from_fn(|j| {
+                            c.rotation[0][j] * m.direction[0]
+                                + c.rotation[1][j] * m.direction[1]
+                                + c.rotation[2][j] * m.direction[2]
+                        }),
+                        magnitude: m.magnitude,
+                        bv: m.bv,
+                    },
+                    None => crate::space::Star {
+                        direction: [0.0, 0.0, 1.0],
+                        magnitude: 99.0,
+                        bv: 0.6,
+                    },
+                });
+            let offset = u64::from(self.star_count - MAX_PLANETS as u32)
+                * std::mem::size_of::<crate::space::Star>() as u64;
+            self.queue
+                .write_buffer(&self.stars, offset, bytemuck::cast_slice(&rows));
+        }
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -511,7 +716,7 @@ impl SkyRenderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sky cached presentation"),
-                color_attachments: &[Some(attachment(&targets.output_view))],
+                color_attachments: &[Some(attachment_opaque(&targets.output_view))],
                 timestamp_writes: self
                     .timing
                     .as_ref()
@@ -522,6 +727,18 @@ impl SkyRenderer {
                     }),
                 ..Default::default()
             });
+            if let Some(c) = &p.celestial {
+                // Stars and figures first; the sky is composited over them.
+                pass.set_bind_group(0, &self.star_bind, &[]);
+                pass.set_pipeline(&self.star_pipeline);
+                pass.set_vertex_buffer(0, self.stars.slice(..));
+                pass.draw(0..6, 0..self.star_count);
+                if c.lines > 0.0 {
+                    pass.set_pipeline(&self.stroke_pipeline);
+                    pass.set_vertex_buffer(0, self.strokes.slice(..));
+                    pass.draw(0..6, 0..self.stroke_count);
+                }
+            }
             pass.set_pipeline(&self.present_pipeline);
             pass.set_bind_group(0, &targets.present_bind, &[]);
             pass.draw(0..3, 0..1);
@@ -692,6 +909,37 @@ impl SkyRenderer {
                 p.reading_luminance[1],
                 p.reading_feather,
             ],
+            rot0: p.celestial.map_or([0.0; 4], |c| {
+                [c.rotation[0][0], c.rotation[0][1], c.rotation[0][2], 1.0]
+            }),
+            rot1: p.celestial.map_or([0.0; 4], |c| {
+                [c.rotation[1][0], c.rotation[1][1], c.rotation[1][2], 0.0]
+            }),
+            rot2: p.celestial.map_or([0.0; 4], |c| {
+                [c.rotation[2][0], c.rotation[2][1], c.rotation[2][2], 0.0]
+            }),
+            body: p.celestial.map_or([0.0, 0.0, 1.0, 0.0], |c| {
+                [c.sun_radius, c.moon_radius, c.sun_visible, c.corona]
+            }),
+            shadow: p.celestial.map_or([0.0; 4], |c| {
+                [
+                    c.shadow_direction[0],
+                    c.shadow_direction[1],
+                    c.shadow_direction[2],
+                    c.umbra_radius,
+                ]
+            }),
+            lunar: p
+                .celestial
+                .map_or([0.0; 4], |c| [c.penumbra_radius, c.moon_glow, c.lines, 0.0]),
+            ecl_north: p.celestial.map_or([0.0, 1.0, 0.0, 0.0], |c| {
+                [
+                    c.ecliptic_north[0],
+                    c.ecliptic_north[1],
+                    c.ecliptic_north[2],
+                    0.0,
+                ]
+            }),
         }
     }
     /// Blocking diagnostic only. Production rendering never maps a timing
@@ -747,6 +995,92 @@ fn bounded(size: (u32, u32), max: (u32, u32)) -> (u32, u32) {
         (size.1 as f64 * scale).round().max(1.0) as u32,
     )
 }
+/// The catalogue's stars, then the planets' spare rows; and the figures' strokes.
+fn star_buffers(device: &wgpu::Device) -> (wgpu::Buffer, u32, wgpu::Buffer, u32) {
+    use wgpu::util::DeviceExt;
+    let mut rows: Vec<crate::space::Star> = crate::space::catalogue().to_vec();
+    rows.extend((0..MAX_PLANETS).map(|_| crate::space::Star {
+        direction: [0.0, 0.0, 1.0],
+        magnitude: 99.0,
+        bv: 0.6,
+    }));
+    let stars = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("sky stars and planets"),
+        contents: bytemuck::cast_slice(&rows),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    });
+    let catalogue = crate::space::catalogue();
+    let mut strokes = Vec::new();
+    for figure in crate::space::figures() {
+        let n = f32::from(figure.end - figure.first).max(1.0);
+        for (k, pair) in crate::space::figure_segments()[figure.first as usize..figure.end as usize]
+            .iter()
+            .enumerate()
+        {
+            strokes.push(Stroke {
+                a: catalogue[pair[0] as usize].direction,
+                b: catalogue[pair[1] as usize].direction,
+                order: [k as f32 / n, 1.0 / n],
+            });
+        }
+    }
+    let strokes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("sky constellation strokes"),
+        contents: bytemuck::cast_slice(&strokes),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    (
+        stars,
+        rows.len() as u32,
+        strokes_buffer,
+        strokes.len() as u32,
+    )
+}
+/// How far apart two real skies are, for deciding whether a repaint is due.
+fn celestial_changed(a: SkyParams, b: SkyParams) -> bool {
+    let (x, y) = match (a.celestial, b.celestial) {
+        (None, None) => return false,
+        (Some(x), Some(y)) => (x, y),
+        _ => return true,
+    };
+    // The sky turns 15° an hour; a few arcseconds is not worth a repaint.
+    let turned = x
+        .rotation
+        .iter()
+        .flatten()
+        .zip(y.rotation.iter().flatten())
+        .any(|(p, q)| (p - q).abs() > 6e-5);
+    let planets = x.planets.iter().zip(&y.planets).any(|(p, q)| match (p, q) {
+        (Some(p), Some(q)) => {
+            p.direction
+                .iter()
+                .zip(q.direction)
+                .any(|(a, b)| (a - b).abs() > 5e-5)
+                || (p.magnitude - q.magnitude).abs() > 0.02
+        }
+        (None, None) => false,
+        _ => true,
+    });
+    turned
+        || planets
+        || (x.sun_radius - y.sun_radius).abs() > 1e-6
+        || (x.moon_radius - y.moon_radius).abs() > 1e-6
+        || (x.sun_visible - y.sun_visible).abs() > 0.002
+        || (x.corona - y.corona).abs() > 0.01
+        || (x.umbra_radius - y.umbra_radius).abs() > 1e-5
+        || (x.penumbra_radius - y.penumbra_radius).abs() > 1e-5
+        || x.shadow_direction
+            .iter()
+            .zip(y.shadow_direction)
+            .any(|(a, b)| (a - b).abs() > 2e-5)
+        || (x.moon_glow - y.moon_glow).abs() > 0.01
+        || (x.lines - y.lines).abs() > 0.001
+        || (x.clear_sky - y.clear_sky).abs() > 0.01
+}
+/// The Sun's visible fraction, 1 when the real sky is off.
+fn sun_visible(p: SkyParams) -> f32 {
+    p.celestial.map_or(1.0, |c| c.sun_visible)
+}
 fn camera_diff(a: SkyParams, b: SkyParams) -> bool {
     (a.view_azimuth - b.view_azimuth).abs() > 0.0001
         || (a.view_elevation - b.view_elevation).abs() > 0.0001
@@ -755,6 +1089,8 @@ fn camera_diff(a: SkyParams, b: SkyParams) -> bool {
 fn volume_changed(a: SkyParams, b: SkyParams) -> bool {
     camera_diff(a, b)
         || a.seed != b.seed
+        // Clouds are lit by the Sun: an eclipse darkens them.
+        || (sun_visible(a) - sun_visible(b)).abs() > 0.03
         || (a.low_cover - b.low_cover).abs() > 0.015
         || (a.stratus - b.stratus).abs() > 0.02
         || (a.cloud_base_km - b.cloud_base_km).abs() > 0.04
@@ -774,6 +1110,7 @@ fn volume_changed(a: SkyParams, b: SkyParams) -> bool {
 }
 fn present_changed(a: SkyParams, b: SkyParams) -> bool {
     a.moon_waxing != b.moon_waxing
+        || celestial_changed(a, b)
         || camera_diff(a, b)
         || a.seed != b.seed
         || a.reading_rect != b.reading_rect
@@ -831,6 +1168,18 @@ fn attachment(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> {
         resolve_target: None,
         ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            store: wgpu::StoreOp::Store,
+        },
+        depth_slice: None,
+    }
+}
+/// The star layer starts from opaque black, so the presentation's blend can keep alpha.
+fn attachment_opaque(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> {
+    wgpu::RenderPassColorAttachment {
+        view,
+        resolve_target: None,
+        ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
             store: wgpu::StoreOp::Store,
         },
         depth_slice: None,

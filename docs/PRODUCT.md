@@ -2073,3 +2073,17 @@ takes it back, and nothing you didn't touch is rewritten.
 Not yet (waiting on the writing-surface layout): hiding markers, heading
 sizes (a heading is bold, not larger, on the fixed cell grid), soft wrap,
 rich paste and the selection bar.
+
+## The real sky, and a few quiet things (2026-10-01)
+
+The Home art "the sky" is now the sky over your Place — real stars, planets, the
+Moon, the Sun, and eclipses — computed on the device (`crates/astro`, rendered by
+`crates/render/src/sky.*`; see `docs/SKY.md`). Without a Place it is exactly what it
+was. With one, a handful of quiet things appear, each a switch in a hidden
+EXPERIMENTS page (found by a chord on the empty Home prompt): name a star by clicking
+it, turn the sky's clock by scrolling, draw the constellations by holding Ctrl+Shift,
+a drifting sky after a minute idle, `sky` / `moon` / `tonight` / `eclipse` at the
+prompt (and `nus sky|moon|tonight`), a dry word on a command's exit status, the sky
+of this build under the masthead number, and (off) finished-work notices that wait
+for an eclipse's totality to end. The rule they were built to: accurate, quiet,
+optional — nothing animates unprompted but the sky, and none of it needs the network.
