@@ -30,11 +30,13 @@ use crate::settings::SwipeLook;
 const LINGER: Duration = Duration::from_millis(320);
 
 /// Movement further apart than this is a new gesture.
-const GAP: Duration = Duration::from_millis(250);
+pub const GAP: Duration = Duration::from_millis(250);
 
 /// How long sideways wheel waits for the page's word that it had no room
-/// for it; unclaimed, it was the page's.
-pub const HOLD: Duration = Duration::from_millis(200);
+/// for it; unclaimed, it was the page's. Generous: a page that keeps the
+/// wheel never answers, so waiting costs nothing, while a busy renderer
+/// can take well over 200 ms to answer and its swipe must not vanish.
+pub const HOLD: Duration = Duration::from_millis(1500);
 
 /// After a swipe fires, sideways wheel is spent for at least this long,
 /// gaps in a glide or not: one swipe, one navigation.
@@ -141,7 +143,10 @@ impl App {
                     w.swipe_free = Some(now);
                     steps.push((right, sx));
                 }
-                Some((_, at)) if now.duration_since(at) >= HOLD => w.swipe_pending = None,
+                Some((sx, at)) if now.duration_since(at) >= HOLD => {
+                    tracing::debug!("sideways wheel {sx:.0} kept by the page (no answer in {} ms)", HOLD.as_millis());
+                    w.swipe_pending = None;
+                }
                 _ => {}
             }
         }

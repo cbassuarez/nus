@@ -10798,7 +10798,7 @@ impl App {
                 // to say anything with yet, the swipe moves now.
                 if sideways {
                     let now = crate::clock::now();
-                    let answered = w.swipe_free.is_some_and(|t| now.duration_since(t) < crate::swipe::HOLD);
+                    let answered = w.swipe_free.is_some_and(|t| now.duration_since(t) < crate::swipe::GAP);
                     if answered || !w.tab.shared.borrow().overscroll_ready {
                         w.swipe_free = Some(now);
                         w.swipe_pending = None;

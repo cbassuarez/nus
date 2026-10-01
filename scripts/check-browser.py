@@ -87,6 +87,8 @@ def main():
     ]) + '\n')
     env = native.run_environment(d, shot)
     env.update(NUS_SHOT_SIZE='1100x900', NUS_MODE='paper', NUS_CEF_LOG=str(d / 'chromium.log'))
+    # A swipe that does not fire says why: the page kept its wheel, or never answered.
+    env.setdefault('RUST_LOG', 'info,composite::swipe=debug,nus_app::swipe=debug')
     if a.software:
         env['NUS_SOFTWARE_PAINT'] = '1'
     exe = native.executable_for(a.app)
