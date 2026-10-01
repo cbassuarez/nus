@@ -1094,6 +1094,11 @@ wrap_app! {
             for flag in ["no-sandbox","disable-gpu-sandbox","disable-seccomp-filter-sandbox","disable-namespace-sandbox","single-process","in-process-gpu","disable-site-isolation-trials"] {cl.remove_switch(Some(&flag.into()));}
             cl.append_switch(Some(&"site-per-process".into()));
             cl.append_switch(Some(&"no-startup-window".into()));
+            // Chromium's first run is Chrome's, not ours. Without initial
+            // preferences, Linux defaults to requiring a EULA dialog an
+            // embedded engine cannot show, and quits with code 28
+            // (EULA_REFUSED) on every fresh profile.
+            cl.append_switch(Some(&"no-first-run".into()));
             // Disposable HTTP cache; cookies and site storage stay.
             cl.append_switch_with_value(Some(&"disk-cache-size".into()), Some(&"67108864".into()));
             cl.append_switch(Some(&"noerrdialogs".into()));
@@ -1261,7 +1266,9 @@ wrap_render_handler! {
                     } else {
                         s.bind = Some(bind);
                         if s.committed { s.painted_committed = true; }
-                        s.paint_size = (texture.width(), texture.height());
+                        let size = (texture.width(), texture.height());
+                        if s.paint_size != size { tracing::info!("page paint {}x{} for view {:?} at {}x", size.0, size.1, s.size, s.scale); }
+                        s.paint_size = size;
                         if s.paints == 0 {
                             tracing::info!("first paint +{}ms", s.created.elapsed().as_millis());
                         }
@@ -3113,6 +3120,10 @@ impl BrowserTab {
         }
         if let Some(h) = self.host() {
             h.was_resized();
+            // macOS takes shared-texture frames from Chromium's capturer, which
+            // only sends on damage: a page already painted keeps its old size
+            // (shrunk into the old surface) until something asks for a frame.
+            h.invalidate(cef::PaintElementType::VIEW);
         }
     }
 
@@ -3127,6 +3138,7 @@ impl BrowserTab {
             if let Some(h) = self.host() {
                 h.notify_screen_info_changed();
                 h.was_resized();
+                h.invalidate(cef::PaintElementType::VIEW);
             }
         }
     }

@@ -83,6 +83,11 @@ def main():
                                     stderr=subprocess.STDOUT, start_new_session=(os.name == 'posix'))
             try:
                 code = proc.wait(timeout=150)
+            except subprocess.TimeoutExpired:
+                native.terminate_run(proc)
+                # The step it stalled on and the app's own reason, not just a timeout.
+                tail = (d / 'run.log').read_text(errors='replace')[-4000:]
+                raise AssertionError(f'packaged browser did not finish within 150 s\n{tail}') from None
             except BaseException:
                 native.terminate_run(proc)
                 raise

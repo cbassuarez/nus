@@ -203,7 +203,9 @@ impl App {
             "awaitpaint" => {
                 let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };
                 let s = w.tab.shared.borrow();
-                s.bind.is_some() && s.painted_committed && !s.loading && s.transcript().is_none()
+                // A paint at the pane's size, not an earlier one at another.
+                let sized = s.paint_size == ((s.size.0 * s.scale).round() as u32, (s.size.1 * s.scale).round() as u32);
+                s.bind.is_some() && s.painted_committed && sized && !s.loading && s.transcript().is_none()
             },
             "awaittranscript" => {
                 let Some(Pane::Web(w)) = self.tabs.get(self.active).map(|t| t.focused_ref()) else { return false };

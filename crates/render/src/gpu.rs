@@ -97,9 +97,21 @@ impl Gpu {
         } else {
             wgpu::Backends::VULKAN
         };
+        // FXC, never DXC. wgpu's default (Auto) loads any dxcompiler.dll it
+        // can find, and the package ships CEF's beside nus.exe. That build
+        // rejects our shaders on Intel iGPUs ("The parameter is incorrect"),
+        // so nus would crash at launch there. FXC ships with Windows.
+        let defaults = wgpu::InstanceDescriptor::new_without_display_handle();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
+            backend_options: wgpu::BackendOptions {
+                dx12: wgpu::Dx12BackendOptions {
+                    shader_compiler: wgpu::Dx12Compiler::Fxc,
+                    ..defaults.backend_options.dx12.clone()
+                },
+                ..defaults.backend_options.clone()
+            },
+            ..defaults
         });
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
