@@ -136,8 +136,10 @@ pub struct Shared {
     /// yet (message id, asked at), and when it last answered one.
     pub(crate) ping: Option<(i32, std::time::Instant)>,
     pub(crate) answered: Option<std::time::Instant>,
-    /// You chose to stop the hung page: its crash reads as that.
-    pub(crate) stopping: bool,
+    /// You chose to stop the hung page (when): its crash reads as that.
+    pub(crate) stopping: Option<std::time::Instant>,
+    /// An address asked for before that renderer was gone, to load after.
+    pub(crate) after_stop: Option<String>,
     /// A `nus://crash`-style command, run once the blank page is there.
     pub(crate) debug: Option<crate::interstitial::Internal>,
     /// Asking the network whether it wants a sign-in (a captive portal).
@@ -356,6 +358,23 @@ impl Shared {
         self.committed=false;self.painted_committed=false;
         self.ping=None;self.answered=None;
         self.address(url);self.requested_url=url.into();self.loading=true;self.progress=0.0;
+    }
+    /// A load while a page you stopped is still going. Chromium loses it
+    /// when that renderer goes, and its crash would cover the new page, so
+    /// it waits until the renderer is gone.
+    fn hold_until_stopped(&mut self,url:&str)->bool {
+        if self.stopping.is_none() {return false;}
+        self.after_stop=Some(url.into());
+        true
+    }
+    /// The held load, once the stopped renderer is gone, or once it has had
+    /// long enough to go: a renderer that never ends doesn't hold it forever.
+    fn resume_after_stop(&mut self,now:std::time::Instant)->Option<String> {
+        const GRACE:std::time::Duration=std::time::Duration::from_secs(5);
+        self.after_stop.as_ref()?;
+        if self.stopping.is_some_and(|at|now.saturating_duration_since(at)<GRACE) {return None;}
+        self.stopping=None;
+        self.after_stop.take()
     }
 }
 
@@ -2278,7 +2297,7 @@ wrap_request_handler! {
             if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Hung) {s.overlay=None;}
             let url=s.url.clone();
             let oom=status==cef::sys::cef_termination_status_t::TS_PROCESS_OOM;
-            let killed=status==cef::sys::cef_termination_status_t::TS_PROCESS_WAS_KILLED || std::mem::take(&mut s.stopping);
+            let killed=status==cef::sys::cef_termination_status_t::TS_PROCESS_WAS_KILLED || s.stopping.take().is_some();
             s.ping=None;
             let code=error_string.map(|e|e.to_string()).filter(|e|!e.is_empty()&&e.parse::<i64>().is_err()).unwrap_or_else(||format!("exit code {error_code}"));
             s.interstitial=Some(crate::interstitial::Page::crashed(&url,oom,&code,killed));
@@ -2833,6 +2852,9 @@ impl BrowserTab {
             s.interstitial_acts.push("retry".into());
             return;
         }
+        if self.shared.borrow_mut().hold_until_stopped(url) {
+            return;
+        }
         if self.native_load(url) {
             return;
         }
@@ -2989,6 +3011,8 @@ impl BrowserTab {
     /// swap in the Wi-Fi page when the network turned out to want a
     /// sign-in, and hand over what the transcript asked for.
     pub fn tend_interstitial(&self) -> Vec<String> {
+        let resume = self.shared.borrow_mut().resume_after_stop(crate::clock::now());
+        if let Some(url) = resume { self.load(&url); }
         let (blank, portal) = {
             let mut s = self.shared.borrow_mut();
             let blank = std::mem::take(&mut s.blank);
@@ -3063,7 +3087,7 @@ impl BrowserTab {
                 if let Some(p) = s.ping.as_mut() { p.1 = crate::clock::now(); }
                 if s.navigation_at.is_some() { s.navigation_at = Some(crate::clock::now()); }
             } else {
-                s.stopping = true;
+                s.stopping = Some(crate::clock::now());
                 let url = s.url.clone();
                 s.interstitial = Some(crate::interstitial::Page::crashed(&url, false, "", true));
                 s.loading = false;
@@ -3312,6 +3336,8 @@ impl BrowserTab {
         }
         {
             let mut s = self.shared.borrow_mut();
+            let url = s.url.clone();
+            if s.hold_until_stopped(&url) { return; }
             if s.native.is_some() { s.reset_favicon(); s.loading = true; return s.native.as_ref().unwrap().reload(); }
         }
         if let Some(b)=&self.browser { b.reload(); }
@@ -3446,6 +3472,42 @@ mod browser_failure_tests {
     use super::*;
     use crate::interstitial::Kind;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_load_while_a_stopped_page_is_still_going_waits_for_it_to_go() {
+        let mut s = Shared::default();
+        let at = Instant::now();
+        assert!(!s.hold_until_stopped("https://page.test/"), "nothing stopped: load now");
+        s.stopping = Some(at);
+        assert!(s.hold_until_stopped("https://page.test/"));
+        assert_eq!(s.resume_after_stop(at + Duration::from_millis(500)), None, "the renderer is still going");
+        // on_render_process_terminated takes `stopping`: the load goes next.
+        assert!(s.stopping.take().is_some());
+        assert_eq!(s.resume_after_stop(at + Duration::from_millis(600)).as_deref(), Some("https://page.test/"));
+        assert_eq!(s.resume_after_stop(at + Duration::from_millis(700)), None, "once");
+    }
+
+    #[test]
+    fn a_stopped_renderer_that_never_goes_holds_a_load_only_briefly() {
+        let mut s = Shared::default();
+        let at = Instant::now();
+        s.stopping = Some(at);
+        assert!(s.hold_until_stopped("https://first.test/"));
+        assert!(s.hold_until_stopped("https://second.test/"));
+        assert_eq!(s.resume_after_stop(at + Duration::from_secs(4)), None);
+        assert_eq!(s.resume_after_stop(at + Duration::from_secs(5)).as_deref(), Some("https://second.test/"), "the latest address");
+        assert_eq!(s.stopping, None);
+        assert!(!s.hold_until_stopped("https://third.test/"));
+    }
+
+    #[test]
+    fn stopping_with_nothing_held_keeps_its_crash_reading_as_yours() {
+        let mut s = Shared::default();
+        let at = Instant::now();
+        s.stopping = Some(at);
+        assert_eq!(s.resume_after_stop(at + Duration::from_secs(60)), None);
+        assert_eq!(s.stopping, Some(at));
+    }
 
     #[test]
     fn silent_navigation_gets_a_native_timeout_and_retry_resets_it() {
