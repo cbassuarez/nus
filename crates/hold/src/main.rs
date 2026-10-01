@@ -197,6 +197,11 @@ fn run() -> Result<()> {
         }
         // A new client: check its token, greet it, hand it the ring.
         if let Ok((mut s, _)) = listener.accept() {
+            // macOS (BSD) hands back the listener's non-blocking mode with the
+            // socket, and timeouts mean nothing to a non-blocking read: a hello
+            // a moment behind the connect read as nothing, and the handshake
+            // was refused ("no greeting from the holder").
+            s.set_nonblocking(false).ok();
             s.set_nodelay(true).ok();
             s.set_read_timeout(Some(Duration::from_millis(500))).ok();
             s.set_write_timeout(Some(Duration::from_millis(500))).ok();
