@@ -140,6 +140,8 @@ pub struct Shared {
     pub(crate) stopping: Option<std::time::Instant>,
     /// An address asked for before that renderer was gone, to load after.
     pub(crate) after_stop: Option<String>,
+    /// The `Page.crash` that stop sent: Chromium can refuse it.
+    pub(crate) stop_msg: Option<i32>,
     /// A `nus://crash`-style command, run once the blank page is there.
     pub(crate) debug: Option<crate::interstitial::Internal>,
     /// Asking the network whether it wants a sign-in (a captive portal).
@@ -1525,6 +1527,15 @@ wrap_dev_tools_message_observer! {
                 }
             }
             {
+                let mut s = self.o.shared.borrow_mut();
+                if s.stop_msg == Some(message_id) {
+                    s.stop_msg = None;
+                    // "Target crashed" once it has gone is the answer it worked.
+                    if success == 0 && s.stopping.is_some() { tracing::warn!("stop: Chromium didn't crash the renderer: {}", result.map(String::from_utf8_lossy).unwrap_or_default()); }
+                    return;
+                }
+            }
+            {
                 // The watch's question, answered: the page is alive.
                 let mut s = self.o.shared.borrow_mut();
                 if s.ping.is_some_and(|(id, _)| id == message_id) {
@@ -2292,6 +2303,7 @@ wrap_request_handler! {
 
         fn on_render_process_terminated(&self,_browser:Option<&mut Browser>,status:TerminationStatus,error_code: ::std::os::raw::c_int,error_string:Option<&CefString>) {
             let status=cef::sys::cef_termination_status_t::from(status);
+            if let Some(at)=self.display.shared.borrow().stopping {tracing::info!("stop: renderer ended ({status:?}) {}ms after stop",crate::clock::since(at).as_millis());}
             let mut s=self.display.shared.borrow_mut();
             s.hung=None;
             if s.overlay.as_ref().is_some_and(|o|o.kind==crate::interstitial::Kind::Hung) {s.overlay=None;}
@@ -3097,10 +3109,16 @@ impl BrowserTab {
         };
         match (cb, wait) {
             (Some(cb), true) => cb.wait(),
-            (Some(cb), false) => cb.terminate(),
+            (Some(cb), false) => { tracing::info!("stop: ending the unresponsive renderer"); cb.terminate(); }
             (None, true) => {}
             // The renderer's IO thread still answers when its page is stuck.
-            (None, false) => { self.devtools("Page.crash", serde_json::json!({})); }
+            // Chromium refuses while a load is pending, so stop that first.
+            (None, false) => {
+                if let Some(b) = &self.browser { b.stop_load(); }
+                let id = self.devtools("Page.crash", serde_json::json!({}));
+                self.shared.borrow_mut().stop_msg = Some(id);
+                tracing::info!("stop: asked the stuck renderer to crash");
+            }
         }
     }
 
