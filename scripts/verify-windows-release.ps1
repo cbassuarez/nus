@@ -3,8 +3,9 @@ $ErrorActionPreference='Stop'
 # Signing happens in CI through Azure Artifact Signing; this only proves the
 # result. Every nus-owned executable, and the installer when given, must carry
 # a valid, timestamped signature (Artifact Signing certificates last days, so an
-# untimestamped one expires) from the same signer.
-$files=@('nus.exe','nus.dll','nus-hold.exe','bin/nus.exe' | ForEach-Object { Join-Path $Directory $_ })
+# untimestamped one expires) from the same signer. chrome_elf.dll is CEF's, but
+# the signed bootstrap refuses to start unless it carries the same certificate.
+$files=@('nus.exe','nus.dll','chrome_elf.dll','nus-hold.exe','bin/nus.exe' | ForEach-Object { Join-Path $Directory $_ })
 if ($Installer) { $files+=$Installer }
 $signer=$null
 foreach ($path in $files) {

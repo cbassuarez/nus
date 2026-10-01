@@ -2,6 +2,7 @@
 """Publication gates: never expose missing, mixed or corrupted packages."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -173,6 +174,7 @@ class ReleaseTests(unittest.TestCase):
         payloads={
             'vendor/cef/libcef.dll':b'cef',
             'vendor/cef/bootstrap.exe':b'sandbox bootstrap',
+            'vendor/cef/chrome_elf.dll':b'elf',
             'vendor/cef/icudtl.dat':b'icu',
             'vendor/cef/locales/en-US.pak':b'locale',
             'spikes/composite/target/release/composite.exe':b'desktop',
@@ -226,6 +228,19 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):
                     self.package('--stage-only')
                 self.assertEqual(list((self.root/'dist/release').iterdir()),[])
+
+    def test_windows_signing_lists_agree(self):
+        # The bootstrap refuses to start beside an unsigned chrome_elf.dll, so
+        # the signer, the verifier and the packager must name the same files.
+        scripts=Path(__file__).parent
+        workflow=(scripts.parent/'.github/workflows/release.yml').read_text()
+        step=workflow.split('- name: Sign nus Windows executables',1)[1].split('file-digest:',1)[0]
+        signed=[line.split('windows-stage\\',1)[1].replace('\\','/') for line in step.splitlines() if 'windows-stage\\' in line]
+        verifier=(scripts/'verify-windows-release.ps1').read_text()
+        verified=re.findall(r"'([^']+)'",re.search(r'\$files=@\(([^|]+)\|',verifier)[1])
+        self.assertIn('chrome_elf.dll',release.package.WINDOWS_SIGNED)
+        self.assertEqual(signed,release.package.WINDOWS_SIGNED)
+        self.assertEqual(verified,release.package.WINDOWS_SIGNED)
 
     def test_windows_installer_is_built_only_from_verified_executables(self):
         with patch.dict('os.environ',self.windows_payloads()):

@@ -19,9 +19,11 @@ MAC_SIGNING = ['MACOS_CERTIFICATE', 'MACOS_CERTIFICATE_PASSWORD', 'MACOS_SIGN_ID
 # Artifact Signing signs these executables in place; --build-installer verifies
 # them and compiles the installer from them; Artifact Signing signs that; then
 # --finalize-staged verifies everything and packages. Nothing else is signed.
+# chrome_elf.dll is CEF's, but the signed bootstrap (nus.exe) refuses to start
+# unless it and nus.dll carry the bootstrap's own certificate.
 WINDOWS_STAGE = 'dist/windows-stage'
 WINDOWS_INSTALLER = 'dist/windows-installer'
-WINDOWS_SIGNED = ['nus.exe', 'nus.dll', 'nus-hold.exe', 'bin/nus.exe']
+WINDOWS_SIGNED = ['nus.exe', 'nus.dll', 'chrome_elf.dll', 'nus-hold.exe', 'bin/nus.exe']
 WINDOWS_INSTRUCTIONS = 'Extract the entire folder, then open nus.exe. Keep its DLLs and locales together.\nThe shell CLI is bin/nus.exe. Settings live in %LOCALAPPDATA%/nus/installs/<channel>/<installation>/profile.\n'
 configured = lambda names: all(os.environ.get(n) for n in names)
 

@@ -82,12 +82,15 @@ leaves the unsigned payload in `dist/windows-stage`. A separate `sign-windows`
 job, the only one with `id-token: write`, runs in the `windows-signing`
 environment (variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
 `AZURE_SUBSCRIPTION_ID`) and signs exactly `nus.exe` (the CEF bootstrap), `nus.dll` (the application),
-`nus-hold.exe` and `bin/nus.exe` with RFC 3161 timestamps; bundled CEF, Widevine and MSVC binaries
-are never signed as ours. `--build-installer` runs
+`chrome_elf.dll`, `nus-hold.exe` and `bin/nus.exe` with RFC 3161 timestamps. Other bundled CEF,
+Widevine and MSVC binaries are never signed as ours. `chrome_elf.dll` is the one
+exception because CEF requires it: a signed bootstrap exits at launch unless
+`chrome_elf.dll` and the client DLL are signed with its own certificate.
+`--build-installer` runs
 `verify-windows-release.ps1`, which requires a valid, timestamped signature on
-all four, then compiles `scripts/windows-installer.iss` with the runner's Inno
+all five, then compiles `scripts/windows-installer.iss` with the runner's Inno
 Setup into `nus-<version>-windows-x86_64-setup.exe`; that is signed the same
-way. `--finalize-staged` verifies all five signatures (one signer) and only
+way. `--finalize-staged` verifies all six signatures (one signer) and only
 then writes `Signing: authenticode`, the ZIP, both hashes and the record. The
 job then installs silently, updates over it, launches the installed copy, and uninstalls. Every Windows package from the Release workflow is signed,
 including build-only runs; if signing fails there is no Windows package. Local

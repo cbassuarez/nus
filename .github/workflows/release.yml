@@ -209,7 +209,9 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      # An exact allowlist: bundled CEF, Widevine and MSVC binaries are not ours to sign.
+      # An exact allowlist: bundled CEF, Widevine and MSVC binaries are not ours to sign,
+      # except chrome_elf.dll. A signed CEF bootstrap refuses to start unless
+      # chrome_elf.dll and its client DLL carry its own certificate.
       - name: Sign nus Windows executables
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
@@ -219,6 +221,7 @@ jobs:
           files: |
             ${{ github.workspace }}\dist\windows-stage\nus.exe
             ${{ github.workspace }}\dist\windows-stage\nus.dll
+            ${{ github.workspace }}\dist\windows-stage\chrome_elf.dll
             ${{ github.workspace }}\dist\windows-stage\nus-hold.exe
             ${{ github.workspace }}\dist\windows-stage\bin\nus.exe
           file-digest: SHA256
