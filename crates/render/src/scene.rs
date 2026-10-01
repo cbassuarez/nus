@@ -728,11 +728,7 @@ impl Scene {
     /// Weights are clamped to [0, 1]; zero/invalid regions contribute nothing.
     /// In particular, a faint footer cannot double-darken the reading area.
     /// Output color-space conversion changes RGB only, never these opacities.
-    pub fn reading_fields_weighted(
-        &mut self,
-        fields: [(Rect, f32, f32); 2],
-        color: Color,
-    ) {
+    pub fn reading_fields_weighted(&mut self, fields: [(Rect, f32, f32); 2], color: Color) {
         if color.iter().any(|v| !v.is_finite()) || color[3] <= 0.0 {
             return;
         }
@@ -778,7 +774,9 @@ impl Scene {
             count += 1;
         }
         let Some(bounds) = bounds else { return };
-        let Ok(start) = u32::try_from(self.points.len()) else { return };
+        let Ok(start) = u32::try_from(self.points.len()) else {
+            return;
+        };
         if start.checked_add((count * 3) as u32).is_none() {
             return;
         }
@@ -948,8 +946,10 @@ mod reading_field_tests {
         let mut scene = Scene::new();
         let linear = [0.293372, 0.301934, 0.311917, 1.0];
         scene.reading_fields(
-            [(Rect::new(20.0, 20.0, 200.0, 100.0), 56.0),
-             (Rect::new(10.0, 110.0, 240.0, 28.0), 20.0)],
+            [
+                (Rect::new(20.0, 20.0, 200.0, 100.0), 56.0),
+                (Rect::new(10.0, 110.0, 240.0, 28.0), 20.0),
+            ],
             VEIL,
             Some(linear),
         );
@@ -986,8 +986,10 @@ mod reading_field_tests {
     fn reading_and_footer_have_independent_strength_in_one_instance() {
         let mut scene = Scene::new();
         scene.reading_fields_weighted(
-            [(Rect::new(20.0, 20.0, 200.0, 100.0), 56.0, 1.0),
-             (Rect::new(10.0, 110.0, 240.0, 28.0), 20.0, 0.3)],
+            [
+                (Rect::new(20.0, 20.0, 200.0, 100.0), 56.0, 1.0),
+                (Rect::new(10.0, 110.0, 240.0, 28.0), 20.0, 0.3),
+            ],
             VEIL,
         );
         assert_eq!(scene.instances().len(), 1);
@@ -1017,7 +1019,10 @@ mod reading_field_tests {
         let mut scene = Scene::new();
         let core = Rect::new(10.0, 10.0, 40.0, 20.0);
         scene.reading_fields_weighted(
-            [(core, 0.0, 1.0), (Rect::new(-1000.0, -1000.0, 4000.0, 4000.0), 50.0, 0.0)],
+            [
+                (core, 0.0, 1.0),
+                (Rect::new(-1000.0, -1000.0, 4000.0, 4000.0), 50.0, 0.0),
+            ],
             [0.25, 0.25, 0.25, 1.0],
         );
         assert_eq!(scene.instances()[0].pos, [10.0, 10.0]);

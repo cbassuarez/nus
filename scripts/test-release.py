@@ -139,6 +139,8 @@ class ReleaseTests(unittest.TestCase):
             'assets/fonts/OFL-test.txt':b'font license',
             'assets/icons/LICENSE':b'icon license',
             'assets/icon/nus-256.png':b'icon',
+            # The real script, so the archive ships what the repository does.
+            'scripts/install-linux-browser-entry.sh':Path(__file__).with_name('install-linux-browser-entry.sh').read_bytes(),
             'LICENSE':b'license',
         }
         for name,data in payloads.items():
@@ -155,10 +157,13 @@ class ReleaseTests(unittest.TestCase):
         prefix='nus-0.0.1-preview.1-linux-x86_64/'
         with tarfile.open(archive) as tar:
             names=set(tar.getnames())
-            for name in ['nus','nus-desktop','nus-hold','bin/nus','libcef.so','libEGL.so.1','icudtl.dat','locales/en-US.pak','licenses/OFL-test.txt']:
+            for name in ['nus','nus-desktop','nus-hold','bin/nus','libcef.so','libEGL.so.1','icudtl.dat','locales/en-US.pak','licenses/OFL-test.txt','nus.png','install-desktop.sh','nus-package.json']:
                 self.assertIn(prefix+name,names)
             self.assertNotIn(prefix+'include/cef.h',names)
-            self.assertEqual(tar.getmember(prefix+'nus').mode & 0o111,0o111)
+            for name in ['nus','install-desktop.sh']:
+                self.assertEqual(tar.getmember(prefix+name).mode & 0o111,0o111,name)
+            installer=tar.extractfile(prefix+'install-desktop.sh').read().decode()
+            self.assertIn('--install-browser-entry',installer)
             launcher=tar.extractfile(prefix+'nus').read().decode()
             self.assertIn('LD_LIBRARY_PATH',launcher)
             self.assertIn('exec "$dir/nus-desktop" "$@"',launcher)

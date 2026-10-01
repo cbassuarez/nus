@@ -114,8 +114,8 @@ impl SkyParams {
             }
         }
         self.reading_luminance[0] = finite(self.reading_luminance[0], 0.0).clamp(0.0, 1.0);
-        self.reading_luminance[1] = finite(self.reading_luminance[1], 1.0)
-            .clamp(self.reading_luminance[0], 1.0);
+        self.reading_luminance[1] =
+            finite(self.reading_luminance[1], 1.0).clamp(self.reading_luminance[0], 1.0);
         self.reading_feather = finite(self.reading_feather, 0.04).clamp(0.0, 1.0);
         self.reading_strength = finite(self.reading_strength, 0.0).clamp(0.0, 0.35);
         self
