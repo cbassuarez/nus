@@ -183,7 +183,7 @@ pub struct Ended {
     pub yours: bool,
     /// Something outside the page ended it: the system, another program.
     pub killed: bool,
-    /// Chromium's code for it, and what that means: ("SIGSEGV (11)", "a bad memory access").
+    /// Chromium's code for it, and what that means: ("SIGSEGV (11)", "bad memory access").
     pub code: Option<(String, String)>,
     /// How long the page had been open.
     pub open: Option<std::time::Duration>,
@@ -243,15 +243,15 @@ impl Page {
     /// The safe way out: back, or when there is nowhere to go back to,
     /// closing the tab.
     fn away(can_back: bool) -> Act {
-        if can_back { act("back", "Go back", "↵") } else { act("close", "Close this tab", "↵") }
+        if can_back { act("back", "Back", "↵") } else { act("close", "Close tab", "↵") }
     }
 
     pub fn cert(url: &str, code: &str, can_back: bool) -> Page {
         let host = host(url);
         let mut p = Page::new(Kind::Cert, Sev::Danger, url, Vec::new(),
-            "This connection isn't private".into(),
-            format!("{host} couldn't prove it is {host}. Someone could be reading or changing what you send, such as passwords or card numbers."),
-            vec![Page::away(can_back), act("retry", "Try again", "⌘R"), risky("proceed", &format!("Continue to {host} (unsafe)"))]);
+            format!("Certificate not trusted · {host}"),
+            format!("The connection to {host} is not private. Data sent to it, such as passwords or card numbers, can be read or altered in transit."),
+            vec![Page::away(can_back), act("retry", "Retry", "⌘R"), risky("proceed", &format!("Continue to {host} (unsafe)"))]);
         p.trace = load_trace(url, code, &Failure { stage: Stage::Secure, only: None, head: String::new(), body: String::new(), what: cert_words(code).into() });
         p
     }
@@ -263,18 +263,18 @@ impl Page {
         let (way, n) = if behind_days >= 0 { ("behind", behind_days) } else { ("ahead", -behind_days) };
         let days = if n == 1 { "1 day".to_string() } else { format!("{n} days") };
         Page::new(Kind::Clock, Sev::Problem, url,
-            vec![format!("✕ your clock is {days} {way}"), format!("  clock   {}", clock_now()), "  error   NET::ERR_CERT_DATE_INVALID".into()],
-            format!("Your computer's clock is {days} {way}"),
-            format!("Secure sites check the date, so {host} can't be verified while your clock is wrong. Set the date and time, then try again."),
-            vec![act("settings:date-time", "Date & time settings", "↵"), act("retry", "Try again", "⌘R"), Page::away(can_back)])
+            vec![format!("✕ system clock {days} {way}"), format!("  clock   {}", clock_now()), "  error   NET::ERR_CERT_DATE_INVALID".into()],
+            format!("System clock is {days} {way}"),
+            format!("Certificates for {host} cannot be validated until the date and time are correct."),
+            vec![act("settings:date-time", "Date & time settings", "↵"), act("retry", "Retry", "⌘R"), Page::away(can_back)])
     }
 
     pub fn malware(url: &str, list: &str, can_back: bool) -> Page {
         let host = host(url);
         Page::new(Kind::Malware, Sev::Danger, url,
-            vec![format!("✕ {host} is on your list of dangerous sites"), format!("  list    {list}"), "  nus stopped before anything loaded".into()],
-            "This site is reported as dangerous".into(),
-            format!("{host} is on a list of sites that steal passwords or install harmful software. Nothing from it has loaded."),
+            vec![format!("✕ {host} is listed as dangerous"), format!("  list    {list}"), "  no request was sent".into()],
+            format!("Listed as dangerous · {host}"),
+            format!("{host} appears in {list}, the list of sites that phish or distribute malware. No request was sent."),
             vec![Page::away(can_back), risky("proceed", &format!("Visit {host} anyway (unsafe)"))])
     }
 
@@ -283,52 +283,52 @@ impl Page {
         let host = host(url);
         let after = e.open.filter(|_| !e.yours).map(|d| format!(" after {}", took(d))).unwrap_or_default();
         let (kind, head, mut body, status) = if e.oom {
-            (Kind::Oom, format!("The page ran out of memory{after}"), format!("{host} used more memory than it could have. nus and your other tabs are fine. Putting idle tabs to sleep frees room before you reload."), "out of memory".to_string())
+            (Kind::Oom, format!("Renderer out of memory{after}"), "Memory limit exceeded. Other tabs are unaffected. Sleeping idle tabs frees memory before a reload.".to_string(), "out of memory".to_string())
         } else if e.yours {
-            (Kind::Crash, "You stopped the page".to_string(), "It had stopped answering, so its process was ended. Reloading starts it again.".to_string(), "stopped by you".to_string())
+            (Kind::Crash, "Page terminated".to_string(), "The renderer was terminated on request.".to_string(), "terminated on request".to_string())
         } else if e.killed {
-            (Kind::Crash, format!("The page's process was ended{after}"), "Something outside the page ended it, such as the system freeing memory. nus and your other tabs are fine.".to_string(), "ended from outside".to_string())
+            (Kind::Crash, format!("Renderer terminated{after}"), "Terminated by an external signal, for example the OS reclaiming memory. Other tabs are unaffected.".to_string(), "terminated externally".to_string())
         } else {
-            let how = e.code.as_ref().map(|(_, words)| words.clone()).unwrap_or_else(|| "an error in its renderer".into());
-            (Kind::Crash, format!("The page's process crashed{after}"), format!("It stopped with {how}. nus and your other tabs are fine."), e.code.as_ref().map(|(c, _)| c.clone()).unwrap_or_else(|| "crashed".into()))
+            let how = e.code.as_ref().map(|(_, words)| words.clone()).unwrap_or_else(|| "renderer error".into());
+            (Kind::Crash, format!("Renderer crashed{after}"), format!("Exit: {how}. Other tabs are unaffected."), e.code.as_ref().map(|(c, _)| c.clone()).unwrap_or_else(|| "crashed".into()))
         };
         if !e.before.is_empty() && !e.yours {
-            body.push_str(" It has ended before in this session, so reloading may end it again.");
+            body.push_str(&format!(" {} on this site this session.", capitalized(&ordinal(e.before.len() + 1))));
         }
         let mut acts = Vec::new();
         if e.shared.is_empty() {
             acts.push(act("retry", "Reload", "↵"));
         } else {
-            acts.push(act("retry-all", &format!("Reload all {} pages", e.shared.len() + 1), "↵"));
-            acts.push(act("retry", "Reload only this one", "⌘R"));
+            acts.push(act("retry-all", &format!("Reload all {} tabs", e.shared.len() + 1), "↵"));
+            acts.push(act("retry", "Reload this tab", "⌘R"));
         }
         if e.oom {
             acts.push(act("sleep-idle", "Sleep idle tabs", "S"));
         }
         if !e.yours {
-            acts.push(act("details", "Copy what happened", "C"));
+            acts.push(act("details", "Copy diagnostics", "C"));
         }
         let mut p = Page::new(kind, Sev::Problem, url, Vec::new(), head, body, acts);
         p.command = format!("page {url}");
         p.trace.push(step("process", vec![format!("renderer · {host}")], e.open.map(took).unwrap_or_default(), Mark::Fact));
-        p.trace.push(step("ended", vec![status], String::new(), Mark::Fail));
+        p.trace.push(step("exit", vec![status], String::new(), Mark::Fail));
         if !e.shared.is_empty() {
-            p.trace.push(step("shared", vec![format!("{} ended with it", e.shared.join(", "))], String::new(), Mark::Fact));
+            p.trace.push(step("same process", vec![format!("{} also exited", e.shared.join(", "))], String::new(), Mark::Fact));
         }
         if !e.before.is_empty() {
             let ago: Vec<String> = e.before.iter().map(|d| format!("{} ago", took(*d))).collect();
-            p.trace.push(step("before", vec![format!("ended {} too", ago.join(", ")), format!("{} this session", ordinal(e.before.len() + 1))], String::new(), Mark::Fact));
+            p.trace.push(step("history", vec![format!("exited {} on this site", ago.join(", ")), format!("{} this session", ordinal(e.before.len() + 1))], String::new(), Mark::Fact));
         }
         p
     }
 
     /// You chose to stop it; Chromium hasn't said it's gone yet.
     pub fn stopping(url: &str) -> Page {
-        let mut p = Page::new(Kind::Crash, Sev::Problem, url, Vec::new(), "Stopping the page".into(),
-            "nus asked Chromium to end the page's process. Reload waits until it has gone.".into(),
+        let mut p = Page::new(Kind::Crash, Sev::Problem, url, Vec::new(), "Terminating renderer".into(),
+            "Reload runs after the process exits.".into(),
             vec![act("retry", "Reload", "↵")]);
         p.command = format!("stop {url}");
-        p.trace.push(step("process", vec!["ending".into()], String::new(), Mark::Wait));
+        p.trace.push(step("process", vec!["terminating".into()], String::new(), Mark::Wait));
         p
     }
 
@@ -336,34 +336,34 @@ impl Page {
     /// to draw their explanation. The native transcript uses these same acts.
     pub fn browser_failed(url: &str, detail: &str) -> Page {
         let mut p = Page::new(Kind::Crash, Sev::Problem, url, Vec::new(),
-            "This page can't be shown".into(), detail.into(),
-            vec![act("retry", "Try again", "↵"), act("close", "Close this tab", "")]);
-        p.trace.push(step("browser", vec!["could not display this page".into()], String::new(), Mark::Fail));
+            "Page can't be displayed".into(), detail.into(),
+            vec![act("retry", "Retry", "↵"), act("close", "Close tab", "")]);
+        p.trace.push(step("render", vec!["no frame displayed".into()], String::new(), Mark::Fail));
         p
     }
 
     pub fn resubmit(url: &str, can_back: bool) -> Page {
         let host = host(url);
         Page::new(Kind::Resubmit, Sev::Problem, url,
-            vec!["✕ this page came from a form you sent · ERR_CACHE_MISS".into(), format!("  form    to {host}")],
-            "Send this form again?".into(),
-            format!("Loading this page again sends the form to {host} again, which could, for example, place the same order twice."),
-            vec![Page::away(can_back), act("resubmit", "Send again", "⌘↵")])
+            vec!["✕ page is the result of a form submission · ERR_CACHE_MISS".into(), format!("  form    to {host}")],
+            "Resend form data?".into(),
+            format!("Reloading resubmits the form to {host}, which can repeat an action such as a purchase."),
+            vec![Page::away(can_back), act("resubmit", "Resend", "⌘↵")])
     }
 
     pub fn portal(url: &str, network: &str) -> Page {
         let host = host(url);
         Page::new(Kind::Portal, Sev::Problem, url,
-            vec!["✕ the network answered instead of the site".into(), format!("  wi-fi   {network} wants a sign-in")],
-            "Sign in to this Wi-Fi network".into(),
-            format!("This network needs you to sign in or accept its terms before other pages load. Once you have, {host} will load."),
-            vec![act("open-portal", "Open the sign-in page", "↵"), act("retry", "Try again", "⌘R")])
+            vec!["✕ request intercepted by the network".into(), format!("  wi-fi   {network} requires sign-in")],
+            "Network sign-in required".into(),
+            format!("{network} intercepts requests until sign-in. {host} loads after sign-in."),
+            vec![act("open-portal", "Open sign-in page", "↵"), act("retry", "Retry", "⌘R")])
     }
 
     pub fn unreachable(url: &str, code: &str, can_back: bool) -> Page {
         let f = failure(url, code);
         let mut p = Page::new(Kind::Unreachable, Sev::Problem, url, Vec::new(), f.head.clone(), f.body.clone(),
-            vec![act("retry", "Try again", "↵"), Page::away(can_back)]);
+            vec![act("retry", "Retry", "↵"), Page::away(can_back)]);
         p.trace = load_trace(url, code, &f);
         p
     }
@@ -410,10 +410,10 @@ impl Page {
         let port = port_of(&self.url);
         let mut first = Vec::new();
         if let Some((process, command, cwd, ago)) = last {
-            self.notes.push(Note { label: format!("Last on :{port}"), lines: vec![format!("{process} · {cwd}"), format!("ran {command}"), format!("gone for {}", took(ago))] });
-            first.push(act("start", &format!("Run {command} again in a new shell"), "↵"));
+            self.notes.push(Note { label: format!("Last process on :{port}"), lines: vec![format!("{process} · {cwd}"), format!("command  {command}"), format!("last seen {} ago", took(ago))] });
+            first.push(act("start", &format!("Run {command} in a new shell"), "↵"));
         }
-        first.push(act("watch", &format!("Load this page when :{port} answers"), "W"));
+        first.push(act("watch", &format!("Reload when :{port} accepts connections"), "W"));
         self.acts.splice(0..0, first);
         self.default_enter();
     }
@@ -422,7 +422,7 @@ impl Page {
     pub fn watching(&mut self, said: Option<String>) {
         let port = port_of(&self.url);
         self.notes.retain(|n| n.label != "Watching");
-        self.notes.push(Note { label: "Watching".into(), lines: std::iter::once(format!(":{port} · this page loads when it answers")).chain(said).collect() });
+        self.notes.push(Note { label: "Watching".into(), lines: std::iter::once(format!(":{port} · reloads when it accepts connections")).chain(said).collect() });
         self.acts.retain(|a| a.verb != "watch" && a.verb != "start");
         self.default_enter();
     }
@@ -452,19 +452,19 @@ impl Page {
     /// The page's script hasn't answered for `secs`.
     pub fn hung(url: &str, secs: u64, seen: &Seen) -> Page {
         let host = host(url);
-        let server = seen.server.map(|(_, d)| format!(": the server answered in {}", took(d))).unwrap_or_default();
+        let server = seen.server.map(|(_, d)| format!("The server responded in {}; the delay is in the page's JavaScript. ", took(d))).unwrap_or_else(|| "The delay is in the page's JavaScript. ".into());
         let mut p = Page::new(Kind::Hung, Sev::Problem, url, Vec::new(),
-            format!("The page's script hasn't let go for {secs} s"),
-            format!("It isn't the network{server}. Something on {host} is running without a pause, so the page can't draw or take your input."),
-            vec![act("wait", "Ask again in 10 s", "↵"), act("stop", "Stop the page · unsaved typing is lost", "S")]);
+            format!("Page unresponsive · main thread blocked {secs} s"),
+            format!("{server}Rendering and input on {host} are blocked."),
+            vec![act("wait", "Wait 10 s", "↵"), act("stop", "Terminate renderer · unsaved input is lost", "S")]);
         p.command = format!("watch {url}");
         if let Some((status, d)) = seen.server {
-            p.trace.push(step("server", vec![format!("answered {status}")], took(d), Mark::Ok));
+            p.trace.push(step("server", vec![format!("HTTP {status}")], took(d), Mark::Ok));
         }
         if let Some(d) = seen.loaded {
             p.trace.push(step("document", vec!["loaded".into()], took(d), Mark::Ok));
         }
-        p.trace.push(step("script", vec!["no answer to nus".into(), "busy without a pause: a long task or a loop".into()], format!("{secs} s"), Mark::Fail));
+        p.trace.push(step("main thread", vec!["blocked".into(), "no response to heartbeat".into()], format!("{secs} s"), Mark::Fail));
         p
     }
 
@@ -472,12 +472,12 @@ impl Page {
     pub fn slow(url: &str, waited: std::time::Duration) -> Page {
         let host = host(url);
         let mut p = Page::new(Kind::Slow, Sev::Rest, url, Vec::new(),
-            format!("{host} hasn't answered in {}", took(waited)),
-            "nus is still waiting and hasn't stopped anything. Slow servers, big uploads and long reports can take this long.".into(),
-            vec![act("wait", "Keep waiting", "↵"), act("retry", "Ask again from the start", "⌘R"), act("stop", "Stop loading", "Esc")]);
+            format!("No response after {} · {host}", took(waited)),
+            "The request is still open. Nothing has been cancelled.".into(),
+            vec![act("wait", "Wait", "↵"), act("retry", "Retry", "⌘R"), act("stop", "Stop loading", "Esc")]);
         p.trace = vec![
             step("request", vec![format!("sent to {host}")], String::new(), Mark::Ok),
-            step("answer", vec!["nothing yet".into()], took(waited), Mark::Wait),
+            step("response", vec!["none yet".into()], took(waited), Mark::Wait),
         ];
         p
     }
@@ -486,9 +486,9 @@ impl Page {
         let host = host(url);
         let mins = (asleep_for.as_secs() / 60).max(1);
         let mut p = Page::new(Kind::Sleep, Sev::Rest, url,
-            vec![format!("· asleep {} · its memory was given back", if mins >= 60 { format!("{}h {}m", mins / 60, mins % 60) } else { format!("{mins} min") }), "  place   kept".into()],
-            format!("{host} is asleep"),
-            if waking { "Waking it now. Your place on the page comes back with it.".into() } else { "nus put this tab to sleep while it was idle. Your place on the page is kept.".into() },
+            vec![format!("· asleep {} · memory released", if mins >= 60 { format!("{}h {}m", mins / 60, mins % 60) } else { format!("{mins} min") }), "  scroll  kept".into()],
+            format!("{host} · asleep"),
+            if waking { "Restoring.".into() } else { "Suspended after inactivity. Scroll position is kept.".into() },
             if waking { vec![] } else { vec![act("wake", "Wake", "↵")] });
         p.command = format!("wake {url}");
         p
@@ -497,19 +497,19 @@ impl Page {
     pub fn permission(url: &str, what: &str) -> Page {
         let host = host(url);
         Page::new(Kind::Permission, Sev::Problem, url,
-            vec![format!("✕ macOS denied nus the {what}"), format!("  site    {host} asked for it")],
-            format!("{host} can't use your {what}"),
-            format!("macOS hasn't given nus access to your {what}. Turn nus on in System Settings under Privacy & Security, then quit and reopen nus."),
-            vec![act("settings:privacy", "Open System Settings", "↵"), act("dismiss", "Back to the page", "Esc")])
+            vec![format!("✕ macOS denied {what} access to nus"), format!("  site    {host}")],
+            format!("{} access denied by macOS", capitalized(what)),
+            "Allow nus in System Settings › Privacy & Security, then restart nus.".into(),
+            vec![act("settings:privacy", "Open System Settings", "↵"), act("dismiss", "Back to page", "Esc")])
     }
 
     pub fn file(url: &str, name: &str, why: &str) -> Page {
         let host = host(url);
         let mut p = Page::new(Kind::File, Sev::Danger, url,
-            vec![format!("✕ blocked {name}"), format!("  why     {why}"), "  saved   nothing".into()],
-            format!("{name} was blocked"),
-            format!("It came from {host}. nus stopped the download, so nothing was saved."),
-            vec![act("dismiss", "Back to the page", "↵"), act("downloads", "Downloads", "⌘J"), risky("keep", "Keep the file anyway (unsafe)")]);
+            vec![format!("✕ blocked {name}"), format!("  reason  {why}"), "  saved   nothing".into()],
+            format!("Download blocked · {name}"),
+            format!("Source: {host}. The file was not saved."),
+            vec![act("dismiss", "Back to page", "↵"), act("downloads", "Downloads", "⌘J"), risky("keep", "Keep file (unsafe)")]);
         p.command = format!("download {url}");
         p
     }
@@ -601,7 +601,7 @@ impl Page {
             Kind::Clock => Page::clock("https://nus.dev/", 3, true),
             Kind::Oom => Page::crashed("https://figma.com/file/8Hq2/Plot", &Ended { oom: true, open: Some(std::time::Duration::from_secs(25 * 60)), ..Ended::default() }),
             Kind::Crash => Page::crashed("https://docs.example.com/editor", &Ended {
-                code: Some(("SIGSEGV (11)".into(), "a bad memory access".into())),
+                code: Some(("SIGSEGV (11)".into(), "bad memory access".into())),
                 open: Some(std::time::Duration::from_secs(42 * 60)),
                 shared: vec!["docs.example.com/sheet".into()],
                 before: vec![std::time::Duration::from_secs(11 * 60)],
@@ -904,49 +904,49 @@ fn failure(url: &str, code: &str) -> Failure {
     let port = port_of(url);
     let f = |stage, head: String, body: String, what: String| Failure { stage, only: None, head, body, what };
     match code {
-        "ERR_NAME_NOT_RESOLVED" | "ERR_NAME_RESOLUTION_FAILED" => f(Stage::Name, format!("{host} can't be found"),
-            "No address came back for it. Check the spelling. If it's right, the site may be gone or your DNS isn't answering.".into(),
-            format!("no address for {host}")),
-        "ERR_INTERNET_DISCONNECTED" => Failure { only: Some("network"), ..f(Stage::Name, "You're offline".into(),
-            "This computer isn't connected to a network. Connect, then try again.".into(), "this computer is offline".into()) },
-        "ERR_BLOCKED_BY_CLIENT" => Failure { only: Some("blocking"), ..f(Stage::Name, format!("{host} was blocked"),
-            "It's on nus's list of ad and tracking hosts, so nus never asked for it. You can turn blocking off for a site in its panel (the gear in the address row).".into(),
-            format!("{host} is on the block list")) },
-        "ERR_CONNECTION_REFUSED" if is_local(url) => f(Stage::Connect, format!("Nothing is listening on {host}:{port}"),
-            format!("The address is right and this computer answered, but no program has port {port} open."),
-            format!("{host}:{port} refused the connection")),
-        "ERR_CONNECTION_REFUSED" => f(Stage::Connect, format!("{host} refused to connect"),
-            format!("{host} answered but turned the connection away. The site may be down, or a firewall is blocking it."),
-            format!("{host}:{port} refused the connection")),
-        "ERR_CONNECTION_TIMED_OUT" => f(Stage::Connect, format!("{host} didn't answer the connection"),
-            "nus found the site, but nothing answered when it tried to connect. The site may be down, or a firewall is dropping the connection.".into(),
-            format!("no answer from {host}:{port}")),
-        "ERR_ADDRESS_UNREACHABLE" => f(Stage::Connect, format!("{host} can't be reached from this network"),
-            "There's no route from this network to the site. A VPN or a network setting may be in the way.".into(),
-            format!("no route to {host}")),
-        "ERR_NETWORK_ACCESS_DENIED" => f(Stage::Connect, format!("This computer didn't let nus connect to {host}"),
-            "A firewall, or the system's network permission for nus, blocked the connection.".into(),
-            "the connection was blocked on this computer".into()),
-        "ERR_NETWORK_CHANGED" => f(Stage::Connect, "Your network changed".into(),
-            "The connection dropped while switching networks. Try again.".into(), "the network changed during the load".into()),
-        "ERR_SSL_PROTOCOL_ERROR" => f(Stage::Secure, format!("{host} couldn't set up a secure connection"),
-            "The site's security setup may be broken or out of date.".into(), "the secure connection failed".into()),
-        "ERR_TIMED_OUT" => f(Stage::Request, format!("{host} took too long to answer"),
-            "nus connected and asked, but no answer came back in time. The site may be busy or down.".into(), "no answer in time".into()),
-        "ERR_CONNECTION_RESET" | "ERR_CONNECTION_CLOSED" => f(Stage::Answer, format!("{host} dropped the connection"),
-            "The connection was cut before the page arrived. Try again in a moment.".into(), format!("{host} closed the connection")),
-        "ERR_EMPTY_RESPONSE" => f(Stage::Answer, format!("{host} sent an empty response"),
-            "The server closed the connection without sending a page. Try again in a moment.".into(), "closed without sending anything".into()),
-        "ERR_INVALID_RESPONSE" => f(Stage::Answer, format!("{host} sent something that isn't a page"),
-            "The server's answer couldn't be read. It may be misconfigured.".into(), "an answer nus couldn't read".into()),
-        "ERR_TOO_MANY_REDIRECTS" => f(Stage::Answer, format!("{host} redirected too many times"),
-            "The site sends the request round in a loop and never arrives. Clearing this site's cookies often fixes it.".into(), "redirected more than 20 times".into()),
-        "ERR_HTTP_RESPONSE_CODE_FAILURE" => f(Stage::Answer, format!("{host} answered with an error and no page"),
-            "The server answered, but with an error status and nothing to show. The problem is on the server.".into(), "an error status with an empty page".into()),
-        "ERR_INVALID_AUTH_CREDENTIALS" => f(Stage::Answer, format!("{host} didn't accept the sign-in"),
-            "The username or password wasn't accepted. Try again to enter them again.".into(), "the sign-in was refused".into()),
-        _ => f(Stage::Request, format!("{host} can't be reached"), "The load failed before the page arrived.".into(), format!("couldn't load {host}")),
+        "ERR_NAME_NOT_RESOLVED" | "ERR_NAME_RESOLUTION_FAILED" => f(Stage::Name, format!("DNS lookup failed · {host}"),
+            format!("No address was returned for {host}."), "no address returned".into()),
+        "ERR_INTERNET_DISCONNECTED" => Failure { only: Some("network"), ..f(Stage::Name, "No network connection".into(),
+            "This device has no active network connection.".into(), "no active connection".into()) },
+        "ERR_BLOCKED_BY_CLIENT" => Failure { only: Some("blocking"), ..f(Stage::Name, format!("Blocked by content blocker · {host}"),
+            format!("{host} is on the ad and tracker block list. No request was sent. Blocking can be turned off per site in the site panel."),
+            "on the block list".into()) },
+        "ERR_CONNECTION_REFUSED" if is_local(url) => f(Stage::Connect, format!("Connection refused · {host}:{port}"),
+            format!("No process is listening on port {port}."), "connection refused".into()),
+        "ERR_CONNECTION_REFUSED" => f(Stage::Connect, format!("Connection refused · {host}:{port}"),
+            format!("The host rejected the connection on port {port}."), "connection refused".into()),
+        "ERR_CONNECTION_TIMED_OUT" => f(Stage::Connect, format!("Connection timed out · {host}:{port}"),
+            "No response to the connection attempt. The host may be down, or a firewall may be dropping packets.".into(), "no response".into()),
+        "ERR_ADDRESS_UNREACHABLE" => f(Stage::Connect, format!("No route to host · {host}"),
+            format!("This network has no route to {host}. Check VPN and routing settings."), "no route".into()),
+        "ERR_NETWORK_ACCESS_DENIED" => f(Stage::Connect, format!("Connection blocked on this device · {host}"),
+            "Blocked by a firewall or by the system's network permission for nus.".into(), "blocked on this device".into()),
+        "ERR_NETWORK_CHANGED" => f(Stage::Connect, "Network changed during load".into(),
+            "The connection was interrupted by a network change.".into(), "interrupted by a network change".into()),
+        "ERR_SSL_PROTOCOL_ERROR" => f(Stage::Secure, format!("TLS handshake failed · {host}"),
+            "The server's TLS configuration is not supported.".into(), "handshake failed".into()),
+        "ERR_TIMED_OUT" => f(Stage::Request, format!("Request timed out · {host}"),
+            "Connected; no response arrived before the timeout.".into(), "no response before timeout".into()),
+        "ERR_CONNECTION_RESET" | "ERR_CONNECTION_CLOSED" => f(Stage::Answer, format!("Connection reset · {host}"),
+            "The connection closed before the response was complete.".into(), "connection reset".into()),
+        "ERR_EMPTY_RESPONSE" => f(Stage::Answer, format!("Empty response · {host}"),
+            "The server closed the connection without sending data.".into(), "no data".into()),
+        "ERR_INVALID_RESPONSE" => f(Stage::Answer, format!("Invalid HTTP response · {host}"),
+            "The response could not be parsed.".into(), "unparseable".into()),
+        "ERR_TOO_MANY_REDIRECTS" => f(Stage::Answer, format!("Redirect loop · {host}"),
+            format!("More than 20 redirects. Clearing cookies for {host} usually resolves this."), "more than 20 redirects".into()),
+        "ERR_HTTP_RESPONSE_CODE_FAILURE" => f(Stage::Answer, format!("HTTP error, empty body · {host}"),
+            "The server returned an error status with no content.".into(), "error status, empty body".into()),
+        "ERR_INVALID_AUTH_CREDENTIALS" => f(Stage::Answer, format!("Authentication failed · {host}"),
+            "The username or password was rejected.".into(), "credentials rejected".into()),
+        _ => f(Stage::Request, format!("Load failed · {host}"), "The request failed before a response was received.".into(), "failed".into()),
     }
+}
+
+/// "2nd time" → "2nd time": capitalized for the start of a sentence.
+fn capitalized(text: &str) -> String {
+    let mut c = text.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// The steps of a failed load: those before the failure went through, the
@@ -959,11 +959,11 @@ fn load_trace(url: &str, code: &str, f: &Failure) -> Vec<Step> {
     }
     let host = host(url);
     let port = port_of(url);
-    let mut stages = vec![(Stage::Name, "name"), (Stage::Connect, "connect")];
+    let mut stages = vec![(Stage::Name, "dns"), (Stage::Connect, "connect")];
     if url.starts_with("https:") {
-        stages.push((Stage::Secure, "secure"));
+        stages.push((Stage::Secure, "tls"));
     }
-    stages.extend([(Stage::Request, "request"), (Stage::Answer, "answer")]);
+    stages.extend([(Stage::Request, "request"), (Stage::Answer, "response")]);
     stages.into_iter().map(|(stage, name)| {
         if stage == f.stage {
             step(name, failed(), String::new(), Mark::Fail)
@@ -971,11 +971,11 @@ fn load_trace(url: &str, code: &str, f: &Failure) -> Vec<Step> {
             step(name, vec!["not reached".into()], String::new(), Mark::Skip)
         } else {
             let what = match stage {
-                Stage::Name => local_addresses(url).unwrap_or_else(|| format!("{host} found")),
-                Stage::Connect => format!("{host}:{port} accepted"),
-                Stage::Secure => "certificate checked".into(),
+                Stage::Name => local_addresses(url).unwrap_or_else(|| format!("{host} resolved")),
+                Stage::Connect => format!("{host}:{port} connected"),
+                Stage::Secure => "certificate valid".into(),
                 Stage::Request => "sent".into(),
-                Stage::Answer => "arrived".into(),
+                Stage::Answer => "received".into(),
             };
             step(name, vec![what], String::new(), Mark::Ok)
         }
@@ -1000,30 +1000,30 @@ fn ordinal(n: usize) -> String {
 pub fn exit_words(name: &str, code: i32) -> Option<(String, String)> {
     let named = |n: &str| -> Option<&'static str> {
         Some(match n {
-            "STATUS_ACCESS_VIOLATION" | "EXCEPTION_ACCESS_VIOLATION" => "a bad memory access",
-            "STATUS_BREAKPOINT" | "EXCEPTION_BREAKPOINT" => "a failed internal check",
-            "STATUS_STACK_BUFFER_OVERRUN" => "a corrupted stack",
-            "STATUS_STACK_OVERFLOW" => "a stack overflow",
-            "STATUS_HEAP_CORRUPTION" => "corrupted memory",
-            "STATUS_OUT_OF_MEMORY" => "too little memory",
-            "STATUS_INVALID_IMAGE_HASH" => "interference from another program",
+            "STATUS_ACCESS_VIOLATION" | "EXCEPTION_ACCESS_VIOLATION" => "bad memory access",
+            "STATUS_BREAKPOINT" | "EXCEPTION_BREAKPOINT" => "failed internal check",
+            "STATUS_STACK_BUFFER_OVERRUN" => "stack corruption",
+            "STATUS_STACK_OVERFLOW" => "stack overflow",
+            "STATUS_HEAP_CORRUPTION" => "heap corruption",
+            "STATUS_OUT_OF_MEMORY" => "out of memory",
+            "STATUS_INVALID_IMAGE_HASH" => "blocked by another program",
             _ => return None,
         })
     };
     if !name.is_empty() && name.parse::<i64>().is_err() {
-        return Some((name.to_string(), named(name).unwrap_or("an error in its renderer").to_string()));
+        return Some((name.to_string(), named(name).unwrap_or("renderer error").to_string()));
     }
     if cfg!(windows) {
-        return (code != 0).then(|| (format!("exit code {code:#x}"), "an error in its renderer".into()));
+        return (code != 0).then(|| (format!("exit code {code:#x}"), "renderer error".into()));
     }
     let (sig, words) = match code {
-        4 => ("SIGILL", "an illegal instruction"),
-        5 => ("SIGTRAP", "a failed internal check"),
-        6 => ("SIGABRT", "an abort"),
-        7 | 10 => ("SIGBUS", "a bad memory access"),
-        9 => ("SIGKILL", "a kill from outside"),
-        11 => ("SIGSEGV", "a bad memory access"),
-        _ if code != 0 => return Some((format!("exit code {code}"), "an error in its renderer".into())),
+        4 => ("SIGILL", "illegal instruction"),
+        5 => ("SIGTRAP", "failed internal check"),
+        6 => ("SIGABRT", "abort"),
+        7 | 10 => ("SIGBUS", "bad memory access"),
+        9 => ("SIGKILL", "external kill"),
+        11 => ("SIGSEGV", "bad memory access"),
+        _ if code != 0 => return Some((format!("exit code {code}"), "renderer error".into())),
         _ => return None,
     };
     Some((format!("{sig} ({code})"), words.into()))
@@ -1033,11 +1033,11 @@ pub fn exit_words(name: &str, code: i32) -> Option<(String, String)> {
 
 fn cert_words(code: &str) -> &'static str {
     match code {
-        "NET::ERR_CERT_DATE_INVALID" => "the certificate has expired, or isn't valid yet",
-        "NET::ERR_CERT_AUTHORITY_INVALID" => "the certificate isn't from an authority nus trusts",
-        "NET::ERR_CERT_COMMON_NAME_INVALID" => "the certificate is for a different site",
-        "NET::ERR_CERT_REVOKED" => "the certificate was revoked",
-        _ => "the certificate couldn't be checked",
+        "NET::ERR_CERT_DATE_INVALID" => "certificate expired or not yet valid",
+        "NET::ERR_CERT_AUTHORITY_INVALID" => "issuer not trusted",
+        "NET::ERR_CERT_COMMON_NAME_INVALID" => "issued for a different host",
+        "NET::ERR_CERT_REVOKED" => "certificate revoked",
+        _ => "certificate could not be verified",
     }
 }
 
@@ -1231,10 +1231,10 @@ pub fn dangerous_file(name: &str) -> Option<&'static str> {
     const PROGRAM: [&str; 14] = ["exe", "scr", "bat", "cmd", "com", "pif", "msi", "vbs", "vbe", "js", "jse", "wsf", "ps1", "command"];
     const DOCUMENT: [&str; 14] = ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "jpg", "jpeg", "png", "gif", "mp3", "mp4"];
     if PROGRAM.contains(&last) && DOCUMENT.contains(&inner) {
-        return Some("a program named like a document");
+        return Some("executable disguised as a document");
     }
     if matches!(last, "scr" | "pif" | "vbe" | "jse") {
-        return Some("a kind of file used almost only to attack");
+        return Some("file type used almost only in attacks");
     }
     None
 }
@@ -1254,9 +1254,10 @@ mod tests {
         assert_eq!(for_error("https://a.test/", -201, true, built, 0).kind, Kind::Cert);
         let p = for_error("http://localhost:3000/", -102, false, built, built);
         assert_eq!(p.kind, Kind::Unreachable);
-        assert_eq!(p.head, "Nothing is listening on localhost:3000");
+        assert_eq!(p.head, "Connection refused · localhost:3000");
+        assert_eq!(p.body, "No process is listening on port 3000.");
         let fail = p.trace.iter().find(|s| s.mark == Mark::Fail).unwrap();
-        assert_eq!((fail.name.as_str(), fail.what[0].as_str()), ("connect", "localhost:3000 refused the connection"));
+        assert_eq!((fail.name.as_str(), fail.what[0].as_str()), ("connect", "connection refused"));
         assert_eq!(p.trace[0].mark, Mark::Ok);
         assert!(p.trace.iter().skip_while(|s| s.mark != Mark::Fail).skip(1).all(|s| s.mark == Mark::Skip));
         // Close isn't first here, so ↵ stays with Try again.
@@ -1267,9 +1268,9 @@ mod tests {
     #[test]
     fn an_empty_error_from_the_server_is_not_a_connection_failure() {
         let p = for_error("http://127.0.0.1:8000/empty500", -379, true, 1, 1);
-        assert_eq!(p.head, "127.0.0.1 answered with an error and no page");
+        assert_eq!(p.head, "HTTP error, empty body · 127.0.0.1");
         let fail = p.trace.iter().find(|s| s.mark == Mark::Fail).unwrap();
-        assert_eq!(fail.name, "answer");
+        assert_eq!(fail.name, "response");
         assert_eq!(fail.what[1], "ERR_HTTP_RESPONSE_CODE_FAILURE");
         assert!(p.trace.iter().take_while(|s| s.mark != Mark::Fail).all(|s| s.mark == Mark::Ok));
     }
@@ -1292,7 +1293,7 @@ mod tests {
     #[test]
     fn steps_and_times_read_plainly() {
         let p = for_error("https://secure.test/", -201, true, 1, 1);
-        assert_eq!(p.trace.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["name", "connect", "secure", "request", "answer"]);
+        assert_eq!(p.trace.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["dns", "connect", "tls", "request", "response"]);
         assert_eq!(p.trace[2].mark, Mark::Fail);
         assert_eq!(port_of("http://localhost:5173/x"), 5173);
         assert_eq!(port_of("https://a.test/"), 443);
@@ -1321,15 +1322,16 @@ mod tests {
     #[test]
     fn a_crash_says_how_it_ended_and_what_went_with_it() {
         if !cfg!(windows) {
-            assert_eq!(exit_words("", 11), Some(("SIGSEGV (11)".into(), "a bad memory access".into())));
+            assert_eq!(exit_words("", 11), Some(("SIGSEGV (11)".into(), "bad memory access".into())));
         }
-        assert_eq!(exit_words("STATUS_BREAKPOINT", 0).unwrap().1, "a failed internal check");
+        assert_eq!(exit_words("STATUS_BREAKPOINT", 0).unwrap().1, "failed internal check");
         let p = Page::sample(Kind::Crash);
-        assert_eq!(p.head, "The page's process crashed after 42 min");
+        assert_eq!(p.head, "Renderer crashed after 42 min");
+        assert_eq!(p.body, "Exit: bad memory access. Other tabs are unaffected. 2nd time on this site this session.");
         assert_eq!(p.default_act().unwrap().verb, "retry-all");
-        assert!(p.trace.iter().any(|s| s.name == "shared"));
+        assert!(p.trace.iter().any(|s| s.name == "same process"));
         let mine = Page::crashed("https://a.test/", &Ended { yours: true, ..Ended::default() });
-        assert_eq!(mine.head, "You stopped the page");
+        assert_eq!(mine.head, "Page terminated");
         assert!(!mine.acts.iter().any(|a| a.verb == "details"));
     }
 

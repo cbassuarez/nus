@@ -87,8 +87,8 @@ impl App {
             "details" => {
                 let text = page.details(&format!("{} ({})", env!("NUS_BUILD_VERSION"), env!("NUS_BUILD_REVISION")));
                 match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-                    Ok(()) => self.notice(nus_render::text::icons::COPY, "Copied What Happened", crate::interstitial::host(&page.url)),
-                    Err(_) => self.notice_problem("Could Not Copy", "the clipboard isn't available"),
+                    Ok(()) => self.notice(nus_render::text::icons::COPY, "Copied Diagnostics", crate::interstitial::host(&page.url)),
+                    Err(_) => self.notice_problem("Could Not Copy", "clipboard unavailable"),
                 }
                 self.dirty = true;
                 return;

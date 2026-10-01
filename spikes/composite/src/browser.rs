@@ -305,7 +305,7 @@ impl Shared {
             self.overlay = Some(crate::interstitial::Page::slow(&self.url, waited));
             return false;
         }
-        self.interstitial = Some(crate::interstitial::Page::browser_failed(&self.url, "The page arrived, but the browser could not draw it. Try again. If this continues, restart nus and check your graphics driver."));
+        self.interstitial = Some(crate::interstitial::Page::browser_failed(&self.url, "The document loaded but no frame was displayed. If this repeats, restart nus and check the graphics driver."));
         self.loading = false;
         self.progress = 1.0;
         true
@@ -1685,7 +1685,7 @@ wrap_dev_tools_message_observer! {
                         s.interstitial = None;
                         let (url, secs, seen) = (s.url.clone(), s.hung_secs, s.seen());
                         let mut page = crate::interstitial::Page::hung(&url, secs, &seen);
-                        page.notes.push(crate::interstitial::Note { label: "Couldn't stop it".into(), lines: vec![if why.is_empty() { "Chromium didn't end the page's process".into() } else { format!("Chromium said: {why}") }] });
+                        page.notes.push(crate::interstitial::Note { label: "Termination refused".into(), lines: vec![if why.is_empty() { "Chromium did not terminate the renderer".into() } else { format!("Chromium: {why}") }] });
                         s.overlay = Some(page);
                         s.paints += 1;
                     }
@@ -3844,7 +3844,7 @@ mod browser_failure_tests {
             navigation_at: Some(at), ..Default::default() };
         s.check_navigation_deadline(at + Duration::from_secs(31));
         assert_eq!(s.transcript().unwrap().kind, Kind::Crash);
-        assert!(s.transcript().unwrap().body.contains("could not draw"));
+        assert!(s.transcript().unwrap().body.contains("no frame was displayed"));
         s.navigation("https://paint.test/");
         s.navigation_at = Some(at);
         s.committed = true;
