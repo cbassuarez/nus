@@ -418,6 +418,9 @@ pub struct WebPane {
     pub reader_req: Option<i32>,
     /// The favicon as a texture, keyed by its URL.
     pub favicon: Option<(String, Arc<wgpu::BindGroup>)>,
+    /// Its average colour, for whether it needs a plate to be seen on this
+    /// theme's surface (`draw_pane_icon`).
+    pub favicon_tone: [f32; 4],
     /// Which DevTools panel: 0 console, 1 network, 2 elements.
     pub dt_panel: usize,
     /// The URL last written to the recent list.
@@ -2079,6 +2082,7 @@ impl App {
             reader: None,
             reader_req: None,
             favicon: None,
+            favicon_tone: [0.5, 0.5, 0.5, 0.0],
             dt_panel: 0,
             remembered: String::new(),
             find: None,
@@ -3586,6 +3590,7 @@ impl App {
                     wgpu::Extent3d { width: f.w, height: f.h, depth_or_array_layers: 1 },
                 );
                 w.favicon = Some((f.url.clone(), binder(&tex)));
+                w.favicon_tone = f.tone;
                 changed = true;
             }
         }
@@ -8374,6 +8379,14 @@ impl App {
             && matches!(code, Some(KeyCode::KeyT) | Some(KeyCode::KeyK)) {
             return self.open_palette(PaletteMode::Go);
         }
+        // A browser's Ctrl+T, wherever it cannot be a shell's (readline
+        // transposes with it): on a page, the prompt, an editor, settings.
+        // In a shell, the app chord Ctrl+Shift+T opens the tab.
+        if !cfg!(target_os = "macos") && pressed && ctrl && !shift && !alt && !sup && code == Some(KeyCode::KeyT)
+            && self.palette.is_none()
+            && self.tabs.get(self.active).is_some_and(|t| !matches!(t.focused_ref(), Pane::Term(_))) {
+            return self.open_start_page(false);
+        }
         if pressed && self.palette.is_none() && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Home(h) if !h.library)) {
             if !cfg!(target_os="macos") && ctrl && !alt && !sup && code==Some(KeyCode::KeyK) { return self.open_palette(PaletteMode::Go); }
             let editing = crate::field::command(self.mods) && matches!(code, Some(KeyCode::KeyA|KeyCode::KeyC|KeyCode::KeyV|KeyCode::KeyX|KeyCode::ArrowLeft|KeyCode::ArrowRight));
@@ -11319,6 +11332,14 @@ impl App {
         match pane {
             Pane::Web(w) => {
                 if let Some((_, b)) = w.favicon.as_ref() {
+                    // A mark that would vanish into the surface (a black logo
+                    // on a dark theme, a white one on a light theme) sits on a
+                    // plate of the theme's ink, as browsers do in their tab strips.
+                    if w.favicon_tone[3] > 0.0 && nus_render::policy::contrast(w.favicon_tone, self.paper()) < 2.0 {
+                        let pad = self.px(2.0);
+                        let plate = Rect::new(x - pad, y - pad, size + pad * 2.0, size + pad * 2.0);
+                        scene.push(nus_render::Instance::rounded(plate, self.px(3.0), self.theme.ink));
+                    }
                     scene.texture(w.favicon_rect(Rect::new(x, y, size, size)), b.clone(), clip);
                     scene.layer(clip);
                     return;

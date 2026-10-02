@@ -837,6 +837,26 @@ pub struct Favicon {
     pub w: u32,
     pub h: u32,
     pub bgra: Vec<u8>,
+    /// The icon's colour, averaged over what it covers: how it reads on a
+    /// surface (a black mark vanishes on a dark theme's sidebar).
+    pub tone: [f32; 4],
+}
+
+/// The average sRGB colour of a premultiplied BGRA image, weighted by
+/// coverage; transparent pixels count for nothing.
+pub fn favicon_tone(bgra: &[u8]) -> [f32; 4] {
+    let (mut r, mut g, mut b, mut a) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for px in bgra.chunks_exact(4) {
+        // Premultiplied: the channels already carry the coverage.
+        b += px[0] as f64;
+        g += px[1] as f64;
+        r += px[2] as f64;
+        a += px[3] as f64;
+    }
+    if a < 1.0 {
+        return [0.5, 0.5, 0.5, 0.0];
+    }
+    [(r / a) as f32, (g / a) as f32, (b / a) as f32, 1.0]
 }
 
 /// Instant with a Default, so Shared can derive it.
@@ -1303,6 +1323,13 @@ wrap_app! {
                 // Hidden is per page, so it can change live (hide_scrollbars).
                 _ => {}
             }
+            // Back and forward rebuild the page rather than restoring it from
+            // the back-forward cache: a page restored into a windowless view
+            // comes back without painting, so the page it replaced stayed on
+            // screen until a reload. Merged, like enable-features.
+            let had = if cl.has_switch(Some(&"disable-features".into())) != 0 { CefString::from(&cl.switch_value(Some(&"disable-features".into()))).to_string() } else { String::new() };
+            let all = if had.is_empty() { "BackForwardCache".to_string() } else { format!("{had},BackForwardCache") };
+            cl.append_switch_with_value(Some(&"disable-features".into()), Some(&all.as_str().into()));
             if std::env::var_os("NUS_AUTOPLAY").is_some() {
                 cl.append_switch_with_value(Some(&"autoplay-policy".into()), Some(&"no-user-gesture-required".into()));
             }
@@ -1639,7 +1666,8 @@ wrap_download_image_callback! {
             if w <= 0 || h <= 0 || bytes.len() < (w * h * 4) as usize {
                 return;
             }
-            self.f.shared.borrow_mut().favicon = Some(Favicon { url: self.f.url.clone(), w: w as u32, h: h as u32, bgra: bytes });
+            let tone = favicon_tone(&bytes);
+            self.f.shared.borrow_mut().favicon = Some(Favicon { url: self.f.url.clone(), w: w as u32, h: h as u32, bgra: bytes, tone });
         }
     }
 }
