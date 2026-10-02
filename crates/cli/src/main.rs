@@ -98,9 +98,14 @@ fn app() -> Option<PathBuf> {
     let bin = exe.parent()?;
     if cfg!(target_os = "macos") {
         let bundle = bin.parent()?.parent()?.parent()?;
-        bundle.extension().is_some_and(|e| e == "app").then(|| bundle.to_path_buf())
+        bundle
+            .extension()
+            .is_some_and(|e| e == "app")
+            .then(|| bundle.to_path_buf())
     } else {
-        let launcher = bin.parent()?.join(if cfg!(windows) { "nus.exe" } else { "nus" });
+        let launcher = bin
+            .parent()?
+            .join(if cfg!(windows) { "nus.exe" } else { "nus" });
         launcher.is_file().then_some(launcher)
     }
 }
@@ -145,7 +150,11 @@ fn version() -> ExitCode {
         println!("nus (command only, version {})", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     };
-    let exe = if cfg!(target_os = "macos") { app.join("Contents/MacOS/nus") } else { app };
+    let exe = if cfg!(target_os = "macos") {
+        app.join("Contents/MacOS/nus")
+    } else {
+        app
+    };
     match std::process::Command::new(exe).arg("--version").status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
@@ -500,8 +509,17 @@ fn main() -> ExitCode {
     };
     // A page or file opens in a new nus when none is running.
     if matches!(cmd, "open" | "edit") && !running() {
-        let target = args.get("url").or_else(|| args.get("path")).and_then(Value::as_str).unwrap_or_default();
-        return start(&[target.to_string()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>());
+        let target = args
+            .get("url")
+            .or_else(|| args.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return start(
+            &[target.to_string()]
+                .into_iter()
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>(),
+        );
     }
     match call(cmd, args) {
         Ok(v) => {
