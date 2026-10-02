@@ -46,6 +46,9 @@ static MAC_QUERIES:Mutex<VecDeque<(u64,u8,Option<isize>,Result<Observation,Strin
 
 pub fn init() {
     let identity=Identity::discover();
+    // A menu entry an older or deleted copy left must not keep nus from opening.
+    #[cfg(target_os="linux")]
+    if let Ok(i)=&identity { linux::repair(i); }
     let dismissed=identity.as_ref().is_ok_and(|i|i.dismissal().is_some_and(|p|p.is_file()));
     let mut s=state();
     if s.identity.is_some() {return;}

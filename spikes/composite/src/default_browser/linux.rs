@@ -59,6 +59,49 @@ fn system_entry(identity:&Identity)->Option<String> {
     std::env::split_paths(&dirs).filter(|p|p.is_absolute())
         .find_map(|p|std::fs::read_to_string(p.join("applications").join(identity.desktop_id)).ok())
 }
+/// The program a desktop entry runs: its Exec's first word. Two layers to
+/// undo, as `executable` writes them: the file's string escapes (`\\` is
+/// `\`), then Exec's quoting (inside quotes, `\` escapes the next character).
+fn exec_target(text:&str)->Option<String> {
+    let raw=text.lines().find_map(|l|l.strip_prefix("Exec="))?.trim();
+    let mut exec=String::new();
+    let mut chars=raw.chars();
+    while let Some(c)=chars.next() {
+        if c=='\\' { match chars.next() { Some('s')=>exec.push(' '), Some('n')=>exec.push('\n'), Some('t')=>exec.push('\t'), Some('r')=>exec.push('\r'), Some(n)=>exec.push(n), None=>{} } } else { exec.push(c); }
+    }
+    let Some(rest)=exec.strip_prefix('"') else { return exec.split_whitespace().next().map(String::from) };
+    let mut out=String::new();
+    let mut chars=rest.chars();
+    while let Some(c)=chars.next() {
+        match c {
+            '\\'=>out.extend(chars.next()),
+            '"'=>return Some(out),
+            _=>out.push(c),
+        }
+    }
+    None
+}
+/// At startup: a user entry for this channel that an earlier copy of nus
+/// wrote, and that now stands in the way, is removed so the menu opens a nus
+/// that exists. In the way: its copy is gone (a deleted download folder), or
+/// this copy came from a system package, whose own entry is the one to use.
+/// An entry nus did not write (no X-Nus-Owner) is the person's and stays.
+pub fn repair(identity:&Identity) {
+    let Ok(dir)=applications() else {return};
+    let path=dir.join(identity.desktop_id);
+    let Ok(text)=std::fs::read_to_string(&path) else {return};
+    let Some(owner)=text.lines().find(|l|l.starts_with("X-Nus-Owner=")) else {return};
+    if owner==format!("X-Nus-Owner={}",marker(identity)) {return;}
+    let gone=exec_target(&text).is_some_and(|t|!Path::new(&t).exists());
+    let packaged=crate::distribution::managed().is_some() && system_entry(identity).is_some();
+    if !(gone||packaged) {return;}
+    if std::fs::remove_file(&path).is_ok() {
+        tracing::info!("removed {} left by another copy of nus ({})",path.display(),if gone{"its copy is gone"}else{"this copy is the system's"});
+        if let Some(d)=dir.to_str() {
+            let _=process::run(Path::new("update-desktop-database"),&[d],Duration::from_secs(3));
+        }
+    }
+}
 pub fn register(identity:&Identity)->Result<(),String> {
     session()?;
     // A system package installs its own entry; a user copy would only shadow it.
@@ -114,6 +157,12 @@ pub fn request(identity:&Identity)->Result<(),String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn an_entry_names_the_program_it_runs() {
+        assert_eq!(exec_target("[Desktop Entry]\nExec=\"/home/s/Downloads/nus-0.0.2/nus\" --open-external -- %U\n").as_deref(),Some("/home/s/Downloads/nus-0.0.2/nus"));
+        assert_eq!(exec_target("Exec=/opt/nus/nus %U").as_deref(),Some("/opt/nus/nus"));
+        assert_eq!(exec_target(&format!("Exec={} %U",executable(Path::new("/opt/a $`\"x/nus")).unwrap())).as_deref(),Some("/opt/a $`\"x/nus"));
+        assert_eq!(exec_target("Name=nus"),None);
+    }
     #[test] fn exec_argument_is_not_a_shell_command() {
         assert_eq!(executable(Path::new("/opt/nus/nus")).unwrap(),"\"/opt/nus/nus\"");
         assert!(executable(Path::new("/opt/a=b/nus")).is_err());

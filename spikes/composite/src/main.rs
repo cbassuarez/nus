@@ -1146,6 +1146,17 @@ fn run() -> i32 {
         return 0;
     }
     let child_process = external.is_none() && std::env::args().any(|a| a == "--type" || a.starts_with("--type="));
+    // If the machine itself runs out of memory, nus and the Chromium
+    // processes it starts go before anything else the person is running.
+    // Only ever raised (an unprivileged process cannot lower it), inherited
+    // by every child.
+    #[cfg(target_os = "linux")]
+    if !child_process {
+        let now = std::fs::read_to_string("/proc/self/oom_score_adj").ok().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
+        if now < 500 {
+            let _ = std::fs::write("/proc/self/oom_score_adj", "500");
+        }
+    }
     // Chromium children must enter CEF before profile, logging, or UI setup.
     if child_process {
         browser_runtime::load_library();

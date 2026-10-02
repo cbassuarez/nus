@@ -32,7 +32,25 @@ linux = importlib.util.module_from_spec(_linux_spec)
 _linux_spec.loader.exec_module(linux)
 # The launcher finds its own folder through a /usr/bin symlink. nus-desktop
 # carries an $ORIGIN runpath, so shells nus opens inherit no LD_LIBRARY_PATH.
-LINUX_LAUNCHER = '#!/bin/sh\nset -eu\ndir=$(dirname -- "$(readlink -f -- "$0")")\nexec "$dir/nus-desktop" "$@"\n'
+LINUX_LAUNCHER = r'''#!/bin/sh
+set -eu
+dir=$(dirname -- "$(readlink -f -- "$0")")
+# nus and every Chromium process it starts run in a scope of their own, so
+# the kernel bounds them whatever happens inside: above MemoryHigh their
+# memory is reclaimed first, MemoryMax is a ceiling (an out-of-memory kill
+# lands inside this scope, never on the rest of the machine), and under CPU
+# contention nus takes half a normal share. Commands that only answer
+# (--version and the like) and machines without a user systemd skip it.
+case "${1:-}" in --open-external|"") launch=1 ;; --*) launch= ;; *) launch=1 ;; esac
+if [ -n "$launch" ] && [ -z "${NUS_SCOPED:-}" ] && command -v systemd-run >/dev/null 2>&1 \
+    && { [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; } \
+    && systemctl --user show-environment >/dev/null 2>&1; then
+    NUS_SCOPED=1 exec systemd-run --user --scope --quiet --collect \
+        --property=MemoryHigh=30% --property=MemoryMax=50% --property=CPUWeight=50 \
+        -- "$dir/nus-desktop" "$@"
+fi
+exec "$dir/nus-desktop" "$@"
+'''
 LINUX_INSTRUCTIONS = ('Run ./install-desktop.sh to install nus for your account: it copies this folder to\n'
     '${XDG_DATA_HOME:-$HOME/.local/share}/nus/app/<channel>, adds it to your applications and ~/.local/bin,\n'
     'and checks that Chromium\'s sandbox can start. Your default browser is unchanged; choose Make Default in nus.\n'

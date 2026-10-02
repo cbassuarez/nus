@@ -56,6 +56,7 @@ pub struct Target {
     pub size: (u32, u32),
     format: wgpu::TextureFormat,
     alpha_mode: wgpu::CompositeAlphaMode,
+    present_mode: wgpu::PresentMode,
     color_space: wgpu::SurfaceColorSpace,
     hdr_white_scale: f32,
     hdr_headroom: f32,
@@ -294,6 +295,7 @@ impl Gpu {
             size: (size.width.max(1), size.height.max(1)),
             format,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            present_mode: wgpu::PresentMode::AutoVsync,
             color_space: wgpu::SurfaceColorSpace::Auto,
             hdr_white_scale: 1.0,
             hdr_headroom: 1.0,
@@ -301,6 +303,7 @@ impl Gpu {
         };
         target.select_color_space(&gpu.adapter);
         target.alpha_mode = gpu.alpha_mode_for(&target.surface);
+        target.present_mode = gpu.present_mode_for(&target.surface);
         target.configure(&gpu.device);
         Ok((gpu, target))
     }
@@ -326,16 +329,39 @@ impl Gpu {
         mode
     }
 
+    /// How frames are handed to the compositor. On Linux, Mailbox: presenting
+    /// never blocks. Vsync's FIFO makes Mesa wait in the presenting thread
+    /// until the compositor gives a buffer back, and a Wayland compositor
+    /// withholds them while a window is being mapped, hidden or occluded;
+    /// nus presents from the thread that handles input and the close button,
+    /// so the window froze. winit already paces redraws with the compositor's
+    /// frame callbacks, so Mailbox does not spin.
+    fn present_mode_for(&self, surface: &wgpu::Surface<'static>) -> wgpu::PresentMode {
+        let caps = surface.get_capabilities(&self.adapter);
+        let mode = present_mode(
+            &caps.present_modes,
+            cfg!(any(target_os = "linux", target_os = "freebsd")),
+        );
+        tracing::info!(
+            "surface present modes {:?} → {:?}",
+            caps.present_modes,
+            mode
+        );
+        mode
+    }
+
     /// A surface for another window (PiP, quick terminal).
     pub fn target(&self, window: Arc<Window>) -> Result<Target> {
         let surface = self.instance.create_surface(window.clone())?;
         let size = window.inner_size();
         let alpha_mode = self.alpha_mode_for(&surface);
+        let present_mode = self.present_mode_for(&surface);
         let mut t = Target {
             surface,
             size: (size.width.max(1), size.height.max(1)),
             format: self.format,
             alpha_mode,
+            present_mode,
             color_space: wgpu::SurfaceColorSpace::Auto,
             hdr_white_scale: 1.0,
             hdr_headroom: 1.0,
@@ -974,10 +1000,24 @@ impl Target {
                 width: self.size.0,
                 height: self.size.1,
                 desired_maximum_frame_latency: 1,
-                present_mode: wgpu::PresentMode::AutoVsync,
+                present_mode: self.present_mode,
             },
         );
     }
+}
+
+/// Mailbox where it is offered and presenting must not block (Linux), then
+/// Immediate (a Wayland compositor never tears, so it is Mailbox there), else
+/// vsync. Elsewhere, vsync as before.
+fn present_mode(offered: &[wgpu::PresentMode], nonblocking: bool) -> wgpu::PresentMode {
+    if nonblocking {
+        for mode in [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate] {
+            if offered.contains(&mode) {
+                return mode;
+            }
+        }
+    }
+    wgpu::PresentMode::AutoVsync
 }
 
 fn srgb_linear(value: f32) -> f32 {
@@ -998,6 +1038,16 @@ fn usable_headroom(value: Option<f32>) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::usable_headroom;
+
+    #[test]
+    fn linux_presents_without_blocking_when_it_can() {
+        use super::present_mode;
+        use wgpu::PresentMode::*;
+        assert_eq!(present_mode(&[Fifo, Mailbox, Immediate], true), Mailbox);
+        assert_eq!(present_mode(&[Fifo, Immediate], true), Immediate);
+        assert_eq!(present_mode(&[Fifo], true), AutoVsync);
+        assert_eq!(present_mode(&[Fifo, Mailbox], false), AutoVsync);
+    }
 
     #[test]
     fn unknown_or_unusable_display_headroom_never_boosts_caret_light() {
