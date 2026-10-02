@@ -12,6 +12,26 @@ down the left. ↵ always runs the safe command. Going ahead anyway is a dim
 command at the end of the list and is never the default. A new transcript
 always starts with its default command highlighted.
 
+Every page that can fail opens with its **route** (direction II, *Index*,
+chosen 2026-10-01): nus → dns → connect → tls (https only) → request →
+response → page, named in lowercase. It walks from nus to the station where
+the page failed (a segment each 120 ms, scaled by the motion register) and
+the break arrives there, marked by how it failed: a wall (connection
+refused, credentials rejected), a gap (timeout, no route), a cut (reset,
+network changed, offline), a dashed ring (no address), a broken seal (TLS,
+certificate), a hollow box (empty or unreadable response), a loop back
+(redirects), a detour (Wi-Fi sign-in), an hourglass (no response yet), a
+hazard or a ban at nus (listed site, content blocking), a u-turn (resend
+form), and at the page a split (crash), an overflow (out of memory), a stop
+(terminated), a stuck bead (main thread blocked), a moon (asleep). Signal
+marks the break; walked stations are ink, the rest faint. While something
+is still happening it keeps moving: a request in flight, the bead going
+round, a port being tried, a renderer being terminated. Reduced motion
+shows the final state. A page that follows another on the same way isn't
+walked again; only its new break arrives. The route is drawn natively
+(`interstitial_ui::draw_route`) and in the HTML nus writes over Chromium's
+error document (`ROUTE_JS`), with the same geometry.
+
 Traces never invent facts. A load error's trace comes from Chromium's error
 (which step it names: name, connect, secure, request, answer) and the time
 from asking to the error; a local name shows what this computer resolves it
