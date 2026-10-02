@@ -154,11 +154,89 @@ instead (Settings · Updates · Profile, listed in `installs/<channel>/separate`
 Welcome shows once per version per channel. Legacy `nus/profile` data is offered for
 explicit settings import and is not overwritten. Browsing data is not imported.
 Source checkouts continue to use their local `profile` directory.
-Linux packages target glibc 2.35+ and need the desktop libraries listed in their
-README. Chromium requires working user namespaces (including AppArmor permission)
-or an administrator-installed sandbox helper; extraction does not install a
-privileged helper. nus checks this before starting CEF and shows a native error
-if the sandbox is unavailable. It does not silently add `--no-sandbox`.
+Linux releases carry two forms of the same payload. CEF's libraries are
+stripped first (libcef.so ships with full debug info: about 1.4 GB, 270 MB
+stripped). `nus-desktop` finds libcef.so through an `$ORIGIN` runpath, so the
+`./nus` launcher sets no `LD_LIBRARY_PATH` for shells to inherit, and it
+resolves its own folder through symlinks.
+
+- **`.deb`** (`scripts/package-linux.py`, recorded as `packages` on the Linux
+  asset, like the Windows installer). Installs the channel to `/opt/nus` or
+  `/opt/nus-preview` with `/usr/bin/nus` (an `update-alternatives` link, so both
+  channels can be installed; Current wins), a system desktop entry, hicolor
+  icons and AppStream metadata. Its postinst writes an AppArmor profile granting
+  `userns` to that executable where the system has AppArmor abi 4.0 (Ubuntu
+  24.04+ restricts unprivileged user namespaces otherwise), and `chrome-sandbox`
+  is setuid root as the fallback where user namespaces are off. Its
+  `nus-package.json` says `"managed": "deb"`: the in-app updater only reports
+  new versions and leaves installing them to apt. The release workflow installs,
+  runs and removes the package on the runner. `--archive <tar.gz>` repackages a
+  published release.
+- **tar.gz**. `./install-desktop.sh` copies the folder to
+  `${XDG_DATA_HOME:-~/.local/share}/nus/app/<channel>`, links
+  `~/.local/bin/nus` (the copy installed last answers), registers the desktop entry (replacing one whose
+  copy was deleted) and checks the sandbox. Where AppArmor blocks it, it prints
+  `sudo sh <installed>/install-desktop.sh --allow-sandbox`, which writes a
+  profile for that one copy. `--uninstall` removes the copy and keeps settings.
+  In-app updates work for this copy as before.
+
+**Install command.** `scripts/install.sh` finds the newest Linux release of a
+channel through the GitHub API, checks each download against its
+`SHA256SUMS.txt`, and installs the .deb with apt on Debian and Ubuntu, or the
+archive with `install-desktop.sh` elsewhere (`--user` forces the archive, which
+needs no sudo; `--preview` picks that channel, as does the absence of a stable
+release):
+
+    curl -fsSL https://raw.githubusercontent.com/cbassuarez/nus/main/scripts/install.sh | sh
+
+**The apt repository** lives in GitHub Releases: after publishing, the release
+workflow builds a signed flat repository (`scripts/apt-repo.py`: the .deb,
+Packages, Release, InRelease) and uploads it to the rolling release
+`apt-preview` or `apt-release`, deleting the previous .deb. apt follows GitHub's
+download redirects, so nothing else needs hosting. The tags have no leading
+`v`, so the in-app updater ignores them. One-time setup:
+
+1. Create a signing key used only for this:
+   `gpg --quick-gen-key 'nus packages <contact@cbassuarez.com>' ed25519 sign never`.
+2. Store the private key (`gpg --armor --export-secret-keys <fingerprint>`) as
+   the secret `NUS_APT_SIGNING_KEY`, and the public key
+   (`gpg --armor --export <fingerprint>`) as the variable `NUS_APT_PUBLIC_KEY`.
+
+From the next release on, each .deb ships
+`/etc/apt/sources.list.d/<package>.sources` and the keyring, so installing it
+once subscribes the machine to its channel. Packages built before then install
+and run, but do not update themselves. Without the secret the step is skipped.
+
+**Homebrew and winget.** After publishing, the release workflow renders the
+release for each package manager from its verified `release.json`
+(`scripts/package-managers.py`):
+
+- **Homebrew**: `Casks/nus.rb` or `Casks/nus@preview.rb`, committed to the tap
+  `github.com/cbassuarez/homebrew-nus` (`brew install cbassuarez/nus/nus@preview`;
+  `brew install` finds casks without `--cask`). The casks conflict, since both
+  install `nus.app`; each links the `nus` command. A cask, not a formula: Homebrew
+  installs GUI apps only as casks, and homebrew-core formulae must build from
+  source with no prebuilt payloads. For a bare `brew install nus`, the cask
+  joins `homebrew/cask`, which takes notarized, stable, notable apps: submit
+  `Casks/nus.rb` once the first stable release is notarized; its autobump then
+  replaces the tap for that channel. `auto_updates` leaves updating to
+  the app. Ad-hoc signed builds get a postflight that clears Homebrew's
+  quarantine flag, without which macOS reports the app as damaged; notarized
+  builds keep it. Setup: create the public repository `cbassuarez/homebrew-nus`,
+  and a fine-grained token with Contents: write on it as the secret
+  `HOMEBREW_TAP_TOKEN`.
+- **winget**: manifests for `cbassuarez.nus` / `cbassuarez.nus.Preview`
+  (the Inno installer, per-user scope, `nus` on PATH), submitted to
+  `microsoft/winget-pkgs` with `wingetcreate`. Microsoft's validation and
+  moderators merge them; the first submission of each identifier takes longest.
+  Setup: a classic token with `public_repo` scope, from the account whose fork
+  the pull requests come from, as the secret `WINGET_TOKEN`.
+
+Without their secrets, both jobs skip. Neither can change a published release.
+
+nus checks Chromium's sandbox before starting CEF and shows a native error if
+it is unavailable. The probe maps its uid in the new namespace, because Ubuntu's
+restriction lets `unshare` itself succeed. nus never silently adds `--no-sandbox`.
 
 `python scripts/check-browser.py --app <package> --out <new-directory>` requires
 Pillow and a usable desktop GPU. It keeps an isolated profile, Chromium log,

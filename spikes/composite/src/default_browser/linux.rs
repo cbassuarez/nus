@@ -48,8 +48,24 @@ fn desktop(identity:&Identity)->Result<String,String> {
     Ok(format!("[Desktop Entry]\nType=Application\nName={}\nComment=A terminal and browser\nExec={} --open-external -- %U\nIcon={}\nTerminal=false\nCategories=Development;TerminalEmulator;WebBrowser;\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\nStartupWMClass=nus\nX-Nus-Owner={}\n",
         identity.title,executable(&identity.gui)?,icon,marker(identity)))
 }
+/// The lines that make an entry this installation's registration. The Dock
+/// publisher may update Icon without changing registration.
+fn critical(text:&str)->Vec<&str> {
+    text.lines().filter(|l|l.starts_with("Exec=")||l.starts_with("MimeType=")||l.starts_with("X-Nus-Owner=")||l.starts_with("Type=")).collect()
+}
+/// A system package's entry, which a user entry of the same id overrides.
+fn system_entry(identity:&Identity)->Option<String> {
+    let dirs=std::env::var_os("XDG_DATA_DIRS").filter(|s|!s.is_empty()).unwrap_or_else(||"/usr/local/share:/usr/share".into());
+    std::env::split_paths(&dirs).filter(|p|p.is_absolute())
+        .find_map(|p|std::fs::read_to_string(p.join("applications").join(identity.desktop_id)).ok())
+}
 pub fn register(identity:&Identity)->Result<(),String> {
     session()?;
+    // A system package installs its own entry; a user copy would only shadow it.
+    if crate::distribution::managed().is_some() {
+        let expected=desktop(identity)?;
+        if system_entry(identity).is_some_and(|s|critical(&s)==critical(&expected)) {return Ok(());}
+    }
     let dir=applications()?;
     std::fs::create_dir_all(&dir).map_err(|_|"Could not create the user applications directory.")?;
     let path=dir.join(identity.desktop_id);
@@ -78,9 +94,8 @@ pub fn query(identity:&Identity)->Result<Observation,String> {
         return Err("The BROWSER environment variable overrides desktop launch policy. This session’s link handling cannot be verified.".into());
     }
     let expected=desktop(identity)?;
-    // The Dock publisher may update Icon without changing registration.
-    let critical=|s:&str|s.lines().filter(|l|l.starts_with("Exec=")||l.starts_with("MimeType=")||l.starts_with("X-Nus-Owner=")||l.starts_with("Type=")).map(String::from).collect::<Vec<_>>();
-    let registered=std::fs::read_to_string(applications()?.join(identity.desktop_id)).is_ok_and(|s|critical(&s)==critical(&expected));
+    let entry=std::fs::read_to_string(applications()?.join(identity.desktop_id)).ok().or_else(||system_entry(identity));
+    let registered=entry.is_some_and(|s|critical(&s)==critical(&expected));
     let handler=|scheme:&str| {
         run("xdg-mime",&["query","default",&format!("x-scheme-handler/{scheme}")]).ok().map(|v|v==identity.desktop_id && registered)
     };
@@ -105,5 +120,15 @@ mod tests {
         assert!(executable(Path::new("/opt/a\nnus")).is_err());
         let q=executable(Path::new("/opt/a $`\"%\\/nus")).unwrap();
         assert!(q.contains("%%"));assert!(q.contains("\\\\$"));assert!(q.contains("\\\\\\\\"));
+    }
+    /// scripts/package-linux.py writes the system entry; registration accepts
+    /// it only while these lines agree.
+    #[test] fn system_package_entry_matches_registration() {
+        let identity=Identity{gui:"/opt/nus-preview/nus".into(),root:"/opt/nus-preview".into(),key:"nus-preview",
+            prog_id:"nus-preview.url",desktop_id:"dev.nus.app.preview.desktop",title:"nus Preview"};
+        let text=desktop(&identity).unwrap();
+        assert_eq!(critical(&text),["Type=Application","Exec=\"/opt/nus-preview/nus\" --open-external -- %U",
+            "MimeType=x-scheme-handler/http;x-scheme-handler/https;",
+            "X-Nus-Owner=c0a7538a52d859fa78cb2dcb63be773388bc8867ba8bf92c466a265eb082b8e2"]);
     }
 }

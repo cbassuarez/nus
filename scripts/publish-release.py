@@ -51,8 +51,12 @@ def main():
                 raise ValueError('Mixed release artifacts')
             if setup.stat().st_size != installer['size'] or package.digest(setup) != installer['sha256']:
                 raise ValueError(f'Invalid installer: {setup.name}')
+        for system in entry.get('packages',[]):
+            path=args.directory/system['name']
+            if not system['name'].endswith('.deb') or path.stat().st_size != system['size'] or package.digest(path) != system['sha256']:
+                raise ValueError(f'Invalid package: {system["name"]}')
         entries.append(entry)
-    files=[f for e in entries for f in [e, e.get('installer')] if f]
+    files=[f for e in entries for f in [e, e.get('installer'), *e.get('packages',[])] if f]
     maintenance=support.evaluate(json.loads(args.support_policy.read_text()),args.tag)
     manifest={'state':'active','maintenance':maintenance,'schema':1,'version':args.tag,'revision':args.revision,'channel':entries[0]['channel'],'assets':entries}
     (args.directory/'release.json').write_text(json.dumps(manifest,indent=2)+'\n')
@@ -70,10 +74,11 @@ def main():
         url=f'https://github.com/cbassuarez/nus/blob/{args.revision}/docs/releases/{args.tag}.md'
         lines += ['', f'[Candidate review notes, compatibility and known limitations]({url})']
     lines += ['', '## Downloads', '', '| Package | Signing |', '| --- | --- |']
-    lines.extend(f'| {e["target"]}{" (installer)" if e.get("installer") else ""} | {e["signing"]} |' for e in entries)
+    lines.extend(f'| {e["target"]}{" (installer)" if e.get("installer") else ""}{" (.deb)" if e.get("packages") else ""} | {e["signing"]} |' for e in entries)
     omitted=sorted(package.TARGETS-targets)
     if omitted: lines += ['', 'Not included in this preview: '+', '.join(omitted)+'. These packages remain unavailable until their platform checks and signing setup are complete.']
-    lines += ['', 'Windows: download the -setup.exe installer and run it; the .zip beside it is the package in-app updates use, so most people never need it. macOS: unzip the complete package and move nus.app to Applications. Linux: extract the complete archive and run ./nus; see README.txt for desktop integration and runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://cbassuarez.com/nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
+    linux_install='curl -fsSL https://raw.githubusercontent.com/cbassuarez/nus/main/scripts/install.sh | sh'+(' -s -- --preview' if manifest['channel']=='preview' else '')
+    lines += ['', 'Windows: download the -setup.exe installer and run it; the .zip beside it is the package in-app updates use, so most people never need it. macOS: unzip the complete package and move nus.app to Applications. Linux: run `' + linux_install + '` (the .deb with apt on Debian and Ubuntu, otherwise the archive for your account), or download the .deb or archive below. See README.txt in the archive for runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://cbassuarez.com/nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
     # The public API returns release notes without a second cross-origin asset
     # request. Keep the same verified metadata available to the download page.
     lines += ['', '<!-- nus-release:'+json.dumps(manifest,separators=(',',':'))+' -->']

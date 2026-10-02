@@ -147,7 +147,39 @@ Native preview releases are published for macOS, Windows and Linux. They are pre
 | Windows 11 | x86-64 | ✓ |
 | Linux | Wayland + X11, x86-64 | ✓ |
 
-[Download the latest preview](https://github.com/cbassuarez/nus/releases/latest).
+### Install
+
+Every channel installs the same command, `nus`: on its own it opens nus, and
+inside or outside nus it drives the running app (`nus open <url>`, `nus ls`,
+`nus --help`).
+
+macOS (Homebrew):
+
+```sh
+brew install cbassuarez/nus/nus@preview
+```
+
+Windows (winget):
+
+```sh
+winget install cbassuarez.nus.Preview
+```
+
+Debian and Ubuntu (apt; updates arrive with your system updates):
+
+```sh
+sudo curl -fsSLo /usr/share/keyrings/nus-archive-keyring.gpg https://github.com/cbassuarez/nus/releases/download/apt-preview/nus-archive-keyring.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/nus-preview.sources https://github.com/cbassuarez/nus/releases/download/apt-preview/nus-preview.sources
+sudo apt update && sudo apt install nus-preview
+```
+
+Any Linux (picks apt where it can, otherwise installs for your account):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cbassuarez/nus/main/scripts/install.sh | sh -s -- --preview
+```
+
+Or [download the latest preview](https://github.com/cbassuarez/nus/releases/latest) directly.
 
 ## What this is, and isn't
 

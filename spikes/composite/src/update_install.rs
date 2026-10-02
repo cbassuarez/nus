@@ -340,6 +340,9 @@ pub fn stage_and_launch(release: &Release) -> Result<(), String> {
     if crate::private::enabled() {
         return Err("Updates are unavailable in incognito".into());
     }
+    if crate::distribution::managed().is_some() {
+        return Err("Your system's package manager updates this installation".into());
+    }
     crate::updates::revalidate(release)?;
     let installed = installation()?;
     let parent = installed.parent().ok_or("No installation parent")?;

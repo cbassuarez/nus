@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -140,6 +141,7 @@ class ReleaseTests(unittest.TestCase):
             'assets/fonts/OFL-test.txt':b'font license',
             'assets/icons/LICENSE':b'icon license',
             'assets/icon/nus-256.png':b'icon',
+            'assets/icon/nus-48.png':b'small icon',
             # The real script, so the archive ships what the repository does.
             'scripts/install-linux-browser-entry.sh':Path(__file__).with_name('install-linux-browser-entry.sh').read_bytes(),
             'LICENSE':b'license',
@@ -148,26 +150,48 @@ class ReleaseTests(unittest.TestCase):
             path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
             if '/release/' in name: path.chmod(0o755)
         args=['package','--tag',self.tag,'--target','linux-x86_64']
-        with patch.object(sys,'argv',args),patch.object(release.package,'ROOT',self.root),patch('builtins.print'):
+        built=[]
+        def deb(stage,tag,out,keyring=None):
+            built.append(json.loads((stage/'nus-package.json').read_text()))
+            path=out/'nus-preview_0.0.1~preview.1_amd64.deb';path.write_bytes(b'deb');return path
+        with patch.object(sys,'argv',args),patch.object(release.package,'ROOT',self.root),patch.object(release.package.linux,'build_deb',deb),patch('builtins.print'):
             release.package.main()
         output=self.root/'dist/release'
         record=json.loads((output/'linux-x86_64.json').read_text())
         archive=output/record['name']
         self.assertEqual(record['sha256'],release.package.digest(archive))
         self.assertEqual(record['signing'],'checksum')
+        # The .deb is built from the archive's own payload and rides on its record.
+        self.assertEqual(built[0]['version'],self.tag)
+        self.assertEqual(record['packages'],[{'name':'nus-preview_0.0.1~preview.1_amd64.deb','sha256':release.package.digest(output/'nus-preview_0.0.1~preview.1_amd64.deb'),'size':3}])
         prefix='nus-0.0.1-preview.1-linux-x86_64/'
         with tarfile.open(archive) as tar:
             names=set(tar.getnames())
-            for name in ['nus','nus-desktop','nus-hold','bin/nus','libcef.so','libEGL.so.1','icudtl.dat','locales/en-US.pak','licenses/OFL-test.txt','nus.png','install-desktop.sh','nus-package.json']:
+            for name in ['nus','nus-desktop','nus-hold','bin/nus','libcef.so','libEGL.so.1','icudtl.dat','locales/en-US.pak','licenses/OFL-test.txt','nus.png','icons/nus-48.png','install-desktop.sh','nus-package.json']:
                 self.assertIn(prefix+name,names)
             self.assertNotIn(prefix+'include/cef.h',names)
             for name in ['nus','install-desktop.sh']:
                 self.assertEqual(tar.getmember(prefix+name).mode & 0o111,0o111,name)
             installer=tar.extractfile(prefix+'install-desktop.sh').read().decode()
             self.assertIn('--install-browser-entry',installer)
+            self.assertIn('--allow-sandbox',installer)
             launcher=tar.extractfile(prefix+'nus').read().decode()
-            self.assertIn('LD_LIBRARY_PATH',launcher)
+            # Shells nus opens must not inherit the bundle's libraries.
+            self.assertNotIn('LD_LIBRARY_PATH',launcher)
+            self.assertIn('readlink -f',launcher)
             self.assertIn('exec "$dir/nus-desktop" "$@"',launcher)
+
+    def test_linux_packages_are_verified_and_published(self):
+        record=json.loads((self.root/'linux-x86_64.json').read_text())
+        deb=self.root/'nus-preview_0.0.1~preview.1_amd64.deb'
+        deb.write_bytes(b'deb')
+        record['packages']=[{'name':deb.name,'sha256':release.package.digest(deb),'size':3}]
+        (self.root/'linux-x86_64.json').write_text(json.dumps(record))
+        calls=self.run_release()
+        self.assertIn(str(deb),[a for c in calls for a in c])
+        self.assertIn(deb.name,(self.root/'SHA256SUMS.txt').read_text())
+        deb.write_bytes(b'bad')
+        with self.assertRaisesRegex(ValueError,'Invalid package'): self.run_release()
 
     def windows_payloads(self):
         redist=self.root/'redist'
@@ -346,5 +370,76 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(calls,[])
         record=json.loads((self.root/'dist/release/windows-x86_64.json').read_text())
         self.assertEqual(record['signing'],'unsigned')
+
+class DebianPackageTests(unittest.TestCase):
+    linux=release.package.linux
+    def test_preview_versions_sort_before_their_release(self):
+        self.assertEqual(self.linux.deb_version('v0.0.2-preview.9'),'0.0.2~preview.9')
+        self.assertEqual(self.linux.deb_version('v1.2.3'),'1.2.3')
+        self.assertEqual(self.linux.package_name('v1.2.3'),'nus')
+        self.assertEqual(self.linux.package_name('v1.2.3-preview.1'),'nus-preview')
+
+    def test_system_entry_matches_registration(self):
+        # Pinned identically in default_browser/linux.rs
+        # (system_package_entry_matches_registration).
+        entry=self.linux.desktop_entry('v0.0.2-preview.9')
+        critical=[l for l in entry.splitlines() if l.startswith(('Exec=','MimeType=','X-Nus-Owner=','Type='))]
+        self.assertEqual(critical,['Type=Application','Exec="/opt/nus-preview/nus" --open-external -- %U',
+            'MimeType=x-scheme-handler/http;x-scheme-handler/https;',
+            'X-Nus-Owner=c0a7538a52d859fa78cb2dcb63be773388bc8867ba8bf92c466a265eb082b8e2'])
+
+    @unittest.skipUnless(shutil.which('dpkg-deb'), 'dpkg-deb is required')
+    def test_package_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage=Path(tmp)/'stage'
+            for name,mode in [('nus-desktop',0o755),('nus',0o755),('chrome-sandbox',0o755),('libcef.so',0o755),('install-desktop.sh',0o755),('README.txt',0o644),('LICENSE',0o644),('nus.png',0o644),('icons/nus-48.png',0o644)]:
+                (stage/name).parent.mkdir(parents=True,exist_ok=True);(stage/name).write_bytes(b'x');(stage/name).chmod(mode)
+            (stage/'nus-package.json').write_text('{"version": "v0.0.2-preview.9"}')
+            key=Path(tmp)/'key.gpg';key.write_bytes(b'key')
+            deb=self.linux.build_deb(stage,'v0.0.2-preview.9',Path(tmp)/'out',key)
+            listing=subprocess.run(['dpkg-deb','-c',str(deb)],check=True,capture_output=True,text=True).stdout
+            entries={l.split()[5].removeprefix('.'):l.split()[0:2] for l in listing.splitlines()}
+            self.assertEqual(entries['/opt/nus-preview/chrome-sandbox'],['-rwsr-xr-x','root/root'])
+            self.assertEqual(entries['/usr/share/applications/dev.nus.app.preview.desktop'][0],'-rw-r--r--')
+            for path in ['/usr/share/icons/hicolor/48x48/apps/dev.nus.app.preview.png',
+                         '/etc/apt/sources.list.d/nus-preview.sources','/usr/share/keyrings/nus-archive-keyring.gpg']:
+                self.assertIn(path,entries)
+            self.assertNotIn('/opt/nus-preview/install-desktop.sh',entries)
+            control=subprocess.run(['dpkg-deb','-I',str(deb),'conffiles'],check=True,capture_output=True,text=True).stdout
+            self.assertIn('/etc/apt/sources.list.d/nus-preview.sources',control)
+            scripts=subprocess.run(['dpkg-deb','-I',str(deb),'postinst'],check=True,capture_output=True,text=True).stdout
+            self.assertIn('update-alternatives --install /usr/bin/nus nus /opt/nus-preview/bin/nus 50',scripts)
+            scripts=subprocess.run(['dpkg-deb','-I',str(deb),'prerm'],check=True,capture_output=True,text=True).stdout
+            self.assertIn('update-alternatives --remove nus /opt/nus-preview/bin/nus',scripts)
+
+managers_spec=importlib.util.spec_from_file_location('managers',Path(__file__).with_name('package-managers.py'))
+managers=importlib.util.module_from_spec(managers_spec)
+managers_spec.loader.exec_module(managers)
+
+class PackageManagerTests(unittest.TestCase):
+    def manifest(self,tag='v0.0.2-preview.9',mac='ad-hoc'):
+        return {'schema':1,'state':'active','version':tag,'channel':'preview' if '-preview.' in tag else 'stable','assets':[
+            {'target':'macos-arm64','signing':mac,'sha256':'a'*64,'name':f'nus-{tag[1:]}-macos-arm64.zip'},
+            {'target':'windows-x86_64','signing':'authenticode','sha256':'b'*64,'name':f'nus-{tag[1:]}-windows-x86_64.zip',
+             'installer':{'name':f'nus-{tag[1:]}-windows-x86_64-setup.exe','sha256':'c'*64,'size':1}}]}
+
+    def test_casks_per_channel(self):
+        token,cask=managers.homebrew(self.manifest())
+        self.assertEqual(token,'nus@preview')
+        self.assertIn('conflicts_with cask: "nus"',cask)
+        self.assertIn('com.apple.quarantine',cask)
+        token,cask=managers.homebrew(self.manifest('v1.0.0','notarized'))
+        self.assertEqual(token,'nus')
+        self.assertIn('version "1.0.0"',cask)
+        self.assertNotIn('quarantine',cask)
+
+    def test_winget_manifests(self):
+        folder,files=managers.winget(self.manifest())
+        self.assertEqual(folder,Path('manifests/c/cbassuarez/nus/Preview/0.0.2-preview.9'))
+        installer=files['cbassuarez.nus.Preview.installer.yaml']
+        self.assertIn("ProductCode: '{74ED99B0-ACEA-4860-A2AA-86FD0B170CFB}_is1'",installer)
+        self.assertIn('InstallerSha256: '+'C'*64,installer)
+        unsigned=self.manifest(); unsigned['assets'][1]['signing']='unsigned'
+        self.assertIsNone(managers.winget(unsigned))
 
 if __name__=='__main__': unittest.main()

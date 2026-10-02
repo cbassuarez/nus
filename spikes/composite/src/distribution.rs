@@ -24,3 +24,17 @@ pub fn settle() -> std::io::Result<()> {
     if let Ok(path) = std::env::join_paths(paths) { std::env::set_var("PATH", path); }
     Ok(())
 }
+
+/// The system package format that owns this installation ("deb"), from its
+/// nus-package.json. Such a copy is read-only: its package manager updates it.
+#[cfg(target_os = "linux")]
+pub fn managed() -> Option<String> {
+    static MANAGED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    MANAGED.get_or_init(|| {
+        let exe = std::env::current_exe().and_then(std::fs::canonicalize).ok()?;
+        let record: serde_json::Value = serde_json::from_slice(&std::fs::read(exe.parent()?.join("nus-package.json")).ok()?).ok()?;
+        record["managed"].as_str().filter(|s| !s.is_empty() && s.len() < 32).map(String::from)
+    }).clone()
+}
+#[cfg(not(target_os = "linux"))]
+pub fn managed() -> Option<String> { None }

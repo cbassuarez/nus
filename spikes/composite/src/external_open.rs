@@ -19,12 +19,15 @@ pub(crate) fn validate(value:&str)->Result<(),String> {
 }
 /// None is an ordinary invocation. An external mode is parsed before any
 /// scanning for CEF --type switches, and all items after -- remain URL data.
+/// A desktop launcher's `%U` expands to nothing when its icon is clicked: an
+/// empty batch opens nus with no links.
 pub fn arguments(args:&[String])->Result<Option<Vec<String>>,String> {
     if args.first().map(String::as_str)!=Some("--open-external") {return Ok(None);}
     if args.get(1).map(String::as_str)!=Some("--") {return Err("External activation requires '--open-external -- <URL>'.".into());}
     let urls=&args[2..];
-    if urls.is_empty() || urls.len()>MAX_COUNT || urls.iter().map(String::len).sum::<usize>()>MAX_BYTES {
-        return Err("The external activation batch is empty or too large.".into());
+    if urls.is_empty() {return Ok(Some(Vec::new()));}
+    if urls.len()>MAX_COUNT || urls.iter().map(String::len).sum::<usize>()>MAX_BYTES {
+        return Err("The external activation batch is too large.".into());
     }
     for u in urls {validate(u)?;}
     Ok(Some(urls.to_vec())) // Preserve original escaping, query and fragment.
@@ -73,9 +76,11 @@ mod tests {
         }
     }
     #[test]fn ordinary_child_dispatch_untouched(){assert_eq!(arguments(&args(&["--type=renderer"])).unwrap(),None);}
+    #[test]fn launcher_without_links_is_an_ordinary_launch(){
+        assert_eq!(arguments(&args(&["--open-external","--"])).unwrap(),Some(Vec::new()));
+    }
     #[test]fn malformed_and_large_batches_fail(){
         assert!(arguments(&args(&["--open-external","https://x/"])).is_err());
-        assert!(arguments(&args(&["--open-external","--"])).is_err());
         assert!(validate(&format!("https://x/{}","x".repeat(MAX_URL))).is_err());
     }
 }

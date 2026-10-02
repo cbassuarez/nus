@@ -1130,7 +1130,11 @@ fn run() -> i32 {
     // This probe is a separate process: never unshare the desktop UI itself.
     #[cfg(target_os = "linux")]
     if std::env::args().nth(1).as_deref() == Some("--nus-check-userns") {
-        return if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWPID | libc::CLONE_NEWNET) } == 0 { 0 } else { 1 };
+        // Ubuntu's AppArmor restriction lets unshare succeed and denies using
+        // the namespace. Chromium maps its user, so the probe does too.
+        let uid = unsafe { libc::getuid() };
+        if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWPID | libc::CLONE_NEWNET) } != 0 { return 1; }
+        return if std::fs::write("/proc/self/uid_map", format!("{uid} {uid} 1\n")).is_ok() { 0 } else { 1 };
     }
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("nus {} ({})", env!("NUS_BUILD_VERSION"), env!("NUS_BUILD_REVISION"));

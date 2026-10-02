@@ -43,6 +43,11 @@ fn main() {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default();
     println!("cargo:rustc-env=NUS_BUILD_EPOCH={}", epoch.trim());
+    // Packages keep libcef.so beside the executable. Find it there, rather
+    // than through LD_LIBRARY_PATH, which every shell nus opens would inherit.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN");
+    }
     println!("cargo:rerun-if-changed=../../assets/icon/nus.ico");
     #[cfg(windows)]
     {

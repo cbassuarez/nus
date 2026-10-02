@@ -2,6 +2,7 @@
 """Package already-built native binaries. Never fetch or rebuild at this stage."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,19 @@ WINDOWS_INSTALLER = 'dist/windows-installer'
 WINDOWS_SIGNED = ['nus.exe', 'nus.dll', 'chrome_elf.dll', 'nus-hold.exe', 'bin/nus.exe']
 WINDOWS_INSTRUCTIONS = 'Extract the entire folder, then open nus.exe. Keep its DLLs and locales together.\nThe shell CLI is bin/nus.exe. Settings live in %LOCALAPPDATA%/nus/installs/<channel>/<installation>/profile.\n'
 configured = lambda names: all(os.environ.get(n) for n in names)
+_linux_spec = importlib.util.spec_from_file_location('package_linux', Path(__file__).with_name('package-linux.py'))
+linux = importlib.util.module_from_spec(_linux_spec)
+_linux_spec.loader.exec_module(linux)
+# The launcher finds its own folder through a /usr/bin symlink. nus-desktop
+# carries an $ORIGIN runpath, so shells nus opens inherit no LD_LIBRARY_PATH.
+LINUX_LAUNCHER = '#!/bin/sh\nset -eu\ndir=$(dirname -- "$(readlink -f -- "$0")")\nexec "$dir/nus-desktop" "$@"\n'
+LINUX_INSTRUCTIONS = ('Run ./install-desktop.sh to install nus for your account: it copies this folder to\n'
+    '${XDG_DATA_HOME:-$HOME/.local/share}/nus/app/<channel>, adds it to your applications and ~/.local/bin,\n'
+    'and checks that Chromium\'s sandbox can start. Your default browser is unchanged; choose Make Default in nus.\n'
+    'Run ./install-desktop.sh --uninstall to remove it. You can also run ./nus from here without installing.\n'
+    'On Debian and Ubuntu, the .deb package from the same release installs system-wide and sets up the sandbox.\n'
+    'Requires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA, NSS and libxkbcommon.\n'
+    'Settings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\n')
 
 def digest(path):
     with path.open('rb') as stream:
@@ -146,20 +160,35 @@ def main():
             shutil.copy2(build/'composite', stage/'nus-desktop')
             shutil.copy2(ROOT/'target/release/nus-hold', stage/'nus-hold')
             shutil.copy2(ROOT/'target/release/nus', stage/'bin/nus')
-            (stage/'nus').write_text('#!/bin/sh\nset -eu\ndir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport LD_LIBRARY_PATH="$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$dir/nus-desktop" "$@"\n')
+            # CEF's Linux distribution keeps full debug info: 1.4 GB of libcef.so
+            # is about 270 MB stripped. Symbols stay in the CEF symbol archive.
+            for library in stage.iterdir():
+                if ('.so' in library.name or library.name == 'chrome-sandbox') and library.is_file() and linux.is_elf(library):
+                    subprocess.run(['strip', '--strip-unneeded', str(library)], check=True)
+            (stage/'nus').write_text(LINUX_LAUNCHER)
             (stage/'nus').chmod(0o755)
             shutil.copy2(ROOT/'assets/icon/nus-256.png', stage/'nus.png')
+            (stage/'icons').mkdir()
+            for size in linux.ICON_SIZES:
+                if (ROOT/f'assets/icon/nus-{size}.png').is_file(): shutil.copy2(ROOT/f'assets/icon/nus-{size}.png', stage/'icons'/f'nus-{size}.png')
             shutil.copy2(ROOT/'scripts/install-linux-browser-entry.sh', stage/'install-desktop.sh')
             (stage/'install-desktop.sh').chmod(0o755)
             signing = 'checksum'
-            instructions = 'Extract the entire folder and run ./nus. The shell CLI is bin/nus.\nRequires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA, NSS and libxkbcommon-x11 (X11).\nChromium also needs user namespaces allowed by the system and AppArmor policy,\nor an administrator-installed sandbox helper. The archive does not install a privileged helper.\nIf the sandbox is unavailable, nus explains the problem in the page; sandboxing stays enabled.\nSettings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\nTo install the browser launcher, keep this folder in a stable location and run ./install-desktop.sh.\nThis registers HTTP/HTTPS handling without changing your defaults. Choose Make Default in nus to change them.\n'
+            instructions = LINUX_INSTRUCTIONS
         shutil.copy2(ROOT/'LICENSE', stage/'LICENSE')
         if args.stage_only:
             print(f'Staged unsigned Windows payload at {stage}; sign {", ".join(WINDOWS_SIGNED)}, then run --finalize-staged.')
             return
         archive = finish(stage, name, out, args, stable, signing, instructions)
+        if args.target.startswith('linux'):
+            # The same verified payload, as a system package. Its record rides on
+            # the archive's, like the Windows installer's.
+            deb = linux.build_deb(stage, args.tag, out, os.environ.get('NUS_APT_KEYRING'))
+            packages = [{'name':deb.name,'sha256':digest(deb),'size':deb.stat().st_size}]
+            (out/f'{deb.name}.sha256').write_text(f'{packages[0]["sha256"]}  {deb.name}\n')
     record = {'name':archive.name,'target':args.target,'version':args.tag,'channel':'stable' if stable else 'preview','sha256':digest(archive),'size':archive.stat().st_size,'signing':signing}
     if args.finalize_staged: record['installer'] = installer
+    if args.target.startswith('linux'): record['packages'] = packages
     (out/f'{args.target}.json').write_text(json.dumps(record,indent=2)+'\n')
     (out/f'{archive.name}.sha256').write_text(f'{record["sha256"]}  {archive.name}\n')
     print(json.dumps(record))

@@ -20,8 +20,13 @@
 //!   nus sky|moon|tonight [--place LAT,LON]   the almanac, computed here (sky.rs)
 //!   nus version
 //!
-//! It finds the running instance through `profile/instance` next to the
-//! app (or NUS_INSTANCE=<path>), which carries the port and the token.
+//!   nus                             open nus, or bring it forward
+//!
+//! It finds the running instance through NUS_INSTANCE=<path> (set in every
+//! shell nus opens), `profile/instance` next to the app, or the installed
+//! profiles in the user data directory; the file carries the port and token.
+//! With nothing to talk to, `nus`, `nus <file|url>` and `nus open` start the
+//! nus this command was installed with.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -54,7 +59,101 @@ fn instance_file() -> PathBuf {
         .into_iter()
         .flatten()
         .find(|p| p.is_file())
+        .or_else(installed_instance)
         .unwrap_or_else(|| PathBuf::from("profile/instance"))
+}
+
+/// The newest instance among installed copies' profiles
+/// (`<data>/nus/installs/<channel>/<installation>/profile/instance`), for a
+/// shell nus did not open.
+fn installed_instance() -> Option<PathBuf> {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let data = if cfg!(target_os = "macos") {
+        home()?.join("Library/Application Support/nus")
+    } else if cfg!(windows) {
+        PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("nus")
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| home().map(|h| h.join(".local/share")))?
+            .join("nus")
+    };
+    std::fs::read_dir(data.join("installs"))
+        .ok()?
+        .flatten()
+        .filter_map(|channel| std::fs::read_dir(channel.path()).ok())
+        .flatten()
+        .flatten()
+        .map(|install| install.path().join("profile").join("instance"))
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, p)| p)
+}
+
+/// The nus application this command was installed with: the package's
+/// launcher beside bin/ (Linux, Windows), or the nus.app around it (macOS).
+fn app() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let bin = exe.parent()?;
+    if cfg!(target_os = "macos") {
+        let bundle = bin.parent()?.parent()?.parent()?;
+        bundle.extension().is_some_and(|e| e == "app").then(|| bundle.to_path_buf())
+    } else {
+        let launcher = bin.parent()?.join(if cfg!(windows) { "nus.exe" } else { "nus" });
+        launcher.is_file().then_some(launcher)
+    }
+}
+
+/// Start nus, detached from this terminal, with links or files to open.
+fn start(targets: &[String]) -> ExitCode {
+    let Some(app) = app() else {
+        eprintln!("nus is not running, and this command is not part of an installed nus to start");
+        return ExitCode::FAILURE;
+    };
+    let mut command = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("/usr/bin/open");
+        c.arg("-a").arg(&app);
+        if !targets.is_empty() {
+            c.arg("--args");
+        }
+        c
+    } else {
+        std::process::Command::new(&app)
+    };
+    command
+        .args(targets)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Outside the terminal's foreground group, so closing it leaves nus open.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0000_0008 | 0x0000_0200);
+    match command.spawn() {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("nus: could not start {}: {e}", app.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn version() -> ExitCode {
+    let Some(app) = app() else {
+        println!("nus (command only, version {})", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    };
+    let exe = if cfg!(target_os = "macos") { app.join("Contents/MacOS/nus") } else { app };
+    match std::process::Command::new(exe).arg("--version").status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    }
+}
+
+fn running() -> bool {
+    connect().is_ok()
 }
 
 fn connect() -> Result<(TcpStream, String), String> {
@@ -235,11 +334,23 @@ fn main() -> ExitCode {
         mcp::serve(&|cmd, a| call(cmd, a));
         return ExitCode::SUCCESS;
     }
+    match args.as_slice() {
+        [h] if h == "--help" || h == "-h" => {
+            println!("{}", USAGE);
+            return ExitCode::SUCCESS;
+        }
+        // The installed application's version, without starting it.
+        [v] if v == "--version" || v == "-V" => return version(),
+        _ => {}
+    }
     let (words, mut opts) = parse(&args);
     let want_json = opts.remove("json").is_some();
     let Some(cmd) = words.first().cloned() else {
-        eprintln!("{}", USAGE);
-        return ExitCode::from(2);
+        // Bare `nus`: the running one comes forward, or nus starts.
+        if running() && call("raise", Value::Object(opts)).is_ok() {
+            return ExitCode::SUCCESS;
+        }
+        return start(&[]);
     };
     let rest: Vec<String> = words[1..].to_vec();
     let (cmd, args): (&str, Value) = match cmd.as_str() {
@@ -387,6 +498,11 @@ fn main() -> ExitCode {
             }
         }
     };
+    // A page or file opens in a new nus when none is running.
+    if matches!(cmd, "open" | "edit") && !running() {
+        let target = args.get("url").or_else(|| args.get("path")).and_then(Value::as_str).unwrap_or_default();
+        return start(&[target.to_string()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>());
+    }
     match call(cmd, args) {
         Ok(v) => {
             if want_json
@@ -488,7 +604,8 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: nus <command> [args] [--json]
+const USAGE: &str = "usage: nus [<command> [args] [--json]]
+  with no command, opens nus or brings it forward
   ls · open <url> [--split] · edit <file> [--split] · launch [--profile P] [--cwd D] [--run CMD] [--split]
   send-text <text> [--tab N] [--right] [--enter] · focus <tab> · close [<tab>] [--force]
   theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|work|list|open --window ID --tab-id ID [--right]|hoist|land|quit]

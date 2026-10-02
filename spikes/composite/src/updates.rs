@@ -232,6 +232,13 @@ pub fn check() {
         let mut s = STATE.lock().unwrap();
         s.status.busy = false;
         match result {
+            Ok(release) if crate::distribution::managed().is_some() => {
+                // The system package manager owns this copy; it installs updates.
+                s.status.message = release
+                    .as_ref()
+                    .map(|r| format!("{} is available. Install it with your system's software updates.", r.version))
+                    .unwrap_or_else(|| format!("{CURRENT}: no newer version is available for this channel."));
+            }
             Ok(release) => {
                 s.status.available = release.is_some();
                 s.status.message = release
