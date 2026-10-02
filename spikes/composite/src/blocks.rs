@@ -462,7 +462,8 @@ impl App {
                     let danger = matches!(what, crate::diffs::Do::Revert);
                     scene.rect(chip, if hot { if danger { signal } else { ink } } else { paper });
                     scene.outline(chip, self.px(m::HAIRLINE), if danger { signal } else { ink });
-                    self.fonts.draw(scene, Style { color: if hot { paper } else if danger { signal } else { ink }, ..label }, chip.x + self.px(7.0), base - self.px(1.0), word);
+                    let on = self.on_fill(if danger { signal } else { ink });
+                    self.fonts.draw(scene, Style { color: if hot { on } else if danger { signal } else { ink }, ..label }, chip.x + self.px(7.0), base - self.px(1.0), word);
                     if hot {
                         self.tip_words(chip, &format!("{} · {} · {}", word.to_lowercase(), h.file(), h.counts()));
                     }

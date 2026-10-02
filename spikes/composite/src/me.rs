@@ -981,7 +981,8 @@ impl App {
             }
             _ => {
                 scene.rect(r, self.surface.signal);
-                let st = Style { font: self.f.strong, px: (r.h * 0.5).round(), color: [1.0, 1.0, 1.0, 1.0], tracking: 0.0 };
+                // The signal can be any colour, white included (Blueprint).
+                let st = Style { font: self.f.strong, px: (r.h * 0.5).round(), color: self.on_fill(self.surface.signal), tracking: 0.0 };
                 let iw = self.fonts.measure(st, &initial);
                 self.fonts.draw(scene, st, r.x + (r.w - iw) / 2.0, r.y + r.h * 0.5 + st.px * 0.36, &initial);
             }
@@ -1040,7 +1041,9 @@ impl App {
             scene.rect(Rect::new(b.x + self.px(3.0), b.y + self.px(3.0), b.w, b.h), t.ink);
             scene.rect(b, self.surface.signal);
             scene.outline(b, self.px(m::STRUCTURE), t.ink);
-            self.fonts.draw(scene, Style { color: [1.0, 1.0, 1.0, 1.0], ..strong }, b.x + self.px(12.0), base, word);
+            // Paper or ink, whichever reads on this theme's signal (white in Blueprint).
+            let on = self.on_fill(self.surface.signal);
+            self.fonts.draw(scene, Style { color: on, ..strong }, b.x + self.px(12.0), base, word);
         } else {
             scene.rect(b, t.paper);
             scene.outline(b, self.px(m::HAIRLINE), t.ink);

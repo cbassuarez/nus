@@ -305,6 +305,8 @@ impl App {
         let ink = self.theme.ink;
         let paper = self.paper();
         let signal = self.surface.signal;
+        // What reads on the signal: paper or ink (Blueprint's signal is white).
+        let on_signal = self.on_fill(signal);
         let dim = self.theme.dim;
         let reach = self.swipe_reach();
         // Drawn progress eases toward the swipe's, so bursts of wheel read
@@ -350,10 +352,10 @@ impl App {
                     // The distance, as a bar under the disc.
                     scene.rect(Rect::new(r.x, r.bottom() + self.px(6.0), d * progress, self.px(2.0)), fade(signal, a));
                 }
-                self.fonts.draw_icon(scene, icon, isz, r.x + ((d - isz) / 2.0).round(), r.y + ((d - isz) / 2.0).round(), fade(if lit { paper } else { mark }, a));
+                self.fonts.draw_icon(scene, icon, isz, r.x + ((d - isz) / 2.0).round(), r.y + ((d - isz) / 2.0).round(), fade(if lit { on_signal } else { mark }, a));
             }
             SwipeLook::Card => {
-                let st = nus_render::Style { color: fade(if lit { paper } else { mark }, a), ..self.label_strong() };
+                let st = nus_render::Style { color: fade(if lit { on_signal } else { mark }, a), ..self.label_strong() };
                 let words = sw.dest.words(back);
                 let tw = self.fonts.measure(st, words);
                 let pad = self.px(12.0);

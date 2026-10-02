@@ -411,6 +411,20 @@ mod tests {
     use super::*;
     use crate::theme_edit::contrast;
 
+    /// A button or chip filled with the signal (LET'S BEGIN, a toast's
+    /// action, a ticked box) is labelled with `App::on_fill`: paper or ink,
+    /// whichever reads. Every theme's signal must leave one of them at 4.5:1,
+    /// on both faces; Blueprint's white signal took the old hard-coded white.
+    #[test]
+    fn every_signal_takes_a_readable_label() {
+        for t in all() {
+            for face in [&t.paper, &t.ink] {
+                let on = nus_render::oklch::on(t.surface.signal, face.paper, face.ink, 4.5);
+                assert!(contrast(on, t.surface.signal) >= 4.5, "{}: label on its signal reads {:.2}:1", t.name, contrast(on, t.surface.signal));
+            }
+        }
+    }
+
     #[test]
     fn curated_collection_has_ten_complete_looks_and_balanced_polarity() {
         let originals: Vec<_> = stock().into_iter().filter(|t| !t.port).collect();

@@ -260,7 +260,8 @@ impl App {
         } else {
             scene.rect(Rect::new(cell.right() - self.px(1.0), r.y, self.px(1.0), bh), fade(paper, 0.16));
         }
-        let white = [1.0, 1.0, 1.0, 1.0];
+        // On the signal, paper or ink: whichever reads (Blueprint's signal is white).
+        let white = self.on_fill(signal);
         self.fonts.draw_icon(scene, icon, isz, (cell.x + (bh - isz) / 2.0).round(), (cell.y + (bh - isz) / 2.0).round(), if problem { white } else { signal });
         let by = r.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
         let mut tx = r.x + bh + inner;

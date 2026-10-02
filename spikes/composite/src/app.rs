@@ -6855,7 +6855,8 @@ impl App {
             let by = base - box_sz + self.px(2.0);
             if ticked {
                 scene.rect(Rect::new(bx, by, box_sz, box_sz), self.surface.signal);
-                self.fonts.draw_icon(scene, nus_render::text::icons::CHECK, box_sz, bx, by, [1.0, 1.0, 1.0, 1.0]);
+                let on = self.on_fill(self.surface.signal);
+                self.fonts.draw_icon(scene, nus_render::text::icons::CHECK, box_sz, bx, by, on);
             } else {
                 scene.outline(Rect::new(bx, by, box_sz, box_sz), self.px(m::HAIRLINE), ink);
             }
