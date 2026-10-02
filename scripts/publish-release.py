@@ -70,10 +70,10 @@ def main():
         url=f'https://github.com/cbassuarez/nus/blob/{args.revision}/docs/releases/{args.tag}.md'
         lines += ['', f'[Candidate review notes, compatibility and known limitations]({url})']
     lines += ['', '## Downloads', '', '| Package | Signing |', '| --- | --- |']
-    lines.extend(f'| {e["target"]}{" (installer and portable ZIP)" if e.get("installer") else ""} | {e["signing"]} |' for e in entries)
+    lines.extend(f'| {e["target"]}{" (installer)" if e.get("installer") else ""} | {e["signing"]} |' for e in entries)
     omitted=sorted(package.TARGETS-targets)
     if omitted: lines += ['', 'Not included in this preview: '+', '.join(omitted)+'. These packages remain unavailable until their platform checks and signing setup are complete.']
-    lines += ['', 'Extract the complete package before launching. macOS: move nus.app to Applications. Windows: run the -setup.exe installer, or extract the portable ZIP and launch nus.exe. Linux: run ./nus; see README.txt for desktop integration and runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://cbassuarez.com/nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
+    lines += ['', 'Windows: download the -setup.exe installer and run it; the .zip beside it is the package in-app updates use, so most people never need it. macOS: unzip the complete package and move nus.app to Applications. Linux: extract the complete archive and run ./nus; see README.txt for desktop integration and runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://cbassuarez.com/nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
     # The public API returns release notes without a second cross-origin asset
     # request. Keep the same verified metadata available to the download page.
     lines += ['', '<!-- nus-release:'+json.dumps(manifest,separators=(',',':'))+' -->']

@@ -304,6 +304,11 @@ class ReleaseTests(unittest.TestCase):
         windows=[e for e in manifest['assets'] if e['target']=='windows-x86_64']
         self.assertEqual([e['name'] for e in windows],['nus-0.0.1-preview.1-windows-x86_64.zip'])
         self.assertEqual(windows[0]['installer']['name'],setup.name)
+        # People are pointed at the installer; the ZIP is described as the updater's.
+        notes=(self.root/'notes.md').read_text()
+        self.assertIn('windows-x86_64 (installer) |',notes)
+        self.assertIn('Windows: download the -setup.exe installer and run it',notes)
+        self.assertNotIn('extract the portable ZIP',notes)
 
     def test_corrupt_installer_cannot_publish(self):
         self.with_installer().write_bytes(b'changed')

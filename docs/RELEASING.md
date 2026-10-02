@@ -107,7 +107,13 @@ successful loader check is not a complete desktop acceptance test.
 
 ## Packages and storage
 
-The Windows installer is per-user and never asks for elevation. Each channel
+The Windows installer is the Windows download: nus.dev offers only it, and the
+release notes tell people to run it. The portable ZIP stays published because
+it is not a download so much as a payload: the in-app updater, `install.ps1` and
+the winget manifest all unpack it, and `publish-release.py` keeps it as the
+first asset for its target. Do not drop it or rename it without changing those.
+
+The installer is per-user and never asks for elevation. Each channel
 installs to one fixed folder, `%LOCALAPPDATA%\Programs\nus\<release|preview>`,
 and records it in `%LOCALAPPDATA%\nus\installs\<channel>\installed-location`.
 nus treats that folder as a single installation, so installer upgrades, in-app
