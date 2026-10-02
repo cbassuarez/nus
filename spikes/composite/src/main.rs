@@ -2,6 +2,7 @@
 // Also included by the Windows bootstrap DLL (lib.rs).
 
 mod access;
+mod address;
 mod overscroll;
 mod passwords;
 mod autofill;

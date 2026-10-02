@@ -1304,6 +1304,8 @@ pub struct App {
     pub confirm_stack: Option<usize>,
     pub window_focused: bool,
     pub palette: Option<(PaletteMode, String)>,
+    /// A page's address, edited in its header (address.rs).
+    pub address: Option<crate::address::Address>,
     pub palette_sel: usize,
     /// Add to Note: the capture frozen when asked, waiting for where it
     /// goes (notes_ui.rs).
@@ -1648,6 +1650,7 @@ impl App {
             window_focused: true,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
+            address: None,
             palette_sel: 0,
             pending_capture: None,
             note_export: None,
@@ -4871,6 +4874,8 @@ impl App {
         if self.sidebar_visible() && (self.look_menu||self.look_anim.active()) {self.draw_look_menu(&mut scene,self.list_rect());}
         // A page's question: the strip turns and the sheet hangs from it.
         self.draw_page_dialog(&mut scene);
+        // A page's address being edited: its suggestions, over the page.
+        self.draw_address_list(&mut scene);
         // Palette.
         if let Some((mode, input)) = self.palette.clone() {
             // The palette is modal: nothing under it takes the atom's drags.
@@ -7111,14 +7116,18 @@ impl App {
                     self.fonts.draw_icon(scene, nus_render::text::icons::BUG, isz, bug_x, iy, ink);
                 }
                 let field = Rect::new(x, r.y + self.px(6.0), r.right() - self.px(14.0) - dw - self.px(18.0) - x, self.px(22.0));
-                if local {
-                    crate::page_signal::plot(scene, field, self.scale, ink, t.paper, true);
+                if self.editing_address_of(p) {
+                    self.draw_address_field(scene, field, base);
                 } else {
-                    scene.outline(field, self.px(m::HAIRLINE), ink);
+                    if local {
+                        crate::page_signal::plot(scene, field, self.scale, ink, t.paper, true);
+                    } else {
+                        scene.outline(field, self.px(m::HAIRLINE), ink);
+                    }
+                    let shown = self.fit(ui, url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'), field.w - self.px(16.0));
+                    let small = Style { px: self.px(12.0), ..ui };
+                    self.fonts.draw(scene, small, field.x + self.px(8.0), base, &shown);
                 }
-                let shown = self.fit(ui, url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'), field.w - self.px(16.0));
-                let small = Style { px: self.px(12.0), ..ui };
-                self.fonts.draw(scene, small, field.x + self.px(8.0), base, &shown);
                 scene.hline(r.x, p.page.y - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
                 }
                 // Page — or the reader set over it.
@@ -7756,6 +7765,7 @@ impl App {
         let input = if mode == PaletteMode::Go {
             self.tabs.get(self.active).and_then(|t| if let Pane::Home(h)=t.focused_ref() {(!h.library).then(||h.input.clone())} else {None}).unwrap_or_default()
         } else {String::new()};
+        self.address = None;
         self.palette = Some((mode, input));
         self.palette_sel = 0;
         self.palette_scroll = 0.0;
@@ -8092,6 +8102,8 @@ impl App {
         let tip_was_visible = self.tooltips.visible();
         if pressed { self.dismiss_tip(); }
         if self.page_menu_key(ev) { return; }
+        // A page's address being edited owns its keys (address.rs).
+        if self.address_key(ev) { return; }
         // Esc leaves a page's fullscreen, as in any browser; the page is told.
         if pressed && self.mods.is_empty() && matches!(ev.logical_key, WKey::Named(NamedKey::Escape)) {
             if let Some((id, ..)) = self.page_fullscreen {
@@ -8142,7 +8154,7 @@ impl App {
                 PhysicalKey::Code(KeyCode::KeyW) => return self.close_tabs(false),
                 PhysicalKey::Code(KeyCode::KeyT) if !shift => return self.open_start_page(false),
                 PhysicalKey::Code(KeyCode::KeyT) => return self.reopen_closed(),
-                PhysicalKey::Code(KeyCode::KeyL) => return self.open_palette(PaletteMode::Url),
+                PhysicalKey::Code(KeyCode::KeyL) => return self.edit_address(None),
                 _ => {}
             }
         }
@@ -8438,7 +8450,7 @@ impl App {
                     return;
                 }
 
-                Some(KeyCode::KeyL) => return self.open_palette(PaletteMode::Url),
+                Some(KeyCode::KeyL) => return self.edit_address(None),
                 Some(KeyCode::KeyW) => return self.close_tabs(false),
                 Some(KeyCode::KeyZ) => return self.reopen_closed(),
                 Some(KeyCode::KeyD) => return self.divide(),
@@ -8750,7 +8762,7 @@ impl App {
                 if pressed {
                     match (&ev.logical_key, ctrl, alt) {
                         _ if code == Some(KeyCode::KeyL) && ctrl && !alt => {
-                            return self.open_palette(PaletteMode::Url);
+                            return self.edit_address(Some(w_right));
                         }
                         _ if code == Some(KeyCode::KeyR) && ctrl && !alt => return if shift { w.tab.reload_ignore_cache() } else { w.tab.reload() },
                         (WKey::Named(NamedKey::F5), _, _) => return if ctrl || shift { w.tab.reload_ignore_cache() } else { w.tab.reload() },
@@ -10022,7 +10034,7 @@ impl App {
             CrumbHit::Minimize => self.window.set_minimized(true),
             CrumbHit::Menu => self.open_palette(PaletteMode::Application),
             CrumbHit::Space | CrumbHit::Tab | CrumbHit::Search => self.open_palette(PaletteMode::Go),
-            CrumbHit::Url => self.open_palette(PaletteMode::Url),
+            CrumbHit::Url => self.edit_address(None),
             CrumbHit::Start => self.open_start(),
             CrumbHit::Nus => self.toggle_home_latch(),
             CrumbHit::Agents => self.goto_agent(),
@@ -10104,6 +10116,9 @@ impl App {
         }
         if pressed && button==MouseButton::Left && (self.dl_menu || !(self.sidebar_visible()&&self.sidebar_rect().contains(x,y))) && self.download_click(x,y) {return;}
         if pressed && button == MouseButton::Left && self.toast_click(x, y) {
+            return;
+        }
+        if pressed && button == MouseButton::Left && self.address_click(x, y) {
             return;
         }
         if pressed && button == MouseButton::Left && self.palette.is_some() {
@@ -10456,7 +10471,7 @@ impl App {
         let scale = self.scale;
         let mods = cef_mods(self.mods);
         let mut down_in_web = self.mouse_down_in_web;
-        let mut open_url_palette = false;
+        let mut open_url_palette: Option<bool> = None;
         let mut toggle_devtools = false;
         let mut toggle_reader = false;
         let mut toggle_site: Option<bool> = None;
@@ -10487,7 +10502,7 @@ impl App {
                         } else if x > w.rect.right() - 134.0 * scale && !w.tab.shared.borrow().media.is_empty() {
                             media_click = Some((tab.id, is_right));
                         } else {
-                            open_url_palette = true;
+                            open_url_palette = Some(is_right);
                         }
                         continue;
                     }
@@ -10599,8 +10614,8 @@ impl App {
             self.loop_click(i, right, lx, ly);
             return;
         }
-        if open_url_palette {
-            self.open_palette(PaletteMode::Url);
+        if let Some(right) = open_url_palette {
+            self.edit_address(Some(right));
         }
     }
 

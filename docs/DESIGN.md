@@ -145,7 +145,12 @@ a colour it hardcodes.
   pinned to the bottom.
 - **Panes**: terminal and browser are peers split by a 1.5 rule; each has a
   9×18 caps header. Browser URL is a 1px boxed field; devtools is a caps
-  tab row under the page.
+  tab row under the page. ⌘L or a click edits the address in place: a 2px
+  edge, the address selected, suggestions hung from the field edge to edge
+  over the page (4×4 shadow; hosts ink, paths dim; ↵ go, ⌘↵ tab, ⇧↵
+  window, Esc back). Tab selects the next part of the address in the field
+  itself and the list becomes that part's alternatives, whole addresses
+  with only the changing part in ink (address.rs). ⌘K stays the palette.
 - **Palette** (⌘K, 600 wide, top 220): serif "go" prompt, 2px edge, 8×8
   shadow, selected row = ink fill.
 - **Quick terminal** (⌥⌘T): 960 wide sheet from the top edge, no top
@@ -157,7 +162,7 @@ a colour it hardcodes.
 
 ## Keys
 
-⌘K go · ⌘T new tab · ⌘1–9 tab · ⌘⌥1–9 space · ⌘⇧S sidebar · ⌥⌘T quick
+⌘K go · ⌘L address · ⌘T new tab · ⌘1–9 tab · ⌘⌥1–9 space · ⌘⇧S sidebar · ⌥⌘T quick
 terminal · ⌘↵ open detected URL in split · ⌘⇧↵ in new tab · ⌘D split ·
 ⌘W close. (Ctrl on Windows/Linux.)
 
