@@ -600,8 +600,9 @@ wrap_load_handler! {
             // CEF names an error document by the address that failed.
             let ours=url.starts_with("chrome-error:") || url=="about:blank" || s.failed_url.as_deref()==Some(url.as_str()) || s.interstitial.as_ref().is_some_and(|p|p.url==url);
             if !s.inject || !ours {return;}
-            if let Some(page)=s.interstitial.as_ref() {
+            if let Some(page)=s.interstitial.as_mut() {
                 let script=page.script();
+                if let Some(r)=page.route.as_mut() {r.settled=true;}
                 s.inject=false;s.paints+=1;
                 drop(s);
                 frame.execute_java_script(Some(&script.as_str().into()),Some(&url.as_str().into()),0);

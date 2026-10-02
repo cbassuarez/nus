@@ -472,6 +472,12 @@ pub struct WebPane {
     pub overlay_sel: usize,
     /// The transcript `overlay_sel` belongs to: a new one starts at its default.
     pub overlay_page: String,
+    /// When it appeared: its route walks from then.
+    pub overlay_at: Instant,
+    /// Its route, and how much of it the new page walks again: 0 all of
+    /// it, 1 only the break (the same way, a new break), 2 none.
+    pub overlay_route: Option<crate::interstitial::Route>,
+    pub overlay_skip: u8,
     pub overlay_hits: Vec<(Rect, String)>,
 }
 
@@ -2085,6 +2091,9 @@ impl App {
             woke: None,
             overlay_sel: 0,
             overlay_page: String::new(),
+            overlay_at: crate::clock::now(),
+            overlay_route: None,
+            overlay_skip: 0,
             overlay_hits: Vec::new(),
             wheel_carry: (0.0, 0.0),
             wheel_precise: false,
@@ -3958,6 +3967,7 @@ impl App {
         for (i, payload) in checkpoints {
             self.checkpoint(i, payload);
         }
+        crate::interstitial::set_pace(crate::interstitial::Pace { seg: self.motion.dur(crate::interstitial_ui::ROUTE_SEG) * 1000.0, pop: self.motion.dur(crate::interstitial_ui::ROUTE_POP) * 1000.0, loop_: if self.motion.reduced() { 0.0 } else { crate::interstitial_ui::ROUTE_LOOP } });
         crate::interstitial::set_colors(crate::interstitial::Colors { paper: self.theme.paper, ink: self.theme.ink, dim: self.theme.dim, signal: self.surface.signal, dark: self.theme.mode == nus_render::theme::Mode::Ink });
         let mut interstitial_acts: Vec<(u64, bool, String)> = Vec::new();
         let mut externals: Vec<String> = Vec::new();

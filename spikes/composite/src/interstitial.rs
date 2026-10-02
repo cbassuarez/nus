@@ -166,6 +166,123 @@ pub fn took(d: std::time::Duration) -> String {
     }
 }
 
+/// How a page failed, as its route shows it at the station where it did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Break {
+    /// No address came back.
+    Unknown,
+    /// Turned away: a connection refused, credentials rejected.
+    Wall,
+    /// Nothing came back: a timeout, no route.
+    Gap,
+    /// The connection broke on the way.
+    Cut,
+    /// The network sent the request somewhere else (a sign-in page).
+    Detour,
+    /// Sent back round: a redirect loop.
+    Loop,
+    /// Still waiting for it.
+    Glass,
+    /// It came back empty or unreadable.
+    Empty,
+    /// The certificate failed.
+    Seal,
+    /// nus refused it: a listed dangerous site.
+    Hazard,
+    /// nus blocked it before asking.
+    Ban,
+    /// A download that nus blocked.
+    File,
+    /// The page's main thread is stuck.
+    Stuck,
+    /// The renderer crashed.
+    Split,
+    /// The renderer ran out of memory.
+    Overflow,
+    /// The renderer was terminated.
+    Stop,
+    /// The tab is asleep.
+    Moon,
+    /// This device's clock is wrong.
+    Clock,
+    /// This device refused the page a camera or microphone.
+    Device,
+    /// The request would be a form sent again.
+    Uturn,
+}
+
+/// What is still happening at the break: drawn as a loop while it lasts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Live {
+    Still,
+    /// A request out, with no response yet.
+    InFlight,
+    /// A script running without a pause.
+    Spinning,
+    /// A renderer being terminated.
+    Ending,
+    /// A port being tried until it accepts connections.
+    Polling,
+}
+
+/// The way a page travels, nus to page, and where it broke.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Route {
+    pub stations: Vec<&'static str>,
+    pub at: usize,
+    pub mark: Break,
+    pub live: Live,
+    /// Already walked on this page: written again, it stands in place.
+    pub settled: bool,
+}
+
+impl Route {
+    /// The stations for `url` (tls only over https), broken at `station`.
+    pub fn new(url: &str, station: &str, mark: Break) -> Route {
+        let mut stations = vec!["nus", "dns", "connect"];
+        if url.starts_with("https:") {
+            stations.push("tls");
+        }
+        stations.extend(["request", "response", "page"]);
+        let at = stations.iter().position(|s| *s == station).or_else(|| stations.iter().position(|s| *s == "connect")).unwrap_or(0);
+        Route { stations, at, mark, live: Live::Still, settled: false }
+    }
+
+    pub fn live(mut self, live: Live) -> Route {
+        self.live = live;
+        self
+    }
+
+    fn mark_slug(&self) -> &'static str {
+        match self.mark {
+            Break::Unknown => "unknown", Break::Wall => "wall", Break::Gap => "gap", Break::Cut => "cut", Break::Detour => "detour",
+            Break::Loop => "loop", Break::Glass => "glass", Break::Empty => "empty", Break::Seal => "seal", Break::Hazard => "hazard",
+            Break::Ban => "ban", Break::File => "file", Break::Stuck => "stuck", Break::Split => "split", Break::Overflow => "overflow",
+            Break::Stop => "stop", Break::Moon => "moon", Break::Clock => "clock", Break::Device => "device", Break::Uturn => "uturn",
+        }
+    }
+
+    fn live_slug(&self) -> &'static str {
+        match self.live { Live::Still => "", Live::InFlight => "flight", Live::Spinning => "spin", Live::Ending => "pulse", Live::Polling => "poll" }
+    }
+}
+
+/// How fast the route walks, from the window's motion register: ms for a
+/// segment, the break arriving, a live loop; all 0 when motion is reduced.
+#[derive(Clone, Copy, Debug)]
+pub struct Pace {
+    pub seg: f32,
+    pub pop: f32,
+    pub loop_: f32,
+}
+
+static PACE: RwLock<Pace> = RwLock::new(Pace { seg: 120.0, pop: 220.0, loop_: 1400.0 });
+
+/// The window's motion, for pages written from Chromium's callbacks.
+pub fn set_pace(p: Pace) {
+    *PACE.write().unwrap_or_else(|e| e.into_inner()) = p;
+}
+
 /// What nus saw of a page before it stopped answering.
 #[derive(Clone, Debug, Default)]
 pub struct Seen {
@@ -218,6 +335,8 @@ pub struct Page {
     pub trace: Vec<Step>,
     /// Facts under their own labels, after the trace.
     pub notes: Vec<Note>,
+    /// Where on its way the page failed: the glyph at the head of the page.
+    pub route: Option<Route>,
     pub head: String,
     pub body: String,
     pub acts: Vec<Act>,
@@ -237,7 +356,7 @@ impl Page {
                 a.key = "";
             }
         }
-        Page { kind, sev, url: url.into(), command: format!("open {url}"), log, trace: Vec::new(), notes: Vec::new(), head, body, acts, token: crate::remote::new_token(), fields: Vec::new(), field: 0 }
+        Page { kind, sev, url: url.into(), command: format!("open {url}"), log, trace: Vec::new(), notes: Vec::new(), route: None, head, body, acts, token: crate::remote::new_token(), fields: Vec::new(), field: 0 }
     }
 
     /// The safe way out: back, or when there is nowhere to go back to,
@@ -253,6 +372,7 @@ impl Page {
             format!("The connection to {host} is not private. Data sent to it, such as passwords or card numbers, can be read or altered in transit."),
             vec![Page::away(can_back), act("retry", "Retry", "⌘R"), risky("proceed", &format!("Continue to {host} (unsafe)"))]);
         p.trace = load_trace(url, code, &Failure { stage: Stage::Secure, only: None, head: String::new(), body: String::new(), what: cert_words(code).into() });
+        p.route = Some(Route::new(url, "tls", Break::Seal));
         p
     }
 
@@ -262,20 +382,24 @@ impl Page {
         let host = host(url);
         let (way, n) = if behind_days >= 0 { ("behind", behind_days) } else { ("ahead", -behind_days) };
         let days = if n == 1 { "1 day".to_string() } else { format!("{n} days") };
-        Page::new(Kind::Clock, Sev::Problem, url,
+        let mut p = Page::new(Kind::Clock, Sev::Problem, url,
             vec![format!("✕ system clock {days} {way}"), format!("  clock   {}", clock_now()), "  error   NET::ERR_CERT_DATE_INVALID".into()],
             format!("System clock is {days} {way}"),
             format!("Certificates for {host} cannot be validated until the date and time are correct."),
-            vec![act("settings:date-time", "Date & time settings", "↵"), act("retry", "Retry", "⌘R"), Page::away(can_back)])
+            vec![act("settings:date-time", "Date & time settings", "↵"), act("retry", "Retry", "⌘R"), Page::away(can_back)]);
+        p.route = Some(Route::new(url, "tls", Break::Clock));
+        p
     }
 
     pub fn malware(url: &str, list: &str, can_back: bool) -> Page {
         let host = host(url);
-        Page::new(Kind::Malware, Sev::Danger, url,
+        let mut p = Page::new(Kind::Malware, Sev::Danger, url,
             vec![format!("✕ {host} is listed as dangerous"), format!("  list    {list}"), "  no request was sent".into()],
             format!("Listed as dangerous · {host}"),
             format!("{host} appears in {list}, the list of sites that phish or distribute malware. No request was sent."),
-            vec![Page::away(can_back), risky("proceed", &format!("Visit {host} anyway (unsafe)"))])
+            vec![Page::away(can_back), risky("proceed", &format!("Visit {host} anyway (unsafe)"))]);
+        p.route = Some(Route::new(url, "nus", Break::Hazard));
+        p
     }
 
     /// The page's process ended. `e` says how, and what nus knows besides.
@@ -310,6 +434,7 @@ impl Page {
         }
         let mut p = Page::new(kind, Sev::Problem, url, Vec::new(), head, body, acts);
         p.command = format!("page {url}");
+        p.route = Some(Route::new(url, "page", if e.oom { Break::Overflow } else if e.yours { Break::Stop } else { Break::Split }));
         p.trace.push(step("process", vec![format!("renderer · {host}")], e.open.map(took).unwrap_or_default(), Mark::Fact));
         p.trace.push(step("exit", vec![status], String::new(), Mark::Fail));
         if !e.shared.is_empty() {
@@ -328,6 +453,7 @@ impl Page {
             "Reload runs after the process exits.".into(),
             vec![act("retry", "Reload", "↵")]);
         p.command = format!("stop {url}");
+        p.route = Some(Route::new(url, "page", Break::Stop).live(Live::Ending));
         p.trace.push(step("process", vec!["terminating".into()], String::new(), Mark::Wait));
         p
     }
@@ -339,25 +465,30 @@ impl Page {
             "Page can't be displayed".into(), detail.into(),
             vec![act("retry", "Retry", "↵"), act("close", "Close tab", "")]);
         p.trace.push(step("render", vec!["no frame displayed".into()], String::new(), Mark::Fail));
+        p.route = Some(Route::new(url, "page", Break::Empty));
         p
     }
 
     pub fn resubmit(url: &str, can_back: bool) -> Page {
         let host = host(url);
-        Page::new(Kind::Resubmit, Sev::Problem, url,
+        let mut p = Page::new(Kind::Resubmit, Sev::Problem, url,
             vec!["✕ page is the result of a form submission · ERR_CACHE_MISS".into(), format!("  form    to {host}")],
             "Resend form data?".into(),
             format!("Reloading resubmits the form to {host}, which can repeat an action such as a purchase."),
-            vec![Page::away(can_back), act("resubmit", "Resend", "⌘↵")])
+            vec![Page::away(can_back), act("resubmit", "Resend", "⌘↵")]);
+        p.route = Some(Route::new(url, "request", Break::Uturn));
+        p
     }
 
     pub fn portal(url: &str, network: &str) -> Page {
         let host = host(url);
-        Page::new(Kind::Portal, Sev::Problem, url,
+        let mut p = Page::new(Kind::Portal, Sev::Problem, url,
             vec!["✕ request intercepted by the network".into(), format!("  wi-fi   {network} requires sign-in")],
             "Network sign-in required".into(),
             format!("{network} intercepts requests until sign-in. {host} loads after sign-in."),
-            vec![act("open-portal", "Open sign-in page", "↵"), act("retry", "Retry", "⌘R")])
+            vec![act("open-portal", "Open sign-in page", "↵"), act("retry", "Retry", "⌘R")]);
+        p.route = Some(Route::new(url, "connect", Break::Detour));
+        p
     }
 
     pub fn unreachable(url: &str, code: &str, can_back: bool) -> Page {
@@ -365,6 +496,7 @@ impl Page {
         let mut p = Page::new(Kind::Unreachable, Sev::Problem, url, Vec::new(), f.head.clone(), f.body.clone(),
             vec![act("retry", "Retry", "↵"), Page::away(can_back)]);
         p.trace = load_trace(url, code, &f);
+        p.route = Some(load_route(url, code, &f));
         p
     }
 
@@ -424,6 +556,9 @@ impl Page {
         self.notes.retain(|n| n.label != "Watching");
         self.notes.push(Note { label: "Watching".into(), lines: std::iter::once(format!(":{port} · reloads when it accepts connections")).chain(said).collect() });
         self.acts.retain(|a| a.verb != "watch" && a.verb != "start");
+        if let Some(r) = self.route.as_mut() {
+            r.live = Live::Polling;
+        }
         self.default_enter();
     }
 
@@ -458,6 +593,7 @@ impl Page {
             format!("{server}Rendering and input on {host} are blocked."),
             vec![act("wait", "Wait 10 s", "↵"), act("stop", "Terminate renderer · unsaved input is lost", "S")]);
         p.command = format!("watch {url}");
+        p.route = Some(Route::new(url, "page", Break::Stuck).live(Live::Spinning));
         if let Some((status, d)) = seen.server {
             p.trace.push(step("server", vec![format!("HTTP {status}")], took(d), Mark::Ok));
         }
@@ -475,6 +611,7 @@ impl Page {
             format!("No response after {} · {host}", took(waited)),
             "The request is still open. Nothing has been cancelled.".into(),
             vec![act("wait", "Wait", "↵"), act("retry", "Retry", "⌘R"), act("stop", "Stop loading", "Esc")]);
+        p.route = Some(Route::new(url, "response", Break::Glass).live(Live::InFlight));
         p.trace = vec![
             step("request", vec![format!("sent to {host}")], String::new(), Mark::Ok),
             step("response", vec!["none yet".into()], took(waited), Mark::Wait),
@@ -491,16 +628,19 @@ impl Page {
             if waking { "Restoring.".into() } else { "Suspended after inactivity. Scroll position is kept.".into() },
             if waking { vec![] } else { vec![act("wake", "Wake", "↵")] });
         p.command = format!("wake {url}");
+        p.route = Some(Route::new(url, "page", Break::Moon));
         p
     }
 
     pub fn permission(url: &str, what: &str) -> Page {
         let host = host(url);
-        Page::new(Kind::Permission, Sev::Problem, url,
+        let mut p = Page::new(Kind::Permission, Sev::Problem, url,
             vec![format!("✕ macOS denied {what} access to nus"), format!("  site    {host}")],
             format!("{} access denied by macOS", capitalized(what)),
             "Allow nus in System Settings › Privacy & Security, then restart nus.".into(),
-            vec![act("settings:privacy", "Open System Settings", "↵"), act("dismiss", "Back to page", "Esc")])
+            vec![act("settings:privacy", "Open System Settings", "↵"), act("dismiss", "Back to page", "Esc")]);
+        p.route = Some(Route::new(url, "page", Break::Device));
+        p
     }
 
     pub fn file(url: &str, name: &str, why: &str) -> Page {
@@ -511,6 +651,7 @@ impl Page {
             format!("Source: {host}. The file was not saved."),
             vec![act("dismiss", "Back to page", "↵"), act("downloads", "Downloads", "⌘J"), risky("keep", "Keep file (unsafe)")]);
         p.command = format!("download {url}");
+        p.route = Some(Route::new(url, "response", Break::File));
         p
     }
 
@@ -630,6 +771,7 @@ impl Page {
     /// govern either.
     pub fn script(&self) -> String {
         let c = *COLORS.read().unwrap_or_else(|e| e.into_inner());
+        let pace = { let p = *PACE.read().unwrap_or_else(|e| e.into_inner()); serde_json::json!({ "seg": p.seg, "pop": p.pop, "loop": p.loop_ }) };
         let data = serde_json::json!({
             "title": self.head,
             "sev": match self.sev { Sev::Danger => "danger", Sev::Problem => "", Sev::Rest => "rest" },
@@ -639,12 +781,14 @@ impl Page {
             "body": self.body,
             "trace": self.trace.iter().map(|s| serde_json::json!({ "name": s.name, "what": s.what, "time": s.time, "mark": s.mark.glyph(), "fail": s.mark == Mark::Fail })).collect::<Vec<_>>(),
             "notes": self.notes.iter().map(|n| serde_json::json!({ "label": n.label, "lines": n.lines })).collect::<Vec<_>>(),
+            "route": self.route.as_ref().map(|r| serde_json::json!({ "stations": r.stations, "at": r.at, "mark": r.mark_slug(), "live": r.live_slug(), "settled": r.settled, "label": format!("{} at {}", self.head, r.stations[r.at]) })),
+            "pace": pace,
             "acts": self.acts.iter().map(|a| serde_json::json!({ "verb": a.verb, "shown": shown_verb(&a.verb), "what": if a.key.is_empty() { a.label.clone() } else { format!("{} · {}", a.label, a.key) }, "unsafe": a.unsafe_ })).collect::<Vec<_>>(),
             "token": self.token,
             "css": self.css(c),
             "scheme": if c.dark { "dark" } else { "light" },
         });
-        format!("({})({});", BUILD_JS, data)
+        format!("({})({},{});", BUILD_JS, data, ROUTE_JS)
     }
 
     fn css(&self, c: Colors) -> String {
@@ -664,9 +808,29 @@ main{{display:grid;grid-template-columns:3px minmax(0,1fr);gap:0 22px;padding:44
 .cmd[aria-selected=true]{{background:var(--ink);color:var(--paper)}}.cmd[aria-selected=true] .what,.cmd[aria-selected=true] .verb{{color:var(--paper)}}
 .steps{{border-bottom:1px solid var(--edge)}}
 .step{{display:grid;grid-template-columns:11ch minmax(0,1fr) 9ch 2ch;gap:0 14px;padding:3px 0 3px 12px;border-top:1px solid var(--edge)}}
-.step .name{{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);line-height:22.4px}}
+.step .name{{font-size:12px;color:var(--dim);line-height:22.4px}}
 .step .t,.step .m{{text-align:right}}.step .t{{color:var(--dim)}}.step .d{{color:var(--dim)}}
 .step.fail{{box-shadow:inset 3px 0 0 var(--rule)}}.step.fail .name{{color:var(--ink)}}.step.fail .first,.step.fail .m{{font-weight:500}}
+.strip{{border-top:1.5px solid var(--ink);border-bottom:1px solid var(--edge);margin:12px 0 2px;padding-top:4px}}
+.route{{display:block;width:100%;height:auto;overflow:visible}}
+.route text{{font:12px "nus mono",ui-monospace,monospace;fill:var(--dim)}}.route text.at{{fill:var(--ink);font-weight:500}}main.danger .route text.at{{fill:var(--signal)}}
+.route .walk{{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:walk var(--t) linear var(--d) forwards}}
+.route .pop{{opacity:0;transform-box:fill-box;transform-origin:center;animation:pop var(--t) cubic-bezier(.2,.8,.2,1) var(--d) forwards}}
+.route .fade{{opacity:0;animation:fade var(--t) linear var(--d) forwards}}
+.route .fly{{opacity:0;animation:fly var(--t) linear var(--d) infinite}}
+.route .poll{{opacity:0;animation:poll var(--t) ease-in-out var(--d) infinite}}
+.route .spin{{animation:spin var(--t) linear var(--d) infinite}}
+.route .pulse{{animation:pulse var(--t) ease-in-out var(--d) infinite}}
+@keyframes walk{{to{{stroke-dashoffset:0}}}}
+@keyframes pop{{from{{opacity:0;transform:scale(.6)}}to{{opacity:1;transform:none}}}}
+@keyframes fade{{to{{opacity:1}}}}
+@keyframes fly{{0%{{opacity:1;transform:translateX(0)}}100%{{opacity:1;transform:translateX(var(--dx))}}}}
+@keyframes poll{{0%,100%{{opacity:1;transform:translateX(0)}}50%{{opacity:1;transform:translateX(var(--dx))}}}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+@keyframes pulse{{50%{{opacity:.35}}}}
+.route.still .walk,.route.still .pop,.route.still .fade{{animation:none;opacity:1;stroke-dashoffset:0;transform:none}}
+.route.still .fly,.route.still .poll{{display:none}}.route.still .spin,.route.still .pulse{{animation:none}}
+@media (prefers-reduced-motion:reduce){{.route .walk,.route .pop,.route .fade{{animation:none;opacity:1;stroke-dashoffset:0;transform:none}}.route .fly,.route .poll{{display:none}}.route .spin,.route .pulse{{animation:none}}}}
 .prompt{{display:flex;gap:1ch;align-items:baseline}}
 .prompt input{{flex:1;min-width:0;font:inherit;color:var(--ink);background:transparent;border:0;outline:0;padding:0;caret-color:var(--ink)}}
 @media (max-width:560px){{main{{padding:24px 18px}}}}"#,
@@ -685,7 +849,7 @@ fn shown_verb(verb: &str) -> String {
 }
 
 /// Builds the transcript from the page's data (see `Page::script`).
-const BUILD_JS: &str = r#"(P)=>{
+const BUILD_JS: &str = r#"(P,ROUTE)=>{
 const d=document;d.open();d.close();
 const el=(tag,cls,text)=>{const e=d.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
 const root=d.documentElement||d.appendChild(d.createElement('html'));
@@ -697,6 +861,7 @@ try{const s=new CSSStyleSheet();s.replaceSync(P.css);d.adoptedStyleSheets=[s]}ca
 const main=el('main',P.sev);main.appendChild(el('div','gut '+(P.trace.length?'rest':P.sev)));const col=el('div');main.appendChild(col);body.appendChild(main);
 const line=(cls,text)=>col.appendChild(el('div','line'+(cls?' '+cls:''),text));
 const first=el('div','line');first.append(el('span','p','»'),' '+P.command);col.appendChild(first);
+if(P.route)col.appendChild(ROUTE(d,P.route,P.pace));
 P.log.forEach((l,i)=>line(i===0?'verdict':'',l));
 if(P.log.length)col.appendChild(el('div','gap'));line('head',P.head);line('body',P.body);
 if(P.trace.length){col.appendChild(el('div','gap'));col.appendChild(el('div','cap','Trace'));const t=el('div','steps');col.appendChild(t);
@@ -724,6 +889,68 @@ d.addEventListener('keydown',e=>{
  if(e.key==='Escape')input.value=''});
 mark();input.focus();
 }"#;
+
+/// Draws a route as SVG, node by node, walking from nus to the break. The
+/// same geometry as `interstitial_ui::draw_route`.
+const ROUTE_JS: &str = r#"(d,R,T)=>{
+const NS='http://www.w3.org/2000/svg',W=820,H=92,pad=14,y=34,n=R.stations.length,at=R.at;
+const xs=R.stations.map((_,i)=>pad+i*(W-2*pad)/(n-1));
+const svg=d.createElementNS(NS,'svg');svg.setAttribute('viewBox','0 0 '+W+' '+H);svg.setAttribute('role','img');svg.setAttribute('aria-label',R.label);
+svg.setAttribute('class','route'+(T.loop>0?'':' still'));
+if(R.settled)T={seg:0,pop:0,loop:T.loop};
+const INK='var(--ink)',HOT='var(--signal)',FAINT='var(--edge)',PAPER='var(--paper)';
+const css=(e,o)=>{let s='';for(const k in o)s+=k+':'+o[k]+';';e.setAttribute('style',s);return e};
+const mk=(parent,tag,a,cls)=>{const e=d.createElementNS(NS,tag);for(const k in a)e.setAttribute(k,a[k]);if(cls)e.setAttribute('class',cls);parent.appendChild(e);return e};
+const g=(cls,delay,dur)=>css(mk(svg,'g',{},cls),{'--d':delay+'ms','--t':dur+'ms'});
+const fill=c=>({fill:c});const stroke=(c,w)=>({fill:'none',stroke:c,'stroke-width':w});
+const rect=(p,x,y,w,h,a)=>mk(p,'rect',Object.assign({x,y,width:w,height:h},a));
+const circ=(p,cx,cy,r,a)=>mk(p,'circle',Object.assign({cx,cy,r},a));
+const poly=(p,pts,a)=>mk(p,'polygon',Object.assign({points:pts.map(q=>q.join(',')).join(' ')},a));
+const line=(p,x1,y1,x2,y2,a,cls)=>mk(p,'line',Object.assign({x1,y1,x2,y2},a),cls);
+const fail=at*T.seg,live=fail+T.pop;
+// The way: walked in ink, the rest faint.
+for(let i=0;i<n-1;i++){const a=xs[i]+8,b=xs[i+1]-8;
+ if(i+1<=at){const last=i+1===at;
+  if(last&&(R.mark==='gap'||R.mark==='glass'))css(line(svg,a,y,b,y,{stroke:INK,'stroke-width':4,'stroke-dasharray':R.mark==='gap'?'7 6':'2 5'},'fade'),{'--d':i*T.seg+'ms','--t':T.seg+'ms'});
+  else if(last&&R.mark==='cut'){const m=(a+b)/2,s=g('pop',i*T.seg,T.pop);css(line(svg,a,y,m-8,y,{stroke:INK,'stroke-width':4},'walk'),{'--len':(m-8-a)+'px','--d':i*T.seg+'ms','--t':T.seg+'ms'});
+   poly(s,[[m-6,y+11],[m-2,y+11],[m+2,y-11],[m-2,y-11]],fill(HOT));poly(s,[[m+2,y+11],[m+6,y+11],[m+10,y-11],[m+6,y-11]],fill(HOT))}
+  else css(line(svg,a,y,b,y,{stroke:INK,'stroke-width':4},'walk'),{'--len':(b-a)+'px','--d':i*T.seg+'ms','--t':T.seg+'ms'})}
+ else line(svg,a,y,b,y,{stroke:FAINT,'stroke-width':1.5,'stroke-dasharray':'4 4'})}
+// Stations.
+for(let i=0;i<n;i++){if(i===at)continue;const x=xs[i],name=R.stations[i],box=name==='page'||name==='nus',s=name==='page'?16:12;
+ if(i<at){const p=g('pop',Math.max(0,i*T.seg-T.seg/2),T.pop);if(box)rect(p,x-s/2,y-s/2,s,s,fill(INK));else circ(p,x,y,6.5,fill(INK))}
+ else if(box)rect(svg,x-s/2,y-s/2,s,s,stroke(FAINT,2));else circ(svg,x,y,6,stroke(FAINT,2))}
+// The break.
+const x=xs[at],m=g('pop',fail,T.pop),px=at>0?xs[at-1]:x;
+({unknown:()=>circ(m,x,y,9,Object.assign(stroke(HOT,3.5),{'stroke-dasharray':'4 3'})),
+ wall:()=>rect(m,x-4,y-17,8,34,fill(HOT)),
+ gap:()=>circ(m,x,y,7,stroke(HOT,3)),
+ cut:()=>circ(m,x,y,6,stroke(FAINT,2)),
+ detour:()=>{circ(m,x,y,6.5,fill(INK));line(m,x,y+7,x,y+26,{stroke:HOT,'stroke-width':4});rect(m,x-8,y+26,16,10,fill(HOT))},
+ loop:()=>{circ(m,x,y,6.5,fill(HOT));mk(m,'path',Object.assign({d:'M'+x+' '+(y-9)+' C '+x+' '+(y-34)+', '+px+' '+(y-34)+', '+px+' '+(y-12)},stroke(HOT,3.5)));poly(m,[[px-6,y-16],[px+6,y-16],[px,y-8]],fill(HOT))},
+ glass:()=>{poly(m,[[x-9,y-12],[x+9,y-12],[x,y]],fill(HOT));poly(m,[[x,y],[x-9,y+12],[x+9,y+12]],stroke(HOT,2.5))},
+ empty:()=>rect(m,x-8,y-8,16,16,stroke(HOT,3.5)),
+ seal:()=>{poly(m,[[x-1.5,y-12],[x-13,y],[x-1.5,y+12]],fill(INK));poly(m,[[x+1.5,y-12],[x+13,y],[x+1.5,y+12]],fill(HOT))},
+ hazard:()=>{const id='hz'+at;rect(mk(svg,'clipPath',{id}),x-9,y-9,18,18,{});rect(m,x-9,y-9,18,18,fill(HOT));const sg=mk(m,'g',{'clip-path':'url(#'+id+')'});for(const o of [-18,-10,-2,6,14])line(sg,x+o-9,y+9,x+o+9,y-9,{stroke:INK,'stroke-width':4})},
+ ban:()=>{circ(m,x,y,10,stroke(INK,3.5));line(m,x-7,y+7,x+7,y-7,{stroke:HOT,'stroke-width':3.5})},
+ file:()=>{circ(m,x,y,6.5,fill(INK));line(m,x,y+7,x,y+20,{stroke:INK,'stroke-width':4});rect(m,x-7,y+22,14,12,fill(HOT))},
+ stuck:()=>{rect(m,x-10,y-10,20,20,stroke(INK,2.5));circ(m,x,y,5,stroke(INK,2.5))},
+ split:()=>{poly(m,[[x-10,y-10],[x+6,y-10],[x-10,y+6]],fill(INK));poly(m,[[x+10,y-6],[x+10,y+10],[x-6,y+10]],fill(HOT))},
+ overflow:()=>{rect(m,x-8,y-8,16,16,stroke(INK,2.5));rect(m,x-5,y-5,10,10,fill(INK));rect(m,x-10,y-15,20,4,fill(HOT))},
+ stop:()=>rect(m,x-9,y-9,18,18,fill(HOT)),
+ moon:()=>{circ(m,x,y,9,fill(INK));circ(m,x+4,y-3,7.5,fill(PAPER))},
+ clock:()=>{circ(m,x,y,9,stroke(HOT,3));line(m,x,y,x,y-6,{stroke:HOT,'stroke-width':2.5});line(m,x,y,x+5,y,{stroke:HOT,'stroke-width':2.5});rect(m,xs[0]-7,y-7,14,14,stroke(HOT,2.5))},
+ device:()=>{rect(m,x-8,y-8,16,16,fill(INK));line(m,x,y+9,x,y+22,{stroke:INK,'stroke-width':4});rect(m,x-8,y+22,16,10,fill(HOT))},
+ uturn:()=>{circ(m,x,y,6.5,fill(INK));mk(m,'path',Object.assign({d:'M'+(x+9)+' '+y+' H'+(x+20)+' V'+(y+18)+' H'+(x-4)},stroke(HOT,3.5)));poly(m,[[x-2,y+12],[x-2,y+24],[x-10,y+18]],fill(HOT))}
+})[R.mark]();
+// What is still happening there.
+if(R.live==='flight'){const a=px+8,b=x-14,e=rect(svg,a-3,y-3,6,6,fill(INK));e.setAttribute('class','fly');css(e,{'--dx':(b-a)+'px','--d':live+'ms','--t':T.loop+'ms'})}
+if(R.live==='poll'){const a=px+8,b=x-12;const e=circ(svg,a,y,4,fill(INK));e.setAttribute('class','poll');css(e,{'--dx':(b-a)+'px','--d':live+'ms','--t':T.loop+'ms'})}
+if(R.live==='spin'){const s=mk(svg,'g',{},'spin');css(s,{'transform-origin':x+'px '+y+'px','--d':live+'ms','--t':T.loop+'ms'});rect(s,x-3,y-8.5,6,6,fill(HOT))}
+if(R.live==='pulse'){const p=mk(svg,'g',{},'pulse');css(p,{'--d':live+'ms','--t':T.loop+'ms'});p.appendChild(m)}
+// The stations, named.
+R.stations.forEach((name,i)=>{const t=mk(svg,'text',{x:xs[i],y:H-8,'text-anchor':'middle'},i===at?'at':'');t.textContent=name});
+const strip=d.createElement('div');strip.className='strip';strip.appendChild(svg);return strip}"#;
 
 /// `nus://` commands that make the real thing happen to the page you're
 /// on, so each page can be seen for real.
@@ -947,6 +1174,27 @@ fn failure(url: &str, code: &str) -> Failure {
 fn capitalized(text: &str) -> String {
     let mut c = text.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+/// The route of a failed load: the station its step names, and the break.
+fn load_route(url: &str, code: &str, f: &Failure) -> Route {
+    match f.only {
+        Some("network") => return Route::new(url, "dns", Break::Cut),
+        Some(_) => return Route::new(url, "nus", Break::Ban),
+        None => {}
+    }
+    let station = match f.stage { Stage::Name => "dns", Stage::Connect => "connect", Stage::Secure => "tls", Stage::Request => "request", Stage::Answer => "response" };
+    let mark = match code {
+        "ERR_NAME_NOT_RESOLVED" | "ERR_NAME_RESOLUTION_FAILED" => Break::Unknown,
+        "ERR_CONNECTION_REFUSED" | "ERR_INVALID_AUTH_CREDENTIALS" => Break::Wall,
+        "ERR_NETWORK_ACCESS_DENIED" => Break::Ban,
+        "ERR_NETWORK_CHANGED" | "ERR_CONNECTION_RESET" | "ERR_CONNECTION_CLOSED" => Break::Cut,
+        "ERR_SSL_PROTOCOL_ERROR" => Break::Seal,
+        "ERR_EMPTY_RESPONSE" | "ERR_INVALID_RESPONSE" | "ERR_HTTP_RESPONSE_CODE_FAILURE" => Break::Empty,
+        "ERR_TOO_MANY_REDIRECTS" => Break::Loop,
+        _ => Break::Gap,
+    };
+    Route::new(url, station, mark)
 }
 
 /// The steps of a failed load: those before the failure went through, the
@@ -1288,6 +1536,34 @@ mod tests {
         assert!(first.acts.iter().any(|a| a.verb == "watch"));
         assert!(first.trace.iter().any(|s| s.what.last().is_some_and(|l| l == "tried 3 times")));
         assert!(!first.same_failure(&Page::unreachable("http://localhost:5173/", "ERR_EMPTY_RESPONSE", false)));
+    }
+
+    #[test]
+    fn the_route_breaks_where_the_trace_does() {
+        let at = |p: &Page| { let r = p.route.as_ref().unwrap(); (r.stations[r.at], r.mark) };
+        let refused = for_error("http://localhost:5173/", -102, false, 1, 1);
+        assert_eq!(refused.route.as_ref().unwrap().stations, ["nus", "dns", "connect", "request", "response", "page"], "no tls over http");
+        assert_eq!(at(&refused), ("connect", Break::Wall));
+        assert_eq!(at(&for_error("https://a.test/", -105, true, 1, 1)), ("dns", Break::Unknown));
+        assert_eq!(at(&for_error("https://a.test/", -202, true, 1, 1)), ("tls", Break::Seal));
+        assert_eq!(at(&for_error("https://a.test/", -310, true, 1, 1)), ("response", Break::Loop));
+        assert_eq!(at(&for_error("https://a.test/", -379, true, 1, 1)), ("response", Break::Empty));
+        assert_eq!(at(&for_error("https://a.test/", -106, true, 1, 1)), ("dns", Break::Cut));
+        assert_eq!(at(&for_error("https://a.test/", -20, true, 1, 1)), ("nus", Break::Ban));
+        assert_eq!(at(&Page::sample(Kind::Hung)), ("page", Break::Stuck));
+        assert_eq!(Page::sample(Kind::Hung).route.unwrap().live, Live::Spinning);
+        assert_eq!(Page::sample(Kind::Slow).route.unwrap().live, Live::InFlight);
+        assert_eq!(at(&Page::sample(Kind::Crash)), ("page", Break::Split));
+        let mut watched = refused.clone();
+        watched.watching(None);
+        assert_eq!(watched.route.unwrap().live, Live::Polling, "a watched port is tried until it answers");
+        // Every page that can fail has a route; a page's own dialog has none.
+        for k in Kind::ALL {
+            let has = Page::sample(k).route.is_some();
+            assert_eq!(has, !matches!(k, Kind::Dialog | Kind::Index), "{k:?}");
+        }
+        let h = refused.script();
+        assert!(h.contains("\"mark\":\"wall\"") && h.contains("\"stations\":[\"nus\""));
     }
 
     #[test]

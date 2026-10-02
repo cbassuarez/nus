@@ -8,14 +8,83 @@ use nus_render::theme::metric as m;
 use nus_render::{Rect, Scene};
 
 use crate::app::{fade, App, Pane, WebPane};
-use crate::interstitial::{Kind, Mark, Page, Sev};
+use crate::interstitial::{Break, Kind, Live, Mark, Page, Route, Sev};
+use nus_render::Color;
+use std::f32::consts::{PI, TAU};
+
+/// The route walks a segment in this (ms, before the motion register), the
+/// break arrives in this, and a live break loops once in this.
+pub(crate) const ROUTE_SEG: f32 = 120.0;
+pub(crate) const ROUTE_POP: f32 = 220.0;
+pub(crate) const ROUTE_LOOP: f32 = 1400.0;
+
+fn ease_out(x: f32) -> f32 {
+    1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
+}
+
+/// A filled circle.
+fn disc(scene: &mut Scene, cx: f32, cy: f32, r: f32, c: Color) {
+    let pts: Vec<[f32; 2]> = (0..40).map(|i| { let a = i as f32 / 40.0 * TAU; [cx + r * a.cos(), cy + r * a.sin()] }).collect();
+    scene.poly(&pts, c);
+}
+
+/// A band of width `w` inside the ellipse (rx, ry), from angle `a0` to `a1`.
+#[allow(clippy::too_many_arguments)]
+fn arc(scene: &mut Scene, cx: f32, cy: f32, rx: f32, ry: f32, w: f32, a0: f32, a1: f32, c: Color) {
+    let n = (((a1 - a0).abs() / TAU) * 48.0).ceil().max(4.0) as usize;
+    let at = |i: usize| a0 + (a1 - a0) * i as f32 / n as f32;
+    let mut pts: Vec<[f32; 2]> = (0..=n).map(|i| [cx + rx * at(i).cos(), cy + ry * at(i).sin()]).collect();
+    pts.extend((0..=n).rev().map(|i| [cx + (rx - w) * at(i).cos(), cy + (ry - w) * at(i).sin()]));
+    scene.poly(&pts, c);
+}
+
+/// A circle's outline, `w` thick inward; dashed in `dashes` when nonzero.
+fn ring(scene: &mut Scene, cx: f32, cy: f32, r: f32, w: f32, dashes: usize, c: Color) {
+    if dashes == 0 {
+        // Two halves, overlapping a little: no seam where they meet.
+        arc(scene, cx, cy, r, r, w, -0.05, PI + 0.05, c);
+        arc(scene, cx, cy, r, r, w, PI, TAU + 0.05, c);
+    } else {
+        for k in 0..dashes {
+            let a0 = k as f32 / dashes as f32 * TAU;
+            arc(scene, cx, cy, r, r, w, a0, a0 + TAU / dashes as f32 * 0.55, c);
+        }
+    }
+}
+
+/// A straight stroke `w` thick, any angle.
+fn stroke(scene: &mut Scene, x1: f32, y1: f32, x2: f32, y2: f32, w: f32, c: Color) {
+    let (dx, dy) = (x2 - x1, y2 - y1);
+    let len = (dx * dx + dy * dy).sqrt().max(0.001);
+    let (nx, ny) = (-dy / len * w / 2.0, dx / len * w / 2.0);
+    scene.poly(&[[x1 + nx, y1 + ny], [x2 + nx, y2 + ny], [x2 - nx, y2 - ny], [x1 - nx, y1 - ny]], c);
+}
+
+/// A dashed horizontal stroke from `a` to `a + len`.
+fn dashed(scene: &mut Scene, a: f32, b: f32, y: f32, w: f32, on: f32, off: f32, c: Color) {
+    let mut x = a;
+    while x < b {
+        scene.rect(Rect::new(x, y - w / 2.0, on.min(b - x), w), c);
+        x += on + off;
+    }
+}
 
 /// The highlighted command starts at a new transcript's default: a choice
 /// made on the page before it (↓ to retry) must not carry to this one.
 pub(crate) fn follow_page(w: &mut WebPane, page: &Page) {
     if w.overlay_page != page.token {
+        // The same way as the page before (a stuck page, then stopped): it
+        // isn't walked again; only a new break arrives.
+        let way = |r: &Route| (r.stations.clone(), r.at);
+        w.overlay_skip = match (&w.overlay_route, &page.route) {
+            (Some(a), Some(b)) if way(a) == way(b) && a.mark == b.mark => 2,
+            (Some(a), Some(b)) if way(a) == way(b) => 1,
+            _ => 0,
+        };
         w.overlay_page = page.token.clone();
         w.overlay_sel = page.acts.iter().position(|a| !a.unsafe_).unwrap_or(0);
+        w.overlay_at = crate::clock::now();
+        w.overlay_route = page.route.clone();
     }
 }
 
@@ -368,16 +437,220 @@ impl App {
             }
             let asleep = w.slept.map(crate::clock::since).unwrap_or_default();
             let p = Page::sleep(&page.url, asleep, true);
-            self.draw_transcript(scene, w.page, &p, w.overlay_sel, &mut w.overlay_hits);
+            let age = crate::clock::since(w.overlay_at).as_secs_f32();
+            self.draw_transcript(scene, w.page, &p, w.overlay_sel, &mut w.overlay_hits, (age, w.overlay_skip));
             return;
         }
         follow_page(w, &page);
         w.overlay_sel = w.overlay_sel.min(page.acts.len().saturating_sub(1));
-        self.draw_transcript(scene, w.page, &page, w.overlay_sel, &mut w.overlay_hits);
+        let age = crate::clock::since(w.overlay_at).as_secs_f32();
+        self.draw_transcript(scene, w.page, &page, w.overlay_sel, &mut w.overlay_hits, (age, w.overlay_skip));
+    }
+
+    /// The route, nus to page, walked from `age` 0 to the station where it
+    /// broke, the break arriving there, and a loop while it is still going
+    /// on. Lowercase names under the stations. The same geometry as the
+    /// page's own (`interstitial::ROUTE_JS`). Returns the height drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_route(&mut self, scene: &mut Scene, x0: f32, top: f32, w: f32, route: &Route, danger: bool, age: f32, skip: u8) -> f32 {
+        let t = self.theme.clone();
+        let (ink, dim, hot) = (t.ink, t.dim, self.surface.signal);
+        let paper = { let p = self.paper(); [p[0], p[1], p[2], 1.0] };
+        let faint = fade(ink, 0.18);
+        let u = self.px(1.0);
+        // The route keeps its proportions; a narrow pane squeezes the spacing only.
+        let n = route.stations.len();
+        let pad = 14.0 * u;
+        let y = top + 34.0 * u;
+        let height = 92.0 * u;
+        let xs: Vec<f32> = (0..n).map(|i| x0 + pad + i as f32 * (w - 2.0 * pad) / (n - 1) as f32).collect();
+        let reduced = self.motion.reduced();
+        let seg = if skip >= 1 { 0.0 } else { self.motion.dur(ROUTE_SEG) };
+        let pop = if skip >= 2 { 0.0 } else { self.motion.dur(ROUTE_POP) };
+        let age = if reduced { f32::INFINITY } else { age };
+        let at = route.at;
+        let fail = at as f32 * seg;
+        let walked = |i: usize| if seg <= 0.0 { 1.0 } else { ((age - i as f32 * seg) / seg).clamp(0.0, 1.0) };
+        let arrived = if pop <= 0.0 { 1.0 } else { ease_out((age - fail) / pop) };
+        // The way: walked in ink, the rest faint.
+        for i in 0..n - 1 {
+            let (a, b) = (xs[i] + 8.0 * u, xs[i + 1] - 8.0 * u);
+            if i + 1 > at {
+                dashed(scene, a, b, y, 1.5 * u, 4.0 * u, 4.0 * u, faint);
+                continue;
+            }
+            let p = walked(i);
+            let end = a + (b - a) * p;
+            match route.mark {
+                Break::Gap if i + 1 == at => dashed(scene, a, end, y, 4.0 * u, 7.0 * u, 6.0 * u, ink),
+                Break::Glass if i + 1 == at => dashed(scene, a, end, y, 4.0 * u, 2.0 * u, 5.0 * u, ink),
+                Break::Cut if i + 1 == at => {
+                    let m = (a + b) / 2.0;
+                    scene.rect(Rect::new(a, y - 2.0 * u, ((m - 8.0 * u) - a) * p, 4.0 * u), ink);
+                    let c = fade(hot, arrived);
+                    for o in [-6.0, 2.0] {
+                        scene.poly(&[[m + o * u, y + 11.0 * u], [m + (o + 4.0) * u, y + 11.0 * u], [m + (o + 8.0) * u, y - 11.0 * u], [m + (o + 4.0) * u, y - 11.0 * u]], c);
+                    }
+                }
+                _ => scene.rect(Rect::new(a, y - 2.0 * u, end - a, 4.0 * u), ink),
+            }
+        }
+        // Stations: reached ones fill as the walk passes them.
+        for (i, &x) in xs.iter().enumerate() {
+            if i == at {
+                continue;
+            }
+            let name = route.stations[i];
+            let s = if name == "page" { 16.0 } else { 12.0 } * u;
+            let boxed = name == "page" || name == "nus";
+            if i < at {
+                let shown = if i == 0 { 1.0 } else { walked(i - 1) };
+                if shown <= 0.0 {
+                    continue;
+                }
+                let c = fade(ink, shown);
+                if boxed { scene.rect(Rect::new(x - s / 2.0, y - s / 2.0, s, s), c); } else { disc(scene, x, y, 6.5 * u * (0.6 + 0.4 * shown), c); }
+            } else if boxed {
+                scene.outline(Rect::new(x - s / 2.0, y - s / 2.0, s, s), 2.0 * u, faint);
+            } else {
+                ring(scene, x, y, 6.0 * u, 2.0 * u, 0, faint);
+            }
+        }
+        // The break, arriving: growing into place.
+        let x = xs[at];
+        let px = if at > 0 { xs[at - 1] } else { x };
+        let k = u * (0.6 + 0.4 * arrived);
+        let (ink_a, hot_a) = (fade(ink, arrived), fade(hot, arrived));
+        let pulse = matches!(route.live, Live::Ending) && age > fail + pop && !reduced;
+        let hot_m = if pulse { fade(hot, 0.35 + 0.65 * (0.5 + 0.5 * ((age - fail - pop) / (ROUTE_LOOP / 1000.0) * TAU).cos())) } else { hot_a };
+        if arrived > 0.0 {
+            match route.mark {
+                Break::Unknown => ring(scene, x, y, 9.0 * k, 3.5 * k, 8, hot_a),
+                Break::Wall => scene.rect(Rect::new(x - 4.0 * u, y - 17.0 * k, 8.0 * u, 34.0 * k), hot_a),
+                Break::Gap => ring(scene, x, y, 7.0 * k, 3.0 * k, 0, hot_a),
+                Break::Cut => ring(scene, x, y, 6.0 * u, 2.0 * u, 0, faint),
+                Break::Detour => {
+                    disc(scene, x, y, 6.5 * u, ink_a);
+                    scene.rect(Rect::new(x - 2.0 * u, y + 7.0 * u, 4.0 * u, 19.0 * k), hot_a);
+                    scene.rect(Rect::new(x - 8.0 * u, y + 7.0 * u + 19.0 * k, 16.0 * u, 10.0 * u), hot_a);
+                }
+                Break::Loop => {
+                    disc(scene, x, y, 6.5 * u, hot_a);
+                    // Back over the way it came, from this station to the one before.
+                    let cx = (x + px) / 2.0;
+                    arc(scene, cx, y - 10.0 * u, (x - px) / 2.0 + 1.75 * u, 20.0 * k, 3.5 * u, PI, TAU, hot_a);
+                    scene.poly(&[[px - 6.0 * u, y - 14.0 * u], [px + 6.0 * u, y - 14.0 * u], [px, y - 6.0 * u]], hot_a);
+                }
+                Break::Glass => {
+                    scene.poly(&[[x - 9.0 * k, y - 12.0 * k], [x + 9.0 * k, y - 12.0 * k], [x, y]], hot_a);
+                    for (a, b) in [([x, y], [x - 9.0 * k, y + 12.0 * k]), ([x - 9.0 * k, y + 12.0 * k], [x + 9.0 * k, y + 12.0 * k]), ([x + 9.0 * k, y + 12.0 * k], [x, y])] {
+                        stroke(scene, a[0], a[1], b[0], b[1], 2.5 * u, hot_a);
+                    }
+                }
+                Break::Empty => scene.outline(Rect::new(x - 8.0 * k, y - 8.0 * k, 16.0 * k, 16.0 * k), 3.5 * u, hot_a),
+                Break::Seal => {
+                    scene.poly(&[[x - 1.5 * u, y - 12.0 * k], [x - 13.0 * k, y], [x - 1.5 * u, y + 12.0 * k]], ink_a);
+                    scene.poly(&[[x + 1.5 * u, y - 12.0 * k], [x + 13.0 * k, y], [x + 1.5 * u, y + 12.0 * k]], hot_a);
+                }
+                Break::Hazard => {
+                    let sq = Rect::new(x - 9.0 * k, y - 9.0 * k, 18.0 * k, 18.0 * k);
+                    scene.rect(sq, hot_a);
+                    let parent = scene.clip();
+                    scene.layer(Some(parent.map_or(sq, |c| c.intersect(&sq))));
+                    for o in [-18.0, -10.0, -2.0, 6.0, 14.0] {
+                        stroke(scene, x + (o - 9.0) * k, y + 9.0 * k, x + (o + 9.0) * k, y - 9.0 * k, 4.0 * k, ink_a);
+                    }
+                    scene.layer(parent);
+                }
+                Break::Ban => {
+                    ring(scene, x, y, 10.0 * k, 3.5 * k, 0, ink_a);
+                    stroke(scene, x - 7.0 * k, y + 7.0 * k, x + 7.0 * k, y - 7.0 * k, 3.5 * k, hot_a);
+                }
+                Break::File => {
+                    disc(scene, x, y, 6.5 * u, ink_a);
+                    scene.rect(Rect::new(x - 2.0 * u, y + 7.0 * u, 4.0 * u, 13.0 * u), ink_a);
+                    scene.rect(Rect::new(x - 7.0 * k, y + 22.0 * u, 14.0 * k, 12.0 * k), hot_a);
+                }
+                Break::Stuck => {
+                    scene.outline(Rect::new(x - 10.0 * k, y - 10.0 * k, 20.0 * k, 20.0 * k), 2.5 * u, ink_a);
+                    ring(scene, x, y, 5.0 * k, 2.5 * u, 0, ink_a);
+                }
+                Break::Split => {
+                    scene.poly(&[[x - 10.0 * k, y - 10.0 * k], [x + 6.0 * k, y - 10.0 * k], [x - 10.0 * k, y + 6.0 * k]], ink_a);
+                    scene.poly(&[[x + 10.0 * k, y - 6.0 * k], [x + 10.0 * k, y + 10.0 * k], [x - 6.0 * k, y + 10.0 * k]], hot_a);
+                }
+                Break::Overflow => {
+                    scene.outline(Rect::new(x - 8.0 * k, y - 8.0 * k, 16.0 * k, 16.0 * k), 2.5 * u, ink_a);
+                    scene.rect(Rect::new(x - 5.0 * k, y - 5.0 * k, 10.0 * k, 10.0 * k), ink_a);
+                    scene.rect(Rect::new(x - 10.0 * k, y - 15.0 * k, 20.0 * k, 4.0 * u), hot_a);
+                }
+                Break::Stop => scene.rect(Rect::new(x - 9.0 * k, y - 9.0 * k, 18.0 * k, 18.0 * k), hot_m),
+                Break::Moon => {
+                    disc(scene, x, y, 9.0 * k, ink_a);
+                    disc(scene, x + 4.0 * k, y - 3.0 * k, 7.5 * k, paper);
+                }
+                Break::Clock => {
+                    ring(scene, x, y, 9.0 * k, 3.0 * u, 0, hot_a);
+                    scene.rect(Rect::new(x - 1.25 * u, y - 6.0 * k, 2.5 * u, 6.0 * k), hot_a);
+                    scene.rect(Rect::new(x, y - 1.25 * u, 5.0 * k, 2.5 * u), hot_a);
+                    scene.outline(Rect::new(xs[0] - 7.0 * u, y - 7.0 * u, 14.0 * u, 14.0 * u), 2.5 * u, hot_a);
+                }
+                Break::Device => {
+                    scene.rect(Rect::new(x - 8.0 * u, y - 8.0 * u, 16.0 * u, 16.0 * u), ink_a);
+                    scene.rect(Rect::new(x - 2.0 * u, y + 9.0 * u, 4.0 * u, 13.0 * u), ink_a);
+                    scene.rect(Rect::new(x - 8.0 * k, y + 22.0 * u, 16.0 * k, 10.0 * k), hot_a);
+                }
+                Break::Uturn => {
+                    disc(scene, x, y, 6.5 * u, ink_a);
+                    scene.rect(Rect::new(x + 9.0 * u, y - 1.75 * u, 11.0 * u, 3.5 * u), hot_a);
+                    scene.rect(Rect::new(x + 18.25 * u, y - 1.75 * u, 3.5 * u, 19.75 * u), hot_a);
+                    scene.rect(Rect::new(x - 4.0 * u, y + 16.25 * u, 25.75 * u, 3.5 * u), hot_a);
+                    scene.poly(&[[x - 2.0 * u, y + 12.0 * u], [x - 2.0 * u, y + 24.0 * u], [x - 10.0 * u, y + 18.0 * u]], hot_a);
+                }
+            }
+        }
+        // What is still going on there: a loop, while it lasts.
+        let looping = !reduced && route.live != Live::Still && age > fail + pop;
+        if looping {
+            let phase = ((age - fail - pop) / (ROUTE_LOOP / 1000.0)).fract();
+            match route.live {
+                Live::InFlight => {
+                    let (a, b) = (px + 8.0 * u, x - 14.0 * u);
+                    let cx = a + (b - a) * phase;
+                    scene.rect(Rect::new(cx - 3.0 * u, y - 3.0 * u, 6.0 * u, 6.0 * u), ink);
+                }
+                Live::Polling => {
+                    let (a, b) = (px + 8.0 * u, x - 12.0 * u);
+                    let there = 1.0 - (2.0 * phase - 1.0).abs();
+                    disc(scene, a + (b - a) * (0.5 - 0.5 * (there * PI).cos()), y, 4.0 * u, ink);
+                }
+                Live::Spinning => {
+                    let a = phase * TAU - PI / 2.0;
+                    let (bx, by) = (x + 5.5 * u * a.cos(), y + 5.5 * u * a.sin());
+                    scene.rect(Rect::new(bx - 3.0 * u, by - 3.0 * u, 6.0 * u, 6.0 * u), hot);
+                }
+                Live::Ending | Live::Still => {}
+            }
+        } else if route.live == Live::Spinning && arrived >= 1.0 {
+            // Still, the bead stays where the loop stopped: at the top.
+            scene.rect(Rect::new(x - 3.0 * u, y - 8.5 * u, 6.0 * u, 6.0 * u), hot);
+        }
+        // The stations, named, in lowercase.
+        let small = Style { px: self.px(12.0), color: dim, ..self.ui() };
+        for (i, (&x, name)) in xs.iter().zip(&route.stations).enumerate() {
+            let style = if i == at { Style { color: if danger { hot } else { ink }, ..Style { px: self.px(12.0), ..self.ui_strong() } } } else { small };
+            let tw = self.fonts.measure(style, name);
+            self.fonts.draw(scene, style, x - tw / 2.0, top + height - 8.0 * u, name);
+        }
+        if looping || (!reduced && age < fail + pop) {
+            self.dirty = true;
+        }
+        height
     }
 
     /// A transcript, drawn: the same page the HTML shows.
-    pub(crate) fn draw_transcript(&mut self, scene: &mut Scene, r: Rect, page: &Page, sel: usize, hits: &mut Vec<(Rect, String)>) {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_transcript(&mut self, scene: &mut Scene, r: Rect, page: &Page, sel: usize, hits: &mut Vec<(Rect, String)>, (age, skip): (f32, u8)) {
         let t = self.theme.clone();
         let ink = t.ink;
         let paper = self.paper();
@@ -404,6 +677,14 @@ impl App {
         for l in crate::reader::wrap(&self.fonts, ui, &page.command, width - pw) {
             self.fonts.draw(scene, ui, tx + pw, y, &l);
             y += line_h;
+        }
+        // Where on its way the page failed: a rule, the route, its stations.
+        if let Some(route) = &page.route {
+            let top = y - line_h * 0.3;
+            scene.rect(Rect::new(tx, top, width, self.px(m::STRUCTURE)), ink);
+            let h = self.draw_route(scene, tx, top + self.px(6.0), width, route, page.sev == Sev::Danger, age, skip);
+            scene.rect(Rect::new(tx, top + self.px(6.0) + h, width, self.px(1.0)), fade(ink, 0.14));
+            y = top + self.px(6.0) + h + line_h * 1.2;
         }
         for (i, l) in page.log.iter().enumerate() {
             // Detail lines keep their columns; only an overlong one wraps.
@@ -445,8 +726,8 @@ impl App {
                 let top = y;
                 y += pad + line_h * 0.72;
                 let first = y;
-                let name_style = Style { color: if fail { ink } else { t.dim }, ..self.label() };
-                self.fonts.draw(scene, name_style, tx + self.px(12.0), y, &st.name.to_uppercase());
+                let name_style = if fail { Style { px: self.px(12.0), color: ink, ..strong } } else { Style { px: self.px(12.0), color: t.dim, ..ui } };
+                self.fonts.draw(scene, name_style, tx + self.px(12.0), y, &st.name);
                 for (i, line) in st.what.iter().enumerate() {
                     let style = if i == 0 { if fail { strong } else { ui } } else { dim };
                     for w in crate::reader::wrap(&self.fonts, style, line, what_w) {
