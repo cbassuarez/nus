@@ -65,7 +65,12 @@ jobs:
       - name: Build deterministic benchmarks
         run: cargo codspeed build -m simulation
 
+      # Timings go to CodSpeed only once this repository is connected there
+      # (codspeed.io, then the variable CODSPEED_ENABLED=true). Until then the
+      # upload is refused (401) and would fail every run; the smoke step above
+      # has already executed every scenario.
       - name: Run CodSpeed
+        if: vars.CODSPEED_ENABLED == 'true'
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
