@@ -216,7 +216,9 @@ def build_deb(stage, tag, out, keyring=None):
             (control/script).write_text(text)
             (control/script).chmod(0o755)
         if conffiles: (control/'conffiles').write_text(''.join(f'{c}\n' for c in conffiles))
-        deb = out/f'{name}_{version}_amd64.deb'
+        # The file is named for the tag: GitHub rewrites `~` in asset names, so a
+        # name with the Debian version would not be the name it serves.
+        deb = out/f'{name}_{tag[1:]}_amd64.deb'
         # Root ownership without root: dpkg-deb records root:root itself.
         subprocess.run(['dpkg-deb', '--root-owner-group', '-Zxz', '--build', str(root), str(deb)], check=True, stdout=subprocess.DEVNULL)
     return deb

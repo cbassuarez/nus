@@ -57,6 +57,10 @@ def main():
                 raise ValueError(f'Invalid package: {system["name"]}')
         entries.append(entry)
     files=[f for e in entries for f in [e, e.get('installer'), *e.get('packages',[])] if f]
+    # GitHub serves an asset under a rewritten name when it holds other characters
+    # (a Debian `~` becomes `.`), and the records would then name a missing file.
+    for f in files:
+        if not re.fullmatch(r'[A-Za-z0-9._+-]+', f['name']): raise ValueError(f'GitHub would rename the asset {f["name"]}')
     maintenance=support.evaluate(json.loads(args.support_policy.read_text()),args.tag)
     manifest={'state':'active','maintenance':maintenance,'schema':1,'version':args.tag,'revision':args.revision,'channel':entries[0]['channel'],'assets':entries}
     (args.directory/'release.json').write_text(json.dumps(manifest,indent=2)+'\n')

@@ -153,7 +153,7 @@ class ReleaseTests(unittest.TestCase):
         built=[]
         def deb(stage,tag,out,keyring=None):
             built.append(json.loads((stage/'nus-package.json').read_text()))
-            path=out/'nus-preview_0.0.1~preview.1_amd64.deb';path.write_bytes(b'deb');return path
+            path=out/'nus-preview_0.0.1-preview.1_amd64.deb';path.write_bytes(b'deb');return path
         with patch.object(sys,'argv',args),patch.object(release.package,'ROOT',self.root),patch.object(release.package.linux,'build_deb',deb),patch('builtins.print'):
             release.package.main()
         output=self.root/'dist/release'
@@ -163,7 +163,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(record['signing'],'checksum')
         # The .deb is built from the archive's own payload and rides on its record.
         self.assertEqual(built[0]['version'],self.tag)
-        self.assertEqual(record['packages'],[{'name':'nus-preview_0.0.1~preview.1_amd64.deb','sha256':release.package.digest(output/'nus-preview_0.0.1~preview.1_amd64.deb'),'size':3}])
+        self.assertEqual(record['packages'],[{'name':'nus-preview_0.0.1-preview.1_amd64.deb','sha256':release.package.digest(output/'nus-preview_0.0.1-preview.1_amd64.deb'),'size':3}])
         prefix='nus-0.0.1-preview.1-linux-x86_64/'
         with tarfile.open(archive) as tar:
             names=set(tar.getnames())
@@ -183,7 +183,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_linux_packages_are_verified_and_published(self):
         record=json.loads((self.root/'linux-x86_64.json').read_text())
-        deb=self.root/'nus-preview_0.0.1~preview.1_amd64.deb'
+        deb=self.root/'nus-preview_0.0.1-preview.1_amd64.deb'
         deb.write_bytes(b'deb')
         record['packages']=[{'name':deb.name,'sha256':release.package.digest(deb),'size':3}]
         (self.root/'linux-x86_64.json').write_text(json.dumps(record))
@@ -192,6 +192,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(deb.name,(self.root/'SHA256SUMS.txt').read_text())
         deb.write_bytes(b'bad')
         with self.assertRaisesRegex(ValueError,'Invalid package'): self.run_release()
+
+    def test_names_github_would_rewrite_are_refused(self):
+        record=json.loads((self.root/'linux-x86_64.json').read_text())
+        deb=self.root/'nus-preview_0.0.1~preview.1_amd64.deb'
+        deb.write_bytes(b'deb')
+        record['packages']=[{'name':deb.name,'sha256':release.package.digest(deb),'size':3}]
+        (self.root/'linux-x86_64.json').write_text(json.dumps(record))
+        with self.assertRaisesRegex(ValueError,'rename'): self.run_release()
 
     def windows_payloads(self):
         redist=self.root/'redist'
@@ -397,6 +405,8 @@ class DebianPackageTests(unittest.TestCase):
             (stage/'nus-package.json').write_text('{"version": "v0.0.2-preview.9"}')
             key=Path(tmp)/'key.gpg';key.write_bytes(b'key')
             deb=self.linux.build_deb(stage,'v0.0.2-preview.9',Path(tmp)/'out',key)
+            self.assertEqual(deb.name,'nus-preview_0.0.2-preview.9_amd64.deb')
+            self.assertIn('Version: 0.0.2~preview.9',subprocess.run(['dpkg-deb','-I',str(deb),'control'],check=True,capture_output=True,text=True).stdout)
             listing=subprocess.run(['dpkg-deb','-c',str(deb)],check=True,capture_output=True,text=True).stdout
             entries={l.split()[5].removeprefix('.'):l.split()[0:2] for l in listing.splitlines()}
             self.assertEqual(entries['/opt/nus-preview/chrome-sandbox'],['-rwsr-xr-x','root/root'])
