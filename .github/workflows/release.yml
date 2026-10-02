@@ -392,8 +392,8 @@ jobs:
             https://api.github.com/repos/cbassuarez/nus.dev/dispatches \
             -d "{\"event_type\":\"release-published\",\"client_payload\":{\"tag\":\"$RELEASE_TAG\"}}"
   homebrew:
-    # brew install --cask cbassuarez/nus/nus (or nus@preview). The tap is
-    # github.com/cbassuarez/homebrew-nus; HOMEBREW_TAP_TOKEN may push to it.
+    # brew install cbassuarez/tap/nus (or nus@preview). The tap is
+    # github.com/cbassuarez/homebrew-tap; HOMEBREW_TAP_TOKEN may push to it.
     needs: [version, publish]
     if: needs.publish.result == 'success'
     runs-on: macos-15
@@ -407,7 +407,7 @@ jobs:
         run: |
           if [ -z "$TAP_TOKEN" ]; then echo "HOMEBREW_TAP_TOKEN not set; the tap is unchanged"; exit 0; fi
           gh release download "$RELEASE_TAG" --pattern release.json --dir "$RUNNER_TEMP"
-          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/cbassuarez/homebrew-nus.git" "$RUNNER_TEMP/tap"
+          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/cbassuarez/homebrew-tap.git" "$RUNNER_TEMP/tap"
           cask=$(python3 scripts/package-managers.py homebrew --manifest "$RUNNER_TEMP/release.json" --out "$RUNNER_TEMP/tap")
           case $cask in *.rb) ;; *) echo "$cask"; exit 0 ;; esac
           brew style "$cask"

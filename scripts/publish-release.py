@@ -77,7 +77,7 @@ def main():
     lines.extend(f'| {e["target"]}{" (installer)" if e.get("installer") else ""}{" (.deb)" if e.get("packages") else ""} | {e["signing"]} |' for e in entries)
     omitted=sorted(package.TARGETS-targets)
     if omitted: lines += ['', 'Not included in this preview: '+', '.join(omitted)+'. These packages remain unavailable until their platform checks and signing setup are complete.']
-    linux_install='curl -fsSL https://raw.githubusercontent.com/cbassuarez/nus/main/scripts/install.sh | sh'+(' -s -- --preview' if manifest['channel']=='preview' else '')
+    linux_install='curl -fsSL https://cbassuarez.com/nus.dev/install.sh | '+('NUS_CHANNEL=preview sh' if manifest['channel']=='preview' else 'sh')
     lines += ['', 'Windows: download the -setup.exe installer and run it; the .zip beside it is the package in-app updates use, so most people never need it. macOS: unzip the complete package and move nus.app to Applications. Linux: run `' + linux_install + '` (the .deb with apt on Debian and Ubuntu, otherwise the archive for your account), or download the .deb or archive below. See README.txt in the archive for runtime dependencies.', '', 'Preview builds are for early testing. Unsigned Windows previews can show a SmartScreen warning; ad-hoc Mac previews are not notarized. Use the signing column above for this release’s exact status.', '', 'Verify the archive against SHA256SUMS.txt. Release metadata and hashes are also in release.json.', '', 'Downloads and installation: https://cbassuarez.com/nus.dev/download/', 'Changes: https://github.com/cbassuarez/nus/commits/'+args.revision]
     # The public API returns release notes without a second cross-origin asset
     # request. Keep the same verified metadata available to the download page.

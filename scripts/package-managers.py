@@ -4,13 +4,13 @@
     package-managers.py homebrew --manifest dist/release/release.json --out <tap checkout>
     package-managers.py winget   --manifest dist/release/release.json --out <folder>
 
-  macOS     brew install cbassuarez/nus/nus               (cbassuarez/nus/nus@preview)
+  macOS     brew install cbassuarez/tap/nus               (cbassuarez/tap/nus@preview)
   Windows   winget install cbassuarez.nus                 (cbassuarez.nus.Preview)
   Linux     apt, from the repository in the apt-<channel> release (apt-repo.py)
 
 Everything comes from release.json, which publish-release.py verified against
 the uploaded assets. The release workflow commits the cask to the tap
-(github.com/cbassuarez/homebrew-nus) and submits the winget manifests to
+(github.com/cbassuarez/homebrew-tap) and submits the winget manifests to
 microsoft/winget-pkgs.
 """
 import argparse

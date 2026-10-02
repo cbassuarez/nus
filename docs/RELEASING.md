@@ -180,14 +180,13 @@ resolves its own folder through symlinks.
   profile for that one copy. `--uninstall` removes the copy and keeps settings.
   In-app updates work for this copy as before.
 
-**Install command.** `scripts/install.sh` finds the newest Linux release of a
-channel through the GitHub API, checks each download against its
-`SHA256SUMS.txt`, and installs the .deb with apt on Debian and Ubuntu, or the
-archive with `install-desktop.sh` elsewhere (`--user` forces the archive, which
-needs no sudo; `--preview` picks that channel, as does the absence of a stable
-release):
-
-    curl -fsSL https://raw.githubusercontent.com/cbassuarez/nus/main/scripts/install.sh | sh
+**Install commands.** The site serves the one-liners
+(`cbassuarez.com/nus.dev/install.sh` and `install.ps1`, in the nus.dev
+repository). Each checks downloads against the release's `SHA256SUMS.txt`:
+on Debian and Ubuntu it installs the .deb with apt, on other Linux the archive
+with `install-desktop.sh`, on Windows the signed installer silently, and on
+macOS nus.app. Package names and the `nus@preview` / `.Preview` identifiers
+below must stay in step with them and with the download page.
 
 **The apt repository** lives in GitHub Releases: after publishing, the release
 workflow builds a signed flat repository (`scripts/apt-repo.py`: the .deb,
@@ -212,7 +211,7 @@ release for each package manager from its verified `release.json`
 (`scripts/package-managers.py`):
 
 - **Homebrew**: `Casks/nus.rb` or `Casks/nus@preview.rb`, committed to the tap
-  `github.com/cbassuarez/homebrew-nus` (`brew install cbassuarez/nus/nus@preview`;
+  `github.com/cbassuarez/homebrew-tap` (`brew install cbassuarez/tap/nus@preview`;
   `brew install` finds casks without `--cask`). The casks conflict, since both
   install `nus.app`; each links the `nus` command. A cask, not a formula: Homebrew
   installs GUI apps only as casks, and homebrew-core formulae must build from
@@ -222,8 +221,8 @@ release for each package manager from its verified `release.json`
   replaces the tap for that channel. `auto_updates` leaves updating to
   the app. Ad-hoc signed builds get a postflight that clears Homebrew's
   quarantine flag, without which macOS reports the app as damaged; notarized
-  builds keep it. Setup: create the public repository `cbassuarez/homebrew-nus`,
-  and a fine-grained token with Contents: write on it as the secret
+  builds keep it. Setup: the tap `cbassuarez/homebrew-tap` exists;
+  add a fine-grained token with Contents: write on it as the secret
   `HOMEBREW_TAP_TOKEN`.
 - **winget**: manifests for `cbassuarez.nus` / `cbassuarez.nus.Preview`
   (the Inno installer, per-user scope, `nus` on PATH), submitted to

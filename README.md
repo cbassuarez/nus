@@ -156,7 +156,7 @@ inside or outside nus it drives the running app (`nus open <url>`, `nus ls`,
 macOS (Homebrew):
 
 ```sh
-brew install cbassuarez/nus/nus@preview
+brew install cbassuarez/tap/nus@preview
 ```
 
 Windows (winget):
@@ -173,10 +173,15 @@ sudo curl -fsSLo /etc/apt/sources.list.d/nus-preview.sources https://github.com/
 sudo apt update && sudo apt install nus-preview
 ```
 
-Any Linux (picks apt where it can, otherwise installs for your account):
+Or one line, which checks the download against the release's checksums and
+uses apt where it can (macOS and Linux, then Windows):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/cbassuarez/nus/main/scripts/install.sh | sh -s -- --preview
+curl -fsSL https://cbassuarez.com/nus.dev/install.sh | sh
+```
+
+```powershell
+irm https://cbassuarez.com/nus.dev/install.ps1 | iex
 ```
 
 Or [download the latest preview](https://github.com/cbassuarez/nus/releases/latest) directly.
