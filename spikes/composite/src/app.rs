@@ -1305,6 +1305,8 @@ pub struct App {
     pub palette: Option<(PaletteMode, String)>,
     /// Find: the bar and its ladder (find.rs).
     pub find_bar: Option<crate::find::Bar>,
+    /// The bar just closed, rolling up: where it was, since when.
+    pub find_ghost: Option<(nus_render::Rect, std::time::Instant)>,
     /// A page's address, edited in its header (address.rs).
     pub address: Option<crate::address::Address>,
     pub palette_sel: usize,
@@ -1652,6 +1654,7 @@ impl App {
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
             find_bar: None,
+            find_ghost: None,
             address: None,
             palette_sel: 0,
             pending_capture: None,

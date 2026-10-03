@@ -370,6 +370,15 @@ pub struct MeCard {
     pub leave_from: Option<std::time::Instant>,
     /// The masthead number is being pressed, since when (skyview.rs: the sky it was made under).
     pub badge_held: Option<std::time::Instant>,
+    /// Moving between steps: the step last drawn and when it changed (the
+    /// heading settles and the body fades up from then), the frame's glide
+    /// (from, to, since), and the rail's marker (from, to, since) and the
+    /// check last drawn in.
+    pub shown: Option<Option<Step>>,
+    pub step_at: Option<std::time::Instant>,
+    pub frame: Option<(Rect, Rect, std::time::Instant)>,
+    pub rail: Option<(f32, f32, std::time::Instant)>,
+    pub checked: Option<(usize, std::time::Instant)>,
 }
 
 impl Default for MeCard {
@@ -396,6 +405,11 @@ impl Default for MeCard {
             host: String::new(),
             first: false,
             leaving: false,
+            shown: None,
+            step_at: None,
+            frame: None,
+            rail: None,
+            checked: None,
             terms_tab: 0,
             terms_scroll: 0.0,
             terms_reach: 0.0,
@@ -1079,6 +1093,52 @@ impl App {
 
     /// Draw the card: above the footer's avatar when the sidebar shows,
     /// centred otherwise.
+    /// How far into the step's arrival we are, 0..1, over `ms` (scaled by
+    /// the motion setting; 1 at once when motion is reduced), after `delay`.
+    fn me_since(&self, delay: f32, ms: f32) -> f32 {
+        let total = self.motion.dur(ms);
+        let Some(at) = self.me_card.step_at else { return 1.0 };
+        if total <= 0.0 {
+            return 1.0;
+        }
+        let d = self.motion.dur(delay);
+        ((crate::clock::since(at).as_secs_f32() - d) / total).clamp(0.0, 1.0)
+    }
+
+    /// A step's heading, settling out of noise left to right the way the
+    /// wordmark does: each letter is noise until its moment, flashes the
+    /// signal as it lands, then holds. Plain once settled, or with motion
+    /// reduced.
+    pub(crate) fn me_title(&mut self, scene: &mut Scene, style: Style, x: f32, base: f32, text: &str) -> f32 {
+        let span = self.motion.dur(300.0);
+        let age = self.me_card.step_at.map(|a| crate::clock::since(a).as_secs_f32()).unwrap_or(f32::MAX);
+        if span <= 0.0 || age >= span + 0.12 {
+            return self.fonts.draw(scene, style, x, base, text);
+        }
+        const NOISE: [&str; 8] = ["#", "%", "&", "*", "+", "=", "-", ":"];
+        let n = text.chars().count().max(1) as f32;
+        let frame = (age * 60.0) as usize;
+        let mut cx = x;
+        for (i, ch) in text.chars().enumerate() {
+            let s = ch.to_string();
+            let w = self.fonts.measure(style, &s);
+            let at = span * (i as f32 / n);
+            if ch == ' ' {
+            } else if age < at {
+                let g = NOISE[(frame + i * 7) % NOISE.len()];
+                let nw = self.fonts.measure(style, g);
+                self.fonts.draw(scene, Style { color: fade(style.color, 0.35), ..style }, cx + (w - nw) * 0.5, base, g);
+            } else if age < at + 0.09 {
+                self.fonts.draw(scene, Style { color: self.surface.signal, ..style }, cx, base, &s);
+            } else {
+                self.fonts.draw(scene, style, cx, base, &s);
+            }
+            cx += w;
+        }
+        self.dirty = true;
+        cx - x
+    }
+
     pub(crate) fn draw_me_card(&mut self, scene: &mut Scene) {
         if self.me_card.mercury_reveal.is_some(){return;}
         if self.me_card.leaving && self.me_card.leave_from.is_none() {
@@ -1093,6 +1153,12 @@ impl App {
         let rise = self.me_card.rise.value();
         if self.me_card.rise.active() {
             self.dirty = true;
+        }
+        // A new step: the heading settles, the body fades up, from now.
+        if self.me_card.shown != Some(self.me_card.step) {
+            let first_draw = self.me_card.shown.is_none();
+            self.me_card.shown = Some(self.me_card.step);
+            self.me_card.step_at = if first_draw { None } else { Some(crate::clock::now()) };
         }
         let (w, h) = (self.target.size.0 as f32, self.target.size.1 as f32);
         let t: Theme = self.theme.clone();
@@ -1160,14 +1226,48 @@ impl App {
         let cy = if leaving { cy + (1.0 - rise).powi(2) * (h - cy + self.px(24.0)) } else { cy + (1.0 - rise) * self.px(12.0) };
         let r = Rect::new(cx.round(), cy.round(), cw, ch);
         self.me_card.rect = r;
+        // The frame glides to a new step's size and place; the step is laid
+        // out where it will end, and shown through the frame as it moves.
+        let glide = self.motion.dur(220.0);
+        let frame = match self.me_card.frame {
+            _ if glide <= 0.0 || leaving || self.me_card.rise.active() => {
+                self.me_card.frame = Some((r, r, crate::clock::now()));
+                r
+            }
+            Some((from, to, at)) => {
+                let shown_now = {
+                    let k = (crate::clock::since(at).as_secs_f32() / glide).clamp(0.0, 1.0);
+                    let e = 1.0 - (1.0 - k).powi(3);
+                    Rect::new(from.x + (to.x - from.x) * e, from.y + (to.y - from.y) * e, from.w + (to.w - from.w) * e, from.h + (to.h - from.h) * e)
+                };
+                if to != r {
+                    self.me_card.frame = Some((shown_now, r, crate::clock::now()));
+                    self.dirty = true;
+                    shown_now
+                } else {
+                    if shown_now != r {
+                        self.dirty = true;
+                    }
+                    shown_now
+                }
+            }
+            None => {
+                self.me_card.frame = Some((r, r, crate::clock::now()));
+                r
+            }
+        };
+        let gliding = frame != r;
 
         scene.layer(None);
         let a = if leaving { rise.sqrt() } else { rise };
-        scene.rect(Rect::new(r.x + self.px(8.0), r.y + self.px(8.0), r.w, r.h), fade(ink, a));
-        scene.rect(r, fade(t.paper, a));
-        scene.outline(r, self.px(m::FLOATING), fade(ink, a));
+        scene.rect(Rect::new(frame.x + self.px(8.0), frame.y + self.px(8.0), frame.w, frame.h), fade(ink, a));
+        scene.rect(frame, fade(t.paper, a));
+        scene.outline(frame, self.px(m::FLOATING), fade(ink, a));
         if a < 0.999 && !leaving {
             scene.layer(Some(Rect::new(r.x, r.y, r.w, r.h * a.max(0.01))));
+        } else if gliding {
+            let inner = frame.inset(self.px(m::FLOATING));
+            scene.layer(Some(inner));
         }
 
         // Head: the face, the name, the device; the badge.
@@ -1241,17 +1341,57 @@ impl App {
             let rail = Rect::new(r.x, r.y + head_h, rail_w, r.h - head_h);
             scene.rect(rail, fade(t.tint, 0.6));
             scene.vline(rail.right(), rail.y, rail.h, self.px(m::HAIRLINE), ink);
+            // The marker travels to the step; the step just finished has its
+            // check drawn in, left to right.
+            let travel = self.motion.dur(260.0);
+            let marker = match self.me_card.rail {
+                Some((_, to, _)) if to != at as f32 => {
+                    let shown = self.me_card.rail.map(|(f, to, s)| { let k = if travel > 0.0 { (crate::clock::since(s).as_secs_f32() / travel).clamp(0.0, 1.0) } else { 1.0 }; f + (to - f) * (1.0 - (1.0 - k).powi(3)) }).unwrap_or(at as f32);
+                    if (at as f32) > to {
+                        self.me_card.checked = Some((at - 1, crate::clock::now()));
+                    }
+                    self.me_card.rail = Some((shown, at as f32, crate::clock::now()));
+                    shown
+                }
+                Some((from, to, s)) => {
+                    let k = if travel > 0.0 { (crate::clock::since(s).as_secs_f32() / travel).clamp(0.0, 1.0) } else { 1.0 };
+                    if k < 1.0 {
+                        self.dirty = true;
+                    }
+                    from + (to - from) * (1.0 - (1.0 - k).powi(3))
+                }
+                None => {
+                    self.me_card.rail = Some((at as f32, at as f32, crate::clock::now()));
+                    at as f32
+                }
+            };
+            let draw_in = self.motion.dur(220.0);
             let mut ry = rail.y + self.px(22.0);
             for (k, name) in stages.iter().enumerate() {
                 let done = k < at;
                 let now = k == at;
                 let dot = Rect::new(rail.x + pad, ry - self.px(9.0), self.px(10.0), self.px(10.0));
                 if done {
-                    self.fonts.draw_icon(scene, icons::CHECK, self.px(11.0), dot.x, dot.y - self.px(0.5), ink);
-                } else if now {
-                    scene.rect(dot, self.surface.signal);
-                } else {
+                    let reveal = match self.me_card.checked {
+                        Some((c, s)) if c == k && draw_in > 0.0 => (crate::clock::since(s).as_secs_f32() / draw_in).clamp(0.0, 1.0),
+                        _ => 1.0,
+                    };
+                    if reveal < 1.0 {
+                        self.dirty = true;
+                        let saved = scene.clip();
+                        scene.layer(Some(Rect::new(dot.x - self.px(1.0), dot.y - self.px(2.0), self.px(13.0) * reveal, self.px(14.0))));
+                        self.fonts.draw_icon(scene, icons::CHECK, self.px(11.0), dot.x, dot.y - self.px(0.5), ink);
+                        scene.layer(saved);
+                    } else {
+                        self.fonts.draw_icon(scene, icons::CHECK, self.px(11.0), dot.x, dot.y - self.px(0.5), ink);
+                    }
+                } else if !now {
                     scene.outline(dot, self.px(m::HAIRLINE), t.dim);
+                }
+                if k == 0 {
+                    // The marker, wherever its travel has it.
+                    let my = dot.y + marker * self.px(34.0);
+                    scene.rect(Rect::new(dot.x, my, dot.w, dot.h), self.surface.signal);
                 }
                 let st = Style { color: if now || done { ink } else { t.dim }, ..if now { ui_strong } else { ui } };
                 self.fonts.draw(scene, st, dot.right() + self.px(12.0), ry, name);
@@ -1336,7 +1476,7 @@ impl App {
                 }
                 if roomy {
                     let title = Style { font: self.f.serif, px: self.px(30.0), color: ink, tracking: 0.0 };
-                    self.fonts.draw(scene, title, bx, y + self.px(26.0), "First, a little about you.");
+                    self.me_title(scene, title, bx, y + self.px(26.0), "First, a little about you.");
                     y += self.px(52.0);
                     let lead = "A minute to set up the profile that's yours on this machine. Everything here can be changed later from the avatar in the footer.";
                     for l in crate::reader::wrap(&self.fonts, ui, lead, bw) {
@@ -1362,7 +1502,7 @@ impl App {
                     }
                     self.me_button(scene, bx, foot_base, "LET'S BEGIN", true, CardHit::Next);
                 } else {
-                    self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "This is your profile.");
+                    self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "This is your profile.");
                     y += self.px(34.0);
                     let words = "Your profile lives on this machine. No nus account or usage telemetry. Optional sync encrypts profile data. Automatic GitHub update checks can be disabled in Settings.";
                     for l in crate::reader::wrap(&self.fonts, ui, words, bw) {
@@ -1375,7 +1515,7 @@ impl App {
                 }
             }
             Some(Step::Name) => {
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), if editing { "YOUR NAME" } else { "WHAT NUS CALLS YOU" });
+                self.me_title(scene, strong, bx, y + self.px(8.0), if editing { "YOUR NAME" } else { "WHAT NUS CALLS YOU" });
                 y += self.px(22.0);
                 y = self.me_input(scene, bx, y, bw, "a name");
                 for l in crate::reader::wrap(&self.fonts, dim, "THE INITIAL IS YOUR FACE UNTIL YOU PICK ONE · ENTER GOES ON", bw) {
@@ -1387,7 +1527,7 @@ impl App {
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Face) => {
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "YOUR FACE");
+                self.me_title(scene, strong, bx, y + self.px(8.0), "YOUR FACE");
                 y += self.px(22.0);
                 // Three tiles: the initial, an emoji, the picture.
                 let gap = self.px(12.0);
@@ -1459,7 +1599,7 @@ impl App {
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Device) => {
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "THIS DEVICE");
+                self.me_title(scene, strong, bx, y + self.px(8.0), "THIS DEVICE");
                 y += self.px(22.0);
                 y = self.me_input(scene, bx, y, bw, "a name for this machine");
                 for l in crate::reader::wrap(&self.fonts, dim, "SYNC NAMES WHAT THIS MACHINE WROTE BY IT · IT NEVER SYNCS ITSELF", bw) {
@@ -1471,7 +1611,7 @@ impl App {
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Sync) => {
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "WHERE IT LIVES");
+                self.me_title(scene, strong, bx, y + self.px(8.0), "WHERE IT LIVES");
                 y += self.px(22.0);
                 // Three tiles: here, a folder you sync, a private repo.
                 let tw = ((bw - 2.0 * self.px(10.0)) / 3.0).floor();
@@ -1515,7 +1655,7 @@ impl App {
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Folder) => {
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "THE FOLDER THAT TRAVELS");
+                self.me_title(scene, strong, bx, y + self.px(8.0), "THE FOLDER THAT TRAVELS");
                 y += self.px(22.0);
                 y = self.me_input(scene, bx, y, bw, "a path your OS already syncs");
                 for l in crate::reader::wrap(&self.fonts, dim, "SEALED FILES PER DEVICE LAND THERE · CTRL+V PASTES · NEXT: THE KEY", bw) {
@@ -1527,7 +1667,7 @@ impl App {
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Forge) => {
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "WHICH FORGE");
+                self.me_title(scene, strong, bx, y + self.px(8.0), "WHICH FORGE");
                 y += self.px(22.0);
                 // Four chips.
                 let picked = self.me_card.forge;
@@ -1582,7 +1722,7 @@ impl App {
                 let kind = self.me_card.forge;
                 let host = self.me_card.host.clone();
                 y = self.me_found_rows(scene, bx, y, bw, &host);
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), &format!("{}A {} TOKEN", if self.me_found_any(&host) { "OR " } else { "" }, kind.name().to_uppercase()));
+                self.me_title(scene, strong, bx, y + self.px(8.0), &format!("{}A {} TOKEN", if self.me_found_any(&host) { "OR " } else { "" }, kind.name().to_uppercase()));
                 y += self.px(22.0);
                 y = self.me_input(scene, bx, y, bw, "paste it · ctrl+v");
                 let hint = format!("{} · IT STAYS IN PROFILE/SYNC, NEVER IN A URL OR ON THE CARRIER", kind.token_hint()).to_uppercase();
@@ -1602,12 +1742,12 @@ impl App {
                 match &phase {
                     Phase::Starting => {
                         self.fonts.draw_icon(scene, icons::GITHUB, isz, bx, y, self.surface.signal);
-                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Asking GitHub for a code…");
+                        self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Asking GitHub for a code…");
                         self.dirty = true;
                     }
                     Phase::Code { user_code, uri } => {
                         self.fonts.draw_icon(scene, icons::GITHUB, isz, bx, y, self.surface.signal);
-                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Enter this code on GitHub");
+                        self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Enter this code on GitHub");
                         y += self.px(36.0);
                         let code = Style { font: self.f.strong, px: self.px(28.0), color: ink, tracking: self.px(2.0) };
                         let cw = self.fonts.measure(code, user_code);
@@ -1625,24 +1765,24 @@ impl App {
                     }
                     Phase::Verifying => {
                         self.fonts.draw_icon(scene, icons::LOCK_KEY, isz, bx, y, self.surface.signal);
-                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Signing in…");
+                        self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Signing in…");
                         self.dirty = true;
                     }
                     Phase::Making => {
                         self.fonts.draw_icon(scene, icons::LOCK_KEY, isz, bx, y, self.surface.signal);
-                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Finding nus-profile, or making it…");
+                        self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "Finding nus-profile, or making it…");
                         self.dirty = true;
                     }
                     Phase::Done(f) => {
                         self.fonts.draw_icon(scene, icons::CHECK, isz, bx, y, self.surface.signal);
-                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), &format!("{} · {}/{}", f.kind.name(), f.user, f.repo));
+                        self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), &format!("{} · {}/{}", f.kind.name(), f.user, f.repo));
                         y += self.px(34.0);
                         self.fonts.draw(scene, ui, bx, y + self.px(12.0), "Private, and empty until the first sync. Next, the key");
                         self.fonts.draw(scene, ui, bx, y + self.px(31.0), "that seals what goes there.");
                     }
                     Phase::Failed(e) => {
                         self.fonts.draw_icon(scene, icons::WARNING, isz, bx, y, self.surface.signal);
-                        self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "That did not work.");
+                        self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), "That did not work.");
                         y += self.px(34.0);
                         for l in crate::reader::wrap(&self.fonts, ui, e, bw) {
                             self.fonts.draw(scene, ui, bx, y + self.px(12.0), &l);
@@ -1659,7 +1799,7 @@ impl App {
                 self.me_button(scene, x, foot_base, "BACK", false, CardHit::Back);
             }
             Some(Step::Key) => {
-                self.fonts.draw(scene, strong, bx, y + self.px(8.0), "THE KEY THAT SEALS IT");
+                self.me_title(scene, strong, bx, y + self.px(8.0), "THE KEY THAT SEALS IT");
                 y += self.px(22.0);
                 // Two chips: the first device makes one; the next joins with the word.
                 let mode = self.me_card.key_mode;
@@ -1711,7 +1851,7 @@ impl App {
             }
             Some(Step::Terms) => {
                 let title = Style { font: self.f.serif, px: self.px(if roomy { 26.0 } else { 20.0 }), color: ink, tracking: 0.0 };
-                self.fonts.draw(scene, title, bx, y + self.px(20.0), "The fine print");
+                self.me_title(scene, title, bx, y + self.px(20.0), "The fine print");
                 y += self.px(38.0);
                 // Three tabs: privacy, terms, licenses.
                 let mut tx = bx;
@@ -1774,7 +1914,7 @@ impl App {
                 self.fonts.draw_icon(scene, icons::HAND_WAVING, isz, bx, y, self.surface.signal);
                 let head = Style { font: self.f.strong, px: self.px(15.0), color: ink, tracking: 0.0 };
                 let word = self.me.as_ref().map(|m| m.day_word()).unwrap_or_else(|| "day 1".into());
-                self.fonts.draw(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), &format!("{}. Everything here stays here.", word.caps()));
+                self.me_title(scene, head, bx + isz + self.px(12.0), y + self.px(16.0), &format!("{}. Everything here stays here.", word.caps()));
                 y += self.px(34.0);
                 let how = if self.sync_ready() {
                     match crate::forge::load() {
@@ -1800,6 +1940,34 @@ impl App {
             }
         }
         let _ = (ui_strong, foot_base);
+        // A new step's body fades up band by band, top to bottom, about
+        // 30 ms apart, under its settling heading; the buttons come last.
+        if self.me_card.step_at.is_some() {
+            let top = r.y + head_h + self.px(if roomy { 60.0 } else { 30.0 });
+            let band = self.px(32.0);
+            let left = r.x + rail_w;
+            // However tall the step, the last band (the buttons) starts by
+            // 180 ms: about 30 ms apart on a short step, closer on a tall one.
+            let bands = ((r.bottom() - top) / band).ceil().max(1.0);
+            let gap = (180.0 / bands).min(30.0);
+            let mut k = 0;
+            let mut by = top;
+            let mut showing = false;
+            while by < r.bottom() {
+                let p = self.me_since(gap * k as f32, 160.0);
+                let veil = 1.0 - (1.0 - (1.0 - p).powi(2));
+                if veil > 0.001 {
+                    let hgt = band.min(r.bottom() - by);
+                    scene.rect(Rect::new(left + self.px(1.0), by, r.right() - left - self.px(2.0), hgt), fade(t.paper, veil * a));
+                    showing = true;
+                }
+                by += band;
+                k += 1;
+            }
+            if showing {
+                self.dirty = true;
+            }
+        }
         scene.hline(r.x, r.bottom() - foot_h, r.w, self.px(m::HAIRLINE), t.tint);
         scene.layer(None);
         // Hits are only live once the card has risen.

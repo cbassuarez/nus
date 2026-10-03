@@ -558,6 +558,16 @@ impl App {
                     if now {
                         scene.rect(rr, fade(self.surface.signal, 0.32));
                         scene.outline(rr, self.px(m::FLOATING), ink);
+                        // Just arrived: a ring closes in on it.
+                        let ring = self.motion.dur(180.0);
+                        if let Some(at) = s.moved_at.filter(|_| ring > 0.0) {
+                            let k = (crate::clock::since(at).as_secs_f32() / ring).clamp(0.0, 1.0);
+                            if k < 1.0 {
+                                let grow = (1.0 - k) * self.px(10.0);
+                                scene.outline(Rect::new(rr.x - grow, rr.y - grow, rr.w + 2.0 * grow, rr.h + 2.0 * grow), self.px(m::STRUCTURE), fade(ink, 1.0 - k));
+                                self.dirty = true;
+                            }
+                        }
                     } else {
                         scene.rect(rr, fade(self.surface.signal, 0.18));
                     }

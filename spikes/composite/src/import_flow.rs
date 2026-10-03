@@ -139,7 +139,7 @@ impl App {
     pub(crate) fn draw_import_page(&mut self,scene:&mut Scene,bx:f32,mut y:f32,bw:f32,foot:f32){
         let step=self.me_card.step;let ui=self.ui();let dim=Style{color:self.theme.dim,..ui};let title=Style{font:self.f.serif,px:self.px(23.0),color:self.theme.ink,tracking:0.0};
         if step==Some(Step::Import){
-            self.fonts.draw(scene,title,bx,y+self.px(22.0),"Make yourself at home.");y+=self.px(46.0);
+            self.me_title(scene,title,bx,y+self.px(22.0),"Make yourself at home.");y+=self.px(46.0);
             for line in crate::reader::wrap(&self.fonts,dim,"Bring your saved links and color themes.",bw){self.fonts.draw(scene,dim,bx,y,&line);y+=self.px(18.0);}
             y+=self.px(21.0);let st=Style{color:self.surface.signal,px:self.px(17.0),..ui};
             let lead=self.fonts.draw(scene,st,bx,y,"Import from");let rx=bx+lead+self.px(9.0);let width=(bw-lead-self.px(33.0)).min(self.px(144.0));let clip=Rect::new(rx,y-self.px(23.0),width,self.px(36.0));
@@ -164,7 +164,7 @@ impl App {
             y+=self.px(58.0);
             self.me_button(scene,bx,foot,"CONTINUE",true,CardHit::Next);
         }else if step==Some(Step::ImportSources){
-            self.fonts.draw(scene,self.ui_strong(),bx,y+self.px(12.0),"Where are you coming from?");y+=self.px(30.0);
+            self.me_title(scene,self.ui_strong(),bx,y+self.px(12.0),"Where are you coming from?");y+=self.px(30.0);
             let cols=3;let cw=(bw-self.px(16.0))/cols as f32;
             for (i,(name,_)) in APPS.iter().enumerate(){let r=Rect::new(bx+(i%cols)as f32*(cw+self.px(8.0)),y+(i/cols)as f32*self.px(36.0),cw,self.px(29.0));let selected=i==self.me_card.import.source;
                 scene.rect(r,if selected{crate::app::fade(self.surface.signal,0.1)}else{self.theme.paper});scene.outline(r,self.px(1.0),if selected{self.surface.signal}else{self.theme.tint});

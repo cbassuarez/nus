@@ -84,6 +84,8 @@ pub struct TermFind {
     screen_at: Option<Instant>,
     /// The user has walked: the first match no longer picks itself.
     walked: bool,
+    /// When the current match last moved: its ring closes in from then.
+    pub moved_at: Option<Instant>,
 }
 
 impl TermFind {
@@ -119,6 +121,7 @@ impl TermFind {
             seen: 0,
             screen_at: None,
             walked: false,
+            moved_at: None,
         }
     }
 
@@ -185,6 +188,7 @@ impl TermFind {
         }
         if !self.walked && self.current.is_none() {
             if let Some(&newest) = self.hits.last() {
+                self.moved_at = Some(crate::clock::now());
                 self.current = Some(newest);
                 self.seen = newest.line;
                 changed = true;
@@ -267,6 +271,7 @@ impl TermFind {
         self.walked = true;
         self.current = Some(self.hits[i]);
         self.seen = self.seen.max(self.hits[i].line);
+        self.moved_at = Some(crate::clock::now());
     }
 }
 
@@ -421,6 +426,27 @@ pub struct Bar {
     away_done: bool,
     /// The list row ↑↓ has picked, for ↵.
     pick: Option<usize>,
+    /// Motion: when it opened (it unrolls from its top edge), the rung the
+    /// fill is sliding from, where the card is on its way between top and
+    /// foot, the count's last words (a new one ticks up into place), when
+    /// the NUS list appeared.
+    opened: Instant,
+    rung_from: Option<(Rect, Instant)>,
+    rung_rect: Option<Rect>,
+    y_shown: Option<(f32, f32, Instant)>,
+    count_shown: (String, Instant),
+    list_at: Option<Instant>,
+}
+
+/// 0..1 over `ms` scaled by the motion setting since `at`, eased out; 1 at
+/// once when motion is reduced.
+fn eased(motion: &crate::anim::Motion, at: Instant, ms: f32) -> f32 {
+    let d = motion.dur(ms);
+    if d <= 0.0 {
+        return 1.0;
+    }
+    let k = (crate::clock::since(at).as_secs_f32() / d).clamp(0.0, 1.0);
+    1.0 - (1.0 - k).powi(3)
 }
 
 /// A count, in words: "3 of 41", "counting… 12", "No matches", "10,000+".
@@ -702,6 +728,12 @@ impl App {
             away_job: None,
             away_done: false,
             pick: None,
+            opened: crate::clock::now(),
+            rung_from: None,
+            rung_rect: None,
+            y_shown: None,
+            count_shown: (String::new(), crate::clock::now()),
+            list_at: None,
         });
         if let Some(s) = seed {
             if let Some(bar) = self.find_bar.as_mut() {
@@ -793,6 +825,7 @@ impl App {
 
     pub(crate) fn close_find(&mut self) {
         let Some(bar) = self.find_bar.take() else { return };
+        self.find_ghost = Some((bar.rect, crate::clock::now()));
         for id in bar.searched {
             self.find_clear(id, id == bar.at);
         }
@@ -938,6 +971,7 @@ impl App {
         if bar.scope == scope {
             return;
         }
+        bar.rung_from = bar.rung_rect.map(|r| (r, crate::clock::now()));
         bar.scope = scope;
         bar.notice = None;
         bar.wide_due = Some(Instant::now());
@@ -1370,6 +1404,24 @@ impl App {
 
     /// The bar, over the pane holding the current match.
     pub(crate) fn draw_find_bar(&mut self, scene: &mut Scene) {
+        // Closed: the card rolls back up into its top edge.
+        if self.find_bar.is_none() {
+            if let Some((r, at)) = self.find_ghost {
+                let e = eased(&self.motion, at, 90.0);
+                if e >= 1.0 {
+                    self.find_ghost = None;
+                } else {
+                    let h = r.h * (1.0 - e);
+                    let ink = self.theme.ink;
+                    scene.layer(None);
+                    scene.rect(Rect::new(r.x, r.y, r.w, h), self.paper());
+                    scene.outline(Rect::new(r.x, r.y, r.w, h), self.px(m::STRUCTURE), fade(ink, 1.0 - e));
+                    self.dirty = true;
+                }
+            }
+            return;
+        }
+        self.find_ghost = None;
         let Some(at) = self.find_bar.as_ref().map(|b| b.at) else { return };
         // Only over a pane on screen: the walk may have left it behind.
         let on_screen = self.tabs.get(self.active).is_some_and(|t| t.id == at.0);
@@ -1398,7 +1450,32 @@ impl App {
         let under = |r: Rect| cur.is_some_and(|c| c.x < r.right() + pad && c.right() > r.x - pad && c.y < r.bottom() + pad && c.bottom() > r.y - pad);
         let was_low = self.find_bar.as_ref().is_some_and(|b| b.low);
         let go_low = if was_low { !under(low) && (under(high) || cur.is_some_and(|c| c.bottom() < pane.y + pane.h * 0.5)) } else { under(high) };
-        let card = if go_low { low } else { high };
+        let target = if go_low { low } else { high };
+        let motion = self.motion.clone();
+        let glide_y = {
+            let bar = self.find_bar.as_mut().unwrap();
+            let (from, to, at) = bar.y_shown.unwrap_or((target.y, target.y, crate::clock::now()));
+            let now = from + (to - from) * eased(&motion, at, 160.0);
+            if (to - target.y).abs() >= 0.5 {
+                // A new place: from wherever it is now.
+                bar.y_shown = Some((now, target.y, crate::clock::now()));
+                now
+            } else {
+                if bar.y_shown.is_none() {
+                    bar.y_shown = Some((target.y, target.y, at));
+                }
+                now
+            }
+        };
+        if (glide_y - target.y).abs() >= 0.5 {
+            self.dirty = true;
+        }
+        let card = Rect::new(target.x, glide_y, target.w, target.h);
+        let opened = self.find_bar.as_ref().map(|b| b.opened).unwrap_or_else(crate::clock::now);
+        let unroll = eased(&motion, opened, 110.0);
+        if unroll < 1.0 {
+            self.dirty = true;
+        }
         // On a page, only plain text and case: Chromium's find does nothing
         // else, and a half-right search is worse than none.
         let on_page = matches!(self.find_pane(at), Some(Pane::Web(_)));
@@ -1413,6 +1490,9 @@ impl App {
         let (word, regex) = (bar.word, bar.regex);
         let notice = bar.notice.as_ref().filter(|(_, at)| at.elapsed() < Duration::from_secs(3)).map(|(n, _)| n.clone());
         scene.layer(None);
+        if unroll < 1.0 {
+            scene.layer(Some(Rect::new(card.x - self.px(2.0), card.y - self.px(2.0), card.w + self.px(10.0), (card.h + self.px(10.0)) * unroll)));
+        }
         scene.rect(Rect::new(card.x + self.px(6.0), card.y + self.px(6.0), card.w, card.h), fade(ink, 0.35));
         scene.rect(card, paper);
         scene.outline(card, self.px(if focused { m::FLOATING } else { m::STRUCTURE }) , ink);
@@ -1459,14 +1539,26 @@ impl App {
             self.fonts.draw(scene, label, r.x + self.px(5.0), base, &fresh);
             right -= self.px(8.0);
         }
+        // A new count ticks up into place.
+        let tick = {
+            let bar = self.find_bar.as_mut().unwrap();
+            if bar.count_shown.0 != count {
+                bar.count_shown = (count.clone(), crate::clock::now());
+            }
+            eased(&motion, bar.count_shown.1, 90.0)
+        };
+        if tick < 1.0 {
+            self.dirty = true;
+        }
+        let lift = (1.0 - tick) * self.px(5.0);
         if !count.is_empty() {
             let cw = self.fonts.measure(strong, &count);
             right -= cw + if none { self.px(10.0) } else { 0.0 };
             if none {
                 scene.rect(Rect::new(right, card.y + self.px(9.0), cw + self.px(10.0), row - self.px(18.0)), ink);
-                self.fonts.draw(scene, Style { color: paper, ..strong }, right + self.px(5.0), base, &count);
+                self.fonts.draw(scene, Style { color: paper, ..strong }, right + self.px(5.0), base + lift, &count);
             } else {
-                self.fonts.draw(scene, strong, right, base, &count);
+                self.fonts.draw(scene, Style { color: fade(ink, 0.35 + 0.65 * tick), ..strong }, right, base + lift, &count);
             }
         }
         // The field: the query's end stays in sight.
@@ -1498,6 +1590,9 @@ impl App {
         let y2 = card.y + row;
         let base2 = y2 + (row + label.px) * 0.5 - self.px(2.0);
         let mut x2 = card.x;
+        // The rungs, then the fill sliding to the chosen one, then their
+        // words: each inverts where the fill is under it.
+        let mut placed: Vec<(Scope, String, Rect)> = Vec::new();
         for (sc, st) in &rungs {
             let n = if query.is_empty() {
                 String::new()
@@ -1511,18 +1606,35 @@ impl App {
             let text = format!("{}{n}", sc.word());
             let tw = self.fonts.measure(label, &text) + self.px(20.0);
             let r = Rect::new(x2, y2, tw, row);
-            if *sc == scope {
-                scene.rect(r, ink);
-                self.fonts.draw(scene, Style { color: paper, ..label }, r.x + self.px(10.0), base2, &text);
-            } else {
-                if r.contains(self.mouse.0, self.mouse.1) {
-                    scene.rect(r, fade(ink, 0.08));
-                }
-                self.fonts.draw(scene, label, r.x + self.px(10.0), base2, &text);
-            }
-            scene.rect(Rect::new(r.right(), y2, self.px(m::HAIRLINE), row), ink);
-            hits.push((r, Hit::Rung(*sc)));
+            placed.push((*sc, text, r));
             x2 = r.right();
+        }
+        let chosen = placed.iter().find(|(sc, _, _)| *sc == scope).map(|(_, _, r)| *r).unwrap_or(Rect::new(card.x, y2, 0.0, row));
+        let fill = match self.find_bar.as_ref().and_then(|b| b.rung_from) {
+            Some((from, at)) => {
+                let e = eased(&motion, at, 140.0);
+                if e < 1.0 {
+                    self.dirty = true;
+                }
+                Rect::new(from.x + (chosen.x - from.x) * e, y2, from.w + (chosen.w - from.w) * e, row)
+            }
+            None => chosen,
+        };
+        if let Some(bar) = self.find_bar.as_mut() {
+            bar.rung_rect = Some(chosen);
+        }
+        for (_, _, r) in &placed {
+            if r.contains(self.mouse.0, self.mouse.1) && *r != chosen {
+                scene.rect(*r, fade(ink, 0.08));
+            }
+        }
+        scene.rect(fill, ink);
+        for (sc, text, r) in &placed {
+            let mid = r.x + r.w * 0.5;
+            let under_fill = mid >= fill.x && mid <= fill.right();
+            self.fonts.draw(scene, Style { color: if under_fill { paper } else { ink }, ..label }, r.x + self.px(10.0), base2, text);
+            scene.rect(Rect::new(r.right(), y2, self.px(m::HAIRLINE), row), ink);
+            hits.push((*r, Hit::Rung(*sc)));
         }
         let wider = if none {
             rungs.iter().find(|(sc, st)| *sc > scope && st.total > 0).map(|(sc, st)| format!("{} IN THIS {} · {}", thousands(st.total), sc.word(), chord(false)))
@@ -1565,8 +1677,19 @@ impl App {
             scene.rect(Rect::new(list.x + self.px(6.0), list.y + self.px(6.0), list.w, list.h), fade(ink, 0.35));
             scene.rect(list, paper);
             scene.outline(list, self.px(m::STRUCTURE), ink);
+            let list_at = {
+                let bar = self.find_bar.as_mut().unwrap();
+                *bar.list_at.get_or_insert_with(crate::clock::now)
+            };
             for (k, (title, detail)) in rows.iter().enumerate() {
                 let r = Rect::new(list.x, list.y + self.px(4.0) + rh * k as f32, list.w, rh);
+                // Rows unroll one after another, 25 ms apart.
+                let e = eased(&motion, list_at + Duration::from_secs_f32(motion.dur(25.0 * k as f32)), 120.0);
+                if e < 1.0 {
+                    self.dirty = true;
+                }
+                let saved = scene.clip();
+                scene.layer(Some(Rect::new(r.x, r.y, r.w, r.h * e)));
                 let real = !away.is_empty();
                 let picked = real && pick == Some(k);
                 let hot = real && r.contains(self.mouse.0, self.mouse.1);
@@ -1594,7 +1717,10 @@ impl App {
                 if real {
                     hits.push((r, Hit::Away(k)));
                 }
+                scene.layer(saved);
             }
+        } else if let Some(bar) = self.find_bar.as_mut() {
+            bar.list_at = None;
         }
         if let Some(bar) = self.find_bar.as_mut() {
             // The list is part of the bar for the pointer.
