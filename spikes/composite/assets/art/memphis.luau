@@ -30,7 +30,13 @@ local pieces = {
   { kind = "zigzag", w = 250, h = 26, stroke = 5, x = 330, y = 596, col = "red", at = 1.0, depth = 0.4 },
   { kind = "sticker", s = 84, x = 1180, y = 470, at = 1.12, depth = 0.95 },
   { kind = "circle", s = 54, x = 890, y = 232, col = "teal", at = 1.24, depth = 0.3 },
+  -- Placed only: a half disc on the pane's edge, pointing at the hover
+  -- sidebar behind it. Which edge it sits on says which way it points.
+  { kind = "peek", s = 150, x = 0, y = 400, col = "red", at = 1.36, depth = 0, placed = true },
 }
+-- The composition behind the prompt leaves the placed-only pieces out.
+local composed = {}
+for _, p in pieces do if not p.placed then composed[#composed + 1] = p end end
 for i, p in pieces do p.nod = -10; p.lift = -10; p.ph = i * 1.7; p.rot = p.rot or 0 end
 local nudges = 0
 local lastTyped = ""
@@ -74,6 +80,9 @@ local function polyOf(p, phase)
   elseif p.kind == "quarter" then
     pts[1] = { -s / 2, s / 2 }
     for i = 0, 24 do local a = -math.pi / 2 + i / 24 * (math.pi / 2); pts[#pts + 1] = { -s / 2 + math.cos(a) * s, s / 2 + math.sin(a) * s } end
+  elseif p.kind == "peek" then
+    -- Flat side on the edge (x = 0), the dome reaching into the pane.
+    for i = 0, 24 do local a = -math.pi / 2 + i / 24 * math.pi; pts[#pts + 1] = { math.cos(a) * s / 2, math.sin(a) * s / 2 } end
   elseif p.kind == "half" then
     for i = 0, 24 do local a = math.pi + i / 24 * math.pi; pts[#pts + 1] = { math.cos(a) * s / 2, math.sin(a) * s / 2 } end
   elseif p.kind == "stripes" then
@@ -182,6 +191,11 @@ local function drawPiece(c, p, t, sc, ink, paper, white, pointer)
   local o = put(shape, 0, 0)
   c:poly(o, fill)
   for i = 1, #o do local a, b = o[i], o[i % #o + 1]; c:line(a[1], a[2], b[1], b[2], 2 * sc, ink) end
+  if p.kind == "peek" then
+    -- Rotated half a turn on the right edge, the chevron flips with it.
+    local dir = if p.rot ~= 0 then -1 else 1
+    c:text(cx - lift * 6 + dir * p.s * 0.2 * scale, cy - lift * 6 + p.s * 0.12 * scale, if dir > 0 then "«" else "»", p.s * 0.34 * scale, white, 1, { font = "strong", align = "center" })
+  end
   if p.kind == "sticker" then
     c:text(cx - lift * 6, cy - lift * 6 + p.s * 0.18 * scale, "»", p.s * 0.5 * scale, signals.red, 1, { font = "strong", align = "center" })
   end
@@ -208,7 +222,13 @@ function draw(c)
           if math.abs(tap.x-at.x) < w/2+6 and math.abs(tap.y-at.y) < h/2+6 then source.lift = c.t end
         end
         p.lift = source.lift
-        if hot then p.rot += 5 end
+        if p.kind == "peek" then
+          -- Points at the nearer edge; leans toward it, more when hovered.
+          local right = at.x > c.w / 2
+          if right then p.rot = 180 end
+          local tug = (if hot then 6 else 2.5) * (0.5 - 0.5 * math.cos(c.t * 2.4))
+          p.x += (if right then tug else -tug) / sc
+        elseif hot then p.rot += 5 end
         -- Entry and tap motion use drawPiece; page position stays exact.
         p.depth = 0
         drawPiece(c, p, c.t, sc, c.ink, c.paper, if c.face == "paper" then "#ffffff" else "#1e1e1d", nil)
@@ -224,18 +244,18 @@ function draw(c)
   if c.typed ~= lastTyped then
     if #c.typed > #lastTyped then
       nudges += 1
-      local p = pieces[(nudges - 1) % #pieces + 1]
+      local p = composed[(nudges - 1) % #composed + 1]
       p.nod = c.t
     end
     lastTyped = c.typed
   end
   for _, tp in c:taps() do
-    for i = #pieces, 1, -1 do
-      local p = pieces[i]
+    for i = #composed, 1, -1 do
+      local p = composed[i]
       local w, h = (p.w or p.s) * sc, (p.h or p.s) * sc
       if math.abs(tp.x - p.x * sc) <= w / 2 + 8 and math.abs(tp.y - p.y * sc) <= h / 2 + 8 then p.lift = c.t; break end
     end
   end
   local pointer = c.pointer
-  for _, p in pieces do drawPiece(c, p, c.t, sc, ink, paper, white, pointer) end
+  for _, p in composed do drawPiece(c, p, c.t, sc, ink, paper, white, pointer) end
 end

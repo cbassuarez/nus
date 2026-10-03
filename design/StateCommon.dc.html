@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Common ground</title>
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+    .cap { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .sig { color: #c8102e; }
+    h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; white-space: nowrap; }
+    h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a857a; font-weight: 500; margin: 0; }
+    h2 b { color: #ece7da; font-weight: 600; }
+    .note { font-size: 12px; line-height: 1.6; color: #8a857a; }
+    .note b { color: #ece7da; font-weight: 600; }
+    .col { display: flex; flex-direction: column; gap: 8px; }
+    .sb { width: 280px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; box-sizing: border-box; flex-shrink: 0; }
+    .band { height: 5px; background: #c8102e; }
+    .hd { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border-bottom: 1.5px solid #ece7da; }
+    .r { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 30px; border-bottom: 1px solid rgba(236,231,218,0.16); white-space: nowrap; font-size: 12px; box-sizing: border-box; }
+    .r.on { background: rgba(236,231,218,0.08); font-weight: 600; box-shadow: inset 2px 0 0 #c8102e; }
+    .r .n { width: 12px; color: #8a857a; font-size: 10px; flex-shrink: 0; }
+    .r .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .r .end { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .two { flex-direction: column; align-items: stretch; justify-content: center; gap: 1px; padding-top: 5px; padding-bottom: 5px; }
+    .two .l1 { display: flex; gap: 8px; align-items: center; min-width: 0; }
+    .sub { font-size: 10px; color: #8a857a; display: flex; gap: 6px; align-items: center; padding-left: 20px; overflow: hidden; white-space: nowrap; font-weight: 400; }
+    .kid { padding-left: 30px; }
+    .kid::before { content: ''; position: absolute; left: 17px; top: 0; bottom: 0; border-left: 1px solid rgba(236,231,218,0.35); }
+    .cell { min-width: 58px; height: 18px; padding: 0 6px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; font-size: 10px; letter-spacing: 0.04em; box-sizing: border-box; }
+    .cell.sig { background: #c8102e; color: #fff; font-weight: 600; justify-content: center; }
+    .cell.out { border: 1px solid #ece7da; justify-content: center; }
+    .cell.hatch { background: repeating-linear-gradient(135deg, rgba(200,16,46,.9) 0 3px, transparent 3px 6px); color: #ece7da; justify-content: center; font-weight: 600; }
+    .meter { width: 40px; height: 4px; background: rgba(236,231,218,.2); position: relative; }
+    .meter i { position: absolute; left: 0; top: 0; bottom: 0; background: #ece7da; }
+    .spine { display: flex; gap: 2px; align-items: center; }
+    .spine i { width: 6px; height: 10px; background: rgba(236,231,218,.35); display: block; }
+    .spine i.a { background: #ece7da; }
+    .spine i.s { background: #c8102e; }
+    .proof { margin: 0 0 6px 31px; height: 50px; border: 1px solid rgba(236,231,218,.35); font-size: 8.5px; line-height: 1.35; padding: 4px 6px; white-space: pre; overflow: hidden; color: rgba(236,231,218,.7); box-sizing: border-box; background: #0d0d0d; position: relative; }
+    .film { display: flex; gap: 4px; margin: 0 0 6px 31px; }
+    .film > div { width: 66px; height: 42px; border: 1px solid rgba(236,231,218,.35); background: #0d0d0d; position: relative; font-size: 7.5px; padding: 3px; box-sizing: border-box; overflow: hidden; color: rgba(236,231,218,.6); }
+    .film > div.a { border: 1.5px solid #ece7da; }
+    .bar3 { position: absolute; left: 0; right: 0; top: 0; height: 3px; }
+    .card { width: 340px; border: 1.5px solid #ece7da; background: #141414; box-shadow: 6px 6px 0 rgba(236,231,218,.3); display: flex; flex-direction: column; }
+    .card .shot { height: 150px; background: #0d0d0d; border-bottom: 1.5px solid #ece7da; padding: 8px 10px; font-size: 10px; line-height: 1.5; white-space: pre; color: rgba(236,231,218,.75); overflow: hidden; box-sizing: border-box; }
+    .kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; padding: 10px 12px; font-size: 11px; }
+    .kv .k { color: #8a857a; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+    .edge { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+    .e-wait { background: #c8102e; }
+    .e-run { background: repeating-linear-gradient(180deg, #ece7da 0 4px, transparent 4px 7px); }
+    .e-fail { background: repeating-linear-gradient(135deg, #c8102e 0 2px, transparent 2px 4px); }
+    .e-done { border: 1px solid #ece7da; border-left-width: 1px; box-sizing: border-box; width: 4px; }
+    .wire { font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; padding-left: 20px; display: flex; gap: 5px; overflow: hidden; white-space: nowrap; font-weight: 500; }
+    .wire b { font-weight: 700; }
+    .wire .w { color: #c8102e; }
+    .rail { width: 48px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; }
+    .rail .ic { position: relative; width: 48px; height: 40px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(236,231,218,.16); }
+    .rail .ic.on { background: rgba(236,231,218,.08); box-shadow: inset 2px 0 0 #c8102e; }
+    .badge { position: absolute; right: 6px; bottom: 6px; width: 8px; height: 8px; }
+    .tbl { display: grid; font-size: 11.5px; }
+    .tbl > div { padding: 7px 10px 7px 0; border-bottom: 1px solid rgba(236,231,218,0.16); display: flex; align-items: center; gap: 6px; }
+    .tbl > .h { color: #8a857a; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1.5px solid #ece7da; }
+    .box { border: 1.5px solid #ece7da; padding: 14px 16px; box-sizing: border-box; }
+    .strip { height: 30px; border: 1.5px solid #ece7da; display: flex; align-items: center; gap: 14px; padding: 0 12px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; box-sizing: border-box; }
+</style>
+</helmet>
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 34px 40px; display:flex; flex-direction:column; gap: 22px; overflow:hidden;">
+  <div style="display:flex; gap: 40px; align-items: flex-end;">
+    <h1>Common ground</h1>
+    <div class="note" style="max-width: 920px; padding-bottom: 6px;"><b>What all three share.</b> The states a tab can be in, where nus already reads each one, and one ladder of loudness. The directions differ in how a row says it: a fixed cell (A), the tab itself (B), or words when there's news (C).</div>
+  </div>
+  <div style="display:grid;grid-template-columns:820px 1fr;gap:36px;">
+    <div class="col" style="gap:14px"><div class="tbl" style="grid-template-columns:150px 1fr 110px"><div class="h">state</div><div class="h">what nus already reads</div><div class="h">loudness</div><div><b>waits for you</b></div><div class="dim">assistant asks (agent.rs) · a shell's prompt waits (t.waiting) · a page's dialog</div><div class="sig">1</div><div><b>failed</b></div><div class="dim">OSC 133 CommandEnd with a nonzero exit (last_exit)</div><div class="sig">2</div><div><b>running</b></div><div class="dim">OSC 133 CommandStart → running_since · an assistant working</div><div class="sig">3</div><div><b>progress</b></div><div class="dim">OSC 9;4 state and percent (t.progress) · a download</div><div class="sig">with running</div><div><b>listening</b></div><div class="dim">a port the tab's processes hold (ports.rs, procs.rs)</div><div class="sig">with running</div><div><b>done, unseen</b></div><div class="dim">CommandEnd 0 while the tab wasn't in front · an assistant's turn done</div><div class="sig">4</div><div><b>playing</b></div><div class="dim">the page's media (shared.media) · camera or mic in use</div><div class="sig">5</div><div><b>where</b></div><div class="dim">cwd and branch (git_state.rs) · ssh host · site · container</div><div class="sig">always, quiet</div><div><b>idle</b></div><div class="dim">a prompt with nothing running, or a page at rest</div><div class="sig">silent</div></div></div>
+    <div class="col" style="gap:16px">
+      <div class="note box"><b>One ladder.</b> A tab shows its loudest state; a stack, the loudest of its members; the window's strip counts them. Waits beats failed beats running beats done beats playing. Idle is silence, not a word.</div>
+      <div class="note box"><b>Seen.</b> 'Unseen' ends when the tab has been in front for a second, or its row hovered for one. Failed stays until seen; done fades. A tab nobody looked at never pretends to be fine.</div>
+      <div class="note box"><b>Not colour alone.</b> Every state has a shape or a word as well as a colour (solid, hatched, dashes, outline; or the word itself), so it reads in monochrome, for colour blindness, and in the 48px column. The row's accessible name carries the state first: "claude, waits for you: bash, cargo test."</div>
+      <div class="note box"><b>Calm.</b> Only running moves, and slowly; nothing blinks. The clock ticks once a second. Reduced motion: no walking dashes, the clock still counts.</div>
+      <div class="note box"><b>To add.</b> 'Unseen' needs a per-tab seen-at; 'listening' needs ports mapped to a tab's process tree; a stack's roll-up is new. The rest is read today.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

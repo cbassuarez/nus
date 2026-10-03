@@ -43,6 +43,9 @@ pub enum Op {
     SplitWidth { tab: u64, w: Option<f32> },
     /// The tiling, whole: which tabs, in what order, where its rules sit.
     Tiling(Option<Tiling>),
+    /// A tab (and its stack) to a place in the list: under `parent` (None
+    /// is the top level), before `before` (None is the parent's end).
+    Place { tab: u64, parent: Option<u64>, before: Option<u64> },
     /// Several ops as one step (a drop that makes a tab, then tiles it).
     Batch(Vec<Op>),
 }
@@ -56,7 +59,7 @@ impl Op {
             Op::Solo { .. } => "solo",
             Op::Kill { .. } => "close",
             Op::ToTab { .. } => "to a tab",
-            Op::Join { .. } => "move",
+            Op::Join { .. } | Op::Place { .. } => "move",
             Op::SplitWidth { .. } => "resize",
             Op::Tiling(_) => "tiling",
             Op::Batch(ops) => ops.first().map(Op::words).unwrap_or("layout"),
@@ -360,6 +363,27 @@ impl App {
                 } else {
                     Op::Join { from: to, right: side_right, to: from, side_right: right }
                 })
+            }
+            Op::Place { tab, parent, before } => {
+                let i = self.tab_at(tab)?;
+                let p = match parent {
+                    Some(id) => Some(self.tab_at(id)?),
+                    None => None,
+                };
+                if p.is_some_and(|p| p == i || self.subtree(i).contains(&p)) {
+                    return None;
+                }
+                let b = before.and_then(|id| self.tab_at(id));
+                // Where it is now, said the same way: its parent, and the
+                // sibling after its stack (None: the parent's end).
+                let was_parent = self.tabs[i].parent;
+                let last = self.subtree(i).into_iter().max().unwrap_or(i).max(i);
+                let was_before = self.tabs.get(last + 1).filter(|t| t.parent == was_parent).map(|t| t.id);
+                if was_parent == parent && was_before == before {
+                    return None;
+                }
+                self.reparent(i, p, b);
+                Some(Op::Place { tab, parent: was_parent, before: was_before })
             }
             Op::SplitWidth { tab, w } => {
                 let i = self.tab_at(tab)?;

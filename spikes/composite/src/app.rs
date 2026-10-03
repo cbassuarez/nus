@@ -520,6 +520,11 @@ pub enum Width {
     Narrow,
 }
 
+/// How far past its edge a hover sidebar still counts the pointer in.
+pub(crate) const SIDEBAR_BAND: f32 = 28.0;
+/// The shortest wait before a hover sidebar goes, whatever the setting.
+pub(crate) const SIDEBAR_GRACE_FLOOR_MS: u64 = 450;
+
 pub const NARROW: f32 = 900.0;
 pub const WIDE: f32 = 1200.0;
 
@@ -954,6 +959,8 @@ pub struct App {
     pub sidebar: bool,
     pub sidebar_hover: bool,
     pub sidebar_leave: Option<Instant>,
+    /// The pointer's x at the last motion, to tell heading back from leaving.
+    pub sidebar_last_x: f32,
     pub hover_row: Option<usize>,
     /// The row the pointer rests on, and since when: a sleeping page there
     /// starts waking before the click (webui.rs).
@@ -1042,6 +1049,8 @@ pub struct App {
     pub tab_menu_last: Option<(usize, f32)>,
     pub drag: Option<(usize, f32, f32)>,
     pub drag_armed: Option<(usize, f32, f32)>,
+    /// A tab row in hand: its verb, and what it holds onto (tab_drag.rs).
+    pub tab_drag: crate::tab_drag::TabDrag,
     /// Two to four tabs sharing the content, and a divider being dragged.
     pub tiling: Option<crate::tiles::Tiling>,
     /// Every layout change goes through here, and can be taken back.
@@ -1171,6 +1180,20 @@ pub struct App {
     pub sound: crate::sound::Sound,
     /// The Start modal, the session it can restore, and recent places.
     pub start: Option<crate::start::Start>,
+    /// Orrery: every window and tab, by place (orrery_ui.rs).
+    pub orrery: Option<crate::orrery_ui::Orrery>,
+    /// Every window's cards, shared by the host while the map is open here.
+    pub orrery_world: Arc<Vec<crate::orrery::WindowCards>>,
+    pub orrery_world_wanted: bool,
+    pub orrery_sig: u64,
+    /// For the host: go to (window, tab), or bring it into this window.
+    pub orrery_go: Option<(u64, u64)>,
+    pub orrery_bring: Option<(u64, u64)>,
+    /// Kept between openings: what the map remembers, and folders' places.
+    pub orrery_memory: Option<crate::orrery::Memory>,
+    pub orrery_roots: crate::orrery::Roots,
+    /// How far the map's glyph warm-up has got (orrery_ui.rs).
+    pub orrery_warmed: u8,
     /// You, on this machine (profile/me.json), and the card that shows it.
     pub me: Option<crate::me::Me>,
     pub me_card: crate::me::MeCard,
@@ -1429,6 +1452,7 @@ impl App {
             sidebar: false,
             sidebar_hover: false,
             sidebar_leave: None,
+            sidebar_last_x: -1.0,
             hover_row: None,
             hover_wake: None,
             sidebar_scroll: 0.0,
@@ -1522,6 +1546,7 @@ impl App {
             live: crate::folders::start(),
             drag: None,
             drag_armed: None,
+            tab_drag: Default::default(),
             paste_request: false,
             dl_menu: false,
             download_ui: Default::default(),
@@ -1575,6 +1600,15 @@ impl App {
             started: crate::clock::now(),
             sound: crate::sound::Sound::new(crate::sound::SoundPrefs::default()),
             start: None,
+            orrery: None,
+            orrery_world: Arc::new(Vec::new()),
+            orrery_world_wanted: false,
+            orrery_sig: 0,
+            orrery_go: None,
+            orrery_bring: None,
+            orrery_memory: None,
+            orrery_roots: Default::default(),
+            orrery_warmed: 0,
             me: crate::me::Me::load(),
             me_card: crate::me::MeCard::default(),
             pending_name: String::new(),
@@ -2051,7 +2085,7 @@ impl App {
     /// each over its pane's page when that page is on screen and nothing
     /// of nus's is over it; hide it otherwise.
     fn sync_webkit(&self) {
-        let covered = self.palette.is_some() || self.start.is_some() || self.me_card.open || self.timeline.is_some()
+        let covered = self.palette.is_some() || self.start.is_some() || self.orrery.is_some() || self.me_card.open || self.timeline.is_some()
             || self.splash.is_some() || self.board.open || self.scm.open || self.page_menu.is_some() || self.peeking().is_some();
         let narrow = self.width_class() == Width::Narrow;
         for (k, tab) in self.tabs.iter().enumerate() {
@@ -2170,7 +2204,7 @@ impl App {
     }
 
     /// Whether a hover may reveal it at all.
-    fn sidebar_hoverable(&self) -> bool {
+    pub(crate) fn sidebar_hoverable(&self) -> bool {
         !self.focus && !(self.fullscreen && self.sidebar_rules.fullscreen == Fullscreen::Hidden)
     }
 
@@ -2279,7 +2313,13 @@ impl App {
         self.tip_icon = None;
         self.compact_tip = None;
         self.pointer_inside = false;
-        if self.sidebar_hover {self.sidebar_leave=Some(crate::clock::now()+std::time::Duration::from_millis(self.sidebar_rules.grace_ms));}
+        // Out through the sidebar's own side is an overshoot, not a leave:
+        // it stays until the pointer comes back somewhere else.
+        let through_sidebar = self.sidebar_hover && {
+            let sb = self.sidebar_rect();
+            self.mouse.1 >= sb.y && self.mouse.1 < sb.bottom() && if self.sidebar_right() { self.mouse.0 >= sb.x } else { self.mouse.0 >= 0.0 && self.mouse.0 < sb.right() }
+        };
+        if self.sidebar_hover && !through_sidebar && !self.sidebar_held() {self.sidebar_leave=Some(crate::clock::now()+self.sidebar_grace());}
         // Nothing is hovered once the pointer is gone.
         self.mouse = (-1.0, -1.0);
         self.dirty = true;
@@ -2504,7 +2544,7 @@ impl App {
                 self.open_start_page(true);
             }
             if self.behavior.atlas != crate::settings::AtlasMode::Planet {
-                self.open_start();
+                self.open_orrery(false);
             }
         }
         self.track_session();
@@ -2612,7 +2652,9 @@ impl App {
             self.dirty = true;
         }
         if let Some(t) = self.sidebar_leave {
-            if crate::clock::now() >= t {
+            if self.sidebar_held() {
+                self.sidebar_leave = None;
+            } else if crate::clock::now() >= t {
                 self.sidebar_leave = None;
                 self.sidebar_hover = false;
                 self.hover_row = None;
@@ -3202,7 +3244,7 @@ impl App {
 
     /// A modal surface owns keyboard focus; its underlying panes do not blink.
     fn pane_caret_available(&self) -> bool {
-        self.painting_hatch || (self.palette.is_none() && self.start.is_none()
+        self.painting_hatch || (self.palette.is_none() && self.start.is_none() && self.orrery.is_none()
             && !self.me_card.open && !self.dl_menu && !self.board.open && !self.scm.open
             && !self.tidy.open && self.splash.is_none() && self.timeline.is_none())
     }
@@ -3618,6 +3660,7 @@ impl App {
             || self.intel.animating(self.motion.reduced())
             || self.palette_anim.active()
             || self.band_anim.active()
+            || self.orrery_animating()
             || self.tint_anim.active()
             || self.crumb_anim.active()
             || self.row_anims.values().any(|a| a.active())
@@ -4554,7 +4597,7 @@ impl App {
         }
         rx -= gap + ic;
         let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-        let pc = if self.start.is_some() { self.surface.signal } else { ink };
+        let pc = if self.start.is_some() || self.orrery.is_some() { self.surface.signal } else { ink };
         self.icon_button(scene, nus_render::text::icons::PLANET, ic, rx, iy, pc, hr, hover_key("atlas", 0), IconMotion::Spin(-25.0));
         self.crumb_hits.push((hr, CrumbHit::Start));
         rx -= gap;
@@ -4900,9 +4943,7 @@ impl App {
         self.draw_docked(&mut scene);
         self.draw_pane_drag(&mut scene);
         self.draw_pane_mode(&mut scene);
-        if let Some((i, _, _)) = self.drag {
-            self.draw_drop(&mut scene, crate::pane_mode::Dragging::Tab(i));
-        }
+        self.draw_tab_drag(&mut scene);
         if self.sidebar_visible() && (self.look_menu||self.look_anim.active()) {self.draw_look_menu(&mut scene,self.list_rect());}
         // A page's question: the strip turns and the sheet hangs from it.
         self.draw_page_dialog(&mut scene);
@@ -5046,6 +5087,7 @@ impl App {
         self.draw_board_overlay(&mut scene, w, h);
         self.draw_scm(&mut scene, w, h);
         self.draw_start(&mut scene);
+        self.draw_orrery(&mut scene);
         self.draw_me_card(&mut scene);
         self.draw_download_overlay(&mut scene);
         self.draw_tip(&mut scene, w, h);
@@ -5204,7 +5246,7 @@ impl App {
 
     pub(crate) fn tooltip_blocked(&self) -> bool {
         !self.window_focused || self.pointer_hidden || self.palette.is_some()
-            || self.board.open || self.scm.open || self.start.is_some() || self.me_card.open
+            || self.board.open || self.scm.open || self.start.is_some() || self.orrery.is_some() || self.me_card.open
             || self.splash.is_some() || self.timeline.is_some() || self.page_menu.is_some()
             || self.dl_menu || self.look_menu || self.win_menu || self.kinds_menu
             || self.tab_menu.is_some() || self.sidebar_resize.is_some() || self.settings_drag.is_some()
@@ -5708,33 +5750,6 @@ impl App {
         }
         self.tabs = tabs;
 
-        // A row being dragged: the others part, the ghost follows the pointer.
-        if let Some((di, off, dy)) = self.drag {
-            if let Some(&(_, _, _)) = g.rows.iter().find(|&&(t, _, _)| t == di) {
-                let (mx, my) = self.mouse;
-                let _ = mx;
-                // Drop marker: a signal rule between rows, or a tint on the row it nests under.
-                if let Some(&(j, ry, rh)) = g.rows.iter().find(|&&(_, ry, rh)| my >= ry && my < ry + rh) {
-                    if j != di {
-                        let frac = (my - ry) / rh;
-                        if (0.3..0.7).contains(&frac) {
-                            scene.outline(Rect::new(sb.x + self.px(6.0), ry + self.px(2.0), sb.w - self.px(12.0), rh - self.px(4.0)), self.px(m::STRUCTURE), self.surface.signal);
-                        } else {
-                            let ly = if frac < 0.3 { ry } else { ry + rh };
-                            scene.rect(Rect::new(sb.x + self.px(12.0), ly - self.px(1.0), sb.w - self.px(24.0), self.px(2.0)), self.surface.signal);
-                        }
-                    }
-                }
-                let ghost = Rect::new(sb.x + self.px(4.0), dy - off, sb.w - self.px(8.0), row_h);
-                scene.rect(Rect::new(ghost.x + self.px(3.0), ghost.y + self.px(3.0), ghost.w, ghost.h), fade(ink, 0.5));
-                scene.rect(ghost, self.paper());
-                scene.outline(ghost, self.px(m::STRUCTURE), ink);
-                let title = self.tabs[di].title();
-                let st = ui_strong;
-                let text = self.fit(st, &title, ghost.w - self.px(24.0));
-                self.fonts.draw(scene, st, ghost.x + self.px(12.0), ghost.y + (row_h + self.px(m::UI_PX)) / 2.0 - self.px(2.0), &text);
-            }
-        }
         // The next ruled row is NEW TAB: a ghost plus where the tab will appear.
         if let Some(next_clip) = if self.header.next_row { g.clip(sb, g.next_y, row_h) } else { None } {
             scene.layer(Some(next_clip));
@@ -7514,7 +7529,7 @@ impl App {
                         Action::TogglePin,
                     ),
                     (format!("reopen closed tab · {}", key("Z", true)), Action::Reopen),
-                    ("atlas · last session, recent pages and shells".to_string(), Action::Start),
+                    ("atlas · every window, tab and held shell, by place".to_string(), Action::Start),
                     (format!("carapace · {:?} → next", self.surface.shell).to_lowercase(), Action::ShellStyle),
                     (format!("corner radius {} → +2", self.surface.shell_radius), Action::ShellRadius(2.0)),
                     (format!("corner radius {} → −2", self.surface.shell_radius), Action::ShellRadius(-2.0)),
@@ -7580,7 +7595,7 @@ impl App {
                 // Browser first: the address leads, and an empty Enter is the atlas.
                 if browser_first {
                     if q.is_empty() {
-                        rows.push(row("→", "new page · the atlas: recent pages and shells, or type an address".into(), Action::Start));
+                        rows.push(row("→", "new page · the atlas: everything open, by place, or type an address".into(), Action::Start));
                     } else {
                         self.query_rows(input, &mut rows, true);
                         rows.extend(self.history_rows(input, true, 5));
@@ -8066,7 +8081,7 @@ impl App {
                 self.surface.shell = self.surface.shell.next();
                 self.layout();
             }
-            Action::Start => self.open_start(),
+            Action::Start => self.open_orrery(false),
             Action::Pip => {
                 let tab = self.active;
                 let right = match (&self.tabs[tab].left, &self.tabs[tab].right) {
@@ -8135,6 +8150,10 @@ impl App {
                 self.splash = None;
                 self.dirty = true;
             }
+            return;
+        }
+        // A tab in hand takes the keys: esc, a window's number, N.
+        if self.tab_drag_key(ev.physical_key, &ev.logical_key, ev.state) {
             return;
         }
         // Opening or accepting assistance takes one physical keystroke.
@@ -8212,7 +8231,7 @@ impl App {
 
         if let Some(step) = crate::zoom::shortcut(ev, self.mods) {
             if pressed {
-                if self.palette.is_none() && self.start.is_none() && !self.me_card.open
+                if self.palette.is_none() && self.start.is_none() && self.orrery.is_none() && !self.me_card.open
                     && self.splash.is_none() && self.timeline.is_none() && !self.dl_menu
                     && self.library_zoom_key(ev) { return; }
                 self.zoom_focused(step);
@@ -8231,6 +8250,13 @@ impl App {
 
         // The profile card, then the atlas, own the keyboard while open.
         if self.me_key(ev) {
+            return;
+        }
+        if self.orrery_key(ev) {
+            return;
+        }
+        if self.orrery.is_none() && self.orrery_chord(ev) {
+            self.open_orrery(true);
             return;
         }
         if self.start_key(ev) {
@@ -8956,37 +8982,6 @@ impl App {
             cur = p;
         }
         self.tabs[i].parent.is_none() || self.stack_open(self.stack_root(i))
-    }
-
-    /// Where a dragged row lands: onto the middle of a row nests under it,
-    /// the edges reorder at that row's level.
-    pub(crate) fn drop_row(&mut self, i: usize, y: f32) {
-        let g = self.sidebar_geometry();
-        let Some(&(j, ry, rh)) = g.rows.iter().find(|&&(_, ry, rh)| y >= ry && y < ry + rh) else {
-            // Below everything: to the top level, at the end.
-            if y > g.rows.last().map(|r| r.1 + r.2).unwrap_or(0.0) {
-                self.reparent(i, None, None);
-            }
-            return;
-        };
-        if j == i {
-            return;
-        }
-        let frac = (y - ry) / rh;
-        if (0.3..0.7).contains(&frac) {
-            self.reparent(i, Some(j), None);
-        } else if frac < 0.3 {
-            let parent = self.tabs[j].parent.and_then(|pid| self.tabs.iter().position(|t| t.id == pid));
-            self.reparent(i, parent, Some(j));
-        } else {
-            // After j: before j's next sibling if any, else the parent's end.
-            let parent = self.tabs[j].parent.and_then(|pid| self.tabs.iter().position(|t| t.id == pid));
-            let sub = self.subtree(j);
-            let last = sub.last().copied().unwrap_or(j);
-            let next = (last + 1..self.tabs.len()).find(|&k| self.tabs[k].parent == self.tabs[j].parent);
-            self.reparent(i, parent, next);
-        }
-        self.play_event("toggle");
     }
 
     /// Fold or unfold a node's subtree.
@@ -9884,6 +9879,11 @@ impl App {
 
     pub fn modifiers(&mut self, m: ModifiersState) {
         self.mods = m;
+        // A tab in hand changes verb with the keys held.
+        if self.drag.is_some() {
+            self.dirty = true;
+        }
+        self.orrery_modifiers();
     }
 
     /// The held modifiers as the VT crate spells them.
@@ -9896,11 +9896,37 @@ impl App {
         mods
     }
 
+    /// Something the sidebar is in the middle of: a menu off one of its
+    /// rows, a row or pin in hand, a resize, a held button. A hover
+    /// sidebar stays while any of these is up.
+    fn sidebar_held(&self) -> bool {
+        self.tab_menu.is_some() || self.kinds_menu || self.look_menu || self.win_menu || self.dl_menu
+            || self.press.is_some() || self.drag.is_some() || self.drag_armed.is_some()
+            || self.pins.drag.is_some() || self.sidebar_resize.is_some()
+    }
+
+    /// How long a hover sidebar waits once the pointer is out: the person's
+    /// setting, but never so short that a slip out of it is a leave.
+    fn sidebar_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.sidebar_rules.grace_ms.max(SIDEBAR_GRACE_FLOOR_MS))
+    }
+
+    /// The pointer moved back toward the sidebar since the last motion.
+    fn sidebar_returning(&self, x: f32) -> bool {
+        let toward = if self.sidebar_right() { x - self.sidebar_last_x } else { self.sidebar_last_x - x };
+        toward > self.px(1.0)
+    }
+
     pub(crate) fn refresh_sidebar_hover(&mut self,x:f32,y:f32) {
         if !self.sidebar_pinned() && self.sidebar_hoverable() {
             let c = self.content_rect();
             let sb = self.sidebar_rect();
-            let inside = sb.contains(x, y);
+            // Hysteresis: the sidebar keeps a margin past its rule, so an
+            // overshoot of a few pixels doesn't count; and it reaches out to
+            // the window's edge over the frame's inset.
+            let band = self.px(SIDEBAR_BAND);
+            let ww = self.target.size.0 as f32;
+            let inside = y >= sb.y && y < sb.bottom() && if self.sidebar_right() { x >= sb.x - band && x <= ww } else { x >= 0.0 && x < sb.right() + band };
             let edge = self.px(6.0);
             let at_edge = if self.sidebar_right() { x <= self.target.size.0 as f32 && x > self.target.size.0 as f32 - edge } else { x >= 0.0 && x < edge };
             // "Inside window" means the pointer must have travelled from inside
@@ -9916,12 +9942,15 @@ impl App {
                 self.sidebar_leave = None;
                 self.dirty = true;
             } else if self.sidebar_hover {
-                if inside {
+                if inside || self.sidebar_held() {
                     self.sidebar_leave = None;
-                } else if self.sidebar_leave.is_none() {
-                    self.sidebar_leave = Some(crate::clock::now() + std::time::Duration::from_millis(self.sidebar_rules.grace_ms));
+                } else if self.sidebar_leave.is_none() || self.sidebar_returning(x) {
+                    // The wait runs while the pointer rests or heads away;
+                    // drifting back toward the sidebar starts it over.
+                    self.sidebar_leave = Some(crate::clock::now() + self.sidebar_grace());
                 }
             }
+            self.sidebar_last_x = x;
             if !at_edge {
                 self.pointer_inside = true;
             }
@@ -9953,6 +9982,7 @@ impl App {
         // Coalesced by the existing redraw loop. Native controls outside the
         // sidebar also need hover invalidation; no polling continues at rest.
         if was != self.mouse { self.dirty = true; }
+        if self.orrery_pointer(x, y) { return; }
         if self.pointer_hidden {
             self.window.set_cursor_visible(true);
             self.pointer_hidden = false;
@@ -9961,7 +9991,7 @@ impl App {
         if self.page_menu_motion(x, y) { return; }
         self.pin_drag_move(x, y);
         if self.timeline_pointer(x,y){self.dirty=true;return;}
-        if self.palette.is_none() && !self.me_card.open && self.start.is_none() && self.library_pointer(x,y) { return; }
+        if self.palette.is_none() && !self.me_card.open && self.start.is_none() && self.orrery.is_none() && self.library_pointer(x,y) { return; }
         if self.sidebar_resize.is_some(){self.sidebar_resize_to(x,y);return;}
         if self.intel_move(x, y) {
             return;
@@ -9991,6 +10021,7 @@ impl App {
             if (y - y0).abs() > self.px(4.0) || (x - x0).abs() > self.px(12.0) {
                 self.drag_armed = None;
                 self.drag = Some((i, off, y));
+                self.tab_drag_lift(i, x0);
                 // The page shows the tab you were on, to drop this one beside.
                 if let Some((h, _)) = self.row_host.filter(|&(h, _)| h != i && h < self.tabs.len()) {
                     self.activate(h);
@@ -10092,7 +10123,7 @@ impl App {
             CrumbHit::Menu => self.open_palette(PaletteMode::Application),
             CrumbHit::Space | CrumbHit::Tab | CrumbHit::Search => self.open_palette(PaletteMode::Go),
             CrumbHit::Url => self.edit_address(None),
-            CrumbHit::Start => self.open_start(),
+            CrumbHit::Start => self.open_orrery(false),
             CrumbHit::Nus => self.toggle_home_latch(),
             CrumbHit::Agents => self.goto_agent(),
             CrumbHit::Updates => {
@@ -10132,6 +10163,7 @@ impl App {
             // Only the live Skip action (or existing keyboard shortcut) ends arrival.
             return;
         }
+        if self.orrery_mouse(button, state, x, y) { return; }
         // The find bar's buttons; a press anywhere else gives the keys back.
         if self.find_mouse(button, state) { self.dirty = true; return; }
         if pressed && self.behavior.pip_policy.click_app {self.close_pip();}
@@ -10443,24 +10475,14 @@ impl App {
                 self.pane_drop(x, y);
                 return;
             }
-            if let Some((i, _, _)) = self.drag.take() {
+            if let Some((i, _, _)) = self.drag {
                 self.row_host = None;
-                // Out of the window: onto another nus window, or a new one there.
-                if let Some(dest) = self.dropped_outside() {
-                    self.send_tab(i, dest);
-                    return;
-                }
-                let what = crate::pane_mode::Dragging::Tab(i);
-                if let Some(d) = self.drop_at(x, y, what) {
-                    self.apply_drop(what, d);
-                    return;
-                }
-                // A reorder in the sidebar; the dragged tab is in front again.
-                let id = self.tabs.get(i).map(|t| t.id);
-                self.drop_row(i, y);
-                if let Some(k) = id.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
-                    self.activate(k);
-                }
+                // What the drag showed is what happens (tab_drag.rs).
+                self.tab_drop(i);
+                self.drag = None;
+                return;
+            }
+            if self.tab_drag_swallow() {
                 return;
             }
         }

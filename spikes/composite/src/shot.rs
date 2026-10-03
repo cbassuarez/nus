@@ -39,6 +39,8 @@
 //!   settingsat 2               open settings at a section (2 is STARTUP)
 //!   settingsscroll 900         scroll the open settings page to 900 logical px
 //!   hover 40 200               the pointer at logical px from the top-left
+//!   down 40 200 · up 300 90    the left button pressed, released there (a drag)
+//!   mods shift ctrl | none     modifiers held from here on
 //!   click 900 500              a left click there
 //!   rclick 900 500             a right click there (the page's menu)
 //!   altclick 900 500           with Alt held (a peek)
@@ -48,6 +50,7 @@
 //!   focus shell | page         which half of the split has the focus
 //!   erase 8                    backspaces to the shell, undoing a `line`
 //!   close                      the palette, ask, board and atlas, whichever is up
+//!   atlas | orrery             open the map (orrery_ui.rs); `key` drives it
 //!   restore                    the last session, as the atlas would
 //!   hands allow | deny | host  answer the hands band on the active page
 //!   pip                        this tab's video in the floating window
@@ -1326,7 +1329,7 @@ impl App {
             }
             "ctrlc" => self.shot_type(""),
             "compact" => self.toggle_compact(),
-            "atlas" => self.open_start(),
+            "atlas" | "orrery" => self.open_orrery(false),
             "settings" => self.open_settings(),
             "hatchname" => self.tabs[self.active].name=Some(rest.into()),
             "hatchwork" => self.show_hatch_work(),
@@ -1936,11 +1939,16 @@ impl App {
             "iconsettings"=>{self.open_settings();self.look_tab=crate::settings::LOOK_APP_ICON;if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|t.focused()){p.section=crate::settings::SEC_LOOK;p.scroll=0.0;}self.dirty=true;},
             "iconchoose"=>{let choice=crate::app_icon::Choice::ALL.into_iter().find(|c|c.name()==rest).unwrap();let r=self.settings_hits.iter().find(|(_,h)|*h==crate::settings::Hit::AppIcon(choice)).expect("icon card visible").0;self.mouse_moved(r.x+r.w/2.0,r.y+r.h/2.0);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);assert_eq!(self.behavior.app_icon,choice);assert_eq!(crate::app_icon::selected(),choice);},
             "asserticon"=>assert_eq!(self.behavior.app_icon.name(),rest),
+            "sidebarside"=>{self.sidebar_rules.side=if rest=="right" {crate::surface::Side::Right} else {crate::surface::Side::Left};self.sidebar_hover=false;self.sidebar_leave=None;self.layout();self.dirty=true;},
             "sidebarhoverprobe"=>{
                 self.sidebar=false;self.focus=false;self.sidebar_rules.hover_from=crate::surface::HoverFrom::InsideWindow;self.sidebar_rules.side=crate::surface::Side::Left;self.sidebar_hover=false;self.sidebar_leave=None;self.layout();
                 let y=self.content_rect().y+self.px(100.0);
                 self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_hover,"content handler swallowed edge hover");
-                self.cursor_left();assert!(self.sidebar_leave.is_some());
+                self.cursor_left();assert!(self.sidebar_leave.is_none(),"out through the sidebar's own side is an overshoot");
+                let band=self.sidebar_rect().right()+self.px(crate::app::SIDEBAR_BAND);
+                self.mouse_moved(band-self.px(4.0),y);assert!(self.sidebar_leave.is_none(),"a few pixels past the rule still counts as inside");
+                self.mouse_moved(band+self.px(200.0),y);assert!(self.sidebar_leave.is_some(),"well past the rule starts the wait");
+                self.cursor_left();assert!(self.sidebar_leave.is_some(),"out through the content side still leaves");
                 self.mouse_moved(self.px(100.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_leave.is_none(),"reentry must cancel stale hide timer");
                 self.focus_changed(false);self.focus_changed(true);self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_hover,"hover after focus return");
                 self.sidebar_rules.side=crate::surface::Side::Right;self.sidebar_hover=false;self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.target.size.0 as f32-self.px(1.0),y);assert!(self.sidebar_hover,"right edge hover");
@@ -2148,6 +2156,10 @@ impl App {
             "close" => {
                 self.palette = None;
                 self.start = None;
+                self.close_orrery();
+                if self.me_card.open {
+                    self.close_me_card();
+                }
                 if self.board.open {
                     self.close_board();
                 }
@@ -2155,6 +2167,23 @@ impl App {
                     t.ask = None;
                 }
                 self.layout();
+            }
+            // A drag in parts: the button down here, `hover` along the way,
+            // `mods` held meanwhile, the button up there.
+            "down" | "up" => {
+                let mut it = rest.split_whitespace().filter_map(|n| n.parse::<f32>().ok());
+                let (x, y) = (it.next().unwrap_or(0.0) * self.scale, it.next().unwrap_or(0.0) * self.scale);
+                self.mouse_moved(x, y);
+                self.mouse_button(MouseButton::Left, if verb == "down" { ElementState::Pressed } else { ElementState::Released });
+            }
+            "mods" => {
+                let m = rest.split_whitespace().fold(ModifiersState::empty(), |m, k| match k {
+                    "shift" => m | ModifiersState::SHIFT,
+                    "ctrl" => m | ModifiersState::CONTROL,
+                    "alt" => m | ModifiersState::ALT,
+                    _ => m,
+                });
+                self.modifiers(m);
             }
             "hover" | "rclick" | "altclick" | "srcclick" => {
                 let mut it = rest.split_whitespace().filter_map(|n| n.parse::<f32>().ok());

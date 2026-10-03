@@ -34,6 +34,7 @@ mod ledger;
 mod director;
 mod pane_mode;
 mod send;
+mod tab_drag;
 mod shell_colors;
 mod live;
 mod intelligence;
@@ -195,6 +196,8 @@ mod pick;
 mod files;
 mod procs;
 mod start;
+mod orrery;
+mod orrery_ui;
 mod surface;
 mod carapace;
 mod carapace_activity;
@@ -531,6 +534,25 @@ impl Host {
         }
     }
 
+    /// Orrery: every window's cards, to the windows showing the map; a
+    /// window showing it draws again when what it shows changes.
+    fn share_orrery(&mut self) {
+        if !self.apps.iter().any(|a| a.orrery_world_wanted) {
+            return;
+        }
+        let _perf = perf::scope("orrery_share");
+        let world: Vec<orrery::WindowCards> = self.apps.iter().map(|a| a.orrery_cards()).collect();
+        let sig = orrery::signature(&world);
+        let world = Arc::new(world);
+        for a in self.apps.iter_mut().filter(|a| a.orrery_world_wanted) {
+            if a.orrery_sig != sig {
+                a.orrery_sig = sig;
+                a.dirty = true;
+            }
+            a.orrery_world = world.clone();
+        }
+    }
+
     /// Tell every app about every window.
     fn share_registry(&mut self) {
         let entries: Vec<windows::Entry> = self
@@ -721,6 +743,8 @@ impl ApplicationHandler<UserEvent> for Host {
         let mut spawn_from: Vec<usize> = Vec::new();
         let mut front: Vec<u64> = Vec::new();
         let mut sends: Vec<(usize, u64, send::Dest)> = Vec::new();
+        let mut orrery_go: Vec<(u64, u64)> = Vec::new();
+        let mut sends_in: Vec<(u64, u64, u64)> = Vec::new();
         for (i, a) in self.apps.iter_mut().enumerate() {
             if let Some((id, dest)) = a.send_request.take() {
                 sends.push((i, id, dest));
@@ -731,6 +755,18 @@ impl ApplicationHandler<UserEvent> for Host {
             }
             if let Some(id) = a.front_request.take() {
                 front.push(id);
+            }
+            if let Some(go) = a.orrery_go.take() {
+                orrery_go.push(go);
+            }
+            if let Some((w, t)) = a.orrery_bring.take() {
+                sends_in.push((u64::from(a.window.id()), w, t));
+            }
+        }
+        // Orrery: a tab brought here leaves its window for this one.
+        for (here, w, t) in sends_in {
+            if let Some(j) = self.apps.iter().position(|a| u64::from(a.window.id()) == w) {
+                sends.push((j, t, send::Dest::Window(here)));
             }
         }
         // Windows a restore asked for: one per saved session, each restored.
@@ -760,6 +796,15 @@ impl ApplicationHandler<UserEvent> for Host {
         }
         for (i, id, dest) in sends {
             self.send_tab(event_loop, i, id, dest);
+        }
+        // Orrery: that window, at that tab.
+        for (w, t) in orrery_go {
+            if let Some(a) = self.apps.iter_mut().find(|a| u64::from(a.window.id()) == w) {
+                if let Some(i) = a.tabs.iter().position(|x| x.id == t) {
+                    a.activate(i);
+                }
+                front.push(w);
+            }
         }
         for id in front {
             if let Some(a) = self.apps.iter_mut().find(|a| u64::from(a.window.id()) == id) {
@@ -1310,6 +1355,12 @@ fn run() -> i32 {
         }
         let _turn = perf::scope("ui_turn_work");
         host.share_registry();
+        host.share_orrery();
+        // One step of the map's warm-up per turn, in the window you're in, while it's idle.
+        let warm = host.focused.and_then(|id| host.apps.iter().position(|a| a.window.id() == id)).unwrap_or(0);
+        if let Some(a) = host.apps.get_mut(warm) {
+            a.orrery_warm();
+        }
         // URLs from other launches go to the window the user was last in.
         if let Some(rx) = urls_rx.as_ref() {
             let focused = host.focused;

@@ -4094,7 +4094,7 @@ impl App {
                     ("THE SCREEN EDGE".into(), Hit::HoverFrom(HoverFrom::ScreenEdge), self.sidebar_rules.hover_from == HoverFrom::ScreenEdge),
                     ("THIS WINDOW'S EDGE".into(), Hit::HoverFrom(HoverFrom::InsideWindow), self.sidebar_rules.hover_from == HoverFrom::InsideWindow),
                 ])),
-                ("WAIT BEFORE HIDING".into(), Slider(self::Slider::Grace, self.slider_value(self::Slider::Grace), format!("{} ms after the pointer leaves", self.sidebar_rules.grace_ms))),
+                ("WAIT BEFORE HIDING".into(), Slider(self::Slider::Grace, self.slider_value(self::Slider::Grace), format!("{} ms after the pointer leaves", self.sidebar_rules.grace_ms.max(crate::app::SIDEBAR_GRACE_FLOOR_MS)))),
                 ("IN FULLSCREEN".into(), Choice(vec![
                     ("SLIDES IN ON HOVER".into(), Hit::Fullscreen(Fullscreen::Hover), self.sidebar_rules.fullscreen == Fullscreen::Hover),
                     ("HIDDEN".into(), Hit::Fullscreen(Fullscreen::Hidden), self.sidebar_rules.fullscreen == Fullscreen::Hidden),

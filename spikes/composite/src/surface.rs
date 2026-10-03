@@ -193,7 +193,7 @@ pub struct SidebarRules {
 
 impl Default for SidebarRules {
     fn default() -> Self {
-        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 300, compact: false, width:248.0, footer_row:32.0, small_tabs:Default::default(), pin_display:Default::default(), live_github:false, live_ports:false }
+        SidebarRules { side: Side::Left, hover_from: HoverFrom::ScreenEdge, fullscreen: Fullscreen::Hover, grace_ms: 600, compact: false, width:248.0, footer_row:32.0, small_tabs:Default::default(), pin_display:Default::default(), live_github:false, live_ports:false }
     }
 }
 

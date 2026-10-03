@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>C · Wire</title>
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+    .cap { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .sig { color: #c8102e; }
+    h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; white-space: nowrap; }
+    h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a857a; font-weight: 500; margin: 0; }
+    h2 b { color: #ece7da; font-weight: 600; }
+    .note { font-size: 12px; line-height: 1.6; color: #8a857a; }
+    .note b { color: #ece7da; font-weight: 600; }
+    .col { display: flex; flex-direction: column; gap: 8px; }
+    .sb { width: 280px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; box-sizing: border-box; flex-shrink: 0; }
+    .band { height: 5px; background: #c8102e; }
+    .hd { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border-bottom: 1.5px solid #ece7da; }
+    .r { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 30px; border-bottom: 1px solid rgba(236,231,218,0.16); white-space: nowrap; font-size: 12px; box-sizing: border-box; }
+    .r.on { background: rgba(236,231,218,0.08); font-weight: 600; box-shadow: inset 2px 0 0 #c8102e; }
+    .r .n { width: 12px; color: #8a857a; font-size: 10px; flex-shrink: 0; }
+    .r .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .r .end { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .two { flex-direction: column; align-items: stretch; justify-content: center; gap: 1px; padding-top: 5px; padding-bottom: 5px; }
+    .two .l1 { display: flex; gap: 8px; align-items: center; min-width: 0; }
+    .sub { font-size: 10px; color: #8a857a; display: flex; gap: 6px; align-items: center; padding-left: 20px; overflow: hidden; white-space: nowrap; font-weight: 400; }
+    .kid { padding-left: 30px; }
+    .kid::before { content: ''; position: absolute; left: 17px; top: 0; bottom: 0; border-left: 1px solid rgba(236,231,218,0.35); }
+    .cell { min-width: 58px; height: 18px; padding: 0 6px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; font-size: 10px; letter-spacing: 0.04em; box-sizing: border-box; }
+    .cell.sig { background: #c8102e; color: #fff; font-weight: 600; justify-content: center; }
+    .cell.out { border: 1px solid #ece7da; justify-content: center; }
+    .cell.hatch { background: repeating-linear-gradient(135deg, rgba(200,16,46,.9) 0 3px, transparent 3px 6px); color: #ece7da; justify-content: center; font-weight: 600; }
+    .meter { width: 40px; height: 4px; background: rgba(236,231,218,.2); position: relative; }
+    .meter i { position: absolute; left: 0; top: 0; bottom: 0; background: #ece7da; }
+    .spine { display: flex; gap: 2px; align-items: center; }
+    .spine i { width: 6px; height: 10px; background: rgba(236,231,218,.35); display: block; }
+    .spine i.a { background: #ece7da; }
+    .spine i.s { background: #c8102e; }
+    .proof { margin: 0 0 6px 31px; height: 50px; border: 1px solid rgba(236,231,218,.35); font-size: 8.5px; line-height: 1.35; padding: 4px 6px; white-space: pre; overflow: hidden; color: rgba(236,231,218,.7); box-sizing: border-box; background: #0d0d0d; position: relative; }
+    .film { display: flex; gap: 4px; margin: 0 0 6px 31px; }
+    .film > div { width: 66px; height: 42px; border: 1px solid rgba(236,231,218,.35); background: #0d0d0d; position: relative; font-size: 7.5px; padding: 3px; box-sizing: border-box; overflow: hidden; color: rgba(236,231,218,.6); }
+    .film > div.a { border: 1.5px solid #ece7da; }
+    .bar3 { position: absolute; left: 0; right: 0; top: 0; height: 3px; }
+    .card { width: 340px; border: 1.5px solid #ece7da; background: #141414; box-shadow: 6px 6px 0 rgba(236,231,218,.3); display: flex; flex-direction: column; }
+    .card .shot { height: 150px; background: #0d0d0d; border-bottom: 1.5px solid #ece7da; padding: 8px 10px; font-size: 10px; line-height: 1.5; white-space: pre; color: rgba(236,231,218,.75); overflow: hidden; box-sizing: border-box; }
+    .kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; padding: 10px 12px; font-size: 11px; }
+    .kv .k { color: #8a857a; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+    .edge { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+    .e-wait { background: #c8102e; }
+    .e-run { background: repeating-linear-gradient(180deg, #ece7da 0 4px, transparent 4px 7px); }
+    .e-fail { background: repeating-linear-gradient(135deg, #c8102e 0 2px, transparent 2px 4px); }
+    .e-done { border: 1px solid #ece7da; border-left-width: 1px; box-sizing: border-box; width: 4px; }
+    .wire { font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; padding-left: 20px; display: flex; gap: 5px; overflow: hidden; white-space: nowrap; font-weight: 500; }
+    .wire b { font-weight: 700; }
+    .wire .w { color: #c8102e; }
+    .rail { width: 48px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; }
+    .rail .ic { position: relative; width: 48px; height: 40px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(236,231,218,.16); }
+    .rail .ic.on { background: rgba(236,231,218,.08); box-shadow: inset 2px 0 0 #c8102e; }
+    .badge { position: absolute; right: 6px; bottom: 6px; width: 8px; height: 8px; }
+    .tbl { display: grid; font-size: 11.5px; }
+    .tbl > div { padding: 7px 10px 7px 0; border-bottom: 1px solid rgba(236,231,218,0.16); display: flex; align-items: center; gap: 6px; }
+    .tbl > .h { color: #8a857a; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1.5px solid #ece7da; }
+    .box { border: 1.5px solid #ece7da; padding: 14px 16px; box-sizing: border-box; }
+    .strip { height: 30px; border: 1.5px solid #ece7da; display: flex; align-items: center; gap: 14px; padding: 0 12px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; box-sizing: border-box; }
+</style>
+</helmet>
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 34px 40px; display:flex; flex-direction:column; gap: 22px; overflow:hidden;">
+  <div style="display:flex; gap: 40px; align-items: flex-end;">
+    <h1>C · Wire</h1>
+    <div class="note" style="max-width: 920px; padding-bottom: 6px;"><b>A wire service.</b> Rows are one line until something happens; then they grow a line of words saying it, verb first, and a left edge whose shape says what kind of news it is. Seen news fades back to one line. Stacks speak with their loudest member; the top strip sums the window.</div>
+  </div>
+  <div style="display:flex; gap: 36px; align-items:flex-start;">
+    <div class="col"><h2><b>at rest</b> · a line of words when something happens</h2><div class="sb"><div class="band"></div><div class="hd"><span style="width:9px;height:9px;background:#c8102e;display:inline-block"></span><span class="cap">nus</span><span class="dim cap" style="margin-left:auto;font-size:9px">11 tabs</span></div><div class="r two on"><div class="l1"><span class="n">1</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">nus · zsh</span><span class="end dim" style="font-size:10px">~/nus</span></div></div><div class="r two"><span class="edge e-run"></span><div class="l1"><span class="n">2</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">cargo test</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b>running 1:42</b> · 64% · -p composite</div></div><div class="r two"><span class="edge e-wait"></span><div class="l1"><span class="n">3</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="5" y="8" width="14" height="11" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg><span class="t">claude</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b class="w">waits</b> · bash: cargo test --workspace?</div></div><div class="r two"><div class="l1"><span class="n">4</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span class="t">wgpu docs</span><span class="end dim" style="font-size:10px">3 ▸</span></div><div class="wire">3 pages · surfaces, queue, adapter</div></div><div class="r two"><span class="edge e-run"></span><div class="l1"><span class="n">5</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">vite</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b>listening</b> :5173 · 2 req/s</div></div><div class="r two"><span class="edge e-fail"></span><div class="l1"><span class="n">6</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">deploy.sh</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b class="w">failed</b> · exit 1 · 4 min ago</div></div><div class="r two"><div class="l1"><span class="n">7</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span class="t">prod-1</span><span class="end dim" style="font-size:10px">ssh</span></div></div><div class="r two"><div class="l1"><span class="n">8</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span class="t">Low Light Mix</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b>playing</b> 2:31 / 58:10</div></div><div class="r two"><span class="edge e-done"></span><div class="l1"><span class="n">9</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg><span class="t">atlas.rs</span><span class="end dim" style="font-size:10px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16"/></svg></span></div><div class="wire"><b>done</b> · cargo check · 0 errors</div></div></div></div>
+    <div style="display:flex; flex-direction:column; gap: 22px;">
+      <div class="col"><h2><b>the edge</b> · shape first, then colour</h2><div class="sb" style="width:280px"><div class="band"></div><div class="hd"><span style="width:9px;height:9px;background:#c8102e;display:inline-block"></span><span class="cap">nus</span><span class="dim cap" style="margin-left:auto;font-size:9px">the edge</span></div>
+      <div class="r two"><span class="edge e-wait"></span><div class="l1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="5" y="8" width="14" height="11" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg><span class="t">needs you</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b class="w">waits</b> · solid signal</div></div>
+      <div class="r two"><span class="edge e-fail"></span><div class="l1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">failed, unseen</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b class="w">failed</b> · hatched signal</div></div>
+      <div class="r two"><span class="edge e-run"></span><div class="l1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">running</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b>running</b> · ink dashes, walking</div></div>
+      <div class="r two"><span class="edge e-done"></span><div class="l1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">finished, unseen</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b>done</b> · an ink outline</div></div>
+      <div class="r two"><div class="l1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">idle, or seen</span><span class="end dim" style="font-size:10px"></span></div><div class="wire">nothing: no edge, no wire</div></div>
+    </div></div>
+      <div class="col"><h2><b>stacks</b> · the loudest member speaks for it</h2><div class="sb" style="width:280px"><div class="band"></div><div class="hd"><span style="width:9px;height:9px;background:#c8102e;display:inline-block"></span><span class="cap">nus</span><span class="dim cap" style="margin-left:auto;font-size:9px">stacks</span></div>
+      <div class="r two"><div class="l1"><span class="n">4</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span class="t">wgpu docs</span><span class="end dim" style="font-size:10px">3 ▸</span></div><div class="wire">3 pages · surfaces, queue, adapter</div></div>
+      <div class="r two"><span class="edge e-wait"></span><div class="l1"><span class="n">10</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">ci</span><span class="end dim" style="font-size:10px">3 ▸</span></div><div class="wire"><b class="w">1 waits</b> · 1 running · 1 idle</div></div>
+      <div class="r two kid"><span class="edge e-run"></span><div class="l1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t">lint</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b>running 0:31</b> · cargo clippy</div></div>
+      <div class="r two kid"><span class="edge e-wait"></span><div class="l1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="5" y="8" width="14" height="11" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg><span class="t">fix-flaky</span><span class="end dim" style="font-size:10px"></span></div><div class="wire"><b class="w">waits</b> · edit tests/sync.rs?</div></div>
+    </div></div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap: 22px;">
+      <div class="col"><h2><b>the window, summed</b> · the top strip counts the wire</h2><div class="strip" style="width:560px"><span style="color:#c8102e;font-weight:700">1 waits</span><span>·</span><span>1 failed</span><span>·</span><span>3 running</span><span>·</span><span class="dim">1 done</span><span style="margin-left:auto" class="dim">nus</span></div></div>
+      <div class="note box" style="max-width: 560px"><b>Words, only when there's news.</b> A row is one line until its tab has something to say; then a second line, the <b>wire</b>, says it, verb first: RUNNING 1:42, WAITS, FAILED, LISTENING, PLAYING, DONE. When it's said and seen, the line goes away. So the sidebar's shape is itself the signal: the tall rows are the ones with news.<br><br><b>The edge</b> at each row's left is a code you can read without colour: solid (waits), hatched (failed), dashes that walk (running), an outline (done, unseen). Only the dashes move.<br><br><b>Stacks</b> take the loudest member's edge and say how many of each ("1 waits · 1 running"). The top strip says the same for the window, so a hidden sidebar still reports.<br><br><b>Cost.</b> Rows change height when news arrives (eased, 160ms, and never under the pointer: a row under the pointer waits until it leaves). The wire's words must be short and reliable, so each one has a source (common ground).</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

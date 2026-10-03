@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Common ground</title>
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+    .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 500; font-style: italic; }
+    .cap { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .sig { color: #c8102e; }
+    h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; white-space: nowrap; }
+    .note { font-size: 12px; line-height: 1.6; color: #8a857a; }
+    .note b { color: #ece7da; font-weight: 600; }
+    .grid { display: grid; grid-template-columns: repeat(4, 322px); gap: 22px 24px; }
+    .frame { display: flex; flex-direction: column; gap: 6px; }
+    .frame > .cap { color: #8a857a; display: flex; flex-direction: column; gap: 2px; height: 30px; }
+    .frame > .cap b { color: #ece7da; font-weight: 600; }
+    .win { position: relative; width: 322px; height: 318px; border: 1.5px solid #ece7da; display: flex; overflow: hidden; box-sizing: border-box; }
+    .sb { width: 146px; border-right: 1.5px solid #ece7da; display: flex; flex-direction: column; position: relative; flex-shrink: 0; }
+    .band { height: 5px; background: #c8102e; flex-shrink: 0; }
+    .hd { height: 28px; display: flex; align-items: center; padding: 0 9px; border-bottom: 1.5px solid #ece7da; gap: 6px; }
+    .row { position: relative; height: 26px; display: flex; align-items: center; gap: 7px; padding: 0 9px; border-bottom: 1px solid rgba(236,231,218,0.18); white-space: nowrap; font-size: 11.5px; box-sizing: border-box; }
+    .row .n { width: 8px; color: #8a857a; font-size: 10px; }
+    .row.on { background: rgba(236,231,218,0.07); font-weight: 600; box-shadow: inset 3px 0 0 #c8102e; }
+    .row.kid { padding-left: 26px; }
+    .row.kid::before { content: ''; position: absolute; left: 14px; top: 0; bottom: 0; border-left: 1px solid rgba(236,231,218,0.35); }
+    .row.gap { background: repeating-linear-gradient(135deg, transparent 0 4px, rgba(236,231,218,0.08) 4px 8px); color: transparent; }
+    .row.lift { opacity: 0.28; }
+    .ct { flex-grow: 1; position: relative; padding: 10px 12px; font-size: 10px; line-height: 1.6; white-space: pre; color: rgba(236,231,218,0.45); }
+    .ghost { position: absolute; z-index: 5; height: 26px; display: flex; align-items: center; gap: 7px; padding: 0 9px; background: #141414; border: 1.5px solid #ece7da; box-shadow: 4px 4px 0 rgba(236,231,218,0.35); font-size: 11.5px; font-weight: 600; white-space: nowrap; box-sizing: border-box; }
+    .verb { position: absolute; z-index: 6; padding: 3px 7px; background: #c8102e; color: #fff; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; white-space: nowrap; display: flex; gap: 5px; align-items: center; }
+    .verb.ink { background: #ece7da; color: #141414; }
+    .rule { position: absolute; z-index: 4; height: 2px; background: #c8102e; }
+    .rule::before { content: ''; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; background: #c8102e; }
+    .wash { position: absolute; z-index: 3; background: rgba(200,16,46,0.16); outline: 1.5px solid #c8102e; outline-offset: -1.5px; }
+    .lane { position: absolute; z-index: 2; top: 33px; bottom: 0; border-left: 1px dashed rgba(236,231,218,0.35); }
+    .ptr { position: absolute; z-index: 9; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 14px solid #ece7da; transform: rotate(-28deg); transform-origin: top left; filter: drop-shadow(1px 1px 0 #141414); }
+    .plug { position: absolute; right: 4px; top: 4px; width: 18px; height: 16px; border: 1px dashed rgba(236,231,218,0.5); display: flex; align-items: center; justify-content: center; color: #8a857a; box-sizing: border-box; }
+    .plug.hot { border: 1.5px solid #c8102e; background: #c8102e; color: #fff; }
+    .shelf { position: absolute; z-index: 7; left: 0; right: 0; top: 0; height: 46px; background: #141414; border-bottom: 1.5px solid #ece7da; box-shadow: 0 5px 0 rgba(236,231,218,0.18); display: flex; gap: 6px; padding: 7px 8px; box-sizing: border-box; }
+    .wcard { white-space: nowrap; overflow: hidden; flex: 1; border: 1px solid #ece7da; display: flex; flex-direction: column; justify-content: center; padding: 0 6px; font-size: 9.5px; gap: 2px; min-width: 0; }
+    .wcard .sq { display: inline-block; width: 7px; height: 7px; margin-right: 4px; }
+    .wcard.hot { background: #ece7da; color: #141414; outline: 2px solid #c8102e; outline-offset: 1px; }
+    .wcard.new { border-style: dashed; color: #8a857a; }
+    .timer { position: absolute; z-index: 4; left: 0; bottom: -1px; height: 3px; background: #c8102e; }
+    .bar { position: absolute; z-index: 8; left: 0; right: 0; bottom: 0; height: 26px; background: #ece7da; color: #141414; display: flex; align-items: center; gap: 0; font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .bar span { padding: 0 7px; height: 100%; display: flex; align-items: center; border-right: 1px solid rgba(20,20,20,0.25); white-space: nowrap; }
+    .bar span.on { background: #c8102e; color: #fff; font-weight: 600; }
+    .bar kbd { font-family: inherit; border: 1px solid currentColor; padding: 0 3px; margin-right: 4px; font-size: 9px; }
+    .pane { position: absolute; top: 0; bottom: 0; border-left: 1.5px solid #ece7da; }
+    .pip { display: inline-block; width: 7px; height: 7px; background: #c8102e; }
+    .tbl { display: grid; grid-template-columns: 200px 160px 1fr; font-size: 11.5px; }
+    .tbl > div { padding: 7px 10px 7px 0; border-bottom: 1px solid rgba(236,231,218,0.18); }
+    .tbl > .h { color: #8a857a; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1.5px solid #ece7da; }
+    .box { border: 1.5px solid #ece7da; padding: 14px 16px; box-sizing: border-box; }
+    .k { display: inline-block; border: 1px solid #ece7da; padding: 0 4px; font-size: 10px; margin: 0 2px; }
+</style>
+</helmet>
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 34px 40px; display:flex; flex-direction:column; gap: 20px; overflow:hidden;">
+  <div style="display:flex; gap: 40px; align-items: flex-end;">
+    <h1>Common ground</h1>
+    <div class="note" style="max-width: 900px; padding-bottom: 6px;"><b>What all three share.</b> The bounds, the timings, and one model of a drag: a single intent that the ghost, the target and the words all draw from. The directions differ only in how a verb is chosen: by place (A), by waiting (B), by key (C).</div>
+  </div>
+  <div style="display:grid;grid-template-columns:760px 1fr;gap:36px;">
+    <div style="display:flex;flex-direction:column;gap:14px"><div class="tbl"><div class="h">bound</div><div class="h">value</div><div class="h">why</div><div>arm → drag</div><div class="sig">4px ↕ · 12px ↔</div><div class="dim">today's slop, kept. Horizontal is larger so a row-click that wobbles isn't a drag.</div><div>rule ↔ on-row</div><div class="sig">30 / 40 / 30</div><div class="dim">today's thirds, with 4px hysteresis: once on a row, leaving needs the band +4px. Kills the flicker at a boundary.</div><div>depth lanes</div><div class="sig">14px per level</div><div class="dim">x relative to the row's left, quantised; snaps only after 6px of travel into the next lane.</div><div>sidebar → page</div><div class="sig">edge + 8px</div><div class="dim">crossing the sidebar's rule isn't enough; 8px into the page and the quarters take over.</div><div>tear off</div><div class="sig">16px outside</div><div class="dim">Chrome's vertical detach magnetism is 15px (50 for touch). Inside again within 16px, it re-attaches.</div><div>shelf</div><div class="sig">24px from top</div><div class="dim">appears after 120ms near the edge, so a passing drag doesn't flash it.</div><div>dwell (B; folds & names in all)</div><div class="sig">450ms at < 0.15 px/ms</div><div class="dim">only when nearly still, so a drag passing over rows springs nothing.</div><div>verb change</div><div class="sig">120ms cross-fade</div><div class="dim">chip and targets; none under reduced motion. Sound: 'toggle' on drop, nothing on hover.</div><div>autoscroll</div><div class="sig">28px from list ends</div><div class="dim">speed ∝ depth into the band; stops when a dwell timer is running.</div><div>cancel</div><div class="sig">esc · drop on origin</div><div class="dim">ghost returns 160ms. Every drop is one director op: ctrl alt z.</div></div></div>
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div class="frame"><div class="cap">a row while something is dragged over it</div><div style="position:relative;width:380px;height:120px;border:1.5px solid #ece7da;"><div style="position:absolute;left:0;right:0;top:0;height:30%;background:rgba(236,231,218,.06)"></div><div style="position:absolute;left:0;right:0;top:30%;height:40%;background:rgba(200,16,46,.16)"></div><div style="position:absolute;left:0;right:0;top:25%;height:50%;border-top:1px dashed #c8102e;border-bottom:1px dashed #c8102e"></div><div class="cap dim" style="position:absolute;left:8px;top:8px;font-size:10px">before · rule</div><div class="cap" style="position:absolute;left:8px;top:52px;font-size:10px">on · stack (A, C) · dwell (B)</div><div class="cap dim" style="position:absolute;right:8px;bottom:8px;font-size:10px">after · rule</div><div class="cap sig" style="position:absolute;left:8px;top:96px;font-size:9px">dashed: exit with hysteresis</div><div style="position:absolute;right:6px;top:44px;width:30px;height:30px;border:1.5px solid #c8102e;display:flex;align-items:center;justify-content:center" class="sig"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16"/></svg></div><div class="cap dim" style="position:absolute;right:42px;top:54px;font-size:9px">plug (A)</div></div></div>
+      <div class="note box">idle → <b>armed</b> (press on a row) → <b>lifted</b> (past slop: ghost, lanes, bar) → over <b>sidebar</b> | <b>page</b> | <b>edge</b> (shelf) | <b>outside</b> (tear-off) → <b>drop</b> (one op) or <b>cancel</b>. One <b>Intent</b> {verb, target, preview} computed per pointer move, drawn by one painter, applied by one function: the director. The ghost, the chip, the target's wash and the bar all read the same Intent, so they can't disagree.</div>
+      <div class="note box"><b>Wayland (your session: GNOME 50.1).</b> Today a tab let go outside the window always opens a <b>new</b> window: <span class='sig'>outer_position</span> isn't available on Wayland, so <span class='sig'>dropped_outside</span> can't find another nus window under the pointer. The in-window routes (A's shelf, B's sprung name, C's digits) fix this on every platform. A true tear-off that follows the pointer needs <span class='sig'>xdg-toplevel-drag-v1</span> — Mutter has it since 48, KWin too — but winit 0.30 has no drag source, so that is our own wl_data_device code alongside winit: a later step.</div>
+      <div class="note box"><b>Keys.</b> shift for join: free on every desktop, and VS Code already uses shift to change what a drop does. ctrl for copy: Firefox duplicates a tab on ctrl-drag; Windows and Finder copy on it. Never <b>alt</b> or <b>super</b>: on Linux those drag the whole window (GNOME's mouse-button-modifier is super; others use alt). esc always cancels.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>
