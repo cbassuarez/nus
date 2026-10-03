@@ -1,5 +1,4 @@
-//! The page's chrome that isn't the page: find in page, the permission
-//! band, <select> popups composited over the page, the downloads list in
+//! The page's chrome that isn't the page: the permission band, <select> popups composited over the page, the downloads list in
 //! the footer, sleeping and archiving of idle tabs, and history for the
 //! address palette.
 
@@ -7,16 +6,9 @@ use std::time::Instant;
 
 use nus_render::text::Style;
 use nus_render::{Rect, Scene};
-use winit::event::ElementState;
 
 use crate::app::{Caps, hover_key, App, IconMotion, Pane, WebPane};
 use nus_render::theme::metric as m;
-
-/// Find in page state on a web pane.
-#[derive(Clone, Debug, Default)]
-pub struct Find {
-    pub query: String,
-}
 
 impl App {
     pub(crate) fn draw_pip_notice(&mut self, scene: &mut Scene, page: Rect) {
@@ -39,56 +31,11 @@ impl App {
 
     /// Ctrl+Shift+F: find in whichever pane has focus.
     pub(crate) fn search_open(&mut self) {
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        match tab.focused() {
-            Pane::Term(_) => self.term_search_open(),
-            Pane::Web(w) => {
-                w.find = Some(Find::default());
-                self.dirty = true;
-            }
-            _ => {}
-        }
+        self.open_find();
     }
 
-    /// Keys while a page's find band is up. Returns true when consumed.
-    pub(crate) fn web_mode_key(&mut self, key: &crate::app::KeyIn) -> bool {
-        use winit::keyboard::{Key as WKey, NamedKey};
-        if key.state != ElementState::Pressed {
-            return false;
-        }
-        let shift = self.mods.shift_key();
-        let mods = self.mods;
-        let Some(tab) = self.tabs.get_mut(self.active) else { return false };
-        let Pane::Web(w) = tab.focused() else { return false };
-        let Some(f) = w.find.as_mut() else { return false };
-        // The query's own editing: typing, erasing, paste (field.rs).
-        let took = crate::field::edit(&mut f.query, key, mods, 400);
-        if took.changed() {
-            if f.query.is_empty() {
-                w.tab.stop_find();
-            } else {
-                w.tab.find(&f.query.clone(), true, false);
-            }
-        }
-        match &key.logical_key {
-            _ if took.taken() => {}
-            WKey::Named(NamedKey::Escape) => {
-                w.find = None;
-                w.tab.stop_find();
-            }
-            WKey::Named(NamedKey::Enter) => {
-                if !f.query.is_empty() {
-                    w.tab.find(&f.query.clone(), !shift, true);
-                }
-            }
-            _ => return false,
-        }
-        self.dirty = true;
-        true
-    }
-
-    /// The find band, the permission band, the select popup and the site
-    /// panel, over a page.
+    /// The permission band, the select popup and the site panel, over a
+    /// page.
     pub(crate) fn draw_web_overlays(&mut self, scene: &mut Scene, w: &mut WebPane) {
         self.draw_swipe(scene, w);
         self.draw_overlay(scene, w);
@@ -164,32 +111,6 @@ impl App {
                 w.dedupe_hits.push((hit, switch));
                 x += isz + self.px(18.0);
             }
-        }
-        // Find band, below any permission band.
-        if let Some(f) = &w.find {
-            let bh = self.header_h();
-            let y = page.y + if w.perm_hits.is_empty() { 0.0 } else { bh };
-            let br = Rect::new(page.x, y, page.w, bh);
-            scene.rect(br, ink);
-            let inv = Style { color: t.paper, ..strong };
-            let inv_l = Style { color: t.paper, ..label };
-            let by = br.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
-            let mut x = br.x + self.px(m::HEADER_PAD_X);
-            x += self.fonts.draw(scene, inv_l, x, by, "FIND") + self.px(12.0);
-            let q = if f.query.is_empty() { "…".to_string() } else { f.query.clone() };
-            x += self.fonts.draw(scene, Style { font: self.f.ui, px: self.px(m::UI_PX), color: t.paper, tracking: 0.0 }, x, by, &q);
-            self.draw_line_caret_on(scene, x + self.px(2.0), by, self.px(m::UI_PX), 1.0, self.last_key, ink);
-            let found = w.tab.shared.borrow().find;
-            let count = match found {
-                Some((n, _)) if n == 0 && !f.query.is_empty() => "NO MATCHES".to_string(),
-                Some((n, k)) if n > 0 => format!("{k} OF {n}"),
-                _ => String::new(),
-            };
-            let keys = "ENTER NEXT · SHIFT+ENTER BACK · ESC";
-            let kw = self.fonts.measure(inv_l, keys);
-            self.fonts.draw(scene, inv_l, br.right() - self.px(m::HEADER_PAD_X) - kw, by, keys);
-            let cw = self.fonts.measure(inv, &count);
-            self.fonts.draw(scene, inv, br.right() - self.px(m::HEADER_PAD_X) - kw - self.px(14.0) - cw, by, &count);
         }
     }
 

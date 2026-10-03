@@ -83,7 +83,12 @@ fn bench_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("vt/search");
     for (name, query) in cases {
         group.bench_function(name, |b| {
-            b.iter(|| black_box(term.search(black_box(query))))
+            b.iter(|| {
+                // The whole history, the way find walks it.
+                let g = term.grid();
+                let needle = nus_vt::Needle::new(black_box(query), false);
+                black_box(g.find_in(&needle, g.oldest_abs(), g.end_abs()))
+            })
         });
     }
     group.finish();

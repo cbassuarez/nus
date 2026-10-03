@@ -8,6 +8,31 @@ use std::sync::Arc;
 use cef::rc::Rc;
 use cef::*;
 
+/// Find in page as Chromium reports it. Each new search gets a larger
+/// identifier from Chromium; an answer for an older one (still arriving
+/// while the query changes) is dropped, so the count always belongs to
+/// the query shown. Answers come in instalments until `last`.
+#[derive(Clone, Debug, Default)]
+pub struct FindState {
+    /// The query and case the page was last asked.
+    pub query: String,
+    pub case: bool,
+    /// The newest identifier seen; answers at or below `floor` are stale.
+    pub newest: i32,
+    pub floor: i32,
+    pub count: i32,
+    pub active: i32,
+    /// Chromium has finished counting.
+    pub last: bool,
+    /// Where the current match is, in view coordinates (DIP).
+    pub rect: Option<(i32, i32, i32, i32)>,
+    /// When the page was asked, and whether it has answered since.
+    pub asked: Option<std::time::Instant>,
+    pub answered: bool,
+    /// The page navigated since it was asked: its count is not this page's.
+    pub changed: bool,
+}
+
 /// What the app reads each frame.
 #[derive(Default)]
 pub struct Shared {
@@ -116,8 +141,8 @@ pub struct Shared {
     /// Downloads belong to one document, including a reload at the same URL.
     pub(crate) favicon_epoch: u64,
     pub(crate) native_icon_document: Option<(String, String)>,
-    /// Find in page: (matches, active ordinal), from the find handler.
-    pub find: Option<(i32, i32)>,
+    /// Find in page, as Chromium has answered it (find.rs reads it).
+    pub find: FindState,
     /// A permission the page asked for, waiting on the band.
     pub permission: Option<PermissionAsk>,
     /// A <select> (or other popup widget): where it is and its texture.
@@ -1293,7 +1318,12 @@ wrap_app! {
             // Only sanitize the browser's user switches; preserve child policy.
             if _process_type.is_some_and(|p| !p.to_string().is_empty()) { return; }
             let Some(cl) = command_line else { return };
-            for flag in ["no-sandbox","disable-gpu-sandbox","disable-seccomp-filter-sandbox","disable-namespace-sandbox","single-process","in-process-gpu","disable-site-isolation-trials"] {cl.remove_switch(Some(&flag.into()));}
+            for flag in ["no-sandbox","disable-gpu-sandbox","disable-seccomp-filter-sandbox","disable-namespace-sandbox","single-process","in-process-gpu","disable-site-isolation-trials"] {
+                // A debug build's scripted checks keep the one CEF set from
+                // its own settings (browser_runtime::test_unsandboxed).
+                if flag == "no-sandbox" && crate::browser_runtime::test_unsandboxed() { continue; }
+                cl.remove_switch(Some(&flag.into()));
+            }
             cl.append_switch(Some(&"site-per-process".into()));
             cl.append_switch(Some(&"no-startup-window".into()));
             // Chromium's first run is Chrome's, not ours. Without initial
@@ -1575,6 +1605,12 @@ wrap_display_handler! {
                 let u = u.to_string();
                 if s.settled && u != s.url && !u.starts_with("about:") {
                     s.moves += 1;
+                }
+                if u != s.url && !s.find.query.is_empty() {
+                    s.find.changed = true;
+                    s.find.count = 0;
+                    s.find.active = 0;
+                    s.find.rect = None;
                 }
                 s.address(&u);
             }
@@ -2195,9 +2231,24 @@ wrap_find_handler! {
     }
 
     impl FindHandler {
-        fn on_find_result(&self, _browser: Option<&mut Browser>, _identifier: ::std::os::raw::c_int, count: ::std::os::raw::c_int, _selection_rect: Option<&Rect>, active_match_ordinal: ::std::os::raw::c_int, _final_update: ::std::os::raw::c_int) {
+        fn on_find_result(&self, _browser: Option<&mut Browser>, identifier: ::std::os::raw::c_int, count: ::std::os::raw::c_int, selection_rect: Option<&Rect>, active_match_ordinal: ::std::os::raw::c_int, final_update: ::std::os::raw::c_int) {
+            tracing::debug!(identifier, count, active_match_ordinal, final_update, "find result");
             let mut s = self.display.shared.borrow_mut();
-            s.find = Some((count, active_match_ordinal));
+            let f = &mut s.find;
+            // An answer for a search the query has moved past.
+            if identifier <= f.floor || identifier < f.newest {
+                return;
+            }
+            f.newest = identifier;
+            f.count = count.max(0);
+            if active_match_ordinal > 0 {
+                f.active = active_match_ordinal;
+            }
+            f.last = final_update != 0;
+            if let Some(r) = selection_rect.filter(|r| r.width > 0 && r.height > 0) {
+                f.rect = Some((r.x, r.y, r.width, r.height));
+            }
+            f.answered = true;
             s.paints += 1;
         }
     }
@@ -2891,18 +2942,50 @@ impl BrowserTab {
         if let Some(h) = self.host() { h.exit_fullscreen(1); }
     }
 
-    /// Find in page; `next` continues the same search.
-    pub fn find(&self, text: &str, forward: bool, next: bool) {
-        if let Some(h) = self.host() {
-            h.find(Some(&text.into()), forward as i32, 0, next as i32);
+    /// Find in page: a new search for `text` (`next` false), or the next
+    /// or previous match of the current one. A new search makes every
+    /// answer for the old one stale.
+    pub fn find(&self, text: &str, case: bool, forward: bool, next: bool) {
+        let Some(h) = self.host() else { return };
+        {
+            let mut s = self.shared.borrow_mut();
+            let f = &mut s.find;
+            let fresh = !next || f.query != text || f.case != case;
+            if fresh {
+                f.floor = f.newest;
+                f.count = 0;
+                f.active = 0;
+                f.last = false;
+                f.rect = None;
+                f.changed = false;
+            }
+            f.query = text.to_string();
+            f.case = case;
+            f.asked = Some(std::time::Instant::now());
+            f.answered = false;
         }
+        h.find(Some(&text.into()), forward as i32, case as i32, next as i32);
+        // A new search counts but selects nothing (its active ordinal is
+        // 0); asking once more selects the first match and scrolls to it,
+        // as a browser's find does while you type.
+        if !next {
+            h.find(Some(&text.into()), forward as i32, case as i32, 1);
+        }
+        // Reaching a match can need a frame: opening a closed <details>,
+        // scrolling a nested box. An idle page gets none unless asked.
+        h.invalidate(PaintElementType::VIEW);
+        h.send_external_begin_frame();
     }
 
-    pub fn stop_find(&self) {
+    /// Stop finding. `keep` leaves the current match selected, as a
+    /// browser's Esc does, so it can be copied.
+    pub fn stop_find(&self, keep: bool) {
         if let Some(h) = self.host() {
-            h.stop_finding(1);
+            h.stop_finding(if keep { 0 } else { 1 });
         }
-        self.shared.borrow_mut().find = None;
+        let mut s = self.shared.borrow_mut();
+        let floor = s.find.newest;
+        s.find = FindState { floor, newest: floor, ..FindState::default() };
     }
 
     /// Answer the page's permission ask.

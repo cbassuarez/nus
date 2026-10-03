@@ -327,7 +327,7 @@ pub struct TermPane {
     pub confirm_paste: Option<String>,
     /// Interaction layer (termui): selection, search, hints, scrollbar, block chips.
     pub sel: Option<crate::termui::Selection>,
-    pub search: Option<crate::termui::Search>,
+    pub search: Option<crate::find::TermFind>,
     pub hints: Option<crate::termui::Hints>,
     pub clicks: Option<crate::termui::Clicks>,
     pub scrollbar: Option<Rect>,
@@ -429,7 +429,6 @@ pub struct WebPane {
     pub load_since: Option<Instant>,
     pub load_reported: f32,
     /// Find in page, while the band is up.
-    pub find: Option<crate::webui::Find>,
     /// Dedupe: (this tab, the earlier tab with the same page), and the band's chips.
     pub dedupe: Option<(usize, usize)>,
     /// Resolved before drawing takes the tab list out of App.
@@ -1304,6 +1303,8 @@ pub struct App {
     pub confirm_stack: Option<usize>,
     pub window_focused: bool,
     pub palette: Option<(PaletteMode, String)>,
+    /// Find: the bar and its ladder (find.rs).
+    pub find_bar: Option<crate::find::Bar>,
     /// A page's address, edited in its header (address.rs).
     pub address: Option<crate::address::Address>,
     pub palette_sel: usize,
@@ -1650,6 +1651,7 @@ impl App {
             window_focused: true,
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
+            find_bar: None,
             address: None,
             palette_sel: 0,
             pending_capture: None,
@@ -2088,7 +2090,6 @@ impl App {
             favicon_tone: [0.5, 0.5, 0.5, 0.0],
             dt_panel: 0,
             remembered: String::new(),
-            find: None,
             perm_hits: Vec::new(),
             dedupe: None,
             dedupe_label: String::new(),
@@ -2399,6 +2400,7 @@ impl App {
         self.tend_downloads();
         self.refresh_shared_prefs();
         self.tend_pip_focus();
+        self.tend_find();
         self.sync_viewer_preferences(false);
         self.trim_memory();
         self.drain_popups();
@@ -4877,6 +4879,8 @@ impl App {
         // A page's address being edited: its suggestions, over the page.
         self.draw_address_list(&mut scene);
         // Palette.
+        // Find, over the panes and under the palette.
+        self.draw_find_bar(&mut scene);
         if let Some((mode, input)) = self.palette.clone() {
             // The palette is modal: nothing under it takes the atom's drags.
             self.intel.hits.clear();
@@ -8210,7 +8214,7 @@ impl App {
         if self.palette.is_none() && !self.dl_menu && self.library_key(ev) { return; }
         if self.palette.is_none() && !app && self.settings_key(ev) { return; }
         // Find and hints take the keys while they're up.
-        if self.web_mode_key(ev) {
+        if self.find_key(ev) {
             return;
         }
         if self.term_mode_key(ev) {
@@ -8404,6 +8408,14 @@ impl App {
             && self.tabs.get(self.active).is_some_and(|t| !matches!(t.focused_ref(), Pane::Term(_))) {
             return self.open_start_page(false);
         }
+        // Ctrl+F finds wherever it can't be a shell's (readline moves the
+        // cursor with it): on a page.
+        if !cfg!(target_os = "macos") && pressed && ctrl && !shift && !alt && !sup && code == Some(KeyCode::KeyF)
+            && self.palette.is_none()
+            && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Web(_)))
+            && self.open_find() {
+            return;
+        }
         if pressed && self.palette.is_none() && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Home(h) if !h.library)) {
             if !cfg!(target_os="macos") && ctrl && !alt && !sup && code==Some(KeyCode::KeyK) { return self.open_palette(PaletteMode::Go); }
             let editing = crate::field::command(self.mods) && matches!(code, Some(KeyCode::KeyA|KeyCode::KeyC|KeyCode::KeyV|KeyCode::KeyX|KeyCode::ArrowLeft|KeyCode::ArrowRight));
@@ -8424,7 +8436,12 @@ impl App {
                 Some(KeyCode::ArrowUp) if alt => return self.hoist(),
                 Some(KeyCode::ArrowUp) => return self.jump_prompt(-1),
                 Some(KeyCode::ArrowDown) => return self.jump_prompt(1),
-                Some(KeyCode::KeyF) => return self.search_open(),
+                Some(KeyCode::KeyF) => {
+                    if !self.open_find() {
+                        self.search_open();
+                    }
+                    return;
+                }
                 // Source Control: ⌘⇧G · Ctrl+Shift+G.
                 Some(KeyCode::KeyG) if shift => {
                     if self.scm.open { self.close_scm() } else { self.open_scm() }
@@ -10080,6 +10097,8 @@ impl App {
             // Only the live Skip action (or existing keyboard shortcut) ends arrival.
             return;
         }
+        // The find bar's buttons; a press anywhere else gives the keys back.
+        if self.find_mouse(button, state) { self.dirty = true; return; }
         if pressed && self.behavior.pip_policy.click_app {self.close_pip();}
         // A page's question stands: its sheet answers, its page takes nothing.
         if self.palette.is_none() && self.page_dialog_mouse(pressed && button == MouseButton::Left, x, y) { self.dirty = true; return; }

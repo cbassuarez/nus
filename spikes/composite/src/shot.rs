@@ -2444,6 +2444,24 @@ impl App {
             }
             // A chord, through the app's own key handling.
             "key" => self.shot_key(rest),
+            // Text typed one key at a time through the app's own key path
+            // (into whatever has the keys: the find bar, a field).
+            "keys" => {
+                for c in rest.chars() {
+                    self.shot_key(&if c == ' ' { "space".to_string() } else { c.to_string() });
+                }
+            }
+            // What the find bar says: its count and each rung's, for a check
+            // script to compare.
+            "findcount" => {
+                match self.find_bar.as_ref().map(|b| b.scope) {
+                    Some(scope) => {
+                        let words = self.find_report(scope);
+                        eprintln!("shot: findcount {words}");
+                    }
+                    None => eprintln!("shot: findcount closed"),
+                }
+            }
             // The clock stops until the page paints, or the language
             // server answers. No frame is written while it waits.
             "await-paint" => {

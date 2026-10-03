@@ -4,6 +4,7 @@
 mod access;
 mod address;
 mod applog;
+mod find;
 #[cfg(target_os = "linux")]
 mod hotkey_portal;
 mod overscroll;

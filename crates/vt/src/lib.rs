@@ -11,7 +11,7 @@ pub mod term;
 mod utf8;
 
 pub use cell::{Cell, Color, Flags};
-pub use grid::{Grid, Row};
+pub use grid::{Found, Grid, Needle, Row};
 pub use images::{Image, Placement};
 pub use palette::{Palette, Rgb};
 pub use term::{Cursor, Event, Mark, MarkKind, Modes, Term};

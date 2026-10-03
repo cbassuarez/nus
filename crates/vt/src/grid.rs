@@ -362,6 +362,143 @@ impl Grid {
     }
 }
 
+/// What to look for in a terminal's text: plain characters, compared
+/// case-insensitively unless `case` is set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Needle {
+    chars: Vec<char>,
+    case: bool,
+}
+
+impl Needle {
+    pub fn new(text: &str, case: bool) -> Needle {
+        Needle {
+            chars: text.chars().map(|c| fold(c, case)).collect(),
+            case,
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.chars.is_empty()
+    }
+}
+
+fn fold(c: char, case: bool) -> char {
+    if case {
+        c
+    } else {
+        c.to_lowercase().next().unwrap_or(c)
+    }
+}
+
+/// A match in the terminal's text, in cells: from (`line`, `col`) to
+/// (`end_line`, `end_col`), end exclusive. A match in a line the terminal
+/// wrapped can start on one row and end on the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Found {
+    pub line: u64,
+    pub col: usize,
+    pub end_line: u64,
+    pub end_col: usize,
+}
+
+impl Found {
+    /// The cells of this match on row `line`: (first col, cols), if any.
+    pub fn on_row(&self, line: u64, cols: usize) -> Option<(usize, usize)> {
+        if line < self.line || line > self.end_line {
+            return None;
+        }
+        let from = if line == self.line { self.col } else { 0 };
+        let to = if line == self.end_line {
+            self.end_col
+        } else {
+            cols
+        };
+        (to > from).then_some((from, to - from))
+    }
+}
+
+impl Grid {
+    /// One past the last line there is.
+    pub fn end_abs(&self) -> u64 {
+        self.history_total + self.rows as u64
+    }
+
+    /// The first row of the logical line `abs` is part of: the rows the
+    /// terminal joined by wrapping, as opposed to ones a newline ended.
+    pub fn logical_start(&self, abs: u64) -> u64 {
+        let oldest = self.oldest_abs();
+        let mut l = abs.max(oldest);
+        while l > oldest {
+            match self.row_abs(l - 1) {
+                Some(r) if r.wrapped => l -= 1,
+                _ => break,
+            }
+        }
+        l
+    }
+
+    /// Matches of `needle` in the logical lines that start in
+    /// [`from`, `to`), each searched to its end even past `to`. `from`
+    /// should be a logical start. Returns the matches in order and the
+    /// line after the last logical line searched (the next `from`).
+    /// Matches do not overlap; wide characters count once, and their
+    /// spacer cells are not text.
+    pub fn find_in(&self, needle: &Needle, from: u64, to: u64) -> (Vec<Found>, u64) {
+        let mut out = Vec::new();
+        let end = self.end_abs();
+        let mut l = from.max(self.oldest_abs());
+        if needle.is_empty() {
+            return (out, to.min(end).max(l));
+        }
+        let n = needle.chars.len();
+        // (char, line, col, width) for each character of the logical line.
+        let mut text: Vec<(char, u64, usize, usize)> = Vec::new();
+        while l < to && l < end {
+            text.clear();
+            let mut row_line = l;
+            while let Some(row) = self.row_abs(row_line) {
+                for (col, c) in row.cells.iter().enumerate() {
+                    if c.flags.contains(crate::cell::Flags::WIDE_SPACER) {
+                        continue;
+                    }
+                    let w = if c.flags.contains(crate::cell::Flags::WIDE) {
+                        2
+                    } else {
+                        1
+                    };
+                    text.push((fold(c.ch, needle.case), row_line, col, w));
+                }
+                if !row.wrapped || row_line + 1 >= end {
+                    break;
+                }
+                row_line += 1;
+            }
+            let mut i = 0;
+            while i + n <= text.len() {
+                if text[i..i + n]
+                    .iter()
+                    .zip(&needle.chars)
+                    .all(|(t, c)| t.0 == *c)
+                {
+                    let first = text[i];
+                    let last = text[i + n - 1];
+                    out.push(Found {
+                        line: first.1,
+                        col: first.2,
+                        end_line: last.1,
+                        end_col: last.2 + last.3,
+                    });
+                    i += n;
+                } else {
+                    i += 1;
+                }
+            }
+            l = row_line + 1;
+        }
+        (out, l)
+    }
+}
+
 #[cfg(test)]
 mod fold_tests {
     use super::*;
@@ -399,5 +536,89 @@ mod fold_tests {
         // A fold starting above the view is skipped without a row.
         g.scroll_display(-2);
         assert_eq!(g.display_lines(&[(1, 4)])[0], Display::Line(4));
+    }
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::*;
+    use crate::cell::Flags;
+
+    fn grid(rows: &[(&str, bool)]) -> Grid {
+        let cols = 8;
+        let mut g = Grid::new(cols, rows.len(), 0);
+        for (r, (text, wrapped)) in rows.iter().enumerate() {
+            let mut cells = Vec::new();
+            for ch in text.chars() {
+                let wide = matches!(ch, '漢' | '字');
+                cells.push(Cell {
+                    ch,
+                    flags: if wide { Flags::WIDE } else { Flags::empty() },
+                    ..Cell::default()
+                });
+                if wide {
+                    cells.push(Cell {
+                        ch: ' ',
+                        flags: Flags::WIDE_SPACER,
+                        ..Cell::default()
+                    });
+                }
+            }
+            cells.resize(cols, Cell::default());
+            g.lines[r] = Row {
+                cells,
+                wrapped: *wrapped,
+            };
+        }
+        g
+    }
+
+    #[test]
+    fn a_word_split_by_a_wrap_is_one_match_on_two_rows() {
+        let g = grid(&[("xlast_ER", true), ("ROR=1", false), ("ok", false)]);
+        let (hits, next) = g.find_in(&Needle::new("error", false), 0, 3);
+        assert_eq!(
+            hits,
+            vec![Found {
+                line: 0,
+                col: 6,
+                end_line: 1,
+                end_col: 3
+            }]
+        );
+        assert_eq!(next, 3);
+        assert_eq!(hits[0].on_row(0, 8), Some((6, 2)));
+        assert_eq!(hits[0].on_row(1, 8), Some((0, 3)));
+        assert_eq!(hits[0].on_row(2, 8), None);
+        assert_eq!(g.logical_start(1), 0);
+        assert_eq!(g.logical_start(2), 2);
+    }
+
+    #[test]
+    fn case_and_wide_characters() {
+        let g = grid(&[("a漢字b", false), ("Error", false)]);
+        let (hits, _) = g.find_in(&Needle::new("字b", false), 0, 2);
+        // 漢 is cells 1-2, 字 3-4, b at 5.
+        assert_eq!(
+            hits,
+            vec![Found {
+                line: 0,
+                col: 3,
+                end_line: 0,
+                end_col: 6
+            }]
+        );
+        assert_eq!(g.find_in(&Needle::new("error", true), 0, 2).0.len(), 0);
+        assert_eq!(g.find_in(&Needle::new("Error", true), 0, 2).0.len(), 1);
+    }
+
+    #[test]
+    fn matches_do_not_overlap_and_a_range_ends_on_a_logical_line() {
+        let g = grid(&[("aaaa", true), ("aa", false), ("aa", false)]);
+        let (hits, next) = g.find_in(&Needle::new("aa", false), 0, 1);
+        // The first logical line runs on to row 1 even though `to` is 1.
+        assert_eq!(hits.len(), 3);
+        assert_eq!(next, 2);
+        assert!(g.find_in(&Needle::new("", false), 0, 3).0.is_empty());
     }
 }

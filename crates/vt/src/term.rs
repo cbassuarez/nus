@@ -1147,40 +1147,6 @@ impl Term {
             .unwrap_or(0)
     }
 
-    /// Case-insensitive matches of `q` in history and the screen: (line, col, len).
-    pub fn search(&self, q: &str) -> Vec<(u64, usize, usize)> {
-        let q: Vec<char> = q.to_lowercase().chars().collect();
-        if q.is_empty() {
-            return Vec::new();
-        }
-        let grid = &self.primary;
-        let mut out = Vec::new();
-        let mut line = grid.oldest_abs();
-        let last = grid.abs_row(grid.rows() - 1);
-        while line <= last {
-            if let Some(row) = grid.row_abs(line) {
-                let chars: Vec<char> = row
-                    .cells
-                    .iter()
-                    .map(|c| c.ch.to_lowercase().next().unwrap_or(c.ch))
-                    .collect();
-                if chars.len() >= q.len() {
-                    let mut i = 0;
-                    while i + q.len() <= chars.len() {
-                        if chars[i..i + q.len()] == q[..] {
-                            out.push((line, i, q.len()));
-                            i += q.len();
-                        } else {
-                            i += 1;
-                        }
-                    }
-                }
-            }
-            line += 1;
-        }
-        out
-    }
-
     /// The block a line belongs to: (prompt line, command text, exit) from marks.
     pub fn block_at(&self, line: u64) -> Option<(u64, u64, String, Option<i32>)> {
         let starts: Vec<usize> = self
@@ -1334,6 +1300,12 @@ impl Term {
 
     pub fn take_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.events)
+    }
+
+    /// A full-screen program (less, vim, htop) has the alternate screen up:
+    /// what shows is not the shell's history.
+    pub fn on_alt_screen(&self) -> bool {
+        self.modes.contains(Modes::ALT_SCREEN)
     }
 
     pub fn grid(&self) -> &Grid {

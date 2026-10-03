@@ -32,9 +32,24 @@ fn fail(message: String) -> bool {
     false
 }
 
+/// Local scripted checks only: a debug build, run by the NUS_SHOT harness
+/// in an isolated profile, asked explicitly. A development binary is not the
+/// installed one its AppArmor policy names, so without this a fixture page
+/// on 127.0.0.1 cannot render there. Release builds never have it.
+pub(crate) fn test_unsandboxed() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var_os("NUS_TEST_UNSANDBOXED").is_some_and(|v| v == "1")
+        && std::env::var_os("NUS_SHOT").is_some()
+        && std::env::var_os("NUS_SHOT_DIR").is_some()
+}
+
 #[cfg(target_os = "linux")]
 fn linux_sandbox() -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
+    if test_unsandboxed() {
+        tracing::warn!("browser sandbox off: debug build under the scripted harness");
+        return Ok(());
+    }
     static CHECK: OnceLock<Result<(), String>> = OnceLock::new();
     CHECK.get_or_init(|| {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -173,7 +188,7 @@ pub fn ensure() -> bool {
     let profile = std::env::current_dir().unwrap_or_default().join("profile");
     let settings = Settings {
         command_line_args_disabled: 1,
-        no_sandbox: 0,
+        no_sandbox: test_unsandboxed() as i32,
         windowless_rendering_enabled: 1,
         external_message_pump: 1,
         user_agent_product: format!("Chrome/{}", crate::chromium_version())

@@ -286,6 +286,8 @@ impl App {
                 }
                 Ok(json!({ "tab": self.active + 1 }))
             }
+            // Find: the bar on the pane in front (find.rs).
+            "find" => self.find_remote(args),
             "sync" => {
                 match s("do").as_deref().unwrap_or("now") {
                     "now" => {

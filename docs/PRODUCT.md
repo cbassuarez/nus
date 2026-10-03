@@ -422,8 +422,7 @@ ticks are the prompts.
 
 **The terminal's interaction layer.** Selection with semantic zones,
 copy and paste (bracketed, protected), click-to-move at a prompt, a thin
-scrollbar that appears on hover or when scrolled, find in scrollback as
-a band, hints mode (labels over URLs, paths and hashes), an unfocused
+scrollbar that appears on hover or when scrolled, find (below), hints mode (labels over URLs, paths and hashes), an unfocused
 split washes with paper, a cols × rows card while resizing.
 
 **Fonts and images.** Missing glyphs come from system fallbacks
@@ -462,6 +461,29 @@ list in the footer, click reveals), permission asks as a band, `<select>`
 popups composited, content blocking (built-in hosts plus
 profile/blocklist.txt), history-ranked address palette, idle pages sleep
 after 30 minutes and archive after 12 hours.
+
+**Find.** One bar on every page and shell (`find.rs`): Ctrl+F on a page,
+Ctrl+Shift+F in a shell (Ctrl+F is readline's), ⌘F on macOS. In the bar,
+Ctrl+F again widens it — this pane, this tab, this window — and
+Ctrl+Shift+F narrows it; when there is nothing here, Ctrl+F goes straight
+to the nearest rung that has matches, as the bar's hint says. ↵ / ⇧↵ (or
+F3) walk, crossing panes and tabs at the wider rungs; Alt+C matches case;
+Esc closes and leaves a page's current match selected. The count is never
+a guess: "counting…" until it is final, "k of N", "No matches" with where
+else the word is, "10,000+" past the cap, "+N new" as a shell keeps
+printing, "page changed" after a navigation (the query runs again when the
+new page has loaded), "screen only" in a full-screen program. Pages are
+searched by Chromium itself, so highlighting, frames, closed `<details>`
+and scrolling to the match are Chromium's; answers for a superseded query
+are dropped by identifier, and the bar moves to the pane's foot when the
+current match would be under it. Shells are searched on logical lines (a
+word a wrap split is one match), history newest first in slices of a frame
+budget, the screen again as it changes; the current match is held by
+position, so new output never moves it, and the scrollbar ticks every
+match. `nus find <words> [--scope tab|window] [--case] [--json]` drives it
+from outside. Known limit: with an embedded frame on the page, Chromium's
+own walk can visit the frame's match out of document order once; the count
+is still exact.
 
 **The welcome page.** A full tab, ruled, with a live START HERE
 checklist and TRY buttons that do the thing; F1, the palette, settings.

@@ -47,14 +47,6 @@ impl Selection {
     }
 }
 
-/// Search in scrollback.
-#[derive(Clone, Debug, Default)]
-pub struct Search {
-    pub query: String,
-    pub matches: Vec<(u64, usize, usize)>,
-    pub current: usize,
-}
-
 /// A hint: a match on screen with its label.
 #[derive(Clone, Debug)]
 pub struct Hint {
@@ -548,17 +540,28 @@ impl App {
                 }
             }
         }
-        // Search matches: outlined; the current one filled.
+        // Find: every match on screen tinted, the current one filled and
+        // ruled. A match the terminal wrapped is lit on both rows. Only
+        // rows on screen are drawn, however many matches there are.
         if let Some(s) = &p.search {
-            for (i, &(line, col, len)) in s.matches.iter().enumerate() {
-                let Some(row) = row_at(line) else { continue };
-                let x = p.origin.0 + col as f32 * cw;
-                let y = p.origin.1 + row as f32 * ch;
-                let rr = Rect::new(x, y, len as f32 * cw, ch);
-                if i == s.current {
-                    scene.rect(rr, fade(self.surface.signal, 0.35));
+            let top = view.iter().find_map(|d| match d { nus_vt::grid::Display::Line(l) => Some(*l), _ => None }).unwrap_or(0);
+            let bottom = view.iter().rev().find_map(|d| match d { nus_vt::grid::Display::Line(l) => Some(*l), _ => None }).unwrap_or(0);
+            let first = s.hits.partition_point(|h| h.end_line < top);
+            for h in s.hits[first..].iter().take_while(|h| h.line <= bottom) {
+                let now = s.current == Some(*h);
+                for line in h.line..=h.end_line {
+                    let Some(row) = row_at(line) else { continue };
+                    let Some((col, n)) = h.on_row(line, cols) else { continue };
+                    let rr = Rect::new(p.origin.0 + col as f32 * cw, p.origin.1 + row as f32 * ch, n as f32 * cw, ch);
+                    // Translucent: the match's own text stays readable
+                    // through it, in every theme.
+                    if now {
+                        scene.rect(rr, fade(self.surface.signal, 0.32));
+                        scene.outline(rr, self.px(m::FLOATING), ink);
+                    } else {
+                        scene.rect(rr, fade(self.surface.signal, 0.18));
+                    }
                 }
-                scene.outline(rr, self.px(1.0), fade(self.surface.signal, 0.9));
             }
         }
         // Hints: labels over matches; typed prefix narrows them.
@@ -611,7 +614,7 @@ impl App {
         // Scrollbar: a thin track at the right; the thumb, prompt ticks.
         let grid = p.term.grid();
         let sb_len = grid.scrollback_len();
-        let show = sb_len > 0 && (grid.display_offset > 0 || r.contains(mx, my) || p.scroll_drag);
+        let show = sb_len > 0 && (grid.display_offset > 0 || r.contains(mx, my) || p.scroll_drag || p.search.as_ref().is_some_and(|s| !s.hits.is_empty()));
         if show {
             let track = Rect::new(r.right() - self.px(8.0), r.y + hh + self.px(4.0), self.px(4.0), r.h - hh - self.px(8.0));
             p.scrollbar = Some(track);
@@ -624,6 +627,23 @@ impl App {
                 scene.rect(Rect::new(track.x - self.px(2.0), track.y + f * track.h, track.w + self.px(4.0), self.px(1.0)), fade(ink, 0.45));
             }
             scene.push(nus_render::Instance::rounded(Rect::new(track.x, track.y + pos * track.h, track.w, th), self.px(2.0), fade(ink, 0.55)));
+            // Where the matches are; the current one heavier. A tick per
+            // pixel row at most, so a huge count costs nothing.
+            if let Some(s) = &p.search {
+                let mut last = -1.0f32;
+                for h in &s.hits {
+                    let f = (h.line.saturating_sub(grid.oldest_abs())) as f32 / total;
+                    let y = (track.y + f * track.h).round();
+                    if y != last {
+                        scene.rect(Rect::new(track.x - self.px(3.0), y, track.w + self.px(6.0), self.px(1.5)), fade(self.surface.signal, 0.9));
+                        last = y;
+                    }
+                }
+                if let Some(c) = s.current {
+                    let f = (c.line.saturating_sub(grid.oldest_abs())) as f32 / total;
+                    scene.rect(Rect::new(track.x - self.px(4.0), track.y + f * track.h - self.px(1.0), track.w + self.px(8.0), self.px(3.0)), ink);
+                }
+            }
         } else {
             p.scrollbar = None;
         }
@@ -635,26 +655,6 @@ impl App {
             let by = r.bottom() - self.px(12.0);
             scene.rect(Rect::new(bx - self.px(8.0), by - self.px(12.0), tw + self.px(16.0), self.px(18.0)), fade(self.paper(), 0.9));
             self.fonts.draw(scene, Style { color: t.dim, ..label }, bx, by, &text);
-        }
-        // Search band along the pane's top.
-        if let Some(s) = &p.search {
-            let bh = self.header_h();
-            let br = Rect::new(r.x, r.y + hh, r.w, bh);
-            scene.rect(br, ink);
-            let inv = Style { color: t.paper, ..self.label_strong() };
-            let inv_l = Style { color: t.paper, ..label };
-            let by = br.y + self.px(m::HEADER_PAD_Y) + self.px(m::UI_PX) - self.px(3.0);
-            let mut x = br.x + self.px(m::HEADER_PAD_X);
-            x += self.fonts.draw(scene, inv_l, x, by, "FIND") + self.px(12.0);
-            let q = if s.query.is_empty() { "…".to_string() } else { s.query.clone() };
-            x += self.fonts.draw(scene, Style { font: self.f.ui, px: self.px(m::UI_PX), color: t.paper, tracking: 0.0 }, x, by, &q);
-            self.draw_line_caret_on(scene, x + self.px(2.0), by, self.px(m::UI_PX), 1.0, self.last_key, ink);
-            let count = if s.matches.is_empty() { "NO MATCHES".to_string() } else { format!("{} OF {}", s.current + 1, s.matches.len()) };
-            let cw2 = self.fonts.measure(inv, &count);
-            let keys = "ENTER NEXT · SHIFT+ENTER BACK · ESC";
-            let kw = self.fonts.measure(inv_l, keys);
-            self.fonts.draw(scene, inv_l, br.right() - self.px(m::HEADER_PAD_X) - kw, by, keys);
-            self.fonts.draw(scene, inv, br.right() - self.px(m::HEADER_PAD_X) - kw - self.px(14.0) - cw2, by, &count);
         }
         // Unfocused split: a paper wash, so the focused pane reads.
         if split && !focused {
@@ -689,12 +689,10 @@ impl App {
 
     /// Open search in the focused shell.
     pub(crate) fn term_search_open(&mut self) {
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
-        if let Pane::Term(t) = tab.focused() {
-            t.search = Some(Search::default());
+        if let Some(Pane::Term(t)) = self.tabs.get_mut(self.active).map(|t| t.focused()) {
             t.hints = None;
-            self.dirty = true;
         }
+        self.open_find();
     }
 
     /// Hints mode in the focused shell: label every URL, path and hash on screen.
@@ -723,47 +721,18 @@ impl App {
         }
     }
 
-    /// Keys while search or hints is up. Returns true when consumed.
+    /// Keys while hints are up. Returns true when consumed.
     pub(crate) fn term_mode_key(&mut self, key: &crate::app::KeyIn) -> bool {
         use winit::keyboard::{Key as WKey, NamedKey};
         if key.state != ElementState::Pressed {
             return false;
         }
-        let shift = self.mods.shift_key();
-        let mods = self.mods;
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let Pane::Term(t) = tab.focused() else { return false };
         let mut open_url: Option<String> = None;
         let mut copy: Option<String> = None;
         let mut consumed = false;
-        if let Some(s) = t.search.as_mut() {
-            consumed = true;
-            // The query's own editing: typing, erasing, paste (field.rs).
-            let took = crate::field::edit(&mut s.query, key, mods, 400);
-            if took.changed() {
-                let grew = !matches!(key.logical_key, WKey::Named(NamedKey::Backspace));
-                s.matches = t.term.search(&s.query);
-                // Latest match first: that's where the eye is.
-                s.current = s.matches.len().saturating_sub(1);
-                if grew {
-                    if let Some(&(line, _, _)) = s.matches.get(s.current) {
-                        t.term.grid_mut().scroll_to_abs(line.saturating_sub(2));
-                    }
-                }
-            }
-            match &key.logical_key {
-                _ if took.taken() => {}
-                WKey::Named(NamedKey::Escape) => t.search = None,
-                WKey::Named(NamedKey::Enter) => {
-                    if !s.matches.is_empty() {
-                        s.current = if shift { (s.current + s.matches.len() - 1) % s.matches.len() } else { (s.current + 1) % s.matches.len() };
-                        let line = s.matches[s.current].0;
-                        t.term.grid_mut().scroll_to_abs(line.saturating_sub(2));
-                    }
-                }
-                _ => consumed = false,
-            }
-        } else if let Some(h) = t.hints.as_mut() {
+        if let Some(h) = t.hints.as_mut() {
             consumed = true;
             match &key.logical_key {
                 WKey::Named(NamedKey::Escape) => t.hints = None,

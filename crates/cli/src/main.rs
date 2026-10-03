@@ -319,6 +319,72 @@ fn credential(op: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `nus find <words> [--scope pane|tab|window] [--case] [--json]`, or
+/// `nus find --close`. Waits up to five seconds for a final count.
+fn find(args: &[String]) -> ExitCode {
+    let mut words = Vec::new();
+    let mut opts = serde_json::Map::new();
+    let mut json_out = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--scope" => {
+                if let Some(s) = args.get(i + 1) {
+                    opts.insert("scope".into(), Value::String(s.clone()));
+                }
+                i += 1;
+            }
+            "--case" => {
+                opts.insert("case".into(), Value::Bool(true));
+            }
+            "--close" => {
+                opts.insert("close".into(), Value::Bool(true));
+            }
+            "--json" => json_out = true,
+            w => words.push(w.to_string()),
+        }
+        i += 1;
+    }
+    if !words.is_empty() {
+        opts.insert("q".into(), Value::String(words.join(" ")));
+    } else if !opts.contains_key("close") {
+        eprintln!("usage: nus find <words> [--scope pane|tab|window] [--case] [--json] · nus find --close");
+        return ExitCode::from(2);
+    }
+    let mut v = match call("find", Value::Object(opts)) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("nus: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while v["open"] == true && v["done"] != true && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        match call("find", json!({})) {
+            Ok(next) => v = next,
+            Err(_) => break,
+        }
+    }
+    if json_out {
+        println!("{v}");
+    } else if v["open"] == true {
+        let n = |k: &str| v[k]["total"].as_u64().unwrap_or(0);
+        let note = v["note"]
+            .as_str()
+            .map(|s| format!(" · {s}"))
+            .unwrap_or_default();
+        println!(
+            "{}{note} · pane {} · tab {} · window {}",
+            v["words"].as_str().unwrap_or(""),
+            n("pane"),
+            n("tab"),
+            n("window")
+        );
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The almanac needs no running nus: sky, moon and tonight are computed here.
@@ -337,6 +403,11 @@ fn main() -> ExitCode {
     // running nus; store and erase are git's own business.
     if args.first().map(String::as_str) == Some("credential") {
         return credential(args.get(1).map(String::as_str));
+    }
+    // Find in the running nus: the bar on the pane in front, its count
+    // once it is final.
+    if args.first().map(String::as_str) == Some("find") {
+        return find(&args[1..]);
     }
     // The MCP server: stdin to stdout until the assistant hangs up.
     if args.first().map(String::as_str) == Some("mcp") {
@@ -630,6 +701,7 @@ const USAGE: &str = "usage: nus [<command> [args] [--json]]
   block [last|all] [--tab N] · ask <question> · raise · version
   layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
   sync [now] · sync key · sync join <key> · sync status · sync folder <path> · sync git <remote>
+  find <words> [--scope pane|tab|window] [--case] · find --close
   hold [ls|attach <id>|kill <id>] · log [--cwd D] [--limit N] · page [text|dom|console|network|screenshot|info] [--tab N]
   mcp · the MCP server on stdio: claude mcp add nus -- nus mcp
   hook install claude|codex · hook uninstall claude|codex · the assistant tells its nus pane what it is doing
