@@ -1361,6 +1361,10 @@ pub struct App {
     /// When trackpad fingers last lifted (swipe.rs `wheel_phase`).
     pub wheel_lifted: Option<Instant>,
     pub frames: u64,
+    /// When the last frame was built, and the monitor's refresh interval
+    /// (looked up now and then): frames are paced to the display.
+    pub frame_at: Option<Instant>,
+    pub refresh: Option<(std::time::Duration, Instant)>,
 }
 
 impl App {
@@ -1687,6 +1691,8 @@ impl App {
             strip_press: None,
             last_begin_frame: crate::clock::now(),
             wheel_lifted: None,
+            frame_at: None,
+            refresh: None,
             frames: 0,
         };
         app.ordinal = ordinal;
@@ -4217,6 +4223,26 @@ impl App {
         }
     }
 
+    /// A frame may be drawn now: one refresh interval of this window's
+    /// monitor has passed since the last. With a present mode that does
+    /// not wait for the display (Wayland's mailbox), an animation would
+    /// otherwise be drawn as fast as the machine allows — several times
+    /// what the screen shows, for nothing but heat. Scripted recordings keep
+    /// their own clock and are not paced.
+    pub fn frame_due(&mut self) -> bool {
+        if self.shot.as_ref().is_some_and(|s| s.recording()) {
+            return true;
+        }
+        let stale = self.refresh.is_none_or(|(_, at)| at.elapsed() > std::time::Duration::from_secs(2));
+        if stale {
+            let hz = self.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).filter(|&mhz| mhz >= 24_000).unwrap_or(60_000);
+            self.refresh = Some((std::time::Duration::from_micros(1_000_000_000 / hz as u64), Instant::now()));
+        }
+        let interval = self.refresh.map(|(d, _)| d).unwrap_or(std::time::Duration::from_micros(16_667));
+        // A little early is fine: the loop wakes every couple of ms.
+        self.frame_at.is_none_or(|at| at.elapsed() + std::time::Duration::from_micros(1_500) >= interval)
+    }
+
     pub fn redraw(&mut self) {
         if self.hatch_state.main_hidden {return;}
         let changed = if self.arriving() { false } else { self.pump() };
@@ -4225,6 +4251,7 @@ impl App {
         }
         let _frame = crate::perf::scope("frame_build_submit");
         crate::perf::interval("frame_interval");
+        self.frame_at = Some(Instant::now());
         self.dirty = false;
         let arrival_frame = self.arriving();
         self.build();

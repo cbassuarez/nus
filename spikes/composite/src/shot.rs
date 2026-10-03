@@ -92,6 +92,13 @@ use winit::keyboard::ModifiersState;
 
 use crate::app::{App, PaletteMode, Pane};
 
+impl Shot {
+    /// A recording is in progress: frames follow its own clock.
+    pub fn recording(&self) -> bool {
+        self.rec.is_some()
+    }
+}
+
 pub struct Shot {
     steps: Vec<String>,
     next: usize,

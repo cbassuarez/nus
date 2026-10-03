@@ -1354,7 +1354,7 @@ fn run() -> i32 {
                 a.dirty = true;
             }
             }
-            if a.dirty && !a.hatch_state.main_hidden {
+            if a.dirty && !a.hatch_state.main_hidden && a.frame_due() {
                 a.redraw();
             }
             if let Some((_, ad, frame)) = host.access.iter_mut().find(|(id, _, _)| *id == a.window.id()) {
