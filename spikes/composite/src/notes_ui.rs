@@ -312,7 +312,7 @@ impl App {
         }
     }
 
-    fn open_note_at(&mut self, path: &Path, line: usize) {
+    pub(crate) fn open_note_at(&mut self, path: &Path, line: usize) {
         self.open_note(path, false);
         if let Some(e) = self.focused_editor() {
             if let Some(b) = e.buf_mut().filter(|b| b.note.is_some()) {

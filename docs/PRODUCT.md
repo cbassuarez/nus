@@ -464,10 +464,20 @@ after 30 minutes and archive after 12 hours.
 
 **Find.** One bar on every page and shell (`find.rs`): Ctrl+F on a page,
 Ctrl+Shift+F in a shell (Ctrl+F is readline's), ⌘F on macOS. In the bar,
-Ctrl+F again widens it — this pane, this tab, this window — and
-Ctrl+Shift+F narrows it; when there is nothing here, Ctrl+F goes straight
+Ctrl+F again widens it — this pane, this tab, this window, all of nus —
+and Ctrl+Shift+F narrows it; at NUS the window's matches are joined by
+what isn't open, listed under the bar: notes (the in-memory index) and the
+commands of shells since closed (the journal, read on a worker); ↑↓ pick
+one, ↵ opens it where it lives — a note at its line, a command typed (not
+run) in a new shell in its folder; when there is nothing here, Ctrl+F goes straight
 to the nearest rung that has matches, as the bar's hint says. ↵ / ⇧↵ (or
-F3) walk, crossing panes and tabs at the wider rungs; Alt+C matches case;
+F3) walk, crossing panes and tabs at the wider rungs; Alt+C matches case,
+Alt+W whole words, Alt+R a regular expression (the regex crate: linear,
+size-limited, a bad pattern says why) — in shells and editors; pages stay
+plain text and case, Chromium's, and say so rather than search wrongly.
+Editors are in the same bar (their own stays for replace, Ctrl+H, which
+takes the query along). The bar is a search landmark to a screen reader:
+the field settable, the count a polite live region, every control named;
 Esc closes and leaves a page's current match selected. The count is never
 a guess: "counting…" until it is final, "k of N", "No matches" with where
 else the word is, "10,000+" past the cap, "+N new" as a shell keeps

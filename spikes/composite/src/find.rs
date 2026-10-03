@@ -294,18 +294,23 @@ pub enum Scope {
     Pane,
     Tab,
     Window,
+    /// The window, and what isn't open: notes, and the commands of shells
+    /// since closed (the journal), as a list under the bar.
+    Nus,
 }
 
 impl Scope {
-    const ALL: [Scope; 3] = [Scope::Pane, Scope::Tab, Scope::Window];
+    const ALL: [Scope; 4] = [Scope::Pane, Scope::Tab, Scope::Window, Scope::Nus];
     fn wider(self) -> Scope {
         match self {
             Scope::Pane => Scope::Tab,
-            _ => Scope::Window,
+            Scope::Tab => Scope::Window,
+            _ => Scope::Nus,
         }
     }
     fn narrower(self) -> Scope {
         match self {
+            Scope::Nus => Scope::Window,
             Scope::Window => Scope::Tab,
             _ => Scope::Pane,
         }
@@ -315,6 +320,7 @@ impl Scope {
             Scope::Pane => "PANE",
             Scope::Tab => "TAB",
             Scope::Window => "WINDOW",
+            Scope::Nus => "NUS",
         }
     }
 }
@@ -332,6 +338,56 @@ pub enum Hit {
     Next,
     Close,
     Rung(Scope),
+    /// A row of the NUS list.
+    Away(usize),
+}
+
+/// Something that isn't open, found for the NUS rung.
+#[derive(Clone, Debug)]
+pub struct Away {
+    pub kind: AwayKind,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum AwayKind {
+    /// A note, at the line of the match.
+    Note(std::path::PathBuf, usize),
+    /// A command a shell ran, in its folder: it opens typed, not run.
+    Command { cwd: String, cmd: String },
+}
+
+/// Commands in the journal matching the query, newest first: read off the
+/// UI thread (the journal is files).
+fn journal_matches(q: &str, o: crate::editor_work::Opts, limit: usize) -> Vec<Away> {
+    let re = match crate::editor_work::pattern(q, o) {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
+    let lower = q.to_lowercase();
+    let hit = |cmd: &str| match &re {
+        Some(re) => re.is_match(cmd),
+        None if o.case => cmd.contains(q),
+        None => cmd.to_lowercase().contains(&lower),
+    };
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for e in crate::journal::since(0) {
+        if hit(&e.cmd) && seen.insert((e.cwd.clone(), e.cmd.clone())) {
+            let when = crate::journal::when(e.start);
+            let exit = match e.exit { Some(0) => "ok".to_string(), Some(n) => format!("exit {n}"), None => String::new() };
+            out.push(Away {
+                title: crate::journal::oneline(&e.cmd),
+                detail: [e.cwd.clone(), when, exit].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
+                kind: AwayKind::Command { cwd: e.cwd, cmd: e.cmd },
+            });
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// The bar: one per window, on the pane it was opened in.
@@ -358,6 +414,13 @@ pub struct Bar {
     low: bool,
     pub rect: Rect,
     pub hits: Vec<(Rect, Hit)>,
+    /// The NUS rung's list: notes now, journal commands when the worker
+    /// answers; `away_done` once both have.
+    pub away: Vec<Away>,
+    away_job: Option<std::sync::mpsc::Receiver<Vec<Away>>>,
+    away_done: bool,
+    /// The list row ↑↓ has picked, for ↵.
+    pick: Option<usize>,
 }
 
 /// A count, in words: "3 of 41", "counting… 12", "No matches", "10,000+".
@@ -423,7 +486,7 @@ impl App {
     pub(crate) fn find_panes(&self, scope: Scope, home: PaneId) -> Vec<PaneId> {
         let Some(hi) = self.tab_of(home.0) else { return Vec::new() };
         let n = self.tabs.len();
-        let tabs: Vec<usize> = if scope == Scope::Window { (0..n).map(|k| (hi + k) % n).collect() } else { vec![hi] };
+        let tabs: Vec<usize> = if scope >= Scope::Window { (0..n).map(|k| (hi + k) % n).collect() } else { vec![hi] };
         let mut out = Vec::new();
         for ti in tabs {
             let t = &self.tabs[ti];
@@ -444,7 +507,7 @@ impl App {
 
     /// Sleeping pages a scope would cover, not searched.
     fn find_asleep(&self, scope: Scope) -> usize {
-        if scope != Scope::Window {
+        if scope < Scope::Window {
             return 0;
         }
         self.tabs.iter().flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref())).filter(|p| matches!(p, Pane::Web(w) if w.asleep.is_some())).count()
@@ -569,6 +632,10 @@ impl App {
             out.capped |= s.capped;
             out.fresh += s.fresh;
         }
+        if scope == Scope::Nus {
+            out.total += bar.away.len();
+            out.done &= bar.away_done;
+        }
         out
     }
 
@@ -627,6 +694,10 @@ impl App {
             low: false,
             rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             hits: Vec::new(),
+            away: Vec::new(),
+            away_job: None,
+            away_done: false,
+            pick: None,
         });
         if let Some(s) = seed {
             if let Some(bar) = self.find_bar.as_mut() {
@@ -646,12 +717,68 @@ impl App {
         bar.at = bar.home;
         bar.notice = None;
         bar.reveal = true;
+        bar.away.clear();
+        bar.away_job = None;
+        bar.away_done = false;
+        bar.pick = None;
         bar.wide_due = Some(Instant::now() + WIDE_AFTER);
         let home = bar.home;
         for id in stale {
             self.find_clear(id, false);
         }
         self.find_run(home);
+        self.dirty = true;
+    }
+
+    /// What isn't open: notes from the in-memory index at once (a regex has
+    /// no meaning there, so not then), journal commands on a worker.
+    fn find_gather_away(&mut self) {
+        let Some(bar) = self.find_bar.as_mut() else { return };
+        if bar.query.is_empty() || bar.away_done || bar.away_job.is_some() {
+            return;
+        }
+        let (q, o) = (bar.query.clone(), crate::editor_work::Opts { case: bar.case, word: bar.word, regex: bar.regex });
+        let mut found = Vec::new();
+        if !o.regex {
+            if let Ok(hits) = crate::notes_index::search(&q, None, 8) {
+                for h in hits {
+                    found.push(Away { title: h.title.clone(), detail: format!("note · {} · {}", h.home_name, h.snippet), kind: AwayKind::Note(h.path.clone(), h.line) });
+                }
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new().name("find journal".into()).spawn(move || {
+            let _ = tx.send(journal_matches(&q, o, 8));
+        });
+        let bar = self.find_bar.as_mut().unwrap();
+        bar.away = found;
+        if spawned.is_ok() {
+            bar.away_job = Some(rx);
+        } else {
+            bar.away_done = true;
+        }
+    }
+
+    /// Open a row of the NUS list where it lives.
+    fn find_open_away(&mut self, i: usize) {
+        let Some(item) = self.find_bar.as_ref().and_then(|b| b.away.get(i)).cloned() else { return };
+        self.close_find();
+        match item.kind {
+            AwayKind::Note(path, line) => self.open_note_at(&path, line),
+            AwayKind::Command { cwd, cmd } => {
+                let cwd = std::path::Path::new(&cwd).is_dir().then_some(cwd);
+                match self.new_term_pane_at(false, self.behavior.default_profile, cwd) {
+                    Ok(mut t) => {
+                        // Typed, not run: you read it, you press Enter.
+                        t.type_at_prompt = Some(cmd);
+                        let tab = self.make_tab(Pane::Term(t), None);
+                        self.tabs.push(tab);
+                        self.activate(self.tabs.len() - 1);
+                    }
+                    Err(e) => self.notice_problem("Could Not Open A Shell", e.to_string()),
+                }
+            }
+        }
         self.dirty = true;
     }
 
@@ -881,7 +1008,23 @@ impl App {
                 self.close_find();
                 return true;
             }
+            WKey::Named(NamedKey::ArrowDown | NamedKey::ArrowUp) if bar.scope == Scope::Nus && !bar.away.is_empty() => {
+                let n = bar.away.len();
+                let down = matches!(ev.logical_key, WKey::Named(NamedKey::ArrowDown));
+                bar.pick = Some(match (bar.pick, down) {
+                    (None, true) => 0,
+                    (None, false) => n - 1,
+                    (Some(k), true) => (k + 1) % n,
+                    (Some(k), false) => (k + n - 1) % n,
+                });
+                self.dirty = true;
+                return true;
+            }
             WKey::Named(NamedKey::Enter) => {
+                if let Some(k) = bar.pick.filter(|_| bar.scope == Scope::Nus) {
+                    self.find_open_away(k);
+                    return true;
+                }
                 self.find_step(!shift);
                 self.dirty = true;
                 return true;
@@ -945,6 +1088,7 @@ impl App {
             Hit::Next => return self.find_step(true),
             Hit::Close => return self.close_find(),
             Hit::Rung(s) => return self.find_scope(s),
+            Hit::Away(i) => return self.find_open_away(i),
         }
         self.find_changed();
     }
@@ -991,7 +1135,12 @@ impl App {
                     Hit::Close => ("Close find".into(), None),
                     Hit::Rung(s) => {
                         let r = self.find_tally(*s);
-                        (format!("Search this {}: {} matches", s.word().to_lowercase(), r.total), Some(*s == bar.scope))
+                        let place = if *s == Scope::Nus { "all of nus".to_string() } else { format!("this {}", s.word().to_lowercase()) };
+                        (format!("Search {place}: {} matches", r.total), Some(*s == bar.scope))
+                    }
+                    Hit::Away(i) => {
+                        let a = &bar.away[*i];
+                        (format!("Open {}: {}", a.title, a.detail), None)
                     }
                 };
                 (*r, *h, name, on)
@@ -1008,7 +1157,9 @@ impl App {
             Hit::Rung(Scope::Pane) => 6,
             Hit::Rung(Scope::Tab) => 7,
             Hit::Rung(Scope::Window) => 8,
-            Hit::Close => 9,
+            Hit::Rung(Scope::Nus) => 9,
+            Hit::Away(_) => 10,
+            Hit::Close => 11,
         };
         let mut controls = controls;
         controls.sort_by_key(|c| rank(&c.1));
@@ -1043,6 +1194,25 @@ impl App {
             }
             for id in todo {
                 self.find_run(id);
+            }
+            self.find_gather_away();
+        }
+        // The journal's answer.
+        if let Some(bar) = self.find_bar.as_mut() {
+            if let Some(rx) = bar.away_job.as_ref() {
+                match rx.try_recv() {
+                    Ok(found) => {
+                        bar.away.extend(found);
+                        bar.away_job = None;
+                        bar.away_done = true;
+                        self.dirty = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        bar.away_job = None;
+                        bar.away_done = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => self.dirty = true,
+                }
             }
         }
         let searched = self.find_bar.as_ref().map(|b| b.searched.clone()).unwrap_or_default();
@@ -1147,6 +1317,7 @@ impl App {
             let scope = match args.get("scope").and_then(|v| v.as_str()).unwrap_or("pane") {
                 "tab" => Scope::Tab,
                 "window" => Scope::Window,
+                "nus" => Scope::Nus,
                 "pane" => Scope::Pane,
                 other => return Err(format!("scope is pane, tab or window, not {other}")),
             };
@@ -1176,6 +1347,8 @@ impl App {
             "pane": rung(Scope::Pane),
             "tab": rung(Scope::Tab),
             "window": rung(Scope::Window),
+            "nus": rung(Scope::Nus),
+            "elsewhere": bar.away.iter().map(|a| a.title.clone()).collect::<Vec<_>>(),
         }))
     }
 
@@ -1361,9 +1534,9 @@ impl App {
             if h == Hit::Word { "WHOLE WORDS · ALT+W".into() } else { "REGULAR EXPRESSION · ALT+R".into() }
         } else if let Some(w) = wider {
             w
-        } else if asleep > 0 && scope == Scope::Window && !query.is_empty() {
+        } else if asleep > 0 && scope >= Scope::Window && !query.is_empty() {
             format!("+{asleep} ASLEEP, NOT SEARCHED")
-        } else if scope < Scope::Window {
+        } else if scope < Scope::Nus {
             format!("{} WIDER", chord(false))
         } else {
             format!("{} NARROWER", chord(true))
@@ -1373,7 +1546,59 @@ impl App {
         let sw = self.fonts.measure(label, &say);
         self.fonts.draw(scene, Style { color: fade(ink, 0.8), ..label }, card.right() - self.px(10.0) - sw, base2, &say);
         let _ = s;
+        // NUS: what isn't open, as a list hanging from the bar (above it
+        // when the bar sits at the pane's foot).
+        let (away, away_done, pick) = self.find_bar.as_ref().map(|b| (b.away.clone(), b.away_done, b.pick)).unwrap_or_default();
+        if scope == Scope::Nus && !query.is_empty() {
+            let rows: Vec<(String, String)> = if away.is_empty() {
+                vec![(if away_done { "Nothing in notes or closed shells".into() } else { "Looking in notes and closed shells…".into() }, String::new())]
+            } else {
+                away.iter().take(10).map(|a| (a.title.clone(), a.detail.clone())).collect()
+            };
+            let rh = self.px(30.0);
+            let lh = rh * rows.len() as f32 + self.px(8.0);
+            let list = if go_low { Rect::new(card.x, card.y - lh - self.px(6.0), card.w, lh) } else { Rect::new(card.x, card.bottom() + self.px(6.0), card.w, lh) };
+            scene.rect(Rect::new(list.x + self.px(6.0), list.y + self.px(6.0), list.w, list.h), fade(ink, 0.35));
+            scene.rect(list, paper);
+            scene.outline(list, self.px(m::STRUCTURE), ink);
+            for (k, (title, detail)) in rows.iter().enumerate() {
+                let r = Rect::new(list.x, list.y + self.px(4.0) + rh * k as f32, list.w, rh);
+                let real = !away.is_empty();
+                let picked = real && pick == Some(k);
+                let hot = real && r.contains(self.mouse.0, self.mouse.1);
+                if picked {
+                    scene.rect(r, ink);
+                } else if hot {
+                    scene.rect(r, fade(ink, 0.08));
+                }
+                let fg = if picked { paper } else { ink };
+                let b = r.y + (rh + label.px) * 0.5 - self.px(2.0);
+                let kind = match away.get(k).map(|a| &a.kind) { Some(AwayKind::Note(..)) => "NOTE", Some(AwayKind::Command { .. }) => "SHELL", None => "" };
+                let mut x = r.x + self.px(12.0);
+                if !kind.is_empty() {
+                    self.fonts.draw(scene, Style { color: fade(fg, 0.7), ..label }, x, b, kind);
+                    x += self.px(52.0);
+                }
+                let tw_room = (r.right() - x - self.px(12.0)) * 0.55;
+                let title = self.fit(Style { color: fg, ..strong }, title, tw_room);
+                let tw = self.fonts.draw(scene, Style { color: fg, ..strong }, x, b, &title);
+                if !detail.is_empty() {
+                    let room = r.right() - (x + tw + self.px(12.0)) - self.px(12.0);
+                    let d = self.fit(label, detail, room.max(0.0));
+                    self.fonts.draw(scene, Style { color: fade(fg, 0.75), ..label }, x + tw + self.px(12.0), b, &d);
+                }
+                if real {
+                    hits.push((r, Hit::Away(k)));
+                }
+            }
+        }
         if let Some(bar) = self.find_bar.as_mut() {
+            // The list is part of the bar for the pointer.
+            if let Some((r, _)) = hits.iter().filter(|(_, h)| matches!(h, Hit::Away(_))).last() {
+                let top = hits.iter().filter(|(_, h)| matches!(h, Hit::Away(_))).map(|(r, _)| r.y).fold(f32::MAX, f32::min);
+                let (y0, y1) = (bar.rect.y.min(top), bar.rect.bottom().max(r.bottom()));
+                bar.rect = Rect::new(bar.rect.x, y0, bar.rect.w, y1 - y0);
+            }
             bar.hits = hits;
         }
         scene.layer(None);
