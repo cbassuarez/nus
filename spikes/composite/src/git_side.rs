@@ -374,7 +374,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nus-side-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("docs/new")).unwrap();
-        let run = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&dir)
+        let run = |args: &[&str]| nus_compat::command("git").args(args).current_dir(&dir)
             .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
             .output().unwrap().status.success();
         assert!(run(&["init", "-q", "-b", "main"]));

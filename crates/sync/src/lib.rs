@@ -547,7 +547,7 @@ impl Git {
         }
     }
     fn git(&self, args: &[&str]) -> anyhow::Result<String> {
-        let out = std::process::Command::new("git")
+        let out = nus_compat::command("git")
             .args(self.header_args())
             .args(args)
             .current_dir(&self.work)
@@ -589,7 +589,7 @@ impl Carrier for Git {
     fn before(&self) -> anyhow::Result<()> {
         if !self.work.join(".git").exists() {
             std::fs::create_dir_all(&self.work)?;
-            let out = std::process::Command::new("git")
+            let out = nus_compat::command("git")
                 .args(self.header_args())
                 .args(["clone", "--quiet", &self.remote, "."])
                 .current_dir(&self.work)
@@ -833,7 +833,7 @@ pub fn device_name() -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            std::process::Command::new("hostname")
+            nus_compat::command("hostname")
                 .output()
                 .ok()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

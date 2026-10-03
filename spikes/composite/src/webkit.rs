@@ -339,7 +339,7 @@ mod imp {
     fn safari_name() -> &'static str {
         static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         NAME.get_or_init(|| {
-            let version = std::process::Command::new("/usr/bin/defaults")
+            let version = nus_compat::command("/usr/bin/defaults")
                 .args(["read", "/Applications/Safari.app/Contents/Info", "CFBundleShortVersionString"])
                 .output()
                 .ok()

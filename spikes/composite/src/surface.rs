@@ -959,7 +959,7 @@ impl Rules {
             let _ = g.set("nus", nus);
         }
         // The hour, for time-of-day rules (no os library in the sandbox).
-        let hour = std::process::Command::new(if cfg!(target_os = "windows") { "cmd" } else { "date" })
+        let hour = nus_compat::command(if cfg!(target_os = "windows") { "cmd" } else { "date" })
             .args(if cfg!(target_os = "windows") { vec!["/c", "echo %TIME%"] } else { vec!["+%H"] })
             .output()
             .ok()

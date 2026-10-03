@@ -89,7 +89,7 @@ pub fn start() -> Live {
 }
 
 fn gh(args: &[&str]) -> Result<String, String> {
-    let mut c = std::process::Command::new("gh");
+    let mut c = nus_compat::command("gh");
     c.args(args);
     #[cfg(windows)]
     {

@@ -154,7 +154,7 @@ pub fn base64(data: &[u8]) -> String {
 
 /// One request: the status and the body.
 pub(crate) fn http(method: &str, url: &str, headers: &[String], body: Option<&str>) -> Result<(u16, String), String> {
-    let mut c = std::process::Command::new("curl");
+    let mut c = nus_compat::command("curl");
     c.args(["-sS", "-L", "-X", method, "-w", "\n%{http_code}", "-A", "nus", "--max-time", "30"]);
     for h in headers {
         c.args(["-H", h]);
@@ -342,7 +342,7 @@ pub fn host_name(host: &str) -> String {
 /// anything; its stdout, when it exits 0 within `secs`.
 fn quiet(program: &str, args: &[&str], input: &str, secs: u64) -> Option<String> {
     use std::io::Write;
-    let mut c = std::process::Command::new(program);
+    let mut c = nus_compat::command(program);
     c.args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
@@ -417,7 +417,7 @@ fn from_gh(host: &str) -> Option<Found> {
         return None;
     }
     // gh prints its status on stderr in some versions; either is fine.
-    let status = std::process::Command::new("gh")
+    let status = nus_compat::command("gh")
         .args(["auth", "status", "--hostname", host])
         .env("GH_PROMPT_DISABLED", "1")
         .output()

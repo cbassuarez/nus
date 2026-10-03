@@ -145,7 +145,7 @@ fn sample() -> (Vec<Proc>, std::collections::HashMap<u32, u64>, u64, u64, u32, u
     let mut procs = Vec::new();
     let mut times = std::collections::HashMap::new();
     let mut threads_all = 0u32;
-    let out = std::process::Command::new("ps").args(["-eo", "pid=,ppid=,time=,rss=,nlwp=,comm="]).output();
+    let out = nus_compat::command("ps").args(["-eo", "pid=,ppid=,time=,rss=,nlwp=,comm="]).output();
     let Ok(out) = out else { return (procs, times, 0, 0, 0, 0) };
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let mut it = line.split_whitespace();

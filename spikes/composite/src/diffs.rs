@@ -223,7 +223,7 @@ pub fn run(hunk: &Hunk, what: Do, cwd: &Path) -> Result<String, String> {
     }
     let tmp_s = tmp.to_string_lossy().to_string();
     args.push(&tmp_s);
-    let mut c = std::process::Command::new("git");
+    let mut c = nus_compat::command("git");
     c.args(&args).current_dir(cwd);
     #[cfg(windows)]
     {
@@ -279,7 +279,7 @@ mod tests {
     /// leaves the file as it was. Real git, in a scratch repository.
     #[test]
     fn undo_takes_a_hunk_back() {
-        let git = |dir: &Path, args: &[&str]| std::process::Command::new("git").args(args).current_dir(dir).output();
+        let git = |dir: &Path, args: &[&str]| nus_compat::command("git").args(args).current_dir(dir).output();
         let dir = std::env::temp_dir().join(format!("nus-undo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

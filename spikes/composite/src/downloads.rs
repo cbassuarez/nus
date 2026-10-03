@@ -1350,7 +1350,7 @@ fn open_file(path: &Path) {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(path).spawn();
+        let _ = nus_compat::command("open").arg(path).spawn();
     }
     #[cfg(windows)]
     {
@@ -1371,13 +1371,13 @@ fn open_file(path: &Path) {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+        let _ = nus_compat::command("xdg-open").arg(path).spawn();
     }
 }
 pub(crate) fn reveal(path: &Path, file: bool) {
     #[cfg(target_os = "macos")]
     {
-        let mut c = std::process::Command::new("open");
+        let mut c = nus_compat::command("open");
         if file {
             c.arg("-R");
         }
@@ -1385,7 +1385,7 @@ pub(crate) fn reveal(path: &Path, file: bool) {
     }
     #[cfg(windows)]
     {
-        let mut c = std::process::Command::new("explorer");
+        let mut c = nus_compat::command("explorer");
         if file {
             c.arg(format!("/select,{}", path.display()));
         } else {
@@ -1400,7 +1400,7 @@ pub(crate) fn reveal(path: &Path, file: bool) {
         } else {
             path
         };
-        let _ = std::process::Command::new("xdg-open").arg(p).spawn();
+        let _ = nus_compat::command("xdg-open").arg(p).spawn();
     }
 }
 

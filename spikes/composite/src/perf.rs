@@ -180,7 +180,7 @@ pub fn reset() {
 /// Explicit test-time sample only. RSS includes shared resident pages in each
 /// process, so the tree sum is an upper estimate, not physical/private memory.
 pub fn memory_snapshot() -> serde_json::Value {
-    let Ok(child) = std::process::Command::new("ps")
+    let Ok(child) = nus_compat::command("ps")
         .args(["-axo", "pid=,ppid=,rss="])
         .stdout(std::process::Stdio::piped())
         .spawn()

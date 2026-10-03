@@ -128,7 +128,7 @@ impl App {
     }
     pub(crate) fn hide_menu_drawer(&mut self,restore:bool){
         self.menu_drawer.request=false;
-        if let Some(d)=&mut self.menu_drawer.window{d.visible=false;d.window.set_visible(false);}
+        if crate::hatch_native::can_hide(){if let Some(d)=&mut self.menu_drawer.window{d.visible=false;d.window.set_visible(false);}}else{self.menu_drawer.window=None;}
         if restore&&crate::hatch_native::interactive(){self.menu_drawer.foreground.restore();}
     }
     #[allow(clippy::too_many_arguments)]

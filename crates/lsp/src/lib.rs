@@ -14,7 +14,7 @@ pub mod registry;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -236,7 +236,7 @@ impl Client {
         root: &Path,
         env: &[(&str, &str)],
     ) -> anyhow::Result<(Client, Receiver<Event>)> {
-        let mut child = Command::new(cmd)
+        let mut child = nus_compat::command(cmd)
             .args(args)
             .envs(env.iter().copied())
             .current_dir(root)

@@ -419,7 +419,7 @@ fn sync_dir(_path: &Path) {
 /// `.gitignore`, never the rest of `.nus/`. Sharing notes with a project
 /// is an explicit choice this does not make.
 pub fn exclude_from_git(project: &Path) -> io::Result<()> {
-    let out = std::process::Command::new("git")
+    let out = nus_compat::command("git")
         .arg("-C")
         .arg(project)
         .args(["rev-parse", "--show-toplevel", "--git-path", "info/exclude"])

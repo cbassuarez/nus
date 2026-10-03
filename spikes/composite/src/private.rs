@@ -78,7 +78,7 @@ pub fn launch() -> anyhow::Result<()> {
         header: p.header,
         ..Default::default()
     };
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = nus_compat::command(std::env::current_exe()?);
     command
         .arg("--incognito")
         .env("NUS_PRIVATE_LOOK", serde_json::to_string(&look)?)
@@ -279,7 +279,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_sweep_takes_abandoned_roots_and_leaves_live_ones() {
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let mut child = nus_compat::command("true").spawn().unwrap();
         let dead = child.id();
         child.wait().unwrap();
 

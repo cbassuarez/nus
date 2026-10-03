@@ -2268,6 +2268,7 @@ version = "0.0.2"
 dependencies = [
  "anyhow",
  "lsp-types",
+ "nus-compat",
  "ropey",
  "serde",
  "serde_json",
@@ -2321,6 +2322,7 @@ dependencies = [
  "chacha20poly1305",
  "codspeed-criterion-compat",
  "getrandom 0.2.17",
+ "nus-compat",
  "nus-vault",
  "serde",
  "serde_json",

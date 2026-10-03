@@ -275,7 +275,7 @@ impl Scm {
             .spawn(move || {
                 let mut result = (true, format!("{what} · done"));
                 for args in cmds {
-                    let mut c = std::process::Command::new("git");
+                    let mut c = nus_compat::command("git");
                     c.args(&args).current_dir(&cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null());
                     #[cfg(windows)]
                     {
@@ -1042,7 +1042,7 @@ impl App {
             BlockAct::StageAll => (a(&["add", "--all"]), "staged everything".into()),
             BlockAct::Open => return self.open_scm(),
         };
-        let mut c = std::process::Command::new("git");
+        let mut c = nus_compat::command("git");
         c.args(&args).current_dir(&cwd).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null());
         #[cfg(windows)]
         {
@@ -1080,7 +1080,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let d = dir.to_string_lossy().to_string();
         let run = |args: &[&str]| {
-            let ok = std::process::Command::new("git").args(args).current_dir(&dir)
+            let ok = nus_compat::command("git").args(args).current_dir(&dir)
                 .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
                 .output().unwrap().status.success();
             assert!(ok, "git {args:?}");
@@ -1114,7 +1114,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let d = dir.to_string_lossy().to_string();
         let run = |args: &[&str]| {
-            std::process::Command::new("git").args(args).current_dir(&dir)
+            nus_compat::command("git").args(args).current_dir(&dir)
                 .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
                 .output().unwrap().status.success()
         };

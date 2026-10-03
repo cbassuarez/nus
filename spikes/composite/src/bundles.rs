@@ -226,7 +226,7 @@ fn install(b:&Bundle)->Result<(),String> {
         let program=&b.command[0];
         let bin=nus_lsp::registry::resolve(program,None).ok_or_else(||format!("Install {} first, then try again.",match program.as_str(){"npm"=>"Node.js (includes npm)","go"=>"Go","gh"=>"GitHub CLI",_=>program}))?;
         if program=="npm" && nus_lsp::registry::resolve("node",None).is_none(){return Err("Install Node.js first, then try again.".into());}
-        let mut c=std::process::Command::new(bin);
+        let mut c=nus_compat::command(bin);
         c.args(&b.command[1..]);
         match program.as_str() {
             "npm"=>{c.arg("--prefix").arg(stage.path()).args(["--no-audit","--no-fund","--ignore-scripts"]);},
@@ -239,7 +239,7 @@ fn install(b:&Bundle)->Result<(),String> {
         let url=url::Url::parse(&p.url).map_err(|e|e.to_string())?;
         if url.scheme()!="https"{return Err("Tool downloads require HTTPS".into());}
         let archive=tempfile::NamedTempFile::new_in(dir.parent().unwrap()).map_err(|e|e.to_string())?;
-        let mut curl=std::process::Command::new("curl");
+        let mut curl=nus_compat::command("curl");
         curl.args(["--fail","--location","--silent","--show-error","--proto","=https","--proto-redir","=https","--connect-timeout","20","--max-time","300","--retry","2","--output"]).arg(archive.path()).arg(&p.url);
         run(curl)?;unpack(b,p,archive.path(),stage.path())?;
     }
@@ -362,7 +362,7 @@ mod tests {
     }
     #[test]
     fn command_failures_always_include_exit_status() {
-        let mut c=std::process::Command::new(if cfg!(windows){"cmd"}else{"sh"});
+        let mut c=nus_compat::command(if cfg!(windows){"cmd"}else{"sh"});
         if cfg!(windows){c.args(["/C","exit 7"]);}else{c.args(["-c","exit 7"]);}
         let error=run(c).unwrap_err();assert!(error.contains('7'));assert!(error.contains("No diagnostic output"));
     }

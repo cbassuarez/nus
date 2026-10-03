@@ -169,6 +169,14 @@ impl App {
     }
 
     pub(crate) fn hide_hatch_inner(&mut self, restore: bool) {
+        if !crate::hatch_native::can_hide() {
+            // Its tab stays; the window comes back when the hatch is shown.
+            if self.hatch.take().is_some() {
+                if restore && crate::hatch_native::interactive() { self.hatch_state.foreground.restore(); }
+                self.dirty = true;
+            }
+            return;
+        }
         let d = self.motion.dur(crate::anim::base::PALETTE);
         if let Some(h) = self.hatch.as_mut() {
             if !h.visible {

@@ -110,7 +110,7 @@ pub fn op_in(git_dir: &std::path::Path) -> Option<&'static str> {
 
 /// git, quietly: no prompts, no lock on the index, no console window.
 pub fn git(cwd: &str, args: &[&str]) -> Option<String> {
-    let mut c = std::process::Command::new("git");
+    let mut c = nus_compat::command("git");
     c.args(args)
         .current_dir(cwd)
         .env("GIT_OPTIONAL_LOCKS", "0")

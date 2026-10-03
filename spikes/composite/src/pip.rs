@@ -272,6 +272,8 @@ impl Pip {
 impl App {
     /// Ask the host to create a PiP window for `tab`'s web pane.
     pub(crate) fn tend_pip_focus(&mut self) {
+        // However PiP ended or moved, only its source page stays covered.
+        self.cover_pip_source();
         let minimized=self.window.is_minimized().unwrap_or(false);
         if self.pip_was_minimized && !minimized && self.behavior.pip_policy.restore_window {self.close_pip();}
         if !self.pip_was_minimized && minimized && self.behavior.pip_policy.leave_app {
@@ -380,6 +382,7 @@ impl App {
         p.left_at=Some(crate::clock::now());
         p.last_frame=crate::clock::now()-Duration::from_millis(17);
         if let Some(t)=self.web_tab(tab,right) {t.prepare_pip();}
+        self.cover_pip_source();
         self.pip_frame();
         true
     }
@@ -403,8 +406,24 @@ impl App {
         pip.tab_id=self.tabs[tab].id;
         if let Some(t)=self.web_tab(tab,right) {t.prepare_pip();}
         self.pip=Some(pip);
+        self.cover_pip_source();
         self.pip_frame();
         if let Some(p)=&self.pip {native::show(&p.window);}
+    }
+
+    /// Mark which page the picture comes from (and only that one).
+    pub(crate) fn cover_pip_source(&mut self) {
+        let source = self.pip.as_ref().and_then(|p| self.web_tab(p.tab, p.right)).map(|t| t.shared.clone());
+        for t in &self.tabs {
+            for pane in std::iter::once(&t.left).chain(t.right.as_ref()) {
+                if let crate::app::Pane::Web(w) = pane {
+                    let mine = source.as_ref().is_some_and(|s| std::rc::Rc::ptr_eq(s, &w.tab.shared));
+                    if let Ok(mut s) = w.tab.shared.try_borrow_mut() {
+                        if s.pip_covered != mine { s.pip_covered = mine; self.dirty = true; }
+                    }
+                }
+            }
+        }
     }
 
     pub fn close_pip(&mut self) {
@@ -412,6 +431,7 @@ impl App {
         self.pip_request = None;
         self.place_webkit_pip(None);
         self.pip = None;
+        self.cover_pip_source();
     }
 
     fn pane_video(&self, tab: usize, right: bool) -> Option<Video> {
@@ -969,7 +989,7 @@ impl App {
         let Some(tab) = self.tabs.get(self.active).filter(|t| t.id == pip.tab_id) else { return false };
         let pane = if pip.right { tab.right.as_ref() } else { Some(&tab.left) };
         let Some(crate::app::Pane::Web(w)) = pane else { return false };
-        if !w.page.contains(x, y) || !w.tab.shared.borrow().native.as_ref().is_some_and(|n| n.in_pip()) { return false; }
+        if !w.page.contains(x, y) || !(w.tab.shared.borrow().pip_covered || w.tab.shared.borrow().native.as_ref().is_some_and(|n| n.in_pip())) { return false; }
         self.return_from_pip();
         true
     }
@@ -980,6 +1000,7 @@ impl App {
             self.place_webkit_pip(None);
         }
         if let Some(p) = self.pip.take() {
+            self.cover_pip_source();
             let tab = p.tab;
             let right = p.right;
             drop(p);

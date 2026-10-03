@@ -78,7 +78,7 @@ static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new(
 const FRESH: Duration = Duration::from_secs(4);
 
 fn git(cwd: &str, args: &[&str]) -> Vec<String> {
-    let mut c = std::process::Command::new("git");
+    let mut c = nus_compat::command("git");
     c.args(args).current_dir(cwd).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {

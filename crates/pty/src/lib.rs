@@ -408,10 +408,7 @@ impl Profile {
                     break;
                 }
             }
-            if let Ok(o) = std::process::Command::new("wsl.exe")
-                .args(["-l", "-q"])
-                .output()
-            {
+            if let Ok(o) = nus_compat::command("wsl.exe").args(["-l", "-q"]).output() {
                 // wsl.exe prints UTF-16LE.
                 let u16s: Vec<u16> = o
                     .stdout
@@ -497,7 +494,7 @@ fn child_process_name(parent: u32) -> Option<String> {
 #[cfg(not(windows))]
 fn child_process_name(parent: u32) -> Option<String> {
     // `pgrep -P` is on every Linux and macOS box; a proper /proc walk is v1.
-    let out = std::process::Command::new("pgrep")
+    let out = nus_compat::command("pgrep")
         .args(["-P", &parent.to_string(), "-l"])
         .output()
         .ok()?;
@@ -521,7 +518,7 @@ pub fn listening_ports() -> Vec<ListeningPort> {
     let mut out: Vec<ListeningPort> = Vec::new();
     #[cfg(windows)]
     {
-        if let Ok(o) = std::process::Command::new("netstat")
+        if let Ok(o) = nus_compat::command("netstat")
             .args(["-ano", "-p", "tcp"])
             .output()
         {
@@ -550,14 +547,14 @@ pub fn listening_ports() -> Vec<ListeningPort> {
     #[cfg(not(windows))]
     {
         // ss (Linux) then lsof (macOS); both print "pid=" / "(PID)" forms we can mine.
-        let text = std::process::Command::new("ss")
+        let text = nus_compat::command("ss")
             .args(["-ltnp"])
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .or_else(|| {
-                std::process::Command::new("lsof")
+                nus_compat::command("lsof")
                     .args(["-iTCP", "-sTCP:LISTEN", "-P", "-n"])
                     .output()
                     .ok()

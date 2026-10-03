@@ -37,7 +37,7 @@ pub fn enqueue(url:String)->Result<u64,String> {
     validate(&url)?;
     if crate::private::enabled() {
         let exe=std::env::current_exe().map_err(|_|"Could not locate the regular nus application.")?;
-        let mut command=std::process::Command::new(exe);
+        let mut command=nus_compat::command(exe);
         command.args(["--open-external","--",&url]).stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         for key in ["NUS_PRIVATE_LOOK","NUS_SHOT","NUS_SHOT2","NUS_SHOT_DIR","NUS_SHOT_OUT"] {command.env_remove(key);}

@@ -1,10 +1,10 @@
 //! Bounded subprocesses with file-backed output: inherited pipes cannot hang
 //! the host after a timed-out desktop helper exits. No assembled shell command.
-use std::{io::{Read,Seek,SeekFrom},path::Path,process::{Command,Stdio},time::{Duration,Instant}};
+use std::{io::{Read,Seek,SeekFrom},path::Path,process::Stdio,time::{Duration,Instant}};
 pub fn run(program:&Path,args:&[&str],timeout:Duration)->Result<Vec<u8>,String> {
     let mut output=tempfile::tempfile().map_err(|_|"Could not create a temporary query buffer.")?;
     let error=tempfile::tempfile().map_err(|_|"Could not create a temporary error buffer.")?;
-    let mut cmd=Command::new(program);
+    let mut cmd=nus_compat::command(program);
     cmd.args(args).stdin(Stdio::null())
         .stdout(output.try_clone().map_err(|_|"Could not open the query buffer.")?)
         .stderr(error);

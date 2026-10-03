@@ -73,7 +73,7 @@ impl Chord {
     }
 
     /// (modifier bits, row of KEYS) for any chord.
-    fn parts(self) -> (u8, usize) {
+    pub(crate) fn parts(self) -> (u8, usize) {
         let row = |c: winit::keyboard::KeyCode| KEYS.iter().position(|k| k.0 == c).unwrap_or(0);
         use winit::keyboard::KeyCode::{Backquote, Space};
         match self {
@@ -149,6 +149,9 @@ pub struct Hotkey {
     thread: Option<u32>,
     #[cfg(not(windows))]
     registration: Option<(global_hotkey::GlobalHotKeyManager, global_hotkey::hotkey::HotKey)>,
+    /// Wayland: the desktop's shortcut, when it has the portal.
+    #[cfg(target_os = "linux")]
+    portal: Option<crate::hotkey_portal::Portal>,
     pub chord: Chord,
     /// What the OS said: empty when it took, else why not.
     pub status: String,
@@ -198,8 +201,13 @@ impl Hotkey {
         #[cfg(not(windows))]
         {
             use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::{HotKey, Modifiers, Code}};
+            #[cfg(target_os = "linux")]
             if crate::hatch_native::wayland() {
-                return Hotkey { registration: None, chord, status: "Set a desktop shortcut to: nus hatch toggle (Wayland manages global shortcuts)".into() };
+                // The desktop asks the person and may give another chord;
+                // status stays non-empty so the in-window chord keeps working
+                // whatever it decides.
+                let portal = crate::hotkey_portal::bind(chord, proxy);
+                return Hotkey { registration: None, portal: Some(portal), chord, status: "Wayland: the desktop asks to allow this shortcut; until then it works while nus is in front".into() };
             }
             let (m, row) = chord.parts();
             let mut mods = Modifiers::empty();
@@ -212,8 +220,8 @@ impl Hotkey {
             }));
             let key = HotKey::new(Some(mods), code);
             match GlobalHotKeyManager::new().and_then(|manager| { manager.register(key)?; Ok(manager) }) {
-                Ok(manager) => Hotkey { registration: Some((manager, key)), chord, status: String::new() },
-                Err(e) => Hotkey { registration: None, chord, status: format!("Shortcut unavailable: {e}. Choose another shortcut.") },
+                Ok(manager) => Hotkey { registration: Some((manager, key)), #[cfg(target_os = "linux")] portal: None, chord, status: String::new() },
+                Err(e) => Hotkey { registration: None, #[cfg(target_os = "linux")] portal: None, chord, status: format!("Shortcut unavailable: {e}. Choose another shortcut.") },
             }
         }
     }

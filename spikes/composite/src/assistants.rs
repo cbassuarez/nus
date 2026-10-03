@@ -3,7 +3,7 @@ use crate::app::{Action, App, PaletteMode, PaletteRow, Pane};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::mpsc::{self, Receiver},
     time::{Duration, Instant},
 };
@@ -172,7 +172,7 @@ fn capture(path: &Path, args: &[&str]) -> Result<(bool, String), String> {
 }
 fn capture_with_timeout(path: &Path, args: &[&str], timeout: Duration) -> Result<(bool, String), String> {
     use std::io::Read;
-    let mut c = Command::new(path);
+    let mut c = nus_compat::command(path);
     c.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -109,7 +109,13 @@ impl App {
         if !self.window_shell_active() { return false; }
         if let WindowEvent::Ime(_)=event {
             // Decoration has no text field. Other modals retain their own IME.
-            if self.splash.is_some() { return true; }
+            if self.splash.is_some() {
+                // An input method can hand Enter or Space over as text.
+                if let WindowEvent::Ime(winit::event::Ime::Commit(text))=event {
+                    if matches!(text.as_str(),"\n"|"\r"|" ") { self.finish_arrival(); self.splash=None; self.dirty=true; }
+                }
+                return true;
+            }
         }
         if let WindowEvent::KeyboardInput {event,..}=event {
             let command=if cfg!(target_os="macos") {self.mods.super_key()} else {self.mods.control_key()};
@@ -206,6 +212,10 @@ impl App {
     /// scene may supply the live window controls' hit geometry.
     pub(crate) fn draw_window_shell(&mut self) {
         if !self.window_shell_active() || self.window.fullscreen().is_some() { return; }
+        // Over the splash the controls wait out of sight: they come up when
+        // the pointer reaches the top edge or Tab reaches them.
+        if self.splash.is_some() && self.traffic_lights.shell.focused.is_none()
+            && !self.window_shell_rect().contains(self.mouse.0,self.mouse.1) { return; }
         let mut scene=std::mem::take(&mut self.scene);
         self.draw_window_shell_into(&mut scene);
         self.scene=scene;

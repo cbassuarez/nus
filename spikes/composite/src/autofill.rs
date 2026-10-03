@@ -556,7 +556,7 @@ impl crate::app::App {
             Pick::Safari => {
                 let url = w.tab.shared.borrow().url.clone();
                 if url.starts_with("https://") {
-                    let _ = std::process::Command::new("open").args(["-a", "Safari", &url]).spawn();
+                    let _ = nus_compat::command("open").args(["-a", "Safari", &url]).spawn();
                     self.toast(nus_render::text::icons::OPEN_EXTERNAL, "Opened In Safari", "Apple Pay is Safari's; you may need to sign in there", None);
                 }
             }

@@ -148,17 +148,14 @@ pub fn kill_identified(pid: u32, identity: u64, force: bool) -> bool {
 pub fn sockets() -> Vec<Socket> {
     #[cfg(windows)]
     {
-        let Ok(o) = std::process::Command::new("netstat")
-            .args(["-ano"])
-            .output()
-        else {
+        let Ok(o) = nus_compat::command("netstat").args(["-ano"]).output() else {
             return Vec::new();
         };
         parse_netstat(&String::from_utf8_lossy(&o.stdout))
     }
     #[cfg(not(windows))]
     {
-        let text = std::process::Command::new("ss")
+        let text = nus_compat::command("ss")
             .args(["-tunap"])
             .output()
             .ok()
@@ -167,7 +164,7 @@ pub fn sockets() -> Vec<Socket> {
         match text {
             Some(t) => parse_ss(&t),
             None => {
-                let o = std::process::Command::new("lsof")
+                let o = nus_compat::command("lsof")
                     .args(["-i", "-P", "-n"])
                     .output()
                     .ok();
@@ -350,7 +347,7 @@ pub fn process_tree() -> HashMap<u32, (u32, String)> {
     }
     #[cfg(not(windows))]
     {
-        let o = std::process::Command::new("ps")
+        let o = nus_compat::command("ps")
             .args(["-axo", "pid=,ppid=,comm="])
             .output()
             .ok();
@@ -411,7 +408,7 @@ pub fn process_info(pids: &[u32]) -> HashMap<u32, Process> {
         let script = format!(
             "Get-CimInstance Win32_Process -Filter \"{filter}\" | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,@{{n='Started';e={{[int64]([DateTimeOffset]$_.CreationDate).ToUnixTimeSeconds()}}}} | ConvertTo-Json -Compress"
         );
-        let Ok(o) = std::process::Command::new("powershell")
+        let Ok(o) = nus_compat::command("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .output()
         else {
@@ -458,7 +455,7 @@ pub fn process_info(pids: &[u32]) -> HashMap<u32, Process> {
             .map(|p| p.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let Ok(o) = std::process::Command::new("ps")
+        let Ok(o) = nus_compat::command("ps")
             .args(["-o", "pid=,ppid=,lstart=,args=", "-p", &list])
             .output()
         else {
@@ -625,7 +622,7 @@ pub fn kill_one(pid: u32, force: bool) -> bool {
         if force {
             args.push("/F".into());
         }
-        std::process::Command::new("taskkill")
+        nus_compat::command("taskkill")
             .args(&args)
             .output()
             .map(|o| o.status.success())
@@ -633,7 +630,7 @@ pub fn kill_one(pid: u32, force: bool) -> bool {
     }
     #[cfg(not(windows))]
     {
-        std::process::Command::new("kill")
+        nus_compat::command("kill")
             .args([if force { "-KILL" } else { "-TERM" }, &pid.to_string()])
             .output()
             .map(|o| o.status.success())
@@ -644,7 +641,7 @@ pub fn kill_one(pid: u32, force: bool) -> bool {
 /// Docker's published ports, when docker is on PATH: (host port, container
 /// name, image). Empty otherwise.
 pub fn docker_ports() -> Vec<(u16, String, String)> {
-    let Ok(o) = std::process::Command::new("docker")
+    let Ok(o) = nus_compat::command("docker")
         .args(["ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Ports}}"])
         .output()
     else {
@@ -792,10 +789,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stale_birth_identity_cannot_stop_a_live_process() {
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let mut child = nus_compat::command("/bin/sleep").arg("30").spawn().unwrap();
         let pid = child.id();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let identity = process_identity(pid).expect("OS process birth identifier");

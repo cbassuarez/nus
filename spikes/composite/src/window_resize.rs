@@ -159,7 +159,7 @@ mod imp {
     pub fn strip_action() -> StripAction {
         static ACTION: std::sync::OnceLock<StripAction> = std::sync::OnceLock::new();
         *ACTION.get_or_init(|| {
-            std::process::Command::new("gsettings")
+            nus_compat::command("gsettings")
                 .args(["get", "org.gnome.desktop.wm.preferences", "action-double-click-titlebar"])
                 .output()
                 .ok()

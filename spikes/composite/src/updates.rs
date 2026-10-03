@@ -155,7 +155,7 @@ pub fn select(catalog: &Value, current: &str, target: &str) -> Option<Release> {
         .map(|(_, r)| r)
 }
 pub fn curl() -> std::process::Command {
-    let mut cmd = std::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+    let mut cmd = nus_compat::command(if cfg!(windows) { "curl.exe" } else { "curl" });
     cmd.args([
         "--disable",
         "--fail",

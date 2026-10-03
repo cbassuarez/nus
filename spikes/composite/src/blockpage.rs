@@ -108,7 +108,7 @@ pub fn gist(md: &str) -> Result<String, String> {
     let dir = std::env::temp_dir();
     let path = dir.join("nus-block.md");
     std::fs::write(&path, md).map_err(|e| e.to_string())?;
-    let out = std::process::Command::new("gh").args(["gist", "create", "--public=false", "-f", "block.md"]).arg(&path).output().map_err(|e| format!("gh: {e}"))?;
+    let out = nus_compat::command("gh").args(["gist", "create", "--public=false", "-f", "block.md"]).arg(&path).output().map_err(|e| format!("gh: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }

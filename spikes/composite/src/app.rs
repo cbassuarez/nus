@@ -7065,7 +7065,7 @@ impl App {
                 let painted = if p.still.is_none() { s.paint_size } else { (0, 0) };
                 let media_n = s.media.iter().filter(|mm| !mm.blob).count();
                 let media_any = !s.media.is_empty();
-                let in_pip = s.native.as_ref().is_some_and(|n| n.in_pip());
+                let in_pip = s.pip_covered || s.native.as_ref().is_some_and(|n| n.in_pip());
                 drop(s);
                 let local = is_local(&url);
                 if !p.bare {
@@ -8093,6 +8093,16 @@ impl App {
                 self.carapace.typed = self.carapace.typed.wrapping_add(1);
             }
         }
+        // The splash owns the keyboard before anything else can claim a key:
+        // Enter, Space or Esc go on; the rest wait for it.
+        if self.splash.is_some() {
+            if ev.state == ElementState::Pressed && !ev.repeat && matches!(ev.logical_key, WKey::Named(NamedKey::Escape | NamedKey::Enter | NamedKey::Space)) {
+                self.finish_arrival();
+                self.splash = None;
+                self.dirty = true;
+            }
+            return;
+        }
         // Opening or accepting assistance takes one physical keystroke.
         // Holding Enter must not insert a choice and then run it on repeat.
         if self.prompt_accept_keys.contains(&ev.physical_key) {
@@ -8185,12 +8195,6 @@ impl App {
             return;
         }
 
-        if self.splash.is_some() {
-            if ev.state==winit::event::ElementState::Pressed && matches!(ev.logical_key,winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape|winit::keyboard::NamedKey::Enter|winit::keyboard::NamedKey::Space)) {
-                self.finish_arrival();self.splash=None;self.dirty=true;
-            }
-            return;
-        }
         // The profile card, then the atlas, own the keyboard while open.
         if self.me_key(ev) {
             return;
@@ -11166,11 +11170,11 @@ pub(crate) fn parse_place(s: &str) -> Option<[f32; 2]> {
 pub(crate) fn open_with_os(path: &std::path::Path) {
     let p = path.to_string_lossy().to_string();
     let _ = if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd").args(["/c", "start", "", &p]).spawn()
+        nus_compat::command("cmd").args(["/c", "start", "", &p]).spawn()
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(&p).spawn()
+        nus_compat::command("open").arg(&p).spawn()
     } else {
-        std::process::Command::new("xdg-open").arg(&p).spawn()
+        nus_compat::command("xdg-open").arg(&p).spawn()
     };
 }
 

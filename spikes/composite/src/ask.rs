@@ -221,7 +221,7 @@ fn run(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<S
 }
 fn run_reviewed(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc::Sender<String>>, cwd: Option<&str>,allow_original:bool) -> Result<String, String> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     // A final boundary shared by every provider, including custom commands
     // and the direct API. Scan complete payloads before bytes leave nus.
     let sanitized=if allow_original {crate::secrets::Scrubbed{text:prompt.into(),findings:0}}else{crate::secrets::scrub(prompt)};
@@ -230,35 +230,35 @@ fn run_reviewed(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc:
     let program = |i: usize| crate::assistants::resolve(crate::assistants::BINS[i], &config.providers[i].executable).ok_or_else(|| format!("{} is unavailable. Check Assistants settings.", crate::assistants::NAMES[i]));
     let mut c = match backend.name.as_str() {
         n if n.starts_with("declared:") => {
-            let mut c = if cfg!(windows) { Command::new("cmd") } else { Command::new("sh") };
+            let mut c = if cfg!(windows) { nus_compat::command("cmd") } else { nus_compat::command("sh") };
             c.args(if cfg!(windows) { vec!["/C", &backend.how] } else { vec!["-c", &backend.how] });
             c
         }
         "custom" => {
-            let mut c = if cfg!(windows) { Command::new("cmd") } else { Command::new("sh") };
+            let mut c = if cfg!(windows) { nus_compat::command("cmd") } else { nus_compat::command("sh") };
             c.args(if cfg!(windows) { vec!["/C", &backend.how] } else { vec!["-c", &backend.how] });
             c
         }
         "claude" => {
-            let mut c = Command::new(program(0)?);
+            let mut c = nus_compat::command(program(0)?);
             c.args(["-p", "--output-format", "text", "--tools", "", "--disallowedTools", "mcp__*"]);
             if !config.providers[0].model.is_empty() {c.args(["--model", &config.providers[0].model]);}
             c
         }
         "codex" => {
-            let mut c = Command::new(program(1)?);
+            let mut c = nus_compat::command(program(1)?);
             c.args(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-"]);
             if !config.providers[1].model.is_empty() {c.args(["--model", &config.providers[1].model]);}
             c
         }
         "copilot" => {
-            let mut c = Command::new("gh");
+            let mut c = nus_compat::command("gh");
             c.args(["copilot", "-p", prompt]);
             c
         }
         "ollama" => {
             if config.providers[2].model.is_empty() {return Err("Choose an Ollama model in Assistants settings.".into());}
-            let mut c = Command::new(program(2)?);
+            let mut c = nus_compat::command(program(2)?);
             c.args(["run", &config.providers[2].model]);
             c
         }
@@ -270,7 +270,7 @@ fn run_reviewed(backend: &Backend, prompt: &str, stream: Option<std::sync::mpsc:
                 "messages": [{ "role": "user", "content": prompt }]
             })
             .to_string();
-            let mut c = Command::new("curl");
+            let mut c = nus_compat::command("curl");
             // The credential and payload travel through a pipe, never argv or a file.
             c.args(["--disable", "--silent", "--show-error", "--max-time", "110", "--proto", "=https", "--config", "-"]);
             let quote=|s:&str| serde_json::to_string(s).unwrap();

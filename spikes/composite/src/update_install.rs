@@ -49,7 +49,7 @@ pub fn return_to_previous() -> Result<(), String> {
     if crate::private::enabled() { return Err("Recovery is unavailable in incognito".into()); }
     let exe = if cfg!(target_os = "macos") { r.package.join("Contents/MacOS/nus") }
         else { r.package.join(if cfg!(windows) { "nus.exe" } else { "nus" }) };
-    let report = std::process::Command::new(exe).arg("--compatibility").output().map_err(error)?;
+    let report = nus_compat::command(exe).arg("--compatibility").output().map_err(error)?;
     let old: nus_compat::profile::Contract = serde_json::from_slice(&report.stdout).map_err(|_| "The retained app has no supported recovery contract")?;
     let saved = nus_compat::profile::read(&Path::new("generations").join(r.generation.as_ref().unwrap()).join("profile"))
         .map_err(error)?.ok_or("The recovery profile has no compatibility contract")?;
@@ -65,9 +65,9 @@ pub fn return_to_previous() -> Result<(), String> {
     // the installation's root rather than opening a new Welcome profile.
     crate::install::continue_after_update(&std::env::current_dir().map_err(error)?, &r.package).map_err(error)?;
     let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("powershell.exe");
+        let mut c = nus_compat::command("powershell.exe");
         c.args(["-NoProfile", "-NonInteractive", "-Command", WINDOWS]); c
-    } else { let mut c = std::process::Command::new("/bin/sh"); c.arg(&script); c };
+    } else { let mut c = nus_compat::command("/bin/sh"); c.arg(&script); c };
     cmd.env("NUS_PARENT_PID", std::process::id().to_string())
         .env("NUS_TARGET", &r.installation).env("NUS_STAGED", &r.package)
         .env("NUS_BACKUP", &backup).env("NUS_READY", &ready)
@@ -273,7 +273,7 @@ fn extract(archive: &Path, dest: &Path) -> Result<(), String> {
 fn verify_signature(candidate: &Path, current: &Path, release: &Release) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let verify = std::process::Command::new("/usr/bin/codesign")
+        let verify = nus_compat::command("/usr/bin/codesign")
             .args(["--verify", "--deep", "--strict"])
             .arg(candidate)
             .output()
@@ -282,7 +282,7 @@ fn verify_signature(candidate: &Path, current: &Path, release: &Release) -> Resu
             return Err("The new app's signature is invalid".into());
         }
         let team = |path: &Path| -> Result<Option<String>, String> {
-            let out = std::process::Command::new("/usr/bin/codesign")
+            let out = nus_compat::command("/usr/bin/codesign")
                 .args(["-dv", "--verbose=4"])
                 .arg(path)
                 .output()
@@ -300,7 +300,7 @@ fn verify_signature(candidate: &Path, current: &Path, release: &Release) -> Resu
         }
         if release.signing == "notarized" {
             if after.is_none()
-                || !std::process::Command::new("/usr/sbin/spctl")
+                || !nus_compat::command("/usr/sbin/spctl")
                     .args(["--assess", "--type", "execute"])
                     .arg(candidate)
                     .status()
@@ -319,7 +319,7 @@ fn verify_signature(candidate: &Path, current: &Path, release: &Release) -> Resu
             return Err("In-app Windows updates require Authenticode signing".into());
         }
         let script="$a=Get-AuthenticodeSignature -LiteralPath $env:NUS_CANDIDATE; $b=Get-AuthenticodeSignature -LiteralPath $env:NUS_CURRENT; if($a.Status -ne 'Valid' -or $b.Status -ne 'Valid' -or $a.SignerCertificate.Subject -ne $b.SignerCertificate.Subject){exit 1}";
-        if !std::process::Command::new("powershell.exe")
+        if !nus_compat::command("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("NUS_CANDIDATE", candidate.join("nus.exe"))
             .env("NUS_CURRENT", current.join("nus.exe"))
@@ -405,7 +405,7 @@ pub fn stage_and_launch(release: &Release) -> Result<(), String> {
     } else {
         candidate.join(if cfg!(windows) { "nus.exe" } else { "nus" })
     };
-    let version = std::process::Command::new(&executable)
+    let version = nus_compat::command(&executable)
         .arg("--version")
         .output()
         .map_err(error)?;
@@ -417,7 +417,7 @@ pub fn stage_and_launch(release: &Release) -> Result<(), String> {
     {
         return Err("The package reports a different version than the release".into());
     }
-    let report = std::process::Command::new(&executable).arg("--compatibility").output().map_err(error)?;
+    let report = nus_compat::command(&executable).arg("--compatibility").output().map_err(error)?;
     let candidate_contract: nus_compat::profile::Contract = serde_json::from_slice(&report.stdout)
         .map_err(|_| "This package has no supported profile compatibility contract; install it separately")?;
     if !report.status.success() || candidate_contract.version != release.version.trim_start_matches('v') {
@@ -452,11 +452,11 @@ pub fn stage_and_launch(release: &Release) -> Result<(), String> {
     )
     .map_err(error)?;
     let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("powershell.exe");
+        let mut c = nus_compat::command("powershell.exe");
         c.args(["-NoProfile", "-NonInteractive", "-Command", WINDOWS]);
         c
     } else {
-        let mut c = std::process::Command::new("/bin/sh");
+        let mut c = nus_compat::command("/bin/sh");
         c.arg(&script);
         c
     };
@@ -549,7 +549,7 @@ mod install_tests {
                 std::fs::create_dir(&staged).unwrap();
                 std::fs::write(staged.join("version"), "new").unwrap();
             }
-            let status = std::process::Command::new("/bin/sh")
+            let status = nus_compat::command("/bin/sh")
                 .arg("-c")
                 .arg(UNIX)
                 .env("NUS_PARENT_PID", "99999999")

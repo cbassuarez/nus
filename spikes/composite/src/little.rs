@@ -511,7 +511,7 @@ mod login_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.plist");
         std::fs::write(&path, &plist).unwrap();
-        assert!(std::process::Command::new("plutil").arg("-lint").arg(&path).status().unwrap().success());
+        assert!(nus_compat::command("plutil").arg("-lint").arg(&path).status().unwrap().success());
     }
 }
 
@@ -529,7 +529,7 @@ pub fn login_item(on: bool) -> Result<(), String> {
     let Some(entry) = login_entry() else { return Err("Couldn't find your user folder.".into()) };
     if !on {
         if cfg!(target_os = "macos") {
-            let _ = std::process::Command::new("launchctl").arg("unload").arg(&entry).output();
+            let _ = nus_compat::command("launchctl").arg("unload").arg(&entry).output();
         }
         return match std::fs::remove_file(&entry) {
             Ok(()) => Ok(()),
@@ -554,7 +554,7 @@ pub fn login_item(on: bool) -> Result<(), String> {
         exe.display(),
         exe.parent().map(|p| p.display().to_string()).unwrap_or_default()
     );
-    let out = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).output().map_err(|e| e.to_string())?;
+    let out = nus_compat::command("powershell").args(["-NoProfile", "-Command", &script]).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
@@ -569,7 +569,7 @@ pub fn registered() -> bool {
     if !cfg!(target_os = "windows") {
         return false;
     }
-    std::process::Command::new("reg")
+    nus_compat::command("reg")
         .args(["query", r"HKCU\Software\RegisteredApplications", "/v", "nus"])
         .output()
         .map(|o| o.status.success())
@@ -606,12 +606,12 @@ pub fn register() -> Result<(), String> {
         let mut args = vec!["add".to_string(), s[0].clone()];
         args.extend(s[1..].iter().cloned());
         args.push("/f".into());
-        let out = std::process::Command::new("reg").args(&args).output().map_err(|e| e.to_string())?;
+        let out = nus_compat::command("reg").args(&args).output().map_err(|e| e.to_string())?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
         }
     }
-    let _ = std::process::Command::new("cmd").args(["/c", "start", "", "ms-settings:defaultapps"]).spawn();
+    let _ = nus_compat::command("cmd").args(["/c", "start", "", "ms-settings:defaultapps"]).spawn();
     Ok(())
 }
 
@@ -629,7 +629,7 @@ pub fn unregister() -> Result<(), String> {
             args.extend(["/v", v]);
         }
         args.push("/f");
-        let _ = std::process::Command::new("reg").args(&args).output();
+        let _ = nus_compat::command("reg").args(&args).output();
     }
     Ok(())
 }

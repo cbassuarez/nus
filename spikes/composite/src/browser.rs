@@ -11,6 +11,10 @@ use cef::*;
 /// What the app reads each frame.
 #[derive(Default)]
 pub struct Shared {
+    /// This page's video is up in picture in picture, cropped from this
+    /// page's own paint: the pane shows the way back instead, and the page
+    /// takes no input, so nothing here can scroll the picture away.
+    pub pip_covered: bool,
     /// Download provenance (Finish Work, finish_work.rs). The user's own
     /// input into this page, as nus forwarded it: a page cannot make these.
     pub gesture_at: Option<std::time::Instant>,
@@ -3511,7 +3515,7 @@ impl BrowserTab {
     pub fn mouse_move(&self, x: i32, y: i32, mods: u32, leave: bool) {
         // While the page's question (or a sign-in) stands, the page gets
         // nothing from you: every key, click, wheel and move stops here.
-        if self.shared.borrow().dialog.is_some() { return; }
+        if self.shared.borrow().dialog.is_some() || self.shared.borrow().pip_covered { return; }
         if let Some(h) = self.host() {
             let ev = MouseEvent {
                 x,
@@ -3525,7 +3529,7 @@ impl BrowserTab {
     pub fn mouse_click(&self, x: i32, y: i32, mods: u32, button: MouseButtonType, up: bool, count: i32) {
         // While the page's question (or a sign-in) stands, the page gets
         // nothing from you: every key, click, wheel and move stops here.
-        if self.shared.borrow().dialog.is_some() { return; }
+        if self.shared.borrow().dialog.is_some() || self.shared.borrow().pip_covered { return; }
         if !up {
             self.shared.borrow_mut().gesture_at = Some(crate::clock::now());
         }
@@ -3542,7 +3546,7 @@ impl BrowserTab {
     pub fn wheel(&self, x: i32, y: i32, mods: u32, dx: i32, dy: i32) {
         // While the page's question (or a sign-in) stands, the page gets
         // nothing from you: every key, click, wheel and move stops here.
-        if self.shared.borrow().dialog.is_some() { return; }
+        if self.shared.borrow().dialog.is_some() || self.shared.borrow().pip_covered { return; }
         if let Some(h) = self.host() {
             let ev = MouseEvent {
                 x,
@@ -3556,7 +3560,7 @@ impl BrowserTab {
     pub fn key(&self, ev: &KeyEvent) {
         // While the page's question (or a sign-in) stands, the page gets
         // nothing from you: every key, click, wheel and move stops here.
-        if self.shared.borrow().dialog.is_some() { return; }
+        if self.shared.borrow().dialog.is_some() || self.shared.borrow().pip_covered { return; }
         self.shared.borrow_mut().gesture_at = Some(crate::clock::now());
         if let Some(h) = self.host() {
             h.send_key_event(Some(ev));

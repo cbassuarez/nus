@@ -45,7 +45,7 @@ fn linux_sandbox() -> Result<(), String> {
         }
         // Chromium needs user, PID and network namespaces. Test in a short-lived
         // child, with the installed executable's own AppArmor policy.
-        let mut child = std::process::Command::new(exe).arg("--nus-check-userns")
+        let mut child = nus_compat::command(exe).arg("--nus-check-userns")
             .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
         let until = Instant::now() + Duration::from_secs(2);

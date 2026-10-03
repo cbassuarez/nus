@@ -1031,7 +1031,7 @@ impl App {
 pub fn open_dir() {
     let d = dir();
     let _ = std::fs::create_dir_all(&d);
-    let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "open" }).arg(&d).spawn();
+    let _ = nus_compat::command(if cfg!(windows) { "explorer" } else { "open" }).arg(&d).spawn();
 }
 
 #[cfg(test)]

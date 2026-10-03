@@ -2,6 +2,22 @@
 //! numbers: a patch release need not change either compatibility boundary.
 pub mod profile;
 
+/// A program nus runs in the background (git, netstat, reg, a language
+/// server…): a plain `Command`, except that on Windows it opens no console
+/// window. nus is a windowed program, so without this every console
+/// program it starts flashes a window of its own. Shells in a terminal pane
+/// go through the PTY instead and keep theirs.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
 pub const CLI_PROTOCOL: u32 = 1;
 pub const HOLD_PROTOCOL: u32 = 1;
 pub const PROFILE_FORMAT: u32 = 1;

@@ -146,6 +146,14 @@ pub fn island_level(window:&Window, attached:bool) {
 
 pub fn wayland() -> bool { cfg!(target_os="linux") && std::env::var_os("WAYLAND_DISPLAY").is_some() }
 
+/// Whether a window can be hidden and kept to show again. Wayland has no
+/// request for either (winit's set_visible is a no-op there, and a window
+/// is mapped from its first frame), so there a window that should go away
+/// is dropped, and one that should float over the desktop (the status
+/// badge, the backdrop) is never made: it would be an ordinary window no
+/// one can dismiss.
+pub fn can_hide() -> bool { !wayland() }
+
 /// Scripted captures normally avoid changing focus. Native QA can opt in
 /// while retaining its isolated profile and bounded scripted lifetime.
 pub fn interactive() -> bool {

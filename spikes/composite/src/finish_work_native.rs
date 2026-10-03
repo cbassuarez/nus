@@ -432,7 +432,7 @@ mod tests {
     fn a_mac_lease_is_visible_to_the_os_and_gone_when_dropped() {
         let reason = format!("nus finish-work test {}", std::process::id());
         let listed = || {
-            let out = std::process::Command::new("pmset").args(["-g", "assertions"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+            let out = nus_compat::command("pmset").args(["-g", "assertions"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
             out.contains(&reason)
         };
         let mut native = Native;

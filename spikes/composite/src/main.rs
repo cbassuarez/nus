@@ -3,6 +3,9 @@
 
 mod access;
 mod address;
+mod applog;
+#[cfg(target_os = "linux")]
+mod hotkey_portal;
 mod overscroll;
 mod passwords;
 mod autofill;
@@ -802,7 +805,7 @@ impl ApplicationHandler<UserEvent> for Host {
             }
         }
         for badge in [true,false] {
-            let needed=if badge {app_i==0 && a.hatch_state.badge.is_none()} else {a.behavior.hatch_dim && a.hatch_state.shade.is_none()};
+            let needed=crate::hatch_native::can_hide() && if badge {app_i==0 && a.hatch_state.badge.is_none()} else {a.behavior.hatch_dim && a.hatch_state.shade.is_none()};
             if needed {
                 #[allow(unused_mut)]
                 let mut attrs=Window::default_attributes().with_title(if badge {"nus · ongoing work"} else {"nus · backdrop"}).with_decorations(false).with_resizable(false).with_transparent(true).with_active(false).with_visible(false).with_window_level(if badge {winit::window::WindowLevel::AlwaysOnTop} else {winit::window::WindowLevel::Normal}).with_inner_size(winit::dpi::LogicalSize::new(330.0,30.0));
@@ -956,7 +959,7 @@ impl ApplicationHandler<UserEvent> for Host {
         match event {
             WindowEvent::CloseRequested => {
                 // Keep the owning App/PTYs alive; closing a window is not Quit.
-                if a.behavior.hatch_background && !private::enabled() {
+                if a.behavior.hatch_background && !private::enabled() && crate::hatch_native::can_hide() {
                     a.hatch_state.main_hidden=true;
                     a.window.set_visible(false);
                     a.save_session();
@@ -1086,7 +1089,7 @@ fn prepare_app_environment() {
         }
     }
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let output = std::process::Command::new(&shell).args(["-l", "-c", "printf %s \"$PATH\""])
+    let output = nus_compat::command(&shell).args(["-l", "-c", "printf %s \"$PATH\""])
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().and_then(|mut child| {
             let started = std::time::Instant::now();
             loop {
@@ -1178,12 +1181,15 @@ fn run() -> i32 {
     #[cfg(target_os = "macos")]
     if !child_process { settle_as_app(&mut dock); }
     perf::startup(perf::StartupMark::DockReady);
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    {
+        use tracing_subscriber::prelude::*;
+        let file = applog::open();
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(move || file.clone()))
+            .init();
+    }
 
     #[cfg(not(target_os = "macos"))]
     if !child_process {
