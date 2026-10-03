@@ -152,6 +152,10 @@ Native preview releases are published for macOS, Windows and Linux. They are pre
 Every channel installs the same command, `nus`: on its own it opens nus, and
 inside or outside nus it drives the running app (`nus open <url>`, `nus ls`,
 `nus --help`).
+It also looks after its own copy, with no running nus needed: `nus version`,
+`nus update` (`--check` to only ask), `nus doctor` (what could keep nus from
+working here, each with its fix) and `nus uninstall` (the profile stays unless
+`--everything`).
 
 macOS (Homebrew):
 
