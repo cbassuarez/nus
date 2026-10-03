@@ -15,3 +15,6 @@ path = "src/main.rs"
 nus-compat = { path = "../compat" }
 nus-astro = { path = "../astro" }
 serde_json.workspace = true
+qrcode = { version = "0.14", default-features = false }
+regex = "1"
+ctrlc = "3"

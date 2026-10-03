@@ -289,6 +289,9 @@ impl App {
             // Find: the bar on the pane in front (find.rs).
             "find" => self.find_remote(args),
             "sync" => {
+                if let Some(answer) = self.sync_remote(s("do").as_deref().unwrap_or("now"), args) {
+                    return answer;
+                }
                 match s("do").as_deref().unwrap_or("now") {
                     "now" => {
                         self.sync_now();
@@ -297,10 +300,11 @@ impl App {
                     "key" => Ok(json!({ "key": crate::syncui::make_key() })),
                     "join" => {
                         let Some(w) = s("key") else { return Err("join needs key".into()) };
-                        if nus_sync::decode_key(&w).is_none() {
-                            return Err("that isn't a nus key".into());
-                        }
-                        crate::syncui::write_key(&w);
+                        // The nus5- word, or the 24 words of a paper key.
+                        let Some(k) = nus_sync::decode_any(&w) else {
+                            return Err("that isn't a nus key: a nus5- word or 24 words".into());
+                        };
+                        crate::syncui::write_key(&nus_sync::encode_key(&k));
                         self.sync_now();
                         Ok(Value::Null)
                     }
@@ -315,7 +319,7 @@ impl App {
                         self.save_prefs();
                         Ok(Value::Null)
                     }
-                    other => Err(format!("sync: now · key · join · status · folder · git, not {other}")),
+                    other => Err(format!("sync: now · key · join · status · folder · git · paper · devices · rotate · conflicts · restore · forge, not {other}")),
                 }
             }
             "layout" => {

@@ -14,11 +14,17 @@ pub struct SyncState {
     pub last: Option<(Instant, nus_sync::Report)>,
     pub running_since: Option<Instant>,
     pub last_auto: Option<Instant>,
+    /// A `nus sync` job on a worker (synccli.rs).
+    pub job: Option<crate::synccli::Job>,
+    /// A forge sign-in started from `nus sync forge`.
+    pub forge: Option<crate::forge::Flow>,
+    /// Stops a pairing job (`nus sync pair` interrupted).
+    pub pair_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for SyncState {
     fn default() -> Self {
-        SyncState { rx: None, last: None, running_since: None, last_auto: None }
+        SyncState { rx: None, last: None, running_since: None, last_auto: None, job: None, forge: None, pair_cancel: None }
     }
 }
 
@@ -127,6 +133,11 @@ impl App {
                 self.sync.last_auto = Some(crate::clock::now());
                 self.sync_now();
             }
+        }
+        // Jobs a terminal started finish here when nobody collects them;
+        // collected answers go through `sync job` instead.
+        if self.sync.job.as_ref().is_some_and(|j| j.started.elapsed().as_secs() > 600) {
+            self.reap_sync_job();
         }
         let Some(rx) = self.sync.rx.as_ref() else { return };
         let Ok(rep) = rx.try_recv() else { return };

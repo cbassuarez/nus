@@ -165,6 +165,24 @@ impl Ui {
         );
     }
 
+    /// A step's line without its newline, for a spinner redrawn in place.
+    pub fn row_inline(&self, n: &str, name: &str, detail: &str, mark: &str, time: &str) {
+        print!(
+            "\x1b[2K  {}  {}{}  {}{}",
+            self.grey(n),
+            self.bold(&pad(name, 10)),
+            self.grey(&pad(&fit(detail, 52, self.g().more), 52)),
+            mark,
+            self.grey(&format!("{time:>7}"))
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    /// The terminal draws UTF-8 (block glyphs, arrows).
+    pub fn utf(&self) -> bool {
+        self.utf
+    }
+
     /// A line under a step: what to do about it.
     pub fn hint(&self, text: &str) {
         println!("        {} {}", self.grey(self.g().arrow), text);

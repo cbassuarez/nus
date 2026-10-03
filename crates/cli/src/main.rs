@@ -286,6 +286,7 @@ fn print_ls(v: &Value) {
     }
 }
 
+mod account;
 mod lifecycle;
 mod mcp;
 mod ui;
@@ -406,6 +407,13 @@ fn main() -> ExitCode {
     if args.first().map(String::as_str) == Some("credential") {
         return credential(args.get(1).map(String::as_str));
     }
+    // Sync's own verbs (pairing, devices, rotation…): account.rs. The
+    // plain ones (now, key, join, status, folder, git) carry on below.
+    if args.first().map(String::as_str) == Some("sync") {
+        if let Some(code) = account::run(&args[1..]) {
+            return code;
+        }
+    }
     // Find in the running nus: the bar on the pane in front, its count
     // once it is final.
     if args.first().map(String::as_str) == Some("find") {
@@ -420,6 +428,8 @@ fn main() -> ExitCode {
             return lifecycle::uninstall(flag("--everything"), flag("--yes") || flag("-y"))
         }
         Some("doctor") => return lifecycle::doctor(),
+        Some("channel") => return lifecycle::channel(&args[1..]),
+        Some("logs") => return lifecycle::logs(&args[1..]),
         _ => {}
     }
     // The MCP server: stdin to stdout until the assistant hangs up.
@@ -698,12 +708,15 @@ fn main() -> ExitCode {
 const USAGE: &str = "usage: nus [<command> [args] [--json]]
   with no command, opens nus or brings it forward
   version [--json] · update [--check] · doctor · uninstall [--everything] [--yes] · no running nus needed
+  channel preview|stable [--carry] · logs [--bundle] · no running nus needed
   ls · open <url> [--split] · edit <file> [--split] · launch [--profile P] [--cwd D] [--run CMD] [--split]
   send-text <text> [--tab N] [--right] [--enter] · focus <tab> · close [<tab>] [--force]
   theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|work|list|open --window ID --tab-id ID [--right]|hoist|land|quit]
   block [last|all] [--tab N] · ask <question> · raise
   layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
-  sync [now] · sync key · sync join <key> · sync status · sync folder <path> · sync git <remote>
+  sync [now] · sync key [--paper] · sync join <key|24 words> · sync status · sync folder <path> · sync git <remote>
+  sync pair [<code>] [--to ADDR] [--discover] [--qr] · sync devices · sync rotate · sync forge github [--gh]
+  sync conflicts [diff <n> | keep <n> mine|theirs] · sync restore <file> [--at 3h|2d|DATE]
   find <words> [--scope pane|tab|window] [--case] · find --close
   hold [ls|attach <id>|kill <id>] · log [--cwd D] [--limit N] · page [text|dom|console|network|screenshot|info] [--tab N]
   mcp · the MCP server on stdio: claude mcp add nus -- nus mcp

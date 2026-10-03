@@ -31,6 +31,8 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
 
+pub mod pair;
+
 pub const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 const MAGIC: &[u8; 4] = b"NUS1";
@@ -227,6 +229,50 @@ pub fn decode_key(word: &str) -> Option<[u8; KEY_LEN]> {
     Some(k)
 }
 
+/// The key as 24 words to write down: BIP39's English list, whose last word
+/// carries a checksum, so a slip of the pen is caught rather than taken.
+pub fn paper_key(k: &[u8; KEY_LEN]) -> String {
+    bip39::Mnemonic::from_entropy(k)
+        .expect("32 bytes is a 24-word mnemonic")
+        .to_string()
+}
+
+/// A key from its 24 words.
+pub fn from_paper(words: &str) -> Option<[u8; KEY_LEN]> {
+    let words = words
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let m = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &words).ok()?;
+    m.to_entropy().try_into().ok()
+}
+
+/// `n` words naming `bytes` (a fingerprint people can read out to each
+/// other): BIP39's English list, eleven bits of a blake3 hash each.
+pub fn words(bytes: &[u8], n: usize) -> String {
+    let list = bip39::Language::English.word_list();
+    let h = blake3::hash(bytes);
+    let h = h.as_bytes();
+    (0..n)
+        .map(|i| {
+            let bit = i * 11;
+            let v = (u32::from(h[bit / 8]) << 16
+                | u32::from(h[bit / 8 + 1]) << 8
+                | u32::from(h[bit / 8 + 2]))
+                >> (13 - bit % 8)
+                & 0x7ff;
+            list[v as usize]
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// A key from either way of writing it: the `nus5-` word, or 24 words.
+pub fn decode_any(text: &str) -> Option<[u8; KEY_LEN]> {
+    decode_key(text).or_else(|| from_paper(text))
+}
+
 const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 fn base32_encode(data: &[u8]) -> String {
@@ -321,6 +367,16 @@ pub struct Manifest {
     /// When this manifest was written.
     pub at: u64,
     pub files: BTreeMap<String, Entry>,
+    /// The nus that wrote it (`nus sync devices`); empty from older builds.
+    #[serde(default)]
+    pub nus: String,
+}
+
+static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The app's version, written into this device's manifests.
+pub fn set_build(version: &str) {
+    let _ = BUILD.set(version.to_string());
 }
 
 fn now() -> u64 {
@@ -385,6 +441,7 @@ fn local_manifest_with_library(
         device: device.into(),
         at: now(),
         files: BTreeMap::new(),
+        nus: BUILD.get().cloned().unwrap_or_default(),
     };
     for rel in files_to_sync(profile, session) {
         if !library && library_path(&rel) {
@@ -826,6 +883,128 @@ pub fn exchange(
     rep
 }
 
+// --- devices, rotation, history ---
+
+/// Every device the carriers know, the newest manifest of each, newest first.
+pub fn devices(key: &[u8; KEY_LEN], carriers: &[&dyn Carrier]) -> Vec<Manifest> {
+    let mut by: BTreeMap<String, Manifest> = BTreeMap::new();
+    for c in carriers {
+        for m in c.manifests(key) {
+            if by.get(&m.device).is_none_or(|old| m.at > old.at) {
+                by.insert(m.device.clone(), m);
+            }
+        }
+    }
+    let mut v: Vec<Manifest> = by.into_values().collect();
+    v.sort_by_key(|a| std::cmp::Reverse(a.at));
+    v
+}
+
+/// Where a device's sealed copy of `rel` sits on a carrier, relative to its
+/// root: names that say nothing without the key.
+pub fn carrier_path(key: &[u8; KEY_LEN], device: &str, rel: &str) -> String {
+    format!("{}/{}", device_dir(key, device), enc_name(key, rel))
+}
+
+/// A new key, everything re-sealed under it. First one round with the old
+/// key, so nothing another device left is missed; then every device's
+/// folder sealed with the old key comes off the carriers (a device still
+/// holding it can read nothing new there), and this device's files go out
+/// sealed with the new one. Other devices take part again by joining with
+/// the new key. A git carrier's history keeps the old blobs, sealed with the
+/// old key.
+///
+/// The flag says whether the new key is now the one in use: false only when
+/// the first round failed and nothing changed. Once old folders start coming
+/// off, the new key must be kept even if a later step fails (the next sync
+/// finishes the job); the old one may already read nothing.
+pub fn rotate(
+    profile: &Path,
+    device: &str,
+    old: &[u8; KEY_LEN],
+    new: &[u8; KEY_LEN],
+    session: bool,
+    roots: &[(PathBuf, &dyn Carrier)],
+) -> (Report, bool) {
+    let carriers: Vec<&dyn Carrier> = roots.iter().map(|(_, c)| *c).collect();
+    let mut rep = exchange(profile, device, old, session, &carriers);
+    if !rep.errors.is_empty() {
+        return (rep, false);
+    }
+    for (root, c) in roots {
+        let gone = c.manifests(old);
+        for m in gone {
+            let dir = root.join(device_dir(old, &m.device));
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                rep.errors
+                    .push(format!("{}: {}: {e}", c.name(), dir.display()));
+            }
+        }
+    }
+    let fresh = exchange(profile, device, new, session, &carriers);
+    rep.pushed = fresh.pushed;
+    rep.errors.extend(fresh.errors);
+    (rep, true)
+}
+
+/// One past version of a file on the git carrier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub commit: String,
+    /// When it was committed, seconds since the epoch.
+    pub at: u64,
+    pub device: String,
+}
+
+/// Every committed version of `rel`, from every device the carrier knows,
+/// newest first. The work tree is the git carrier's clone.
+pub fn history(work: &Path, key: &[u8; KEY_LEN], rel: &str) -> anyhow::Result<Vec<Version>> {
+    let folder = Folder {
+        root: work.to_path_buf(),
+    };
+    let mut v = Vec::new();
+    for m in folder.manifests(key) {
+        let path = carrier_path(key, &m.device, rel);
+        let out = nus_compat::command("git")
+            .args(["log", "--format=%H %ct", "--", &path])
+            .current_dir(work)
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!("git log: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some((commit, at)) = line.split_once(' ') {
+                v.push(Version {
+                    commit: commit.into(),
+                    at: at.trim().parse().unwrap_or(0),
+                    device: m.device.clone(),
+                });
+            }
+        }
+    }
+    v.sort_by_key(|a| std::cmp::Reverse(a.at));
+    Ok(v)
+}
+
+/// The plaintext of `rel` as `version` committed it.
+pub fn version_at(
+    work: &Path,
+    key: &[u8; KEY_LEN],
+    rel: &str,
+    version: &Version,
+) -> anyhow::Result<Vec<u8>> {
+    let path = carrier_path(key, &version.device, rel);
+    let out = nus_compat::command("git")
+        .args(["show", &format!("{}:{path}", version.commit)])
+        .current_dir(work)
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!("git show: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    open(key, rel, &out.stdout)
+        .ok_or_else(|| anyhow::anyhow!("that version does not open with this key"))
+}
+
 /// A device name: the hostname, or what the user set.
 pub fn device_name() -> String {
     std::env::var("COMPUTERNAME")
@@ -845,6 +1024,111 @@ pub fn device_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paper_key_is_the_same_key() {
+        let k = new_key();
+        let words = paper_key(&k);
+        assert_eq!(words.split_whitespace().count(), 24);
+        assert_eq!(from_paper(&words), Some(k));
+        assert_eq!(
+            from_paper(&format!("  {}  ", words.to_uppercase().replace(' ', "\n "))),
+            Some(k)
+        );
+        assert_eq!(decode_any(&encode_key(&k)), Some(k));
+        // A wrong last word fails the checksum.
+        let mut w: Vec<&str> = words.split_whitespace().collect();
+        let last = if w[23] == "abandon" { "zoo" } else { "abandon" };
+        w[23] = last;
+        assert_eq!(from_paper(&w.join(" ")), None);
+    }
+
+    fn profile_with(dir: &Path, text: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("rules.luau"), text).unwrap();
+    }
+
+    #[test]
+    fn rotation_leaves_the_old_key_nothing() {
+        let base = std::env::temp_dir().join(format!("nus-rotate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let carrier = Folder {
+            root: base.join("carrier"),
+        };
+        let (a, b) = (base.join("a"), base.join("b"));
+        profile_with(&a, "-- a");
+        profile_with(&b, "-- b");
+        let (old, new) = (new_key(), new_key());
+        assert!(exchange(&a, "a", &old, false, &[&carrier])
+            .errors
+            .is_empty());
+        assert!(exchange(&b, "b", &old, false, &[&carrier])
+            .errors
+            .is_empty());
+        assert_eq!(devices(&old, &[&carrier]).len(), 2);
+        let (rep, rotated) = rotate(
+            &a,
+            "a",
+            &old,
+            &new,
+            false,
+            &[(carrier.root.clone(), &carrier as &dyn Carrier)],
+        );
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(rotated);
+        assert!(devices(&old, &[&carrier]).is_empty());
+        let now: Vec<String> = devices(&new, &[&carrier])
+            .into_iter()
+            .map(|m| m.device)
+            .collect();
+        assert_eq!(now, ["a"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn history_brings_back_an_older_version() {
+        let base = std::env::temp_dir().join(format!("nus-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let remote = base.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        let ok = nus_compat::command("git")
+            .args(["init", "--quiet", "--bare"])
+            .current_dir(&remote)
+            .status();
+        if !ok.is_ok_and(|s| s.success()) {
+            return; // no git here
+        }
+        let profile = base.join("profile");
+        let key = new_key();
+        let git = Git::new(remote.to_str().unwrap(), &base.join("work"));
+        profile_with(&profile, "-- first");
+        assert!(exchange(&profile, "desk", &key, false, &[&git])
+            .errors
+            .is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(profile.join("rules.luau"), "-- second").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(profile.join("rules.luau"))
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(exchange(&profile, "desk", &key, false, &[&git])
+            .errors
+            .is_empty());
+        let versions = history(&git.work, &key, "rules.luau").unwrap();
+        assert_eq!(versions.len(), 2, "{versions:?}");
+        assert_eq!(
+            version_at(&git.work, &key, "rules.luau", &versions[0]).unwrap(),
+            b"-- second"
+        );
+        assert_eq!(
+            version_at(&git.work, &key, "rules.luau", &versions[1]).unwrap(),
+            b"-- first"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn a_memory_file_merges_as_a_union() {
@@ -1074,6 +1358,7 @@ mod tests {
             device: "old".into(),
             at: now(),
             files: BTreeMap::new(),
+            ..Default::default()
         };
         for rel in [
             "library/.writer.lock",

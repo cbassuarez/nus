@@ -25,6 +25,9 @@ pub fn take_notice() -> Option<String> {
 pub fn ready(profile: &Path) -> std::io::Result<()> {
     record(nus_vault::available(profile))
 }
+pub fn read(path: &Path) -> std::io::Result<Vec<u8>> {
+    record(nus_vault::read(path))
+}
 pub fn read_text(path: &Path) -> std::io::Result<String> {
     record(nus_vault::read_text(path))
 }

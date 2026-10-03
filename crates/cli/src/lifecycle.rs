@@ -17,7 +17,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -1035,5 +1035,464 @@ mod tests {
             exec_target("Exec=/usr/bin/nus %U").as_deref(),
             Some("/usr/bin/nus")
         );
+    }
+}
+
+// --- nus channel ----------------------------------------------------------------
+
+/// What a channel change may carry into the new channel's profile: settings
+/// and things you made, in plain files. Never the vault's (sessions, the
+/// sync key, sign-ins, passwords), never history, and never over a file
+/// the new profile already has.
+const CARRY: &[&str] = &[
+    "settings.json",
+    "rules.luau",
+    "me.json",
+    "avatar.png",
+    "themes",
+    "layouts",
+    "surfaces",
+    "art",
+    "fonts",
+    "grammars",
+    "blocklist.txt",
+    "dangerous.txt",
+    "sites.json",
+    "shells.json",
+    "folders.json",
+    "containers.json",
+    "assistants.json",
+];
+
+/// Copy `from` into `to` without replacing anything there; returns how
+/// many files were copied. Links are not followed.
+fn carry_tree(from: &Path, to: &Path) -> std::io::Result<usize> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        return Ok(0);
+    }
+    if meta.is_dir() {
+        std::fs::create_dir_all(to)?;
+        let mut n = 0;
+        for e in std::fs::read_dir(from)?.flatten() {
+            n += carry_tree(&e.path(), &to.join(e.file_name()))?;
+        }
+        return Ok(n);
+    }
+    if to.exists() {
+        return Ok(0);
+    }
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::copy(from, to)?;
+    Ok(1)
+}
+
+/// The shared profile of a channel's installs.
+fn channel_profile(c: nus_compat::Channel) -> Option<PathBuf> {
+    Some(
+        data_home()?
+            .join("installs")
+            .join(c.directory())
+            .join("shared")
+            .join("profile"),
+    )
+}
+
+pub fn channel(args: &[String]) -> ExitCode {
+    let ui = Ui::new();
+    let want = match args.first().map(String::as_str) {
+        Some("preview") => nus_compat::Channel::Preview,
+        Some("stable") => nus_compat::Channel::Current,
+        _ => return fail(&ui, "nus channel preview|stable [--carry] [--yes]"),
+    };
+    let carry = args.iter().any(|a| a == "--carry");
+    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let i = match detect() {
+        Ok(i) => i,
+        Err(e) => return fail(&ui, &e),
+    };
+    if i.channel == want {
+        println!("  This copy is already on {}.", channel_word(want));
+        return ExitCode::SUCCESS;
+    }
+    if i.method == Method::Source {
+        return fail(
+            &ui,
+            "this nus is built from source: build the other channel from its branch",
+        );
+    }
+    let start = Instant::now();
+    // Stable only when there is one: the installer would otherwise fall
+    // back to preview without a word.
+    let version = match latest(want) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return fail(
+                &ui,
+                &format!(
+                    "there is no {} release for this platform yet",
+                    channel_word(want)
+                ),
+            )
+        }
+        Err(e) => return fail(&ui, &e),
+    };
+    ui.row(
+        "01",
+        "Channel",
+        &format!(
+            "{} {} {} {version}",
+            channel_word(i.channel),
+            ui.g().arrow,
+            channel_word(want)
+        ),
+        &ui.ok(),
+        &took(start),
+    );
+    if !yes && std::io::stdin().is_terminal() {
+        println!(
+            "  {} installs beside this one, with its own profile{}.",
+            channel_word(want),
+            if carry {
+                ", carrying your settings over"
+            } else {
+                ""
+            }
+        );
+        if !ask("  Go on? [y/N] ").eq_ignore_ascii_case("y") {
+            println!("  Nothing changed.");
+            return ExitCode::SUCCESS;
+        }
+    }
+    let tag = format!("v{version}");
+    let status = match &i.method {
+        Method::App(Some(_)) => {
+            let token = if want == nus_compat::Channel::Preview {
+                "nus@preview"
+            } else {
+                "nus"
+            };
+            let mut brew = Command::new("brew");
+            brew.args(["install", "--cask", &format!("cbassuarez/tap/{token}")]);
+            ui.stream("02", "Install", "with Homebrew", token, &mut brew)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        Method::Installer => {
+            let mut ps = Command::new("powershell.exe");
+            ps.args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-NoExit",
+                "-Command",
+                &format!("irm {SITE}/install.ps1 | iex"),
+            ]);
+            ps.env("NUS_VERSION", &tag);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                ps.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
+            }
+            ps.spawn()
+                .map(|_| println!("  The install continues in a new window."))
+                .map_err(|e| format!("could not start PowerShell: {e}"))
+        }
+        method => {
+            let mut sh = Command::new("sh");
+            sh.arg("-c")
+                .arg(format!("curl -fsSL {SITE}/install.sh | sh"));
+            // The exact release: never whichever the installer would pick.
+            sh.env("NUS_VERSION", &tag);
+            if matches!(method, Method::Account | Method::Folder) {
+                sh.env("NUS_USER", "1");
+            }
+            match sh.status() {
+                Ok(s) if s.success() => Ok(()),
+                Ok(_) => Err("the installer stopped".to_string()),
+                Err(e) => Err(format!("could not start the installer: {e}")),
+            }
+        }
+    };
+    if let Err(e) = status {
+        return fail(&ui, &e);
+    }
+    if carry {
+        let (Some(from), Some(to)) = (channel_profile(i.channel), channel_profile(want)) else {
+            return fail(&ui, "no data folder to carry from");
+        };
+        let mut n = 0;
+        for name in CARRY {
+            if from.join(name).exists() {
+                match carry_tree(&from.join(name), &to.join(name)) {
+                    Ok(k) => n += k,
+                    Err(e) => ui.hint(&format!("{name}: {e}")),
+                }
+            }
+        }
+        ui.row(
+            "03",
+            "Carried",
+            &format!(
+                "{n} files into the {} profile {} nothing replaced",
+                channel_word(want),
+                ui.g().dot
+            ),
+            &ui.ok(),
+            &took(start),
+        );
+        ui.hint("sign-ins, sessions, the sync key and history stay with the old channel: pair it with nus sync pair");
+    }
+    ui.hint(&format!(
+        "{} is still installed; its own nus uninstall removes it",
+        channel_word(i.channel)
+    ));
+    ExitCode::SUCCESS
+}
+
+// --- nus logs -------------------------------------------------------------------
+
+/// Text made safe to hand to someone: home paths shortened, the host's name
+/// gone, and every secret-shaped thing removed — tokens, sync keys, bearer
+/// and key=value secrets, URL queries and fragments, e-mail addresses,
+/// IP addresses.
+pub fn scrub(text: &str, home: Option<&str>, host: Option<&str>) -> String {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    let rules = RULES.get_or_init(|| {
+        [
+            (r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}", "[token]"),
+            (r"\bgithub_pat_[A-Za-z0-9_]{8,}", "[token]"),
+            (r"\bglpat-[A-Za-z0-9_\-]{8,}", "[token]"),
+            (r"\bnus5-[a-z2-7]{8,}", "nus5-[key]"),
+            (r"(?i)\b(bearer|token|basic)\s+[A-Za-z0-9._~+/=\-]{12,}", "$1 [secret]"),
+            (r"(?i)\b((?:access_|refresh_|id_)?token|password|passwd|secret|api_?key|auth(?:orization)?|client_secret|code)(\s*[=:]\s*)\S+", "$1$2[secret]"),
+            (r"(https?://[^\s?#'\x22<>]+)[?#][^\s'\x22<>]*", "$1?[…]"),
+            (r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[email]"),
+            (r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[ip]"),
+            (r"\b(?:[0-9a-fA-F]{1,4}:){4,7}[0-9a-fA-F]{1,4}\b", "[ip]"),
+        ]
+        .into_iter()
+        .map(|(p, r)| (Regex::new(p).expect("scrub pattern"), r))
+        .collect()
+    });
+    let mut out = text.to_string();
+    if let Some(h) = home.filter(|h| h.len() > 1) {
+        out = out.replace(h, "~");
+    }
+    if let Some(h) = host.filter(|h| h.len() > 2) {
+        out = out.replace(h, "[host]");
+    }
+    for (re, with) in rules {
+        out = re.replace_all(&out, *with).into_owned();
+    }
+    out
+}
+
+fn host_name() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+}
+
+pub fn logs(args: &[String]) -> ExitCode {
+    let ui = Ui::new();
+    let Some(base) = data_home().map(|d| d.join("logs")) else {
+        return fail(&ui, "no data folder");
+    };
+    let found: Vec<PathBuf> = ["preview", "release", "development"]
+        .iter()
+        .map(|c| base.join(c))
+        .filter(|d| d.join("nus.log").is_file())
+        .collect();
+    if found.is_empty() {
+        println!(
+            "  No logs yet: nus writes {} once it has run.",
+            base.join("<channel>").join("nus.log").display()
+        );
+        return ExitCode::SUCCESS;
+    }
+    if !args.iter().any(|a| a == "--bundle") {
+        for dir in &found {
+            for name in ["nus.log", "nus.1.log"] {
+                let p = dir.join(name);
+                if let Ok(m) = std::fs::metadata(&p) {
+                    println!(
+                        "  {}  {}",
+                        p.display(),
+                        ui.grey(&format!("{} KB", m.len() / 1024))
+                    );
+                }
+            }
+        }
+        // The last of the newest log, as it is (it is yours, here).
+        let newest = found
+            .iter()
+            .map(|d| d.join("nus.log"))
+            .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+        if let Some(p) = newest {
+            println!();
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            for l in &lines[lines.len().saturating_sub(40)..] {
+                println!("  {}", ui.grey(l));
+            }
+        }
+        println!();
+        ui.hint(&format!(
+            "{} packs these, version and doctor, with secrets and addresses removed",
+            ui.bold("nus logs --bundle")
+        ));
+        return ExitCode::SUCCESS;
+    }
+    let start = Instant::now();
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok());
+    let host = host_name();
+    let clean = |t: &str| scrub(t, home.as_deref(), host.as_deref());
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = format!("nus-report-{stamp}");
+    let dir = std::env::temp_dir().join(&name);
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return fail(&ui, &format!("{}: {e}", dir.display()));
+    }
+    let me = std::env::current_exe().ok();
+    let run = |arg: &str| -> String {
+        me.as_ref()
+            .and_then(|exe| {
+                Command::new(exe)
+                    .arg(arg)
+                    .env("NO_COLOR", "1")
+                    .env("TERM", "dumb")
+                    .output()
+                    .ok()
+            })
+            .map(|o| {
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )
+            })
+            .unwrap_or_default()
+    };
+    let system = format!(
+        "{} {} · {}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        std::env::var("XDG_SESSION_TYPE").unwrap_or_default()
+    );
+    let mut files: Vec<(String, String)> = vec![
+        ("version.txt".into(), run("version")),
+        ("doctor.txt".into(), run("doctor")),
+        ("system.txt".into(), system),
+    ];
+    for d in &found {
+        let ch = d
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for log in ["nus.log", "nus.1.log"] {
+            if let Ok(t) = std::fs::read_to_string(d.join(log)) {
+                files.push((format!("{ch}-{log}"), t));
+            }
+        }
+    }
+    for (file, text) in &files {
+        if let Err(e) = std::fs::write(dir.join(file), clean(text)) {
+            return fail(&ui, &format!("{file}: {e}"));
+        }
+    }
+    let out = std::env::current_dir()
+        .unwrap_or_default()
+        .join(format!("{name}.tar.gz"));
+    let tar = Command::new(if cfg!(windows) { "tar.exe" } else { "tar" })
+        .arg("-czf")
+        .arg(&out)
+        .arg("-C")
+        .arg(std::env::temp_dir())
+        .arg(&name)
+        .status();
+    let _ = std::fs::remove_dir_all(&dir);
+    match tar {
+        Ok(s) if s.success() => {
+            ui.row(
+                "01",
+                "Report",
+                &out.display().to_string(),
+                &ui.ok(),
+                &took(start),
+            );
+            ui.hint("removed: tokens, keys, secrets, URL queries, e-mail and IP addresses, this machine's name; home is ~");
+            ui.hint("read it before you share it");
+            ExitCode::SUCCESS
+        }
+        _ => fail(&ui, "could not pack the report (is tar installed?)"),
+    }
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::*;
+
+    #[test]
+    fn secrets_and_addresses_do_not_leave() {
+        let raw = "auth Bearer abcdefghijklmnopqrstuv for seb@example.com at 192.168.1.20:51807 \
+                   ghp_ABCDEFGH12345678 key nus5-abcdefghijklmnop token=hunter2hunter2 \
+                   https://github.com/login/oauth?code=XYZ123&state=1 /home/seb/nus/profile on seb-laptop";
+        let s = scrub(raw, Some("/home/seb"), Some("seb-laptop"));
+        for gone in [
+            "abcdefghijklmnopqrstuv",
+            "seb@example.com",
+            "192.168.1.20",
+            "ghp_ABCD",
+            "abcdefghijklmnop",
+            "hunter2",
+            "XYZ123",
+            "/home/seb",
+            "seb-laptop",
+        ] {
+            assert!(!s.contains(gone), "{gone} leaked: {s}");
+        }
+        assert!(s.contains("https://github.com/login/oauth?[…]"), "{s}");
+        assert!(s.contains("~/nus/profile"), "{s}");
+    }
+
+    #[test]
+    fn carrying_never_replaces() {
+        let base = std::env::temp_dir().join(format!("nus-carry-{}", std::process::id()));
+        let (from, to) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(from.join("themes")).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(from.join("themes/dusk.theme"), "new").unwrap();
+        std::fs::write(from.join("settings.json"), "new").unwrap();
+        std::fs::write(to.join("settings.json"), "mine").unwrap();
+        assert_eq!(
+            carry_tree(&from.join("themes"), &to.join("themes")).unwrap(),
+            1
+        );
+        assert_eq!(
+            carry_tree(&from.join("settings.json"), &to.join("settings.json")).unwrap(),
+            0
+        );
+        assert_eq!(
+            std::fs::read_to_string(to.join("settings.json")).unwrap(),
+            "mine"
+        );
+        let _ = std::fs::remove_dir_all(base);
     }
 }

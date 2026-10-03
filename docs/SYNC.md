@@ -97,7 +97,39 @@ nus sync join <key>   # take a key from another device and exchange
 nus sync status       # key · carriers · last run
 nus sync folder <p>   # set the folder carrier ("" clears)
 nus sync git <remote> # set the git carrier ("" clears)
+
+nus sync pair                       # offer this device's key (a new one on a first device)
+nus sync pair <code> --to <addr>    # take it on the other device
+nus sync pair … --discover          # find each other by broadcast (home networks)
+nus sync pair --qr                  # the other device's command as a QR code, too
+nus sync key --paper                # the key as 24 words, to write down (a terminal only)
+nus sync join <24 words>            # take it back from paper
+nus sync devices                    # every device on the carriers, when, which nus
+nus sync rotate                     # a new key; other devices pair again
+nus sync conflicts [diff <n> | keep <n> mine|theirs]
+nus sync restore <file> [--at 3h|2d|2026-10-01|2026-10-01T14:30]   # git carrier
+nus sync forge github [--gh]        # a private repo as the carrier
 ```
+
+The running nus does the work: the key and the forge token live in its
+vault, and pairing runs inside it, so the key never passes through the
+`nus` command, its arguments or its output — the paper key's words are the
+one exception, and only to a terminal (`--force` to print elsewhere). A
+token is never accepted as an argument (it would show in `ps`): `--gh`
+has the app read the GitHub CLI's own sign-in; without it, the device flow
+in a browser.
+
+**Pairing.** The device with the key shows a code (`41-whisper-wear`) and
+its LAN address; the other runs `nus sync pair 41-whisper-wear --to
+192.168.1.20:43211`. The code's words are a SPAKE2 password: the two
+devices agree on a secret only they hold, prove it to each other, and the
+key crosses sealed under it (XChaCha20-Poly1305). Someone watching learns
+nothing; someone guessing gets one try, and a wrong try ends the offer
+("a device answered with the wrong code; nothing was sent"). Nothing is
+announced unless asked: the offer listens only on this machine's LAN
+address, for three minutes at most, and Ctrl+C stops it at once.
+`--discover` broadcasts the code's number (never its words) on UDP 51807,
+for a home network. Receiving replaces an existing key only after a yes.
 
 ## Threat model, plainly
 
@@ -108,6 +140,11 @@ nus sync git <remote> # set the git carrier ("" clears)
 - Someone with the key has the profile. The key is the secret; copy it over
   a channel you trust (the two devices in the same room, a password manager,
   never a chat you don't control).
+- Pairing on a network you don't control: someone on it can try to answer
+  an offer first. They get one guess at the code's two words (about one in
+  four million), and a wrong guess ends the offer without sending anything.
+  Discovery broadcasts are opt-in and carry only the code's number and a
+  port.
 - There is no recovery: lose the key on every device and the sealed copies
   are noise. The profile is still on each device in the clear, so make a new
   key and carry on.

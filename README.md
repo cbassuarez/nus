@@ -154,8 +154,12 @@ inside or outside nus it drives the running app (`nus open <url>`, `nus ls`,
 `nus --help`).
 It also looks after its own copy, with no running nus needed: `nus version`,
 `nus update` (`--check` to only ask), `nus doctor` (what could keep nus from
-working here, each with its fix) and `nus uninstall` (the profile stays unless
-`--everything`).
+working here, each with its fix), `nus uninstall` (the profile stays unless
+`--everything`), `nus channel preview|stable [--carry]` (the other channel
+beside this one, settings carried over if asked) and `nus logs [--bundle]`
+(where the logs are; a report with secrets, addresses and home paths
+removed). Syncing between your devices — pairing, the paper key, devices,
+rotation, conflicts, restore — is `nus sync …` (docs/SYNC.md).
 
 macOS (Homebrew):
 

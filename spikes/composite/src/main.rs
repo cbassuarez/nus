@@ -7,6 +7,7 @@ mod applog;
 mod find;
 #[cfg(target_os = "linux")]
 mod hotkey_portal;
+mod synccli;
 mod overscroll;
 mod passwords;
 mod autofill;
@@ -1150,6 +1151,8 @@ fn run() -> i32 {
         return 0;
     }
     let child_process = external.is_none() && std::env::args().any(|a| a == "--type" || a.starts_with("--type="));
+    // This device's sync manifests say which nus wrote them (nus sync devices).
+    nus_sync::set_build(env!("NUS_BUILD_VERSION"));
     // If the machine itself runs out of memory, nus and the Chromium
     // processes it starts go before anything else the person is running.
     // Only ever raised (an unprivileged process cannot lower it), inherited
