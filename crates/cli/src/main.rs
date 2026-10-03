@@ -18,7 +18,7 @@
 //!   nus hook install claude|codex   add those hooks to the assistant's config
 //!   nus credential get              git's credential helper: the forge sign-in, when allowed
 //!   nus sky|moon|tonight [--place LAT,LON]   the almanac, computed here (sky.rs)
-//!   nus version
+//!   nus version · update · doctor · uninstall   this copy itself (lifecycle.rs)
 //!
 //!   nus                             open nus, or bring it forward
 //!
@@ -286,7 +286,9 @@ fn print_ls(v: &Value) {
     }
 }
 
+mod lifecycle;
 mod mcp;
+mod ui;
 
 mod hook;
 mod sky;
@@ -409,6 +411,17 @@ fn main() -> ExitCode {
     if args.first().map(String::as_str) == Some("find") {
         return find(&args[1..]);
     }
+    // This copy's own lifecycle: none of it needs a running nus.
+    let flag = |f: &str| args.iter().skip(1).any(|a| a == f);
+    match args.first().map(String::as_str) {
+        Some("version") => return lifecycle::version(flag("--json")),
+        Some("update") => return lifecycle::update(flag("--check")),
+        Some("uninstall") => {
+            return lifecycle::uninstall(flag("--everything"), flag("--yes") || flag("-y"))
+        }
+        Some("doctor") => return lifecycle::doctor(),
+        _ => {}
+    }
     // The MCP server: stdin to stdout until the assistant hangs up.
     if args.first().map(String::as_str) == Some("mcp") {
         mcp::serve(&|cmd, a| call(cmd, a));
@@ -434,9 +447,7 @@ fn main() -> ExitCode {
     };
     let rest: Vec<String> = words[1..].to_vec();
     let (cmd, args): (&str, Value) = match cmd.as_str() {
-        "ls" | "version" | "raise" | "ports" | "split" | "log" => {
-            (cmd.as_str(), Value::Object(opts))
-        }
+        "ls" | "raise" | "ports" | "split" | "log" => (cmd.as_str(), Value::Object(opts)),
         "hold" => {
             if let Some(w) = rest.first() {
                 opts.insert("what".into(), Value::String(w.clone()));
@@ -594,22 +605,13 @@ fn main() -> ExitCode {
     }
     match call(cmd, args) {
         Ok(v) => {
-            if want_json
-                || !matches!(
-                    cmd,
-                    "ls" | "version" | "ports" | "block" | "theme" | "layout" | "sync"
-                )
-            {
+            if want_json || !matches!(cmd, "ls" | "ports" | "block" | "theme" | "layout" | "sync") {
                 if !v.is_null() {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
                 }
             } else {
                 match cmd {
                     "ls" => print_ls(&v),
-                    "version" => println!(
-                        "nus {}",
-                        v.get("nus").and_then(Value::as_str).unwrap_or("?")
-                    ),
                     "ports" => {
                         for p in v
                             .get("ports")
@@ -695,10 +697,11 @@ fn main() -> ExitCode {
 
 const USAGE: &str = "usage: nus [<command> [args] [--json]]
   with no command, opens nus or brings it forward
+  version [--json] · update [--check] · doctor · uninstall [--everything] [--yes] · no running nus needed
   ls · open <url> [--split] · edit <file> [--split] · launch [--profile P] [--cwd D] [--run CMD] [--split]
   send-text <text> [--tab N] [--right] [--enter] · focus <tab> · close [<tab>] [--force]
   theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|work|list|open --window ID --tab-id ID [--right]|hoist|land|quit]
-  block [last|all] [--tab N] · ask <question> · raise · version
+  block [last|all] [--tab N] · ask <question> · raise
   layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
   sync [now] · sync key · sync join <key> · sync status · sync folder <path> · sync git <remote>
   find <words> [--scope pane|tab|window] [--case] · find --close
