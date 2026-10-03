@@ -717,6 +717,66 @@ fn linux_checks(i: &Install, out: &mut Vec<Check>) {
     };
     out.push(display);
 
+    // GNOME: nus's launch on its dock icon goes through its own small Shell
+    // extension, which nus installs and enables; GNOME loads a new one at
+    // the next login.
+    let gnome = std::env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|d| d.split(':').any(|p| p.eq_ignore_ascii_case("GNOME")));
+    if gnome {
+        let installed = data_home()
+            .and_then(|d| {
+                d.parent()
+                    .map(|p| p.join("gnome-shell/extensions/dock-motion@nus.dev/extension.js"))
+            })
+            .is_some_and(|p| p.is_file());
+        let enabled = Command::new("gsettings")
+            .args(["get", "org.gnome.shell", "enabled-extensions"])
+            .output()
+            .ok()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("dock-motion@nus.dev"));
+        let running = Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/org/gnome/Shell",
+                "--method",
+                "org.gnome.Shell.Extensions.GetExtensionInfo",
+                "dock-motion@nus.dev",
+            ])
+            .output()
+            .ok()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("'state': <1.0>"));
+        out.push(match (installed, enabled, running) {
+            (_, _, true) => check(
+                State::Good,
+                "Dock",
+                "nus's launch plays on its dock icon",
+                None,
+            ),
+            (true, true, false) => check(
+                State::Note,
+                "Dock",
+                "the dock motion loads at your next login",
+                None,
+            ),
+            (true, false, _) => check(
+                State::Note,
+                "Dock",
+                "dock motion is turned off",
+                Some("gnome-extensions enable dock-motion@nus.dev".into()),
+            ),
+            (false, _, _) => check(
+                State::Note,
+                "Dock",
+                "dock motion is installed when nus next starts",
+                None,
+            ),
+        });
+    }
+
     let fix = match &i.method {
         Method::Deb(p) => Some(format!("sudo apt install --reinstall {p}")),
         _ => Some(format!(

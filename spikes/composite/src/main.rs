@@ -4,6 +4,8 @@
 mod access;
 mod address;
 mod applog;
+#[cfg(target_os = "linux")]
+mod dock_motion;
 mod find;
 #[cfg(target_os = "linux")]
 mod hotkey_portal;
@@ -461,7 +463,11 @@ impl Host {
                 let initial_size = window.inner_size();
                 a.resize(initial_size.width, initial_size.height);
                 a.redraw();
-                if self.made == 0 { self.dock.finish_launch(); }
+                if self.made == 0 {
+                    self.dock.finish_launch();
+                    #[cfg(target_os = "linux")]
+                    dock_motion::ready();
+                }
                 window.set_visible(true);
                 a.dirty=true;
                 window.request_redraw();
@@ -562,7 +568,12 @@ impl ApplicationHandler<UserEvent> for Host {
         let first = self.apps.is_empty();
         if self.tray.is_none() && hatch_native::interactive() && !private::enabled() {
             self.tray = hatch_tray::Tray::new(self.proxy.clone());
-            if first && cfg!(target_os = "linux") {
+            // Not on GNOME: there the dock icon itself plays it (dock_motion.rs).
+            #[cfg(target_os = "linux")]
+            let gnome = dock_motion::gnome();
+            #[cfg(not(target_os = "linux"))]
+            let gnome = false;
+            if first && cfg!(target_os = "linux") && !gnome {
                 let prefs = prefs::Prefs::load();
                 if !prefs.motion.unwrap_or_default().reduced() && prefs.behavior.as_ref().is_none_or(|b| b.menu_drawer.enabled) {
                     if let Some(t) = &self.tray { t.launch(); }
@@ -1230,7 +1241,12 @@ fn run() -> i32 {
         }
     };
     if !child_process {
-        dock.begin_launch(prefs::Prefs::load().motion.unwrap_or_default().reduced());
+        let launch_prefs = prefs::Prefs::load();
+        let reduced = launch_prefs.motion.unwrap_or_default().reduced();
+        dock.begin_launch(reduced);
+        // GNOME: the same launch on nus's dock icon, through its extension.
+        #[cfg(target_os = "linux")]
+        dock_motion::launch(launch_prefs.surface.as_ref().map(|s| s.signal).unwrap_or(nus_render::theme::signal::RED), reduced);
         prefs::apply_start_switches();
         #[cfg(target_os = "macos")]
         prepare_app_environment();

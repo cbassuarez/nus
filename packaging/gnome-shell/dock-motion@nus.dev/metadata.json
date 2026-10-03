@@ -1,0 +1,8 @@
+{
+  "uuid": "dock-motion@nus.dev",
+  "name": "nus dock motion",
+  "description": "Plays nus's launch on its own dock icon: the letter cycles through its faces while nus starts, then settles. Touches no other app's icon. Installed and enabled by nus.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://cbassuarez.com/nus.dev/",
+  "version": 1
+}
