@@ -490,6 +490,10 @@ impl App {
         let mut out = Vec::new();
         for ti in tabs {
             let t = &self.tabs[ti];
+            // The hatch's tab lives in its own window, with its own keys.
+            if t.hatch && ti != hi {
+                continue;
+            }
             let sides: Vec<bool> = if ti == hi {
                 if scope == Scope::Pane { vec![home.1] } else { vec![home.1, !home.1] }
             } else {
