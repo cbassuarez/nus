@@ -557,11 +557,21 @@ impl ApplicationHandler<UserEvent> for Host {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.application_menu.is_none() { self.application_menu = Some(application_menu::NativeMenu::new(self.proxy.clone())); }
-        if self.apps.is_empty() {
-            self.spawn_window(event_loop, None);
-        }
+        // The tray first on Linux: its icon plays the launch cycle on its own
+        // thread while the first window is built (menu_tray_linux.rs).
+        let first = self.apps.is_empty();
         if self.tray.is_none() && hatch_native::interactive() && !private::enabled() {
             self.tray = hatch_tray::Tray::new(self.proxy.clone());
+            if first && cfg!(target_os = "linux") {
+                let prefs = prefs::Prefs::load();
+                if !prefs.motion.unwrap_or_default().reduced() && prefs.behavior.as_ref().is_none_or(|b| b.menu_drawer.enabled) {
+                    if let Some(t) = &self.tray { t.launch(); }
+                }
+            }
+        }
+        if first {
+            self.spawn_window(event_loop, None);
+            if let Some(t) = &self.tray { t.launch_ready(); }
         }
     }
 

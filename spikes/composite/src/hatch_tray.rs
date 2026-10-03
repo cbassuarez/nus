@@ -27,6 +27,15 @@ impl Tray {
         }
         #[cfg(not(any(windows,target_os="macos",target_os="linux")))] {let _=proxy;None}
     }
+    /// Starting: the icon plays the launch cycle (Linux; the Dock tile does
+    /// it on macOS).
+    pub fn launch(&self){
+        #[cfg(target_os="linux")] self.linux.launch();
+    }
+    /// The window is up: the cycle finishes its pass and settles.
+    pub fn launch_ready(&self){
+        #[cfg(target_os="linux")] self.linux.ready();
+    }
     pub fn refresh_icon(&mut self,signal:nus_render::Color){if self.signal!=signal{self.signal=signal;self.paint();}}
     pub fn anchor(&self)->Option<crate::menu_drawer::Anchor>{
         #[cfg(any(windows,target_os="macos"))] {self.icon.rect().map(|r|crate::menu_drawer::Anchor{x:r.position.x,y:r.position.y,width:r.size.width,height:r.size.height})}
