@@ -28,6 +28,7 @@ pub enum Target {
     PageDialog(usize),
     Space(u64, crate::space::Action),
     SpacePrompt(u64),
+    Find(crate::find::Hit),
     None,
 }
 
@@ -435,6 +436,39 @@ impl App {
             if let Some(v)=tl.records.get(tl.at){let id=fresh(&mut map,Target::None);let mut n=Node::new(Role::Document);n.set_label("Recorded command output");n.set_value(v["output"].as_str().unwrap_or(""));nodes.push((id,n));kids.push(id);}
             let mut n=Node::new(Role::Group);n.set_label("Session history and map");n.set_children(kids);nodes.push((NodeId(7),n));root_kids.push(NodeId(7));
         }
+        // The find bar: its field, its count read out as it changes, and a
+        // named control for every button.
+        if let Some((query, count, focused, controls)) = self.find_access() {
+            let mut kids = Vec::new();
+            for (r, hit, name, on) in controls {
+                let id = fresh(&mut map, Target::Find(hit));
+                let mut n = Node::new(if hit == crate::find::Hit::Field { Role::TextInput } else { Role::Button });
+                n.set_label(name);
+                n.set_bounds(bounds(r));
+                if hit == crate::find::Hit::Field {
+                    n.set_value(query.clone());
+                    n.add_action(Action::SetValue);
+                    n.add_action(Action::Focus);
+                    if focused { focus = id; }
+                } else {
+                    n.add_action(Action::Click);
+                }
+                if let Some(on) = on { n.set_toggled(accesskit::Toggled::from(on)); }
+                nodes.push((id, n));
+                kids.push(id);
+            }
+            let id = fresh(&mut map, Target::None);
+            let mut status = Node::new(Role::Status);
+            status.set_label(count);
+            status.set_live(accesskit::Live::Polite);
+            nodes.push((id, status));
+            kids.push(id);
+            let mut group = Node::new(Role::Search);
+            group.set_label("Find");
+            group.set_children(kids);
+            nodes.push((NodeId(9), group));
+            root_kids.push(NodeId(9));
+        }
         // A page's question or a site's sign-in: a modal alert dialog. A
         // secret field is a password input with no value, ever.
         if let Some((title, says, fields, acts)) = self.page_dialog_access() {
@@ -505,6 +539,15 @@ impl App {
         }
         if self.page_menu.is_some() { self.page_menu_access_action(req); return; }
         let Some(&target) = self.access_map.get(&req.target_node.0) else { return };
+        if let Target::Find(hit) = target {
+            match (req.action, &req.data) {
+                (Action::SetValue, Some(accesskit::ActionData::Value(v))) => self.find_set_query(v),
+                (Action::Click, _) | (Action::Focus, _) => self.find_act(hit),
+                _ => {}
+            }
+            self.dirty = true;
+            return;
+        }
         if let Target::Replay(hit)=target {
             match req.action {
                 Action::Click=>self.timeline_action(hit),

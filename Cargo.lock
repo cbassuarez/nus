@@ -2356,6 +2356,7 @@ dependencies = [
  "bitflags 2.13.2",
  "codspeed-criterion-compat",
  "png 0.17.16",
+ "regex",
  "tracing",
  "unicode-width",
  "vte",

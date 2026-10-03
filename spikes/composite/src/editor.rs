@@ -770,6 +770,13 @@ pub struct Find {
     pub matches: Vec<(usize, usize)>,
     pub current: usize,
     pub truncated: bool,
+    /// Case, whole words, regex.
+    pub opts: crate::editor_work::Opts,
+    /// What is wrong with the pattern, when it is not one.
+    pub error: Option<String>,
+    /// Driven by the shared find bar (find.rs): this pane draws its matches
+    /// but not a bar of its own, and leaves the keys to that bar.
+    pub shared: bool,
 }
 
 pub struct Completion {
@@ -949,7 +956,17 @@ impl EditorPane {
         let text = b.text.clone();
         let query = f.query.clone();
         let q = query.clone();
-        if let Some(job) = Task::start(move |cancel| work::search(&text, &q, cancel)) {
+        let opts = f.opts;
+        let re = match work::pattern(&q, opts) {
+            Ok(re) => re,
+            Err(e) => {
+                f.error = Some(e);
+                self.search_needed = false;
+                return;
+            }
+        };
+        f.error = None;
+        if let Some(job) = Task::start(move |cancel| work::search_with(&text, &q, opts, re.as_ref(), cancel)) {
             self.search = Some((self.active, b.revision, query, job));
             self.search_needed = false;
         }
@@ -998,6 +1015,11 @@ impl EditorPane {
             b.cursor = b2;
         }
         self.reveal();
+    }
+
+    /// A find search is still running (or about to).
+    pub fn searching(&self) -> bool {
+        self.search.is_some() || self.search_needed
     }
 
     /// Select the current match without stepping.
@@ -1218,8 +1240,8 @@ impl App {
                 self.dirty = true;
                 return true;
             }
-            // The find bar.
-            if e.find.is_some() && !(cmd && matches!(key.to_text(), Some("f") | Some("h"))) {
+            // The find bar (its own: the shared one has its keys already).
+            if e.find.as_ref().is_some_and(|f| !f.shared) && !(cmd && matches!(key.to_text(), Some("f") | Some("h"))) {
                 let f = e.find.as_mut().unwrap();
                 // The field's own editing: typing, erasing, paste (field.rs).
                 let in_replace = f.in_replace;
@@ -1503,6 +1525,9 @@ impl App {
                                 matches: Vec::new(),
                                 current: 0,
                                 truncated: false,
+                                opts: Default::default(),
+                                error: None,
+                                shared: false,
                             });
                             e.refind();
                             e.find_select();
@@ -1523,6 +1548,9 @@ impl App {
                                 matches: Vec::new(),
                                 current: 0,
                                 truncated: false,
+                                opts: Default::default(),
+                                error: None,
+                                shared: false,
                             });
                             e.refind();
                             e.find_select();
@@ -2470,8 +2498,9 @@ impl App {
             }
         }
 
-        // Find bar above the status row.
-        if let Some(f) = &e.find {
+        // Find bar above the status row (replace, or an editor's own find
+        // when the shared bar is not driving it).
+        if let Some(f) = e.find.as_ref().filter(|f| !f.shared) {
             let fy = sy - status_h;
             scene.rect(Rect::new(r.x, fy, r.w, status_h), wash);
             scene.hline(r.x, fy, r.w, hair, ink);

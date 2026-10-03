@@ -362,21 +362,74 @@ impl Grid {
     }
 }
 
-/// What to look for in a terminal's text: plain characters, compared
-/// case-insensitively unless `case` is set.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What to look for in a terminal's text: plain characters (compared
+/// case-insensitively unless `case`), or a pattern. Whole-word plain text
+/// and regular expressions go through the regex crate, which runs in time
+/// linear in the text: no pattern can hang a search.
+#[derive(Clone, Debug)]
 pub struct Needle {
     chars: Vec<char>,
     case: bool,
+    pattern: Option<regex::Regex>,
 }
 
 impl Needle {
+    /// Plain text.
     pub fn new(text: &str, case: bool) -> Needle {
         Needle {
             chars: text.chars().map(|c| fold(c, case)).collect(),
             case,
+            pattern: None,
         }
     }
+
+    /// Plain text or a pattern, whole words or not. The error says what is
+    /// wrong with a pattern, in a line.
+    pub fn with(text: &str, case: bool, word: bool, regex: bool) -> Result<Needle, String> {
+        if !word && !regex {
+            return Ok(Needle::new(text, case));
+        }
+        let mut source = if regex {
+            text.to_string()
+        } else {
+            regex::escape(text)
+        };
+        if word {
+            // A boundary only where the text has a word character to bound.
+            let wordy = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let (head, tail) = if regex {
+                (true, true)
+            } else {
+                (wordy(text.chars().next()), wordy(text.chars().last()))
+            };
+            source = format!(
+                "{}(?:{source}){}",
+                if head { r"\b" } else { "" },
+                if tail { r"\b" } else { "" }
+            );
+        }
+        let pattern = regex::RegexBuilder::new(&source)
+            .case_insensitive(!case)
+            .size_limit(1 << 20)
+            .build()
+            .map_err(|e| match e {
+                regex::Error::Syntax(s) => s
+                    .lines()
+                    .last()
+                    .unwrap_or("not a pattern")
+                    .trim()
+                    .trim_start_matches("error: ")
+                    .to_string(),
+                regex::Error::CompiledTooBig(_) => "pattern too large".into(),
+                _ => "not a pattern".into(),
+            })?;
+        Ok(Needle {
+            chars: text.chars().collect(),
+            case,
+            pattern: Some(pattern),
+        })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.chars.is_empty()
     }
@@ -466,12 +519,46 @@ impl Grid {
                     } else {
                         1
                     };
-                    text.push((fold(c.ch, needle.case), row_line, col, w));
+                    let ch = if needle.pattern.is_some() {
+                        c.ch
+                    } else {
+                        fold(c.ch, needle.case)
+                    };
+                    text.push((ch, row_line, col, w));
                 }
                 if !row.wrapped || row_line + 1 >= end {
                     break;
                 }
                 row_line += 1;
+            }
+            if let Some(re) = &needle.pattern {
+                // The logical line as a string, each char's byte offset
+                // mapped back to its cell.
+                let s: String = text.iter().map(|t| t.0).collect();
+                let mut at = Vec::with_capacity(text.len() + 1);
+                for (k, (b, _)) in s.char_indices().enumerate() {
+                    at.push((b, k));
+                }
+                let index = |b: usize| {
+                    at.binary_search_by_key(&b, |p| p.0)
+                        .map(|i| at[i].1)
+                        .unwrap_or(text.len())
+                };
+                for m in re.find_iter(&s) {
+                    if m.start() == m.end() {
+                        continue;
+                    }
+                    let (a, z) = (index(m.start()), index(m.end()).saturating_sub(1));
+                    let (first, last) = (text[a], text[z]);
+                    out.push(Found {
+                        line: first.1,
+                        col: first.2,
+                        end_line: last.1,
+                        end_col: last.2 + last.3,
+                    });
+                }
+                l = row_line + 1;
+                continue;
             }
             let mut i = 0;
             while i + n <= text.len() {
@@ -620,5 +707,57 @@ mod find_tests {
         assert_eq!(hits.len(), 3);
         assert_eq!(next, 2);
         assert!(g.find_in(&Needle::new("", false), 0, 3).0.is_empty());
+    }
+
+    #[test]
+    fn words_and_patterns() {
+        let g = grid(&[("err errs", false), ("ERR:5 x", false)]);
+        let word = Needle::with("err", false, true, false).unwrap();
+        let hits = g.find_in(&word, 0, 2).0;
+        assert_eq!(
+            hits.iter().map(|h| (h.line, h.col)).collect::<Vec<_>>(),
+            vec![(0, 0), (1, 0)]
+        );
+        let re = Needle::with(r"err\w+", true, false, true).unwrap();
+        assert_eq!(
+            g.find_in(&re, 0, 2).0,
+            vec![Found {
+                line: 0,
+                col: 4,
+                end_line: 0,
+                end_col: 8
+            }]
+        );
+        // Across a wrap, and on wide characters.
+        let w = grid(&[("xlast_ER", true), ("ROR=1", false), ("a漢字b", false)]);
+        let re = Needle::with("ER+OR", true, false, true).unwrap();
+        assert_eq!(
+            w.find_in(&re, 0, 3).0,
+            vec![Found {
+                line: 0,
+                col: 6,
+                end_line: 1,
+                end_col: 3
+            }]
+        );
+        let re = Needle::with("字.", false, false, true).unwrap();
+        assert_eq!(
+            w.find_in(&re, 0, 3).0,
+            vec![Found {
+                line: 2,
+                col: 3,
+                end_line: 2,
+                end_col: 6
+            }]
+        );
+        // Patterns that match nothing visible are skipped; bad ones say why.
+        assert!(w
+            .find_in(&Needle::with("x*", false, false, true).unwrap(), 0, 3)
+            .0
+            .iter()
+            .all(|h| h.end_col > h.col || h.end_line > h.line));
+        assert!(Needle::with("(fail|err", false, false, true)
+            .unwrap_err()
+            .contains("unclosed"));
     }
 }

@@ -13,6 +13,7 @@ bitflags.workspace = true
 unicode-width.workspace = true
 tracing.workspace = true
 png = "0.17"
+regex = "1"
 
 [dev-dependencies]
 criterion.workspace = true

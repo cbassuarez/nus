@@ -83,6 +83,100 @@ pub struct Matches {
     pub truncated: bool,
 }
 
+/// How find matches: case, whole words, a regular expression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Opts {
+    pub case: bool,
+    pub word: bool,
+    pub regex: bool,
+}
+
+/// A whole-word or regex search, compiled; the error says what is wrong
+/// with a pattern. None for plain text (the streaming search does that).
+pub fn pattern(query: &str, o: Opts) -> Result<Option<regex::Regex>, String> {
+    if !o.word && !o.regex {
+        return Ok(None);
+    }
+    let mut source = if o.regex { query.to_string() } else { regex::escape(query) };
+    if o.word {
+        let wordy = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let (head, tail) = if o.regex { (true, true) } else { (wordy(query.chars().next()), wordy(query.chars().last())) };
+        source = format!("{}(?:{source}){}", if head { r"\b" } else { "" }, if tail { r"\b" } else { "" });
+    }
+    regex::RegexBuilder::new(&source)
+        .case_insensitive(!o.case)
+        .size_limit(1 << 20)
+        .build()
+        .map(Some)
+        .map_err(|e| match e {
+            regex::Error::Syntax(s) => s.lines().last().unwrap_or("not a pattern").trim().trim_start_matches("error: ").to_string(),
+            regex::Error::CompiledTooBig(_) => "pattern too large".into(),
+            _ => "not a pattern".into(),
+        })
+}
+
+/// Find with options. A pattern runs line by line (a match never spans a
+/// line break, as in most editors' find); plain text streams.
+pub fn search_with(text: &Rope, query: &str, o: Opts, re: Option<&regex::Regex>, cancel: &AtomicUsize) -> Matches {
+    let Some(re) = re else {
+        return if o.case { search_case(text, query, cancel) } else { search(text, query, cancel) };
+    };
+    let mut out = Matches::default();
+    let mut start = 0usize;
+    for (n, line) in text.lines().enumerate() {
+        if n % 256 == 0 && cancel.load(Ordering::Relaxed) != 0 {
+            return Matches::default();
+        }
+        let s = line.to_string();
+        let mut chars = s.char_indices().map(|(b, _)| b).collect::<Vec<_>>();
+        chars.push(s.len());
+        for m in re.find_iter(&s) {
+            if m.start() == m.end() {
+                continue;
+            }
+            if out.ranges.len() == MAX_MATCHES {
+                out.truncated = true;
+                return out;
+            }
+            let a = chars.partition_point(|&b| b < m.start());
+            let z = chars.partition_point(|&b| b < m.end());
+            out.ranges.push((start + a, start + z));
+        }
+        start += line.len_chars();
+    }
+    out
+}
+
+/// Case-sensitive plain text: the same walk without folding.
+fn search_case(text: &Rope, query: &str, cancel: &AtomicUsize) -> Matches {
+    let q: Vec<char> = query.chars().collect();
+    let mut out = Matches::default();
+    if q.is_empty() {
+        return out;
+    }
+    let mut window: VecDeque<char> = VecDeque::with_capacity(q.len());
+    for (at, c) in text.chars().enumerate() {
+        if at % 4096 == 0 && cancel.load(Ordering::Relaxed) != 0 {
+            return Matches::default();
+        }
+        if window.len() == q.len() {
+            window.pop_front();
+        }
+        window.push_back(c);
+        if window.len() == q.len() && window.iter().eq(q.iter()) {
+            let start = at + 1 - q.len();
+            if out.ranges.last().is_none_or(|&(_, end)| start >= end) {
+                if out.ranges.len() == MAX_MATCHES {
+                    out.truncated = true;
+                    return out;
+                }
+                out.ranges.push((start, at + 1));
+            }
+        }
+    }
+    out
+}
+
 /// Streaming KMP: O(file + query), with original char positions preserved
 /// even when Unicode lowercase expands one character into several.
 pub fn search(text: &Rope, query: &str, cancel: &AtomicUsize) -> Matches {
@@ -138,6 +232,17 @@ pub fn search(text: &Rope, query: &str, cancel: &AtomicUsize) -> Matches {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn options_case_words_and_patterns() {
+        let text = Rope::from_str("Err err errno\nline ERR 漢字x");
+        let c = AtomicUsize::new(0);
+        let plain = |q: &str, o: Opts| { let re = pattern(q, o).unwrap(); search_with(&text, q, o, re.as_ref(), &c).ranges };
+        assert_eq!(plain("err", Opts::default()).len(), 4);
+        assert_eq!(plain("err", Opts { case: true, ..Opts::default() }), vec![(4, 7), (8, 11)]);
+        assert_eq!(plain("err", Opts { word: true, ..Opts::default() }), vec![(0, 3), (4, 7), (19, 22)]);
+        assert_eq!(plain("字.", Opts { regex: true, ..Opts::default() }), vec![(24, 26)]);
+        assert!(pattern("(oops", Opts { regex: true, ..Opts::default() }).unwrap_err().contains("unclosed"));
+    }
     #[test]
     fn unicode_positions_and_search_use_original_char_offsets() {
         let text = Rope::from_str("😀İx\r\nlast 😀 line");

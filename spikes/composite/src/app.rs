@@ -8251,6 +8251,11 @@ impl App {
         if self.palette.is_none() && self.note_format_key(ev) {
             return;
         }
+        if pressed && self.palette.is_none() && editor_chord && !shift && matches!(ev.logical_key.to_text().map(str::to_ascii_lowercase).as_deref(), Some("f"))
+            && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Editor(_)))
+            && self.open_find() {
+            return;
+        }
         if self.palette.is_none() && (!app || editor_chord) && self.editor_key(ev) {
             return;
         }

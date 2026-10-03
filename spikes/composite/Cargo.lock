@@ -3139,6 +3139,7 @@ version = "0.0.2"
 dependencies = [
  "bitflags 2.13.2",
  "png 0.17.16",
+ "regex",
  "tracing",
  "unicode-width",
  "vte",

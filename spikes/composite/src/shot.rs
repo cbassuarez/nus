@@ -1118,7 +1118,7 @@ impl App {
             }
             "editorfind" => {
                 let e = self.focused_editor().expect("editor");
-                e.find = Some(crate::editor::Find {query:rest.into(),replace:String::new(),in_replace:false,with_replace:false,matches:Vec::new(),current:0,truncated:false});
+                e.find = Some(crate::editor::Find {query:rest.into(),replace:String::new(),in_replace:false,with_replace:false,matches:Vec::new(),current:0,truncated:false,opts:Default::default(),error:None,shared:false});
                 e.refind(); self.dirty = true;
             }
             "assertfind" => {
@@ -2451,6 +2451,22 @@ impl App {
                     self.shot_key(&if c == ' ' { "space".to_string() } else { c.to_string() });
                 }
             }
+            // The find bar's query, set whole (for patterns the key path
+            // can't type here: shifted symbols).
+            "findquery" => {
+                if let Some(bar) = self.find_bar.as_mut() {
+                    bar.query = rest.to_string();
+                }
+                self.find_query_set();
+            }
+            // What a screen reader gets from the find bar.
+            "findaccess" => match self.find_access() {
+                Some((q, count, focused, controls)) => {
+                    let names: Vec<String> = controls.iter().map(|(_, _, n, on)| match on { Some(true) => format!("{n} [on]"), Some(false) => format!("{n} [off]"), None => n.clone() }).collect();
+                    eprintln!("shot: findaccess query={q:?} focused={focused} status={count:?} controls={}", names.join(" | "));
+                }
+                None => eprintln!("shot: findaccess closed"),
+            },
             // What the find bar says: its count and each rung's, for a check
             // script to compare.
             "findcount" => {

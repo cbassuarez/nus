@@ -42,6 +42,8 @@ pub struct Status {
     pub fresh: usize,
     /// Something to say instead of, or beside, the count.
     pub note: Option<&'static str>,
+    /// What is wrong with a pattern, in a line.
+    pub error: Option<String>,
 }
 
 /// Where a walk ended up.
@@ -60,6 +62,9 @@ pub enum Step {
 pub struct TermFind {
     pub query: String,
     pub case: bool,
+    word: bool,
+    regex: bool,
+    error: Option<String>,
     needle: Needle,
     pub hits: Vec<Found>,
     pub current: Option<Found>,
@@ -83,12 +88,25 @@ pub struct TermFind {
 
 impl TermFind {
     pub fn new(query: &str, case: bool, term: &Term) -> TermFind {
+        TermFind::with(query, case, false, false, term)
+    }
+
+    /// With whole words or a regular expression. A pattern that does not
+    /// parse searches nothing and says why.
+    pub fn with(query: &str, case: bool, word: bool, regex: bool, term: &Term) -> TermFind {
         let g = term.grid();
         let start = g.logical_start(g.abs_row(0));
+        let (needle, error) = match Needle::with(query, case, word, regex) {
+            Ok(n) => (n, None),
+            Err(e) => (Needle::new("", case), Some(e)),
+        };
         TermFind {
             query: query.to_string(),
             case,
-            needle: Needle::new(query, case),
+            word,
+            regex,
+            error,
+            needle,
             hits: Vec::new(),
             current: None,
             stable: start,
@@ -109,7 +127,7 @@ impl TermFind {
     pub fn tick(&mut self, term: &Term, budget: Duration) -> bool {
         if term.on_alt_screen() != self.alt {
             // A full-screen program came or went: a different text.
-            *self = TermFind::new(&self.query.clone(), self.case, term);
+            *self = TermFind::with(&self.query.clone(), self.case, self.word, self.regex, term);
         }
         let start = Instant::now();
         let g = term.grid();
@@ -192,8 +210,9 @@ impl TermFind {
         Status {
             total: self.hits.len(),
             current: self.index(),
-            done: self.history_done && !self.behind,
+            done: self.error.is_some() || (self.history_done && !self.behind),
             capped: self.capped,
+            error: self.error.clone(),
             fresh,
             note: if self.alt {
                 Some("screen only")
@@ -307,6 +326,8 @@ pub type PaneId = (u64, bool);
 pub enum Hit {
     Field,
     Case,
+    Word,
+    Regex,
     Prev,
     Next,
     Close,
@@ -317,6 +338,8 @@ pub enum Hit {
 pub struct Bar {
     pub query: String,
     pub case: bool,
+    pub word: bool,
+    pub regex: bool,
     pub scope: Scope,
     /// Where it was opened: the walk is counted from here.
     pub home: PaneId,
@@ -389,7 +412,7 @@ impl App {
 
     fn searchable(p: &Pane) -> bool {
         match p {
-            Pane::Term(_) => true,
+            Pane::Term(_) | Pane::Editor(_) => true,
             Pane::Web(w) => w.asleep.is_none(),
             _ => false,
         }
@@ -429,16 +452,37 @@ impl App {
 
     fn find_run(&mut self, id: PaneId) {
         let Some(bar) = self.find_bar.as_ref() else { return };
-        let (q, case) = (bar.query.clone(), bar.case);
+        let (q, case, word, regex) = (bar.query.clone(), bar.case, bar.word, bar.regex);
         match self.find_pane_mut(id) {
             Some(Pane::Term(p)) => {
-                p.search = (!q.is_empty()).then(|| TermFind::new(&q, case, &p.term));
+                p.search = (!q.is_empty()).then(|| TermFind::with(&q, case, word, regex, &p.term));
             }
             Some(Pane::Web(w)) => {
-                if q.is_empty() {
+                // Chromium's find is plain text: with word or regex on, a page
+                // is not searched rather than searched wrongly.
+                if q.is_empty() || word || regex {
                     w.tab.stop_find(false);
                 } else {
                     w.tab.find(&q, case, true, false);
+                }
+            }
+            Some(Pane::Editor(e)) => {
+                if q.is_empty() {
+                    e.find = None;
+                } else {
+                    e.find = Some(crate::editor::Find {
+                        query: q,
+                        replace: String::new(),
+                        in_replace: false,
+                        with_replace: false,
+                        matches: Vec::new(),
+                        current: 0,
+                        truncated: false,
+                        opts: crate::editor_work::Opts { case, word, regex },
+                        error: None,
+                        shared: true,
+                    });
+                    e.refind();
                 }
             }
             _ => {}
@@ -454,6 +498,11 @@ impl App {
         match self.find_pane_mut(id) {
             Some(Pane::Term(p)) => p.search = None,
             Some(Pane::Web(w)) => w.tab.stop_find(keep),
+            Some(Pane::Editor(e)) => {
+                if e.find.as_ref().is_some_and(|f| f.shared) {
+                    e.find = None;
+                }
+            }
             _ => {}
         }
     }
@@ -461,7 +510,20 @@ impl App {
     /// What one pane knows.
     pub(crate) fn find_status(&self, id: PaneId) -> Status {
         let searched = self.find_bar.as_ref().is_some_and(|b| b.searched.contains(&id));
+        let plain = self.find_bar.as_ref().is_none_or(|b| !b.word && !b.regex);
         match self.find_pane(id) {
+            Some(Pane::Web(_)) if searched && !plain => Status { done: true, note: Some("pages: plain text only"), ..Status::default() },
+            Some(Pane::Editor(e)) if searched => {
+                let Some(f) = e.find.as_ref() else { return Status { done: true, ..Status::default() } };
+                Status {
+                    total: f.matches.len(),
+                    current: (!f.matches.is_empty()).then_some(f.current.min(f.matches.len().saturating_sub(1))),
+                    done: !e.searching(),
+                    capped: f.truncated,
+                    error: f.error.clone(),
+                    ..Status::default()
+                }
+            }
             Some(Pane::Term(p)) => p.search.as_ref().map(|s| s.status()).unwrap_or_default(),
             Some(Pane::Web(w)) if searched => {
                 let s = w.tab.shared.borrow();
@@ -497,6 +559,9 @@ impl App {
             if id == bar.at {
                 out.current = s.current.map(|k| offset + k);
                 out.note = s.note;
+            }
+            if out.error.is_none() {
+                out.error = s.error.clone();
             }
             offset += s.total;
             out.total += s.total;
@@ -549,6 +614,8 @@ impl App {
         self.find_bar = Some(Bar {
             query: String::new(),
             case: false,
+            word: false,
+            regex: false,
             scope: Scope::Pane,
             home: id,
             at: id,
@@ -588,6 +655,11 @@ impl App {
         self.dirty = true;
     }
 
+    /// The query was set from outside (a script): search for it.
+    pub(crate) fn find_query_set(&mut self) {
+        self.find_changed();
+    }
+
     pub(crate) fn close_find(&mut self) {
         let Some(bar) = self.find_bar.take() else { return };
         for id in bar.searched {
@@ -605,6 +677,9 @@ impl App {
     /// Bring the current match into view: a shell scrolls to it (opening a
     /// fold around it); a page has already been scrolled by Chromium.
     fn find_reveal(&mut self, id: PaneId) {
+        if let Some(Pane::Editor(e)) = self.find_pane_mut(id) {
+            e.find_select();
+        }
         if let Some(Pane::Term(p)) = self.find_pane_mut(id) {
             let Some(cur) = p.search.as_ref().and_then(|s| s.current) else { return };
             p.folds.retain(|&(s, e)| !(cur.line >= s && cur.line < e));
@@ -645,6 +720,14 @@ impl App {
                     Step::Moved
                 }
             }
+            Some(Pane::Editor(e)) => match e.find.as_ref().map(|f| (f.matches.len(), f.current)) {
+                None | Some((0, _)) => Step::Empty,
+                Some((n, k)) if (forward && k + 1 >= n) || (!forward && k == 0) => Step::Wrapped,
+                Some(_) => {
+                    e.find_step(forward);
+                    Step::Moved
+                }
+            },
             _ => Step::Empty,
         };
         if step == Step::Moved {
@@ -667,6 +750,12 @@ impl App {
                 if let Some(s) = p.search.as_mut() {
                     s.enter(forward);
                 }
+            }
+            Some(Pane::Editor(e)) => {
+                if let Some(f) = e.find.as_mut() {
+                    f.current = if forward { 0 } else { f.matches.len().saturating_sub(1) };
+                }
+                e.find_select();
             }
             Some(Pane::Web(w)) => {
                 let (q, case) = { let f = &w.tab.shared.borrow().find; (f.query.clone(), f.case) };
@@ -766,10 +855,26 @@ impl App {
             self.find_scope(scope);
             return true;
         }
-        if mods.alt_key() && code == Some(KeyCode::KeyC) {
-            bar.case = !bar.case;
+        if mods.alt_key() && matches!(code, Some(KeyCode::KeyC | KeyCode::KeyW | KeyCode::KeyR)) {
+            match code {
+                Some(KeyCode::KeyC) => bar.case = !bar.case,
+                Some(KeyCode::KeyW) => bar.word = !bar.word,
+                _ => bar.regex = !bar.regex,
+            }
             self.find_changed();
             return true;
+        }
+        // Replace is the editor's own bar: it takes the query along.
+        if command && code == Some(KeyCode::KeyH) {
+            let (at, q) = (bar.at, bar.query.clone());
+            if let Some(Pane::Editor(e)) = self.find_pane_mut(at) {
+                if let Some(f) = e.find.as_mut() {
+                    f.shared = false;
+                    f.query = q;
+                }
+                self.close_find();
+            }
+            return false;
         }
         match &ev.logical_key {
             WKey::Named(NamedKey::Escape) => {
@@ -817,19 +922,97 @@ impl App {
         }
         bar.focused = true;
         let hit = bar.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h);
-        match hit {
-            Some(Hit::Case) => {
-                bar.case = !bar.case;
-                self.find_changed();
-            }
-            Some(Hit::Prev) => self.find_step(false),
-            Some(Hit::Next) => self.find_step(true),
-            Some(Hit::Close) => self.close_find(),
-            Some(Hit::Rung(s)) => self.find_scope(s),
-            _ => {}
+        if let Some(h) = hit {
+            self.find_act(h);
         }
         self.dirty = true;
         true
+    }
+
+    /// A control of the bar, by mouse or by a screen reader.
+    pub(crate) fn find_act(&mut self, hit: Hit) {
+        let Some(bar) = self.find_bar.as_mut() else { return };
+        match hit {
+            Hit::Case => bar.case = !bar.case,
+            Hit::Word => bar.word = !bar.word,
+            Hit::Regex => bar.regex = !bar.regex,
+            Hit::Field => {
+                bar.focused = true;
+                self.dirty = true;
+                return;
+            }
+            Hit::Prev => return self.find_step(false),
+            Hit::Next => return self.find_step(true),
+            Hit::Close => return self.close_find(),
+            Hit::Rung(s) => return self.find_scope(s),
+        }
+        self.find_changed();
+    }
+
+    /// A screen reader set the query.
+    pub(crate) fn find_set_query(&mut self, q: &str) {
+        if let Some(bar) = self.find_bar.as_mut() {
+            bar.query = q.chars().take(400).collect();
+        }
+        self.find_changed();
+    }
+
+    /// The bar for the accessibility tree: the query, the count as said
+    /// aloud, and each control with its name and, for options, its state.
+    pub(crate) fn find_access(&self) -> Option<(String, String, bool, Vec<(Rect, Hit, String, Option<bool>)>)> {
+        let bar = self.find_bar.as_ref()?;
+        let t = self.find_tally(bar.scope);
+        let count = if bar.query.is_empty() {
+            String::new()
+        } else if let Some(e) = t.error.as_ref() {
+            format!("Not a regular expression: {e}")
+        } else if let Some(n) = t.note.filter(|_| t.total == 0) {
+            n.to_string()
+        } else if t.total == 0 && t.done {
+            let wider = Scope::ALL.into_iter().find(|s| *s > bar.scope && self.find_tally(*s).total > 0);
+            match wider {
+                Some(s) => format!("No matches here, {} in this {}", self.find_tally(s).total, s.word().to_lowercase()),
+                None => "No matches".into(),
+            }
+        } else {
+            count_words(t.total, t.current, t.done, t.capped)
+        };
+        let controls = bar
+            .hits
+            .iter()
+            .map(|(r, h)| {
+                let (name, on) = match h {
+                    Hit::Field => ("Find".to_string(), None),
+                    Hit::Case => ("Match case".into(), Some(bar.case)),
+                    Hit::Word => ("Whole words".into(), Some(bar.word)),
+                    Hit::Regex => ("Regular expression".into(), Some(bar.regex)),
+                    Hit::Prev => ("Previous match".into(), None),
+                    Hit::Next => ("Next match".into(), None),
+                    Hit::Close => ("Close find".into(), None),
+                    Hit::Rung(s) => {
+                        let r = self.find_tally(*s);
+                        (format!("Search this {}: {} matches", s.word().to_lowercase(), r.total), Some(*s == bar.scope))
+                    }
+                };
+                (*r, *h, name, on)
+            })
+            .collect::<Vec<_>>();
+        // Reading order: the field, its options, the walk, the rungs, close.
+        let rank = |h: &Hit| match h {
+            Hit::Field => 0,
+            Hit::Case => 1,
+            Hit::Word => 2,
+            Hit::Regex => 3,
+            Hit::Prev => 4,
+            Hit::Next => 5,
+            Hit::Rung(Scope::Pane) => 6,
+            Hit::Rung(Scope::Tab) => 7,
+            Hit::Rung(Scope::Window) => 8,
+            Hit::Close => 9,
+        };
+        let mut controls = controls;
+        controls.sort_by_key(|c| rank(&c.1));
+        Some((bar.query.clone(), count, bar.focused, controls))
     }
 
     /// Each frame while the bar is up: search on, catch pages up, and keep
@@ -875,6 +1058,9 @@ impl App {
                         busy |= !s.status().done;
                     }
                 }
+                Some(Pane::Editor(e)) => {
+                    busy |= e.searching();
+                }
                 Some(Pane::Web(w)) => {
                     let (rerun, waiting) = {
                         let s = w.tab.shared.borrow();
@@ -916,6 +1102,17 @@ impl App {
                 let page = w.page;
                 let cur = w.tab.shared.borrow().find.rect.map(|(x, y, ww, hh)| Rect::new(page.x + x as f32 * scale, page.y + y as f32 * scale, ww as f32 * scale, hh as f32 * scale));
                 Some((page, cur))
+            }
+            Pane::Editor(e) => {
+                let r = e.rect;
+                let (cw, ch) = e.cell;
+                let origin = e.origin;
+                let cur = e.find.as_ref().and_then(|f| f.matches.get(f.current).copied()).and_then(|(a, z)| {
+                    let b = e.buffers.get(e.active)?;
+                    let row = b.line_of(a).checked_sub(b.scroll)?;
+                    Some(Rect::new(origin.0 + b.col_of(a) as f32 * cw, origin.1 + row as f32 * ch, (z - a).max(1) as f32 * cw, ch))
+                });
+                Some((r, cur))
             }
             Pane::Term(p) => {
                 let r = p.rect;
@@ -990,7 +1187,8 @@ impl App {
         let at = self.find_bar.as_ref().map(|b| b.at).unwrap_or((0, false));
         let tab = self.tab_of(at.0).map(|i| i + 1).unwrap_or(0);
         let q = self.find_bar.as_ref().map(|b| b.query.clone()).unwrap_or_default();
-        format!("{q:?} [{}] {} · {} · at tab {tab}{}", count_words(t.total, t.current, t.done, t.capped), t.note.unwrap_or(""), rungs.join(" "), if at.1 { " right" } else { "" })
+        let words = t.error.as_ref().map(|e| format!("regex: {e}")).unwrap_or_else(|| count_words(t.total, t.current, t.done, t.capped));
+        format!("{q:?} [{words}] {} · {} · at tab {tab}{}", t.note.unwrap_or(""), rungs.join(" "), if at.1 { " right" } else { "" })
     }
 
     /// The bar, over the pane holding the current match.
@@ -1024,6 +1222,9 @@ impl App {
         let was_low = self.find_bar.as_ref().is_some_and(|b| b.low);
         let go_low = if was_low { !under(low) && (under(high) || cur.is_some_and(|c| c.bottom() < pane.y + pane.h * 0.5)) } else { under(high) };
         let card = if go_low { low } else { high };
+        // On a page, only plain text and case: Chromium's find does nothing
+        // else, and a half-right search is worse than none.
+        let on_page = matches!(self.find_pane(at), Some(Pane::Web(_)));
         let tally = self.find_tally(self.find_bar.as_ref().unwrap().scope);
         let rungs: Vec<(Scope, Status)> = Scope::ALL.iter().map(|&sc| (sc, self.find_tally(sc))).collect();
         let asleep = self.find_asleep(Scope::Window);
@@ -1032,6 +1233,7 @@ impl App {
         bar.rect = card;
         bar.hits.clear();
         let (query, case, scope, focused) = (bar.query.clone(), bar.case, bar.scope, bar.focused);
+        let (word, regex) = (bar.word, bar.regex);
         let notice = bar.notice.as_ref().filter(|(_, at)| at.elapsed() < Duration::from_secs(3)).map(|(n, _)| n.clone());
         scene.layer(None);
         scene.rect(Rect::new(card.x + self.px(6.0), card.y + self.px(6.0), card.w, card.h), fade(ink, 0.35));
@@ -1043,23 +1245,27 @@ impl App {
         let mut right = card.right() - self.px(6.0);
         let cell = self.px(30.0);
         let mut hits = Vec::new();
-        for (hit, text) in [(Hit::Close, "✕"), (Hit::Next, "↓"), (Hit::Prev, "↑"), (Hit::Case, "Aa")] {
-            let cw = if hit == Hit::Case { self.px(36.0) } else { cell };
+        for (hit, text) in [(Hit::Close, "✕"), (Hit::Next, "↓"), (Hit::Prev, "↑"), (Hit::Regex, ".*"), (Hit::Word, "ab"), (Hit::Case, "Aa")] {
+            let cw = if matches!(hit, Hit::Case | Hit::Word | Hit::Regex) { self.px(32.0) } else { cell };
             right -= cw;
             let r = Rect::new(right, card.y + self.px(4.0), cw, row - self.px(8.0));
             let hot = r.contains(self.mouse.0, self.mouse.1);
-            if hit == Hit::Case && case {
-                scene.rect(r, ink);
+            let on = match hit { Hit::Case => case, Hit::Word => word, Hit::Regex => regex, _ => false };
+            let off_here = on_page && matches!(hit, Hit::Word | Hit::Regex);
+            if on {
+                scene.rect(r, if off_here { fade(ink, 0.45) } else { ink });
             } else if hot {
                 scene.outline(r, self.px(m::HAIRLINE), ink);
             }
-            let st = if hit == Hit::Case && case { Style { color: paper, ..ui } } else { ui };
+            let st = if on { Style { color: paper, ..ui } } else if off_here { Style { color: fade(ink, 0.45), ..ui } } else { ui };
             let tw = self.fonts.measure(st, text);
             self.fonts.draw(scene, st, r.x + (r.w - tw) * 0.5, base, text);
             hits.push((r, hit));
         }
         let count = if query.is_empty() {
             String::new()
+        } else if let Some(e) = tally.error.as_ref() {
+            format!("regex: {e}")
         } else if let Some(n) = tally.note.filter(|_| tally.total == 0) {
             n.to_string()
         } else {
@@ -1146,8 +1352,13 @@ impl App {
         } else {
             None
         };
+        let hovered_option = hits.iter().find(|(r, h)| matches!(h, Hit::Word | Hit::Regex) && r.contains(self.mouse.0, self.mouse.1)).map(|(_, h)| *h);
         let say = if let Some(n) = notice {
             n.to_uppercase()
+        } else if on_page && (word || regex || hovered_option.is_some()) {
+            "PAGES: PLAIN TEXT AND CASE (CHROMIUM'S FIND)".to_string()
+        } else if let Some(h) = hovered_option {
+            if h == Hit::Word { "WHOLE WORDS · ALT+W".into() } else { "REGULAR EXPRESSION · ALT+R".into() }
         } else if let Some(w) = wider {
             w
         } else if asleep > 0 && scope == Scope::Window && !query.is_empty() {
