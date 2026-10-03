@@ -98,6 +98,16 @@ fn answer(it: &mut zbus::blocking::proxy::SignalIterator<'_>) -> Result<HashMap<
 
 fn listen(chord: Chord, proxy: &EventLoopProxy<UserEvent>, alive: &AtomicBool) -> Result<(), String> {
     let conn = zbus::blocking::Connection::session().map_err(|e| e.to_string())?;
+    // An app outside Flatpak or Snap says who it is first, by the name of
+    // its desktop entry; without it the portal answers "An app id is
+    // required". Portals older than the registry (before 1.19) find out
+    // for themselves, so a failure here is not one.
+    if let Ok(registry) = zbus::blocking::Proxy::new(&conn, DEST, PATH, "org.freedesktop.host.portal.Registry") {
+        let none: HashMap<&str, Value> = HashMap::new();
+        if let Err(e) = registry.call_method("Register", &(crate::default_browser::app_id(), none)) {
+            tracing::debug!("portal registry: {e}");
+        }
+    }
     let portal = zbus::blocking::Proxy::new(&conn, DEST, PATH, "org.freedesktop.portal.GlobalShortcuts").map_err(|e| e.to_string())?;
     let n = std::process::id();
     let token = format!("nus_session_{n}");
