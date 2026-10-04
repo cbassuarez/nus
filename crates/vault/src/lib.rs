@@ -177,6 +177,51 @@ pub fn remove_test_key(profile: &Path) -> io::Result<()> {
 pub fn available(profile: &Path) -> io::Result<()> {
     key(profile).map(|_| ())
 }
+
+/// Explicit complete-uninstall cleanup. Call only after locking the owning
+/// profile and confirming deletion; this never creates or retrieves a key.
+pub fn erase_key(profile: &Path) -> io::Result<()> {
+    erase_key_with(profile, |id| {
+        let entry = keyring::Entry::new(SERVICE, id)
+            .map_err(|_| error("OS credential store unavailable"))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(error(
+                "OS credential store could not remove the local state key",
+            )),
+        }
+    })
+}
+
+/// Public, nonsecret identifier used to avoid deleting a key still referenced
+/// by another local profile. No credential is opened or created here.
+pub fn key_identifier(profile: &Path) -> io::Result<Option<String>> {
+    let marker = profile.join(".vault-id");
+    let meta = match std::fs::symlink_metadata(&marker) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != 32 {
+        return Err(error("Invalid vault identifier; credential left untouched"));
+    }
+    let id = std::fs::read_to_string(&marker)?;
+    if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(error("Invalid vault identifier; credential left untouched"));
+    }
+    Ok(Some(id))
+}
+
+fn erase_key_with(profile: &Path, delete: impl FnOnce(&str) -> io::Result<()>) -> io::Result<()> {
+    let Some(id) = key_identifier(profile)? else {
+        return Ok(());
+    };
+    delete(&id)?;
+    KEYS.lock()
+        .map_err(|_| error("Local vault unavailable"))?
+        .remove(&profile.canonicalize()?);
+    Ok(())
+}
 /// Once recognized legacy records have migrated, reject plaintext on every
 /// subsequent read. A damaged magic header must not become a legacy import.
 pub fn finish_migration(profile: &Path) -> io::Result<()> {
@@ -438,6 +483,51 @@ impl Write for StreamWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uninstall_erases_only_the_valid_profile_key_and_can_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let marker = profile.join(".vault-id");
+        std::fs::write(&marker, "invalid").unwrap();
+        assert!(erase_key_with(&profile, |_| panic!(
+            "invalid marker reached the credential store"
+        ))
+        .is_err());
+        let id = "0123456789abcdef0123456789abcdef";
+        std::fs::write(&marker, id).unwrap();
+        key(&profile).unwrap();
+        let root = profile.canonicalize().unwrap();
+        assert!(erase_key_with(&profile, |_| Err(error("locked"))).is_err());
+        assert!(KEYS.lock().unwrap().contains_key(&root));
+        erase_key_with(&profile, |found| {
+            assert_eq!(found, id);
+            Ok(())
+        })
+        .unwrap();
+        assert!(!KEYS.lock().unwrap().contains_key(&root));
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap(),
+            id,
+            "retain the id until files are deleted, so cleanup can retry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_never_uses_a_linked_vault_identifier() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("other-key");
+        std::fs::write(&outside, "0123456789abcdef0123456789abcdef").unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        std::os::unix::fs::symlink(&outside, profile.join(".vault-id")).unwrap();
+        assert!(erase_key_with(&profile, |_| panic!(
+            "linked marker reached the credential store"
+        ))
+        .is_err());
+        assert!(outside.exists());
+    }
     #[test]
     fn child_handoff_is_bounded_and_unlocks_existing_ciphertext() {
         let dir = tempfile::tempdir().unwrap();

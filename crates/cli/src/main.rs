@@ -427,6 +427,7 @@ fn main() -> ExitCode {
         Some("uninstall") => {
             return lifecycle::uninstall(flag("--everything"), flag("--yes") || flag("-y"))
         }
+        Some("__uninstall-data") => return lifecycle::uninstall_data(),
         Some("doctor") => return lifecycle::doctor(),
         Some("channel") => return lifecycle::channel(&args[1..]),
         Some("logs") => return lifecycle::logs(&args[1..]),

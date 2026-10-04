@@ -130,7 +130,7 @@ impl App {
             return vec![PaletteRow { num: "+".into(), text, action: Action::KeepKeyword(String::new()) }];
         }
         if !crate::keep::valid_keyword(word) {
-            return vec![PaletteRow { num: "·".into(), text: "one word, without spaces, not starting with > ? @ / . ~".into(), action: Action::KeepKeyword(String::new()) }];
+            return vec![PaletteRow { num: "·".into(), text: "one short word, no spaces; don't start with > ? @ / . ~".into(), action: Action::Noop }];
         }
         let search = if e.source.contains("%s") { format!(" · {word} <words> searches") } else { String::new() };
         vec![PaletteRow { num: "+".into(), text: format!("Keyword · {word} opens {title}{search}"), action: Action::KeepKeyword(word.to_string()) }]

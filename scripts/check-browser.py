@@ -64,16 +64,18 @@ def main():
     shot.write_text('\n'.join([
         'wait 1200', 'home', f'tab {url}/ok', 'awaitpage nus browser fixture', 'awaitpaint',
         'eval window.fixture', 'awaitreply 42', 'wait 300', 'shot browsing',
-        # Back by swipe, in steps big enough that a slow runner's ticks do not
+        # Back by swipe, in physical-pixel steps big enough for Retina scale
+        # (300 physical pixels are only 150 logical, below the default 180)
+        # and so a slow runner's ticks do not
         # matter. Fingers lifted short of the distance let it go: the glide
         # after must not navigate. A full swipe goes back once, and its glide
         # is spent (a second back would close this new tab).
         # Typed, not scripted: Chromium skips history a script adds without a gesture.
         f'url {url}/two', 'awaitpage nus browser fixture two', 'awaitpaint',
-        'wheel 0.5 0.5 20 0 start', 'wheel 0.5 0.5 0 0 end', 'wheel 0.5 0.5 300 0', 'wheel 0.5 0.5 300 0',
+        'wheel 0.5 0.5 20 0 start', 'wheel 0.5 0.5 0 0 end', 'wheel 0.5 0.5 900 0', 'wheel 0.5 0.5 900 0',
         'wait 700', 'awaitpage nus browser fixture two',
-        'wheel 0.5 0.5 300 0 start', 'awaitpage nus browser fixture',
-        'wheel 0.5 0.5 0 0 end', 'wheel 0.5 0.5 300 0', 'wheel 0.5 0.5 300 0', 'wait 700',
+        'wheel 0.5 0.5 900 0 start', 'awaitpage nus browser fixture',
+        'wheel 0.5 0.5 0 0 end', 'wheel 0.5 0.5 900 0', 'wheel 0.5 0.5 900 0', 'wait 700',
         'awaitpage nus browser fixture', 'awaitpaint',
         # No answer in 30 s: nus says so and keeps waiting (↵); retry is the second command.
         f'tab {url}/stall', 'awaittranscript slow', 'wait 200', 'shot timeout',

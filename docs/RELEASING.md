@@ -119,10 +119,10 @@ and records it in `%LOCALAPPDATA%\nus\installs\<channel>\installed-location`.
 nus treats that folder as a single installation, so installer upgrades, in-app
 updates (which swap the folder in place and refresh the version shown in
 Installed apps) and reinstalls keep one profile; a portable ZIP elsewhere is
-still its own installation. An upgrade replaces the whole folder, the
+still its own installation but shares that channel's profile by default. An upgrade replaces the whole folder, the
 uninstaller lives outside it in `%LOCALAPPDATA%\nus\uninstall\<channel>`, and
 uninstalling keeps profiles unless the person chooses *Remove them too* (a
-silent uninstall always keeps them).
+silent uninstall keeps them unless `/REMOVELOCALDATA` is supplied).
 
 Setup is one Broadsheet sheet (`scripts/windows-installer.iss`; wordmark
 bitmaps from `scripts/installer-art.py`): where it installs, then what it adds
@@ -147,13 +147,24 @@ binary, CEF, locales and `bin/nus`. Packaged apps keep one profile per channel,
 Development and release channels are separate. Every copy of a channel —
 rebuilt, redownloaded, moved or updated — opens that shared profile; the first
 launch after upgrading moves the channel's most recently used profile into it
-when no nus holds it, and otherwise starts it fresh with an import offer. One
+when no nus holds it. A busy profile or failed move stops launch and preserves
+the original; it never silently creates a duplicate local profile. This also
+applies to local “Here” profiles without sync. One
 copy uses the profile at a time (the profile lock), and a newer version saves a
 recovery generation before upgrading it. A copy can keep a profile of its own
 instead (Settings · Updates · Profile, listed in `installs/<channel>/separate`);
 Welcome shows once per version per channel. Legacy `nus/profile` data is offered for
 explicit settings import and is not overwritten. Browsing data is not imported.
 Source checkouts continue to use their local `profile` directory.
+
+`nus uninstall` keeps the local profile for a reinstall. `nus uninstall
+--everything` explicitly removes this installation and its channel's profiles,
+recovery copies, vault credentials and logs; add `--yes` for unattended cleanup.
+Windows' **Remove them too** choice uses the same cleanup through the signed
+CLI, and silent uninstall can request it with `/REMOVELOCALDATA`. A busy profile
+blocks cleanup. Other channels, project files and external sync destinations
+are preserved; a vault key still referenced by another local profile is kept.
+
 Linux releases carry two forms of the same payload. CEF's libraries are
 stripped first (libcef.so ships with full debug info: about 1.4 GB, 270 MB
 stripped). `nus-desktop` finds libcef.so through an `$ORIGIN` runpath, so the

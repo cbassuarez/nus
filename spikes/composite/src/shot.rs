@@ -1072,6 +1072,17 @@ impl App {
                 self.save_prefs();
             }
             "assertpalette" => assert_eq!(self.palette.is_some(), rest == "open"),
+            // Exercise the keyword editor through the same commit path as Enter.
+            "keywordedit" => {
+                let id = self.library.entries.values().find(|e| !e.deleted && e.keyword == rest).expect("keywordedit: missing keyword").id.clone();
+                self.ask_keyword(id);
+            }
+            "assertkeyword" => {
+                let (source, word) = rest.split_once('|').expect("assertkeyword: source | keyword");
+                let e = self.library.entries.values().find(|e| !e.deleted && e.source == source.trim()).expect("assertkeyword: missing entry");
+                assert_eq!(e.keyword, word.trim(), "keyword changed unexpectedly");
+                assert_eq!(self.library.store().read(&e.id).unwrap().keyword, word.trim(), "stored keyword differs");
+            }
             // `promptrun <line>`: what the home prompt does with it.
             "promptrun" => { if let Some(r) = self.prompt_action(rest) { self.run(r.action); } else { panic!("promptrun: nothing for {rest}") } }
             // `assertrows url|go <query> | <words>`: the palette's first row for

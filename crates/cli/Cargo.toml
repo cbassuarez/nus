@@ -13,8 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 nus-compat = { path = "../compat" }
+nus-vault = { path = "../vault" }
 nus-astro = { path = "../astro" }
 serde_json.workspace = true
 qrcode = { version = "0.14", default-features = false }
 regex = "1"
 ctrlc = "3"
+
+[dev-dependencies]
+tempfile = "3"

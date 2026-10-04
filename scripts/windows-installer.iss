@@ -122,6 +122,8 @@ Filename: "ms-settings:defaultapps?registeredAppUser={#BrowserKey}"; Description
 ; the uninstall dialog is told to remove them.
 Type: filesandordirs; Name: "{app}"
 Type: files; Name: "{localappdata}\nus\installs\{#Channel}\installed-location"
+Type: dirifempty; Name: "{localappdata}\nus\uninstall\{#Channel}"
+Type: dirifempty; Name: "{localappdata}\nus\uninstall"
 
 [Code]
 const
@@ -645,18 +647,34 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  I, ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then begin
-    // Silent uninstalls keep the profile, as they always have.
+    // Silent uninstalls keep local data unless explicitly requested.
+    RemoveProfile := False;
+    for I := 1 to ParamCount do
+      if CompareText(ParamStr(I), '/REMOVELOCALDATA') = 0 then RemoveProfile := True;
     if not UninstallSilent then
       RemoveProfile := TaskDialogMsgBox('Keep your settings?',
         'If nus is open, it closes now. Shells running in it will end.',
         mbConfirmation, MB_YESNO, ['Keep my settings'#10'Profiles and settings stay for a reinstall.',
-          'Remove them too'#10'Deletes {#AppName}''s profile, settings and sign-ins on this PC.'], 0) = IDNO;
+          'Remove them too'#10'Deletes {#AppName}''s profiles, recovery copies, sign-ins, vault keys and logs on this PC.'], 0) = IDNO;
     CloseApp;
+    if RemoveProfile then begin
+      // The signed CLI removes OS vault credentials as well as the files.
+      if not Exec(ExpandConstant('{app}\bin\nus.exe'), '__uninstall-data',
+          ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        RaiseException('Could not start local data cleanup. Your files are kept.');
+      if ResultCode <> 0 then
+        RaiseException('Local data cleanup did not finish. Quit other nus copies and retry.');
+    end;
   end else if CurUninstallStep = usPostUninstall then begin
     RemoveFromPath;
-    if RemoveProfile then
-      DelTree(ExpandConstant('{localappdata}\nus\installs\{#Channel}'), True, True, True);
+    if RemoveProfile then begin
+      RemoveDir(ExpandConstant('{localappdata}\nus\installs'));
+      RemoveDir(ExpandConstant('{localappdata}\nus\logs'));
+      RemoveDir(ExpandConstant('{localappdata}\nus'));
+    end;
   end;
 end;

@@ -177,14 +177,18 @@ jobs:
           python -m pip install Pillow==11.3.0
           if [[ "$RUNNER_OS" == macOS ]]; then
             python scripts/check-browser.py --app dist/nus.app --out dist/browser-check
+            python scripts/check-kept-keywords.py --app dist/nus.app --out dist/keyword-check
           else
             xvfb-run -a python scripts/check-browser.py --app "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --out dist/browser-check
+            xvfb-run -a python scripts/check-kept-keywords.py --app "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --out dist/keyword-check
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure() && runner.os != 'Windows'
         with:
           name: browser-failure-${{ matrix.target }}
-          path: dist/browser-check/
+          path: |
+            dist/browser-check/
+            dist/keyword-check/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: runner.os != 'Windows'
         with:
@@ -274,11 +278,14 @@ jobs:
         run: |
           python -m pip install Pillow==11.3.0
           python scripts/check-browser.py --app dist/windows-stage/nus.exe --out dist/browser-check
+          python scripts/check-kept-keywords.py --app dist/windows-stage/nus.exe --out dist/keyword-check
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
         with:
           name: browser-failure-windows
-          path: dist/browser-check/
+          path: |
+            dist/browser-check/
+            dist/keyword-check/
       - name: Install, launch and uninstall silently
         shell: pwsh
         run: |
@@ -292,9 +299,34 @@ jobs:
           if ($p.ExitCode -ne 0) { Get-Content install.log; throw "Installer exited $($p.ExitCode)" }
           if (-not (Test-Path "$client\Capabilities\URLAssociations")) { throw 'Browser was not registered' }
           if ((& $registered) -ne "Software\Clients\StartMenuInternet\$browser\Capabilities") { throw 'Browser missing from RegisteredApplications' }
+          # A real, local Here profile: no sync, and no fixture placement override.
+          $data = Join-Path $env:LOCALAPPDATA "nus\installs\$channel"
+          $localProfile = Join-Path $data 'shared\profile'
+          New-Item -ItemType Directory -Force $localProfile | Out-Null
+          Set-Content "$localProfile\local-here.txt" 'same local profile'
+          Set-Content "$localProfile\onboarded" 'skip'
+          Set-Content "$localProfile\settings.json" '{"behavior":{"splash":"None","then":"Prompt","update_checks":false,"hatch_background":false,"hatch_status":false}}'
+          $shot = Join-Path $env:RUNNER_TEMP 'installed.shot'
+          Set-Content $shot "wait 1600`nhome`nwait 300`nshot installed"
+          function Test-LocalProfile($phase) {
+            $env:NUS_SHOT = $shot
+            $env:NUS_SHOT_OUT = Join-Path $env:RUNNER_TEMP "installed-$phase-screens"
+            Remove-Item Env:NUS_SHOT_DIR -ErrorAction SilentlyContinue
+            try {
+              $native = Start-Process "$app\nus.exe" -Wait -PassThru -RedirectStandardError "installed-$phase.log"
+              if ($native.ExitCode -ne 0) { Get-Content "installed-$phase.log"; throw 'Installed native app failed' }
+            } finally { Remove-Item Env:NUS_SHOT,Env:NUS_SHOT_OUT -ErrorAction SilentlyContinue }
+            if ((Get-Content "$localProfile\local-here.txt") -ne 'same local profile') { throw 'Native launch changed the local profile' }
+          }
+          Test-LocalProfile 'first'
+          if (-not (Test-Path "$localProfile\compatibility.json")) { throw 'Native app did not reuse the local Here profile' }
+          $vaultId = Get-Content "$localProfile\.vault-id"
           # Installing over it is an update: a task left out now is taken back out.
           $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=path','/LOG=update.log' -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content update.log; throw "Update exited $($p.ExitCode)" }
+          if ((Get-Content "$localProfile\local-here.txt") -ne 'same local profile') { throw 'Update changed the local profile' }
+          Test-LocalProfile 'updated'
+          if ((Get-Content "$localProfile\.vault-id") -ne $vaultId) { throw 'Update duplicated the local vault' }
           if ((Test-Path $client) -or (& $registered)) { throw 'Update left the browser registration it was told to drop' }
           # nus.exe is a GUI program: PowerShell's `&` neither waits for it nor
           # sets $LASTEXITCODE. Wait for it and read its own exit code.
@@ -312,6 +344,18 @@ jobs:
           if (Test-Path $app) { throw 'Uninstall left the application folder' }
           if ((Get-ItemProperty HKCU:\Environment).Path -split ';' -contains "$app\bin") { throw 'Uninstall left bin on PATH' }
           if ((Test-Path $client) -or (Test-Path "HKCU:\Software\Classes\$browser.url") -or (& $registered)) { throw 'Uninstall left the browser registration' }
+          if (-not (Test-Path "$localProfile\local-here.txt")) { throw 'Normal uninstall removed the local profile' }
+          # Reinstall comes back to it; explicit complete uninstall removes it and logs.
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=path','/LOG=reinstall.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content reinstall.log; throw 'Reinstall failed' }
+          if ((Get-Content "$localProfile\local-here.txt") -ne 'same local profile') { throw 'Reinstall duplicated or changed the local profile' }
+          Test-LocalProfile 'reinstalled'
+          if ((Get-Content "$localProfile\.vault-id") -ne $vaultId) { throw 'Reinstall duplicated the local vault' }
+          $uninstall = Get-ChildItem (Join-Path $env:LOCALAPPDATA "nus\uninstall\$channel\unins*.exe") | Select-Object -First 1
+          $p = Start-Process $uninstall.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/REMOVELOCALDATA','/LOG=purge.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content purge.log; throw 'Complete uninstall failed' }
+          for ($i = 0; $i -lt 30 -and (Test-Path $app); $i++) { Start-Sleep 1 }
+          if ((Test-Path $app) -or (Test-Path $data) -or (Test-Path (Join-Path $env:LOCALAPPDATA "nus\logs\$channel"))) { throw 'Complete uninstall left local app data' }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-windows-x86_64
@@ -387,7 +431,7 @@ jobs:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
           if [ -z "$SITE_TOKEN" ]; then echo "SITE_DISPATCH_TOKEN not set; the site will catch up on its schedule"; exit 0; fi
-          curl -sS -X POST \
+          curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer $SITE_TOKEN" -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/cbassuarez/nus.dev/dispatches \
             -d "{\"event_type\":\"release-published\",\"client_payload\":{\"tag\":\"$RELEASE_TAG\"}}"

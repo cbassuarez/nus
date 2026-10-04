@@ -133,7 +133,7 @@ fn method_of(root: &Path, channel: nus_compat::Channel) -> Method {
         };
         let brew = ["/opt/homebrew", "/usr/local"]
             .iter()
-            .any(|p| Path::new(p).join("Caskroom").join(token).is_dir());
+            .any(|p| homebrew_owns(root, &Path::new(p).join("Caskroom").join(token)));
         return Method::App(brew.then(|| token.to_string()));
     }
     let record: Option<Value> = std::fs::read(root.join("nus-package.json"))
@@ -164,6 +164,28 @@ fn method_of(root: &Path, channel: nus_compat::Channel) -> Method {
     } else {
         Method::Folder
     }
+}
+
+fn homebrew_owns(root: &Path, cask: &Path) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(cask) = cask.canonicalize() else {
+        return false;
+    };
+    if root.starts_with(&cask) {
+        return true;
+    }
+    // Casks moved to /Applications leave an app link in their version folder.
+    std::fs::read_dir(cask).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry
+                .path()
+                .join("nus.app")
+                .canonicalize()
+                .is_ok_and(|app| app == root)
+        })
+    })
 }
 
 /// This platform's release target.
@@ -497,7 +519,7 @@ pub fn uninstall(everything: bool, yes: bool) -> ExitCode {
         }
         if everything {
             let typed = ask(&format!(
-                "  Type {} to also delete this channel's profile (settings, sessions, sign-ins, the sync key): ",
+                "  Type {} to also delete this channel's profiles, recovery copies, sign-ins, vault keys and logs: ",
                 ui.bold(word)
             ));
             if typed != word {
@@ -506,6 +528,25 @@ pub fn uninstall(everything: bool, yes: bool) -> ExitCode {
             }
         }
         println!();
+    }
+    // Keep the package available until credential/profile cleanup succeeds.
+    // A busy profile or locked credential store must not strand an uninstall.
+    if everything {
+        if let Some(base) = data_home() {
+            if let Err(e) = purge_channel_data(&base, i.channel) {
+                return fail(
+                    &ui,
+                    &format!("local data could not be removed: {e}; nus is still installed"),
+                );
+            }
+            ui.row(
+                "02",
+                "Local data",
+                "profiles, recovery copies, vault keys and logs removed",
+                &ui.ok(),
+                "",
+            );
+        }
     }
     let root = i.root.display().to_string();
     let removed = match &i.method {
@@ -610,18 +651,8 @@ pub fn uninstall(everything: bool, yes: bool) -> ExitCode {
         return fail(&ui, &e);
     }
     if everything {
-        if let Some(p) = profile.as_ref().filter(|p| p.exists()) {
-            let start = Instant::now();
-            match std::fs::remove_dir_all(p) {
-                Ok(()) => ui.row(
-                    "03",
-                    "Profile",
-                    &format!("{} removed", p.display()),
-                    &ui.ok(),
-                    &took(start),
-                ),
-                Err(e) => return fail(&ui, &format!("could not remove {}: {e}", p.display())),
-            }
+        if let Some(base) = data_home() {
+            remove_empty_data_dirs(&base);
         }
     }
     ui.rule();
@@ -643,6 +674,114 @@ pub fn uninstall(everything: bool, yes: bool) -> ExitCode {
     );
     println!();
     ExitCode::SUCCESS
+}
+
+/// The signed Windows uninstaller calls this after closing nus, while its
+/// packaged CLI is still present. No remote sync destination is touched.
+pub fn uninstall_data() -> ExitCode {
+    let ui = Ui::new();
+    let i = match detect() {
+        Ok(i) => i,
+        Err(e) => return fail(&ui, &e),
+    };
+    if !cfg!(windows) || i.method != Method::Installer {
+        return fail(
+            &ui,
+            "data cleanup requires the installed Windows uninstaller",
+        );
+    }
+    if crate::running() {
+        return fail(&ui, "quit nus before removing its local data");
+    }
+    match data_home()
+        .ok_or_else(|| std::io::Error::other("user data directory unavailable"))
+        .and_then(|base| purge_channel_data(&base, i.channel))
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(&ui, &format!("local data could not be removed: {e}")),
+    }
+}
+
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
+fn collect_profiles(root: &Path, profiles: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for item in std::fs::read_dir(root)? {
+        let path = item?.path();
+        let meta = std::fs::symlink_metadata(&path)?;
+        if !meta.is_dir() || is_link(&meta) {
+            continue;
+        }
+        if path.file_name().is_some_and(|n| n == "profile") {
+            profiles.push(path);
+        } else {
+            collect_profiles(&path, profiles)?;
+        }
+    }
+    Ok(())
+}
+
+fn purge_channel_data(base: &Path, channel: nus_compat::Channel) -> std::io::Result<()> {
+    let root = base.join("installs").join(channel.directory());
+    if root.exists() {
+        let _channel_guard = nus_compat::profile::Guard::acquire(&root)?;
+        let mut profiles = Vec::new();
+        collect_profiles(&root, &mut profiles)?;
+        // Imported/copied profiles can retain the same vault id. Deleting this
+        // channel must not erase a key another channel or legacy profile uses.
+        let mut others = Vec::new();
+        for item in std::fs::read_dir(base.join("installs"))? {
+            let path = item?.path();
+            let meta = std::fs::symlink_metadata(&path)?;
+            if path != root && meta.is_dir() && !is_link(&meta) {
+                collect_profiles(&path, &mut others)?;
+            }
+        }
+        if base.join("profile").is_dir() {
+            others.push(base.join("profile"));
+        }
+        let retained = others
+            .iter()
+            .map(|p| nus_vault::key_identifier(p))
+            .collect::<std::io::Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<std::collections::HashSet<_>>();
+        // Acquire every lock before removing any credential or file.
+        let _guards = profiles
+            .iter()
+            .map(|p| nus_compat::profile::Guard::acquire(p.parent().unwrap()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        for p in &profiles {
+            if nus_vault::key_identifier(p)?.is_none_or(|id| !retained.contains(&id)) {
+                nus_vault::erase_key(p)?;
+            }
+        }
+        std::fs::remove_dir_all(&root)?;
+    }
+    let logs = base.join("logs").join(channel.directory());
+    match std::fs::remove_dir_all(&logs) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    remove_empty_data_dirs(base);
+    Ok(())
+}
+
+fn remove_empty_data_dirs(base: &Path) {
+    for name in ["installs", "logs", "app", "uninstall"] {
+        let _ = std::fs::remove_dir(base.join(name));
+    }
+    let _ = std::fs::remove_dir(base);
 }
 
 // --- nus doctor -----------------------------------------------------------------
@@ -1058,6 +1197,104 @@ pub fn doctor() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unrelated_homebrew_cask_does_not_own_this_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let cask = temp.path().join("Caskroom/nus/1.0/nus.app");
+        let manual = temp.path().join("Downloads/nus.app");
+        std::fs::create_dir_all(&cask).unwrap();
+        std::fs::create_dir_all(&manual).unwrap();
+        let cask_root = temp.path().join("Caskroom/nus");
+        assert!(homebrew_owns(&cask, &cask_root));
+        assert!(!homebrew_owns(&manual, &cask_root));
+        #[cfg(unix)]
+        {
+            std::fs::remove_dir(&cask).unwrap();
+            std::os::unix::fs::symlink(&manual, &cask).unwrap();
+            assert!(homebrew_owns(&manual, &cask_root));
+        }
+    }
+
+    #[test]
+    fn complete_uninstall_removes_channel_data_and_logs_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("nus");
+        for channel in ["preview", "release"] {
+            for suffix in [
+                "shared/profile",
+                "old/profile",
+                "shared/generations/saved/profile",
+            ] {
+                let p = base.join("installs").join(channel).join(suffix);
+                std::fs::create_dir_all(&p).unwrap();
+                std::fs::write(p.join("settings.json"), "my local profile").unwrap();
+            }
+            let logs = base.join("logs").join(channel);
+            std::fs::create_dir_all(&logs).unwrap();
+            std::fs::write(logs.join("nus.log"), "my log").unwrap();
+        }
+        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+        assert!(!base.join("installs/preview").exists());
+        assert!(!base.join("logs/preview").exists());
+        assert!(base
+            .join("installs/release/shared/profile/settings.json")
+            .is_file());
+        assert!(base.join("logs/release/nus.log").is_file());
+        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+    }
+
+    #[test]
+    fn complete_uninstall_refuses_a_busy_profile_before_deleting_anything() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("nus");
+        let root = base.join("installs/preview/shared");
+        std::fs::create_dir_all(root.join("profile")).unwrap();
+        std::fs::write(root.join("profile/settings.json"), "keep me").unwrap();
+        let _guard = nus_compat::profile::Guard::acquire(&root).unwrap();
+        assert!(purge_channel_data(&base, nus_compat::Channel::Preview).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("profile/settings.json")).unwrap(),
+            "keep me"
+        );
+    }
+
+    #[test]
+    fn complete_uninstall_keeps_a_key_another_channel_uses() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("nus");
+        let id = "0123456789abcdef0123456789abcdef";
+        for channel in ["preview", "release"] {
+            let profile = base.join("installs").join(channel).join("shared/profile");
+            std::fs::create_dir_all(&profile).unwrap();
+            std::fs::write(profile.join(".vault-id"), id).unwrap();
+        }
+        // No credential store is needed: the shared id must not be erased.
+        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(base.join("installs/release/shared/profile/.vault-id"))
+                .unwrap(),
+            id
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_uninstall_does_not_follow_linked_profiles() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("nus");
+        let root = base.join("installs/preview/shared");
+        let outside = temp.path().join("project/profile");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("settings.json"), "project").unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("profile")).unwrap();
+        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(outside.join("settings.json")).unwrap(),
+            "project"
+        );
+    }
 
     #[test]
     fn previews_come_before_their_release() {

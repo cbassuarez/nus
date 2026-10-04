@@ -25,7 +25,7 @@ MAC_SIGNING = ['MACOS_CERTIFICATE', 'MACOS_CERTIFICATE_PASSWORD', 'MACOS_SIGN_ID
 WINDOWS_STAGE = 'dist/windows-stage'
 WINDOWS_INSTALLER = 'dist/windows-installer'
 WINDOWS_SIGNED = ['nus.exe', 'nus.dll', 'chrome_elf.dll', 'nus-hold.exe', 'bin/nus.exe']
-WINDOWS_INSTRUCTIONS = 'Extract the entire folder, then open nus.exe. Keep its DLLs and locales together.\nThe shell CLI is bin/nus.exe. Settings live in %LOCALAPPDATA%/nus/installs/<channel>/<installation>/profile.\n'
+WINDOWS_INSTRUCTIONS = 'Extract the entire folder, then open nus.exe. Keep its DLLs and locales together.\nThe shell CLI is bin/nus.exe. Settings live in %LOCALAPPDATA%/nus/installs/<channel>/shared/profile.\n'
 configured = lambda names: all(os.environ.get(n) for n in names)
 _linux_spec = importlib.util.spec_from_file_location('package_linux', Path(__file__).with_name('package-linux.py'))
 linux = importlib.util.module_from_spec(_linux_spec)
@@ -57,7 +57,7 @@ LINUX_INSTRUCTIONS = ('Run ./install-desktop.sh to install nus for your account:
     'Run ./install-desktop.sh --uninstall to remove it. You can also run ./nus from here without installing.\n'
     'On Debian and Ubuntu, the .deb package from the same release installs system-wide and sets up the sandbox.\n'
     'Requires an x86-64 Linux desktop, glibc 2.35+, Vulkan, GTK 3, ALSA, NSS and libxkbcommon.\n'
-    'Settings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/<installation>/profile.\n')
+    'Settings live in ${XDG_DATA_HOME:-$HOME/.local/share}/nus/installs/<channel>/shared/profile.\n')
 
 def digest(path):
     with path.open('rb') as stream:

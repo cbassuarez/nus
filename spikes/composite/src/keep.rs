@@ -53,7 +53,7 @@ pub fn expand(template: &str, rest: &str) -> String {
 
 /// A keyword must be one short word: what is typed first at the prompt.
 pub fn valid_keyword(word: &str) -> bool {
-    !word.is_empty() && word.chars().count() <= 64 && !word.chars().any(|c| c.is_whitespace() || c.is_control())
+    !word.is_empty() && word.len() <= 64 && !word.chars().any(|c| c.is_whitespace() || c.is_control())
         && !word.starts_with(['>', '?', '@', '/', '.', '~'])
 }
 
@@ -148,6 +148,8 @@ mod tests {
         assert_eq!(expand("https://github.com", "ignored"), "https://github.com");
         assert!(valid_keyword("rs") && valid_keyword("gh"));
         assert!(!valid_keyword("two words") && !valid_keyword("") && !valid_keyword(">x") && !valid_keyword("?q"));
+        assert!(valid_keyword(&"é".repeat(32)));
+        assert!(!valid_keyword(&"é".repeat(33)), "keywords must fit the store's 64-byte limit");
     }
 
     #[test]

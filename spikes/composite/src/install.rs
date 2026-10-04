@@ -111,6 +111,8 @@ fn place(base: &Path, channel: &str, identity: &str) -> std::io::Result<PathBuf>
 fn resolve(base: &Path, channel: &str, identity: &str) -> std::io::Result<(PathBuf, bool)> {
     let channel_root = base.join("installs").join(channel);
     std::fs::create_dir_all(&channel_root)?;
+    // Serialize placement and migration before any copy opens its profile.
+    let _placement_guard = nus_compat::profile::Guard::acquire(&channel_root)?;
     let continues = channel_root.join(format!("{identity}.update")).exists();
     if continues || is_separate(&channel_root, identity) {
         return Ok((prepare(base, channel, identity)?, true));
@@ -123,16 +125,15 @@ fn is_separate(channel_root: &Path, identity: &str) -> bool {
 }
 
 /// The channel's shared profile. The first time, the profile last used in
-/// this channel moves in whole — when no nus has it open; otherwise the
-/// shared one starts fresh and offers to import it.
+/// this channel moves in whole. A busy profile or a failed move stops launch
+/// rather than silently creating a second local profile.
 fn shared(base: &Path, channel: &str) -> std::io::Result<PathBuf> {
     let channel_root = base.join("installs").join(channel);
     let root = channel_root.join(SHARED);
     if !root.join("profile").exists() {
         if let Some(last) = last_root(&channel_root).filter(|r| r.file_name().is_some_and(|n| n != SHARED)) {
-            if is_idle(&last) {
-                let _ = std::fs::rename(&last, &root);
-            }
+            let _guard = nus_compat::profile::Guard::acquire(&last)?;
+            std::fs::rename(&last, &root).map_err(|e| std::io::Error::other(format!("Could not continue the local profile: {e}. The original profile is unchanged; quit other nus copies and retry.")))?;
         }
     }
     prepare(base, channel, SHARED)
@@ -144,12 +145,6 @@ fn last_root(channel_root: &Path) -> Option<PathBuf> {
     let root = profile.parent()?.to_path_buf();
     let inside = root.parent()?.canonicalize().ok()? == channel_root.canonicalize().ok()?;
     (inside && profile.join("settings.json").is_file()).then_some(root)
-}
-
-/// No nus holds this profile's lock (compat's Guard takes the same one).
-fn is_idle(root: &Path) -> bool {
-    let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(root.join(".nus-profile.lock")) else { return false };
-    file.try_lock().is_ok()
 }
 
 /// Settings · PROFILE: keep this copy's own profile (`true`) or share the
@@ -236,8 +231,8 @@ fn mark_welcomed_in(channel: &Path, version: &str) {
 }
 
 /// Welcome is for a version's first opening. A rebuilt or redownloaded
-/// copy of a version already welcomed is a new profile (see `prepare`),
-/// but not a new first time: it starts without the tour.
+/// copy of a version already welcomed reuses its channel's profile and
+/// starts without the tour.
 pub fn version_welcomed() -> bool {
     channel_root().is_some_and(|c| welcomed_in(&c, env!("NUS_BUILD_VERSION")))
 }
@@ -353,6 +348,28 @@ mod tests {
     }
 
     #[test]
+    fn local_here_profile_survives_updates_and_reinstallation_without_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let (first, _) = resolve(temp.path(), "preview", "first-download").unwrap();
+        let files = [
+            ("settings.json", r#"{"behavior":{"sync_folder":"","sync_git":""}}"#),
+            ("me.json", r#"{"name":"Local","way":"Here"}"#),
+            (".vault-id", "0123456789abcdef0123456789abcdef"),
+            ("session.json", "saved tabs"),
+        ];
+        for (name, text) in files { std::fs::write(first.join("profile").join(name), text).unwrap(); }
+        continue_after_update(&first, &temp.path().join("new-package")).unwrap();
+        for identity in ["updated-copy", "reinstalled-copy", "moved-copy"] {
+            let (next, own) = resolve(temp.path(), "preview", identity).unwrap();
+            assert_eq!(next, first);
+            assert!(!own);
+            for (name, text) in files { assert_eq!(std::fs::read_to_string(next.join("profile").join(name)).unwrap(), text); }
+        }
+        let roots = std::fs::read_dir(first.parent().unwrap()).unwrap().flatten().filter(|p| p.path().is_dir()).count();
+        assert_eq!(roots, 1, "updates/reinstalls must not grow a second profile");
+    }
+
+    #[test]
     fn the_last_used_profile_moves_in_when_idle() {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path();
@@ -366,17 +383,33 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_in_use_is_imported_not_moved() {
+    fn a_profile_in_use_never_creates_a_duplicate() {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path();
         let old = prepare(base, "preview", "old").unwrap();
         std::fs::write(old.join("profile/settings.json"), "{}").unwrap();
         let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(old.join(".nus-profile.lock")).unwrap();
         held.lock().unwrap();
-        let (shared, _) = resolve(base, "preview", "new").unwrap();
+        assert!(resolve(base, "preview", "new").is_err());
         assert!(old.join("profile/settings.json").is_file());
-        assert!(!shared.join("profile/settings.json").exists());
-        assert!(shared.join("profile/previous-install").is_file());
+        assert!(!base.join("installs/preview/shared/profile").exists());
+        drop(held);
+        let (shared, _) = resolve(base, "preview", "new").unwrap();
+        assert!(shared.join("profile/settings.json").is_file());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_failed_profile_move_does_not_start_fresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = prepare(temp.path(), "preview", "old").unwrap();
+        std::fs::write(old.join("profile/settings.json"), "{}").unwrap();
+        let shared = temp.path().join("installs/preview/shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::write(shared.join("unexpected"), "preserve").unwrap();
+        assert!(resolve(temp.path(), "preview", "new").is_err());
+        assert!(old.join("profile/settings.json").is_file());
+        assert!(!shared.join("profile").exists());
     }
 
     #[test]

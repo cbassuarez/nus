@@ -2302,9 +2302,11 @@ dependencies = [
  "ctrlc",
  "nus-astro",
  "nus-compat",
+ "nus-vault",
  "qrcode",
  "regex",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

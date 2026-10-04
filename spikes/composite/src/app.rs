@@ -9612,7 +9612,7 @@ impl App {
             None if mode == PaletteMode::New => Action::NewTerminal(self.behavior.default_profile),
             None => return,
         };
-        if matches!(mode, PaletteMode::Assistant(_)) && action == Action::Noop {
+        if matches!(mode, PaletteMode::Assistant(_) | PaletteMode::KeepKeyword) && action == Action::Noop {
             self.palette = Some((mode, input));
             self.dirty = true;
             return;
