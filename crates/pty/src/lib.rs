@@ -196,6 +196,12 @@ impl Pty {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "nus");
+        // nus started from another terminal inherits that terminal's name.
+        // Left in, a shell believes it runs there: VTE's own integration
+        // (/etc/profile.d/vte-2.91.sh, keyed on VTE_VERSION) loads and adds
+        // a second set of prompt marks to nus's.
+        cmd.env_remove("VTE_VERSION");
+        cmd.env_remove("TERM_PROGRAM_VERSION");
         if std::env::var_os("LANG").is_none() {
             cmd.env("LANG", "en_US.UTF-8");
         }
