@@ -8,24 +8,54 @@ The name “spike” is historical and does not identify a separate demo.
 
 - [Review overview](https://cbassuarez.com/nus.dev/review/): specifications, architecture, funding scope, and limitations.
 - [Published previews](https://github.com/cbassuarez/nus/releases): platform archives, `release.json`, and `SHA256SUMS.txt`.
-- [Preview 7 change notes](releases/v0.0.1-preview.7.md): the scope of this candidate.
+- [Preview 17 change notes](releases/v0.0.2-preview.17.md): the reviewed candidate’s features, fixes and validation boundaries.
 - [Architecture](ARCHITECTURE.md), [dependencies](DEPENDENCIES.md), and [third-party notices](../NOTICE).
 - [Security policy](../SECURITY.md) and [privacy and diagnostics](PRIVACY_AND_DIAGNOSTICS.md).
 
-**The current preview is unsigned for trusted distribution.** macOS uses an
-ad-hoc signature, not Developer ID signing or notarization; Windows does not
-have an Authenticode signature. Signing identities and distribution validation
-are part of the funding request. A checksum verifies archive integrity, not the
-publisher's identity. Follow the platform-specific instructions in the release
-notes rather than disabling system protections globally.
+## Reviewed candidate · October 4, 2026
 
-Preview 7 was published from `ec36cbeb10a891752af29f833fb797e484d3b446`.
-Its [release workflow](https://github.com/cbassuarez/nus/actions/runs/35626434391)
-completed macOS arm64, Windows x86-64, and Linux x86-64 packaging and publication.
-This is build and packaging evidence, not an independent security audit or a
-claim that every interactive feature has been tested on every platform.
-Subsequent documentation and maintenance commits on `main` do not change that
-published binary. Use its tag when reproducing release behavior.
+**v0.0.2-preview.17** was published from
+`a81adee496f3dfbc6749e2bb3b3f9a966e36acbc`.
+Its [release workflow](https://github.com/cbassuarez/nus/actions/runs/37227526637)
+completed macOS arm64, Windows x86-64 and Linux x86-64 packaging and publication.
+The [review evidence](https://cbassuarez.com/nus.dev/review/releases/#reviewed-release)
+names each runner, procedure and remaining limit.
+
+Windows' five executable payloads and installer are Authenticode signed and
+verified. macOS remains ad-hoc signed, without Developer ID distribution or
+Apple notarization. Linux publishes SHA-256 checksums. Read the signing label
+and source revision of the package you actually download; signing identifies
+a publisher and a checksum identifies bytes, neither establishes safety.
+
+The release ran packaged browser rendering, timeout, crash, hang, retry and
+keyword regressions on all three platforms. Windows installer checks cover
+installation, upgrade, native launch, normal uninstall, reinstall with the same
+local profile and complete cleanup. Linux's Debian installation, launch and
+removal check passed. Root CI, profile/component compatibility and the bounded
+PTY ring verification passed at this same source revision. These are scoped,
+maintainer-operated automated checks, not an independent security audit or
+universal interactive and hardware acceptance. The current local macOS 15.6
+walkthrough uses Chromium software-paint upload: the accelerated browser split
+capture showed a black strip and clipped content and did not finish its resized
+paint wait. The review packet preserves that open observation and original
+capture; its cause is not yet established.
+
+Homebrew, winget and the rolling apt repository did not update: their optional
+jobs exited successfully without the needed repository credentials. Direct
+release packages, including the installer and .deb, were published. The site's
+release snapshot was updated by a separate manual dispatch and Pages deployment.
+A green optional job does not prove that its integration changed.
+
+“Here” continues across updates, reinstalls and moved app copies without sync.
+Normal uninstall keeps its local profile. Deliberate `nus uninstall --everything`
+removes the current channel's local profiles, recovery copies, vault keys, logs
+and owned retained app packages; Windows also offers **Remove them too**.
+Projects, other channels and external sync folders are preserved. Complete
+cleanup is irreversible; review the confirmation before proceeding.
+
+Use the release tag to reproduce the reviewed binary. New commits and newer
+downloads do not inherit its evidence. The September security audit and native
+performance measurements retain their original dates and scope.
 
 ## Build and checks
 
@@ -41,7 +71,7 @@ From a Bash shell:
 git clone --recurse-submodules https://github.com/cbassuarez/nus.git
 cd nus
 # To reproduce the published candidate:
-git checkout v0.0.1-preview.7
+git checkout v0.0.2-preview.17
 git submodule update --init --recursive
 cargo build --workspace --locked
 cargo test --workspace --locked
@@ -81,13 +111,14 @@ measurements describe their recorded revision and machine, not every release.
 Read the [security limits](../SECURITY.md#known-limits) before testing private
 browsing, assistant context, remote control, or phone access.
 
-There were no public issues and one merged PR at the September 21, 2026 audit.
+The historical September 21, 2026 audit recorded no public issues and one
+merged PR; it is not a current tracker count.
 An empty issue tracker is not evidence that the app is defect-free. Report
 reproducible problems with the version, OS, expected result, actual result, and
 redacted evidence. Use private vulnerability reporting for security findings.
 
 `main` is the integration branch. Completed feature branches are deleted after
-merging; their commits remain in the merged PR history. This audit was prepared
-on `seb/feat-review-readiness` in [PR #2](https://github.com/cbassuarez/nus/pull/2).
+merging; their commits remain in the merged PR history. The historical
+September audit was prepared on `seb/feat-review-readiness` in [PR #2](https://github.com/cbassuarez/nus/pull/2).
 No branch protection was configured at audit time; a green workflow is evidence
 of checks, not enforced peer review.
