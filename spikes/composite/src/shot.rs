@@ -2046,6 +2046,14 @@ impl App {
                 if let Some(reading)=&h.reading {let viewport=reading.reader.saved.viewport.expect("reader viewport");assert!(viewport.h>h.rect.h*0.6,"reader chrome consumed the page");}
             },
             "library" => self.open_library(),
+            // `libraryfilter <n>`: the library's lens n (library.rs).
+            "libraryfilter" => self.library_action(crate::library::Hit::Filter(rest.trim().parse().unwrap())),
+            // `assertlibrary <query> | <title>`: the first row the query lists.
+            "assertlibrary" => {
+                let (q, want) = rest.split_once('|').map(|(q, w)| (q.trim(), w.trim())).unwrap_or((rest.trim(), ""));
+                let rows = self.library_rows(q);
+                assert!(rows.first().is_some_and(|e| e.title.contains(want)), "first row for `{q}`: {:?}", rows.iter().map(|e| &e.title).collect::<Vec<_>>());
+            }
             "savereading" => self.save_reading(),
             "readingscroll" => self.library_scroll(-rest.parse::<f32>().unwrap()*self.scale),
             "readingopen" => {

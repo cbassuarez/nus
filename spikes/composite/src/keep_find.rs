@@ -42,7 +42,10 @@ impl App {
     /// The kept items a query reaches, best first.
     fn kept_matches(&self, q: &str) -> Vec<&Entry> {
         let f = crate::keep::facets(q);
-        let mut hits: Vec<(i64, &Entry)> = self.library.entries.values().filter_map(|e| crate::keep::score(e, &f).map(|s| (s, e))).collect();
+        let said = (!f.said.is_empty()).then(|| self.kept_words.search(&f.said));
+        let mut hits: Vec<(i64, &Entry)> = self.library.entries.values()
+            .filter(|e| said.as_ref().is_none_or(|ids| ids.contains(&e.id)))
+            .filter_map(|e| crate::keep::score(e, &f).map(|s| (s, e))).collect();
         hits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.saved.cmp(&a.1.saved)).then(a.1.id.cmp(&b.1.id)));
         hits.into_iter().map(|(_, e)| e).collect()
     }
@@ -103,7 +106,7 @@ impl App {
             .filter_map(|e| Self::kept_action(e, true).map(|action| PaletteRow { num: KEPT.into(), text: Self::kept_text(e), action }))
             .take(200).collect();
         if rows.is_empty() {
-            let text = if self.library.entries.values().all(|e| e.deleted) { "Nothing kept yet · Ctrl+D on a page keeps it" } else { "Nothing kept matches · try to:read, in:<folder>, done, copy" };
+            let text = if self.library.entries.values().all(|e| e.deleted) { "Nothing kept yet · Ctrl+D on a page keeps it" } else { "Nothing kept matches · try to:read, in:<folder>, done, copy, said:<word>" };
             rows.push(PaletteRow { num: "·".into(), text: text.into(), action: Action::Library });
         }
         rows

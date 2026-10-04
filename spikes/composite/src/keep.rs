@@ -58,7 +58,7 @@ pub fn valid_keyword(word: &str) -> bool {
 }
 
 /// What the kept palette narrows by: words, and facets written as words.
-/// `to:read` · `done` · `copy` · `in:<collection>`; everything else matches
+/// `to:read` · `done` · `copy` · `in:<collection>` · `said:<word>`; the rest matches
 /// the title, the address and the keyword.
 #[derive(Debug, Default, PartialEq)]
 pub struct Facets {
@@ -67,6 +67,8 @@ pub struct Facets {
     pub done: bool,
     pub copy: bool,
     pub collections: Vec<String>,
+    /// `said:<word>`: the saved copy holds it (keep_index.rs; the caller checks).
+    pub said: Vec<String>,
 }
 
 pub fn facets(q: &str) -> Facets {
@@ -77,8 +79,9 @@ pub fn facets(q: &str) -> Facets {
             "to:read" => f.reading = true,
             "done" | "is:done" => f.done = true,
             "copy" | "has:copy" => f.copy = true,
-            _ => match lw.strip_prefix("in:") {
-                Some(c) if !c.is_empty() => f.collections.push(c.to_string()),
+            _ => match (lw.strip_prefix("in:"), lw.strip_prefix("said:")) {
+                (Some(c), _) if !c.is_empty() => f.collections.push(c.to_string()),
+                (_, Some(w)) if !w.is_empty() => f.said.push(w.to_string()),
                 _ => f.words.push(lw),
             },
         }
@@ -149,8 +152,8 @@ mod tests {
 
     #[test]
     fn facets_are_words() {
-        let f = facets("to:read in:Rust ownership");
-        assert_eq!(f, Facets { words: vec!["ownership".into()], reading: true, collections: vec!["rust".into()], ..Default::default() });
+        let f = facets("to:read in:Rust ownership said:borrow");
+        assert_eq!(f, Facets { words: vec!["ownership".into()], reading: true, collections: vec!["rust".into()], said: vec!["borrow".into()], ..Default::default() });
     }
 
     #[test]

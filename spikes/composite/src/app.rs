@@ -868,7 +868,7 @@ impl Tab {
                 }
                 Pane::Settings(_) => ("settings".into(), String::new()),
                 Pane::Hints(_) => ("welcome".into(), String::new()),
-                Pane::Home(h) if h.library => ("Reading list".into(), String::new()),
+                Pane::Home(h) if h.library => ("Kept".into(), String::new()),
                 Pane::Home(_) => ("home".into(), String::new()),
                 Pane::Editor(e) => (e.title(), e.buf().and_then(|b| b.path.as_ref()).and_then(|p| p.parent()).map(|p| p.display().to_string()).unwrap_or_default()),
                 Pane::Ports(_) => ("ports".into(), String::new()),
@@ -919,7 +919,7 @@ impl Tab {
                 }
                 Pane::Settings(_) => out.write_str("settings"),
                 Pane::Hints(_) => out.write_str("welcome"),
-                Pane::Home(h) => out.write_str(if h.library { "Reading list" } else { "home" }),
+                Pane::Home(h) => out.write_str(if h.library { "Kept" } else { "home" }),
                 Pane::Editor(e) => out.write_str(&e.title()),
                 Pane::Ports(_) => out.write_str("ports"),
                 Pane::Downloads(_) => out.write_str("downloads"),
@@ -1327,6 +1327,8 @@ pub struct App {
     pub keep_slip: Option<crate::keep_ui::Slip>,
     /// The kept item the keyword palette is for.
     pub keep_keyword_for: Option<String>,
+    /// What kept pages said, for search (keep_index.rs).
+    pub kept_words: crate::keep_index::Words,
     pub icon_previews: Vec<crate::app_icon::Preview>,
     pub welcome_icon_tex: Option<((nus_render::Mode, nus_render::Color), Arc<wgpu::BindGroup>)>,
     pub welcome_art: Option<(Instant, crate::art::Art)>,
@@ -1696,6 +1698,7 @@ impl App {
             welcome_hits: Vec::new(),
             keep_slip: None,
             keep_keyword_for: None,
+            kept_words: Default::default(),
             icon_previews: Vec::new(),
             welcome_icon_tex: None,
             welcome_art: None,
@@ -4511,7 +4514,7 @@ impl App {
                 Pane::Web(_) => (nus_render::text::icons::GLOBE, tab.title()),
                 Pane::Settings(_) => (nus_render::text::icons::SETTINGS, "settings".into()),
                 Pane::Hints(_) => (nus_render::text::icons::HOME, "welcome".into()),
-                Pane::Home(h) if h.library => (nus_render::text::icons::BOOK, "Reading list".into()),
+                Pane::Home(h) if h.library => (nus_render::text::icons::BOOK, "Kept".into()),
                 Pane::Home(_) => (nus_render::text::icons::HOME, "home".into()),
                 Pane::Editor(e) => (nus_render::text::icons::CODE, e.title()),
                 Pane::Ports(_) => (nus_render::text::icons::PORTS, "ports".into()),
@@ -7429,7 +7432,7 @@ impl App {
                 }
             }
             PaletteMode::Go => {
-                if hit("reading list reading list saved articles") {rows.push(row("", "Reading list".into(), Action::Library));}
+                if hit("kept library reading list saved articles bookmarks") {rows.push(row("", "Kept · the library, with the reading list".into(), Action::Library));}
                 if hit("keep this page bookmark save ctrl+d") {rows.push(row("", "Keep this page".into(), Action::Keep));}
                 if hit("kept bookmarks everything kept find") {rows.push(row("", "Kept · find what you kept".into(), Action::OpenPalette(PaletteMode::Kept)));}
                 if hit("save to reading list offline article") {rows.push(row("", "Save to reading list".into(), Action::SaveReading));}

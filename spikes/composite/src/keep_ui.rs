@@ -188,7 +188,7 @@ impl App {
 
     /// Put a source in a plain folder, or take it out; folders are still
     /// their own list until the sidebar reads collections (keep.rs).
-    fn keep_folder_item(&mut self, source: &str, title: &str, name: &str, on: bool) {
+    pub(crate) fn keep_folder_item(&mut self, source: &str, title: &str, name: &str, on: bool) {
         use crate::folders::{Item, Kind};
         let canon = crate::keep::canon(source);
         let Some(f) = self.folders.iter_mut().find(|f| f.kind == Kind::Plain && f.name == name) else { return };
@@ -215,8 +215,16 @@ impl App {
 
     fn keep_slip_act(&mut self, hit: SlipHit) {
         let Some(id) = self.keep_slip.as_ref().map(|s| s.id.clone()) else { return };
-        let Some(entry) = self.library.entries.get(&id).cloned() else { self.keep_slip = None; return };
+        if !self.library.entries.contains_key(&id) { self.keep_slip = None; return; }
         if let Some(s) = self.keep_slip.as_mut() { s.fresh = false; s.since = crate::clock::now(); }
+        self.keep_role(&id, hit);
+    }
+
+    /// Change what a kept item is for: the slip's chips and the library's
+    /// detail column both come here.
+    pub(crate) fn keep_role(&mut self, id: &str, hit: SlipHit) {
+        let id = id.to_string();
+        let Some(entry) = self.library.entries.get(&id).cloned() else { return };
         self.play_event("control.press");
         let store = self.library.store().clone();
         let result = match &hit {
