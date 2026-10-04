@@ -145,7 +145,7 @@ fn method_of(root: &Path, channel: nus_compat::Channel) -> Method {
     if cfg!(windows) {
         let fixed = data_home()
             .and_then(|d| d.parent().map(|p| p.join("Programs").join("nus")))
-            .is_some_and(|p| root.starts_with(p));
+            .is_some_and(|p| installed_under(root, &p));
         return if fixed {
             Method::Installer
         } else {
@@ -159,10 +159,17 @@ fn method_of(root: &Path, channel: nus_compat::Channel) -> Method {
             .unwrap_or_else(|| "nus".into());
         return Method::Deb(name);
     }
-    if data_home().is_some_and(|d| root.starts_with(d.join("app"))) {
+    if data_home().is_some_and(|d| installed_under(root, &d.join("app"))) {
         Method::Account
     } else {
         Method::Folder
+    }
+}
+
+fn installed_under(root: &Path, directory: &Path) -> bool {
+    match (root.canonicalize(), directory.canonicalize()) {
+        (Ok(root), Ok(directory)) => root.starts_with(directory),
+        _ => false,
     }
 }
 
@@ -1420,6 +1427,24 @@ pub fn doctor() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installation_ownership_compares_canonical_paths_on_both_sides() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("Programs/nus");
+        let installed = directory.join("preview");
+        let unrelated = temp.path().join("Programs/nus-other/preview");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::create_dir_all(&unrelated).unwrap();
+        assert!(installed_under(
+            &installed.canonicalize().unwrap(),
+            &directory
+        ));
+        assert!(!installed_under(
+            &unrelated.canonicalize().unwrap(),
+            &directory
+        ));
+    }
 
     #[test]
     fn sandbox_cleanup_requires_the_exact_installation_rule() {
