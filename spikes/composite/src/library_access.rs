@@ -59,7 +59,7 @@ impl App {
             }
             doc.set_children(blocks);tree.nodes.push((doc_id,doc));children.push(doc_id);
         }
-        let mut node=Node::new(if confirming{Role::Dialog}else{Role::Group});if confirming{node.set_modal();}node.set_label("Reading list");node.set_bounds(rect(area));node.set_children(children);
+        let mut node=Node::new(if confirming{Role::Dialog}else{Role::Group});if confirming{node.set_modal();}node.set_label("Kept");node.set_bounds(rect(area));node.set_children(children);
         tree.nodes.push((group,node));
         if let Some((_,root))=tree.nodes.iter_mut().find(|(id,_)|id.0==1){let mut kids=root.children().to_vec();kids.push(group);root.set_children(kids);}
         tree

@@ -282,6 +282,8 @@ impl App {
     /// History rows for the palette: pages visited, most and most recently first.
     pub(crate) fn history_rows(&self, q: &str, new_tab: bool, limit: usize) -> Vec<crate::app::PaletteRow> {
         let q = q.trim().to_lowercase();
+        // Kept pages are listed as kept, ahead of history (keep_find.rs).
+        let kept = self.kept_addresses();
         let mut hits: Vec<(&crate::start::Recent, &str, &str)> = self
             .recent
             .iter()
@@ -290,14 +292,11 @@ impl App {
                 _ => None,
             })
             .filter(|(_, url, title)| q.is_empty() || url.to_lowercase().contains(&q) || title.to_lowercase().contains(&q))
+            .filter(|(_, url, _)| !kept.contains(&crate::keep::canon(url)))
             .collect();
-        // Visits weigh more than recency; a prefix match on the host beats both.
+        let now = crate::journal::now();
         hits.sort_by(|a, b| {
-            let score = |(r, url, _): &(&crate::start::Recent, &str, &str)| {
-                let host = url.split("//").nth(1).unwrap_or(url).trim_start_matches("www.");
-                let prefix = if !q.is_empty() && host.starts_with(&q) { 1000 } else { 0 };
-                prefix + r.visits as i64 * 10 + (r.when as i64 / 3600).min(500_000)
-            };
+            let score = |(r, url, _): &(&crate::start::Recent, &str, &str)| history_score(&q, url, r.visits, r.when, now);
             score(b).cmp(&score(a))
         });
         hits.into_iter()
@@ -309,6 +308,34 @@ impl App {
                 crate::app::PaletteRow { num: format!("{}×", r.visits.max(1)), text, action }
             })
             .collect()
+    }
+}
+
+/// A history row's rank: a host that starts with the query beats
+/// everything; then each visit counts ten, and a visit today counts up to
+/// sixty more, fading to nothing over ten days. (Recency used to be hours
+/// since 1970, capped at 500,000: it stopped counting on 2027-01-15.)
+pub(crate) fn history_score(q: &str, url: &str, visits: u32, when: u64, now: u64) -> i64 {
+    let host = url.split("//").nth(1).unwrap_or(url).trim_start_matches("www.");
+    let prefix = if !q.is_empty() && host.starts_with(q) { 1000 } else { 0 };
+    let age_h = now.saturating_sub(when) / 3600;
+    prefix + visits as i64 * 10 + (240 - age_h.min(240) as i64) / 4
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::history_score;
+    const NOW: u64 = 1_800_000_000; // past 2027-01-15, where the old cap bit
+
+    #[test]
+    fn visits_lead_and_recency_still_counts_after_2027() {
+        let day = 86_400;
+        // Visited often beats visited once, today.
+        assert!(history_score("", "https://a.test", 20, NOW - 30 * day, NOW) > history_score("", "https://b.test", 1, NOW, NOW));
+        // Between equals, the newer one wins: recency is not a constant.
+        assert!(history_score("", "https://a.test", 3, NOW, NOW) > history_score("", "https://b.test", 3, NOW - 3 * day, NOW));
+        // A host prefix beats both.
+        assert!(history_score("doc", "https://docs.rs", 1, NOW - 30 * day, NOW) > history_score("doc", "https://x.test/docs", 50, NOW, NOW));
     }
 }
 

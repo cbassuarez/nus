@@ -245,15 +245,22 @@ impl App {
             let s = w.tab.shared.borrow();
             (s.url.clone(), if s.title.is_empty() { s.url.clone() } else { s.title.clone() })
         };
+        let container = crate::library::container(&w.container);
         let title = tab.name.clone().unwrap_or(title);
         let host = url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
+        let mut kept = None;
         if let Some(f) = self.folders.get_mut(fi) {
-            if f.kind == Kind::Plain && !f.items.iter().any(|it| it.url == url) {
-                f.items.push(Item { title, url, detail: host });
-                f.open = true;
+            if f.kind == Kind::Plain {
+                // The folder's name is a collection on the kept item (keep.rs).
+                kept = Some((url.clone(), title.clone(), f.name.clone()));
+                if !f.items.iter().any(|it| it.url == url) {
+                    f.items.push(Item { title, url, detail: host });
+                    f.open = true;
+                }
             }
         }
         self.save_folders();
+        if let Some((url, title, name)) = kept { self.keep_into_folder(&url, &title, container, &name); }
         self.play_event("toggle");
         self.dirty = true;
     }
@@ -269,6 +276,10 @@ impl App {
     }
 
     pub(crate) fn remove_from_folder(&mut self, fi: usize, k: usize) {
+        // A plain folder is a collection: the item leaves it (keep_side.rs).
+        if let Some((url, name)) = self.folders.get(fi).filter(|f| f.kind == Kind::Plain).and_then(|f| f.items.get(k).map(|it| (it.url.clone(), f.name.clone()))) {
+            self.uncollect(&url, &name);
+        }
         if let Some(f) = self.folders.get_mut(fi) {
             if f.kind == Kind::Plain && k < f.items.len() {
                 f.items.remove(k);
@@ -285,11 +296,16 @@ impl App {
     /// Open an item: the tab that has it, else a new page.
     pub(crate) fn open_item(&mut self, fi: usize, k: usize) {
         let Some(it) = self.folders.get(fi).and_then(|f| f.items.get(k)).cloned() else { return };
+        let plain = self.folders.get(fi).is_some_and(|f| f.kind == Kind::Plain);
         if self.files_click(&it.url) {
             return;
         }
         if let Some(i) = self.tabs.iter().position(|t| t.peek.is_none() && matches!(&t.left, Pane::Web(w) if w.tab.shared.borrow().url == it.url)) {
             return self.activate(i);
+        }
+        // A kept item opens in its own container (keep_side.rs).
+        if plain && self.open_kept_source(&it.url) {
+            return;
         }
         self.open_url(&it.url, true);
     }

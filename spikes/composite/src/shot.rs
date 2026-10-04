@@ -39,6 +39,8 @@
 //!   settingsat 2               open settings at a section (2 is STARTUP)
 //!   settingsscroll 900         scroll the open settings page to 900 logical px
 //!   hover 40 200               the pointer at logical px from the top-left
+//!   down 40 200 · up 300 90    the left button pressed, released there (a drag)
+//!   mods shift ctrl | none     modifiers held from here on
 //!   click 900 500              a left click there
 //!   rclick 900 500             a right click there (the page's menu)
 //!   altclick 900 500           with Alt held (a peek)
@@ -48,6 +50,7 @@
 //!   focus shell | page         which half of the split has the focus
 //!   erase 8                    backspaces to the shell, undoing a `line`
 //!   close                      the palette, ask, board and atlas, whichever is up
+//!   atlas | orrery             open the map (orrery_ui.rs); `key` drives it
 //!   restore                    the last session, as the atlas would
 //!   hands allow | deny | host  answer the hands band on the active page
 //!   pip                        this tab's video in the floating window
@@ -1069,6 +1072,36 @@ impl App {
                 self.save_prefs();
             }
             "assertpalette" => assert_eq!(self.palette.is_some(), rest == "open"),
+            // `promptrun <line>`: what the home prompt does with it.
+            "promptrun" => { if let Some(r) = self.prompt_action(rest) { self.run(r.action); } else { panic!("promptrun: nothing for {rest}") } }
+            // `assertrows url|go <query> | <words>`: the palette's first row for
+            // the query is a kept item and reads with those words.
+            "assertrows" => {
+                let (mode, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let (query, want) = rest.split_once('|').map(|(q, w)| (q.trim(), w.trim())).unwrap_or((rest.trim(), ""));
+                let mode = if mode == "go" { PaletteMode::Go } else { PaletteMode::Url };
+                let rows = self.palette_rows_raw(mode, query);
+                // Go lists open tabs first; a kept row still leads the search.
+                let at = rows.iter().position(|r| r.num == crate::keep_find::KEPT);
+                let search = rows.iter().position(|r| r.num == "?").unwrap_or(usize::MAX);
+                let listed = rows.iter().map(|r| (&r.num, &r.text)).collect::<Vec<_>>();
+                let at = at.unwrap_or_else(|| panic!("no kept row for `{query}`: {listed:?}"));
+                assert!(if mode == PaletteMode::Go { at < search } else { at == 0 }, "kept row not leading for `{query}`: {listed:?}");
+                let first = &rows[at];
+                assert!(first.text.contains(want), "first row `{}` lacks `{want}`", first.text);
+            }
+            // `assertkept yes|no|reading`: the page in front is kept (and on the reading list).
+            "assertkept" => {
+                let Pane::Web(w) = self.tabs[self.active].focused_ref() else { panic!("assertkept: no page in front") };
+                let url = w.tab.shared.borrow().url.clone();
+                let e = self.library.kept(&url, &crate::library::container(&w.container)).cloned();
+                match rest {
+                    "no" => assert!(e.is_none(), "kept: {url}"),
+                    "reading" => assert!(e.as_ref().is_some_and(|e| e.reading != Some(false)), "not on the reading list: {url} {e:?}"),
+                    _ => assert!(e.as_ref().is_some_and(|e| e.reading == Some(false)), "not kept: {url} {e:?}"),
+                }
+                assert_eq!(self.keep_slip.is_some(), rest != "no", "slip at `{step}`");
+            }
             "assertpane" => {
                 let kind = self.tabs.get(self.active).map(|t| match &t.left {
                     Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Editor(_) => "editor", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",
@@ -1326,7 +1359,7 @@ impl App {
             }
             "ctrlc" => self.shot_type(""),
             "compact" => self.toggle_compact(),
-            "atlas" => self.open_start(),
+            "atlas" | "orrery" => self.open_orrery(false),
             "settings" => self.open_settings(),
             "hatchname" => self.tabs[self.active].name=Some(rest.into()),
             "hatchwork" => self.show_hatch_work(),
@@ -1936,11 +1969,16 @@ impl App {
             "iconsettings"=>{self.open_settings();self.look_tab=crate::settings::LOOK_APP_ICON;if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|t.focused()){p.section=crate::settings::SEC_LOOK;p.scroll=0.0;}self.dirty=true;},
             "iconchoose"=>{let choice=crate::app_icon::Choice::ALL.into_iter().find(|c|c.name()==rest).unwrap();let r=self.settings_hits.iter().find(|(_,h)|*h==crate::settings::Hit::AppIcon(choice)).expect("icon card visible").0;self.mouse_moved(r.x+r.w/2.0,r.y+r.h/2.0);self.mouse_button(MouseButton::Left,ElementState::Pressed);self.mouse_button(MouseButton::Left,ElementState::Released);assert_eq!(self.behavior.app_icon,choice);assert_eq!(crate::app_icon::selected(),choice);},
             "asserticon"=>assert_eq!(self.behavior.app_icon.name(),rest),
+            "sidebarside"=>{self.sidebar_rules.side=if rest=="right" {crate::surface::Side::Right} else {crate::surface::Side::Left};self.sidebar_hover=false;self.sidebar_leave=None;self.layout();self.dirty=true;},
             "sidebarhoverprobe"=>{
                 self.sidebar=false;self.focus=false;self.sidebar_rules.hover_from=crate::surface::HoverFrom::InsideWindow;self.sidebar_rules.side=crate::surface::Side::Left;self.sidebar_hover=false;self.sidebar_leave=None;self.layout();
                 let y=self.content_rect().y+self.px(100.0);
                 self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_hover,"content handler swallowed edge hover");
-                self.cursor_left();assert!(self.sidebar_leave.is_some());
+                self.cursor_left();assert!(self.sidebar_leave.is_none(),"out through the sidebar's own side is an overshoot");
+                let band=self.sidebar_rect().right()+self.px(crate::app::SIDEBAR_BAND);
+                self.mouse_moved(band-self.px(4.0),y);assert!(self.sidebar_leave.is_none(),"a few pixels past the rule still counts as inside");
+                self.mouse_moved(band+self.px(200.0),y);assert!(self.sidebar_leave.is_some(),"well past the rule starts the wait");
+                self.cursor_left();assert!(self.sidebar_leave.is_some(),"out through the content side still leaves");
                 self.mouse_moved(self.px(100.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_leave.is_none(),"reentry must cancel stale hide timer");
                 self.focus_changed(false);self.focus_changed(true);self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.px(1.0),y);assert!(self.sidebar_hover,"hover after focus return");
                 self.sidebar_rules.side=crate::surface::Side::Right;self.sidebar_hover=false;self.mouse_moved(self.px(300.0),y);self.mouse_moved(self.target.size.0 as f32-self.px(1.0),y);assert!(self.sidebar_hover,"right edge hover");
@@ -2008,6 +2046,29 @@ impl App {
                 if let Some(reading)=&h.reading {let viewport=reading.reader.saved.viewport.expect("reader viewport");assert!(viewport.h>h.rect.h*0.6,"reader chrome consumed the page");}
             },
             "library" => self.open_library(),
+            // `assertpinned <url> <n>|no`: the kept item for a page pin holds
+            // its place n in the grid, or is kept but not pinned.
+            "assertpinned" => {
+                let (url, want) = rest.rsplit_once(' ').unwrap();
+                let e = self.library.kept(url, &None).cloned();
+                let e = e.unwrap_or_else(|| panic!("not kept: {url}"));
+                if want == "no" { assert_eq!(e.pin, None, "still pinned: {url}"); } else { assert_eq!(e.pin, Some(want.parse().unwrap()), "pin role for {url}"); }
+            }
+            // `assertfolder <NAME> <count>`: a plain folder, as a collection's view.
+            "assertfolder" => {
+                let (name, n) = rest.rsplit_once(' ').unwrap();
+                let f = self.folders.iter().find(|f| f.kind == crate::folders::Kind::Plain && f.name == name).unwrap_or_else(|| panic!("no folder {name}: {:?}", self.folders.iter().map(|f| &f.name).collect::<Vec<_>>()));
+                assert_eq!(f.items.len(), n.parse::<usize>().unwrap(), "items in {name}: {:?}", f.items);
+            }
+            "unpin" => self.pin_action(crate::pins::Act::Remove(rest.trim().parse().unwrap())),
+            // `libraryfilter <n>`: the library's lens n (library.rs).
+            "libraryfilter" => self.library_action(crate::library::Hit::Filter(rest.trim().parse().unwrap())),
+            // `assertlibrary <query> | <title>`: the first row the query lists.
+            "assertlibrary" => {
+                let (q, want) = rest.split_once('|').map(|(q, w)| (q.trim(), w.trim())).unwrap_or((rest.trim(), ""));
+                let rows = self.library_rows(q);
+                assert!(rows.first().is_some_and(|e| e.title.contains(want)), "first row for `{q}`: {:?}", rows.iter().map(|e| &e.title).collect::<Vec<_>>());
+            }
             "savereading" => self.save_reading(),
             "readingscroll" => self.library_scroll(-rest.parse::<f32>().unwrap()*self.scale),
             "readingopen" => {
@@ -2148,6 +2209,10 @@ impl App {
             "close" => {
                 self.palette = None;
                 self.start = None;
+                self.close_orrery();
+                if self.me_card.open {
+                    self.close_me_card();
+                }
                 if self.board.open {
                     self.close_board();
                 }
@@ -2155,6 +2220,23 @@ impl App {
                     t.ask = None;
                 }
                 self.layout();
+            }
+            // A drag in parts: the button down here, `hover` along the way,
+            // `mods` held meanwhile, the button up there.
+            "down" | "up" => {
+                let mut it = rest.split_whitespace().filter_map(|n| n.parse::<f32>().ok());
+                let (x, y) = (it.next().unwrap_or(0.0) * self.scale, it.next().unwrap_or(0.0) * self.scale);
+                self.mouse_moved(x, y);
+                self.mouse_button(MouseButton::Left, if verb == "down" { ElementState::Pressed } else { ElementState::Released });
+            }
+            "mods" => {
+                let m = rest.split_whitespace().fold(ModifiersState::empty(), |m, k| match k {
+                    "shift" => m | ModifiersState::SHIFT,
+                    "ctrl" => m | ModifiersState::CONTROL,
+                    "alt" => m | ModifiersState::ALT,
+                    _ => m,
+                });
+                self.modifiers(m);
             }
             "hover" | "rclick" | "altclick" | "srcclick" => {
                 let mut it = rest.split_whitespace().filter_map(|n| n.parse::<f32>().ok());

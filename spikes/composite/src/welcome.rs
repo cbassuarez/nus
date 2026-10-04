@@ -46,6 +46,8 @@ pub enum Act {
     Scroll(f32),
     /// GET or REMOVE an optional tool by id.
     Bundle(String),
+    /// Slide the hover sidebar in, from the shape on its edge.
+    Sidebar,
 }
 
 /// One row: chord (may be empty), title, what it does, an optional action.
@@ -156,7 +158,8 @@ impl App {
         let pages = vec![
             row(k("T"), "New tab", "opens the start page selected in Start/New Tab; hold or right-click NEW TAB to choose a shell or page", Some(("TRY", Act::NewTab))),
             row(k("K"), "The palette", "tabs, ports, history, commands to run again, settings, ask an assistant", Some(("TRY", Act::Palette(PaletteMode::Go)))),
-            row(k("L"), "Address", "history ranked by visits and recency; a search when it isn't a URL", Some(("TRY", Act::Palette(PaletteMode::Url)))),
+            row(if cfg!(target_os = "macos") { "⌘D" } else { "CTRL+D" }, "Keep a page", "the ribbon at the end of the address fills, and a slip says where it went: on the reading list, in a folder, with a copy for when the page won't load", None),
+                        row(k("L"), "Address", "history ranked by visits and recency; a search when it isn't a URL", Some(("TRY", Act::Palette(PaletteMode::Url)))),
             row(k("D"), "Split", "a page beside the shell, or two of anything", Some(("TRY", Act::Split))),
             row(if cfg!(target_os = "macos") { "⌘⌥R" } else { "CTRL+ALT+R" }, "Reader", "the article, set in Newsreader on our paper; the page keeps living underneath", Some(("TRY", Act::Reader))),
             row(if cfg!(target_os = "macos") { "⌘R" } else { "CTRL+R · F5" }, "Reload", "the page again; with Shift, past the cache", None),
@@ -398,11 +401,27 @@ impl App {
             }
         }
         y+=self.px(24.0);
+        // The hover sidebar's edge wears a half disc pointing at it. A pinned
+        // sidebar is already in sight, and a pane away from its edge (the far
+        // side of a split) has nothing to point at.
+        let c=self.content_rect();
+        let right=self.sidebar_right();
+        let at_edge=if right {r.right()>=c.right()-1.0} else {r.x<=c.x+1.0};
+        if at_edge && !self.sidebar_pinned() && self.sidebar_hoverable() {
+            let gap=x-r.x;
+            let radius=(gap-self.px(10.0)).min(self.px(48.0));
+            if radius>=self.px(22.0) {
+                let (ex,ey)=(if right {r.right()} else {r.x},r.y+r.h*0.5);
+                pieces.push(piece(11.0,ex,ey,radius/(75.0*sc)));
+                let hit=Rect::new(if right {ex-radius} else {ex},ey-radius,radius,radius*2.0);
+                self.welcome_hits.push((hit,Act::Sidebar));
+            }
+        }
         let reduced=self.motion.reduced();
         let modal=self.me_card.open;
         let pointer=if !reduced && r.contains(self.mouse.0,self.mouse.1) {Some(((self.mouse.0-r.x)/sc,(self.mouse.1-r.y)/sc))} else {None};
         for p in &pieces {
-            let (w,h)=match p[0] as usize {1=>(320.0,320.0),2=>(210.0,210.0),3=>(440.0,110.0),4=>(300.0,220.0),5=>(170.0,85.0),6=>(380.0,44.0),7=>(78.0,78.0),8=>(250.0,26.0),_=>(84.0,84.0)};
+            let (w,h)=match p[0] as usize {1=>(320.0,320.0),2=>(210.0,210.0),3=>(440.0,110.0),4=>(300.0,220.0),5=>(170.0,85.0),6=>(380.0,44.0),7=>(78.0,78.0),8=>(250.0,26.0),11=>(150.0,150.0),_=>(84.0,84.0)};
             let hit=Rect::new(r.x+(p[1]-w*p[3]*0.5)*sc,r.y+(p[2]-h*p[3]*0.5)*sc,w*p[3]*sc,h*p[3]*sc).intersect(&r);
             if hit.w>0.0 && hit.h>0.0 {self.welcome_shapes.push(hit);}
         }
@@ -525,6 +544,11 @@ impl App {
             Act::Close => self.dismiss_hints(),
             Act::Bundle(id) => self.bundle_toggle(&id),
             Act::Scroll(_) => {}
+            Act::Sidebar => {
+                self.sidebar_hover = true;
+                self.sidebar_leave = None;
+                self.play_event("sidebar.reveal");
+            }
         }
         self.save_prefs();
         self.dirty = true;

@@ -1409,6 +1409,25 @@ mod tests {
     }
 
     #[test]
+    fn welcome_peek_points_at_the_nearer_edge() {
+        for (x,chevron) in [(0.0,"«"),(800.0,"»")] {
+            let mut art=Art::open("memphis");
+            let commands=art.frame_at(Env {w:800.0,h:600.0,pieces:vec![[11.0,x,300.0,0.5]],face:"paper".into(),paper:[1.0;4],ink:[0.0,0.0,0.0,1.0],..Default::default()},3.0);
+            assert!(art.status.is_none(),"{:?}",art.status);
+            assert!(commands.iter().any(|c|matches!(c,Cmd::Text(_,_,t,..) if t==chevron)),"{chevron} at x={x}");
+            // The dome reaches into the pane from its edge, never past it.
+            let polys:Vec<_>=commands.iter().filter_map(|c|if let Cmd::Poly(points,_)=c {Some(points)} else {None}).collect();
+            assert!(!polys.is_empty());
+            assert!(polys.iter().any(|p|p.iter().all(|xy|(xy[0]-x).abs()<=50.0)));
+        }
+        // Behind the prompt it stays out of the composition.
+        let mut art=Art::open("memphis");
+        let commands=art.frame_at(Env {w:1280.0,h:800.0,..Default::default()},3.0);
+        // The sticker's » is the only text there.
+        assert_eq!(commands.iter().filter(|c|matches!(c,Cmd::Text(..))).count(),1);
+    }
+
+    #[test]
     fn welcome_places_existing_memphis_vectors_individually() {
         let mut art=Art::open("memphis");
         let commands=art.frame_at(Env {w:800.0,h:600.0,pieces:vec![[2.0,100.0,100.0,0.3],[6.0,650.0,480.0,0.4]],face:"paper".into(),paper:[1.0;4],ink:[0.0,0.0,0.0,1.0],..Default::default()},3.0);

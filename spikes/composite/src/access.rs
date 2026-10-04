@@ -119,7 +119,10 @@ impl App {
                 if !detail.is_empty() {
                     label.push_str(&format!(", {detail}"));
                 }
-                if t.waiting() {
+                let said = if self.tab_state_on() { self.tab_cell(t).words(1) } else { String::new() };
+                if !said.is_empty() && said != "idle" {
+                    label.push_str(&format!(", {said}"));
+                } else if t.waiting() {
                     label.push_str(", waiting");
                 }
                 n.set_label(label);

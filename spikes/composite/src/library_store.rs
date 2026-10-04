@@ -24,7 +24,7 @@ pub struct Position {
     #[serde(default)] pub block_hash: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub id: String,
     pub source: String,
@@ -44,6 +44,15 @@ pub struct Entry {
     #[serde(default)] pub position: Option<Position>,
     #[serde(default)] pub capture: Option<String>,
     #[serde(default)] pub note: String,
+    // A kept item's roles (keep.rs). Still schema 1: a build that predates
+    // them reads them into `extra` and writes them back untouched, rather
+    // than refusing the record. None: an item saved before keeping existed,
+    // which is on the reading list.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub reading: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub collections: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub pin: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")] pub keyword: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")] pub quote: String,
     // Preserve metadata written by compatible clients instead of losing it.
     #[serde(flatten)] pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -75,7 +84,9 @@ fn check_entry(e: &Entry) -> io::Result<()> {
     if !valid_id(&e.id) || e.schema > 1 || !e.progress.is_finite() || !(0.0..=1.0).contains(&e.progress)
         || e.source.len() > 16384 || e.title.len() > 8192 || e.anchor.len() > 8192 || e.note.len() > 8192
         || e.container.as_ref().is_some_and(|c| c.len() > 1024)
-        || e.snapshot.as_ref().is_some_and(|s| !valid_hash(s)) { return Err(invalid("Invalid or newer library record; original left untouched")); }
+        || e.snapshot.as_ref().is_some_and(|s| !valid_hash(s))
+        || e.collections.len() > 64 || e.collections.iter().any(|c| c.trim().is_empty() || c.len() > 256)
+        || e.keyword.len() > 64 || e.keyword.chars().any(char::is_whitespace) || e.quote.len() > 4096 { return Err(invalid("Invalid or newer library record; original left untouched")); }
     if let Some(p) = &e.position { validate_position(p)?; }
     Ok(())
 }
@@ -218,7 +229,8 @@ impl Store {
         let _lock = self.lock()?;
         let (entries,errors)=self.list()?;
         if !errors.is_empty(){return Err(invalid("Unreadable library records; save was not applied"));}
-        if let Some(mut existing)=entries.into_values().find(|e|e.source==source && e.container==container) {
+        let canon=crate::keep::canon(source);
+        if let Some(mut existing)=entries.into_values().find(|e|(e.source==source || crate::keep::canon(&e.source)==canon) && e.container==container) {
             if existing.deleted {existing.deleted=false;existing.capture=None;self.write(&mut existing)?;}
             return Ok((existing,false));
         }
@@ -243,7 +255,7 @@ impl Store {
         let mut e = Entry { id: key, source: source.into(), title: title.into(), saved: now, words: 0,
             progress: 0.0, anchor: String::new(), archived: false, schema: 1, revision: 0,
             container, finished: false, deleted: false, snapshot: None, position: None,
-            capture: None, note: String::new(), extra: BTreeMap::new() };
+            capture: None, note: String::new(), reading: Some(true), ..Default::default() };
         self.write(&mut e)?;
         Ok((e, true))
     }
@@ -262,7 +274,7 @@ impl Store {
             let e = Entry { id: id(source), source: source.into(), title: title.into(), saved: now,
                 words: 0, progress: 0.0, anchor: String::new(), archived: false,
                 schema: 1, revision: 0, container: None, finished: false, deleted: false,
-                snapshot: None, position: None, capture: None, note: String::new(), extra: BTreeMap::new() };
+                snapshot: None, position: None, capture: None, note: String::new(), ..Default::default() };
             check_entry(&e)?;
             if candidates.insert(e.id.clone(), e).is_some() {
                 return Err(invalid("Duplicate reading-default identifier"));
@@ -373,7 +385,7 @@ impl Store {
         }else {
             let key=id(source);
             let key=if all.contains_key(&key){id(&token()?)}else{key};
-            Entry{id:key,source:source.into(),title:title.into(),saved:now,words:0,progress:0.0,anchor:String::new(),archived:false,schema:1,revision:0,container:None,finished:false,deleted:false,snapshot:None,position:None,capture:None,note:String::new(),extra:BTreeMap::new()}
+            Entry{id:key,source:source.into(),title:title.into(),saved:now,words:0,progress:0.0,anchor:String::new(),archived:false,schema:1,revision:0,container:None,finished:false,deleted:false,snapshot:None,position:None,capture:None,note:String::new(),..Default::default()}
         };
         if e.source!=source {
             e.extra.entry("original_source".into()).or_insert_with(||serde_json::Value::String(e.source.clone()));
@@ -416,6 +428,43 @@ impl Store {
         if e.deleted || revision.is_some_and(|r| r != e.revision) { return Err(conflict()); }
         e.deleted = true;
         e.capture = None;
+        self.write(&mut e)?;
+        Ok(e)
+    }
+    /// Keep a source (⌘D): the same record Save to reading list makes, found
+    /// by its tidied address so one page is one item however it was reached,
+    /// but not put on the reading list. A removed item comes back, kept.
+    pub fn keep(&self, source: &str, title: &str, container: Option<String>, now: u64) -> io::Result<(Entry, bool)> {
+        if source.is_empty() || source.len() > 16384 || title.len() > 8192 { return Err(invalid("Invalid kept source or title")); }
+        let canon = crate::keep::canon(source);
+        let _lock = self.lock()?;
+        let (entries, errors) = self.list()?;
+        if !errors.is_empty() { return Err(invalid("Unreadable library records; nothing was kept")); }
+        if let Some(mut e) = entries.into_values().find(|e| (e.source == source || crate::keep::canon(&e.source) == canon) && e.container == container) {
+            if !e.deleted { return Ok((e, false)); }
+            e.deleted = false; e.capture = None; e.reading = Some(false);
+            self.write(&mut e)?;
+            return Ok((e, true));
+        }
+        let key = match &container { None => id(source), Some(c) => id(&format!("container\0{c}\0{source}")) };
+        let key = match self.read(&key) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => key,
+            Err(e) => return Err(e),
+            Ok(_) => id(&token()?),
+        };
+        let mut e = Entry { id: key, source: source.into(), title: title.into(), saved: now, schema: 1, container, reading: Some(false), ..Default::default() };
+        self.write(&mut e)?;
+        Ok((e, true))
+    }
+    /// Change a live record's roles under the writer lock: the record is
+    /// reread, so a change made elsewhere since is kept, not overwritten.
+    pub fn update(&self, key: &str, change: impl FnOnce(&mut Entry)) -> io::Result<Entry> {
+        let _lock = self.lock()?;
+        let mut e = self.read(key)?;
+        if e.deleted { return Err(conflict()); }
+        let (id, source, container) = (e.id.clone(), e.source.clone(), e.container.clone());
+        change(&mut e);
+        if e.id != id || e.source != source || e.container != container { return Err(invalid("A role change may not move the record")); }
         self.write(&mut e)?;
         Ok(e)
     }
@@ -728,6 +777,52 @@ mod tests {
         assert_eq!(locate_quote("same and same", &p), Some(9));
         let p = Position {quote:"日本語".into(),before:"a ".into(),after:" b".into(),..Default::default()};
         assert_eq!(locate_quote("a 日本語 b", &p), Some(2));
+    }
+    #[test]
+    fn keeping_is_one_record_per_page_and_off_the_reading_list() {
+        let (_t, s) = store();
+        let (a, created) = s.keep("https://www.example.test/doc/?utm_source=x", "Doc", None, 5).unwrap();
+        assert!(created); assert_eq!(a.reading, Some(false));
+        let (b, created) = s.keep("https://example.test/doc", "Doc again", None, 6).unwrap();
+        assert!(!created); assert_eq!(a.id, b.id);
+        // Save to reading list finds the same record.
+        let (c, created) = s.save_link("https://example.test/doc/", "Doc", None, 7).unwrap();
+        assert!(!created); assert_eq!(c.id, a.id);
+        // Another container is another item.
+        let (d, _) = s.keep("https://example.test/doc", "Doc", Some("work".into()), 8).unwrap();
+        assert_ne!(d.id, a.id);
+        // A removed item comes back kept, not as a reading item.
+        s.remove(&a.id).unwrap();
+        let (e, created) = s.keep("https://example.test/doc", "Doc", None, 9).unwrap();
+        assert!(created && !e.deleted); assert_eq!(e.reading, Some(false));
+    }
+    #[test]
+    fn roles_change_under_the_lock_and_survive_older_builds() {
+        let (_t, s) = store();
+        let (e, _) = s.keep("https://example.test/a", "A", None, 1).unwrap();
+        let e = s.update(&e.id, |e| { e.collections.push("rust".into()); e.reading = Some(true); }).unwrap();
+        assert_eq!(s.read(&e.id).unwrap().collections, vec!["rust".to_string()]);
+        assert!(s.update(&e.id, |e| e.source = "https://elsewhere.test".into()).is_err());
+        assert!(s.update(&e.id, |e| e.keyword = "two words".into()).is_err());
+        // A build without the role fields reads them into `extra` and writes
+        // them back as found, still schema 1.
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct Older { id: String, source: String, title: String, saved: u64, #[serde(default)] schema: u32,
+            #[serde(flatten)] extra: BTreeMap<String, serde_json::Value> }
+        let bytes = fs::read(s.path(&e.id).unwrap()).unwrap();
+        let older: Older = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(older.schema, 1);
+        let round: Entry = serde_json::from_slice(&serde_json::to_vec(&older).unwrap()).unwrap();
+        assert_eq!(round.collections, vec!["rust".to_string()]); assert_eq!(round.reading, Some(true));
+        // A record from before keeping is on the reading list.
+        let (r, _) = saved_legacy_shape(&s);
+        assert_eq!(r.reading, None);
+    }
+    fn saved_legacy_shape(s: &Store) -> (Entry, ()) {
+        let e = Entry { id: id("https://example.test/old"), source: "https://example.test/old".into(), title: "Old".into(), saved: 1, schema: 1, ..Default::default() };
+        fs::create_dir_all(&s.root).unwrap();
+        fs::write(s.path(&e.id).unwrap(), serde_json::to_vec(&serde_json::json!({"id":e.id,"source":e.source,"title":e.title,"saved":1,"schema":1})).unwrap()).unwrap();
+        (s.read(&e.id).unwrap(), ())
     }
     #[cfg(unix)]
     #[test]

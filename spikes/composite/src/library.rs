@@ -24,7 +24,18 @@ pub enum Hit {
     Search, Filter(u8), Row(String), Back, More, Original, Finished, Archive,
     Refresh, Remove, ConfirmRemove, CancelRemove, Undo, Find, Copy,
     Smaller, Larger, Link(String), Code(usize),
+    /// The detail column beside the list (wide panes only).
+    Detail(Detail),
 }
+/// What the item in the detail column can be asked to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Detail { Reading, Pin, Copy, Keyword, Folder(String), Note(PathBuf), Open, Original, Forget }
+/// Lenses past the four reading ones: items with a keyword, with a saved
+/// copy, and one per collection from COLLECTIONS on.
+pub const KEYWORDS: u8 = 4;
+pub const COPIES: u8 = 5;
+pub const PINNED: u8 = 6;
+pub const COLLECTIONS: u8 = 16;
 #[derive(Default)]
 pub struct Ui {
     pub draft: Option<form::Draft>,
@@ -36,6 +47,10 @@ pub struct Ui {
     pub selected: Option<String>,
     pub reveal: bool,
     pub size: f32,
+    /// Wide enough for the detail column: a click selects before it opens.
+    pub wide: bool,
+    /// The notes citing the selected item, as of a notes generation.
+    pub cited: Option<(String, u64, Vec<crate::notes_index::Hit>)>,
 }
 pub struct Library {
     pub entries: BTreeMap<String, Entry>,
@@ -48,6 +63,9 @@ pub struct Library {
     store: Store,
     last_scan: Instant,
     serial: u64,
+    /// Counts every change to `entries`: views derived from them redo
+    /// their work only when it moves (keep_side.rs).
+    gen: u64,
     scan: Option<(u64, std::sync::mpsc::Receiver<ScanResult>)>,
     pub status: String,
     undo: Option<(String, u64)>,
@@ -73,7 +91,7 @@ impl Default for Library {
     fn default() -> Self {
         Self { entries: BTreeMap::new(), loaded: false, defaults_ready: false,
             defaults_retry: None, defaults_error: None, pending: vec![], dirty: BTreeMap::new(),
-            store: Store::new(PathBuf::from("profile/library")), last_scan: crate::clock::now(), serial: 0, scan: None,
+            store: Store::new(PathBuf::from("profile/library")), last_scan: crate::clock::now(), serial: 0, gen: 0, scan: None,
             status: String::new(), undo: None, access_ids: BTreeMap::new(), access_map: BTreeMap::new() }
     }
 }
@@ -126,6 +144,7 @@ impl Library {
                     }
                 }
                 let changed=!self.loaded||entries!=self.entries||!errors.is_empty();
+                if changed{self.gen=self.gen.wrapping_add(1);}
                 self.entries=entries;self.loaded=true;
                 if !errors.is_empty(){self.status=format!("{} unreadable record(s); original files left untouched. {}",errors.len(),errors[0]);}
                 else if self.status=="Loading reading list…"{self.status.clear();}
@@ -134,8 +153,16 @@ impl Library {
             Err(e)=>{self.status=format!("Could not read the library; previous view retained: {e}");true},
         }
     }
-    fn ensure(&mut self) { if !self.loaded || !self.defaults_ready { self.reload(); } }
-    fn remember(&mut self, e: Entry) { self.serial=self.serial.wrapping_add(1);self.entries.insert(e.id.clone(), e); }
+    pub(crate) fn ensure(&mut self) { if !self.loaded || !self.defaults_ready { self.reload(); } }
+    pub(crate) fn store(&self) -> &Store { &self.store }
+    /// The live item for a source in a container, found by its tidied address.
+    pub(crate) fn kept(&self, source: &str, container: &Option<String>) -> Option<&Entry> {
+        let canon = crate::keep::canon(source);
+        self.entries.values().find(|e| !e.deleted && &e.container == container && (e.source == source || crate::keep::canon(&e.source) == canon))
+    }
+    pub(crate) fn remember(&mut self, e: Entry) { self.serial=self.serial.wrapping_add(1);self.gen=self.gen.wrapping_add(1);self.entries.insert(e.id.clone(), e); }
+    pub(crate) fn generation(&self) -> u64 { self.gen }
+    pub(crate) fn is_loaded(&self) -> bool { self.loaded }
     pub(crate) fn flush(&mut self, force: bool) {
         if crate::private::enabled() { return; }
         let dirty = std::mem::take(&mut self.dirty);
@@ -155,7 +182,7 @@ impl Library {
     }
 }
 impl Drop for Library { fn drop(&mut self) { self.flush(true); } }
-fn container(name: &str) -> Option<String> { (name != crate::containers::PERSONAL).then(|| name.to_string()) }
+pub(crate) fn container(name: &str) -> Option<String> { (name != crate::containers::PERSONAL).then(|| name.to_string()) }
 fn reading_action_available(source: &str, available: bool, hit: &Hit) -> bool {
     let web=url::Url::parse(source).is_ok_and(|u|matches!(u.scheme(),"http"|"https") && u.username().is_empty() && u.password().is_none());
     match hit {
@@ -220,11 +247,14 @@ impl App {
             if let Some(right) = right { self.tabs[i].focus_right = right; self.activate(i); return; }
         }
         let mut h = HomePane::new(); h.library = true; h.library_ui.focus = Some(Hit::Search);
-        let mut tab = self.make_tab(Pane::Home(h), None); tab.name = Some("Reading list".into());
+        let mut tab = self.make_tab(Pane::Home(h), None); tab.name = Some("Kept".into());
         self.tabs.push(tab); self.activate(self.tabs.len()-1); self.layout(); self.dirty = true;
     }
     pub(crate) fn save_reading(&mut self) { self.save_reading_mode(false, None); }
     pub(crate) fn refresh_reading(&mut self) { self.save_reading_mode(true, None); }
+    /// A kept item's copy, taken from its page open in front; it stays off
+    /// the reading list unless it was on it.
+    pub(crate) fn copy_kept(&mut self, id: &str) { self.save_reading_mode(true, Some(id.to_string())); }
     fn save_reading_mode(&mut self, refresh: bool, requested: Option<String>) {
         if crate::private::enabled() { self.library_message("Reading is not saved from an incognito window."); return; }
         self.library.ensure();
@@ -279,6 +309,13 @@ impl App {
             Ok((e, false))
         } else { self.library.store.save_link(&source, &title, context.clone(), crate::journal::now()) };
         let (e, created) = match saved { Ok(v) => v, Err(e) => { tracing::info!("reading link save failed: {e}"); self.library_message("Could not add this item to your library. Please try again."); return; } };
+        // A page kept with ⌘D joins the reading list here, and gets its copy.
+        let (e, created) = if !refresh && e.reading == Some(false) {
+            match self.library.store.update(&e.id, |e| e.reading = Some(true)) {
+                Ok(e) => (e, true),
+                Err(e) => { tracing::info!("reading role failed: {e}"); self.library_message("Could not add this item to your reading list. Please try again."); return; },
+            }
+        } else { (e, created) };
         self.library.remember(e.clone());
         if !created && !refresh { self.library_message("Already in your library."); return; }
         let e = match self.library.store.start_capture(&e.id) { Ok(e) => e, Err(e) => { tracing::info!("reading capture start failed: {e}"); self.library_message("Your link is saved. Keep the original open, then choose Refresh saved copy in the command palette to retry."); return; } };
@@ -309,6 +346,11 @@ impl App {
     }
     pub(crate) fn poll_library(&mut self) {
         if crate::private::enabled() { return; }
+        // Kept items lead the palette and the address field from the start:
+        // one load, then the usual rescans while the list is open.
+        if !self.library.loaded { self.library.ensure(); }
+        self.kept_words.tick(&self.library.store, &self.library.entries);
+        self.sync_kept_side();
         self.library.flush(false);
         if self.library.scan_ready() {
             let removed=self.library_home().and_then(|h|h.reading.as_ref()).is_some_and(|r|self.library.entries.get(&r.id).is_none_or(|e|e.deleted));
@@ -357,14 +399,36 @@ impl App {
         let archived = q == "archive" || q.starts_with("archive ");
         let q = if archived {q.strip_prefix("archive").unwrap().trim()} else {q.as_str()};
         let words: Vec<_> = q.split_whitespace().collect();
+        let collections = self.library_collections();
+        // What the saved copies said (keep_index.rs), beside titles and addresses.
+        let said = self.kept_words.search(&words.iter().map(|w| w.to_string()).collect::<Vec<_>>());
         let mut rows: Vec<_> = self.library.entries.values().filter(|e| !e.deleted && match if archived {3} else {filter} {
-            0 => !e.archived && !e.finished, 1 => true, 2 => !e.archived && e.finished, _ => e.archived,
-        }).filter(|e| { let text = format!("{} {} {}",e.title,e.source,e.extra.get("user_notes").and_then(|v|v.as_str()).unwrap_or("")).to_lowercase(); words.iter().all(|w|text.contains(w)) }).cloned().collect();
+            // Kept but not for reading: only ALL (and the kept lenses) list it.
+            0 => e.reading != Some(false) && !e.archived && !e.finished, 1 => true, 2 => e.reading != Some(false) && !e.archived && e.finished,
+            KEYWORDS => !e.keyword.is_empty(), COPIES => e.snapshot.is_some(), PINNED => e.pin.is_some(),
+            n if n >= COLLECTIONS => collections.get((n - COLLECTIONS) as usize).is_some_and(|c| e.collections.contains(c)),
+            _ => e.archived,
+        }).filter(|e| { let text = format!("{} {} {} {}",e.title,e.source,e.keyword,e.extra.get("user_notes").and_then(|v|v.as_str()).unwrap_or("")).to_lowercase(); words.iter().all(|w|text.contains(w)) || said.contains(&e.id) }).cloned().collect();
         rows.sort_by(|a,b| {
             let ongoing = |e:&Entry| filter == 0 && e.progress > 0.0 && !e.finished;
             ongoing(b).cmp(&ongoing(a)).then_with(||b.saved.cmp(&a.saved)).then_with(||a.id.cmp(&b.id))
         });
         rows
+    }
+    /// Every collection a live item sits in, by name.
+    pub(crate) fn library_collections(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.library.entries.values().filter(|e| !e.deleted).flat_map(|e| e.collections.iter().cloned()).collect();
+        names.sort_by_key(|n| n.to_lowercase()); names.dedup();
+        names.truncate((u8::MAX - COLLECTIONS) as usize);
+        names
+    }
+    /// A lens's name in the row of controls.
+    fn library_lens_name(&self, filter: u8) -> String {
+        match filter {
+            0 => "To read".into(), 1 => "All".into(), 2 => "Finished".into(), 3 => "Archived".into(),
+            KEYWORDS => "Keywords".into(), COPIES => "Copies".into(), PINNED => "Pinned".into(),
+            n => self.library_collections().get(n.saturating_sub(COLLECTIONS) as usize).cloned().unwrap_or_default(),
+        }
     }
     /// A reading item's saved copy as it is now (its hash), while the item
     /// is in the list: notes check a citation against it.
@@ -438,6 +502,8 @@ impl App {
         }
         if missing>0{format!(" · {missing} image(s) unavailable offline")}else{String::new()}
     }
+    /// A kept item's own place: its page in its container, or its file.
+    pub(crate) fn open_kept_entry(&mut self,e:&Entry) { self.open_reading_source(e); }
     fn open_reading_source(&mut self,e:&Entry) {
         if let Ok(url)=url::Url::parse(&e.source) {
             if matches!(url.scheme(),"http"|"https") && url.username().is_empty() && url.password().is_none() {
@@ -505,6 +571,7 @@ impl App {
             Hit::Smaller|Hit::Larger=>if let Some(h)=self.library_home_mut(){h.library_ui.size=((if h.library_ui.size==0.0{1.0}else{h.library_ui.size})+if hit==Hit::Larger{0.1}else{-0.1}).clamp(0.8,1.8);},
             Hit::Code(index)=>{let text=self.library_home().and_then(|h|h.reading.as_ref()).and_then(|r|r.reader.saved.code.get(&index)).cloned().unwrap_or_default();self.library_copy(text);},
             Hit::Link(url)=>if let Some(mut e)=e{e.source=url;self.open_reading_source(&e);},
+            Hit::Detail(d)=>self.library_detail(d),
         }
         self.dirty=true;
     }
@@ -659,7 +726,11 @@ impl App {
         if !self.library_focus_at(x,y){return false;}
         let hit=self.library_home().and_then(|h|h.library_ui.hits.iter().find(|(r,_)|r.contains(x,y))).map(|(_,h)|h.clone());
         if let Some(hit)=hit {
+            // With the detail column beside the list, a click selects; a
+            // second click on the selected row (or OPEN) opens it.
+            let select_only=matches!(&hit,Hit::Row(id) if self.library_home().is_some_and(|h|h.library_ui.wide && h.reading.is_none() && h.library_ui.selected.as_ref()!=Some(id)));
             if let Some(h)=self.library_home_mut(){h.library_ui.focus=Some(hit.clone());if let Hit::Row(id)=&hit{h.library_ui.selected=Some(id.clone());}}
+            if select_only{self.dirty=true;return true;}
             self.library_action(hit);return true;
         }
         if self.library_home().is_some_and(|h|h.library_ui.confirm){return true;}
@@ -696,7 +767,8 @@ impl App {
         let e=self.library_home().and_then(|h|h.reading.as_ref()).and_then(|r|self.library.entries.get(&r.id));
         match hit {
             Hit::Add=>"Add item".into(),Hit::Field(0)=>"Title".into(),Hit::Field(1)=>"Link or file path".into(),Hit::Field(_)=>"Text / personal notes".into(),Hit::SaveDraft=>"Save".into(),Hit::CancelDraft=>"Cancel".into(),
-            Hit::Search=>"Search title or source".into(),Hit::Filter(0)=>"Unfinished".into(),Hit::Filter(1)=>"All saved".into(),Hit::Filter(2)=>"Finished".into(),Hit::Filter(_)=>"Archived".into(),
+            Hit::Search=>"Search titles, addresses, keywords and saved copies".into(),Hit::Filter(f)=>self.library_lens_name(*f),
+            Hit::Detail(d)=>match d{Detail::Reading=>"To read".into(),Detail::Pin=>"Pin to the sidebar".into(),Detail::Copy=>"Keep a copy".into(),Detail::Keyword=>"Keyword".into(),Detail::Folder(n)=>format!("In folder {n}"),Detail::Note(p)=>format!("Open note {}",p.file_stem().map(|s|s.to_string_lossy().to_string()).unwrap_or_default()),Detail::Open=>"Open".into(),Detail::Original=>"Open original".into(),Detail::Forget=>"Forget".into()},
             Hit::Row(id)=>self.library.entries.get(id).map(|e|format!("Open saved {}",e.title)).unwrap_or_else(||"Open saved article".into()),
             Hit::Back=>"Library".into(),Hit::More=>"Reading options".into(),Hit::Original=>"Open original".into(),Hit::Finished=>if e.is_some_and(|e|e.finished){"Mark unfinished"}else{"Mark finished"}.into(),
             Hit::Archive=>if e.is_some_and(|e|e.archived){"Unarchive"}else{"Archive"}.into(),Hit::Refresh=>"Refresh saved copy".into(),Hit::Remove=>"Remove…".into(),Hit::ConfirmRemove=>"Confirm removal".into(),Hit::CancelRemove=>"Keep article".into(),Hit::Undo=>"Undo removal".into(),Hit::Find=>"Find in article".into(),Hit::Copy=>"Copy selection".into(),Hit::Smaller=>"A−".into(),Hit::Larger=>"A+".into(),Hit::Link(u)=>format!("Open link: {u}"),Hit::Code(_)=>"Copy code or table".into(),
@@ -710,7 +782,12 @@ impl App {
             .map(|hit|(self.library_label(&hit),hit)).collect()
     }
     fn library_controls(&mut self,scene:&mut Scene,h:&mut HomePane,controls:&[(Hit,String)],top:f32)->f32 {
-        let r=h.rect;let scale=self.scale;let px=|v:f32|v*scale;let gap=px(8.0);let span=px(760.0).min((r.w-px(40.0)).max(1.0));let left=if h.reading.is_some(){r.x+px(16.0)}else{r.x+(r.w-span)/2.0};let right=if h.reading.is_some(){r.right()-px(16.0)}else{left+span};let mut x=left;let mut y=top;
+        self.library_controls_in(scene,h,controls,top,None)
+    }
+    /// Controls in a row that wraps, between `span`'s edges when given.
+    fn library_controls_in(&mut self,scene:&mut Scene,h:&mut HomePane,controls:&[(Hit,String)],top:f32,span:Option<(f32,f32)>)->f32 {
+        let r=h.rect;let scale=self.scale;let px=|v:f32|v*scale;let gap=px(8.0);let width=px(760.0).min((r.w-px(40.0)).max(1.0));let left=if h.reading.is_some(){r.x+px(16.0)}else{r.x+(r.w-width)/2.0};let right=if h.reading.is_some(){r.right()-px(16.0)}else{left+width};
+        let (left,right)=span.unwrap_or((left,right));let mut x=left;let mut y=top;
         let label=self.label();let ink=self.theme.ink;let dim=self.theme.dim;
         for (hit,text) in controls {
             let width=(self.fonts.measure(label,text)+px(20.0)).min((right-left).max(1.0));
@@ -806,22 +883,39 @@ impl App {
             h.library_ui.hits.retain(|(r,_)|r.w>0.0&&r.h>0.0);
             scene.layer(outer);return;
         }
-        let width=px(760.0).min((r.w-px(40.0)).max(1.0));let x=r.x+(r.w-width)/2.0;
-        let title=self.fit(Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},"Reading list",width);
-        self.fonts.draw(scene,Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0},x,y+px(40.0),&title);y+=px(66.0);
-        for line in crate::reader::wrap(&self.fonts,label,"A place for what you want to return to.",width){self.fonts.draw(scene,Style{color:dim,..label},x,y,&line);y+=px(20.0);}
-        let controls=[(Hit::Add,"+ Add item".into()),(Hit::Filter(0),"Unfinished".into()),(Hit::Filter(1),"All saved".into()),(Hit::Filter(2),"Finished".into()),(Hit::Filter(3),"Archived".into())];
-        y=self.library_controls(scene,h,&controls,y+px(8.0));
+        // Wide enough: the list, and beside it the item in hand.
+        let wide=r.w>=px(1080.0);
+        h.library_ui.wide=wide;
+        let detail_w=if wide{px(340.0)}else{0.0};
+        let gap=if wide{px(36.0)}else{0.0};
+        let width=if wide{px(700.0).min(r.w-px(40.0)-detail_w-gap).max(1.0)}else{px(760.0).min((r.w-px(40.0)).max(1.0))};
+        let x=r.x+(r.w-width-gap-detail_w)/2.0;
+        let top=y;
+        let wm=Style{font:self.f.wordmark,px:px(36.0),color:ink,tracking:0.0};
+        let title=self.fit(wm,"Kept",width);
+        self.fonts.draw(scene,wm,x,y+px(40.0),&title);y+=px(66.0);
+        let key=if cfg!(target_os="macos"){"⌘D"}else{"Ctrl+D"};
+        for line in crate::reader::wrap(&self.fonts,label,&format!("Everything you kept. To read is one view of it; {key} on a page adds to it."),width){self.fonts.draw(scene,Style{color:dim,..label},x,y,&line);y+=px(20.0);}
+        let mut controls=vec![(Hit::Add,"+ Add item".to_string())];
+        let mut lenses=vec![0u8,1,2,3,PINNED,KEYWORDS,COPIES];
+        lenses.extend((0..self.library_collections().len()).map(|i|COLLECTIONS+i as u8));
+        for f in lenses {
+            let n=self.library_rows_for("",f).len();
+            // The kept lenses show once there is something in them.
+            if n==0 && f>=KEYWORDS && h.library_ui.filter!=f {continue;}
+            controls.push((Hit::Filter(f),format!("{} {n}",self.library_lens_name(f))));
+        }
+        y=self.library_controls_in(scene,h,&controls,y+px(8.0),Some((x,x+width)));
         let search=Rect::new(x,y,width,px(44.0));
         scene.hline(search.x,search.bottom()-px(3.0),search.w,px(1.0),if h.library_ui.focus==Some(Hit::Search){self.surface.signal}else{dim});
-        let text=self.fit(label,if h.input.is_empty(){"Search title or source"}else{&h.input},(width-px(20.0)).max(1.0));
+        let text=self.fit(label,if h.input.is_empty(){"Search titles, addresses, keywords and what pages said"}else{&h.input},(width-px(20.0)).max(1.0));
         self.fonts.draw(scene,Style{color:if h.input.is_empty(){dim}else{ink},..label},x+px(10.0),y+px(28.0),&text);
         if h.library_ui.focus==Some(Hit::Search) {
             let width=if h.input.is_empty(){0.0}else{self.fonts.measure(label,&text)};
             self.draw_line_caret(scene,x+px(10.0)+width,y+px(28.0),label.px,1.0,self.last_key);
         }
         h.library_ui.hits.push((search.intersect(&r),Hit::Search));y+=px(56.0);
-        if self.library.undo.is_some(){y=self.library_controls(scene,h,&[(Hit::Undo,"Undo removal".into())],y);}
+        if self.library.undo.is_some(){y=self.library_controls_in(scene,h,&[(Hit::Undo,"Undo removal".into())],y,Some((x,x+width)));}
         if !self.library.status.is_empty(){let message=self.fit(label,&self.library.status,width);self.fonts.draw(scene,Style{color:dim,..label},x,y+px(14.0),&message);y+=px(28.0);}
         let rows=self.library_rows_for(&h.input,h.library_ui.filter);
         if h.library_ui.selected.as_ref().is_some_and(|id| !rows.iter().any(|e| &e.id==id)) {
@@ -830,6 +924,10 @@ impl App {
             h.library_ui.focus=Some(h.library_ui.selected.clone().map(Hit::Row).unwrap_or(Hit::Search));
             h.sel=if rows.is_empty(){0}else{next+1};
         }
+        // Beside the list, an item is always in hand when there is one.
+        if wide && h.library_ui.selected.is_none() { h.library_ui.selected=rows.first().map(|e|e.id.clone()); }
+        let words:Vec<String>=h.input.to_lowercase().split_whitespace().map(str::to_string).collect();
+        let said=self.kept_words.search(&words);
         let area=Rect::new(x,y,width,(r.bottom()-y-px(16.0)).max(1.0));let row_h=px(82.0);
         h.library_reach=(rows.len() as f32*row_h-area.h).max(0.0);
         if h.library_ui.reveal{if let Some(i)=h.library_ui.selected.as_ref().and_then(|key|rows.iter().position(|e|&e.id==key)){
@@ -837,23 +935,144 @@ impl App {
         }h.library_ui.reveal=false;}
         h.library_scroll=h.library_scroll.clamp(0.0,h.library_reach);
         scene.layer(Some(area.intersect(&r)));
-        if rows.is_empty(){let message=if !self.library.loaded{"Reading the saved library…"}else if self.library.entries.values().all(|e|e.deleted){"Add a link or note above, or right-click a page to save it here."}else{"No matching items in this view."};for (i,line) in crate::reader::wrap(&self.fonts,label,message,width).iter().enumerate(){self.fonts.draw(scene,label,x,y+px(28.0)+i as f32*px(22.0),line);}}
+        if rows.is_empty(){let message=if !self.library.loaded{"Reading the saved library…"}else if self.library.entries.values().all(|e|e.deleted){"Add a link or note above, or press Ctrl+D on a page to keep it here."}else{"No matching items in this view."};for (i,line) in crate::reader::wrap(&self.fonts,label,message,width).iter().enumerate(){self.fonts.draw(scene,label,x,y+px(28.0)+i as f32*px(22.0),line);}}
         for (i,e) in rows.iter().enumerate(){
             let row=Rect::new(x,y+i as f32*row_h-h.library_scroll,width,row_h);
             if row.bottom()<area.y||row.y>area.bottom(){continue;}
             let selected=h.library_ui.selected.as_ref()==Some(&e.id);
             if selected||row.contains(self.mouse.0,self.mouse.1){scene.rect(row,self.theme.tint);}
+            if selected && wide {scene.vline(row.x,row.y+px(8.0),row.h-px(16.0),px(2.0),self.surface.signal);}
             let title=self.fit(self.ui_strong(),&e.title,(width-px(20.0)).max(1.0));
             self.fonts.draw(scene,self.ui_strong(),x+px(10.0),row.y+px(27.0),&title);
-            let state=if e.words==0 && e.snapshot.is_none(){"Link only".into()}else{format!("~{} min · {} · saved text",e.words.div_ceil(220),if e.finished{"finished"}else if e.progress>0.0{"continue reading"}else{"unread"})};
+            let state=if e.reading==Some(false){if e.snapshot.is_some(){"Kept · copy saved".into()}else{"Kept".into()}}
+                else if e.words==0 && e.snapshot.is_none(){"Link only".into()}else{format!("~{} min · {} · saved text",e.words.div_ceil(220),if e.finished{"finished"}else if e.progress>0.0{"continue reading"}else{"unread"})};
             let source=url::Url::parse(&e.source).ok().and_then(|u|u.host_str().map(str::to_owned)).unwrap_or_else(||if e.source.starts_with("file:"){Path::new(e.source.trim_start_matches("file:")).file_name().unwrap_or_default().to_string_lossy().to_string()}else{"Note".into()});
-            let text=self.fit(label,format!("{state} · {source}"),(width-px(20.0)).max(1.0));
+            let mut text=format!("{state} · {source}");
+            if !e.keyword.is_empty(){text.push_str(&format!(" · {}",e.keyword));}
+            for c in e.collections.iter().take(2){text.push_str(&format!(" · {c}"));}
+            let plain=format!("{} {} {}",e.title,e.source,e.keyword).to_lowercase();
+            if !words.is_empty() && said.contains(&e.id) && !words.iter().all(|w|plain.contains(w.as_str())){text.push_str(" · found in the saved copy");}
+            let text=self.fit(label,text,(width-px(20.0)).max(1.0));
             self.fonts.draw(scene,Style{color:dim,..label},x+px(10.0),row.y+px(53.0),&text);
             scene.hline(x,row.bottom()-px(1.0),width,px(1.0),self.theme.tint);
             let clipped=row.intersect(&area).intersect(&r);
             if clipped.w>0.0&&clipped.h>0.0{h.hits.push((clipped,i));h.library_ui.hits.push((clipped,Hit::Row(e.id.clone())));}
         }
+        scene.layer(Some(r));
+        if wide {
+            let dx=x+width+gap;
+            self.draw_library_detail(scene,h,Rect::new(dx,top+px(12.0),detail_w,(r.bottom()-top-px(28.0)).max(1.0)));
+        }
         scene.layer(outer);
+    }
+
+    /// The item in hand, beside the list: what it is, where it sits, what
+    /// it is for, and the notes that cite it.
+    fn draw_library_detail(&mut self,scene:&mut Scene,h:&mut HomePane,rect:Rect) {
+        let scale=self.scale;let px=|v:f32|v*scale;
+        let ink=self.theme.ink;let dim=self.theme.dim;let label=self.label();let ui=self.ui();
+        scene.vline(rect.x-px(18.0),rect.y,rect.h,px(1.0),self.theme.tint);
+        let Some(e)=h.library_ui.selected.as_ref().and_then(|id|self.library.entries.get(id)).cloned() else {
+            for (i,line) in crate::reader::wrap(&self.fonts,label,"Select an item to see where it sits, what it is for, and the notes that cite it.",rect.w).iter().enumerate(){self.fonts.draw(scene,Style{color:dim,..label},rect.x,rect.y+px(20.0)+i as f32*px(20.0),line);}
+            return;
+        };
+        let mut y=rect.y;
+        self.draw_ribbon(scene,rect.x,y+px(6.0),px(16.0),self.surface.signal);
+        let head=Style{font:self.f.wordmark,px:px(22.0),color:ink,tracking:0.0};
+        for line in crate::reader::wrap(&self.fonts,head,if e.title.is_empty(){&e.source}else{&e.title},rect.w-px(20.0)).into_iter().take(3){self.fonts.draw(scene,head,rect.x+px(18.0),y+px(20.0),&line);y+=px(28.0);}
+        y+=px(10.0);
+        let small=Style{color:dim,..label};
+        let days=crate::journal::now().saturating_sub(e.saved)/86_400;
+        let saved=match days{0=>"today".to_string(),1=>"yesterday".into(),n=>format!("{n} days ago")};
+        let copy=if e.snapshot.is_some(){format!("reader copy · {} words",e.words)}else if e.capture.is_some(){"being saved…".into()}else{"none · the page itself".into()};
+        let mut kv=vec![("ADDRESS",e.source.clone()),("KEPT",saved),("COPY",copy)];
+        if let Some(c)=&e.container{kv.insert(1,("CONTAINER",c.clone()));}
+        if !e.keyword.is_empty(){kv.push(("KEYWORD",e.keyword.clone()));}
+        for (k,v) in kv {
+            self.fonts.draw(scene,small,rect.x,y+px(14.0),k);
+            let v=self.fit(ui,v,rect.w-px(96.0));
+            self.fonts.draw(scene,Style{color:ink,..ui},rect.x+px(92.0),y+px(14.0),&v);
+            y+=px(22.0);
+        }
+        y+=px(8.0);scene.hline(rect.x,y,rect.w,px(1.0),self.theme.tint);y+=px(12.0);
+        let focus=h.library_ui.focus.clone();
+        let chips=|app:&mut App,scene:&mut Scene,h:&mut HomePane,y:&mut f32,key:&str,items:Vec<(String,bool,Detail)>| {
+            app.fonts.draw(scene,small,rect.x,*y+px(15.0),key);
+            let mut cx=rect.x+px(36.0);
+            for (text,on,d) in items {
+                let cw=app.fonts.measure(label,&text)+px(16.0);
+                if cx+cw>rect.right(){cx=rect.x+px(36.0);*y+=px(26.0);}
+                let r=Rect::new(cx,*y+px(2.0),cw,px(20.0));
+                if on{scene.rect(r,ink);}else{scene.outline(r,px(1.0),ink);}
+                if focus.as_ref()==Some(&Hit::Detail(d.clone())){scene.outline(Rect::new(r.x-px(3.0),r.y-px(3.0),r.w+px(6.0),r.h+px(6.0)),px(2.0),ink);}
+                app.fonts.draw(scene,Style{color:if on{app.on_fill(ink)}else{ink},..label},r.x+px(8.0),r.y+px(14.0),&text);
+                h.library_ui.hits.push((r,Hit::Detail(d)));
+                cx+=cw+px(6.0);
+            }
+            *y+=px(32.0);
+        };
+        // The sidebar's plain folders, and any collection the item sits in.
+        let mut names:Vec<String>=self.folders.iter().filter(|f|f.kind==crate::folders::Kind::Plain).map(|f|f.name.clone()).collect();
+        for c in &e.collections{if !names.contains(c){names.push(c.clone());}}
+        let folders:Vec<(String,bool,Detail)>=names.into_iter().map(|n|(n.to_uppercase(),e.collections.contains(&n),Detail::Folder(n))).collect();
+        if folders.is_empty(){self.fonts.draw(scene,small,rect.x,y+px(15.0),"IN");self.fonts.draw(scene,small,rect.x+px(36.0),y+px(15.0),"no folders yet");y+=px(32.0);}
+        else{chips(self,scene,h,&mut y,"IN",folders);}
+        let copy=if e.snapshot.is_some(){"COPY KEPT"}else{"KEEP A COPY"};
+        let keyword=if e.keyword.is_empty(){"KEYWORD".to_string()}else{format!("KEYWORD · {}",e.keyword)};
+        chips(self,scene,h,&mut y,"AS",vec![("TO READ".into(),e.reading!=Some(false),Detail::Reading),("PIN".into(),e.pin.is_some(),Detail::Pin),(copy.into(),e.snapshot.is_some(),Detail::Copy),(keyword,!e.keyword.is_empty(),Detail::Keyword)]);
+        scene.hline(rect.x,y,rect.w,px(1.0),self.theme.tint);y+=px(12.0);
+        // The notes that cite it, as of the notes index's last change.
+        let generation=crate::notes_index::generation();
+        let fresh=h.library_ui.cited.as_ref().is_some_and(|(id,g,_)|*id==e.id && *g==generation);
+        if !fresh{h.library_ui.cited=Some((e.id.clone(),generation,crate::notes_index::about(&[crate::notes_index::lookup_url(&e.source)])));}
+        let cited=h.library_ui.cited.as_ref().map(|(_,_,c)|c.clone()).unwrap_or_default();
+        let head=match cited.len(){0=>"NO NOTE CITES IT".to_string(),1=>"CITED IN 1 NOTE".into(),n=>format!("CITED IN {n} NOTES")};
+        self.fonts.draw(scene,Style{color:ink,..self.label_strong()},rect.x,y+px(14.0),&head);y+=px(24.0);
+        for c in cited.iter().take(4) {
+            let r=Rect::new(rect.x,y,rect.w,px(26.0));
+            if r.contains(self.mouse.0,self.mouse.1)||focus.as_ref()==Some(&Hit::Detail(Detail::Note(c.path.clone()))){scene.rect(r,self.theme.tint);}
+            let t=self.fit(ui,format!("{} · {}",c.title,c.home_name),rect.w-px(12.0));
+            self.fonts.draw(scene,Style{color:ink,..ui},rect.x+px(6.0),y+px(18.0),&t);
+            h.library_ui.hits.push((r,Hit::Detail(Detail::Note(c.path.clone()))));
+            y+=px(28.0);
+        }
+        y+=px(10.0);
+        let mut bx=rect.x;
+        let web=url::Url::parse(&e.source).ok().is_some_and(|u|matches!(u.scheme(),"http"|"https"));
+        let mut buttons=vec![("OPEN",Detail::Open)];
+        if web{buttons.push(("ORIGINAL",Detail::Original));}
+        buttons.push(("FORGET",Detail::Forget));
+        for (i,(text,d)) in buttons.into_iter().enumerate() {
+            let bw=self.fonts.measure(label,text)+px(18.0);
+            let r=Rect::new(bx,y,bw,px(24.0));
+            if i==0{scene.rect(r,ink);}else{scene.outline(r,px(1.0),ink);}
+            if focus.as_ref()==Some(&Hit::Detail(d.clone())){scene.outline(Rect::new(r.x-px(3.0),r.y-px(3.0),r.w+px(6.0),r.h+px(6.0)),px(2.0),ink);}
+            self.fonts.draw(scene,Style{color:if i==0{self.on_fill(ink)}else{ink},..label},r.x+px(9.0),r.y+px(16.0),text);
+            h.library_ui.hits.push((r,Hit::Detail(d)));
+            bx+=bw+px(8.0);
+        }
+    }
+
+    /// The detail column's controls.
+    fn library_detail(&mut self, d: Detail) {
+        use crate::keep_ui::SlipHit;
+        let Some(id)=self.library_home().and_then(|h|h.library_ui.selected.clone()) else { return };
+        let Some(e)=self.library.entries.get(&id).cloned() else { return };
+        match d {
+            Detail::Reading=>self.keep_role(&id,SlipHit::Reading),
+            Detail::Pin=>self.toggle_kept_pin(&id),
+            Detail::Copy=>self.keep_role(&id,SlipHit::Copy),
+            Detail::Keyword=>self.ask_keyword(id),
+            Detail::Folder(name)=>self.keep_role(&id,SlipHit::Folder(name)),
+            Detail::Note(path)=>self.run(crate::app::Action::Note(crate::notes_ui::NoteAct::Open(path))),
+            Detail::Open=>self.read_saved(&id),
+            Detail::Original=>self.open_reading_source(&e),
+            Detail::Forget=>{
+                self.library_remove_revision(&e.id,e.revision);
+                for name in e.collections { self.keep_folder_item(&e.source,"",&name,false); }
+                self.library_message("Forgotten. Undo puts it back.");
+            }
+        }
     }
 }
 

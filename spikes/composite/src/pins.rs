@@ -10,7 +10,7 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Display { #[default] Icon, Preview }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Target {
     Library,
     Welcome,
@@ -22,7 +22,7 @@ pub enum Target {
     Page { url: String, container: String },
     File { path: String },
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Pin {
     pub id: String,
     pub title: String,

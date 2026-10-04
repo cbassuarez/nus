@@ -31,7 +31,7 @@ pub enum Dest {
 
 impl App {
     /// Why tab `i` can't leave this window, if it can't.
-    fn cannot_send(&self, i: usize) -> Option<&'static str> {
+    pub(crate) fn cannot_send(&self, i: usize) -> Option<&'static str> {
         let t = self.tabs.get(i)?;
         let real = self.tabs.iter().filter(|t| !t.hatch && t.peek.is_none()).count();
         if t.hatch {

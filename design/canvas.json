@@ -197,6 +197,114 @@
       "h": 560,
       "page": "page-4",
       "title": "Look chip \u00b7 options"
+    },
+    {
+      "file": "DragLanes.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-5",
+      "title": "A \u00b7 Lanes"
+    },
+    {
+      "file": "DragDwell.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-5",
+      "title": "B \u00b7 Dwell"
+    },
+    {
+      "file": "DragDirector.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-5",
+      "title": "C \u00b7 Director"
+    },
+    {
+      "file": "DragCommon.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-5",
+      "title": "Common ground \u00b7 bounds, timing, Wayland"
+    },
+    {
+      "file": "StateLedger.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-6",
+      "title": "A \u00b7 Ledger"
+    },
+    {
+      "file": "StateProof.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-6",
+      "title": "B \u00b7 Proof"
+    },
+    {
+      "file": "StateWire.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-6",
+      "title": "C \u00b7 Wire"
+    },
+    {
+      "file": "StateCommon.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-6",
+      "title": "Common ground \u00b7 states, sources, loudness"
+    },
+    {
+      "file": "KeptShelf.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "title": "A \u00b7 Shelf",
+      "page": "page-7"
+    },
+    {
+      "file": "KeptLibrary.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "title": "B \u00b7 Library",
+      "page": "page-7"
+    },
+    {
+      "file": "KeptPalette.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "title": "C \u00b7 Palette",
+      "page": "page-7"
+    },
+    {
+      "file": "KeptCommon.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "title": "Common ground \u00b7 record, verb, mark, bands",
+      "page": "page-7"
     }
   ],
   "annotations": [
@@ -327,11 +435,35 @@
       "w": 620,
       "page": "page-4",
       "text": "Sidebar header \u2014 three directions. Windows, not spaces; the name is the title the wordmark was holding; NEW TAB is the button hit most. Approve one or name the amalgam (e.g. Masthead title + Ledger next-row + Spine on hover)."
+    },
+    {
+      "id": "n-drag",
+      "x": 0,
+      "y": -170,
+      "w": 760,
+      "page": "page-5",
+      "text": "Tab drag \u2014 three directions for one tab director. Five things a drag can do: move (around tabs), stack (in / out), join (multiplex into another tab as a pane), tile (beside, on the page), send (to another window); plus copy.\nA chooses the verb by place, B by waiting, C by key. Common ground (bottom right) holds what all three share: one Intent drawn by ghost, target and words alike; bounds with hysteresis; dwell only when still; the Wayland gap.\nSuggested amalgam: A's lanes and quarters as the base, C's director bar plus shift = join and 1\u20139 = send, and B's dwell only for folded stacks and the window name. Approve one or name the mix."
+    },
+    {
+      "id": "n-state",
+      "x": 0,
+      "y": -170,
+      "w": 760,
+      "page": "page-6",
+      "text": "Tab state \u2014 three directions for what's inside a tab or a stack, on the same nine tabs. A states it in a fixed cell, B shows the tab itself (live crops, a hover card), C writes a line of words only when there's news, with a shaped edge.\nSuggested mix: C's wire and edge at rest, A's spine for folded stacks, B's hover card on demand. Approve one or name the mix."
+    },
+    {
+      "id": "n-kept",
+      "x": 0,
+      "y": -170,
+      "w": 760,
+      "page": "page-7",
+      "text": "Bookmarks \u2014 one store for everything kept. Today six places keep a link (pins, folders, the reading list, saved commands, notes' sources, history); here they become one record with roles: in (collections), pin, to read, keyword, copy, quote, and here (personal or this project). One verb, \u2318D; one mark, the ribbon.\nA browses in the sidebar, B on one Library page, C nowhere: \u2318D keeps, \u2318K finds. Common ground (bottom right) holds the record, the verb, the bands and the two homes.\nSuggested mix: C's verb and recall everywhere (kept leads the palette and the address field), B's Library as the one place to tidy (the reading-list page grown up), and from A only Pinned and This project in the sidebar. Approve one or name the mix."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-4"
+    "page": "page-7"
   },
   "pages": [
     {
@@ -349,6 +481,18 @@
     {
       "id": "page-4",
       "name": "Sidebar header"
+    },
+    {
+      "id": "page-5",
+      "name": "Tab drag"
+    },
+    {
+      "id": "page-6",
+      "name": "Tab state"
+    },
+    {
+      "id": "page-7",
+      "name": "Bookmarks"
     }
   ]
 }

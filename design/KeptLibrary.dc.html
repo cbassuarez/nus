@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>B · Library</title>
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+    .cap { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .sig { color: #c8102e; }
+    h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; white-space: nowrap; }
+    h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a857a; font-weight: 500; margin: 0; }
+    h2 b { color: #ece7da; font-weight: 600; }
+    .note { font-size: 12px; line-height: 1.6; color: #8a857a; }
+    .note b { color: #ece7da; font-weight: 600; }
+    .col { display: flex; flex-direction: column; gap: 8px; }
+    .box { border: 1.5px solid #ece7da; padding: 14px 16px; box-sizing: border-box; }
+    .sb { width: 280px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; box-sizing: border-box; flex-shrink: 0; }
+    .band { height: 5px; background: #c8102e; }
+    .hd { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border-bottom: 1.5px solid #ece7da; }
+    .r { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 28px; border-bottom: 1px solid rgba(236,231,218,0.16); white-space: nowrap; font-size: 12px; box-sizing: border-box; }
+    .r.on { background: rgba(236,231,218,0.08); font-weight: 600; box-shadow: inset 2px 0 0 #c8102e; }
+    .r .n { width: 12px; color: #8a857a; font-size: 10px; flex-shrink: 0; }
+    .r .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .r .end { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .r .h { color: #8a857a; font-size: 10px; }
+    .sec { display: flex; align-items: center; gap: 7px; padding: 0 11px; height: 26px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #8a857a; border-bottom: 1px solid rgba(236,231,218,0.16); }
+    .sec b { color: #ece7da; font-weight: 600; }
+    .sec .end { margin-left: auto; }
+    .rule { border-top: 1.5px solid #ece7da; }
+    .kid { padding-left: 30px; }
+    .pins { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid rgba(236,231,218,0.16); }
+    .pins > div { height: 46px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 9.5px; border-right: 1px solid rgba(236,231,218,0.16); border-bottom: 1px solid rgba(236,231,218,0.16); color: #ece7da; }
+    .cell { min-width: 30px; height: 17px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; font-size: 9.5px; letter-spacing: 0.05em; box-sizing: border-box; text-transform: uppercase; white-space: nowrap; }
+    .cell.out { border: 1px solid #ece7da; }
+    .cell.dimo { border: 1px solid rgba(236,231,218,.35); color: #8a857a; }
+    .cell.sig { background: #c8102e; color: #fff; font-weight: 600; }
+    .cell.inv { background: #ece7da; color: #141414; font-weight: 600; }
+    .meter { width: 34px; height: 4px; background: rgba(236,231,218,.2); position: relative; display: inline-block; }
+    .meter i { position: absolute; left: 0; top: 0; bottom: 0; background: #ece7da; }
+    .page { border: 1.5px solid #ece7da; background: #0f0f0f; box-sizing: border-box; position: relative; }
+    .addr { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1.5px solid #ece7da; background: #141414; font-size: 11.5px; }
+    .field { flex: 1; height: 22px; border: 1px solid rgba(236,231,218,.5); display: flex; align-items: center; gap: 6px; padding: 0 8px; min-width: 0; }
+    .field .u { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .slip { position: absolute; border: 1.5px solid #ece7da; background: #141414; box-shadow: 6px 6px 0 rgba(236,231,218,.3); font-size: 11.5px; }
+    .slip .row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid rgba(236,231,218,0.16); }
+    .slip .row:last-child { border-bottom: 0; }
+    .slip .k { width: 26px; color: #8a857a; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; }
+    .chip { height: 19px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(236,231,218,.5); font-size: 10px; letter-spacing: .04em; white-space: nowrap; }
+    .chip.on { border-color: #ece7da; background: #ece7da; color: #141414; font-weight: 600; }
+    .chip.add { border-style: dashed; color: #8a857a; }
+    .text { padding: 14px 18px; font-family: 'Newsreader', Georgia, serif; font-size: 15px; line-height: 1.5; color: rgba(236,231,218,.8); }
+    .text h3 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 24px; margin: 0 0 8px; color: #ece7da; }
+    .bandmsg { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 30px; border-bottom: 1.5px solid #ece7da; font-size: 11px; background: #141414; }
+    .bandmsg .end { margin-left: auto; display: flex; gap: 8px; }
+    .btn { white-space: nowrap; flex-shrink: 0; height: 20px; padding: 0 8px; display: inline-flex; align-items: center; border: 1px solid #ece7da; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+    .btn.fill { background: #ece7da; color: #141414; }
+    .pal { border: 2px solid #ece7da; background: #141414; box-shadow: 8px 8px 0 rgba(236,231,218,.3); box-sizing: border-box; }
+    .pal .in { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1.5px solid #ece7da; font-size: 14px; }
+    .caret { display: inline-block; width: 2px; height: 16px; background: #c8102e; }
+    .pal .r { min-height: 32px; }
+    .pal .r .num { width: 34px; color: #8a857a; font-size: 10px; text-align: right; flex-shrink: 0; }
+    .facet { color: #c8102e; }
+    .tbl { display: grid; font-size: 11.5px; }
+    .tbl > div { padding: 7px 10px 7px 0; border-bottom: 1px solid rgba(236,231,218,0.16); display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .tbl > .h { color: #8a857a; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1.5px solid #ece7da; }
+    .tbl > div.sel { background: rgba(236,231,218,0.08); }
+    .tbl .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lens { display: flex; border-bottom: 1.5px solid #ece7da; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+    .lens > div { padding: 8px 12px; border-right: 1px solid rgba(236,231,218,0.16); white-space: nowrap; }
+    .lens > div.on { background: #ece7da; color: #141414; font-weight: 600; }
+    .lens > div span { color: #8a857a; margin-left: 5px; }
+    .lens > div.on span { color: #141414; }
+    .kv { display: grid; grid-template-columns: 84px 1fr; gap: 6px 10px; font-size: 11px; }
+    .kv .k { color: #8a857a; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; padding-top: 2px; }
+    .rail { width: 48px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; }
+    .rail .ic { position: relative; width: 48px; height: 38px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(236,231,218,.16); }
+    .rail .ic.on { background: rgba(236,231,218,.08); box-shadow: inset 2px 0 0 #c8102e; }
+</style>
+</helmet>
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 34px 40px; display:flex; flex-direction:column; gap: 22px; overflow:hidden;">
+  <div style="display:flex; gap: 40px; align-items: flex-end;">
+    <h1>B · Library</h1>
+    <div class="note" style="max-width: 940px; padding-bottom: 6px;"><b>One page for everything kept.</b> The reading list grows into a ruled page with lenses (to read, pinned, this project, commands, notes, each collection) and a column for the item in hand, including the notes that cite it.</div>
+  </div>
+
+  <div style="display:flex; gap: 30px; align-items:flex-start;">
+    <div class="col" style="flex:1;min-width:0"><h2><b>the library</b> · one page, today's reading list grown into it</h2>
+      <div class="page" style="width:1020px;height:640px;padding:0">
+        <div class="addr"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M3 5h7a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H3zM21 5h-7a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h7z"/></svg><span class="cap">kept</span><span class="dim" style="font-size:10px">341</span><div class="field" style="margin-left:14px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg><span class="u dim">find by title, address, or what the page said</span></div></div>
+        <div class="lens"><div class="on">all<span>341</span></div><div>to read<span>3</span></div><div>pinned<span>6</span></div><div>this project<span>5</span></div><div>commands<span>9</span></div><div>notes<span>4</span></div><div>rust<span>14</span></div><div>imported · chrome<span>212</span></div><div style="color:#8a857a">+</div></div>
+        <div style="display:flex;padding:14px 18px;gap:20px">
+          <div style="flex:1;min-width:0"><div class="tbl" style="grid-template-columns:22px 1fr 120px 120px 48px 76px"><div class="h"></div><div class="h">kept</div><div class="h">in</div><div class="h">as</div><div class="h">notes</div><div class="h">opened</div><div class=" sel"><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=" sel"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="t"><b style="font-weight:600">Understanding Ownership</b> <span class="dim">· doc.rust-lang.org</span></span></div><div class="dim sel" style="font-size:10.5px">rust · nus</div><div class=" sel" style="gap:8px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M3 5h7a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H3zM21 5h-7a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h7z"/></svg><span class="meter"><i style="width:40%"></i></span> <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9h16"/><path d="M8 14h8"/></svg></div><div class=" sel">2</div><div class="dim sel" style="font-size:10.5px">today</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="t"><b style="font-weight:600">wgpu — Rust</b> <span class="dim">· docs.rs</span></span></div><div class="dim" style="font-size:10.5px">nus</div><div class="" style="gap:8px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M9 3h6l-1 6 4 4H6l4-4z"/><path d="M12 13v8"/></svg></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">today</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="t"><b style="font-weight:600">PR #212 · Sidebar hold</b> <span class="dim">· github.com</span></span></div><div class="dim" style="font-size:10.5px">nus</div><div class="" style="gap:8px"><span class="dim">—</span></div><div class="">1</div><div class="dim" style="font-size:10.5px">yesterday</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="t"><b style="font-weight:600">docs.rs search</b> <span class="dim">· docs.rs/?search=%s</span></span></div><div class="dim" style="font-size:10.5px">—</div><div class="" style="gap:8px"><span class="cell dimo">rs</span></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">3 d</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span class="t"><b style="font-weight:600">cargo test --workspace</b> <span class="dim">· command</span></span></div><div class="dim" style="font-size:10.5px">nus</div><div class="" style="gap:8px"><span class="cell dimo">ct</span></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">3 d</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="t"><b style="font-weight:600">The Rust Async Book</b> <span class="dim">· rust-lang.github.io</span></span></div><div class="dim" style="font-size:10.5px">rust</div><div class="" style="gap:8px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M3 5h7a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H3zM21 5h-7a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h7z"/></svg><span class="meter"><i style="width:5%"></i></span></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">1 wk</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M5 3h10l4 4v14H5z"/><path d="M9 11h6M9 15h6"/></svg><span class="t"><b style="font-weight:600">Why the prompt wraps</b> <span class="dim">· note · nus</span></span></div><div class="dim" style="font-size:10.5px">nus</div><div class="" style="gap:8px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M9 3h6l-1 6 4 4H6l4-4z"/><path d="M12 13v8"/></svg></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">2 wk</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="t"><b style="font-weight:600">Tracing JITs, again</b> <span class="dim">· lwn.net</span></span></div><div class="dim" style="font-size:10.5px">—</div><div class="" style="gap:8px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M3 5h7a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H3zM21 5h-7a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h7z"/></svg><span class="meter"><i style="width:0%"></i></span> <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9h16"/><path d="M8 14h8"/></svg></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">3 wk</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/></svg><span class="t"><b style="font-weight:600">design/canvas.json</b> <span class="dim">· file · nus</span></span></div><div class="dim" style="font-size:10.5px">nus</div><div class="" style="gap:8px"><span class="dim">—</span></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">1 mo</div><div class=""><svg width="7" height="10" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg></div><div class=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="t"><b style="font-weight:600">Hacker News</b> <span class="dim">· news.ycombinator.com</span></span></div><div class="dim" style="font-size:10.5px">imported · chrome</div><div class="" style="gap:8px"><span class="dim">—</span></div><div class=""><span class=dim>—</span></div><div class="dim" style="font-size:10.5px">4 mo</div></div></div>
+          <div class="col" style="width:330px;gap:14px;border-left:1.5px solid #ece7da;padding-left:20px">
+<div style="display:flex;gap:8px;align-items:center"><svg width="9" height="14" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg><span style="font-family:Newsreader,Georgia,serif;font-style:italic;font-size:22px">Understanding Ownership</span></div>
+<div class="kv">
+<div class="k">address</div><div>doc.rust-lang.org/book/ch04-01…</div>
+<div class="k">container</div><div>default</div>
+<div class="k">in</div><div style="display:flex;gap:5px;flex-wrap:wrap"><span class="chip on">this project · nus</span><span class="chip">rust</span></div>
+<div class="k">as</div><div style="display:flex;gap:5px;flex-wrap:wrap"><span class="chip">pin</span><span class="chip on">to read · 40%</span><span class="chip">keyword</span></div>
+<div class="k">copy</div><div>reader copy · 12 Mar · 4,210 words</div>
+<div class="k">quote</div><div class="dim">“Each value in Rust has an owner.”</div>
+</div>
+<div class="rule"></div>
+<h2><b>cited in 2 notes</b></h2>
+<div class="r "><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M5 3h10l4 4v14H5z"/><path d="M9 11h6M9 15h6"/></svg><span class="t">Borrowck, slowly</span><span class="h">personal</span><span class="end"></span></div>
+<div class="r "><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M5 3h10l4 4v14H5z"/><path d="M9 11h6M9 15h6"/></svg><span class="t">Why the prompt wraps</span><span class="h">nus</span><span class="end"></span></div>
+<div style="display:flex;gap:8px"><span class="btn fill">open</span><span class="btn">write about it</span><span class="btn">forget</span></div>
+</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex; gap: 20px;">
+    <div class="note box" style="flex:1"><b>How it reads.</b> One page holds everything kept, ruled like the ports board. Lenses across the top are the roles and the collections; the reading list is the <b>to read</b> lens, not a second page. The right column is the item: what it is, where it sits, what it's for, its copy, and the notes that cite it.</div>
+    <div class="note box" style="flex:1"><b>For.</b> Room for 341 items and for tidying them; the reading-list page already exists to grow from. Search reaches the kept copies' text, so you find a page by what it said.</div>
+    <div class="note box" style="flex:1"><b>Against.</b> A page is a place you have to go. On its own it becomes the graveyard most bookmark managers are: filed once, never visited. It needs the palette and the address field to bring things back.</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>
