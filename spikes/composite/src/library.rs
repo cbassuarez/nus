@@ -29,11 +29,12 @@ pub enum Hit {
 }
 /// What the item in the detail column can be asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Detail { Reading, Copy, Keyword, Folder(String), Note(PathBuf), Open, Original, Forget }
+pub enum Detail { Reading, Pin, Copy, Keyword, Folder(String), Note(PathBuf), Open, Original, Forget }
 /// Lenses past the four reading ones: items with a keyword, with a saved
 /// copy, and one per collection from COLLECTIONS on.
 pub const KEYWORDS: u8 = 4;
 pub const COPIES: u8 = 5;
+pub const PINNED: u8 = 6;
 pub const COLLECTIONS: u8 = 16;
 #[derive(Default)]
 pub struct Ui {
@@ -62,6 +63,9 @@ pub struct Library {
     store: Store,
     last_scan: Instant,
     serial: u64,
+    /// Counts every change to `entries`: views derived from them redo
+    /// their work only when it moves (keep_side.rs).
+    gen: u64,
     scan: Option<(u64, std::sync::mpsc::Receiver<ScanResult>)>,
     pub status: String,
     undo: Option<(String, u64)>,
@@ -87,7 +91,7 @@ impl Default for Library {
     fn default() -> Self {
         Self { entries: BTreeMap::new(), loaded: false, defaults_ready: false,
             defaults_retry: None, defaults_error: None, pending: vec![], dirty: BTreeMap::new(),
-            store: Store::new(PathBuf::from("profile/library")), last_scan: crate::clock::now(), serial: 0, scan: None,
+            store: Store::new(PathBuf::from("profile/library")), last_scan: crate::clock::now(), serial: 0, gen: 0, scan: None,
             status: String::new(), undo: None, access_ids: BTreeMap::new(), access_map: BTreeMap::new() }
     }
 }
@@ -140,6 +144,7 @@ impl Library {
                     }
                 }
                 let changed=!self.loaded||entries!=self.entries||!errors.is_empty();
+                if changed{self.gen=self.gen.wrapping_add(1);}
                 self.entries=entries;self.loaded=true;
                 if !errors.is_empty(){self.status=format!("{} unreadable record(s); original files left untouched. {}",errors.len(),errors[0]);}
                 else if self.status=="Loading reading list…"{self.status.clear();}
@@ -155,7 +160,9 @@ impl Library {
         let canon = crate::keep::canon(source);
         self.entries.values().find(|e| !e.deleted && &e.container == container && (e.source == source || crate::keep::canon(&e.source) == canon))
     }
-    pub(crate) fn remember(&mut self, e: Entry) { self.serial=self.serial.wrapping_add(1);self.entries.insert(e.id.clone(), e); }
+    pub(crate) fn remember(&mut self, e: Entry) { self.serial=self.serial.wrapping_add(1);self.gen=self.gen.wrapping_add(1);self.entries.insert(e.id.clone(), e); }
+    pub(crate) fn generation(&self) -> u64 { self.gen }
+    pub(crate) fn is_loaded(&self) -> bool { self.loaded }
     pub(crate) fn flush(&mut self, force: bool) {
         if crate::private::enabled() { return; }
         let dirty = std::mem::take(&mut self.dirty);
@@ -343,6 +350,7 @@ impl App {
         // one load, then the usual rescans while the list is open.
         if !self.library.loaded { self.library.ensure(); }
         self.kept_words.tick(&self.library.store, &self.library.entries);
+        self.sync_kept_side();
         self.library.flush(false);
         if self.library.scan_ready() {
             let removed=self.library_home().and_then(|h|h.reading.as_ref()).is_some_and(|r|self.library.entries.get(&r.id).is_none_or(|e|e.deleted));
@@ -397,7 +405,7 @@ impl App {
         let mut rows: Vec<_> = self.library.entries.values().filter(|e| !e.deleted && match if archived {3} else {filter} {
             // Kept but not for reading: only ALL (and the kept lenses) list it.
             0 => e.reading != Some(false) && !e.archived && !e.finished, 1 => true, 2 => e.reading != Some(false) && !e.archived && e.finished,
-            KEYWORDS => !e.keyword.is_empty(), COPIES => e.snapshot.is_some(),
+            KEYWORDS => !e.keyword.is_empty(), COPIES => e.snapshot.is_some(), PINNED => e.pin.is_some(),
             n if n >= COLLECTIONS => collections.get((n - COLLECTIONS) as usize).is_some_and(|c| e.collections.contains(c)),
             _ => e.archived,
         }).filter(|e| { let text = format!("{} {} {} {}",e.title,e.source,e.keyword,e.extra.get("user_notes").and_then(|v|v.as_str()).unwrap_or("")).to_lowercase(); words.iter().all(|w|text.contains(w)) || said.contains(&e.id) }).cloned().collect();
@@ -418,7 +426,7 @@ impl App {
     fn library_lens_name(&self, filter: u8) -> String {
         match filter {
             0 => "To read".into(), 1 => "All".into(), 2 => "Finished".into(), 3 => "Archived".into(),
-            KEYWORDS => "Keywords".into(), COPIES => "Copies".into(),
+            KEYWORDS => "Keywords".into(), COPIES => "Copies".into(), PINNED => "Pinned".into(),
             n => self.library_collections().get(n.saturating_sub(COLLECTIONS) as usize).cloned().unwrap_or_default(),
         }
     }
@@ -494,6 +502,8 @@ impl App {
         }
         if missing>0{format!(" · {missing} image(s) unavailable offline")}else{String::new()}
     }
+    /// A kept item's own place: its page in its container, or its file.
+    pub(crate) fn open_kept_entry(&mut self,e:&Entry) { self.open_reading_source(e); }
     fn open_reading_source(&mut self,e:&Entry) {
         if let Ok(url)=url::Url::parse(&e.source) {
             if matches!(url.scheme(),"http"|"https") && url.username().is_empty() && url.password().is_none() {
@@ -758,7 +768,7 @@ impl App {
         match hit {
             Hit::Add=>"Add item".into(),Hit::Field(0)=>"Title".into(),Hit::Field(1)=>"Link or file path".into(),Hit::Field(_)=>"Text / personal notes".into(),Hit::SaveDraft=>"Save".into(),Hit::CancelDraft=>"Cancel".into(),
             Hit::Search=>"Search titles, addresses, keywords and saved copies".into(),Hit::Filter(f)=>self.library_lens_name(*f),
-            Hit::Detail(d)=>match d{Detail::Reading=>"To read".into(),Detail::Copy=>"Keep a copy".into(),Detail::Keyword=>"Keyword".into(),Detail::Folder(n)=>format!("In folder {n}"),Detail::Note(p)=>format!("Open note {}",p.file_stem().map(|s|s.to_string_lossy().to_string()).unwrap_or_default()),Detail::Open=>"Open".into(),Detail::Original=>"Open original".into(),Detail::Forget=>"Forget".into()},
+            Hit::Detail(d)=>match d{Detail::Reading=>"To read".into(),Detail::Pin=>"Pin to the sidebar".into(),Detail::Copy=>"Keep a copy".into(),Detail::Keyword=>"Keyword".into(),Detail::Folder(n)=>format!("In folder {n}"),Detail::Note(p)=>format!("Open note {}",p.file_stem().map(|s|s.to_string_lossy().to_string()).unwrap_or_default()),Detail::Open=>"Open".into(),Detail::Original=>"Open original".into(),Detail::Forget=>"Forget".into()},
             Hit::Row(id)=>self.library.entries.get(id).map(|e|format!("Open saved {}",e.title)).unwrap_or_else(||"Open saved article".into()),
             Hit::Back=>"Library".into(),Hit::More=>"Reading options".into(),Hit::Original=>"Open original".into(),Hit::Finished=>if e.is_some_and(|e|e.finished){"Mark unfinished"}else{"Mark finished"}.into(),
             Hit::Archive=>if e.is_some_and(|e|e.archived){"Unarchive"}else{"Archive"}.into(),Hit::Refresh=>"Refresh saved copy".into(),Hit::Remove=>"Remove…".into(),Hit::ConfirmRemove=>"Confirm removal".into(),Hit::CancelRemove=>"Keep article".into(),Hit::Undo=>"Undo removal".into(),Hit::Find=>"Find in article".into(),Hit::Copy=>"Copy selection".into(),Hit::Smaller=>"A−".into(),Hit::Larger=>"A+".into(),Hit::Link(u)=>format!("Open link: {u}"),Hit::Code(_)=>"Copy code or table".into(),
@@ -887,7 +897,7 @@ impl App {
         let key=if cfg!(target_os="macos"){"⌘D"}else{"Ctrl+D"};
         for line in crate::reader::wrap(&self.fonts,label,&format!("Everything you kept. To read is one view of it; {key} on a page adds to it."),width){self.fonts.draw(scene,Style{color:dim,..label},x,y,&line);y+=px(20.0);}
         let mut controls=vec![(Hit::Add,"+ Add item".to_string())];
-        let mut lenses=vec![0u8,1,2,3,KEYWORDS,COPIES];
+        let mut lenses=vec![0u8,1,2,3,PINNED,KEYWORDS,COPIES];
         lenses.extend((0..self.library_collections().len()).map(|i|COLLECTIONS+i as u8));
         for f in lenses {
             let n=self.library_rows_for("",f).len();
@@ -1009,7 +1019,7 @@ impl App {
         else{chips(self,scene,h,&mut y,"IN",folders);}
         let copy=if e.snapshot.is_some(){"COPY KEPT"}else{"KEEP A COPY"};
         let keyword=if e.keyword.is_empty(){"KEYWORD".to_string()}else{format!("KEYWORD · {}",e.keyword)};
-        chips(self,scene,h,&mut y,"AS",vec![("TO READ".into(),e.reading!=Some(false),Detail::Reading),(copy.into(),e.snapshot.is_some(),Detail::Copy),(keyword,!e.keyword.is_empty(),Detail::Keyword)]);
+        chips(self,scene,h,&mut y,"AS",vec![("TO READ".into(),e.reading!=Some(false),Detail::Reading),("PIN".into(),e.pin.is_some(),Detail::Pin),(copy.into(),e.snapshot.is_some(),Detail::Copy),(keyword,!e.keyword.is_empty(),Detail::Keyword)]);
         scene.hline(rect.x,y,rect.w,px(1.0),self.theme.tint);y+=px(12.0);
         // The notes that cite it, as of the notes index's last change.
         let generation=crate::notes_index::generation();
@@ -1050,6 +1060,7 @@ impl App {
         let Some(e)=self.library.entries.get(&id).cloned() else { return };
         match d {
             Detail::Reading=>self.keep_role(&id,SlipHit::Reading),
+            Detail::Pin=>self.toggle_kept_pin(&id),
             Detail::Copy=>self.keep_role(&id,SlipHit::Copy),
             Detail::Keyword=>self.ask_keyword(id),
             Detail::Folder(name)=>self.keep_role(&id,SlipHit::Folder(name)),

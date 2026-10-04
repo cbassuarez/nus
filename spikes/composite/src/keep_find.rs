@@ -21,7 +21,8 @@ impl App {
         }
         let ok = url::Url::parse(&e.source).ok().is_some_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
         if !ok || e.source.contains("%s") { return None; }
-        Some(if new_tab { Action::NewBrowser(e.source.clone()) } else { Action::OpenInPane(e.source.clone()) })
+        // A new tab opens in the item's own container; in place, the pane's.
+        Some(if new_tab { Action::OpenKept(e.id.clone()) } else { Action::OpenInPane(e.source.clone()) })
     }
 
     /// A kept item as a row reads: its title, its host, what it is for.
@@ -35,6 +36,7 @@ impl App {
             let p = (e.progress * 100.0).round() as u32;
             text.push_str(&if p > 0 { format!(" · to read {p}%") } else { " · to read".to_string() });
         }
+        if e.pin.is_some() { text.push_str(" · pinned"); }
         for c in e.collections.iter().take(2) { text.push_str(&format!(" · {c}")); }
         text
     }

@@ -80,6 +80,8 @@ pub enum Action {
     SaveReading,
     /// Keep what is in front (keep.rs): ⌘D, Ctrl+D on a page.
     Keep,
+    /// A kept item, opened where it lives: its page in its container.
+    OpenKept(String),
     /// The asked-for kept item's keyword; empty clears it.
     KeepKeyword(String),
     /// `keyword rs https://…%s`: keep a search address under a word.
@@ -1329,6 +1331,10 @@ pub struct App {
     pub keep_keyword_for: Option<String>,
     /// What kept pages said, for search (keep_index.rs).
     pub kept_words: crate::keep_index::Words,
+    /// The library generation and pins the sidebar's kept views last saw.
+    pub kept_side_seen: Option<(u64, u64)>,
+    /// Plain folders' old item lists are filed into collections once.
+    pub folders_filed: bool,
     pub icon_previews: Vec<crate::app_icon::Preview>,
     pub welcome_icon_tex: Option<((nus_render::Mode, nus_render::Color), Arc<wgpu::BindGroup>)>,
     pub welcome_art: Option<(Instant, crate::art::Art)>,
@@ -1699,6 +1705,8 @@ impl App {
             keep_slip: None,
             keep_keyword_for: None,
             kept_words: Default::default(),
+            kept_side_seen: None,
+            folders_filed: false,
             icon_previews: Vec::new(),
             welcome_icon_tex: None,
             welcome_art: None,
@@ -7996,6 +8004,7 @@ impl App {
             Action::SaveReading => self.save_reading(),
             Action::Keep => self.keep_front(),
             Action::KeepKeyword(word) => self.set_keyword(word),
+            Action::OpenKept(id) => if let Some(e) = self.library.entries.get(&id).cloned() { self.open_kept_entry(&e); },
             Action::KeepTemplate(word, url) => self.keep_template(word, url),
             Action::RefreshReading => self.refresh_reading(),
             Action::ReadingControl(hit) => self.library_action(hit),

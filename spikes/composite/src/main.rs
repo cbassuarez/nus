@@ -154,6 +154,7 @@ mod keep;
 mod keep_ui;
 mod keep_find;
 mod keep_index;
+mod keep_side;
 mod celestial;
 mod settings;
 mod sound;

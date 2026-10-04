@@ -2046,6 +2046,21 @@ impl App {
                 if let Some(reading)=&h.reading {let viewport=reading.reader.saved.viewport.expect("reader viewport");assert!(viewport.h>h.rect.h*0.6,"reader chrome consumed the page");}
             },
             "library" => self.open_library(),
+            // `assertpinned <url> <n>|no`: the kept item for a page pin holds
+            // its place n in the grid, or is kept but not pinned.
+            "assertpinned" => {
+                let (url, want) = rest.rsplit_once(' ').unwrap();
+                let e = self.library.kept(url, &None).cloned();
+                let e = e.unwrap_or_else(|| panic!("not kept: {url}"));
+                if want == "no" { assert_eq!(e.pin, None, "still pinned: {url}"); } else { assert_eq!(e.pin, Some(want.parse().unwrap()), "pin role for {url}"); }
+            }
+            // `assertfolder <NAME> <count>`: a plain folder, as a collection's view.
+            "assertfolder" => {
+                let (name, n) = rest.rsplit_once(' ').unwrap();
+                let f = self.folders.iter().find(|f| f.kind == crate::folders::Kind::Plain && f.name == name).unwrap_or_else(|| panic!("no folder {name}: {:?}", self.folders.iter().map(|f| &f.name).collect::<Vec<_>>()));
+                assert_eq!(f.items.len(), n.parse::<usize>().unwrap(), "items in {name}: {:?}", f.items);
+            }
+            "unpin" => self.pin_action(crate::pins::Act::Remove(rest.trim().parse().unwrap())),
             // `libraryfilter <n>`: the library's lens n (library.rs).
             "libraryfilter" => self.library_action(crate::library::Hit::Filter(rest.trim().parse().unwrap())),
             // `assertlibrary <query> | <title>`: the first row the query lists.

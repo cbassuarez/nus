@@ -25,6 +25,7 @@ const LIFE_MS: u128 = 4000;
 #[derive(Clone, Debug, PartialEq)]
 pub enum SlipHit {
     Reading,
+    Pin,
     Copy,
     Keyword,
     /// A plain folder, by name: the item sits in it or not.
@@ -237,6 +238,7 @@ impl App {
                 return self.copy_kept(&id);
             }
             SlipHit::Keyword => return self.ask_keyword(id),
+            SlipHit::Pin => return self.toggle_kept_pin(&id),
             SlipHit::Folder(name) => {
                 let on = !entry.collections.iter().any(|c| c == name);
                 let result = store.update(&id, |e| {
@@ -336,7 +338,7 @@ impl App {
         let strong = self.label_strong();
         let ui = self.ui();
         let dim = Style { color: fade(ink, 0.6), ..label };
-        let width = self.px(360.0).min(pane.w - self.px(28.0));
+        let width = self.px(420.0).min(pane.w - self.px(28.0));
         let x = (field.right() - width).max(pane.x + self.px(14.0));
         let y = field.bottom() + self.px(6.0);
         let pad = self.px(12.0);
@@ -394,6 +396,7 @@ impl App {
         self.fonts.draw(scene, dim, kx, ry + self.px(20.0), "AS");
         let mut cx = cx0;
         chip(self, scene, &mut hits, &mut cx, ry, "TO READ", e.reading != Some(false), true, SlipHit::Reading);
+        chip(self, scene, &mut hits, &mut cx, ry, "PIN", e.pin.is_some(), true, SlipHit::Pin);
         let (copy, has) = if e.snapshot.is_some() { ("COPY KEPT", true) } else if e.capture.is_some() { ("COPYING…", false) } else { ("KEEP A COPY", false) };
         chip(self, scene, &mut hits, &mut cx, ry, copy, has, !has && e.capture.is_none(), SlipHit::Copy);
         let keyword = if e.keyword.is_empty() { "KEYWORD".to_string() } else { format!("KEYWORD · {}", e.keyword) };
