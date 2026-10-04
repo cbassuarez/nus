@@ -68,6 +68,10 @@ pub enum PaletteMode {
     /// A note's title, or its tags, for the focused note.
     NoteTitle,
     NoteTags,
+    /// Everything kept, narrowed by words (keep_find.rs).
+    Kept,
+    /// A word that opens the kept item a slip was showing.
+    KeepKeyword,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -76,6 +80,10 @@ pub enum Action {
     SaveReading,
     /// Keep what is in front (keep.rs): ⌘D, Ctrl+D on a page.
     Keep,
+    /// The asked-for kept item's keyword; empty clears it.
+    KeepKeyword(String),
+    /// `keyword rs https://…%s`: keep a search address under a word.
+    KeepTemplate(String, String),
     RefreshReading,
     ReadingControl(crate::library::Hit),
     Application(crate::application_menu::Command),
@@ -1317,6 +1325,8 @@ pub struct App {
     pub welcome_hits: Vec<(Rect, crate::welcome::Act)>,
     /// The slip under the address field after ⌘D (keep_ui.rs).
     pub keep_slip: Option<crate::keep_ui::Slip>,
+    /// The kept item the keyword palette is for.
+    pub keep_keyword_for: Option<String>,
     pub icon_previews: Vec<crate::app_icon::Preview>,
     pub welcome_icon_tex: Option<((nus_render::Mode, nus_render::Color), Arc<wgpu::BindGroup>)>,
     pub welcome_art: Option<(Instant, crate::art::Art)>,
@@ -1685,6 +1695,7 @@ impl App {
             hint_hits: Vec::new(),
             welcome_hits: Vec::new(),
             keep_slip: None,
+            keep_keyword_for: None,
             icon_previews: Vec::new(),
             welcome_icon_tex: None,
             welcome_art: None,
@@ -5006,7 +5017,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name", PaletteMode::ShellAdd => "shell", PaletteMode::NoteCapture | PaletteMode::NoteTitle | PaletteMode::NoteTags => "note" };
+            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name", PaletteMode::ShellAdd => "shell", PaletteMode::NoteCapture | PaletteMode::NoteTitle | PaletteMode::NoteTags => "note", PaletteMode::Kept => "kept", PaletteMode::KeepKeyword => "keyword" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -5053,7 +5064,13 @@ impl App {
                 let ui = Style { color: fg, ..self.ui() };
                 let base = y + self.px(10.0) + self.px(m::UI_PX) - self.px(3.0);
                 let mut px = r.x + self.px(18.0);
+                if num == crate::keep_find::KEPT {
+                    let rh = self.px(14.0);
+                    self.draw_ribbon(&mut scene, px + self.px(3.0), base - rh + self.px(2.0), rh, if sel { fg } else { self.surface.signal });
+                    px += self.px(36.0);
+                }
                 let icon = match num.as_str() {
+                    k if k == crate::keep_find::KEPT => None,
                     "?" => Some(nus_render::text::icons::SEARCH),
                     "→" => Some(nus_render::text::icons::GLOBE),
                     ">" => Some(nus_render::text::icons::TERMINAL),
@@ -5068,6 +5085,7 @@ impl App {
                         self.fonts.draw_icon(&mut scene, icon, isz, px, base - isz + self.px(3.0), fg);
                         px += self.px(24.0) + self.px(12.0);
                     }
+                    None if num == crate::keep_find::KEPT => {}
                     None => px += self.fonts.draw(&mut scene, strong, px, base, num) + self.px(12.0),
                 }
                 if review {
@@ -7376,6 +7394,10 @@ impl App {
     /// them at the prompt's engine (PROMPT · SEARCH ENGINE).
     pub(crate) fn url_or_search(&self, input: &str) -> (String, String) {
         let q = input.trim();
+        // A kept item's keyword, typed first (keep_find.rs).
+        if let Some(found) = self.keyword_target(q) {
+            return found;
+        }
         if q.contains("://") {
             (q.to_string(), format!("open {q}"))
         } else if q.contains('.') && !q.contains(' ') || q.starts_with("localhost") {
@@ -7409,6 +7431,7 @@ impl App {
             PaletteMode::Go => {
                 if hit("reading list reading list saved articles") {rows.push(row("", "Reading list".into(), Action::Library));}
                 if hit("keep this page bookmark save ctrl+d") {rows.push(row("", "Keep this page".into(), Action::Keep));}
+                if hit("kept bookmarks everything kept find") {rows.push(row("", "Kept · find what you kept".into(), Action::OpenPalette(PaletteMode::Kept)));}
                 if hit("save to reading list offline article") {rows.push(row("", "Save to reading list".into(), Action::SaveReading));}
                 if hit("refresh saved reading copy from the open original") {rows.push(row("", "Refresh saved reading copy from the open original".into(), Action::RefreshReading));}
                 if hit("incognito private new window") {
@@ -7616,11 +7639,14 @@ impl App {
                     }
                 }
                 if !q.is_empty() {
+                    rows.extend(self.kept_rows(input, true, 4, false));
                     self.query_rows(input, &mut rows, false);
                 }
             }
             PaletteMode::Preference(field) => return self.preference_rows(field,input),
             PaletteMode::Assistant(id) => return self.assistant_prompt_rows(id,input),
+            PaletteMode::Kept => return self.kept_mode_rows(input),
+            PaletteMode::KeepKeyword => return self.keyword_rows(input),
             PaletteMode::PromptPin => return vec![PaletteRow {num:"+".into(),text:format!("Save shortcut · {input}"),action:Action::PromptPin(input.trim().into())}],
             PaletteMode::SavedEdit(i) => return vec![row("+", format!("Save command · {input}"), Action::SavedEdit(i,input.into()))],
             PaletteMode::SavedName(i) => return vec![row("+", format!("Name · {input}"), Action::SavedName(i,input.into()))],
@@ -7631,6 +7657,7 @@ impl App {
                     if q.is_empty() {
                         rows.push(row("→", "new page · the atlas: everything open, by place, or type an address".into(), Action::Start));
                     } else {
+                        rows.extend(self.kept_rows(input, true, 4, false));
                         self.query_rows(input, &mut rows, true);
                         rows.extend(self.history_rows(input, true, 5));
                     }
@@ -7656,6 +7683,7 @@ impl App {
                 }
                 if !browser_first {
                     if !q.is_empty() {
+                        rows.extend(self.kept_rows(input, true, 4, false));
                         rows.extend(self.history_rows(input, true, 5));
                     }
                     if q.is_empty() {
@@ -7667,9 +7695,11 @@ impl App {
             }
             PaletteMode::Url => {
                 if !q.is_empty() {
+                    rows.extend(self.kept_rows(input, false, 4, false));
                     self.query_rows(input, &mut rows, false);
                     rows.extend(self.history_rows(input, false, 6));
                 } else {
+                    rows.extend(self.kept_rows("", false, 3, true));
                     rows.extend(self.history_rows("", false, 8));
                 }
             }
@@ -7795,7 +7825,10 @@ impl App {
         if let Some(p) = local_file(q) {
             rows.push(row("</>", format!("{} · open in the editor", p.display()), Action::OpenFile(p.display().to_string())));
         }
-        if is_url {
+        if self.keyword_target(q).is_some() {
+            // The kept row above already opens the keyword; this one searches.
+            rows.push(row("?", format!("search “{q}”"), open(self.behavior.prompt.search_url(q))));
+        } else if is_url {
             rows.push(row("→", text, open(url)));
             rows.push(row("?", format!("search “{q}”"), open(self.behavior.prompt.search_url(q))));
         } else {
@@ -7959,6 +7992,8 @@ impl App {
             Action::Library => self.open_library(),
             Action::SaveReading => self.save_reading(),
             Action::Keep => self.keep_front(),
+            Action::KeepKeyword(word) => self.set_keyword(word),
+            Action::KeepTemplate(word, url) => self.keep_template(word, url),
             Action::RefreshReading => self.refresh_reading(),
             Action::ReadingControl(hit) => self.library_action(hit),
             Action::PromptShell(cmd) => self.open_prompt_shell(&cmd),

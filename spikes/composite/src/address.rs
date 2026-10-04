@@ -141,6 +141,8 @@ pub enum Glyph {
     Search,
     History,
     Port,
+    /// A kept item: the ribbon.
+    Kept,
 }
 
 /// A suggestion: where it goes, how it reads, and what is lit in it.
@@ -226,6 +228,11 @@ impl App {
             }
         }
         let q = if unchanged { String::new() } else { typed.to_lowercase() };
+        for r in self.kept_rows(&q, false, 3, false) {
+            let crate::app::Action::OpenInPane(url) = r.action else { continue };
+            if url == a.original || rows.iter().any(|x| x.url == url) { continue; }
+            rows.push(Row { glyph: Glyph::Kept, text: r.text, url, lit: None, tag: "kept".into() });
+        }
         for r in self.history_rows(&q, false, HISTORY + 1) {
             let crate::app::Action::OpenInPane(url) = r.action else { continue };
             if url == a.original || rows.iter().any(|x| x.url == url) || rows.len() >= 1 + HISTORY {
@@ -565,7 +572,11 @@ impl App {
             }
             let (strong, soft) = if on { (paper, fade_to(dim, paper)) } else { (ink, dim) };
             let base = rr.y + row_h / 2.0 + style.px * 0.36;
-            let glyph = match r.glyph { Glyph::Go => "→", Glyph::Search => "⌕", Glyph::History => "↺", Glyph::Port => "●" };
+            let glyph = match r.glyph { Glyph::Go => "→", Glyph::Search => "⌕", Glyph::History => "↺", Glyph::Port => "●", Glyph::Kept => "" };
+            if r.glyph == Glyph::Kept {
+                let h = self.px(13.0);
+                self.draw_ribbon(scene, rr.x + pad + self.px(2.0), rr.y + (row_h - h) / 2.0, h, if on { paper } else { self.surface.signal });
+            }
             let gcolor = if r.glyph == Glyph::Port && !on { self.surface.signal } else if on { paper } else { dim };
             self.fonts.draw(scene, Style { color: gcolor, ..style }, rr.x + pad, base, glyph);
             let tx = rr.x + pad + self.px(24.0);

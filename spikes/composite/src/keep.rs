@@ -45,9 +45,76 @@ pub fn canon(source: &str) -> String {
     out
 }
 
+/// A keyword's address with what followed it: `%s` takes the rest, encoded;
+/// an address without `%s` is the place itself, and the rest is ignored.
+pub fn expand(template: &str, rest: &str) -> String {
+    if template.contains("%s") { template.replace("%s", &crate::prompt::encode_query(rest.trim())) } else { template.to_string() }
+}
+
+/// A keyword must be one short word: what is typed first at the prompt.
+pub fn valid_keyword(word: &str) -> bool {
+    !word.is_empty() && word.chars().count() <= 64 && !word.chars().any(|c| c.is_whitespace() || c.is_control())
+        && !word.starts_with(['>', '?', '@', '/', '.', '~'])
+}
+
+/// What the kept palette narrows by: words, and facets written as words.
+/// `to:read` · `done` · `copy` · `in:<collection>`; everything else matches
+/// the title, the address and the keyword.
+#[derive(Debug, Default, PartialEq)]
+pub struct Facets {
+    pub words: Vec<String>,
+    pub reading: bool,
+    pub done: bool,
+    pub copy: bool,
+    pub collections: Vec<String>,
+}
+
+pub fn facets(q: &str) -> Facets {
+    let mut f = Facets::default();
+    for w in q.split_whitespace() {
+        let lw = w.to_lowercase();
+        match lw.as_str() {
+            "to:read" => f.reading = true,
+            "done" | "is:done" => f.done = true,
+            "copy" | "has:copy" => f.copy = true,
+            _ => match lw.strip_prefix("in:") {
+                Some(c) if !c.is_empty() => f.collections.push(c.to_string()),
+                _ => f.words.push(lw),
+            },
+        }
+    }
+    f
+}
+
+/// How well a kept item answers a query, best first; None when it doesn't.
+/// A keyword typed whole wins, then an address that starts with the query,
+/// then items whose title and address hold every word.
+pub fn score(e: &crate::library::Entry, f: &Facets) -> Option<i64> {
+    if e.deleted { return None; }
+    let on_list = e.reading != Some(false);
+    if f.reading && !(on_list && !e.finished && !e.archived) { return None; }
+    if f.done && !(on_list && e.finished) { return None; }
+    if f.copy && e.snapshot.is_none() { return None; }
+    if !f.collections.iter().all(|c| e.collections.iter().any(|have| have.to_lowercase() == *c)) { return None; }
+    let title = e.title.to_lowercase();
+    let address = e.source.to_lowercase();
+    let host = address.split("//").nth(1).unwrap_or(&address).trim_start_matches("www.");
+    let keyword = e.keyword.to_lowercase();
+    let mut score = 0;
+    if let Some(first) = f.words.first() {
+        if !keyword.is_empty() && *first == keyword { score += 10_000; }
+        if host.starts_with(first.as_str()) { score += 1_000; }
+    }
+    let all = f.words.iter().all(|w| title.contains(w.as_str()) || address.contains(w.as_str()) || keyword == *w);
+    if !all && score < 10_000 { return None; }
+    // Ties go to the newer keep, in the caller's sort.
+    Some(score)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::canon;
+    use super::{canon, expand, facets, score, valid_keyword, Facets};
+    use crate::library::Entry;
 
     #[test]
     fn one_page_however_it_was_reached() {
@@ -70,5 +137,37 @@ mod tests {
         for s in ["file:/home/me/notes.md", "note:0123", "not a url", "about:blank"] {
             assert_eq!(canon(s), s);
         }
+    }
+
+    #[test]
+    fn keywords_take_the_rest() {
+        assert_eq!(expand("https://docs.rs/releases/search?query=%s", " serde json "), "https://docs.rs/releases/search?query=serde+json");
+        assert_eq!(expand("https://github.com", "ignored"), "https://github.com");
+        assert!(valid_keyword("rs") && valid_keyword("gh"));
+        assert!(!valid_keyword("two words") && !valid_keyword("") && !valid_keyword(">x") && !valid_keyword("?q"));
+    }
+
+    #[test]
+    fn facets_are_words() {
+        let f = facets("to:read in:Rust ownership");
+        assert_eq!(f, Facets { words: vec!["ownership".into()], reading: true, collections: vec!["rust".into()], ..Default::default() });
+    }
+
+    #[test]
+    fn a_keyword_wins_then_the_host_then_the_words() {
+        let e = |source: &str, title: &str, keyword: &str| Entry { id: "0".repeat(32), source: source.into(), title: title.into(), keyword: keyword.into(), reading: Some(false), ..Default::default() };
+        let rs = e("https://docs.rs/releases/search?query=%s", "docs.rs search", "rs");
+        let rust = e("https://doc.rust-lang.org/book/", "The Rust Book", "");
+        let other = e("https://example.org/rust", "Rust notes", "");
+        let q = facets("rs serde");
+        assert!(score(&rs, &q).unwrap() >= 10_000);
+        assert!(score(&rust, &q).is_none());
+        let q = facets("doc");
+        assert!(score(&rust, &q).unwrap() >= 1_000);
+        assert!(score(&other, &facets("rust")).is_some());
+        // Facets narrow: kept-only items are not on the reading list.
+        assert!(score(&rust, &facets("to:read")).is_none());
+        let reading = Entry { reading: None, ..rust.clone() };
+        assert!(score(&reading, &facets("to:read")).is_some());
     }
 }

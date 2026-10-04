@@ -152,6 +152,7 @@ mod reader;
 mod library;
 mod keep;
 mod keep_ui;
+mod keep_find;
 mod celestial;
 mod settings;
 mod sound;

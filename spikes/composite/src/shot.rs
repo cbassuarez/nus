@@ -1072,6 +1072,24 @@ impl App {
                 self.save_prefs();
             }
             "assertpalette" => assert_eq!(self.palette.is_some(), rest == "open"),
+            // `promptrun <line>`: what the home prompt does with it.
+            "promptrun" => { if let Some(r) = self.prompt_action(rest) { self.run(r.action); } else { panic!("promptrun: nothing for {rest}") } }
+            // `assertrows url|go <query> | <words>`: the palette's first row for
+            // the query is a kept item and reads with those words.
+            "assertrows" => {
+                let (mode, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let (query, want) = rest.split_once('|').map(|(q, w)| (q.trim(), w.trim())).unwrap_or((rest.trim(), ""));
+                let mode = if mode == "go" { PaletteMode::Go } else { PaletteMode::Url };
+                let rows = self.palette_rows_raw(mode, query);
+                // Go lists open tabs first; a kept row still leads the search.
+                let at = rows.iter().position(|r| r.num == crate::keep_find::KEPT);
+                let search = rows.iter().position(|r| r.num == "?").unwrap_or(usize::MAX);
+                let listed = rows.iter().map(|r| (&r.num, &r.text)).collect::<Vec<_>>();
+                let at = at.unwrap_or_else(|| panic!("no kept row for `{query}`: {listed:?}"));
+                assert!(if mode == PaletteMode::Go { at < search } else { at == 0 }, "kept row not leading for `{query}`: {listed:?}");
+                let first = &rows[at];
+                assert!(first.text.contains(want), "first row `{}` lacks `{want}`", first.text);
+            }
             // `assertkept yes|no|reading`: the page in front is kept (and on the reading list).
             "assertkept" => {
                 let Pane::Web(w) = self.tabs[self.active].focused_ref() else { panic!("assertkept: no page in front") };

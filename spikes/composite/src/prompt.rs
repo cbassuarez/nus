@@ -496,6 +496,17 @@ impl App {
         if q.starts_with('@') {
             return None;
         }
+        // `keyword rs https://docs.rs/releases/search?query=%s`: keep a search
+        // address under a word, then `rs serde` searches it (keep_find.rs).
+        if let Some((word, template)) = q.strip_prefix("keyword ").and_then(|r| r.trim().split_once(char::is_whitespace)).map(|(w, t)| (w.trim(), t.trim())) {
+            if crate::keep::valid_keyword(word) && looks_like_url(template) {
+                return Some(row(format!("Keyword · {word} opens {template}"), Action::KeepTemplate(word.into(), template.into())));
+            }
+        }
+        // A kept item's keyword, typed first.
+        if let Some((url, text)) = self.keyword_target(q) {
+            return Some(row(text, Action::NewBrowser(url)));
+        }
         // An address is explicit intent, regardless of the preferred route for
         // ordinary words. Shell and assistant prefixes still take precedence.
         if looks_like_url(q) { return Some(row(format!("Open page · {q}"), Action::NewBrowser(self.url_or_search(q).0))); }
@@ -708,6 +719,7 @@ impl App {
                         items.push(row("Search the web · type a question or keywords".into(), Action::PromptInput("? ".into())));
                         items.push(row("Visit a website · type an address".into(), Action::PromptInput("https://".into())));
                     }
+                    items.extend(self.kept_rows(q, true, 4, false));
                     items.extend(self.history_rows(q, true, 8));
                 },
                 Source::Activity => {

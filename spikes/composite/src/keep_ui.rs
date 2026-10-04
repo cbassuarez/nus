@@ -26,6 +26,7 @@ const LIFE_MS: u128 = 4000;
 pub enum SlipHit {
     Reading,
     Copy,
+    Keyword,
     /// A plain folder, by name: the item sits in it or not.
     Folder(String),
 }
@@ -143,6 +144,21 @@ impl App {
         self.dirty = true;
     }
 
+    /// `keyword rs https://…%s`: keep a search address under a word.
+    pub(crate) fn keep_template(&mut self, word: String, url: String) {
+        if crate::private::enabled() { return; }
+        self.library.ensure();
+        let host = url.split("//").nth(1).unwrap_or(&url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
+        match self.library.store().keep(&url, &format!("{host} search"), None, crate::journal::now()) {
+            Ok((e, _)) => {
+                self.keep_keyword_for = Some(e.id.clone());
+                self.library.remember(e);
+                self.set_keyword(word);
+            }
+            Err(e) => { tracing::info!("keyword keep failed: {e}"); self.notice(icons::BOOK, "Keyword Not Set", "your library is unchanged · try again"); }
+        }
+    }
+
     /// The mark clicked: the same as the key, for that pane.
     pub(crate) fn keep_mark_click(&mut self, right: bool) {
         if let Some(t) = self.tabs.get_mut(self.active) {
@@ -212,6 +228,7 @@ impl App {
                 if entry.snapshot.is_some() { return; }
                 return self.copy_kept(&id);
             }
+            SlipHit::Keyword => return self.ask_keyword(id),
             SlipHit::Folder(name) => {
                 let on = !entry.collections.iter().any(|c| c == name);
                 let result = store.update(&id, |e| {
@@ -371,6 +388,8 @@ impl App {
         chip(self, scene, &mut hits, &mut cx, ry, "TO READ", e.reading != Some(false), true, SlipHit::Reading);
         let (copy, has) = if e.snapshot.is_some() { ("COPY KEPT", true) } else if e.capture.is_some() { ("COPYING…", false) } else { ("KEEP A COPY", false) };
         chip(self, scene, &mut hits, &mut cx, ry, copy, has, !has && e.capture.is_none(), SlipHit::Copy);
+        let keyword = if e.keyword.is_empty() { "KEYWORD".to_string() } else { format!("KEYWORD · {}", e.keyword) };
+        chip(self, scene, &mut hits, &mut cx, ry, &keyword, !e.keyword.is_empty(), true, SlipHit::Keyword);
         ry += row_h;
         scene.hline(x, ry, width, self.px(m::HAIRLINE), fade(ink, 0.2));
         self.fonts.draw(scene, dim, kx, ry + self.px(17.0), "TAB MOVES · SPACE TOGGLES · ESC CLOSES");

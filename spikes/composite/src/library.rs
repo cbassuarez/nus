@@ -325,6 +325,9 @@ impl App {
     }
     pub(crate) fn poll_library(&mut self) {
         if crate::private::enabled() { return; }
+        // Kept items lead the palette and the address field from the start:
+        // one load, then the usual rescans while the list is open.
+        if !self.library.loaded { self.library.ensure(); }
         self.library.flush(false);
         if self.library.scan_ready() {
             let removed=self.library_home().and_then(|h|h.reading.as_ref()).is_some_and(|r|self.library.entries.get(&r.id).is_none_or(|e|e.deleted));
