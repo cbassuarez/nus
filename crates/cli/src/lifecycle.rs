@@ -781,7 +781,7 @@ fn recovery_cleanup(
         };
         if value["schema"] != 1
             || owner.canonicalize().ok().as_ref() != Some(&installed)
-            || nus_compat::Channel::for_version(version) != channel
+            || nus_compat::Channel::for_version(version.trim_start_matches('v')) != channel
         {
             continue;
         }
@@ -1493,7 +1493,7 @@ mod tests {
         }
         let record = |owner: &Path, package: &Path, stage: &Path| {
             json!({
-                "schema":1,"previous_version":"0.0.2-preview.12", "installation":owner,
+                "schema":1,"previous_version":"v0.0.2-preview.12", "installation":owner,
                 "package":package,"staging":stage
             })
         };
