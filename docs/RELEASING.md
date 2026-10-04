@@ -161,7 +161,9 @@ Source checkouts continue to use their local `profile` directory.
 --everything` explicitly removes this installation and its channel's profiles,
 recovery copies, retained app packages owned by this installation, vault credentials
 and logs; add `--yes` for unattended cleanup. Successful in-app updates remove
-their download and staging folders.
+their download and staging folders. Linux complete uninstall purges apt
+configuration, removes the account installer's owned AppArmor rule (with sudo),
+and removes the shared GNOME dock extension when the last channel is gone.
 Windows' **Remove them too** choice uses the same cleanup through the signed
 CLI, and silent uninstall can request it with `/REMOVELOCALDATA`. A busy profile
 blocks cleanup. Other channels, project files and external sync destinations

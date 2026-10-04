@@ -166,8 +166,10 @@ jobs:
           test -u "/opt/$name/chrome-sandbox"
           grep -q '"managed": "deb"' "/opt/$name/nus-package.json"
           desktop-file-validate /usr/share/applications/dev.nus.app*.desktop
-          sudo apt-get remove -y "$name"
+          nus uninstall --everything --yes
           test ! -e "/opt/$name" && test ! -e /usr/bin/nus
+          test ! -e "/etc/apt/sources.list.d/$name.sources"
+          test ! -e "/etc/apparmor.d/$name"
       - name: Exercise packaged browsing and native failure screens
         if: runner.os != 'Windows'
         env:

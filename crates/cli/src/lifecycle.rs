@@ -529,6 +529,14 @@ pub fn uninstall(everything: bool, yes: bool) -> ExitCode {
         }
         println!();
     }
+    if everything
+        && cfg!(target_os = "linux")
+        && matches!(i.method, Method::Account | Method::Folder)
+    {
+        if let Err(e) = remove_user_sandbox_rule(&i) {
+            return fail(&ui, &e);
+        }
+    }
     // Keep the package available until credential/profile cleanup succeeds.
     // A busy profile or locked credential store must not strand an uninstall.
     if everything {
@@ -580,7 +588,7 @@ pub fn uninstall(everything: bool, yes: bool) -> ExitCode {
                 c.arg("apt-get");
                 c
             };
-            apt.args(["remove", "-y", pkg]);
+            apt.args([if everything { "purge" } else { "remove" }, "-y", pkg]);
             ui.stream(
                 "02",
                 "Remove",
@@ -876,7 +884,119 @@ fn purge_channel_data(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    if cfg!(target_os = "linux") {
+        remove_shared_linux_data(base, channel, Path::new("/opt"))?;
+    }
     remove_empty_data_dirs(base);
+    Ok(())
+}
+
+fn sandbox_rule_is_owned(text: &str, name: &str, root: &Path) -> bool {
+    text.lines().any(|line| {
+        line == format!(
+            "profile {name} {}/nus-desktop flags=(unconfined) {{",
+            root.display()
+        )
+    })
+}
+
+fn remove_user_sandbox_rule(i: &Install) -> Result<(), String> {
+    let identity = Command::new("id")
+        .arg("-un")
+        .output()
+        .map_err(|e| e.to_string())?;
+    let user = String::from_utf8_lossy(&identity.stdout).trim().to_string();
+    if !identity.status.success()
+        || user.is_empty()
+        || !user
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return Ok(());
+    }
+    let name = format!("nus-{}-{user}", i.channel.directory());
+    let rule = Path::new("/etc/apparmor.d").join(&name);
+    if !std::fs::symlink_metadata(&rule).is_ok_and(|m| m.is_file() && !is_link(&m)) {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&rule).map_err(|e| e.to_string())?;
+    if !sandbox_rule_is_owned(&text, &name, &i.root) {
+        return Ok(());
+    }
+    // The account installer creates this optional root-owned integration only
+    // on explicit --allow-sandbox. Remove just its exact, verified rule.
+    let script = r#"set -e
+if [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null 2>&1; then apparmor_parser -R "$1"; fi
+rm -f -- "$1"
+"#;
+    let result = Command::new("sudo")
+        .args(["/bin/sh", "-c", script, "nus-uninstall"])
+        .arg(&rule)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if result.success() {
+        Ok(())
+    } else {
+        Err("could not remove this installation's sandbox rule; authenticate with sudo and retry; nus is still installed".into())
+    }
+}
+
+fn remove_shared_linux_data(
+    base: &Path,
+    channel: nus_compat::Channel,
+    opt: &Path,
+) -> std::io::Result<()> {
+    for other in [
+        nus_compat::Channel::Current,
+        nus_compat::Channel::Preview,
+        nus_compat::Channel::Development,
+    ] {
+        if other == channel {
+            continue;
+        }
+        let package = if other == nus_compat::Channel::Preview {
+            "nus-preview"
+        } else {
+            "nus"
+        };
+        if base.join("installs").join(other.directory()).exists()
+            || base.join("app").join(other.directory()).exists()
+            || (other != nus_compat::Channel::Development && opt.join(package).exists())
+        {
+            return Ok(());
+        }
+    }
+    let Some(data) = base.parent() else {
+        return Ok(());
+    };
+    let extension = data.join("gnome-shell/extensions/dock-motion@nus.dev");
+    let parents_are_local = extension
+        .ancestors()
+        .take_while(|p| *p != data)
+        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| !is_link(&m)));
+    let owned = parents_are_local
+        && std::fs::symlink_metadata(&extension).is_ok_and(|m| m.is_dir() && !is_link(&m))
+        && std::fs::read(extension.join("metadata.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .is_some_and(|v| {
+                v["uuid"] == "dock-motion@nus.dev" && v["url"] == "https://cbassuarez.com/nus.dev/"
+            });
+    if owned {
+        std::fs::remove_dir_all(&extension)?;
+        if cfg!(target_os = "linux") {
+            let _ = Command::new("gnome-extensions")
+                .args(["disable", "dock-motion@nus.dev"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+    match std::fs::remove_file(base.join("dock-motion-enabled")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     Ok(())
 }
 
@@ -1300,6 +1420,59 @@ pub fn doctor() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_cleanup_requires_the_exact_installation_rule() {
+        let rule = "profile nus-preview-seb /home/seb/.local/share/nus/app/preview/nus-desktop flags=(unconfined) {";
+        assert!(sandbox_rule_is_owned(
+            rule,
+            "nus-preview-seb",
+            Path::new("/home/seb/.local/share/nus/app/preview")
+        ));
+        assert!(!sandbox_rule_is_owned(
+            rule,
+            "nus-release-seb",
+            Path::new("/home/seb/.local/share/nus/app/preview")
+        ));
+        assert!(!sandbox_rule_is_owned(
+            rule,
+            "nus-preview-seb",
+            Path::new("/home/seb/project")
+        ));
+    }
+
+    #[test]
+    fn shared_dock_cleanup_waits_for_the_last_channel() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("nus");
+        let other = base.join("installs/release/shared/profile");
+        std::fs::create_dir_all(&other).unwrap();
+        let extension = temp
+            .path()
+            .join("gnome-shell/extensions/dock-motion@nus.dev");
+        std::fs::create_dir_all(&extension).unwrap();
+        std::fs::write(
+            extension.join("metadata.json"),
+            r#"{"uuid":"dock-motion@nus.dev","url":"https://cbassuarez.com/nus.dev/"}"#,
+        )
+        .unwrap();
+        std::fs::write(base.join("dock-motion-enabled"), "enabled").unwrap();
+        let opt = temp.path().join("opt");
+        remove_shared_linux_data(&base, nus_compat::Channel::Preview, &opt).unwrap();
+        assert!(extension.exists());
+        std::fs::remove_dir_all(&other).unwrap();
+        std::fs::remove_dir_all(base.join("installs/release")).unwrap();
+        std::fs::create_dir_all(opt.join("nus")).unwrap();
+        remove_shared_linux_data(&base, nus_compat::Channel::Preview, &opt).unwrap();
+        assert!(
+            extension.exists(),
+            "an installed channel with no profile still uses it"
+        );
+        std::fs::remove_dir_all(&opt).unwrap();
+        remove_shared_linux_data(&base, nus_compat::Channel::Preview, &opt).unwrap();
+        assert!(!extension.exists());
+        assert!(!base.join("dock-motion-enabled").exists());
+    }
 
     #[test]
     fn complete_cleanup_removes_only_recovery_owned_by_this_installation() {
