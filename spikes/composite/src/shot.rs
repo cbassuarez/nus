@@ -1072,6 +1072,18 @@ impl App {
                 self.save_prefs();
             }
             "assertpalette" => assert_eq!(self.palette.is_some(), rest == "open"),
+            // `assertkept yes|no|reading`: the page in front is kept (and on the reading list).
+            "assertkept" => {
+                let Pane::Web(w) = self.tabs[self.active].focused_ref() else { panic!("assertkept: no page in front") };
+                let url = w.tab.shared.borrow().url.clone();
+                let e = self.library.kept(&url, &crate::library::container(&w.container)).cloned();
+                match rest {
+                    "no" => assert!(e.is_none(), "kept: {url}"),
+                    "reading" => assert!(e.as_ref().is_some_and(|e| e.reading != Some(false)), "not on the reading list: {url} {e:?}"),
+                    _ => assert!(e.as_ref().is_some_and(|e| e.reading == Some(false)), "not kept: {url} {e:?}"),
+                }
+                assert_eq!(self.keep_slip.is_some(), rest != "no", "slip at `{step}`");
+            }
             "assertpane" => {
                 let kind = self.tabs.get(self.active).map(|t| match &t.left {
                     Pane::Home(_) => "home", Pane::Web(_) => "web", Pane::Term(_) => "term", Pane::Editor(_) => "editor", Pane::Settings(_) => "settings", Pane::Hints(_) => "welcome", Pane::Downloads(_) => "downloads", _ => "other",

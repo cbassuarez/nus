@@ -74,6 +74,8 @@ pub enum PaletteMode {
 pub enum Action {
     Library,
     SaveReading,
+    /// Keep what is in front (keep.rs): ⌘D, Ctrl+D on a page.
+    Keep,
     RefreshReading,
     ReadingControl(crate::library::Hit),
     Application(crate::application_menu::Command),
@@ -1313,6 +1315,8 @@ pub struct App {
     pub hint_hits: Vec<(Rect, usize)>,
     /// The welcome page's controls, the icon texture, a demo waiting.
     pub welcome_hits: Vec<(Rect, crate::welcome::Act)>,
+    /// The slip under the address field after ⌘D (keep_ui.rs).
+    pub keep_slip: Option<crate::keep_ui::Slip>,
     pub icon_previews: Vec<crate::app_icon::Preview>,
     pub welcome_icon_tex: Option<((nus_render::Mode, nus_render::Color), Arc<wgpu::BindGroup>)>,
     pub welcome_art: Option<(Instant, crate::art::Art)>,
@@ -1680,6 +1684,7 @@ impl App {
             hints: App::load_hints(),
             hint_hits: Vec::new(),
             welcome_hits: Vec::new(),
+            keep_slip: None,
             icon_previews: Vec::new(),
             welcome_icon_tex: None,
             welcome_art: None,
@@ -2576,6 +2581,7 @@ impl App {
         self.tend_swipe();
         self.prewake();
         self.welcome_tick();
+        self.keep_tick();
         if self.paste_request {
             self.paste_request = false;
             self.paste_into_shell();
@@ -4949,6 +4955,8 @@ impl App {
         self.draw_page_dialog(&mut scene);
         // A page's address being edited: its suggestions, over the page.
         self.draw_address_list(&mut scene);
+        // A page just kept: the slip under its field.
+        self.draw_keep_slip(&mut scene);
         // Palette.
         // Find, over the panes and under the palette.
         self.draw_find_bar(&mut scene);
@@ -7198,9 +7206,10 @@ impl App {
                     } else {
                         scene.outline(field, self.px(m::HAIRLINE), ink);
                     }
-                    let shown = self.fit(ui, url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'), field.w - self.px(16.0));
+                    let shown = self.fit(ui, url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'), field.w - self.px(36.0));
                     let small = Style { px: self.px(12.0), ..ui };
                     self.fonts.draw(scene, small, field.x + self.px(8.0), base, &shown);
+                    self.draw_keep_mark(scene, p);
                 }
                 scene.hline(r.x, p.page.y - self.px(m::HAIRLINE), r.w, self.px(m::HAIRLINE), ink);
                 }
@@ -7399,6 +7408,7 @@ impl App {
             }
             PaletteMode::Go => {
                 if hit("reading list reading list saved articles") {rows.push(row("", "Reading list".into(), Action::Library));}
+                if hit("keep this page bookmark save ctrl+d") {rows.push(row("", "Keep this page".into(), Action::Keep));}
                 if hit("save to reading list offline article") {rows.push(row("", "Save to reading list".into(), Action::SaveReading));}
                 if hit("refresh saved reading copy from the open original") {rows.push(row("", "Refresh saved reading copy from the open original".into(), Action::RefreshReading));}
                 if hit("incognito private new window") {
@@ -7948,6 +7958,7 @@ impl App {
             Action::Home => self.open_home(),
             Action::Library => self.open_library(),
             Action::SaveReading => self.save_reading(),
+            Action::Keep => self.keep_front(),
             Action::RefreshReading => self.refresh_reading(),
             Action::ReadingControl(hit) => self.library_action(hit),
             Action::PromptShell(cmd) => self.open_prompt_shell(&cmd),
@@ -8190,6 +8201,7 @@ impl App {
         let tip_was_visible = self.tooltips.visible();
         if pressed { self.dismiss_tip(); }
         if self.page_menu_key(ev) { return; }
+        if self.keep_slip_key(ev) { return; }
         // A page's address being edited owns its keys (address.rs).
         if self.address_key(ev) { return; }
         // Esc leaves a page's fullscreen, as in any browser; the page is told.
@@ -8472,6 +8484,12 @@ impl App {
             if let Some(d) = dir {
                 return if shift { self.tile_swap(d) } else { self.tile_focus(d) };
             }
+        }
+        // Keep what is in front: ⌘D anywhere on macOS; elsewhere Ctrl+D on a
+        // page only, since a shell needs Ctrl+D for itself (keep_ui.rs).
+        if pressed && !ev.repeat && code == Some(KeyCode::KeyD) && !shift && !alt && self.palette.is_none()
+            && (if cfg!(target_os = "macos") { sup && !ctrl } else { ctrl && !sup && self.tabs.get(self.active).is_some_and(|t| matches!(t.focused_ref(), Pane::Web(_))) }) {
+            return self.keep_front();
         }
         // The reader: Ctrl+Alt+R (⌘⌥R on macOS), as in Firefox. R with the
         // app chord — ⌘R, Ctrl+Shift+R — is a reload, as everywhere.
@@ -10194,6 +10212,7 @@ impl App {
         // A page's question stands: its sheet answers, its page takes nothing.
         if self.palette.is_none() && self.page_dialog_mouse(pressed && button == MouseButton::Left, x, y) { self.dirty = true; return; }
         if self.page_menu_mouse(button, state) { return; }
+        if self.keep_slip_mouse(pressed, button == MouseButton::Left, x, y) { self.dirty = true; return; }
         if self.timeline_mouse(button,state,x,y){return;}
         // The mouse's own back and forward buttons, on the page under them.
         if pressed && matches!(button, MouseButton::Back | MouseButton::Forward) {
@@ -10572,7 +10591,10 @@ impl App {
         if pressed && button == MouseButton::Left && self.palette.is_none() && self.pip_notice_click(x, y) {
             return;
         }
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+// The keep marks' boxes, measured before the tab is borrowed for the click.
+        let marks: Vec<(bool, Rect)> = self.tabs.get(self.active).map(|t| std::iter::once((false, &t.left)).chain(t.right.as_ref().map(|r| (true, r)))
+            .filter_map(|(right, p)| match p { Pane::Web(w) => Some((right, self.keep_mark_rect(w))), _ => None }).collect()).unwrap_or_default();
+                let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let scale = self.scale;
         let mods = cef_mods(self.mods);
         let mut down_in_web = self.mouse_down_in_web;
@@ -10585,6 +10607,7 @@ impl App {
         let mut loop_click: Option<(bool, f32, f32)> = None;
         let mut media_click: Option<(u64, bool)> = None;
         let mut nav_click: Option<(bool, bool)> = None;
+        let mut keep_click: Option<bool> = None;
         for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
             match p {
                 Pane::Web(w) => {
@@ -10606,6 +10629,8 @@ impl App {
                             toggle_site = Some(is_right);
                         } else if x > w.rect.right() - 134.0 * scale && !w.tab.shared.borrow().media.is_empty() {
                             media_click = Some((tab.id, is_right));
+                        } else if marks.iter().any(|(r, m)| *r == is_right && m.contains(x, y)) {
+                            keep_click = Some(is_right);
                         } else {
                             open_url_palette = Some(is_right);
                         }
@@ -10712,6 +10737,10 @@ impl App {
         }
         if let Some((right, back)) = nav_click {
             self.navigate(right, back);
+            return;
+        }
+        if let Some(right) = keep_click {
+            self.keep_mark_click(right);
             return;
         }
         if let Some((right, lx, ly)) = loop_click {

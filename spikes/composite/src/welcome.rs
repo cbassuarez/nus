@@ -158,7 +158,8 @@ impl App {
         let pages = vec![
             row(k("T"), "New tab", "opens the start page selected in Start/New Tab; hold or right-click NEW TAB to choose a shell or page", Some(("TRY", Act::NewTab))),
             row(k("K"), "The palette", "tabs, ports, history, commands to run again, settings, ask an assistant", Some(("TRY", Act::Palette(PaletteMode::Go)))),
-            row(k("L"), "Address", "history ranked by visits and recency; a search when it isn't a URL", Some(("TRY", Act::Palette(PaletteMode::Url)))),
+            row(if cfg!(target_os = "macos") { "⌘D" } else { "CTRL+D" }, "Keep a page", "the ribbon at the end of the address fills, and a slip says where it went: on the reading list, in a folder, with a copy for when the page won't load", None),
+                        row(k("L"), "Address", "history ranked by visits and recency; a search when it isn't a URL", Some(("TRY", Act::Palette(PaletteMode::Url)))),
             row(k("D"), "Split", "a page beside the shell, or two of anything", Some(("TRY", Act::Split))),
             row(if cfg!(target_os = "macos") { "⌘⌥R" } else { "CTRL+ALT+R" }, "Reader", "the article, set in Newsreader on our paper; the page keeps living underneath", Some(("TRY", Act::Reader))),
             row(if cfg!(target_os = "macos") { "⌘R" } else { "CTRL+R · F5" }, "Reload", "the page again; with Shift, past the cache", None),

@@ -245,15 +245,22 @@ impl App {
             let s = w.tab.shared.borrow();
             (s.url.clone(), if s.title.is_empty() { s.url.clone() } else { s.title.clone() })
         };
+        let container = crate::library::container(&w.container);
         let title = tab.name.clone().unwrap_or(title);
         let host = url.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
+        let mut kept = None;
         if let Some(f) = self.folders.get_mut(fi) {
-            if f.kind == Kind::Plain && !f.items.iter().any(|it| it.url == url) {
-                f.items.push(Item { title, url, detail: host });
-                f.open = true;
+            if f.kind == Kind::Plain {
+                // The folder's name is a collection on the kept item (keep.rs).
+                kept = Some((url.clone(), title.clone(), f.name.clone()));
+                if !f.items.iter().any(|it| it.url == url) {
+                    f.items.push(Item { title, url, detail: host });
+                    f.open = true;
+                }
             }
         }
         self.save_folders();
+        if let Some((url, title, name)) = kept { self.keep_into_folder(&url, &title, container, &name); }
         self.play_event("toggle");
         self.dirty = true;
     }

@@ -150,6 +150,8 @@ mod file_viewer_app;
 mod prefs;
 mod reader;
 mod library;
+mod keep;
+mod keep_ui;
 mod celestial;
 mod settings;
 mod sound;

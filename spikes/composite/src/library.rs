@@ -134,8 +134,14 @@ impl Library {
             Err(e)=>{self.status=format!("Could not read the library; previous view retained: {e}");true},
         }
     }
-    fn ensure(&mut self) { if !self.loaded || !self.defaults_ready { self.reload(); } }
-    fn remember(&mut self, e: Entry) { self.serial=self.serial.wrapping_add(1);self.entries.insert(e.id.clone(), e); }
+    pub(crate) fn ensure(&mut self) { if !self.loaded || !self.defaults_ready { self.reload(); } }
+    pub(crate) fn store(&self) -> &Store { &self.store }
+    /// The live item for a source in a container, found by its tidied address.
+    pub(crate) fn kept(&self, source: &str, container: &Option<String>) -> Option<&Entry> {
+        let canon = crate::keep::canon(source);
+        self.entries.values().find(|e| !e.deleted && &e.container == container && (e.source == source || crate::keep::canon(&e.source) == canon))
+    }
+    pub(crate) fn remember(&mut self, e: Entry) { self.serial=self.serial.wrapping_add(1);self.entries.insert(e.id.clone(), e); }
     pub(crate) fn flush(&mut self, force: bool) {
         if crate::private::enabled() { return; }
         let dirty = std::mem::take(&mut self.dirty);
@@ -155,7 +161,7 @@ impl Library {
     }
 }
 impl Drop for Library { fn drop(&mut self) { self.flush(true); } }
-fn container(name: &str) -> Option<String> { (name != crate::containers::PERSONAL).then(|| name.to_string()) }
+pub(crate) fn container(name: &str) -> Option<String> { (name != crate::containers::PERSONAL).then(|| name.to_string()) }
 fn reading_action_available(source: &str, available: bool, hit: &Hit) -> bool {
     let web=url::Url::parse(source).is_ok_and(|u|matches!(u.scheme(),"http"|"https") && u.username().is_empty() && u.password().is_none());
     match hit {
@@ -225,6 +231,9 @@ impl App {
     }
     pub(crate) fn save_reading(&mut self) { self.save_reading_mode(false, None); }
     pub(crate) fn refresh_reading(&mut self) { self.save_reading_mode(true, None); }
+    /// A kept item's copy, taken from its page open in front; it stays off
+    /// the reading list unless it was on it.
+    pub(crate) fn copy_kept(&mut self, id: &str) { self.save_reading_mode(true, Some(id.to_string())); }
     fn save_reading_mode(&mut self, refresh: bool, requested: Option<String>) {
         if crate::private::enabled() { self.library_message("Reading is not saved from an incognito window."); return; }
         self.library.ensure();
@@ -279,6 +288,13 @@ impl App {
             Ok((e, false))
         } else { self.library.store.save_link(&source, &title, context.clone(), crate::journal::now()) };
         let (e, created) = match saved { Ok(v) => v, Err(e) => { tracing::info!("reading link save failed: {e}"); self.library_message("Could not add this item to your library. Please try again."); return; } };
+        // A page kept with ⌘D joins the reading list here, and gets its copy.
+        let (e, created) = if !refresh && e.reading == Some(false) {
+            match self.library.store.update(&e.id, |e| e.reading = Some(true)) {
+                Ok(e) => (e, true),
+                Err(e) => { tracing::info!("reading role failed: {e}"); self.library_message("Could not add this item to your reading list. Please try again."); return; },
+            }
+        } else { (e, created) };
         self.library.remember(e.clone());
         if !created && !refresh { self.library_message("Already in your library."); return; }
         let e = match self.library.store.start_capture(&e.id) { Ok(e) => e, Err(e) => { tracing::info!("reading capture start failed: {e}"); self.library_message("Your link is saved. Keep the original open, then choose Refresh saved copy in the command palette to retry."); return; } };
@@ -358,7 +374,8 @@ impl App {
         let q = if archived {q.strip_prefix("archive").unwrap().trim()} else {q.as_str()};
         let words: Vec<_> = q.split_whitespace().collect();
         let mut rows: Vec<_> = self.library.entries.values().filter(|e| !e.deleted && match if archived {3} else {filter} {
-            0 => !e.archived && !e.finished, 1 => true, 2 => !e.archived && e.finished, _ => e.archived,
+            // Kept but not for reading: only ALL lists it.
+            0 => e.reading != Some(false) && !e.archived && !e.finished, 1 => true, 2 => e.reading != Some(false) && !e.archived && e.finished, _ => e.archived,
         }).filter(|e| { let text = format!("{} {} {}",e.title,e.source,e.extra.get("user_notes").and_then(|v|v.as_str()).unwrap_or("")).to_lowercase(); words.iter().all(|w|text.contains(w)) }).cloned().collect();
         rows.sort_by(|a,b| {
             let ongoing = |e:&Entry| filter == 0 && e.progress > 0.0 && !e.finished;
