@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Common ground</title>
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+    .cap { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .sig { color: #c8102e; }
+    h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; white-space: nowrap; }
+    h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a857a; font-weight: 500; margin: 0; }
+    h2 b { color: #ece7da; font-weight: 600; }
+    .note { font-size: 12px; line-height: 1.6; color: #8a857a; }
+    .note b { color: #ece7da; font-weight: 600; }
+    .col { display: flex; flex-direction: column; gap: 8px; }
+    .box { border: 1.5px solid #ece7da; padding: 14px 16px; box-sizing: border-box; }
+    .sb { width: 280px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; box-sizing: border-box; flex-shrink: 0; }
+    .band { height: 5px; background: #c8102e; }
+    .hd { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border-bottom: 1.5px solid #ece7da; }
+    .r { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 28px; border-bottom: 1px solid rgba(236,231,218,0.16); white-space: nowrap; font-size: 12px; box-sizing: border-box; }
+    .r.on { background: rgba(236,231,218,0.08); font-weight: 600; box-shadow: inset 2px 0 0 #c8102e; }
+    .r .n { width: 12px; color: #8a857a; font-size: 10px; flex-shrink: 0; }
+    .r .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .r .end { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .r .h { color: #8a857a; font-size: 10px; }
+    .sec { display: flex; align-items: center; gap: 7px; padding: 0 11px; height: 26px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #8a857a; border-bottom: 1px solid rgba(236,231,218,0.16); }
+    .sec b { color: #ece7da; font-weight: 600; }
+    .sec .end { margin-left: auto; }
+    .rule { border-top: 1.5px solid #ece7da; }
+    .kid { padding-left: 30px; }
+    .pins { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid rgba(236,231,218,0.16); }
+    .pins > div { height: 46px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 9.5px; border-right: 1px solid rgba(236,231,218,0.16); border-bottom: 1px solid rgba(236,231,218,0.16); color: #ece7da; }
+    .cell { min-width: 30px; height: 17px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; font-size: 9.5px; letter-spacing: 0.05em; box-sizing: border-box; text-transform: uppercase; white-space: nowrap; }
+    .cell.out { border: 1px solid #ece7da; }
+    .cell.dimo { border: 1px solid rgba(236,231,218,.35); color: #8a857a; }
+    .cell.sig { background: #c8102e; color: #fff; font-weight: 600; }
+    .cell.inv { background: #ece7da; color: #141414; font-weight: 600; }
+    .meter { width: 34px; height: 4px; background: rgba(236,231,218,.2); position: relative; display: inline-block; }
+    .meter i { position: absolute; left: 0; top: 0; bottom: 0; background: #ece7da; }
+    .page { border: 1.5px solid #ece7da; background: #0f0f0f; box-sizing: border-box; position: relative; }
+    .addr { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1.5px solid #ece7da; background: #141414; font-size: 11.5px; }
+    .field { flex: 1; height: 22px; border: 1px solid rgba(236,231,218,.5); display: flex; align-items: center; gap: 6px; padding: 0 8px; min-width: 0; }
+    .field .u { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .slip { position: absolute; border: 1.5px solid #ece7da; background: #141414; box-shadow: 6px 6px 0 rgba(236,231,218,.3); font-size: 11.5px; }
+    .slip .row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid rgba(236,231,218,0.16); }
+    .slip .row:last-child { border-bottom: 0; }
+    .slip .k { width: 26px; color: #8a857a; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; }
+    .chip { height: 19px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(236,231,218,.5); font-size: 10px; letter-spacing: .04em; white-space: nowrap; }
+    .chip.on { border-color: #ece7da; background: #ece7da; color: #141414; font-weight: 600; }
+    .chip.add { border-style: dashed; color: #8a857a; }
+    .text { padding: 14px 18px; font-family: 'Newsreader', Georgia, serif; font-size: 15px; line-height: 1.5; color: rgba(236,231,218,.8); }
+    .text h3 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 24px; margin: 0 0 8px; color: #ece7da; }
+    .bandmsg { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 30px; border-bottom: 1.5px solid #ece7da; font-size: 11px; background: #141414; }
+    .bandmsg .end { margin-left: auto; display: flex; gap: 8px; }
+    .btn { white-space: nowrap; flex-shrink: 0; height: 20px; padding: 0 8px; display: inline-flex; align-items: center; border: 1px solid #ece7da; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+    .btn.fill { background: #ece7da; color: #141414; }
+    .pal { border: 2px solid #ece7da; background: #141414; box-shadow: 8px 8px 0 rgba(236,231,218,.3); box-sizing: border-box; }
+    .pal .in { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1.5px solid #ece7da; font-size: 14px; }
+    .caret { display: inline-block; width: 2px; height: 16px; background: #c8102e; }
+    .pal .r { min-height: 32px; }
+    .pal .r .num { width: 34px; color: #8a857a; font-size: 10px; text-align: right; flex-shrink: 0; }
+    .facet { color: #c8102e; }
+    .tbl { display: grid; font-size: 11.5px; }
+    .tbl > div { padding: 7px 10px 7px 0; border-bottom: 1px solid rgba(236,231,218,0.16); display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .tbl > .h { color: #8a857a; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1.5px solid #ece7da; }
+    .tbl > div.sel { background: rgba(236,231,218,0.08); }
+    .tbl .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lens { display: flex; border-bottom: 1.5px solid #ece7da; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+    .lens > div { padding: 8px 12px; border-right: 1px solid rgba(236,231,218,0.16); white-space: nowrap; }
+    .lens > div.on { background: #ece7da; color: #141414; font-weight: 600; }
+    .lens > div span { color: #8a857a; margin-left: 5px; }
+    .lens > div.on span { color: #141414; }
+    .kv { display: grid; grid-template-columns: 84px 1fr; gap: 6px 10px; font-size: 11px; }
+    .kv .k { color: #8a857a; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; padding-top: 2px; }
+    .rail { width: 48px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; }
+    .rail .ic { position: relative; width: 48px; height: 38px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(236,231,218,.16); }
+    .rail .ic.on { background: rgba(236,231,218,.08); box-shadow: inset 2px 0 0 #c8102e; }
+</style>
+</helmet>
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 34px 40px; display:flex; flex-direction:column; gap: 22px; overflow:hidden;">
+  <div style="display:flex; gap: 40px; align-items: flex-end;">
+    <h1>Common ground</h1>
+    <div class="note" style="max-width: 940px; padding-bottom: 6px;"><b>What all three share.</b> One record whose roles are pin, to read, keyword, copy and quote; one verb; one mark; two bands on the page; two homes. The directions differ only in where you browse what you kept.</div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:720px 1fr;gap:36px;">
+    <div class="col" style="gap:18px">
+      <div class="col"><h2><b>one record, many roles</b> · every surface is a view of it</h2><div class="tbl" style="grid-template-columns:90px 1fr 200px"><div class="h">role</div><div class="h">what it is</div><div class="h">from today</div><div><b>kept</b></div><div class="dim">the record itself: a page, file, shell, command, note or place</div><div class="dim" style="font-size:10.5px">folders.json · pins · library · prompt.saved</div><div><b>in</b></div><div class="dim">collections it sits in, any number; live ones compute themselves</div><div class="dim" style="font-size:10.5px">plain and live folders</div><div><b>pin</b></div><div class="dim">a place in the sidebar grid; a click spawns a tab</div><div class="dim" style="font-size:10.5px">pins.rs</div><div><b>to read</b></div><div class="dim">progress, position, finished; a lens, not a list</div><div class="dim" style="font-size:10.5px">library_store</div><div><b>keyword</b></div><div class="dim">"gh", or "rs %s" to search with what follows</div><div class="dim" style="font-size:10.5px">saved commands</div><div><b>copy</b></div><div class="dim">a reader copy by content hash; opens when the page won't</div><div class="dim" style="font-size:10.5px">library objects/</div><div><b>quote</b></div><div class="dim">a passage, as a text fragment the page scrolls to</div><div class="dim" style="font-size:10.5px">notes capture</div><div><b>here</b></div><div class="dim">personal (profile, sealed) or this project (.nus/, plain)</div><div class="dim" style="font-size:10.5px">notes' two homes</div></div></div>
+      <div class="col"><h2><b>bands on a page</b> · the same band as permissions, never a dialog</h2><div class="page" style="width:640px;height:68px;"><div class="addr"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;transform:rotate(180deg)"><path d="M9 6l6 6-6 6"/></svg><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M9 6l6 6-6 6"/></svg><div class="field"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="u">doc.rust-lang.org/book/ch04-01-what-is-ownership.html</span><span style="margin-left:auto;display:flex;gap:8px;align-items:center"><svg width="8" height="12" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg></span></div></div><div class="bandmsg"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M5 3h10l4 4v14H5z"/><path d="M9 11h6M9 15h6"/></svg><span><b>Cited in 2 notes</b> <span class="dim">· Borrowck, slowly · Why the prompt wraps</span></span><span class="end"><span class="btn">open</span><span class="btn">write about it</span></span></div></div><div class="page" style="width:640px;height:68px;"><div class="addr"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;transform:rotate(180deg)"><path d="M9 6l6 6-6 6"/></svg><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M9 6l6 6-6 6"/></svg><div class="field"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><span class="u">blog.example.org/2019/tracing-jits</span><span style="margin-left:auto;display:flex;gap:8px;align-items:center"><svg width="8" height="12" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg></span></div></div><div class="bandmsg" style="box-shadow:inset 4px 0 0 #c8102e"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7M4 4l3 3M20 20l-3-3"/></svg><span><b>This page didn't load</b> <span class="dim">· not found · copy from 12 Mar</span></span><span class="end"><span class="btn fill">read the copy</span><span class="btn">try again</span></span></div></div></div>
+      <div class="col"><h2><b>the mark</b> · the ribbon saved commands already draw</h2>
+        <div style="display:flex;gap:26px;align-items:center" class="note"><span style="display:flex;gap:8px;align-items:center"><svg width="11" height="16" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="#c8102e" stroke="#c8102e" stroke-width="1.6" stroke-linejoin="round"/></svg> <b>kept</b></span><span style="display:flex;gap:8px;align-items:center"><svg width="11" height="16" viewBox="0 0 14 20" style="flex-shrink:0"><path d="M1 1h12v18l-6-5-6 5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg> <b>not kept</b> (field only)</span><span style="display:flex;gap:8px;align-items:center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M18 16V9a3 3 0 0 0-3-3h-4"/></svg> <b>live</b>: its own icon, never the ribbon</span></div>
+      </div>
+    </div>
+    <div class="col" style="gap:14px">
+      <div class="note box"><b>The verb.</b> ⌘D keeps the page in front (or the shell's command, the file, the note) with nothing to fill in: no folder required. It goes in <b>this project</b> when the window is bound to one, else in personal. ⌘D again undoes. Every surface that offers "save" today calls this one verb: SAVE TO FOLDER, SAVE TO READING LIST, PIN THIS TAB, SAVE SHORTCUT.</div>
+      <div class="note box"><b>Finding beats filing.</b> Kept items outrank history in the palette and the address field. A kept copy's text is searchable. History may suggest (visited on 4 days, not kept: <i>keep?</i>), never act.</div>
+      <div class="note box"><b>Notes stay files.</b> A bookmark is <i>where</i>; the reading list is <i>what's left to do</i>, a state on the bookmark; a note is <i>what you think</i>. They meet by links: the notes index already knows every URL a note mentions, so the page asks which notes cite it. "Write about it" opens a note with the page as its first source.</div>
+      <div class="note box"><b>Two homes.</b> Personal items live in the profile and are encrypted like history. A project's live in <span class="sig">&lt;project&gt;/.nus/</span> beside its notes, plain, shared through git only if you say so.</div>
+      <div class="note box"><b>To build.</b> The record grows from library_store (per item, revisions, tombstones, copies, unknown fields kept). One way to tidy an address for duplicates. Migration in place: pins, plain folders, prompt.saved URLs, library entries; library's <i>note:</i> entries become notes. Import keeps the folder tree as collections; export to bookmarks HTML and JSON.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

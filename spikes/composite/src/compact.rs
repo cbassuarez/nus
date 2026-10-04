@@ -134,6 +134,10 @@ impl App {
                 }
                 self.fonts.draw_icon(scene, icons::CLOSE, d, cr.x, cr.y, if hot { ink } else { crate::app::fade(ink, 0.6) });
                 self.side_hits.push((reach, SideHit::Close(i)));
+            } else if self.tab_state_on() && self.tab_cell(tab).rank() > crate::tab_state::Cell::Idle.rank() {
+                // The state cell, as a mark on the icon's corner (tab_state.rs).
+                let c = self.tab_cell(tab);
+                self.draw_corner(scene, &c, Rect::new(ix, iy, isz + self.px(4.0), isz + self.px(4.0)));
             } else if tab.waiting() {
                 let d = self.px(6.0);
                 scene.rect(Rect::new(cell.right() - d - self.px(4.0), y + self.px(4.0), d, d), self.surface.signal);

@@ -35,6 +35,7 @@ mod director;
 mod pane_mode;
 mod send;
 mod tab_drag;
+mod tab_state;
 mod shell_colors;
 mod live;
 mod intelligence;

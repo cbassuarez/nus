@@ -546,6 +546,10 @@ pub struct Behavior {
     /// SIDEBAR · ASSISTANTS IN TAB ROWS: the Ledger's lines (ledger.rs).
     #[serde(default = "default_true")]
     pub ledger: bool,
+    /// SIDEBAR · TAB ROWS: where each tab is, under its title, and what it
+    /// is doing, in a cell at the row's end (tab_state.rs).
+    #[serde(default = "default_true")]
+    pub tab_state: bool,
     #[serde(default = "default_true")]
     pub progress_taskbar: bool,
     /// Blocks: lamps in the gutter, and output longer than this folds itself (0 = never).
@@ -1020,6 +1024,7 @@ impl Default for Behavior {
             hands_confirm_submit: true,
             progress_sidebar: true,
             ledger: true,
+            tab_state: true,
             progress_taskbar: true,
             ask_ctx: default_ask_ctx(),
             then_layout: String::new(),
@@ -1265,6 +1270,7 @@ pub enum Hit {
     FoldOver(u32),
     ProgressSidebar(bool),
     Ledger(bool),
+    TabState(bool),
     ProgressTaskbar(bool),
     AskCtx(crate::askctx::Ctx),
     ForgetMemory,
@@ -1912,6 +1918,7 @@ impl App {
             Hit::FoldOver(n) => if n == 0 { "never fold on its own".into() } else { format!("fold output over {n} lines") },
             Hit::ProgressSidebar(b) => if b { "progress in the sidebar".into() } else { "progress in the pane only".into() },
             Hit::Ledger(b) => if b { "assistants in tab rows".into() } else { "assistants as a dot".into() },
+            Hit::TabState(b) => if b { "tab rows: where, and what's happening".into() } else { "tab rows: one line".into() },
             Hit::ProgressTaskbar(b) => if b { "progress on the taskbar".into() } else { "taskbar left alone".into() },
             Hit::AskCtx(c) => format!("ask context · {}", c.key()),
             Hit::ForgetMemory => "memory cleared".into(),
@@ -2440,6 +2447,7 @@ impl App {
             Hit::FoldOver(n) => self.behavior.fold_over = n,
             Hit::ProgressSidebar(b) => self.behavior.progress_sidebar = b,
             Hit::Ledger(b) => self.behavior.ledger = b,
+            Hit::TabState(b) => self.behavior.tab_state = b,
             Hit::ProgressTaskbar(b) => self.behavior.progress_taskbar = b,
             Hit::AskCtx(c) => {
                 let k = c.key().to_string();
@@ -4051,6 +4059,11 @@ impl App {
                     ("FULL · ICONS AND TITLES".into(), Hit::Compact(false), !self.sidebar_rules.compact),
                     ("COMPACT · ICONS ONLY".into(), Hit::Compact(true), self.sidebar_rules.compact),
                 ])),
+                ("TAB ROWS".into(), Choice(vec![
+                    ("TWO LINES · WHERE, AND WHAT'S HAPPENING".into(), Hit::TabState(true), self.behavior.tab_state),
+                    ("ONE LINE".into(), Hit::TabState(false), !self.behavior.tab_state),
+                ])),
+                ("".into(), Info("Under each title, where the tab is: its folder and branch, its host or its site. At the row's end, what it's doing: how long a command has run, a port it listens on, a failure or a finish you haven't seen yet, or that it waits for you. Only waiting fills with colour.".into())),
                 ("ASSISTANTS IN TAB ROWS".into(), Choice(vec![
                     ("STATUS, QUESTION & ANSWERS".into(), Hit::Ledger(true), self.behavior.ledger),
                     ("A DOT".into(), Hit::Ledger(false), !self.behavior.ledger),

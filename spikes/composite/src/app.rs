@@ -5456,7 +5456,7 @@ impl App {
                 continue;
             }
             let hidden = !self.row_visible(i);
-            let want = if hidden { 0.0 } else { row + self.ledger_h(&self.tabs[i]) };
+            let want = if hidden { 0.0 } else { row + self.sub_h() + self.ledger_h(&self.tabs[i]) };
             // Animated height while a stack unfolds; otherwise the target.
             let h = match self.row_anims.get(&self.tabs[i].id) {
                 Some(a) if a.active() => a.value(),
@@ -5658,9 +5658,25 @@ impl App {
                 }
             }
             x += isz + self.px(10.0);
-            // Right side: × on hover, else a signal dot when waiting, else a
-            // collapsed stack's count.
+            // Right side: the state cell at the end (tab_state.rs), then
+            // × on hover, else a signal dot when waiting, else a stack's count.
             let mut right = sb.right() - pad_x;
+            let state = self.tab_state_on();
+            // A folded stack speaks for its members.
+            // Folded by hand, or closed because none of it is in front:
+            // either way none of its members has a row.
+            let shut = !stack.is_empty() && !stack.iter().any(|c| g.rows.iter().any(|r| r.0 == *c));
+            let members: Option<Vec<usize>> = (state && shut).then(|| std::iter::once(i).chain(subtree_of(&tabs, i)).collect());
+            if state {
+                let (cell, n) = match &members {
+                    Some(ms) => self.stack_cell(&tabs, ms),
+                    None => (self.tab_cell(tab), 1),
+                };
+                if cell != crate::tab_state::Cell::Quiet {
+                    let cx = self.draw_cell(scene, &cell, n, right, y + row_h / 2.0, active);
+                    right = cx - self.px(8.0);
+                }
+            }
             if tiled_ids.contains(&tab.id) {
                 let tsz = self.px(11.0);
                 self.fonts.draw_icon(scene, nus_render::text::icons::TILES, tsz, right - tsz, y + (row_h - tsz) / 2.0, if active { ink } else { t.dim });
@@ -5671,7 +5687,7 @@ impl App {
                 self.fonts.draw_icon(scene, nus_render::text::icons::CLOSE, isz, cx, iy, ink);
                 self.side_hits.push((Rect::new(cx - self.px(6.0), y, isz + self.px(12.0), row_h), SideHit::Close(i)));
                 right = cx - self.px(8.0);
-            } else if let Some((name, is_waiting)) = tab.attention().filter(|_| !self.ledger_shows(tab)) {
+            } else if let Some((name, is_waiting)) = tab.attention().filter(|_| !self.ledger_shows(tab) && !state) {
                 // A signal square when waiting for you; an assistant at work
                 // breathes in ink. The words are in the tooltip. (With the
                 // Ledger's lines under the title, they say it instead.)
@@ -5691,7 +5707,8 @@ impl App {
             } else if !stack.is_empty() {
                 // A node: its count and a caret; click the caret to fold or unfold.
                 let all = subtree_of(&tabs, i).len();
-                let tag = format!("{all}");
+                // A shut stack's second line already counts it.
+                let tag = if members.is_some() { String::new() } else { format!("{all}") };
                 let tw = self.fonts.measure(label, &tag);
                 let csz = self.px(11.0);
                 let icon = if open { nus_render::text::icons::CARET_DOWN } else { nus_render::text::icons::CARET_RIGHT };
@@ -5721,7 +5738,7 @@ impl App {
             let st = Style { color: if active { ink } else { Theme::with_alpha(ink, 0.82) }, ..st };
             // The shell's repository, dim at the right: `main ↑2 ●3`. Only
             // when the title keeps room to be read.
-            if let Pane::Term(tp) = tab.focused_ref() {
+            if let (Pane::Term(tp), false) = (tab.focused_ref(), state) {
                 if let Some(g) = tp.git() {
                     let word = g.short();
                     let gsz = self.px(11.0);
@@ -5736,12 +5753,19 @@ impl App {
             }
             let tab_id = tab.id;
             self.marquee(scene, st, x, base, right - x, &title, active || hovered, row_bg, hover_key("row", tab_id as usize));
-            // The Ledger: the assistant's lines, under the title.
-            if h > row_h + 1.0 {
-                self.draw_ledger(scene, tab, i, x, y + row_h - self.px(4.0), sb.right() - pad_x - x);
+            // Where the tab is, under its title.
+            let sub = self.sub_h();
+            if sub > 0.0 {
+                let bits = self.tab_where(&tabs, i, members.as_deref());
+                self.draw_where(scene, &bits, x, y + row_h + self.px(5.0), sb.right() - pad_x, active);
             }
-            // The shell's progress (OSC 9;4): a line under the title.
-            if let (Some((state, pct)), true) = (tab.progress(), self.behavior.progress_sidebar) {
+            // The Ledger: the assistant's lines, under the title.
+            if h > row_h + sub + 1.0 {
+                self.draw_ledger(scene, tab, i, x, y + row_h + sub - self.px(4.0), sb.right() - pad_x - x);
+            }
+            // The shell's progress (OSC 9;4): a line under the title (in the
+            // cell instead, when there is one).
+            if let (Some((state, pct)), true, false) = (tab.progress(), self.behavior.progress_sidebar, state) {
                 let (v, color) = self.progress_look(state, pct);
                 let py = y + row_h - self.px(3.0);
                 scene.rect(Rect::new(x, py, (right - x) * v, self.px(2.0)), color);

@@ -137,6 +137,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::Block(true) => "Block known ads and trackers.", Hit::Block(false) => "Allow requests on the block list.",
         Hit::ClickToSource(true) => "Offer source links on local pages.", Hit::ClickToSource(false) => "Keep normal page clicks.",
         Hit::Ledger(true) => "Show what assistants are doing under their tabs.", Hit::Ledger(false) => "Show assistants as a dot beside the tab.",
+        Hit::TabState(true) => "Show where each tab is and what it is doing.", Hit::TabState(false) => "Keep tab rows to one line.",
         Hit::ProgressSidebar(true) => "Show task progress beside tabs.", Hit::ProgressSidebar(false) => "Hide progress in the sidebar.",
         Hit::ProgressTaskbar(true) => "Show progress on the app icon.", Hit::ProgressTaskbar(false) => "Keep the app icon unchanged.",
         Hit::SshIntegration(true) => "Install hooks for remote commands.", Hit::SshIntegration(false) => "Leave remote shells unchanged.",

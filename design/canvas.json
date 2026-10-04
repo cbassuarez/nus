@@ -269,6 +269,42 @@
       "h": 1000,
       "page": "page-6",
       "title": "Common ground \u00b7 states, sources, loudness"
+    },
+    {
+      "file": "KeptShelf.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "title": "A \u00b7 Shelf",
+      "page": "page-7"
+    },
+    {
+      "file": "KeptLibrary.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "title": "B \u00b7 Library",
+      "page": "page-7"
+    },
+    {
+      "file": "KeptPalette.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "title": "C \u00b7 Palette",
+      "page": "page-7"
+    },
+    {
+      "file": "KeptCommon.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "title": "Common ground \u00b7 record, verb, mark, bands",
+      "page": "page-7"
     }
   ],
   "annotations": [
@@ -415,11 +451,19 @@
       "w": 760,
       "page": "page-6",
       "text": "Tab state \u2014 three directions for what's inside a tab or a stack, on the same nine tabs. A states it in a fixed cell, B shows the tab itself (live crops, a hover card), C writes a line of words only when there's news, with a shaped edge.\nSuggested mix: C's wire and edge at rest, A's spine for folded stacks, B's hover card on demand. Approve one or name the mix."
+    },
+    {
+      "id": "n-kept",
+      "x": 0,
+      "y": -170,
+      "w": 760,
+      "page": "page-7",
+      "text": "Bookmarks \u2014 one store for everything kept. Today six places keep a link (pins, folders, the reading list, saved commands, notes' sources, history); here they become one record with roles: in (collections), pin, to read, keyword, copy, quote, and here (personal or this project). One verb, \u2318D; one mark, the ribbon.\nA browses in the sidebar, B on one Library page, C nowhere: \u2318D keeps, \u2318K finds. Common ground (bottom right) holds the record, the verb, the bands and the two homes.\nSuggested mix: C's verb and recall everywhere (kept leads the palette and the address field), B's Library as the one place to tidy (the reading-list page grown up), and from A only Pinned and This project in the sidebar. Approve one or name the mix."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-6"
+    "page": "page-7"
   },
   "pages": [
     {
@@ -445,6 +489,10 @@
     {
       "id": "page-6",
       "name": "Tab state"
+    },
+    {
+      "id": "page-7",
+      "name": "Bookmarks"
     }
   ]
 }
