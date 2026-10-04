@@ -132,11 +132,47 @@ fn shared(base: &Path, channel: &str) -> std::io::Result<PathBuf> {
     let root = channel_root.join(SHARED);
     if !root.join("profile").exists() {
         if let Some(last) = last_root(&channel_root).filter(|r| r.file_name().is_some_and(|n| n != SHARED)) {
-            let _guard = nus_compat::profile::Guard::acquire(&last)?;
-            std::fs::rename(&last, &root).map_err(|e| std::io::Error::other(format!("Could not continue the local profile: {e}. The original profile is unchanged; quit other nus copies and retry.")))?;
+            let guard = nus_compat::profile::Guard::acquire(&last)?;
+            // Windows cannot rename the enclosing directory with a locked
+            // child file. Keep that file in place and move the live profile
+            // last, after its metadata/generations have moved successfully.
+            #[cfg(windows)] let moved = move_locked_contents(&last, &root, |from, to| std::fs::rename(from, to));
+            #[cfg(not(windows))] let moved = std::fs::rename(&last, &root);
+            moved.map_err(|e| std::io::Error::other(format!("Could not continue the local profile: {e}. Your data is retained; quit other nus copies and retry.")))?;
+            drop(guard);
+            #[cfg(windows)] {
+                let _ = std::fs::remove_file(last.join(".nus-profile.lock"));
+                let _ = std::fs::remove_dir(&last);
+            }
         }
     }
     prepare(base, channel, SHARED)
+}
+
+#[cfg(any(windows, test))]
+fn move_locked_contents(from: &Path, to: &Path, mut move_entry: impl FnMut(&Path, &Path) -> std::io::Result<()>) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(from)?.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>()?;
+    entries.retain(|p| p.file_name().is_none_or(|n| n != ".nus-profile.lock"));
+    entries.sort_by_key(|p| p.file_name().is_some_and(|n| n == "profile"));
+    // Refuse an existing destination before moving any data.
+    std::fs::create_dir(to)?;
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for source in entries {
+        let destination = to.join(source.file_name().unwrap());
+        if let Err(error) = move_entry(&source, &destination) {
+            let mut rollback_error = None;
+            for (source, destination) in moved.into_iter().rev() {
+                if let Err(e) = std::fs::rename(destination, source) { rollback_error = Some(e); }
+            }
+            let _ = std::fs::remove_dir(to);
+            return Err(match rollback_error {
+                Some(e) => std::io::Error::other(format!("{error}; metadata rollback needs attention: {e}; both folders are preserved")),
+                None => error,
+            });
+        }
+        moved.push((source, destination));
+    }
+    Ok(())
 }
 
 /// The root of the profile this channel used last, when it is one of its own.
@@ -261,6 +297,38 @@ pub fn complete() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_style_migration_keeps_the_lock_and_rolls_back_before_the_live_profile() {
+        for fail in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let old = temp.path().join("old");
+            let shared = temp.path().join("shared");
+            std::fs::create_dir_all(old.join("profile")).unwrap();
+            std::fs::write(old.join("profile/settings.json"), "local Here").unwrap();
+            std::fs::write(old.join("metadata.json"), "saved metadata").unwrap();
+            let guard = nus_compat::profile::Guard::acquire(&old).unwrap();
+            let result = move_locked_contents(&old, &shared, |from, to| {
+                if from.file_name().is_some_and(|n| n == "profile") {
+                    assert!(shared.join("metadata.json").exists());
+                    assert!(old.join(".nus-profile.lock").exists());
+                    if fail { return Err(std::io::Error::other("injected profile rename failure")); }
+                }
+                std::fs::rename(from, to)
+            });
+            assert_eq!(result.is_err(), fail);
+            assert!(nus_compat::profile::Guard::acquire(&old).is_err());
+            if fail {
+                assert_eq!(std::fs::read_to_string(old.join("profile/settings.json")).unwrap(), "local Here");
+                assert_eq!(std::fs::read_to_string(old.join("metadata.json")).unwrap(), "saved metadata");
+                assert!(!shared.exists());
+            } else {
+                assert_eq!(std::fs::read_to_string(shared.join("profile/settings.json")).unwrap(), "local Here");
+                assert!(!old.join("profile").exists());
+            }
+            drop(guard);
+        }
+    }
+
     #[test]
     fn only_registered_updates_continue_an_existing_profile() {
         let temp=tempfile::tempdir().unwrap();
