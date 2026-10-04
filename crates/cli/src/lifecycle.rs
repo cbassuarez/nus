@@ -533,7 +533,7 @@ pub fn uninstall(everything: bool, yes: bool) -> ExitCode {
     // A busy profile or locked credential store must not strand an uninstall.
     if everything {
         if let Some(base) = data_home() {
-            if let Err(e) = purge_channel_data(&base, i.channel) {
+            if let Err(e) = purge_channel_data(&base, i.channel, Some(&i.root)) {
                 return fail(
                     &ui,
                     &format!("local data could not be removed: {e}; nus is still installed"),
@@ -695,7 +695,7 @@ pub fn uninstall_data() -> ExitCode {
     }
     match data_home()
         .ok_or_else(|| std::io::Error::other("user data directory unavailable"))
-        .and_then(|base| purge_channel_data(&base, i.channel))
+        .and_then(|base| purge_channel_data(&base, i.channel, Some(&i.root)))
     {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&ui, &format!("local data could not be removed: {e}")),
@@ -729,12 +729,98 @@ fn collect_profiles(root: &Path, profiles: &mut Vec<PathBuf>) -> std::io::Result
     Ok(())
 }
 
-fn purge_channel_data(base: &Path, channel: nus_compat::Channel) -> std::io::Result<()> {
+/// Only recovery records naming this exact installation can authorize removal
+/// beside it. Never delete a folder just because its name looks like nus's.
+fn recovery_cleanup(
+    installation: &Path,
+    profiles: &[PathBuf],
+    channel: nus_compat::Channel,
+) -> std::io::Result<Vec<PathBuf>> {
+    let installed = installation.canonicalize()?;
+    let parent = installed
+        .parent()
+        .ok_or_else(|| std::io::Error::other("installation has no parent"))?;
+    let mut records: Vec<PathBuf> = profiles
+        .iter()
+        .map(|p| p.parent().unwrap().join("update-recovery.json"))
+        .collect();
+    for entry in std::fs::read_dir(parent)? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with(".nus-previous-"))
+            && path.extension().is_some_and(|e| e == "json")
+        {
+            records.push(path);
+        }
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for record in records {
+        let Ok(meta) = std::fs::symlink_metadata(&record) else {
+            continue;
+        };
+        if !meta.is_file() || is_link(&meta) || meta.len() > 65536 {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(&std::fs::read(&record)?) else {
+            continue;
+        };
+        let Some(owner) = value["installation"].as_str().map(Path::new) else {
+            continue;
+        };
+        let Some(version) = value["previous_version"].as_str() else {
+            continue;
+        };
+        if value["schema"] != 1
+            || owner.canonicalize().ok().as_ref() != Some(&installed)
+            || nus_compat::Channel::for_version(version) != channel
+        {
+            continue;
+        }
+        for (field, prefixes) in [
+            ("package", &[".nus-previous-"][..]),
+            ("staging", &[".nus-update-", ".nus-recovery-"][..]),
+        ] {
+            let Some(path) = value[field].as_str().map(PathBuf::from) else {
+                continue;
+            };
+            if path.parent().and_then(|p| p.canonicalize().ok()).as_deref() != Some(parent)
+                || !path.file_name().is_some_and(|n| {
+                    prefixes
+                        .iter()
+                        .any(|prefix| n.to_string_lossy().starts_with(prefix))
+                })
+            {
+                continue;
+            }
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && !is_link(&m)) {
+                paths.insert(path);
+            }
+        }
+        if record.parent() == Some(parent) {
+            paths.insert(record);
+        }
+    }
+    // Remove ownership records last so a failed package deletion can be retried.
+    let mut paths: Vec<_> = paths.into_iter().collect();
+    paths.sort_by_key(|p| p.extension().is_some_and(|e| e == "json"));
+    Ok(paths)
+}
+
+fn purge_channel_data(
+    base: &Path,
+    channel: nus_compat::Channel,
+    installation: Option<&Path>,
+) -> std::io::Result<()> {
     let root = base.join("installs").join(channel.directory());
+    let mut recovery = Vec::new();
     if root.exists() {
         let _channel_guard = nus_compat::profile::Guard::acquire(&root)?;
         let mut profiles = Vec::new();
         collect_profiles(&root, &mut profiles)?;
+        if let Some(installed) = installation {
+            recovery = recovery_cleanup(installed, &profiles, channel)?;
+        }
         // Imported/copied profiles can retain the same vault id. Deleting this
         // channel must not erase a key another channel or legacy profile uses.
         let mut others = Vec::new();
@@ -766,6 +852,23 @@ fn purge_channel_data(base: &Path, channel: nus_compat::Channel) -> std::io::Res
             }
         }
         std::fs::remove_dir_all(&root)?;
+    } else if let Some(installed) = installation {
+        recovery = recovery_cleanup(installed, &[], channel)?;
+    }
+    for path in recovery {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        if is_link(&meta) {
+            continue;
+        }
+        if meta.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else if meta.is_file() {
+            std::fs::remove_file(path)?;
+        }
     }
     let logs = base.join("logs").join(channel.directory());
     match std::fs::remove_dir_all(&logs) {
@@ -1199,6 +1302,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn complete_cleanup_removes_only_recovery_owned_by_this_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("data");
+        let installed = temp.path().join("nus");
+        let foreign = temp.path().join("other nus");
+        let profile = base.join("installs/preview/shared/profile");
+        for dir in [&installed, &foreign, &profile] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let owned = temp.path().join(".nus-previous-owned");
+        let staging = temp.path().join(".nus-update-owned");
+        let unrelated = temp.path().join(".nus-previous-foreign");
+        let project = temp.path().join("project");
+        for dir in [&owned, &staging, &unrelated, &project] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let record = |owner: &Path, package: &Path, stage: &Path| {
+            json!({
+                "schema":1,"previous_version":"0.0.2-preview.12", "installation":owner,
+                "package":package,"staging":stage
+            })
+        };
+        let owned_record = owned.with_extension("json");
+        let foreign_record = unrelated.with_extension("json");
+        std::fs::write(
+            &owned_record,
+            record(&installed, &owned, &staging).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &foreign_record,
+            record(&foreign, &unrelated, &project).to_string(),
+        )
+        .unwrap();
+        // Even a valid owner record cannot authorize a project path.
+        std::fs::write(
+            profile.parent().unwrap().join("update-recovery.json"),
+            record(&installed, &project, &project).to_string(),
+        )
+        .unwrap();
+        purge_channel_data(&base, nus_compat::Channel::Preview, Some(&installed)).unwrap();
+        assert!(!owned.exists());
+        assert!(!staging.exists());
+        assert!(!owned_record.exists());
+        assert!(unrelated.exists());
+        assert!(foreign_record.exists());
+        assert!(project.exists());
+        // Companion ownership survives profile removal and allows cleanup retries.
+        std::fs::create_dir(&owned).unwrap();
+        std::fs::write(
+            &owned_record,
+            record(&installed, &owned, &staging).to_string(),
+        )
+        .unwrap();
+        purge_channel_data(&base, nus_compat::Channel::Preview, Some(&installed)).unwrap();
+        assert!(!owned.exists());
+        assert!(!owned_record.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_cleanup_preserves_linked_and_outside_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let installed = temp.path().join("nus");
+        let outside = temp.path().join("project/.nus-previous-outside");
+        std::fs::create_dir(&installed).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let linked = temp.path().join(".nus-previous-linked");
+        std::os::unix::fs::symlink(&outside, &linked).unwrap();
+        for (name, package) in [("linked", &linked), ("outside", &outside)] {
+            std::fs::write(temp.path().join(format!(".nus-previous-{name}.json")), json!({
+                "schema":1,"previous_version":"0.0.2-preview.12","installation":installed,"package":package
+            }).to_string()).unwrap();
+        }
+        purge_channel_data(
+            &temp.path().join("data"),
+            nus_compat::Channel::Preview,
+            Some(&installed),
+        )
+        .unwrap();
+        assert!(outside.exists());
+        assert!(linked.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
     fn an_unrelated_homebrew_cask_does_not_own_this_copy() {
         let temp = tempfile::tempdir().unwrap();
         let cask = temp.path().join("Caskroom/nus/1.0/nus.app");
@@ -1234,14 +1422,14 @@ mod tests {
             std::fs::create_dir_all(&logs).unwrap();
             std::fs::write(logs.join("nus.log"), "my log").unwrap();
         }
-        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+        purge_channel_data(&base, nus_compat::Channel::Preview, None).unwrap();
         assert!(!base.join("installs/preview").exists());
         assert!(!base.join("logs/preview").exists());
         assert!(base
             .join("installs/release/shared/profile/settings.json")
             .is_file());
         assert!(base.join("logs/release/nus.log").is_file());
-        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+        purge_channel_data(&base, nus_compat::Channel::Preview, None).unwrap();
     }
 
     #[test]
@@ -1252,7 +1440,7 @@ mod tests {
         std::fs::create_dir_all(root.join("profile")).unwrap();
         std::fs::write(root.join("profile/settings.json"), "keep me").unwrap();
         let _guard = nus_compat::profile::Guard::acquire(&root).unwrap();
-        assert!(purge_channel_data(&base, nus_compat::Channel::Preview).is_err());
+        assert!(purge_channel_data(&base, nus_compat::Channel::Preview, None).is_err());
         assert_eq!(
             std::fs::read_to_string(root.join("profile/settings.json")).unwrap(),
             "keep me"
@@ -1270,7 +1458,7 @@ mod tests {
             std::fs::write(profile.join(".vault-id"), id).unwrap();
         }
         // No credential store is needed: the shared id must not be erased.
-        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+        purge_channel_data(&base, nus_compat::Channel::Preview, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(base.join("installs/release/shared/profile/.vault-id"))
                 .unwrap(),
@@ -1289,7 +1477,7 @@ mod tests {
         std::fs::write(outside.join("settings.json"), "project").unwrap();
         std::fs::create_dir_all(&root).unwrap();
         std::os::unix::fs::symlink(&outside, root.join("profile")).unwrap();
-        purge_channel_data(&base, nus_compat::Channel::Preview).unwrap();
+        purge_channel_data(&base, nus_compat::Channel::Preview, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(outside.join("settings.json")).unwrap(),
             "project"

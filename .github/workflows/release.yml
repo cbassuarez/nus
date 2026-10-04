@@ -351,11 +351,22 @@ jobs:
           if ((Get-Content "$localProfile\local-here.txt") -ne 'same local profile') { throw 'Reinstall duplicated or changed the local profile' }
           Test-LocalProfile 'reinstalled'
           if ((Get-Content "$localProfile\.vault-id") -ne $vaultId) { throw 'Reinstall duplicated the local vault' }
+          # Retained updates have explicit ownership beside the installed app.
+          $installParent = Split-Path $app -Parent
+          $recoveryBackup = Join-Path $installParent '.nus-previous-smoke'
+          $recoveryStage = Join-Path $installParent '.nus-update-smoke'
+          $neighbor = Join-Path $installParent '.nus-previous-unrelated'
+          New-Item -ItemType Directory -Force $recoveryBackup,$recoveryStage,$neighbor | Out-Null
+          $packageVersion = (Get-Content "$app\nus-package.json" | ConvertFrom-Json).version
+          $recoveryRecord = "$recoveryBackup.json"
+          @{ schema=1; previous_version=$packageVersion; installation=$app; package=$recoveryBackup; staging=$recoveryStage } | ConvertTo-Json | Set-Content $recoveryRecord
           $uninstall = Get-ChildItem (Join-Path $env:LOCALAPPDATA "nus\uninstall\$channel\unins*.exe") | Select-Object -First 1
           $p = Start-Process $uninstall.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/REMOVELOCALDATA','/LOG=purge.log' -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content purge.log; throw 'Complete uninstall failed' }
           for ($i = 0; $i -lt 30 -and (Test-Path $app); $i++) { Start-Sleep 1 }
           if ((Test-Path $app) -or (Test-Path $data) -or (Test-Path (Join-Path $env:LOCALAPPDATA "nus\logs\$channel"))) { throw 'Complete uninstall left local app data' }
+          if ((Test-Path $recoveryBackup) -or (Test-Path $recoveryStage) -or (Test-Path $recoveryRecord)) { throw 'Complete uninstall left retained update files' }
+          if (-not (Test-Path $neighbor)) { throw 'Complete uninstall removed an unrelated neighboring folder' }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-windows-x86_64

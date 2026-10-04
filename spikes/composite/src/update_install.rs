@@ -18,6 +18,8 @@ pub struct Recovery {
     pub installation: PathBuf,
     pub package: PathBuf,
     pub generation: Option<String>,
+    #[serde(default)]
+    pub staging: Option<PathBuf>,
 }
 pub fn recovery() -> Option<Recovery> {
     let r: Recovery = serde_json::from_slice(&std::fs::read("update-recovery.json").ok()?).ok()?;
@@ -57,7 +59,13 @@ pub fn return_to_previous() -> Result<(), String> {
     old.accepts(&saved).map_err(error)?;
     let parent = r.installation.parent().ok_or("No installation parent")?;
     let staging = tempfile::Builder::new().prefix(".nus-recovery-").tempdir_in(parent).map_err(error)?;
-    let backup = staging.path().join("newer-installation");
+    let backup = parent.join(format!(".nus-previous-{}", crate::journal::now()));
+    if backup.exists() { return Err("A recovery backup already exists; retry in a moment".into()); }
+    crate::store::write_json(&backup.with_extension("json"), &Recovery {
+        schema: 1, previous_version: crate::updates::CURRENT.into(), next_version: r.previous_version.clone(),
+        installation: r.installation.clone(), package: backup.clone(), generation: None,
+        staging: Some(staging.path().to_path_buf()),
+    }).map_err(error)?;
     let ready = staging.path().join("ready");
     let script = staging.path().join("recover.sh");
     crate::security::write_secret(&script, UNIX.as_bytes()).map_err(error)?;
@@ -73,6 +81,7 @@ pub fn return_to_previous() -> Result<(), String> {
         .env("NUS_BACKUP", &backup).env("NUS_READY", &ready)
         .env("NUS_RESULT", std::env::current_dir().map_err(error)?.join("profile/update-result.txt"))
         .env("NUS_PLATFORM", std::env::consts::OS).env("NUS_RECOVER", r.generation.as_ref().unwrap())
+        .env("NUS_WORKDIR", staging.path())
         .env("NUS_VERSION", &r.previous_version)
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)] { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000200); }
@@ -431,10 +440,15 @@ pub fn stage_and_launch(release: &Release) -> Result<(), String> {
     if backup.exists() {
         return Err("A recovery backup already exists; retry in a moment".into());
     }
-    crate::store::write_json(&current.join("update-recovery.json"), &Recovery {
+    let recovery = Recovery {
         schema: 1, previous_version: crate::updates::CURRENT.into(), next_version: candidate_contract.version,
         installation: installed.clone(), package: backup.clone(), generation: None,
-    }).map_err(error)?;
+        staging: Some(staging.path().to_path_buf()),
+    };
+    crate::store::write_json(&current.join("update-recovery.json"), &recovery).map_err(error)?;
+    // Keep an ownership record for every retained package, even after the
+    // profile's latest recovery record has advanced to another update.
+    crate::store::write_json(&backup.with_extension("json"), &recovery).map_err(error)?;
     let ready = staging.path().join("ready");
     let result = current.join("profile/update-result.txt");
     let script = staging.path().join(if cfg!(windows) {
@@ -470,6 +484,7 @@ pub fn stage_and_launch(release: &Release) -> Result<(), String> {
         .env("NUS_RESULT", &result)
         .env("NUS_VERSION", release.version.trim_start_matches('v'))
         .env("NUS_PLATFORM", std::env::consts::OS);
+    cmd.env("NUS_WORKDIR", staging.path());
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -507,12 +522,16 @@ if [ "$NUS_PLATFORM" = macos ]; then
 else
   if [ -n "${NUS_RECOVER:-}" ]; then "$NUS_TARGET/nus" "--recover-profile=$NUS_RECOVER" >/dev/null 2>&1 & else "$NUS_TARGET/nus" >/dev/null 2>&1 & fi
 fi
+if [ -n "${NUS_WORKDIR:-}" ] && [ "$(dirname -- "$NUS_WORKDIR")" = "$(dirname -- "$NUS_TARGET")" ]; then
+  case "${NUS_WORKDIR##*/}" in .nus-update-*|.nus-recovery-*) rm -rf -- "$NUS_WORKDIR" || true ;; esac
+fi
 "#;
 const WINDOWS: &str = r#"$ErrorActionPreference='Stop'
 Set-Content -LiteralPath $env:NUS_READY -Value 'ready'
 $until=(Get-Date).AddMinutes(4)
 while(Get-Process -Id $env:NUS_PARENT_PID -ErrorAction SilentlyContinue){if((Get-Date) -gt $until){Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update cancelled: nus did not exit.';exit 1};Start-Sleep -Milliseconds 250}
 try{Move-Item -LiteralPath $env:NUS_TARGET -Destination $env:NUS_BACKUP;try{Move-Item -LiteralPath $env:NUS_STAGED -Destination $env:NUS_TARGET}catch{Move-Item -LiteralPath $env:NUS_BACKUP -Destination $env:NUS_TARGET;throw};Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update installed. Previous installation retained for recovery.';try{Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue|ForEach-Object{$k=Get-ItemProperty -LiteralPath $_.PSPath;if($k.InstallLocation -and $k.InstallLocation.TrimEnd('\') -ieq $env:NUS_TARGET.TrimEnd('\')){Set-ItemProperty -LiteralPath $_.PSPath -Name DisplayVersion -Value $env:NUS_VERSION}}}catch{};if($env:NUS_RECOVER){Start-Process -FilePath (Join-Path $env:NUS_TARGET 'nus.exe') -ArgumentList ('--recover-profile='+$env:NUS_RECOVER)}else{Start-Process -FilePath (Join-Path $env:NUS_TARGET 'nus.exe')}}catch{Set-Content -LiteralPath $env:NUS_RESULT -Value 'Update failed; inspect the retained previous installation.';exit 1}
+if($env:NUS_WORKDIR -and [IO.Path]::GetDirectoryName($env:NUS_WORKDIR) -eq [IO.Path]::GetDirectoryName($env:NUS_TARGET) -and [IO.Path]::GetFileName($env:NUS_WORKDIR) -match '^\.nus-(update|recovery)-'){Remove-Item -LiteralPath $env:NUS_WORKDIR -Recurse -Force -ErrorAction SilentlyContinue}
 "#;
 #[cfg(test)]
 mod tests {
@@ -543,6 +562,9 @@ mod install_tests {
             let target = temp.path().join("nus package");
             let staged = temp.path().join("candidate");
             let backup = temp.path().join("previous");
+            let workdir = temp.path().join(".nus-update-fixture");
+            std::fs::create_dir(&workdir).unwrap();
+            std::fs::write(workdir.join("download"), "temporary archive").unwrap();
             std::fs::create_dir(&target).unwrap();
             std::fs::write(target.join("version"), "old").unwrap();
             if success {
@@ -559,11 +581,13 @@ mod install_tests {
                 .env("NUS_BACKUP", &backup)
                 .env("NUS_RESULT", temp.path().join("result"))
                 .env("NUS_PLATFORM", "fixture")
+                .env("NUS_WORKDIR", &workdir)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
             assert_eq!(status.success(), success);
+            assert_eq!(workdir.exists(), !success);
             assert_eq!(
                 std::fs::read_to_string(target.join("version")).unwrap(),
                 if success { "new" } else { "old" }

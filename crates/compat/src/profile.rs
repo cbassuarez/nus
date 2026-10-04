@@ -140,6 +140,14 @@ pub struct Guard {
     root: PathBuf,
     _lock: File,
 }
+impl Drop for Guard {
+    fn drop(&mut self) {
+        // Release explicitly: a concurrent Unix process spawn can briefly
+        // inherit the open file description before exec closes it. Closing
+        // only our descriptor could leave placement locked until that exec.
+        let _ = self._lock.unlock();
+    }
+}
 impl Guard {
     /// Obtain before settings reads (which may salvage and write), CEF, vault
     /// migration, holder discovery, or any other profile mutation.
@@ -481,6 +489,18 @@ mod tests {
         assert!(Guard::acquire(d.path()).is_err());
         drop(g);
         assert!(Guard::acquire(d.path()).is_ok());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn dropping_guard_releases_lock_even_with_a_shared_descriptor() {
+        let d = tempfile::tempdir().unwrap();
+        let g = Guard::acquire(d.path()).unwrap();
+        // Models a descriptor briefly inherited by another thread's fork.
+        let inherited = g._lock.try_clone().unwrap();
+        assert!(Guard::acquire(d.path()).is_err());
+        drop(g);
+        assert!(Guard::acquire(d.path()).is_ok());
+        drop(inherited);
     }
     #[cfg(unix)]
     #[test]

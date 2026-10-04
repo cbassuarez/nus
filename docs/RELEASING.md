@@ -159,7 +159,9 @@ Source checkouts continue to use their local `profile` directory.
 
 `nus uninstall` keeps the local profile for a reinstall. `nus uninstall
 --everything` explicitly removes this installation and its channel's profiles,
-recovery copies, vault credentials and logs; add `--yes` for unattended cleanup.
+recovery copies, retained app packages owned by this installation, vault credentials
+and logs; add `--yes` for unattended cleanup. Successful in-app updates remove
+their download and staging folders.
 Windows' **Remove them too** choice uses the same cleanup through the signed
 CLI, and silent uninstall can request it with `/REMOVELOCALDATA`. A busy profile
 blocks cleanup. Other channels, project files and external sync destinations
