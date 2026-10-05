@@ -1,0 +1,148 @@
+{
+  "capture": "Native NUS_SHOT compositor on macOS",
+  "git_head": "765a4d201493b0e0c682c7d5beb305fc32a6df5c",
+  "app_sha256": "a1eaf4aa2a6d93e4473bde2d6816c433d58648d7268906baa3b4aa4a9e6ad235",
+  "capture_diff_sha256": "a9bad8b845bf54b8cecfade0b828dbdcc8f9910818ab439bb6b567b4e4bac28f",
+  "project": "hello-world",
+  "theme": "Blueprint",
+  "profile": "Isolated disposable profiles",
+  "hover_hints": false,
+  "port_toasts": false,
+  "audio": false,
+  "hero": {
+    "source_take": "browser-motion-v2",
+    "duration_seconds": 14,
+    "source_frames": 840,
+    "source_fps": 60,
+    "export_fps": 30,
+    "export_pixels": [
+      1600,
+      1086
+    ],
+    "capture_pixels": [
+      2240,
+      1520
+    ],
+    "window_logical": [
+      1120,
+      760
+    ],
+    "topbar": true,
+    "browser_visible_throughout": true,
+    "counter_verified": [
+      0,
+      1,
+      2
+    ],
+    "find_verified": "Hello: 1 of 1 in page",
+    "bookmark_verified": true,
+    "script_sha256": "930c42baee32cc525aecf0d3ba8a0be27670b53341515d08de5799e223f68d16",
+    "paced_demonstration": true
+  },
+  "details": {
+    "source_take": "browser-features-v5",
+    "script_sha256": "c2f357f8fadaf299a1caa3844a3812da6b41818263da3c2d765a4e73ac0368f4",
+    "topbar": {
+      "workspace": true,
+      "browser": false,
+      "editor": false,
+      "kept": false,
+      "home": false
+    },
+    "layout_verified": "left=editor right=web split=yes",
+    "counter_verified": 1,
+    "find_verified": "Hello: 1 of 1 in page",
+    "kept_page_verified": "Hello, world!",
+    "kept_detail": {
+      "source_take": "browser-kept-detail",
+      "script_sha256": "4c35519593593250261efc1326afaed9f3e95b8c802e219b61c375e286ac8c44",
+      "crop_native_window_fraction": [
+        0.007,
+        0.049,
+        0.986,
+        0.52
+      ],
+      "kept_page_verified": "Hello, world!",
+      "topbar": false
+    }
+  },
+  "retained_captures": [
+    "nus-history-detail.png",
+    "nus-hatch-project.png"
+  ],
+  "rejected_take": {
+    "source": "browser-motion",
+    "reason": "Disk-full frame writer; interrupted at 414 frames, never exported. Partial PNGs retained losslessly in incomplete-frames.tar.gz."
+  },
+  "files": [
+    {
+      "file": "nus-browser-hero-web.mp4",
+      "bytes": 216167,
+      "sha256": "2246d22feaa3033d22449a328e767cc2d6f15f67d020b1498a2213d519835c5d"
+    },
+    {
+      "file": "nus-browser-hero-poster.png",
+      "bytes": 223721,
+      "sha256": "5e9b9240ef5d5be510b2ce800e75cee2aeef30b0cb3405651357c6fe5b0421e0",
+      "pixels": [
+        2240,
+        1520
+      ]
+    },
+    {
+      "file": "nus-browser-hero-readme.gif",
+      "bytes": 471941,
+      "sha256": "5e533e26ee934fe9f6300d56484b81cbd4e5c4254028b210c528493281ead317",
+      "pixels": [
+        960,
+        652
+      ],
+      "fps": 12
+    },
+    {
+      "file": "nus-browser-find.png",
+      "bytes": 175668,
+      "sha256": "120ea9ceeea65fd0d0519c9089d0cf1dcf37c4b491719e32770993392397072a",
+      "pixels": [
+        2208,
+        1434
+      ]
+    },
+    {
+      "file": "nus-workspace-page.png",
+      "bytes": 290410,
+      "sha256": "405654b69b5a3e6f4db7397f0de239471dce697bdfe0f4902ec3cd6d962a8846",
+      "pixels": [
+        2240,
+        1520
+      ]
+    },
+    {
+      "file": "nus-source-page.png",
+      "bytes": 242498,
+      "sha256": "a7904079f51e8f53659c25e7e70d90f9bf2909d1b0845a084304d71c1e9eb5c3",
+      "pixels": [
+        2208,
+        1434
+      ]
+    },
+    {
+      "file": "nus-kept-pages.png",
+      "bytes": 219163,
+      "sha256": "67882b5ef39cb1077103e7651987509e3f2fcc98bcd14ac22a7b6d84d102a405",
+      "pixels": [
+        2208,
+        790
+      ]
+    },
+    {
+      "file": "nus-home-links.png",
+      "bytes": 297091,
+      "sha256": "0ddec14a6c01cf1faf82057cd00e8ec0948666b2d11ec11e7e584d9ef6eea8e8",
+      "pixels": [
+        2105,
+        1246
+      ]
+    }
+  ]
+}

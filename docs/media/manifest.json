@@ -1,228 +1,108 @@
 {
-    "commit":  "97cd255",
-    "taken":  "2026-09-18 14:49",
-    "exe":  "debug",
-    "scale":  1.25,
-    "window":  {
-                   "logical":  [
-                                   1280,
-                                   800
-                               ],
-                   "px":  [
-                              1600,
-                              1000
-                          ]
-               },
-    "shots":  [
-                  {
-                      "name":  "ask",
-                      "face":  "ink",
-                      "file":  "ask-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "ask",
-                      "face":  "paper",
-                      "file":  "ask-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "atlas",
-                      "face":  "ink",
-                      "file":  "atlas-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "atlas",
-                      "face":  "paper",
-                      "file":  "atlas-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "compact",
-                      "face":  "ink",
-                      "file":  "compact-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "compact",
-                      "face":  "paper",
-                      "file":  "compact-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "devtools",
-                      "face":  "ink",
-                      "file":  "devtools-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "devtools",
-                      "face":  "paper",
-                      "file":  "devtools-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "hero-page",
-                      "face":  "ink",
-                      "file":  "hero-page-ink.png",
-                      "width":  649,
-                      "height":  862
-                  },
-                  {
-                      "name":  "hero-page",
-                      "face":  "paper",
-                      "file":  "hero-page-paper.png",
-                      "width":  649,
-                      "height":  862
-                  },
-                  {
-                      "name":  "home-line",
-                      "face":  "ink",
-                      "file":  "home-line-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "home-line",
-                      "face":  "paper",
-                      "file":  "home-line-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "home-plate",
-                      "face":  "ink",
-                      "file":  "home-plate-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "home-plate",
-                      "face":  "paper",
-                      "file":  "home-plate-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "palette",
-                      "face":  "ink",
-                      "file":  "palette-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "palette",
-                      "face":  "paper",
-                      "file":  "palette-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "ports",
-                      "face":  "ink",
-                      "file":  "ports-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "ports",
-                      "face":  "paper",
-                      "file":  "ports-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "prompt",
-                      "face":  "ink",
-                      "file":  "prompt-ink.png",
-                      "width":  646,
-                      "height":  420
-                  },
-                  {
-                      "name":  "prompt",
-                      "face":  "paper",
-                      "file":  "prompt-paper.png",
-                      "width":  646,
-                      "height":  420
-                  },
-                  {
-                      "name":  "theme-catppuccin",
-                      "face":  "ink",
-                      "file":  "theme-catppuccin-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "theme-catppuccin",
-                      "face":  "paper",
-                      "file":  "theme-catppuccin-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "theme-gruvbox",
-                      "face":  "ink",
-                      "file":  "theme-gruvbox-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "theme-gruvbox",
-                      "face":  "paper",
-                      "file":  "theme-gruvbox-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "theme-nord",
-                      "face":  "ink",
-                      "file":  "theme-nord-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "theme-nord",
-                      "face":  "paper",
-                      "file":  "theme-nord-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "theme-rose-pine",
-                      "face":  "ink",
-                      "file":  "theme-rose-pine-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "theme-rose-pine",
-                      "face":  "paper",
-                      "file":  "theme-rose-pine-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "window",
-                      "face":  "ink",
-                      "file":  "window-ink.png",
-                      "width":  1600,
-                      "height":  1000
-                  },
-                  {
-                      "name":  "window",
-                      "face":  "paper",
-                      "file":  "window-paper.png",
-                      "width":  1600,
-                      "height":  1000
-                  }
-              ]
+  "updated": "2026-10-04",
+  "capture": "Native NUS_SHOT compositor on macOS",
+  "theme": "Blueprint",
+  "profile": "Isolated disposable profiles",
+  "source_repository": "nus-site",
+  "source_directory": "assets/films",
+  "build_git_head": "765a4d201493b0e0c682c7d5beb305fc32a6df5c",
+  "app_sha256": "a1eaf4aa2a6d93e4473bde2d6816c433d58648d7268906baa3b4aa4a9e6ad235",
+  "capture_diff_sha256": "a9bad8b845bf54b8cecfade0b828dbdcc8f9910818ab439bb6b567b4e4bac28f",
+  "paced_demonstration": true,
+  "legacy_manifest": "manifest-2026-09-18.json",
+  "files": [
+    {
+      "file": "readme-browser.gif",
+      "source_file": "nus-browser-hero-readme.gif",
+      "provenance": "browser-features-provenance.json",
+      "bytes": 471941,
+      "sha256": "5e533e26ee934fe9f6300d56484b81cbd4e5c4254028b210c528493281ead317",
+      "width": 960,
+      "height": 652,
+      "codec": "gif",
+      "duration_seconds": 14.0,
+      "frame_rate": "12/1",
+      "frames": 168
+    },
+    {
+      "file": "readme-browser.mp4",
+      "source_file": "nus-browser-hero-web.mp4",
+      "provenance": "browser-features-provenance.json",
+      "bytes": 216167,
+      "sha256": "2246d22feaa3033d22449a328e767cc2d6f15f67d020b1498a2213d519835c5d",
+      "width": 1600,
+      "height": 1086,
+      "codec": "h264",
+      "duration_seconds": 14.0,
+      "frame_rate": "30/1",
+      "frames": 420
+    },
+    {
+      "file": "readme-shell-page.mp4",
+      "source_file": "nus-hero-web.mp4",
+      "provenance": "hello-world-provenance.json",
+      "bytes": 190217,
+      "sha256": "34c55c774567f2c13b93f6d7646a81a0a128d369e5997697e644d706bf81f3cc",
+      "width": 1600,
+      "height": 1086,
+      "codec": "h264",
+      "duration_seconds": 14.0,
+      "frame_rate": "30/1",
+      "frames": 420
+    },
+    {
+      "file": "readme-browser.png",
+      "source_file": "nus-browser-hero-poster.png",
+      "provenance": "browser-features-provenance.json",
+      "bytes": 223721,
+      "sha256": "5e9b9240ef5d5be510b2ce800e75cee2aeef30b0cb3405651357c6fe5b0421e0",
+      "width": 2240,
+      "height": 1520
+    },
+    {
+      "file": "readme-workspace.png",
+      "source_file": "nus-workspace-page.png",
+      "provenance": "browser-features-provenance.json",
+      "bytes": 290410,
+      "sha256": "405654b69b5a3e6f4db7397f0de239471dce697bdfe0f4902ec3cd6d962a8846",
+      "width": 2240,
+      "height": 1520
+    },
+    {
+      "file": "readme-editor.png",
+      "source_file": "nus-editor-detail.png",
+      "provenance": "hello-world-provenance.json",
+      "bytes": 135835,
+      "sha256": "f92ecac729f41dbe0e7e6e43e21455bc01aca357ae08eaf9aabf6b9137ae3a1b",
+      "width": 1433,
+      "height": 957
+    },
+    {
+      "file": "readme-hatch.png",
+      "source_file": "nus-hatch-project.png",
+      "provenance": "hello-world-provenance.json",
+      "bytes": 164241,
+      "sha256": "cfffdedd7b3e14dc3b545f8ff7b6f26f5f979f99479e06c2f66bac6b6b9a93b2",
+      "width": 1920,
+      "height": 936
+    },
+    {
+      "file": "readme-home.png",
+      "source_file": "nus-home-project.png",
+      "provenance": "hello-world-provenance.json",
+      "bytes": 297725,
+      "sha256": "7429bef3b5abcf135873b2e61387cea8b80767f5d51ee11bfd0915216e16108f",
+      "width": 2105,
+      "height": 1246
+    },
+    {
+      "file": "readme-history.png",
+      "source_file": "nus-history-detail.png",
+      "provenance": "hello-world-provenance.json",
+      "bytes": 242514,
+      "sha256": "72c85bbb84d53edf45f96c97939f50110d9a777ac3c7cf0a1088259281154abc",
+      "width": 1176,
+      "height": 1208
+    }
+  ]
 }

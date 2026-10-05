@@ -1,0 +1,107 @@
+{
+  "capture": "Native NUS_SHOT compositor on macOS",
+  "git_head": "765a4d201493b0e0c682c7d5beb305fc32a6df5c",
+  "app_sha256": "a1eaf4aa2a6d93e4473bde2d6816c433d58648d7268906baa3b4aa4a9e6ad235",
+  "capture_diff_sha256": "a9bad8b845bf54b8cecfade0b828dbdcc8f9910818ab439bb6b567b4e4bac28f",
+  "project": "hello-world",
+  "theme": "Blueprint",
+  "profile": "Isolated disposable profiles",
+  "hover_hints": false,
+  "port_toasts": false,
+  "audio": false,
+  "hero": {
+    "duration_seconds": 14,
+    "source_fps": 60,
+    "export_fps": 30,
+    "export_pixels": [
+      1600,
+      1086
+    ],
+    "capture_pixels": [
+      2240,
+      1520
+    ],
+    "window_logical": [
+      1120,
+      760
+    ],
+    "topbar": true,
+    "segments": [
+      {
+        "source": "hero-polished/command",
+        "duration_seconds": 4
+      },
+      {
+        "source": "page-live/page",
+        "duration_seconds": 10
+      }
+    ],
+    "counter_verified": [
+      0,
+      1,
+      2
+    ],
+    "paced_demonstration": true
+  },
+  "details": {
+    "topbar": false,
+    "hatch_statuses_verified": [
+      "running",
+      "finished"
+    ],
+    "saved_collection_count": 3,
+    "script_sha256": "2356e032bbcf89d789b0044b3405be3a23250ade89d4df2aff62e658e4e7572f"
+  },
+  "files": [
+    {
+      "file": "nus-hero-web.mp4",
+      "bytes": 190217,
+      "sha256": "34c55c774567f2c13b93f6d7646a81a0a128d369e5997697e644d706bf81f3cc"
+    },
+    {
+      "file": "nus-hero-poster.png",
+      "bytes": 302910,
+      "sha256": "073b8a1b51a68a4a1b3f787170304ae9bc71fa1c71e74f3cc10d1013fb97e087",
+      "pixels": [
+        2240,
+        1520
+      ]
+    },
+    {
+      "file": "nus-editor-detail.png",
+      "bytes": 135835,
+      "sha256": "f92ecac729f41dbe0e7e6e43e21455bc01aca357ae08eaf9aabf6b9137ae3a1b",
+      "pixels": [
+        1433,
+        957
+      ]
+    },
+    {
+      "file": "nus-history-detail.png",
+      "bytes": 242514,
+      "sha256": "72c85bbb84d53edf45f96c97939f50110d9a777ac3c7cf0a1088259281154abc",
+      "pixels": [
+        1176,
+        1208
+      ]
+    },
+    {
+      "file": "nus-home-project.png",
+      "bytes": 297725,
+      "sha256": "7429bef3b5abcf135873b2e61387cea8b80767f5d51ee11bfd0915216e16108f",
+      "pixels": [
+        2105,
+        1246
+      ]
+    },
+    {
+      "file": "nus-hatch-project.png",
+      "bytes": 164241,
+      "sha256": "cfffdedd7b3e14dc3b545f8ff7b6f26f5f979f99479e06c2f66bac6b6b9a93b2",
+      "pixels": [
+        1920,
+        936
+      ]
+    }
+  ]
+}

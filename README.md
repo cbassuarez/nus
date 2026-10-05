@@ -3,20 +3,28 @@
 <p align="center"><em>terminus</em>: the endpoint. the last terminal emulator, multiplexer, and browser you’ll install.</p>
 
 <p align="center">
-  <a href="https://github.com/cbassuarez/nus/releases/latest">Download</a> ·
+  <a href="https://github.com/cbassuarez/nus/releases">Download</a> ·
   <a href="docs/PRODUCT.md">Product</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./docs/media/window-ink.png">
-  <source media="(prefers-color-scheme: light)" srcset="./docs/media/window-paper.png">
-  <img alt="nus with a shell and browser page open in one workspace" src="./docs/media/window-paper.png">
-</picture>
+<p align="center">
+  <a href="https://github.com/cbassuarez/nus/releases"><img alt="Latest preview release" src="https://img.shields.io/github/v/release/cbassuarez/nus?include_prereleases&amp;sort=semver&amp;filter=%2Apreview%2A&amp;label=preview"></a>
+  <a href="https://github.com/cbassuarez/nus/actions/workflows/ci.yml"><img alt="CI on main" src="https://github.com/cbassuarez/nus/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/cbassuarez/nus"></a>
+</p>
 
-<p align="center"><sub>A shell and the page it started, in one workspace.</sub></p>
+[![nus opening a browser page, finding text, revealing its source and keeping the page](docs/media/readme-browser.gif)](docs/media/readme-browser.mp4)
+
+<p align="center"><sub>A page, native Find, its source, and a kept link — in one workspace.</sub></p>
+
+<p align="center">
+  <a href="docs/media/readme-browser.mp4">Watch the browser workflow</a> ·
+  <a href="docs/media/readme-shell-page.mp4">Watch a shell start its page</a> ·
+  <a href="docs/media/readme-browser.png">Full-resolution still</a>
+</p>
 
 ## What nus is
 
@@ -25,30 +33,18 @@ A terminal, browser, editor, local processes and an optional assistant usually l
 <table>
   <tr>
     <td width="33%"><strong>shell + page</strong></td>
-    <td width="33%"><strong>page as peer</strong></td>
-    <td width="33%"><strong>process ownership</strong></td>
+    <td width="33%"><strong>editor</strong></td>
+    <td width="33%"><strong>Hatch</strong></td>
   </tr>
   <tr>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/window-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/window-paper.png">
-        <img alt="a shell and page together in nus" src="./docs/media/window-paper.png">
-      </picture>
+      <a href="docs/media/readme-workspace.png"><img alt="A running development server beside its working counter page in nus" src="docs/media/readme-workspace.png"></a>
     </td>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/hero-page-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/hero-page-paper.png">
-        <img alt="a browser page as a peer pane in nus" src="./docs/media/hero-page-paper.png">
-      </picture>
+      <a href="docs/media/readme-editor.png"><img alt="The counter's JavaScript source in nus's native editor" src="docs/media/readme-editor.png"></a>
     </td>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ports-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ports-paper.png">
-        <img alt="the nus ports board showing process ownership" src="./docs/media/ports-paper.png">
-      </picture>
+      <a href="docs/media/readme-hatch.png"><img alt="Hatch showing a running development server and finished project checks" src="docs/media/readme-hatch.png"></a>
     </td>
   </tr>
 </table>
@@ -96,46 +92,21 @@ A terminal, browser, editor, local processes and an optional assistant usually l
 
 <table>
   <tr>
-    <td width="50%"><strong>Ports</strong></td>
-    <td width="50%"><strong>Ask</strong></td>
+    <td width="50%"><strong>Home</strong></td>
+    <td width="50%"><strong>Command history</strong></td>
   </tr>
   <tr>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ports-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ports-paper.png">
-        <img alt="nus ports board" src="./docs/media/ports-paper.png">
-      </picture>
+      <a href="docs/media/readme-home.png"><img alt="nus Home with saved commands, a project and a resumable development session" src="docs/media/readme-home.png"></a>
     </td>
     <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/ask-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/ask-paper.png">
-        <img alt="nus assistant surface" src="./docs/media/ask-paper.png">
-      </picture>
-    </td>
-  </tr>
-  <tr>
-    <td><strong>Palette</strong></td>
-    <td><strong>DevTools</strong></td>
-  </tr>
-  <tr>
-    <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/palette-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/palette-paper.png">
-        <img alt="nus command palette" src="./docs/media/palette-paper.png">
-      </picture>
-    </td>
-    <td>
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="./docs/media/devtools-ink.png">
-        <source media="(prefers-color-scheme: light)" srcset="./docs/media/devtools-paper.png">
-        <img alt="Chromium DevTools inside nus" src="./docs/media/devtools-paper.png">
-      </picture>
+      <a href="docs/media/readme-history.png"><img alt="nus command history with searchable commands, output and a navigation map" src="docs/media/readme-history.png"></a>
     </td>
   </tr>
 </table>
+
+The screenshots and silent fourteen-second videos above come from the native
+macOS app in the Blueprint theme. Click any screenshot for its original pixels.
 
 ## Status
 
@@ -192,7 +163,7 @@ curl -fsSL https://cbassuarez.com/nus.dev/install.sh | sh
 irm https://cbassuarez.com/nus.dev/install.ps1 | iex
 ```
 
-Or [download the latest preview](https://github.com/cbassuarez/nus/releases/latest) directly.
+Or [download the latest preview](https://github.com/cbassuarez/nus/releases) directly.
 
 ## What this is, and isn't
 
