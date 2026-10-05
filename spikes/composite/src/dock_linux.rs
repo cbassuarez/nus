@@ -53,13 +53,14 @@ fn publish(data: &Path, exe: &Path, signal: Color) -> io::Result<()> {
     std::fs::create_dir_all(&icons)?;
     std::fs::create_dir_all(&apps)?;
     let mercury=crate::app_icon::mercury();
-    let path = if mercury{icons.join("mercury-tidal-v1.png")}else{icons.join(format!(
-        "orbit-{:?}-{:02x}{:02x}{:02x}{:02x}.png",
+    let path = if mercury{icons.join(format!("mercury-{}-{:02x}{:02x}{:02x}.png",dock_icon::MERCURY_ART_VERSION,colour[0],colour[1],colour[2]))}else{icons.join(format!(
+        "orbit-{}-{:?}-{:02x}{:02x}{:02x}{:02x}.png",
+        dock_icon::ART_VERSION,
         crate::app_icon::face(),
         colour[0], colour[1], colour[2], colour[3]
     ))};
     if !path.exists() {
-        let rgba = if mercury{crate::mercury::icon(256)}else{dock_icon::render(256, signal, crate::app_icon::face())};
+        let rgba = if mercury{crate::mercury::icon_with_signal(256,signal)}else{dock_icon::render(256, signal, crate::app_icon::face())};
         atomic_write(&path, &nus_render::icon::png(&rgba, 256, 256))?;
     }
     let app_id = crate::default_browser::app_id();

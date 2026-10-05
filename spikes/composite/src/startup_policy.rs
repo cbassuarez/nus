@@ -30,15 +30,20 @@ pub fn centered(work: Area, preferred: (f64, f64)) -> Option<Area> {
         y: work.y + (work.h - h) * 0.5, w, h })
 }
 
-/// Restore only when a usable segment of the caption is reachable. A valid
-/// multi-monitor window is not pulled onto one screen merely for spanning it.
-pub fn caption_reachable(saved: Area, work: &[Area], caption: f64) -> bool {
-    if !saved.valid() || !caption.is_finite() || caption <= 0.0 { return false; }
-    let need = 100.0_f64.min(saved.w);
-    work.iter().copied().filter(|a| a.valid()).any(|a| {
-        let width = (saved.x + saved.w).min(a.x + a.w) - saved.x.max(a.x);
-        width >= need && saved.y >= a.y && saved.y + caption.min(saved.h) <= a.y + a.h
-    })
+/// Whether the complete frame is inside this display's usable desktop.
+pub fn fully_inside(frame: Area, work: Area) -> bool {
+    frame.valid() && work.valid() && frame.x >= work.x && frame.y >= work.y
+        && frame.x + frame.w <= work.x + work.w && frame.y + frame.h <= work.y + work.h
+}
+
+/// Preserve a restored size and position where possible, fitting its whole
+/// frame when a display shrank, disappeared, or a cascade reached an edge.
+pub fn fitted(work: Area, wanted: Area) -> Option<Area> {
+    if !work.valid() || !wanted.valid() { return None; }
+    let w = wanted.w.min(work.w);
+    let h = wanted.h.min(work.h);
+    Some(Area { x: wanted.x.clamp(work.x, work.x + work.w - w),
+        y: wanted.y.clamp(work.y, work.y + work.h - h), w, h })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,10 +94,27 @@ mod tests {
             assert!(centered(Area{x:0.0,y:0.0,w:n,h:700.0},(1440.0,900.0)).is_none());
         }
     }
-    #[test] fn restore_does_not_enforce_first_launch_size() {
-        let w = Area{x:0.0,y:24.0,w:1920.0,h:1056.0};
-        assert!(caption_reachable(Area{x:10.0,y:30.0,w:1890.0,h:1000.0}, &[w],32.0));
-        assert!(!caption_reachable(Area{x:-4000.0,y:30.0,w:1200.0,h:800.0}, &[w],32.0));
+    #[test] fn restores_fit_the_whole_frame_and_keep_valid_geometry() {
+        let work = Area{x:0.0,y:24.0,w:1920.0,h:1056.0};
+        let good = Area{x:10.0,y:30.0,w:1890.0,h:1000.0};
+        assert_eq!(fitted(work,good),Some(good));
+        for bad in [Area{x:1800.0,y:30.0,w:1200.0,h:800.0},
+            Area{x:10.0,y:900.0,w:1200.0,h:800.0},
+            Area{x:-4000.0,y:-2000.0,w:5000.0,h:4000.0}] {
+            assert!(!fully_inside(bad,work));
+            assert!(fully_inside(fitted(work,bad).unwrap(),work));
+        }
+    }
+    #[test] fn negative_origins_and_mixed_scale_work_areas_fit() {
+        for work in [Area{x:-2560.0,y:-1440.0,w:2560.0,h:1400.0},
+            Area{x:3840.0,y:40.0,w:1920.0,h:1040.0},
+            Area{x:-1280.0,y:22.0,w:1280.0,h:698.0}] {
+            for i in 0..1000 {
+                let wanted=Area{x:i as f64*30.0-8000.0,y:i as f64*10.0-2000.0,w:200.0+i as f64*3.0,h:120.0+i as f64*2.0};
+                assert!(fully_inside(fitted(work,wanted).unwrap(),work));
+            }
+        }
+        assert!(fitted(Area{x:0.0,y:0.0,w:0.0,h:700.0},Area{x:0.0,y:0.0,w:10.0,h:10.0}).is_none());
     }
     #[test] fn defaults_are_os_observations_not_dispatch_results() {
         assert_eq!(default_state(Handler::ThisInstall,Handler::ThisInstall),DefaultState::Default);

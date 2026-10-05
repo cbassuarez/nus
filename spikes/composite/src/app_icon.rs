@@ -8,7 +8,7 @@ impl Choice {
     pub fn name(self)->&'static str {match self{Self::Automatic=>"Automatic",Self::Newsreader=>"Newsreader",Self::Plex=>"Plex",Self::Silkscreen=>"Silkscreen",Self::PlexItalic=>"Plex Italic",Self::Bungee=>"Bungee",Self::Rubik=>"Rubik Mono",Self::Mercury=>"Mercury"}}
     pub fn face(self)->Face {match self{Self::Plex=>Face::Plex,Self::Silkscreen=>Face::Silkscreen,Self::PlexItalic=>Face::PlexItalic,Self::Bungee=>Face::Bungee,Self::Rubik=>Face::Rubik,_=>Face::Newsreader}}
     pub fn mercury(self)->bool {matches!(self,Self::Automatic|Self::Mercury)&&crate::mercury::earned()}
-    fn render(self,size:u32,signal:Color)->Vec<u8>{if self.mercury(){crate::mercury::icon(size)}else{dock_icon::render(size,signal,self.face())}}
+    fn render(self,size:u32,signal:Color)->Vec<u8>{if self.mercury(){crate::mercury::icon_with_signal(size,signal)}else{dock_icon::render(size,signal,self.face())}}
 }
 /// The tiles Settings offers: Mercury only while it is yours or can be claimed.
 pub fn offered()->Vec<Choice>{let m=crate::mercury::earned()||crate::mercury::can_claim();Choice::ALL.into_iter().filter(|c|*c!=Choice::Mercury||m).collect()}
@@ -18,12 +18,12 @@ pub fn selected()->Choice {Choice::ALL[usize::from(SELECTED.load(Ordering::Relax
 pub fn mercury()->bool {selected().mercury()}
 pub fn face()->Face {selected().face()}
 pub fn render(size:u32,signal:Color)->Vec<u8>{selected().render(size,signal)}
-pub struct Preview {choice:Choice,signal:Color,earned:bool,bind:Arc<wgpu::BindGroup>}
+pub struct Preview {choice:Choice,signal:Color,earned:bool,size:u32,bind:Arc<wgpu::BindGroup>}
 impl crate::app::App {
     pub(crate) fn icon_choices_height(&self,width:f32)->f32 {let cols=((width/self.px(130.0)).floor()as usize).clamp(1,4);self.px(134.0)*offered().len().div_ceil(cols)as f32}
     pub(crate) fn draw_icon_choices(&mut self,scene:&mut Scene,r:Rect){
-        let signal=self.surface.signal;let earned=crate::mercury::earned();
-        self.icon_previews.retain(|p|p.signal==signal&&p.earned==earned);
+        let signal=self.surface.signal;let earned=crate::mercury::earned();let native_size=(self.px(72.0).ceil()as u32).max(128).next_power_of_two().min(1024);
+        self.icon_previews.retain(|p|p.signal==signal&&p.earned==earned&&p.size==native_size);
         let cols=((r.w/self.px(130.0)).floor()as usize).clamp(1,4);let cell=r.w/cols as f32;
         let mercury_here=offered().contains(&Choice::Mercury);
         for (i,choice) in offered().into_iter().enumerate(){
@@ -32,11 +32,11 @@ impl crate::app::App {
             let color=if selected{signal}else{self.theme.dim};
             scene.outline(tile,self.px(if selected{2.0}else{1.0}),crate::app::fade(color,if selected{1.0}else{0.35}));
             let bind=if let Some(p)=self.icon_previews.iter().find(|p|p.choice==choice){p.bind.clone()}else{
-                let size=128;let rgba=if choice==Choice::Mercury{crate::mercury::icon(size)}else{choice.render(size,signal)};
+                let size=native_size;let rgba=if choice==Choice::Mercury{crate::mercury::icon_with_signal(size,signal)}else{choice.render(size,signal)};
                 let bgra:Vec<u8>=rgba.as_chunks::<4>().0.iter().flat_map(|p|[p[2],p[1],p[0],p[3]]).collect();
                 let tex=self.device.create_texture(&wgpu::TextureDescriptor{label:Some("app icon choice"),size:wgpu::Extent3d{width:size,height:size,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Bgra8Unorm,usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
                 self.gpu.queue.write_texture(wgpu::TexelCopyTextureInfo{texture:&tex,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},&bgra,wgpu::TexelCopyBufferLayout{offset:0,bytes_per_row:Some(size*4),rows_per_image:Some(size)},wgpu::Extent3d{width:size,height:size,depth_or_array_layers:1});
-                let bind=(self.bind_texture)(&tex);self.icon_previews.push(Preview{choice,signal,earned,bind:bind.clone()});bind
+                let bind=(self.bind_texture)(&tex);self.icon_previews.push(Preview{choice,signal,earned,size,bind:bind.clone()});bind
             };
             let size=self.px(72.0);scene.texture(Rect::new(tile.x+(tile.w-size)/2.0,tile.y+self.px(8.0),size,size),bind,Some(r));scene.layer(Some(r));
             let style=Style{color:self.theme.ink,..self.label()};let title=choice.name();let tw=self.fonts.measure(style,title);

@@ -142,7 +142,7 @@ impl App {
     pub(crate) fn command_enabled(&self, command:Command)->bool {
         if crate::private::enabled() && matches!(command, Command::Settings | Command::NewShell | Command::History | Command::Hatch) { return false; }
         let index=if self.hatch.as_ref().is_some_and(|h|h.window.has_focus()) {self.hatch_tab().unwrap_or(self.active)} else {self.active};
-        let pane=self.tabs.get(index).map(|t|t.focused_ref());
+        let pane=self.settings_view.as_ref().or_else(|| self.tabs.get(index).map(|t|t.focused_ref()));
         let field=self.palette.is_some() || matches!(pane,Some(Pane::Home(_)));
         match command {
             Command::Reload|Command::HardReload|Command::Devtools=>matches!(pane,Some(Pane::Web(_))),

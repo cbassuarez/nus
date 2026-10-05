@@ -115,49 +115,12 @@ pub fn claim() -> Result<(), String> {
     *CLAIM.lock().unwrap() = Some(value);
     Ok(())
 }
-/// The selected liquid-metal study, embedded so every platform uses the same
-/// art. Resize in premultiplied space: transparent texels cannot darken silver
-/// edges at small Dock sizes. The public icon remains straight-alpha RGBA.
-static ART: LazyLock<image::RgbaImage> = LazyLock::new(|| {
-    image::load_from_memory(include_bytes!("../../../assets/icon/mercury/tidal.png"))
-        .expect("embedded Mercury artwork")
-        .to_rgba8()
-});
+/// Liquid-metal material fields keep the emitting seam tied to the Space.
 pub fn icon(size: u32) -> Vec<u8> {
-    if size == 0 {
-        return Vec::new();
-    }
-    let source = image::Rgba32FImage::from_fn(ART.width(), ART.height(), |x, y| {
-        let p = ART.get_pixel(x, y).0;
-        let a = p[3] as f32 / 255.0;
-        image::Rgba([
-            p[0] as f32 / 255.0 * a,
-            p[1] as f32 / 255.0 * a,
-            p[2] as f32 / 255.0 * a,
-            a,
-        ])
-    });
-    let resized =
-        image::imageops::resize(&source, size, size, image::imageops::FilterType::Lanczos3);
-    resized
-        .pixels()
-        .flat_map(|p| {
-            let a = p[3].clamp(0.0, 1.0);
-            let channel = |k: usize| {
-                if a > 0.001 {
-                    (p[k] / a * 255.0).clamp(0.0, 255.0).round() as u8
-                } else {
-                    0
-                }
-            };
-            [
-                channel(0),
-                channel(1),
-                channel(2),
-                (a * 255.0).round() as u8,
-            ]
-        })
-        .collect()
+    icon_with_signal(size, nus_render::theme::signal::RED)
+}
+pub fn icon_with_signal(size: u32, signal: nus_render::Color) -> Vec<u8> {
+    nus_render::dock_icon::mercury(size, signal, nus_render::dock_icon::Face::Newsreader)
 }
 
 static LIQUID_EPOCH: LazyLock<Instant> = LazyLock::new(crate::clock::now);
@@ -253,13 +216,13 @@ impl crate::app::App {
     }
 
     pub(crate) fn mercury_texture(&mut self) -> Arc<wgpu::BindGroup> {
-        if let Some(texture) = &self.me_card.mercury_art {
-            return texture.clone();
+        let signal = self.surface.signal;
+        if let Some((cached, texture)) = &self.me_card.mercury_art {
+            if *cached == signal { return texture.clone(); }
         }
-        // Keep the full material study on the GPU; do not run a large CPU
-        // resample on the UI thread just to open Settings.
-        let texture = self.bind_rgba(ART.as_raw(), ART.width(), ART.height());
-        self.me_card.mercury_art = Some(texture.clone());
+        let pixels = icon_with_signal(1024, signal);
+        let texture = self.bind_rgba(&pixels, 1024, 1024);
+        self.me_card.mercury_art = Some((signal, texture.clone()));
         texture
     }
 
@@ -678,14 +641,17 @@ mod tests {
             assert_eq!(pixels.len(), (size * size * 4) as usize);
             let (mut coverage, mut dark, mut light) = (0, 0, 0);
             for p in pixels.chunks_exact(4) {
+                // Area-filtered Dock edges carry fractional pixel coverage.
+                // Counting only opaque pixels discards the 16px silhouette.
+                coverage += u64::from(p[3]);
                 if p[3] > 200 {
-                    coverage += 1;
                     dark += usize::from(p[0] < 100);
                     light += usize::from(p[0] > 200);
                 }
             }
-            assert!(coverage > (size * size / 10) as usize);
-            assert!(coverage < (size * size / 2) as usize);
+            let area = u64::from(size) * u64::from(size) * 255;
+            assert!(coverage > area / 10);
+            assert!(coverage < area / 2);
             assert!(
                 dark > 0 && light > 0,
                 "silver lost its contrast at {size}px"

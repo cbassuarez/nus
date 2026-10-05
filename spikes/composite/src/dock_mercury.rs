@@ -4,6 +4,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSApplication, NSCompositingOperation, NSImage};
 use objc2_foundation::{NSRect, NSSize};
 use std::{
+    borrow::Cow,
     cell::RefCell,
     ffi::c_void,
     ptr,
@@ -11,10 +12,11 @@ use std::{
 };
 
 struct State {
-    // PNG bytes remain in the executable; only the visible frame is decoded.
-    intro: Vec<&'static [u8]>,
+    // Default-red PNGs are borrowed; other Space colors own one short intro.
+    intro: Vec<Cow<'static, [u8]>>,
     base: Option<Retained<NSImage>>,
     still: Retained<NSImage>,
+    signal: nus_render::Color,
     reduced: bool,
     finished: bool,
     index: usize,
@@ -36,13 +38,13 @@ impl State {
             unsafe {
                 app.setApplicationIconImage(Some(&self.still));
             }
-            trace("mercury-still", None, [0.0; 4]);
+            trace("mercury-still", None, self.signal);
             self.intro = Vec::new();
             self.base = None;
             self.finished = true;
             return;
         }
-        let metal = image(self.intro[self.index]);
+        let metal = image(self.intro[self.index].as_ref());
         let frame = match self.base.as_ref() {
             Some(base) => shell_frame(base.clone(), metal, self.index, self.intro.len()),
             None => metal,
@@ -51,14 +53,21 @@ impl State {
             app.setApplicationIconImage(Some(&frame));
         }
         if self.index % 16 == 0 {
-            trace(&format!("mercury-intro-{}", self.index), None, [0.0; 4]);
+            trace(&format!("mercury-intro-{}", self.index), None, self.signal);
         }
         self.index += 1;
         self.next = self.started
             + Duration::from_secs_f64(self.index as f64 / nus_render::mercury::INTRO_FPS as f64);
     }
 }
-fn bank() -> Vec<&'static [u8]> {
+fn bank(signal: nus_render::Color, pixels: &[u8]) -> Vec<Cow<'static, [u8]>> {
+    if signal != nus_render::theme::signal::RED {
+        return nus_render::mercury::frames(256, pixels)
+            .intro
+            .into_iter()
+            .map(Cow::Owned)
+            .collect();
+    }
     let bytes = include_bytes!("../../../assets/icon/mercury/dock-motion.bin");
     assert_eq!(&bytes[..8], b"NUSM\x01\0\0\0");
     let read = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
@@ -75,7 +84,7 @@ fn bank() -> Vec<&'static [u8]> {
             at += 4;
             let frame = &bytes[at..at + len];
             at += len;
-            frame as &'static [u8]
+            Cow::Borrowed(frame as &'static [u8])
         })
         .collect();
     assert_eq!(at, bytes.len());
@@ -116,12 +125,11 @@ pub(super) struct Mercury {
     timer: *mut c_void,
 }
 impl Mercury {
-    pub(super) fn new(reduced: bool, launch: bool) -> Self {
-        let still = image(include_bytes!(
-            "../../../assets/icon/mercury/dock-still.png"
-        ));
+    pub(super) fn new(reduced: bool, launch: bool, signal: nus_render::Color) -> Self {
+        let pixels = crate::mercury::icon_with_signal(256, signal);
+        let still = image(&nus_render::icon::png(&pixels, 256, 256));
         let intro = if launch && !reduced {
-            bank()
+            bank(signal, &pixels)
         } else {
             Vec::new()
         };
@@ -141,6 +149,7 @@ impl Mercury {
                 intro,
                 base,
                 still,
+                signal,
                 reduced,
                 finished: false,
                 index: 0,
@@ -176,8 +185,20 @@ impl Mercury {
         }
         this
     }
-    pub(super) fn update(&mut self, reduced: bool) {
+    pub(super) fn update(&mut self, reduced: bool, signal: nus_render::Color) {
         let mut state = self.state.borrow_mut();
+        if state.signal != signal {
+            state.signal = signal;
+            let pixels = crate::mercury::icon_with_signal(256, signal);
+            state.still = image(&nus_render::icon::png(&pixels, 256, 256));
+            if !state.intro.is_empty() {
+                state.intro = bank(signal, &pixels);
+            }
+            if state.finished {
+                state.finished = false;
+            }
+            state.next = Instant::now();
+        }
         state.reduced = reduced;
         state.tick();
         if state.finished && !self.timer.is_null() {

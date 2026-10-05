@@ -461,7 +461,7 @@ impl App {
             .and_then(|t| if menu.right { t.right.as_ref() } else { Some(&t.left) })
             .is_some_and(|pane| match &menu.source {
                 Source::Reading { .. } => matches!(pane, Pane::Home(h) if h.library),
-                Source::Choose { .. } => matches!(pane, Pane::Settings(_)),
+                Source::Choose { .. } => self.settings_view.is_some(),
                 Source::Page(_) | Source::Media(_) => matches!(pane, Pane::Web(w) if w.reader.is_none()),
                 Source::Shell { .. } => matches!(pane, Pane::Term(_)),
                 Source::Autofill { context, origin, .. } => matches!(pane, Pane::Web(w) if w.reader.is_none()

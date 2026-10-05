@@ -1,7 +1,7 @@
 //! One pre-show placement pass. Never called when startup finishes or the app
-//! regains focus. A saved reachable normal window is the user's geometry.
+//! regains focus. A saved normal window keeps its geometry when its complete frame fits.
 use crate::settings::WindowStart;
-use crate::startup_policy::{caption_reachable, centered, Area};
+use crate::startup_policy::{fitted, fully_inside, centered, Area};
 use winit::window::Window;
 
 pub fn place(window:&Window, mode:WindowStart, saved:bool, secondary:bool) {
@@ -29,9 +29,9 @@ fn platform_place(window:&Window, mode:WindowStart, saved:bool, secondary:bool) 
     let screens=NSScreen::screens(mtm);
     let areas:Vec<_>=screens.iter().map(|s|area(s.visibleFrame())).collect();
     let restore=secondary || (matches!(mode,WindowStart::Last) && saved);
-    if restore && caption_reachable(old,&areas,32.0) {return;}
+    if restore && areas.iter().any(|&work| fully_inside(old,work)) {return;}
     let preferred=if restore {(old.w,old.h)} else {(1440.0,900.0)};
-    let Some(r)=centered(work,preferred) else {return};
+    let Some(r)=(if restore {fitted(work,old)} else {centered(work,preferred)}) else {return};
     native.setFrame_display(NSRect::new(NSPoint::new(r.x,-r.y-r.h),NSSize::new(r.w,r.h)),false);
 }
 
@@ -56,10 +56,10 @@ fn platform_place(window:&Window, mode:WindowStart, saved:bool, secondary:bool) 
     let old=Area{x:outer.left as f64,y:outer.top as f64,w:(outer.right-outer.left)as f64,h:(outer.bottom-outer.top)as f64};
     let scale=window.scale_factor();
     let restore=secondary || (matches!(mode,WindowStart::Last)&&saved);
-    if restore && caption_reachable(old,&[work],32.0*scale) {return;}
+    if restore && fully_inside(old,work) {return;}
     let inset=((old.w-(client.right-client.left)as f64).max(0.0),(old.h-(client.bottom-client.top)as f64).max(0.0));
     let desired=if restore {(old.w,old.h)} else {(1440.0*scale+inset.0,900.0*scale+inset.1)};
-    if let Some(r)=centered(work,desired) {
+    if let Some(r)=if restore {fitted(work,old)} else {centered(work,desired)} {
         let _=window.request_inner_size(winit::dpi::PhysicalSize::new((r.w-inset.0).max(1.0).round()as u32,(r.h-inset.1).max(1.0).round()as u32));
         window.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round()as i32,r.y.round()as i32));
     }
@@ -78,16 +78,41 @@ fn platform_place(window:&Window, mode:WindowStart, saved:bool, secondary:bool) 
     if !wayland && restore {
         if let Ok(p)=window.outer_position() {
             let s=window.outer_size();
-            if caption_reachable(Area{x:p.x as f64,y:p.y as f64,w:s.width as f64,h:s.height as f64},&[work],32.0*scale) {return;}
+            if fully_inside(Area{x:p.x as f64,y:p.y as f64,w:s.width as f64,h:s.height as f64},work) {return;}
         }
     }
-    if wayland && restore {return;} // No fabricated global placement on Wayland.
     let desired=if restore {let s=window.outer_size();(s.width as f64,s.height as f64)} else {(1440.0*scale,900.0*scale)};
-    if let Some(r)=centered(work,desired) {
+    let p=window.outer_position().unwrap_or(p);
+    let old=Area{x:p.x as f64,y:p.y as f64,w:desired.0,h:desired.1};
+    if let Some(r)=if restore {fitted(work,old)} else {centered(work,desired)} {
         let outer=window.outer_size(); let inner=window.inner_size();
         let dx=outer.width.saturating_sub(inner.width) as f64;
         let dy=outer.height.saturating_sub(inner.height) as f64;
         let _=window.request_inner_size(winit::dpi::PhysicalSize::new((r.w-dx).max(1.0).round()as u32,(r.h-dy).max(1.0).round()as u32));
         if !wayland {window.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round()as i32,r.y.round()as i32));}
     }
+}
+
+/// Fit a newly requested auxiliary window without changing its preferred size.
+pub fn keep_inside(window: &Window) { platform_place(window,WindowStart::Last,true,false); }
+
+/// Native frame and usable display area, for isolated placement checks.
+#[cfg(target_os="macos")]
+pub fn desktop_geometry(window: &Window) -> Option<(Area, Vec<Area>)> {
+    use objc2_foundation::{MainThreadMarker, NSRect};
+    use objc2_app_kit::{NSView, NSScreen};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let mtm=MainThreadMarker::new()?;
+    let handle=window.window_handle().ok()?;
+    let RawWindowHandle::AppKit(handle)=handle.as_raw() else {return None};
+    let view=unsafe {&*handle.ns_view.as_ptr().cast::<NSView>()};
+    let native=view.window()?;
+    let area=|r:NSRect|Area{x:r.origin.x,y:-(r.origin.y+r.size.height),w:r.size.width,h:r.size.height};
+    Some((area(native.frame()),NSScreen::screens(mtm).iter().map(|s|area(s.visibleFrame())).collect()))
+}
+#[cfg(not(target_os="macos"))]
+pub fn desktop_geometry(window: &Window) -> Option<(Area, Vec<Area>)> {
+    let p=window.outer_position().ok()?;let size=window.outer_size();
+    let areas=window.available_monitors().map(|m|{let p=m.position();let s=m.size();Area{x:p.x as f64,y:p.y as f64,w:s.width as f64,h:s.height as f64}}).collect();
+    Some((Area{x:p.x as f64,y:p.y as f64,w:size.width as f64,h:size.height as f64},areas))
 }

@@ -258,6 +258,10 @@ pub enum CrumbHit {
     Git,
     /// The branch's pull request (pr.rs): its page, in a tab.
     Pr,
+    /// Window settings, held on the gear rather than in the tab list.
+    Settings,
+    /// A new note beside the current work.
+    Note,
 }
 
 #[derive(Clone)]
@@ -437,7 +441,7 @@ pub struct WebPane {
     pub dt_panel: usize,
     /// The URL last written to the recent list.
     pub remembered: String,
-    /// When the current load began (for the ready cue).
+    /// When the current load bar began.
     pub load_since: Option<Instant>,
     pub load_reported: f32,
     /// Find in page, while the band is up.
@@ -704,6 +708,8 @@ pub fn tip_for(key: u64) -> Option<&'static str> {
         ("updates", 2, "update in progress · view status"),
         ("cluster", CrumbHit::Ports as usize, "ports · ctrl+shift+p"),
         ("cluster", CrumbHit::Assistant as usize, "ask · ctrl+shift+?"),
+        ("settings", 0, "settings · click again to return"),
+        ("note", 0, "new note beside this work"),
         ("cluster", CrumbHit::Pip as usize, "picture in picture"),
         ("cluster", CrumbHit::Waiting as usize, "tabs waiting on you"),
         ("foot", 0, "new tab · ctrl+shift+t"),
@@ -987,11 +993,13 @@ pub struct App {
     pub drawing_tab: u64,
     pub user_name: String,
     /// What the window is made of (see surface.rs) and the rules that colour
-    /// new tabs; both editable from the settings tab.
+    /// new tabs; both editable from window settings.
     pub surface: Surface,
     pub sidebar_rules: SidebarRules,
     pub rules: Rules,
     pub settings_focus: Option<usize>,
+    /// Window-level settings view; the active tab stays intact underneath.
+    pub settings_view: Option<Pane>,
     pub settings_hits: Vec<(Rect, crate::settings::Hit)>,
     /// AccessKit node id → what activating it does (rebuilt per frame).
     pub access_map: std::collections::HashMap<u64, crate::access::Target>,
@@ -1299,6 +1307,7 @@ pub struct App {
     pub pip_away_pending: Option<Instant>,
     pub pip_was_minimized: bool,
     pub update_revision: u64,
+    pub update_details: [bool; 2],
     /// Deferred DevTools open (tab, right pane), created from the main loop.
     pub devtools_request: Option<(usize, bool)>,
     pub crumb_hits: Vec<(Rect, CrumbHit)>,
@@ -1485,6 +1494,7 @@ impl App {
             sidebar_rules: SidebarRules::default(),
             rules: Rules::load(),
             settings_focus: None,
+            settings_view: None,
             settings_hits: Vec::new(),
             access_map: std::collections::HashMap::new(),
             palette_hits: Vec::new(),
@@ -1687,6 +1697,7 @@ impl App {
             pip_away_pending: None,
             pip_was_minimized: false,
             update_revision: 0,
+            update_details: [false; 2],
             devtools_request: None,
             crumb_hits: Vec::new(),
             side_hits: Vec::new(),
@@ -2097,9 +2108,19 @@ impl App {
 
     /// A page in a named container.
     pub(crate) fn new_web_pane_in(&mut self, url: &str, container: &str) -> Option<WebPane> {
+        self.web_pane_in(url, container, crate::page_load_cue::PageLoadCue::default())
+    }
+
+    /// Session restoration is quiet for this page's initial load only.
+    pub(crate) fn restored_web_pane_in(&mut self, url: &str, container: &str) -> Option<WebPane> {
+        self.web_pane_in(url, container, crate::page_load_cue::PageLoadCue::restored())
+    }
+
+    fn web_pane_in(&mut self, url: &str, container: &str, load_cue: crate::page_load_cue::PageLoadCue) -> Option<WebPane> {
         let shared: SharedRef = Rc::new(std::cell::RefCell::new(Shared {
             scale: self.scale,
             size: self.new_page_size(),
+            load_cue,
             ..Default::default()
         }));
         if let Ok(mut config)=shared.borrow().viewer.write(){*config=self.viewer_config();}
@@ -2358,6 +2379,7 @@ impl App {
 
     pub fn layout(&mut self) {
         let c = self.content_rect();
+        if let Some(s) = self.settings_pane_mut() { s.rect = c; }
         let split_w = self.px(m::SPLIT);
         let rule = self.px(m::STRUCTURE);
         let header = self.header_h();
@@ -2752,7 +2774,12 @@ impl App {
                     w.bounce_y = y * scale;
                     self.dirty |= moving;
                     let (loading, progress) = {
-                        let s = w.tab.shared.borrow();
+                        let mut s = w.tab.shared.borrow_mut();
+                        let loading = s.loading;
+                        // CEF records completion in its callback; polling also
+                        // covers native pages and error/cancel paths.
+                        s.load_cue.observe(loading, crate::clock::now());
+                        ready_cue |= s.load_cue.take();
                         (s.loading, s.progress as f32)
                     };
                     if loading {
@@ -2768,8 +2795,7 @@ impl App {
                             w.load_since = Some(crate::clock::now());
                         }
                     } else {
-                        if let Some(t0)=w.load_since.take() {
-                            ready_cue |= crate::clock::since(t0).as_secs_f32()>1.0;
+                        if w.load_since.take().is_some() {
                             w.load.target=1.0;
                         }
                         if w.load_fade.target()>0.0 && w.load.value>=0.999 {w.load_fade.go(0.0,out);self.dirty=true;}
@@ -4320,6 +4346,9 @@ impl App {
         if !(changed || self.dirty || self.frames == 0) {
             return;
         }
+        if self.shot.as_ref().is_some_and(|s| s.hides_hover()) {
+            self.cursor_left();
+        }
         let _frame = crate::perf::scope("frame_build_submit");
         crate::perf::interval("frame_interval");
         self.frame_at = Some(Instant::now());
@@ -4414,6 +4443,8 @@ impl App {
         let t = self.theme.clone();
         let ink = t.ink;
         let strip = self.strip_rect();
+        let dense = strip.w / self.scale < 560.0;
+        let tiny = strip.w / self.scale < 320.0;
         scene.hline(strip.x, strip.bottom(), strip.w, self.px(m::STRUCTURE), ink);
         let ic = self.px(16.0);
         let iy = strip.y + ((strip.h - ic) / 2.0).round();
@@ -4429,7 +4460,7 @@ impl App {
         // The wordmark is the nus button: home, held down while it is up.
         self.crumb_hits.clear();
         self.tend_home_latch();
-        {
+        if !tiny || cfg!(target_os="macos") {
             let ww = self.fonts.measure(wm, "nus");
             let cell = Rect::new(x - self.px(8.0), strip.y + self.px(4.0), ww + self.px(16.0), strip.h - self.px(8.0));
             let down = self.home_latch.is_some();
@@ -4472,7 +4503,7 @@ impl App {
                 _ => (false, String::new()),
             }
         };
-        if focused_web {
+        if !dense && focused_web {
             // The crumb is the site: favicon, title, host. Click to edit the URL.
             let (title, fav) = {
                 let tab = &self.tabs[self.active];
@@ -4485,7 +4516,7 @@ impl App {
             let host = url.split("//").nth(1).unwrap_or(&url).split('/').next().unwrap_or("").trim_start_matches("www.").to_string();
             let ui = self.ui();
             let dim_ui = Style { color: t.dim, ..ui };
-            let reserve=self.px((if self.width_class()==Width::Narrow{172.0}else{300.0})+if cfg!(target_os="macos"){0.0}else{132.0});
+            let reserve=self.px((if self.width_class()==Width::Narrow{262.0}else{360.0})+if cfg!(target_os="macos"){0.0}else{132.0});
             let maxw = (strip.w * 0.42).min(self.px(640.0)).min((strip.right()-reserve-x).max(0.0));
             let start = x;
             let _ = fav;
@@ -4513,7 +4544,7 @@ impl App {
                 scene.hline(start, strip.bottom() - self.px(3.0), x - start, self.px(2.0), self.surface.signal);
             }
             self.crumb_hits.push((field, CrumbHit::Url));
-        } else {
+        } else if !dense {
             let tab = &self.tabs[self.active];
             // Split tabs read as "left | right"; the pane strips name each side.
             let (icon, title) = match &tab.left {
@@ -4529,7 +4560,7 @@ impl App {
             Pane::Downloads(_) => (nus_render::text::icons::DOWNLOAD, "downloads".into()),
             };
             let title = format!("{} {}", self.tab_label(self.active), title).caps();
-            let reserve = self.px((if self.width_class() == Width::Narrow { 172.0 } else { 300.0 }) + if cfg!(target_os = "macos") { 0.0 } else { 132.0 });
+            let reserve = self.px((if self.width_class() == Width::Narrow { 262.0 } else { 360.0 }) + if cfg!(target_os = "macos") { 0.0 } else { 132.0 });
             let title = self.fit(label, &title, (strip.right()-reserve-x-ic-p8).max(0.0));
             let tw = self.fonts.measure(label, &title);
             let fade = Style { color: Theme::with_alpha(ink, self.crumb_anim.value()), ..label };
@@ -4552,7 +4583,7 @@ impl App {
                 let w = self.fonts.measure(st, &word) + pad * 2.0 + gsz + self.px(5.0);
                 let ch = self.px(m::LABEL_PX) + self.px(8.0);
                 let chip = Rect::new(x, lbase - ch + self.px(4.0), w, ch);
-                if chip.right() < strip.right() - self.px(320.0) {
+                if chip.right() < strip.right() - self.px(380.0) {
                     scene.outline(chip, self.px(m::HAIRLINE), st.color);
                     let gi = if g.op == Some("MERGING") { nus_render::text::icons::GIT_MERGE } else { nus_render::text::icons::GIT_BRANCH };
                     self.fonts.draw_icon(scene, gi, gsz, x + pad, chip.y + (ch - gsz) * 0.5, st.color);
@@ -4568,7 +4599,7 @@ impl App {
                     let icons_w = gsz + self.px(5.0) + if pr.icon().is_some() { gsz + self.px(5.0) } else { 0.0 };
                     let w = self.fonts.measure(label, &word) + pad * 2.0 + icons_w;
                     let pchip = Rect::new(x, chip.y, w, ch);
-                    if pchip.right() < strip.right() - self.px(320.0) {
+                    if pchip.right() < strip.right() - self.px(380.0) {
                         scene.rect(pchip, fill);
                         let mut ix = x + pad;
                         self.fonts.draw_icon(scene, nus_render::text::icons::GIT_PR, gsz, ix, chip.y + (ch - gsz) * 0.5, on);
@@ -4585,13 +4616,14 @@ impl App {
         }
         // Right side: status cluster, search, sidebar, window controls.
         let mut rx = strip.right() - self.px(18.0);
-        let gap = self.px(14.0);
+        let gap = self.px(if dense { 8.0 } else { 14.0 });
         if !cfg!(target_os = "macos") {
             for (icon, hit) in [
                 (nus_render::text::icons::CLOSE, CrumbHit::Close),
                 (nus_render::text::icons::MAXIMIZE, CrumbHit::Maximize),
                 (nus_render::text::icons::MINIMIZE, CrumbHit::Minimize),
             ] {
+                if tiny && hit != CrumbHit::Close { continue; }
                 rx -= ic;
                 let hr = Rect::new(rx - p6, strip.y, ic + p12, strip.h);
                 self.icon_button(scene, icon, ic, rx, iy, ink, hr, hover_key("winctl", hit as usize), IconMotion::Still);
@@ -4607,31 +4639,47 @@ impl App {
             self.icon_button(scene,nus_render::text::icons::MORE,ic,rx,iy,ink,hr,hover_key("application-menu",0),IconMotion::Still);
             self.crumb_hits.push((hr,CrumbHit::Menu)); rx-=gap;
         }
-        rx -= ic;
-        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-        self.icon_button(scene, nus_render::text::icons::SIDEBAR, ic, rx, iy, if self.sidebar { ink } else { t.dim }, hr, hover_key("sidebar", 0), IconMotion::Pop);
-        self.crumb_hits.push((hr, CrumbHit::Sidebar));
-        rx -= gap + ic;
-        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-        self.icon_button(scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink, hr, hover_key("search", 0), IconMotion::Pop);
-        self.crumb_hits.push((hr, CrumbHit::Search));
-        if !crate::private::enabled() {
-            rx -= gap + ic;
-            let hr=Rect::new(rx-self.px(4.0),strip.y,ic+self.px(8.0),strip.h);
-            let status=crate::updates::status();let ready=status.available&&!status.busy;
-            if ready{scene.push(nus_render::Instance::rounded(Rect::new(rx-self.px(5.0),iy-self.px(5.0),ic+self.px(10.0),ic+self.px(10.0)),self.px(4.0),fade(self.surface.signal,0.14)));}
-            self.icon_button(scene,nus_render::text::icons::DOWNLOAD,ic,rx,iy,if ready{self.surface.signal}else{t.dim},hr,hover_key("updates",if status.busy{2}else if ready{1}else{0}),IconMotion::Still);
-            self.crumb_hits.push((hr,CrumbHit::Updates));
+        if !tiny {
+            rx -= ic;
+            let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+            self.icon_button(scene, nus_render::text::icons::SIDEBAR, ic, rx, iy, if self.sidebar { ink } else { t.dim }, hr, hover_key("sidebar", 0), IconMotion::Pop);
+            self.crumb_hits.push((hr, CrumbHit::Sidebar));
+            rx -= gap;
         }
-        rx -= gap + ic;
-        let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
-        let pc = if self.start.is_some() || self.orrery.is_some() { self.surface.signal } else { ink };
-        self.icon_button(scene, nus_render::text::icons::PLANET, ic, rx, iy, pc, hr, hover_key("atlas", 0), IconMotion::Spin(-25.0));
-        self.crumb_hits.push((hr, CrumbHit::Start));
-        rx -= gap;
+        if !dense {
+            rx -= ic;
+            let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+            self.icon_button(scene, nus_render::text::icons::SEARCH, ic, rx, iy, ink, hr, hover_key("search", 0), IconMotion::Pop);
+            self.crumb_hits.push((hr, CrumbHit::Search));
+            if !crate::private::enabled() {
+                rx -= gap + ic;
+                let hr=Rect::new(rx-self.px(4.0),strip.y,ic+self.px(8.0),strip.h);
+                let status=crate::updates::status();let ready=status.available&&!status.busy;
+                if ready{scene.push(nus_render::Instance::rounded(Rect::new(rx-self.px(5.0),iy-self.px(5.0),ic+self.px(10.0),ic+self.px(10.0)),self.px(4.0),fade(self.surface.signal,0.14)));}
+                self.icon_button(scene,nus_render::text::icons::DOWNLOAD,ic,rx,iy,if ready{self.surface.signal}else{t.dim},hr,hover_key("updates",if status.busy{2}else if ready{1}else{0}),IconMotion::Still);
+                self.crumb_hits.push((hr,CrumbHit::Updates));
+            }
+            rx -= gap + ic;
+            let hr = Rect::new(rx - self.px(4.0), strip.y, ic + self.px(8.0), strip.h);
+            let pc = if self.start.is_some() || self.orrery.is_some() { self.surface.signal } else { ink };
+            self.icon_button(scene, nus_render::text::icons::PLANET, ic, rx, iy, pc, hr, hover_key("atlas", 0), IconMotion::Spin(-25.0));
+            self.crumb_hits.push((hr, CrumbHit::Start));
+            rx -= gap;
+        }
+        for (icon, hit, down, key) in [
+            (nus_render::text::icons::SETTINGS, CrumbHit::Settings, self.settings_view.is_some(), "settings"),
+            (nus_render::text::icons::PENCIL, CrumbHit::Note, false, "note"),
+        ] {
+            rx -= ic;
+            let hr = Rect::new(rx-self.px(4.0), strip.y, ic+self.px(8.0), strip.h);
+            if down { scene.rect(hr, ink); }
+            self.icon_button(scene, icon, ic, rx, iy, if down { self.on_fill(ink) } else { ink }, hr, hover_key(key, 0), IconMotion::Still);
+            self.crumb_hits.push((hr, hit));
+            rx -= gap;
+        }
         // Finish Work: a fixed place just before the cluster, on laptops
         // only, so nothing beside it moves when work comes and goes.
-        if crate::finish_work::offered() {
+        if !dense && crate::finish_work::offered() {
             use crate::finish_work::Phase;
             let view = crate::finish_work::view();
             let (icon, color) = match view.phase {
@@ -4654,16 +4702,19 @@ impl App {
         // status cluster: waiting · pip · assistant · ports (one icon when narrow)
         let waiting = self.tabs.iter().filter(|t| t.waiting()).count();
         let mut cluster: Vec<((&'static str, &'static str), String, CrumbHit, bool)> = Vec::new();
-        if self.width_class() == Width::Narrow {
+        if dense {
+            cluster.push((nus_render::text::icons::ASSISTANT, String::new(), CrumbHit::Assistant, self.ask_open()));
+        } else if self.width_class() == Width::Narrow {
             let lit = waiting > 0 || self.pip.is_some();
             let count = if waiting > 0 { waiting.to_string() } else { String::new() };
             cluster.push((nus_render::text::icons::MORE, count, CrumbHit::Waiting, lit));
+            cluster.push((nus_render::text::icons::ASSISTANT, String::new(), CrumbHit::Assistant, self.ask_open()));
         } else {
         // Ports and the assistant always keep their place in the cluster,
         // dim until there is something to count; only pip and the bell come
         // and go, so the icons either side of them do not shift about.
         cluster.push((nus_render::text::icons::PORTS, if self.ports.is_empty() { String::new() } else { self.ports.len().to_string() }, CrumbHit::Ports, !self.ports.is_empty()));
-        cluster.push((nus_render::text::icons::ASSISTANT, String::new(), CrumbHit::Assistant, !self.llm_tools.is_empty()));
+        cluster.push((nus_render::text::icons::ASSISTANT, String::new(), CrumbHit::Assistant, self.ask_open()));
         if self.pip.is_some() {
             cluster.push((nus_render::text::icons::PIP, String::new(), CrumbHit::Pip, true));
         }
@@ -4843,8 +4894,9 @@ impl App {
         let has_right = self.tabs[active].right.is_some();
         // Split rule.
         let narrow = self.width_class() == Width::Narrow || self.tabs[active].solo;
-        let tiled = self.draw_tiling(&mut scene) || self.draw_peek(&mut scene);
-        if has_right && !narrow && !tiled {
+        let settings_open = self.settings_view.is_some();
+        let tiled = !settings_open && (self.draw_tiling(&mut scene) || self.draw_peek(&mut scene));
+        if has_right && !narrow && !tiled && !settings_open {
             let r = self.tabs[active].right.as_ref().map(|p| p.rect()).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
             self.draw_split_rule(&mut scene, r);
         }
@@ -4854,7 +4906,7 @@ impl App {
         self.pane_hits.clear();
         self.gather_home_rows();
         let mut tabs = std::mem::take(&mut self.tabs);
-        if !tiled {
+        if !tiled && !settings_open {
             let tab = &mut tabs[active];
             let left_focused = !(focus_right && has_right);
             if !(narrow && has_right && !left_focused) {
@@ -4889,8 +4941,15 @@ impl App {
         }
         self.tabs = tabs;
 
+        if let Some(mut settings) = self.settings_view.take() {
+            self.drawing_tab = 0;
+            self.draw_pane(&mut scene, &mut settings, "", true, &Overrides::default(), false);
+            self.settings_view = Some(settings);
+        }
+
         // localhost chip, anchored under the detected line.
-        if let Some((row, col, url)) = self.detected.clone().filter(|_| !focus_right) {
+        let capture_no_hints = settings_open || self.shot.as_ref().is_some_and(|s| s.hides_hover());
+        if let Some((row, col, url)) = self.detected.clone().filter(|_| !focus_right && !capture_no_hints) {
             if let Pane::Term(t) = &self.tabs[active].left {
                 if row == t.term.cursor().row && t.line_ok && strict_url(&t.line).is_some() {
                     // handled by the typed-line hint below
@@ -4907,7 +4966,7 @@ impl App {
         }
         // URL-at-a-prompt hint, under the cursor line.
         if let Pane::Term(t) = &self.tabs[active].left {
-            if t.line_ok && strict_url(&t.line).is_some() && !(focus_right && has_right) {
+            if t.line_ok && strict_url(&t.line).is_some() && !(focus_right && has_right) && !capture_no_hints {
                 let (cw, ch) = t.grid.cell_size();
                 let c = t.term.cursor();
                 let col = t.line_col.unwrap_or_else(|| c.col.saturating_sub(t.line.chars().count()));
@@ -4966,6 +5025,7 @@ impl App {
             scene.vline(x, sb.y, sb.h, self.px(m::STRUCTURE), ink);
         }
 
+        if self.sidebar_visible() { self.draw_window_menu(&mut scene); }
         self.draw_compact_tip(&mut scene);
         self.draw_focus_hint(&mut scene);
         self.draw_docked(&mut scene);
@@ -5587,7 +5647,7 @@ impl App {
             for (k, &i) in g.pinned.iter().enumerate() {
                 let cx = sb.x + k as f32 * cell_w;
                 let cell = Rect::new(cx, py, cell_w, g.pinned_h - self.px(m::STRUCTURE));
-                let active = i == self.active;
+                let active = i == self.active && self.settings_view.is_none();
                 let selected = self.selected.contains(&i);
                 if active {
                     scene.rect(cell, ink);
@@ -5628,7 +5688,7 @@ impl App {
             let stack: Vec<usize> = (0..tabs.len()).filter(|&j| tabs[j].parent == Some(tab.id)).collect();
             let folded = self.collapsed.contains(&tab.id);
             let open = !stack.is_empty() && !folded;
-            let active = i == self.active;
+            let active = i == self.active && self.settings_view.is_none();
             let hovered = self.hover_row == Some(i);
             let selected = self.selected.contains(&i);
             if active {
@@ -5891,7 +5951,7 @@ impl App {
     /// signal card on top; click opens the studio.
     pub(crate) fn draw_look_chip(&mut self, scene: &mut Scene, x: f32, fy: f32, fh: f32, available:f32) {
         let sw = self.px(13.0).min(available/3.4);
-        let hit = Rect::new(x - self.px(6.0), fy, sw * 2.4 + self.px(12.0), fh);
+        let hit = Rect::new(x, fy, available, fh);
         let (mx, my) = self.mouse;
         let hot = hit.contains(mx, my);
         let key = hover_key("look", 0);
@@ -5917,6 +5977,8 @@ impl App {
         // At rest the cards overlap by half; hovered they spread to touching and
         // step up, each a little higher than the last.
         let step = sw * 0.5 + sw * 0.62 * a;
+        // Centre the complete hand, including its hard shadow, in its cell.
+        let x = (x + (available - (2.0 * step + sw + shadow)) * 0.5).round();
         // One hard shadow under the whole hand, then the cards. The ink card
         // is outlined in paper so it reads as a card and not as the outline.
         let hand = Rect::new(x, cy - sw / 2.0 - self.px(3.0) * a, 2.0 * step + sw, sw + self.px(3.0) * a);
@@ -6021,7 +6083,7 @@ impl App {
             SideHit::Look => {
                 self.close_menus();
                 self.open_settings();
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.section = crate::settings::SEC_LOOK;
                 }
                 self.look_tab = crate::settings::LOOK_PRESETS;
@@ -6118,7 +6180,7 @@ impl App {
                 self.activate(i);
                 self.close_tabs(false);
             }
-            SideHit::Settings => self.open_settings(),
+            SideHit::Settings => self.toggle_settings(),
         }
         self.dirty = true;
     }
@@ -6301,14 +6363,21 @@ impl App {
     }
 
     /// The window list and the kinds fan-out, drawn last so they sit over the rows.
-    pub(crate) fn draw_sidebar_menus(&mut self, scene: &mut Scene, sb: Rect) {
+    /// Window choices float above the panes, with room for names and shortcuts.
+    fn draw_window_menu(&mut self, scene: &mut Scene) {
         let t = self.theme.clone();
         let ink = t.ink;
         let label = self.label();
         let strong = self.label_strong();
         let row = self.px(30.0);
         let (mx, my) = self.mouse;
-        let top = sb.y + self.side_header_h();
+        let anchor = self.list_rect();
+        let margin = self.px(4.0);
+        let width = anchor.w.max(self.px(280.0)).min((self.target.size.0 as f32 - margin * 2.0).max(0.0));
+        let x = if self.sidebar_right() { anchor.right() - width } else { anchor.x };
+        let x = x.clamp(margin, (self.target.size.0 as f32 - width - margin).max(margin));
+        let sb = Rect::new(x, anchor.y, width, anchor.h);
+        let top = self.side_hits.iter().find(|(_, hit)| *hit == SideHit::Window).map(|(r, _)| r.bottom()).unwrap_or(sb.y + self.side_header_h());
         if self.win_menu || self.win_anim.active() {
             let k = self.win_anim.value();
             let me = u64::from(self.window.id());
@@ -6348,7 +6417,7 @@ impl App {
             }
             for (icon, text, key, hit) in [
                 (nus_render::text::icons::PENCIL, "RENAME", "SHIFT+F2", SideHit::Rename),
-                (nus_render::text::icons::PLUS, "NEW WINDOW", "CTRL N", SideHit::NewWindow),
+                (nus_render::text::icons::PLUS, "NEW WINDOW", if cfg!(target_os="macos") { "CMD N" } else { "CTRL N" }, SideHit::NewWindow),
             ] {
                 let cell = Rect::new(sb.x, y, sb.w, row);
                 let hot = cell.contains(mx, my);
@@ -6369,6 +6438,16 @@ impl App {
             scene.hline(sb.x, top + h - self.px(m::STRUCTURE), sb.w, self.px(m::STRUCTURE), ink);
             scene.layer(None);
         }
+    }
+
+    pub(crate) fn draw_sidebar_menus(&mut self, scene: &mut Scene, sb: Rect) {
+        let t = self.theme.clone();
+        let ink = t.ink;
+        let label = self.label();
+        let strong = self.label_strong();
+        let row = self.px(30.0);
+        let (mx, my) = self.mouse;
+        let top = sb.y + self.side_header_h();
         if self.dl_menu || self.dl_anim.active() {
             // Downloads uses the shared modal, drawn above all panes.
         }
@@ -6735,7 +6814,7 @@ impl App {
         self.user_name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into())
     }
 
-    /// Ctrl+, — open (or switch to) the settings tab.
+    /// Ctrl+, — settings sections and rows offered by the palette.
     /// Every settings row as a palette label, with where it lives.
     pub(crate) fn settings_rows_for_palette(&self) -> Vec<(String, Action)> {
         use crate::settings::{LOOK_TABS, SECTIONS};
@@ -6765,7 +6844,7 @@ impl App {
         if let Some(t) = tab {
             self.look_tab = t;
         }
-        if let Some(Pane::Settings(p)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+        if let Some(p) = self.settings_pane_mut() {
             p.section = sec;
             p.scroll = 0.0;
             p.drill = true;
@@ -6835,12 +6914,40 @@ impl App {
     pub(crate) fn open_settings(&mut self) {
         if crate::private::enabled() { self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "open Settings in a regular nus window"); return; }
         self.refresh_register_note();
-        if let Some(i) = self.tabs.iter().position(|t| matches!(t.left, Pane::Settings(_))) {
-            return self.activate(i);
+        if self.settings_view.is_none() {
+            self.close_page_menu();
+            self.close_menus();
+            self.close_board();
+            self.close_scm();
+            self.close_timeline();
+            self.close_find();
+            self.settings_focus = None;
+            self.settings_view = Some(Pane::Settings(SettingsPane { rect: self.content_rect(), section: 0, scroll: 0.0, drill: false }));
         }
-        let tab = self.make_tab(Pane::Settings(SettingsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), section: 0, scroll: 0.0, drill: false }), None);
-        self.tabs.push(tab);
-        self.activate(self.tabs.len() - 1);
+        self.dirty = true;
+    }
+
+    pub(crate) fn settings_pane(&self) -> Option<&SettingsPane> {
+        match self.settings_view.as_ref() { Some(Pane::Settings(p)) => Some(p), _ => None }
+    }
+
+    pub(crate) fn settings_pane_mut(&mut self) -> Option<&mut SettingsPane> {
+        match self.settings_view.as_mut() { Some(Pane::Settings(p)) => Some(p), _ => None }
+    }
+
+    pub(crate) fn close_settings(&mut self) {
+        if self.settings_view.take().is_none() { return; }
+        self.close_page_menu();
+        self.settings_hits.clear();
+        self.settings_focus = None;
+        self.settings_drag = None;
+        self.glide_stop(crate::scrolling::Glider::Settings(0));
+        self.layout();
+        self.dirty = true;
+    }
+
+    pub(crate) fn toggle_settings(&mut self) {
+        if self.settings_view.is_some() { self.close_settings(); } else { self.open_settings(); }
     }
 
     // ── Onboarding ─────────────────────────────────────────────────────
@@ -8089,6 +8196,7 @@ impl App {
             }
             Action::SettingsAt(sec, tab) => self.open_settings_at(sec, tab),
             Action::SettingsRow(sec, tab, row) => {
+                if sec == 14 {self.update_details=[true;2];}
                 self.open_settings_at(sec,Some(tab));
                 self.settings_target=Some((sec,tab,row));
             }
@@ -8275,6 +8383,18 @@ impl App {
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
         let sup = self.mods.super_key();
+        if self.settings_view.is_some() && self.palette.is_none() && !self.me_card.open && self.start.is_none() && self.orrery.is_none() {
+            if pressed && matches!(ev.logical_key, WKey::Named(NamedKey::Escape)) { self.close_settings(); return; }
+            if pressed && crate::field::command(self.mods) {
+                match ev.physical_key {
+                    PhysicalKey::Code(KeyCode::Comma) | PhysicalKey::Code(KeyCode::KeyW) => { self.close_settings(); return; }
+                    PhysicalKey::Code(KeyCode::KeyF) => { self.open_palette(PaletteMode::Settings); return; }
+                    PhysicalKey::Code(KeyCode::KeyK) => { self.open_palette(PaletteMode::Go); return; }
+                    _ => {}
+                }
+            }
+            if !ctrl && !sup && !alt { self.settings_key(ev); return; }
+        }
         if self.hotkey_recording {
             if pressed { self.record_hotkey(ev); }
             return;
@@ -8316,7 +8436,7 @@ impl App {
             if pressed {
                 if self.palette.is_none() && self.start.is_none() && self.orrery.is_none() && !self.me_card.open
                     && self.splash.is_none() && self.timeline.is_none() && !self.dl_menu
-                    && self.library_zoom_key(ev) { return; }
+                    && self.settings_view.is_none() && self.library_zoom_key(ev) { return; }
                 self.zoom_focused(step);
             }
             return;
@@ -8347,13 +8467,13 @@ impl App {
         }
         let downloads_page=self.tabs.get(self.active).is_some_and(|t| matches!(if t.focus_right{t.right.as_ref().unwrap_or(&t.left)}else{&t.left},Pane::Downloads(_)));
         if pressed && (self.dl_menu || downloads_page && self.palette.is_none()) && self.download_key(ev) {return;}
-        if pressed && (if cfg!(target_os="macos") {sup} else {ctrl}) && matches!(&ev.logical_key,WKey::Character(c) if c.eq_ignore_ascii_case("f")) && self.palette.is_none() && self.tabs.get(self.active).is_some_and(|t|matches!(t.left,Pane::Settings(_))) {
+        if pressed && (if cfg!(target_os="macos") {sup} else {ctrl}) && matches!(&ev.logical_key,WKey::Character(c) if c.eq_ignore_ascii_case("f")) && self.palette.is_none() && self.settings_view.is_some() {
             self.open_palette(PaletteMode::Settings);return;
         }
-        if self.palette.is_none() && !self.dl_menu && self.library_key(ev) { return; }
+        if self.settings_view.is_none() && self.palette.is_none() && !self.dl_menu && self.library_key(ev) { return; }
         if self.palette.is_none() && !app && self.settings_key(ev) { return; }
         // Find and hints take the keys while they're up.
-        if self.find_key(ev) {
+        if self.settings_view.is_none() && self.find_key(ev) {
             return;
         }
         if self.term_mode_key(ev) {
@@ -8367,10 +8487,10 @@ impl App {
                 if matches!(ev.logical_key, WKey::Named(NamedKey::Enter | NamedKey::Tab)) { self.prompt_accept_keys.insert(ev.physical_key); }
                 return;
             }
-        if self.palette.is_none() && self.blocks_key(ev) {
+        if self.settings_view.is_none() && self.palette.is_none() && self.blocks_key(ev) {
             return;
         }
-        if self.ask_key(ev) {
+        if self.settings_view.is_none() && self.ask_key(ev) {
             return;
         }
         if self.tidy_key(ev) {
@@ -8395,7 +8515,7 @@ impl App {
             && self.open_find() {
             return;
         }
-        if self.palette.is_none() && (!app || editor_chord) && self.editor_key(ev) {
+        if self.settings_view.is_none() && self.palette.is_none() && (!app || editor_chord) && self.editor_key(ev) {
             return;
         }
         // Launching an assistant: ⌥← and ⌥→ turn the intelligence ring.
@@ -8716,6 +8836,7 @@ impl App {
         }
 
         // Route to the focused pane.
+        if self.settings_view.is_some() { return; }
         if pressed {
             if self.cursor.hide_while_typing && !self.pointer_hidden && matches!(self.tabs.get_mut(self.active).map(|t| t.focused()), Some(Pane::Term(_))) {
                 self.window.set_cursor_visible(false);
@@ -9455,6 +9576,7 @@ impl App {
         if i >= self.tabs.len() {
             return;
         }
+        self.close_settings();
         if i != self.active { self.dismiss_tip(); self.close_page_menu(); }
         // The hatch's tab is never the sidebar's active one: a cycle that
         // lands on it steps past.
@@ -9775,6 +9897,7 @@ impl App {
     /// Close the selection (or the active tab). Unless `force`, a terminal
     /// with a foreground process asks first.
     pub(crate) fn close_tabs(&mut self, force: bool) {
+        if self.settings_view.is_some() { self.close_settings(); return; }
         self.close_timeline();
         let force = force || !self.behavior.close_asks;
         let mut targets: Vec<usize> = if self.selected.is_empty() {
@@ -10078,6 +10201,11 @@ impl App {
         }
         self.refresh_sidebar_hover(x,y);
         if self.page_menu_motion(x, y) { return; }
+        if self.win_menu && self.side_hits.iter().any(|(r, h)| r.contains(x, y) && matches!(h, SideHit::Window | SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow)) { return; }
+        if self.settings_pane().is_some_and(|s| s.rect.contains(x, y)) && !(self.sidebar_visible() && self.sidebar_rect().contains(x, y)) {
+            if let Some(hit) = self.settings_drag { self.apply_setting(hit, x); }
+            return;
+        }
         self.pin_drag_move(x, y);
         if self.timeline_pointer(x,y){self.dirty=true;return;}
         if self.palette.is_none() && !self.me_card.open && self.start.is_none() && self.orrery.is_none() && self.library_pointer(x,y) { return; }
@@ -10228,7 +10356,9 @@ impl App {
                     self.open_url(&pr.url, true);
                 }
             }
-            CrumbHit::Assistant => self.open_settings_at(crate::settings::SEC_ASSISTANTS, None),
+            CrumbHit::Assistant => self.toggle_ask(),
+            CrumbHit::Settings => self.toggle_settings(),
+            CrumbHit::Note => self.header_note(),
             CrumbHit::Pip => self.return_from_pip(),
             CrumbHit::Waiting => {
                 if let Some(i) = self.tabs.iter().position(|t| t.waiting()) {
@@ -10253,6 +10383,13 @@ impl App {
             return;
         }
         if self.orrery_mouse(button, state, x, y) { return; }
+        if self.win_menu {
+            if let Some(hit) = self.side_hits.iter().rev().find(|(r, h)| r.contains(x, y) && matches!(h, SideHit::Window | SideHit::WinFront(_) | SideHit::Rename | SideHit::NewWindow)).map(|(_, h)| *h) {
+                if pressed && button == MouseButton::Left { self.side_action(hit, true); }
+                return;
+            }
+            if pressed { self.close_menus(); }
+        }
         // The find bar's buttons; a press anywhere else gives the keys back.
         if self.find_mouse(button, state) { self.dirty = true; return; }
         if pressed && self.behavior.pip_policy.click_app {self.close_pip();}
@@ -10313,6 +10450,10 @@ impl App {
             return;
         }
 
+        if self.settings_pane().is_some_and(|s| s.rect.contains(x, y)) && !(self.sidebar_visible() && self.sidebar_rect().contains(x, y)) {
+            if pressed && button == MouseButton::Left { self.settings_click(x, y); }
+            return;
+        }
         if pressed && button == MouseButton::Left && self.prompt_history_click(x, y) { return; }
         if pressed && button == MouseButton::Left && self.prompt_code_click(x, y) { return; }
 
@@ -10804,7 +10945,7 @@ impl App {
         self.dismiss_tip();
         if self.page_menu_wheel(delta) { return; }
         let (x, y) = self.mouse;
-        if let Some(i) = self.tile_at(x, y) {
+        if let Some(i) = self.tile_at(x, y).filter(|_| self.settings_view.is_none()) {
             if i != self.active {
                 self.activate(i);
             }
@@ -10830,6 +10971,13 @@ impl App {
         if self.look_menu && self.look_rect.is_some_and(|r|r.contains(x,y)) {
             let (at, max) = (self.look_scroll, self.look_scroll_max);
             self.look_scroll = self.glide(crate::scrolling::Glider::Look, at, -dy_px, max);
+            self.dirty = true;
+            return;
+        }
+        if let Some(s) = self.settings_pane().filter(|s| s.rect.contains(x, y)) {
+            let (at, max) = (s.scroll, (self.settings_reach-s.rect.h+self.scale*48.0).max(0.0));
+            let value = self.glide(crate::scrolling::Glider::Settings(0), at, -dy_px, max);
+            if let Some(s) = self.settings_pane_mut() { s.scroll = value; }
             self.dirty = true;
             return;
         }
@@ -10907,10 +11055,10 @@ impl App {
                 self.dirty = true;
             }
             Do::Settings => {
-                let Some(Pane::Settings(s)) = self.tabs.get(self.active).map(|t| &t.left) else { return };
+                let Some(s) = self.settings_pane() else { return };
                 let (at, max) = (s.scroll, (settings_reach - s.rect.h + scale * 48.0).max(0.0));
                 let v = self.glide(crate::scrolling::Glider::Settings(tab_id), at, -dy_px, max);
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.scroll = v;
                 }
                 self.dirty = true;

@@ -1,5 +1,5 @@
 //! Write the bundled app icon: `cargo run -p nus-render --example icon [dir]`.
-//! White desktop mark/red orbit; the running app follows the surface colour.
+//! Pearl desktop mark/glass red orbit; the running app follows the Space colour.
 
 use nus_render::icon::{band_stops, clipped_app_icon_svg, ico, png};
 use nus_render::theme::signal;
@@ -23,8 +23,14 @@ fn main() {
         }
     }
     std::fs::write(format!("{dir}/nus.ico"), ico(&entries)).unwrap();
-    // Dock variant (pure white n, clipped by its orbit, with a contrast shadow), at every
-    // size a macOS .icns wants (scripts/bundle-mac.sh builds it from these).
+    // Bootstrap never waits for color-response decoding or CEF/GPU setup.
+    std::fs::create_dir_all(format!("{dir}/dock")).unwrap();
+    for (index, face) in nus_render::dock_icon::Face::ALL.into_iter().enumerate() {
+        let rgba = nus_render::dock_icon::render(256, signal::RED, face);
+        std::fs::write(format!("{dir}/dock/face-{index}.png"), png(&rgba, 256, 256)).unwrap();
+    }
+    // Packaging aliases at every size a macOS .icns wants. The same pearl face,
+    // black rim and glass orbit remain readable on Paper and Ink desktops.
     for size in [16u32, 32, 64, 128, 256, 512, 1024] {
         let rgba = nus_render::dock_icon::render(
             size,

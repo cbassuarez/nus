@@ -8,11 +8,15 @@ The name “spike” is historical and does not identify a separate demo.
 
 - [Review overview](https://cbassuarez.com/nus.dev/review/): specifications, architecture, funding scope, and limitations.
 - [Published previews](https://github.com/cbassuarez/nus/releases): platform archives, `release.json`, and `SHA256SUMS.txt`.
-- [Preview 17 change notes](releases/v0.0.2-preview.17.md): the reviewed candidate’s features, fixes and validation boundaries.
+- [0.0.3 preview 1 change notes](releases/v0.0.3-preview.1.md): the current candidate’s features, fixes and validation boundaries.
 - [Architecture](ARCHITECTURE.md), [dependencies](DEPENDENCIES.md), and [third-party notices](../NOTICE).
 - [Security policy](../SECURITY.md) and [privacy and diagnostics](PRIVACY_AND_DIAGNOSTICS.md).
 
-## Reviewed candidate · October 4, 2026
+## Published review baseline · October 4, 2026
+
+The 0.0.3 preview 1 candidate builds on the published baseline below. Its
+candidate notes describe the newer local validation; the Release workflow and
+published package records establish its platform publication separately.
 
 **v0.0.2-preview.17** was published from
 `a81adee496f3dfbc6749e2bb3b3f9a966e36acbc`.
@@ -71,7 +75,7 @@ From a Bash shell:
 git clone --recurse-submodules https://github.com/cbassuarez/nus.git
 cd nus
 # To reproduce the published candidate:
-git checkout v0.0.2-preview.17
+git checkout v0.0.3-preview.1
 git submodule update --init --recursive
 cargo build --workspace --locked
 cargo test --workspace --locked
@@ -89,6 +93,14 @@ The app is outside the root workspace: root checks alone do not compile or test
 it. Do not reformat the app's intentionally compact source as part of a fix.
 The CEF fetch downloads the version pinned by the vendored bindings; see
 [release engineering](RELEASING.md) for packaging and signing.
+
+For local macOS UI checks, run `scripts/check-updates.py` and
+`scripts/check-window-placement.py` with the path to a freshly built app bundle.
+They use disposable profiles. The updates check uses inert release fixtures,
+checks actual capture widths and exercises collapsed details and restart review;
+it does not install a release. The placement check compares native window frames
+with usable desktop bounds, including first open and cascades at an edge. These
+local checks do not establish Windows or Linux native acceptance.
 
 ## Source map
 

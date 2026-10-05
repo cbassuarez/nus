@@ -99,7 +99,7 @@ pub fn scroll_shell(t: &mut TermPane, lines: f32, easing: Easing, motion: &crate
 /// number along the same curve the shell rides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Glider {
-    /// The settings page in the tab with this id.
+    /// Window settings use id 0; historical settings panes use their tab id.
     Settings(u64),
     /// The welcome page in the tab with this id.
     Welcome(u64),
@@ -162,6 +162,7 @@ impl App {
             Glider::Look => Some(&mut self.look_scroll),
             Glider::DownloadsMenu => Some(&mut self.download_ui.scroll),
             Glider::Tree => Some(&mut self.tree.scroll),
+            Glider::Settings(0) => self.settings_pane_mut().map(|s| &mut s.scroll),
             Glider::Settings(id) => match self.tabs.iter_mut().find(|t| t.id == id).map(|t| &mut t.left) {
                 Some(Pane::Settings(s)) => Some(&mut s.scroll),
                 _ => None,

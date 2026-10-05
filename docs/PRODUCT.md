@@ -12,6 +12,9 @@ the v1 crates implement; change the doc when a decision changes.
   Config overrides per Space are not v1.
 - Splits: a tab is one pane or a left|right pair. No vertical splits, no
   nesting. One tab = one sidebar preview.
+- Window choices open above the content with a readable width, including when
+  the sidebar is a small icon rail. Its rows remain clickable outside the rail.
+  Theme swatches are centred in their footer cell, including the fanned hover state.
 - Chromeless by default: 6px signal band + 30px top strip. Sidebar on ⌘⇧S.
 
 ## Quick terminal
@@ -52,6 +55,16 @@ the v1 crates implement; change the doc when a decision changes.
 ## Ops
 - Self-update from GitHub Releases, offered in the top strip. No telemetry.
   Crashes write a local log only.
+- Settings → Updates uses Quiet Status: the running version, completed check
+  result or current activity, last-check time, and a check or update action.
+  Failed checks show the last attempt rather than claiming the app is current.
+  Profile & Recovery and Support & Privacy expand in place; settings search
+  reveals their contents. Restart review retains the interruption warning.
+- Before their first visible frame, normal windows fit their whole frame inside
+  a display's usable desktop. Valid restored positions stay put; oversized or
+  off-screen restores and cascaded or dragged-tab windows fit to the display.
+  macOS uses visibleFrame and Windows uses rcWork, accounting for the dock or
+  taskbar. Linux conservatively fits monitor bounds; Wayland owns positioning.
 
 ## Navigation (settled 2026-09-16, second pass)
 
@@ -107,8 +120,10 @@ the tab's row menu.
 - **Footer:** Space identity and controls — Space color + name, browser
   identity (cookie jar) and default shell profile for new tabs, assistant
   router status (which of claude / codex / ollama / chatgpt are wired, and the
-  default), gear → settings tab, `+ new tab`.
-- **Settings:** Ctrl+, opens a native settings tab (Broadsheet styled):
+  default), gear → window settings, `+ new tab`.
+- **Settings:** Ctrl+, opens native window settings (Broadsheet styled),
+  with the gear held active and the tab list unchanged. The gear again,
+  Escape or the close shortcut returns to the same work. Settings includes
   fonts, theme, Space profiles, browser (search engine, cookies, downloads),
   assistants (router), keys. Every edit writes `~/.config/nus/init.luau`; the
   file is the source of truth and hot-reloads.
@@ -159,6 +174,12 @@ right elsewhere), drag anywhere else. Left: wordmark, then a clickable crumb
 (Space → Space switcher, tab → palette, cwd → open here). When a browser pane
 is focused the crumb becomes an editable URL field. Right: a status cluster —
 waiting count, PiP, assistant, local ports — as icons with counts.
+The assistant button opens or closes the Ask sidebar and focuses its field,
+using the current tab's shell even when its page has focus. A note button
+creates a local project note, or a personal note when no folder is open;
+an occupied split keeps its panes and opens the note in a separate tab.
+The gear opens window settings. At narrow widths these three actions keep
+their place while secondary header controls yield space.
 
 **Stacks.** A tab that spawns another (terminal → URL beside it, page → link,
 agent → tab) nests it one level under the parent. A stack collapses to one

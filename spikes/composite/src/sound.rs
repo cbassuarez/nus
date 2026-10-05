@@ -454,6 +454,9 @@ impl Sound {
             None => self.prefs.cue_for(event),
         };
         if let Some(c) = cue {
+            if std::env::var_os("NUS_SOUND_TRACE").is_some() {
+                eprintln!("SOUND_EVENT {event} {c}");
+            }
             self.cue(&c);
         }
     }

@@ -334,7 +334,7 @@ pub enum CardHit {
 pub struct MeCard {
     pub import: crate::import_flow::Flow,
     pub mercury_reveal: Option<crate::mercury::Reveal>,
-    pub mercury_art: Option<std::sync::Arc<wgpu::BindGroup>>,
+    pub mercury_art: Option<(nus_render::Color, std::sync::Arc<wgpu::BindGroup>)>,
     pub open: bool,
     /// None: the view. Some: a step of the walk, or an edit of one field.
     pub step: Option<Step>,

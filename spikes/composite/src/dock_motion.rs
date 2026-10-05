@@ -80,7 +80,7 @@ fn frames(data: &Path, signal: nus_render::Color) -> Vec<String> {
     Face::ALL
         .iter()
         .filter_map(|&face| {
-            let path = icons.join(format!("launch-{face:?}-{:02x}{:02x}{:02x}.png", rgb[0], rgb[1], rgb[2]));
+            let path = icons.join(format!("launch-{}-{face:?}-{:02x}{:02x}{:02x}.png", dock_icon::ART_VERSION, rgb[0], rgb[1], rgb[2]));
             if !path.exists() {
                 let rgba = dock_icon::render(256, signal, face);
                 std::fs::write(&path, nus_render::icon::png(&rgba, 256, 256)).ok()?;

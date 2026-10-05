@@ -6,6 +6,11 @@ use swash::{
     zeno::Format,
     FontRef,
 };
+#[path = "dock_material.rs"]
+mod material;
+/// Version file caches when the embedded material treatment changes.
+pub const ART_VERSION: &str = "enamel-pebble-v3";
+pub const MERCURY_ART_VERSION: &str = "fluid-ribbon-v1";
 
 /// Exact order and optical size factors from nus-promo/src/design/Wordmark.tsx.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,10 +74,16 @@ pub fn launch_face_at(seconds: f32) -> Face {
     Face::ALL[(seconds.max(0.0) / STEP_SECONDS) as usize % Face::ALL.len()]
 }
 
-/// Straight-alpha RGBA. The n is always pure white, never the theme paper.
-/// A dark keyline and soft offset shadow protect it on light desktop grounds.
+/// Straight-alpha RGBA: the Blender pearl face, polished black stroke and glass
+/// orbit. Space RGB drives the baked radiance response; no Blender at runtime.
 pub fn render(size: u32, signal: Color, face: Face) -> Vec<u8> {
     Field::new(size, face).frame(signal)
+}
+
+/// Continuous liquid-silver ribbon and a Space-colored emitting orbit seam.
+/// Both families support the same six canonical font faces.
+pub fn mercury(size: u32, signal: Color, face: Face) -> Vec<u8> {
+    material::mercury(size, signal, face)
 }
 
 /// The incognito mark: the regular letter and orbit, the orbit in ink
@@ -80,7 +91,7 @@ pub fn render(size: u32, signal: Color, face: Face) -> Vec<u8> {
 /// stems, the way a line is blacked out in print. The arch stays clear so
 /// the n still reads; light keylines keep the ink parts on dark desktops.
 pub fn redacted(size: u32) -> Vec<u8> {
-    let field = Field::new(size, Face::Newsreader);
+    let field = FlatField::new(size, Face::Newsreader);
     let s = size as f32;
     let ink = [0.02, 0.02, 0.025, 1.0];
     let light = [0.93, 0.91, 0.86, 1.0];
@@ -232,8 +243,23 @@ pub fn tray(size: u32, signal: Color, badge: Option<&str>) -> Vec<u8> {
     rgba
 }
 
-/// Geometry and shadows are sampled once; changing theme only recolours the orbit.
+/// A cheap reusable handle for the procedural material field. The six native
+/// banks are decoded once, shared across previews, launch and attention frames.
 pub struct Field {
+    size: u32,
+    face: Face,
+}
+impl Field {
+    pub fn new(size: u32, face: Face) -> Self {
+        Self { size, face }
+    }
+    pub fn frame(&self, signal: Color) -> Vec<u8> {
+        material::render(self.size, signal, self.face)
+    }
+}
+
+/// Flat vector coverage retained for the incognito redaction mark.
+struct FlatField {
     under: Vec<Color>,
     letter: Vec<Color>,
     back: Vec<f32>,
@@ -241,7 +267,7 @@ pub struct Field {
     /// The visible letter's box, [x0, y0, x1, y1] in pixels.
     bounds: [f32; 4],
 }
-impl Field {
+impl FlatField {
     pub fn new(size: u32, face: Face) -> Self {
         assert!(size > 0);
         let s = size as f32;
@@ -349,6 +375,7 @@ impl Field {
             bounds,
         }
     }
+    #[cfg(test)]
     pub fn frame(&self, signal: Color) -> Vec<u8> {
         let mut out = vec![0u8; self.under.len() * 4];
         for (i, base) in self.under.iter().enumerate() {
@@ -430,7 +457,7 @@ mod tests {
         let mut frames = Vec::new();
         for face in Face::ALL {
             let size = 128;
-            let px = render(size, [0.8, 0.05, 0.1, 1.0], face);
+            let px = FlatField::new(size, face).frame([0.8, 0.05, 0.1, 1.0]);
             let b = Band::in_frame(size as f32);
             let mut whites = 0;
             for (i, p) in px.as_chunks::<4>().0.iter().enumerate() {
@@ -449,25 +476,33 @@ mod tests {
         }
     }
     #[test]
-    fn theme_changes_orbit_without_tinting_the_letter() {
-        for signal in [
-            [0.95, 0.8, 0.2, 1.0],
-            [0.02, 0.04, 0.08, 1.0],
-            [0.1, 0.6, 0.9, 1.0],
-        ] {
-            let px = render(64, signal, Face::Newsreader);
-            assert!(px
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .any(|p| p == &[255, 255, 255, 255]));
-            assert!(
-                px.as_chunks::<4>()
-                    .0
-                    .iter()
-                    .any(|p| p[3] > 100 && p[0] < 20 && p[1] < 20 && p[2] < 20),
-                "contrast edge"
-            );
+    fn glass_signals_keep_a_light_face_dark_stroke_and_clear_margin() {
+        for face in Face::ALL {
+            for signal in [
+                [0.95, 0.8, 0.2, 1.0],
+                [0.02, 0.04, 0.08, 1.0],
+                [0.1, 0.6, 0.9, 1.0],
+            ] {
+                let px = render(64, signal, face);
+                assert!(
+                    px.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|p| p[0] > 225 && p[1] > 225 && p[2] > 225 && p[3] > 240),
+                    "{}: lost light face",
+                    face.name()
+                );
+                assert!(
+                    px.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|p| p[3] > 200 && p[0] < 60 && p[1] < 60 && p[2] < 60),
+                    "{}: contrast edge",
+                    face.name()
+                );
+                assert_eq!(px[3], 0);
+                assert_eq!(px[px.len() - 1], 0);
+            }
         }
     }
     #[test]
@@ -487,7 +522,7 @@ mod tests {
                 "{size}: no white letter"
             );
             // The bar: an opaque ink run across the middle of the letter.
-            let b = Field::new(size, Face::Newsreader).bounds;
+            let b = FlatField::new(size, Face::Newsreader).bounds;
             let row = ((b[1] + (b[3] - b[1]) * 0.58) as u32).min(size - 1);
             let inked = (0..size)
                 .filter(|&x| {

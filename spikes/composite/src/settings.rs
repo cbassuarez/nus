@@ -1137,6 +1137,7 @@ pub enum Hit {
     UpdateConfirm,
     UpdateCancel,
     UpdateChecks(bool),
+    UpdateDetails(u8),
     /// UPDATES · PROFILE: this copy keeps its own (`true`) or shares (install.rs).
     ProfileSeparate(bool),
     /// UPDATES · PROFILE: show the channel's profiles in the file manager.
@@ -1504,6 +1505,8 @@ enum Control {
     /// Token tiles: name, colour (None = dashed "none/add"), caption, hit, selected, big.
     Tokens(Vec<(String, Option<Color>, String, Hit, bool)>, bool),
     Info(String),
+    UpdateStatus(crate::updates::Presentation),
+    Disclosure(u8, bool),
     Choice(Vec<(String, Hit, bool)>),
     Slider(Slider, f32, String),
     Swatches(Vec<(Option<Color>, Hit, bool)>),
@@ -1678,7 +1681,7 @@ impl App {
     /// A click inside the settings pane. Returns true when it was handled.
     pub(crate) fn settings_key(&mut self, ev:&crate::app::KeyIn)->bool {
         use winit::keyboard::{Key,NamedKey};
-        if ev.state!=winit::event::ElementState::Pressed || !self.tabs.get(self.active).is_some_and(|t|matches!(t.left,Pane::Settings(_))) {return false;}
+        if ev.state!=winit::event::ElementState::Pressed || self.settings_view.is_none() {return false;}
         if self.settings_hits.is_empty(){return false;}
         match &ev.logical_key {
             Key::Named(NamedKey::ArrowLeft)|Key::Named(NamedKey::ArrowRight) if self.settings_focus.is_some()=>{
@@ -1689,7 +1692,7 @@ impl App {
             },
             Key::Named(NamedKey::Tab)=>{let n=self.settings_hits.len();self.settings_focus=Some(match self.settings_focus{Some(i) if self.mods.shift_key()=>(i+n-1)%n,Some(i)=>(i+1)%n,None=>0});},
             Key::Named(NamedKey::Enter)|Key::Named(NamedKey::Space) if self.settings_focus.is_some()=>{let i=self.settings_focus.take().unwrap();if let Some((r,h))=self.settings_hits.get(i).copied(){self.apply_setting(h,r.x+r.w*0.5);self.save_prefs();}},
-            Key::Named(NamedKey::PageDown)|Key::Named(NamedKey::PageUp)=>{let down=matches!(ev.logical_key,Key::Named(NamedKey::PageDown));if let Some(Pane::Settings(p))=self.tabs.get_mut(self.active).map(|t|&mut t.left){p.scroll=(p.scroll+if down{p.rect.h*0.7}else{-p.rect.h*0.7}).clamp(0.0,(self.settings_reach-p.rect.h+self.scale*80.0).max(0.0));}self.settings_focus=None;},
+            Key::Named(NamedKey::PageDown)|Key::Named(NamedKey::PageUp)=>{let down=matches!(ev.logical_key,Key::Named(NamedKey::PageDown));let reach=self.settings_reach+self.scale*80.0;if let Some(p) = self.settings_pane_mut(){p.scroll=(p.scroll+if down{p.rect.h*0.7}else{-p.rect.h*0.7}).clamp(0.0,(reach-p.rect.h).max(0.0));}self.settings_focus=None;},
             Key::Named(NamedKey::Escape) if self.settings_focus.is_some()=>self.settings_focus=None,
             _=>return false,
         }
@@ -1697,8 +1700,7 @@ impl App {
     }
 
     pub(crate) fn settings_click(&mut self, x: f32, y: f32) -> bool {
-        let Some(tab) = self.tabs.get(self.active) else { return false };
-        let Pane::Settings(s) = &tab.left else { return false };
+        let Some(s) = self.settings_pane() else { return false };
         if !s.rect.contains(x, y) {
             return false;
         }
@@ -1728,6 +1730,7 @@ impl App {
             Control::Pics(cards) => cards.into_iter().map(|(_,_,_,hit,on)|(hit,on)).collect(),
             Control::Art(cards) => cards.into_iter().map(|(_,_,_,hit,on,_)|(hit,on)).collect(),
             Control::Choice(cards) | Control::Strip(cards) => cards.into_iter().map(|(_,hit,on)|(hit,on)).collect(),
+            Control::Disclosure(k,on)=>vec![(Hit::UpdateDetails(k),on)],
             _ => Vec::new(),
         }).collect()
     }
@@ -1872,6 +1875,7 @@ impl App {
             Hit::Mercury => if crate::mercury::earned() { "Replay Mercury" } else { "Claim Mercury" }.into(),
             Hit::CopySupportDetails=>"Copy the support details shown below".into(),
             Hit::RecoverPrevious=>"Review recovery to the previous version".into(),
+            Hit::UpdateDetails(k)=>if k==0 {"Profile & recovery".into()} else {"Support & privacy".into()},
             Hit::UpdateCheck=>"Check GitHub Releases for an update".into(),
             Hit::UpdateInstall=>"Review update and restart warning".into(),
             Hit::UpdateConfirm=>"Download, verify, install and restart nus".into(),
@@ -2056,7 +2060,7 @@ impl App {
             Hit::Egg(e, on) => self.behavior.eggs.set(e, on),
             Hit::Section(k) => {
                 if k == SEC_ASSISTANTS { self.assistants.refresh(self.behavior.assistants.clone()); }
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.section = k;
                     s.scroll = 0.0;
                 }
@@ -2181,7 +2185,7 @@ impl App {
                 self.refresh_rules_folders();
             }
             Hit::Tile(k) => {
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.section = k;
                     s.scroll = 0.0;
                     s.drill = true;
@@ -2191,7 +2195,7 @@ impl App {
                 }
             }
             Hit::Back => {
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.drill = false;
                     s.scroll = 0.0;
                 }
@@ -2342,7 +2346,7 @@ impl App {
             Hit::Starter(k) => self.rules.write_starter(k),
             Hit::LookTab(k) => {
                 self.look_tab = k;
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.scroll = 0.0;
                 }
             }
@@ -2369,6 +2373,7 @@ impl App {
                 }
             }
             Hit::RecoverPrevious => self.recover_previous_version(),
+            Hit::UpdateDetails(k)=>if let Some(on)=self.update_details.get_mut(k as usize){*on=!*on;},
             Hit::UpdateCheck=>crate::updates::check(),
             Hit::UpdateInstall=>crate::updates::confirm(true),
             Hit::UpdateCancel=>crate::updates::confirm(false),
@@ -3384,7 +3389,7 @@ impl App {
     fn rows_for_at(&self, section: usize, look_tab: usize) -> Vec<(String,Control)> {
         // The experiments are plain switches: ON and OFF as chips, with a line saying what each does.
         let raw = self.rows_for_raw(section, look_tab);
-        let mut rows = if section == SEC_EXPERIMENTS { raw } else { self.visual_settings(section, raw) };
+        let mut rows = if section == SEC_EXPERIMENTS || section == 14 { raw } else { self.visual_settings(section, raw) };
         rows.retain(|(k, c)| !(k.is_empty() && matches!(c, Control::Info(s) if s.is_empty())));
         match section {
             2 => sectioned(rows, &[("WINDOW AT LAUNCH", "WHEN NUS LAUNCHES"), ("TERMINAL OR BROWSER", "START PAGE · AT LAUNCH AND EVERY NEW TAB"), (key("N", false).as_str(), "NEW WINDOWS"), ("LINKS FROM OTHER APPS", "FROM OTHER APPS")]),
@@ -4751,18 +4756,28 @@ impl App {
             }
             _ => {
                 let status=crate::updates::status();
-                let mut rows=vec![("UPDATES".into(),Info(status.message.clone()))];
-                if status.available && !status.busy && !status.confirming {rows.push(("".into(),Buttons(vec![("UPDATE".into(),icons::DOWNLOAD,Hit::UpdateInstall)])));}
-                if status.confirming {rows.push(("RESTART REQUIRED".into(),Info(crate::updates::INTERRUPTION_WARNING.into())));rows.push(("".into(),Buttons(vec![("DOWNLOAD & RESTART".into(),icons::RELOAD,Hit::UpdateConfirm),("CANCEL".into(),icons::CLOSE,Hit::UpdateCancel)])));}
+                let mut rows=vec![("".into(),UpdateStatus(crate::updates::presentation()))];
+                if status.confirming {
+                    rows.push(("RESTART REQUIRED".into(),Info(crate::updates::INTERRUPTION_WARNING.into())));
+                    rows.push(("".into(),Buttons(vec![("DOWNLOAD & RESTART".into(),icons::RELOAD,Hit::UpdateConfirm),("CANCEL".into(),icons::CLOSE,Hit::UpdateCancel)])));
+                } else if !status.busy {
+                    let mut actions=vec![];
+                    if status.available {actions.push(("REVIEW UPDATE".into(),icons::DOWNLOAD,Hit::UpdateInstall));}
+                    actions.push((if status.available {"CHECK AGAIN"} else {"CHECK FOR UPDATES"}.into(),icons::RELOAD,Hit::UpdateCheck));
+                    rows.push(("".into(),Buttons(actions)));
+                }
+                rows.push(("CHECK AUTOMATICALLY".into(),Choice(vec![("ON".into(),Hit::UpdateChecks(true),self.behavior.update_checks),("OFF".into(),Hit::UpdateChecks(false),!self.behavior.update_checks)])));
+                rows.push(("".into(),Help(if crate::updates::CURRENT.contains("dev") {"Development builds check only when you choose. Downloads and installation require your click."} else {"Check for new versions. Downloads and installation require your click."}.into())));
+                rows.push(("PROFILE & RECOVERY".into(),Disclosure(0,self.update_details[0])));
                 if let Some(recovery) = crate::update_install::recovery() {
                     rows.push(("RECOVERY".into(),Info(format!("Return to {} and its saved profile. This version's profile and application will be kept separately. Project files will not be reverted. Running processes may be interrupted.", recovery.previous_version))));
-                    if !status.busy { rows.push(("".into(),Buttons(vec![("RETURN TO PREVIOUS VERSION…".into(),icons::RELOAD,Hit::RecoverPrevious)]))); }
+                    if !status.busy { rows.push(("".into(),Buttons(vec![("REVIEW RECOVERY…".into(),icons::RELOAD,Hit::RecoverPrevious)]))); }
                 }
                 if let Some(place)=crate::install::placement() {
                     let own=crate::install::wants_separate();
                     let others=crate::install::other_profiles().len();
-                    rows.push(("PROFILE".into(),Section));
-                    rows.push(("THIS COPY USES".into(),Choice(vec![("THE SHARED PROFILE".into(),Hit::ProfileSeparate(false),!own),("A PROFILE OF ITS OWN".into(),Hit::ProfileSeparate(true),own)])));
+                    rows.push(("PROFILE".into(),Caption));
+                    rows.push(("THIS COPY USES".into(),Choice(vec![("SHARED PROFILE".into(),Hit::ProfileSeparate(false),!own),("OWN PROFILE".into(),Hit::ProfileSeparate(true),own)])));
                     let mut says=if place.separate {"This copy keeps its own profile. ".to_string()} else {"Every copy of nus on this channel shares one profile: settings, sessions, sign-ins and pages. One copy uses it at a time; a newer version saves a recoverable copy before upgrading it. ".to_string()};
                     if own!=place.separate {says.push_str("Your change applies when this copy restarts. ");}
                     says.push_str(&format!("In {}", place.root.display()));
@@ -4771,12 +4786,11 @@ impl App {
                     rows.push(("".into(),Info(says)));
                     rows.push(("".into(),Buttons(vec![("SHOW PROFILES".into(),icons::FOLDER,Hit::ProfileFolder)])));
                 }
+                rows.push(("PROFILE COMPATIBILITY".into(),Info(crate::compatibility::summary())));
+                rows.push(("SUPPORT & PRIVACY".into(),Disclosure(1,self.update_details[1])));
                 rows.extend(vec![
-                    ("PROFILE COMPATIBILITY".into(),Info(crate::compatibility::summary())),
                     ("SUPPORT DETAILS".into(),Info(crate::support::details())),
                     ("".into(),Buttons(vec![("COPY SUPPORT DETAILS".into(),icons::COPY,Hit::CopySupportDetails)])),
-                    ("CHECK AUTOMATICALLY".into(),Choice(vec![("ON".into(),Hit::UpdateChecks(true),self.behavior.update_checks),("OFF".into(),Hit::UpdateChecks(false),!self.behavior.update_checks)])),
-                    ("".into(),Buttons(vec![("CHECK FOR UPDATES".into(),icons::RELOAD,Hit::UpdateCheck)])),
                     ("UPDATE PRIVACY".into(),Info("Checks contact GitHub Releases without a profile ID, account, file paths or usage events. GitHub receives normal connection metadata such as your IP address. Downloads and installation require your click.".into())),
                     ("LOCAL STATE".into(),Info(crate::protected_state::status())),
                     ("TELEMETRY".into(),Info("none".into())),
@@ -4987,19 +5001,24 @@ impl App {
         scene.layer(Some(content));
         let mut y = top + self.px(28.0) - scroll;
         let wm = Style { font: self.f.wordmark, px: self.px(34.0), color: ink, tracking: 0.0 };
-        self.fonts.draw(scene, wm, cx, y + self.px(30.0), &SECTIONS[p.section].0.to_lowercase());
-        y += self.px(58.0);
+        if p.section != 14 {
+            self.fonts.draw(scene, wm, cx, y + self.px(30.0), &SECTIONS[p.section].0.to_lowercase());
+            y += self.px(58.0);
+        }
         let label_w = if tiles { self.px(140.0) } else { self.px(200.0) };
         let rows = self.rows_for(p.section);
         let helped: Vec<bool> = (0..rows.len()).map(|i| matches!(rows.get(i + 1), Some((_, Control::Help(_))))).collect();
+        let mut collapsed=false;
         for (row_index, (k, control)) in rows.into_iter().enumerate() {
+            if let Control::Disclosure(_,on)=&control {collapsed=!*on;}
+            else if collapsed {continue;}
             let row_hits = self.settings_hits.len();
             // Full-width controls: caption above, the control across the column.
             let stacked = matches!(control, Control::Choice(_) | Control::Buttons(_) | Control::Slider(..) | Control::Keys(..) | Control::Stepper(..))
-                && (tiles || self.fonts.measure(label, &k) > label_w - self.px(14.0));
+                && (tiles || p.section==14 || self.fonts.measure(label, &k) > label_w - self.px(14.0));
             let full = stacked || matches!(control, Control::AppIcons | Control::Intelligence | Control::Mercury | Control::DrawerPreview | Control::ProfileOrbit | Control::ShellList | Control::FontProof | Control::PromptProof | Control::Studio | Control::Strip(_) | Control::Cards(_) | Control::Tokens(..) | Control::Art(_) | Control::Pics(_) | Control::Actions(_) | Control::Sources(_))
-                || matches!(control, Control::Info(_) | Control::Help(_) | Control::SavedCommand(_));
-            let cap_h = if full && !k.is_empty() { self.px(26.0) } else { 0.0 };
+                || matches!(control, Control::Info(_) | Control::Help(_) | Control::SavedCommand(_) | Control::UpdateStatus(_) | Control::Disclosure(..));
+            let cap_h = if full && !k.is_empty() && !matches!(control,Control::Disclosure(..)) { self.px(26.0) } else { 0.0 };
             let report_actions = matches!(&control, Control::Actions(items) if items.iter().any(|(_,_,_,h)| matches!(h, Hit::Report(_))));
             let card_w = self.px(if report_actions {220.0} else {168.0}).min((maxw - self.px(6.0)).max(self.px(60.0)));
             let card_h = self.px(104.0);
@@ -5007,6 +5026,8 @@ impl App {
             let per_row = ((maxw + gap) / (card_w + gap)).floor().max(1.0) as usize;
             let text_w = if full { maxw } else { maxw - label_w };
             let rh = match &control {
+                Control::UpdateStatus(view)=>self.update_status_height(view,maxw),
+                Control::Disclosure(..)=>self.px(46.0),
                 Control::SavedCommand(i) => self.saved_card_height(*i,maxw),
                 Control::AppIcons=>self.icon_choices_height(maxw)+cap_h+self.px(18.0),
                 Control::Mercury => self.mercury_settings_height(maxw) + cap_h + self.px(18.0),
@@ -5094,7 +5115,7 @@ impl App {
                 continue;
             }
             if full {
-                if !k.is_empty() {
+                if !k.is_empty() && !matches!(control,Control::Disclosure(..)) {
                     self.fonts.draw(scene, dim, cx, y + self.px(12.0), &k);
                 }
             } else {
@@ -5103,6 +5124,16 @@ impl App {
             // In the studio, unlabelled rows run the full column.
             let vx = if full || (p.section == SEC_LOOK && k.is_empty()) { cx } else { cx + label_w };
             match control {
+                Control::UpdateStatus(view)=>self.draw_update_status(scene,Rect::new(cx,y,maxw,rh),&view),
+                Control::Disclosure(k,on)=>{
+                    let r=Rect::new(cx,y,maxw,rh);
+                    if r.contains(mx,my){scene.rect(r,fade(ink,0.04));}
+                    let size=self.px(13.0);
+                    self.fonts.draw_icon(scene,if on {icons::CARET_DOWN} else {icons::CARET_RIGHT},size,cx,y+self.px(16.0),ink);
+                    let words=if k==0 {"PROFILE & RECOVERY"} else {"SUPPORT & PRIVACY"};
+                    self.fonts.draw(scene,strong,cx+self.px(22.0),y+self.px(28.0),words);
+                    self.settings_hits.push((r,Hit::UpdateDetails(k)));
+                }
                 Control::SavedCommand(i) => {
                     self.draw_saved_card(scene,Rect::new(cx,y,maxw,rh),i);
                 }
@@ -5482,7 +5513,7 @@ impl App {
                     let mut cb = base;
                     for (text, icon, hit) in items {
                         let isz = self.px(13.0);
-                        let w = self.fonts.measure(strong, &text) + self.px(24.0) + isz + self.px(8.0);
+                        let w = (self.fonts.measure(strong, &text) + self.px(24.0) + isz + self.px(8.0)).min(maxw);
                         if x > vx && x + w > cx + maxw {
                             x = vx;
                             cb += self.px(m::LABEL_PX) + self.px(24.0);
@@ -5490,10 +5521,13 @@ impl App {
                         let base = cb;
                         let b = Rect::new(x, base - self.px(m::LABEL_PX) - self.px(8.0), w, self.px(m::LABEL_PX) + self.px(16.0));
                         scene.rect(Rect::new(b.x + self.px(3.0), b.y + self.px(3.0), b.w, b.h), ink);
-                        scene.rect(b, t.paper);
+                        let primary=p.section==14 && (matches!(hit,Hit::UpdateInstall|Hit::UpdateConfirm) || hit==Hit::UpdateCheck && !crate::updates::status().available);
+                        let col=if primary {self.on_fill(ink)} else {ink};
+                        scene.rect(b, if primary {ink} else {t.paper});
                         scene.outline(b, self.px(m::STRUCTURE), ink);
-                        self.fonts.draw_icon(scene, icon, isz, x + self.px(12.0), base - isz + self.px(2.0), ink);
-                        self.fonts.draw(scene, strong, x + self.px(12.0) + isz + self.px(8.0), base, &text);
+                        self.fonts.draw_icon(scene, icon, isz, x + self.px(12.0), base - isz + self.px(2.0), col);
+                        let text=self.fit(strong,&text,(w-self.px(24.0)-isz-self.px(8.0)).max(1.0));
+                        self.fonts.draw(scene, Style{color:col,..strong}, x + self.px(12.0) + isz + self.px(8.0), base, &text);
                         self.settings_hits.push((b, hit));
                         x += w + self.px(14.0);
                     }
@@ -5773,4 +5807,26 @@ impl App {
 
 fn default_swipe_reach() -> u16 {
     180
+}
+
+impl App {
+    fn update_status_height(&self, view:&crate::updates::Presentation, width:f32) -> f32 {
+        let title=Style{font:self.f.serif,px:self.px(30.0),color:self.theme.ink,tracking:0.0};
+        let lines=crate::reader::wrap(&self.fonts,title,&view.title,width).len().max(1);
+        let detail=if view.detail.is_empty(){0}else{crate::reader::wrap(&self.fonts,self.ui(),&view.detail,width).len().max(1)};
+        let version=crate::reader::wrap(&self.fonts,self.ui(),&format!("Running {}",crate::updates::CURRENT),width).len().max(1);
+        let checked=crate::reader::wrap(&self.fonts,self.label(),&view.checked,width).len().max(1);
+        self.px(66.0+checked as f32*12.0+lines as f32*32.0+(detail+version) as f32*m::UI_PX*1.5)
+    }
+    fn draw_update_status(&mut self, scene:&mut Scene, rect:Rect, view:&crate::updates::Presentation) {
+        let ink=self.theme.ink;
+        let label=self.label();let ui=self.ui();
+        self.fonts.draw(scene,Style{color:self.theme.dim,..label},rect.x,rect.y+self.px(16.0),if crate::updates::CURRENT.contains("dev") {"DEVELOPMENT BUILD"} else if crate::updates::CURRENT.contains('-') {"PREVIEW CHANNEL"} else {"STABLE CHANNEL"});
+        let title=Style{font:self.f.serif,px:self.px(30.0),color:ink,tracking:0.0};
+        let mut y=rect.y+self.px(52.0);
+        for line in crate::reader::wrap(&self.fonts,title,&view.title,rect.w){self.fonts.draw(scene,title,rect.x,y,&line);y+=self.px(32.0);}
+        for line in crate::reader::wrap(&self.fonts,ui,&format!("Running {}",crate::updates::CURRENT),rect.w){self.fonts.draw(scene,ui,rect.x,y,&line);y+=self.px(m::UI_PX*1.5);}
+        for line in crate::reader::wrap(&self.fonts,ui,&view.detail,rect.w).into_iter().filter(|s|!s.is_empty()){self.fonts.draw(scene,Style{color:self.theme.dim,..ui},rect.x,y,&line);y+=self.px(m::UI_PX*1.5);}
+        for line in crate::reader::wrap(&self.fonts,label,&view.checked,rect.w){self.fonts.draw(scene,Style{color:self.theme.dim,..label},rect.x,y+self.px(12.0),&line);y+=self.px(12.0);}
+    }
 }

@@ -435,7 +435,7 @@ impl App {
                     let state = t.shell.clone().unwrap_or_default();
                     self.restore_shell(idx, &state).map(Pane::Term)
                 }
-                Some(Saved::Page { url, .. }) => self.new_web_pane_in(url, &container).map(Pane::Web),
+                Some(Saved::Page { url, .. }) => self.restored_web_pane_in(url, &container).map(Pane::Web),
                 Some(Saved::File { path }) => {
                     let mut e = crate::editor::EditorPane::new(nus_render::Rect::new(0.0, 0.0, 1.0, 1.0));
                     e.open(std::path::Path::new(path)).ok().map(|_| Pane::Editor(e))
@@ -449,7 +449,10 @@ impl App {
                 continue;
             };
             let right = match &t.right {
-                Some(Saved::Page { url, .. }) => self.new_web_pane(url).map(Pane::Web),
+                Some(Saved::Page { url, .. }) => {
+                    let container = self.container.clone();
+                    self.restored_web_pane_in(url, &container).map(Pane::Web)
+                }
                 Some(Saved::Shell { profile }) => {
                     let idx = self.profiles.iter().position(|p| &p.name == profile).unwrap_or(self.behavior.default_profile);
                     let state = t.shell_right.clone().unwrap_or_default();

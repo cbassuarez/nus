@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         LazyLock, Mutex,
     },
-    time::Instant,
+    time::{Instant, Duration},
 };
 pub const INTERRUPTION_WARNING:&str="nus will download and verify the update, then close all its windows and restart. Save unsaved work first. Shells, agents and other processes may be interrupted. Automatic process resumption has not been extensively tested; do not rely on it for running work. The previous installation is retained for recovery.";
 pub const REPO: &str = "https://github.com/cbassuarez/nus";
@@ -19,6 +19,8 @@ pub struct Release {
     pub sha256: String,
     pub signing: String,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity { Checking, Installing, Recovering }
 #[derive(Clone, Default)]
 pub struct Status {
     pub message: String,
@@ -26,14 +28,16 @@ pub struct Status {
     pub available: bool,
     pub busy: bool,
     pub confirming: bool,
+    pub activity: Option<Activity>,
 }
 struct State {
     status: Status,
     release: Option<Release>,
     checked: Option<Instant>,
+    last_check: Option<(Instant, bool)>,
 }
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
-    Mutex::new(State{status:Status{message:std::fs::read_to_string("profile/update-result.txt").ok().filter(|s|s.len()<512).unwrap_or_else(||format!("Installed: {CURRENT}. Updates are checked automatically for release builds.")),..Default::default()},release:None,checked:None})
+    Mutex::new(State{status:Status{message:std::fs::read_to_string("profile/update-result.txt").ok().filter(|s|s.len()<512).unwrap_or_default(),..Default::default()},release:None,checked:None,last_check:None})
 });
 static REVISION: AtomicU64 = AtomicU64::new(1);
 pub fn revision() -> u64 {
@@ -199,6 +203,7 @@ pub fn check() {
         s.status = Status {
             message: "Checking GitHub Releases…".into(),
             busy: true,
+            activity: Some(Activity::Checking),
             ..Default::default()
         };
         s.checked = Some(Instant::now());
@@ -231,6 +236,8 @@ pub fn check() {
         })();
         let mut s = STATE.lock().unwrap();
         s.status.busy = false;
+        s.status.activity = None;
+        s.last_check = Some((Instant::now(), result.is_ok()));
         match result {
             Ok(release) if crate::distribution::managed().is_some() => {
                 // The system package manager owns this copy; it installs updates.
@@ -303,12 +310,12 @@ impl crate::app::App {
         {
             let mut s = STATE.lock().unwrap();
             if s.status.busy { return; }
-            s.status.busy = true; s.status.message = "Preparing recovery…".into(); changed();
+            s.status.busy = true; s.status.activity = Some(Activity::Recovering); s.status.message = "Preparing recovery…".into(); changed();
         }
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let result = crate::update_install::return_to_previous();
-            let mut s = STATE.lock().unwrap(); s.status.busy = false;
+            let mut s = STATE.lock().unwrap(); s.status.busy = false; s.status.activity = None;
             match result {
                 Ok(()) => { s.status.message = "Restarting into the previous version…".into(); let _ = proxy.send_event(crate::UserEvent::HatchQuit); }
                 Err(e) => { s.status.failure_code = "RECOVERY_PREPARE_FAILED"; s.status.message = format!("Recovery did not start: {e}"); }
@@ -324,6 +331,7 @@ impl crate::app::App {
             }
             s.status.confirming = false;
             s.status.busy = true;
+            s.status.activity = Some(Activity::Installing);
             s.status.message = "Downloading and verifying the update…".into();
             changed();
             s.release.clone()
@@ -336,6 +344,7 @@ impl crate::app::App {
             let result = crate::update_install::stage_and_launch(&release);
             let mut s = STATE.lock().unwrap();
             s.status.busy = false;
+            s.status.activity = None;
             match result {
                 Ok(()) => {
                     s.status.message = "Restarting to finish installation…".into();
@@ -417,6 +426,67 @@ pub fn preview_warning() {
         confirming: true,
         busy: false,
         failure_code: "",
+        activity: None,
     };
     changed();
+}
+
+#[derive(Clone)]
+pub struct Presentation { pub title: String, pub detail: String, pub checked: String }
+fn present(status: &Status, last_check: Option<(Duration, bool)>, managed: bool) -> Presentation {
+    let title = if status.busy {
+        match status.activity { Some(Activity::Installing)=>"Updating nus…",Some(Activity::Recovering)=>"Preparing recovery…",_=>"Checking for updates…" }
+    } else if !status.failure_code.is_empty() {
+        match status.failure_code { "UPDATE_INSTALL_FAILED"=>"Update wasn’t installed.","RECOVERY_PREPARE_FAILED"=>"Recovery didn’t start.",_=>"Couldn’t check for updates." }
+    } else if status.confirming { "Save your work before restarting." }
+    else if managed { "Updates use your package manager." }
+    else if status.available { "A new version is ready." }
+    else if last_check.is_some_and(|(_,ok)|ok) { "You’re up to date." }
+    else { "Check for updates." };
+    let checked = last_check.map(|(age,ok)| {
+        let when=if age.as_secs()<60 {"just now".into()} else if age.as_secs()<3600 {format!("{} min ago",age.as_secs()/60)} else {format!("{} hr ago",age.as_secs()/3600)};
+        format!("{} {when}",if ok {"Last checked"} else {"Last attempt"})
+    }).unwrap_or_else(||"Not checked this session".into());
+    Presentation {title:title.into(),detail:if !status.busy && !status.available && !status.confirming && status.failure_code.is_empty() && last_check.is_some_and(|(_,ok)|ok) && !managed {String::new()} else {status.message.clone()},checked}
+}
+pub fn presentation() -> Presentation {
+    let s=STATE.lock().unwrap();
+    present(&s.status,s.last_check.map(|(at,ok)|(at.elapsed(),ok)),crate::distribution::managed().is_some())
+}
+
+/// Isolated native fixtures never arm a downloadable release.
+pub fn preview_status(mode: &str) {
+    if std::env::var_os("NUS_SHOT").is_none() || std::env::var_os("NUS_SHOT_DIR").is_none() {return;}
+    let mut s=STATE.lock().unwrap();s.release=None;s.last_check=None;
+    s.status=Status{message:"Native review fixture · no installation will run".into(),..Default::default()};
+    match mode {
+        "initial"=>{},
+        "current"=>{s.last_check=Some((Instant::now(),true));s.status.message="No newer verified package is available for this channel.".into();},
+        "available"=>s.status.available=true,
+        "offline"=>{s.status.failure_code="UPDATE_CHECK_FAILED";s.status.message="GitHub could not be reached. Check your connection and try again.".into();s.last_check=Some((Instant::now(),false));},
+        "checking"=>{s.status.busy=true;s.status.activity=Some(Activity::Checking);},
+        "installing"=>{s.status.busy=true;s.status.activity=Some(Activity::Installing);},
+        _=>panic!("unknown update preview"),
+    }
+    changed();
+}
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test] fn never_claims_a_successful_check_before_one_finishes() {
+        let status=Status::default();
+        assert_eq!(present(&status,None,false).title,"Check for updates.");
+        assert_eq!(present(&status,None,false).checked,"Not checked this session");
+        assert_eq!(present(&status,Some((Duration::from_secs(120),true)),false).title,"You’re up to date.");
+        let failed=Status{failure_code:"UPDATE_CHECK_FAILED",..Default::default()};
+        assert_eq!(present(&failed,Some((Duration::ZERO,false)),false).checked,"Last attempt just now");
+        assert_eq!(present(&failed,Some((Duration::ZERO,false)),false).title,"Couldn’t check for updates.");
+    }
+    #[test] fn installation_and_managed_updates_do_not_look_like_checks() {
+        let status=Status{busy:true,activity:Some(Activity::Installing),..Default::default()};
+        assert_eq!(present(&status,None,false).title,"Updating nus…");
+        assert_eq!(present(&Status::default(),None,true).title,"Updates use your package manager.");
+        let status=Status{confirming:true,available:true,..Default::default()};
+        assert_eq!(present(&status,None,false).title,"Save your work before restarting.");
+    }
 }

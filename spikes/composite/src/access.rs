@@ -55,6 +55,8 @@ impl App {
             CrumbHit::Pr => self.active_git().and_then(|g| crate::pr::get(&g.root, &g.branch)).map(|p| format!("pull request {} · {} → {} · open it", p.word().to_lowercase(), self.active_git().map(|g| g.branch).unwrap_or_default(), if p.base.is_empty() { "?" } else { p.base.as_str() })).unwrap_or_else(|| "pull request".into()),
             CrumbHit::Git => self.active_git().map(|g| format!("source control · {}", g.short())).unwrap_or_else(|| "source control".into()),
             CrumbHit::Assistant => "ask an assistant".into(),
+            CrumbHit::Settings => if self.settings_view.is_some() { "close settings" } else { "settings" }.into(),
+            CrumbHit::Note => "new note".into(),
             CrumbHit::Pip => "return from picture in picture".into(),
             CrumbHit::Waiting => {
                 let n = self.tabs.iter().filter(|t| t.waiting()).count();
@@ -96,6 +98,10 @@ impl App {
             n.set_label(self.crumb_label(hit));
             n.set_bounds(bounds(r));
             n.add_action(Action::Click);
+            if matches!(hit, CrumbHit::Settings | CrumbHit::Assistant) {
+                let down = if hit == CrumbHit::Settings { self.settings_view.is_some() } else { self.ask_open() };
+                n.set_toggled(if down { accesskit::Toggled::True } else { accesskit::Toggled::False });
+            }
             nodes.push((id, n));
             header_kids.push(id);
         }
@@ -127,7 +133,7 @@ impl App {
                 }
                 n.set_label(label);
                 n.set_bounds(bounds(nus_render::Rect::new(sb.x, y, sb.w, h)));
-                n.set_selected(i == self.active);
+                n.set_selected(i == self.active && self.settings_view.is_none());
                 n.add_action(Action::Click);
                 nodes.push((id, n));
                 side_kids.push(id);
@@ -167,7 +173,7 @@ impl App {
                 S::CommitRow(k) => self.tree.root.as_ref().and_then(|r| crate::git_side::get(r)).and_then(|s| s.log.get(k).map(|c| format!("commit {} {} · show it", c.hash, c.subject))).unwrap_or_default(),
                 S::Downloads => "downloads".into(),
                 S::Fold(i) => format!("{} {}", if self.collapsed.contains(&self.tabs[i].id) { "unfold" } else { "fold" }, self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
-                S::Settings => "settings".into(),
+                S::Settings => if self.settings_view.is_some() { "close settings" } else { "settings" }.into(),
                 S::TabCopy(i) => { let n = self.copy_set(i).len(); if n > 1 { format!("copy {n} tabs' addresses") } else { "copy this tab's address".into() } }
                 S::TabRename(i) => format!("rename tab {}", self.tabs.get(i).map(|t| t.title()).unwrap_or_default()),
                 S::TabIcon(_) => "tab icon".into(),
@@ -185,6 +191,7 @@ impl App {
             let id = fresh(&mut map, Target::Side(hit));
             let mut n = Node::new(Role::Button);
             n.set_label(label);
+            if hit == S::Settings { n.set_toggled(if self.settings_view.is_some() { accesskit::Toggled::True } else { accesskit::Toggled::False }); }
             n.set_bounds(bounds(r));
             n.add_action(Action::Click);
             nodes.push((id, n));
@@ -212,8 +219,10 @@ impl App {
         let mut content_kids = Vec::new();
         let mut focus = NodeId(ROOT);
         if let Some(tab) = self.tabs.get(self.active) {
-            let focus_right = tab.focus_right && tab.right.is_some();
-            for (is_right, p) in std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))) {
+            let focus_right = self.settings_view.is_none() && tab.focus_right && tab.right.is_some();
+            let panes: Vec<_> = if let Some(settings) = self.settings_view.as_ref() { vec![(false, settings)] }
+                else { std::iter::once((false, &tab.left)).chain(tab.right.as_ref().map(|r| (true, r))).collect() };
+            for (is_right, p) in panes {
                 let id = fresh(&mut map, Target::None);
                 let mut n = match p {
                     Pane::Term(t) => {
@@ -315,6 +324,12 @@ impl App {
                 if let Pane::Settings(settings) = p {
                     let states = self.setting_states(settings.section);
                     let mut kids = Vec::new();
+                    if settings.section==14 {
+                        let view=crate::updates::presentation();
+                        let id=fresh(&mut map,Target::None);let mut status=Node::new(Role::Status);
+                        status.set_label(format!("{} Running {}. {}. {}",view.title,crate::updates::CURRENT,view.detail,view.checked));
+                        status.set_live(accesskit::Live::Polite);nodes.push((id,status));kids.push(id);
+                    }
                     let hits: Vec<(nus_render::Rect, Hit, String)> = self.settings_hits.iter().map(|(r, h)| (*r, *h, self.setting_label(*h))).collect();
                     for (r, hit, label) in hits {
                         let cid = fresh(&mut map, Target::Setting(hit, r.x + r.w / 2.0));
@@ -338,6 +353,7 @@ impl App {
                             _ => Node::new(Role::RadioButton),
                         };
                         c.set_label(label);
+                        if let Hit::UpdateDetails(k)=hit {c.set_expanded(self.update_details[k as usize]);}
                         if let Some(selected) = match hit { Hit::Section(k)|Hit::Tile(k) => if let Pane::Settings(s)=p {Some(k==s.section)}else{None}, _=>None }.or_else(||states.iter().find(|(h,_)|*h==hit).map(|(_,v)|*v).or_else(||self.startup_choice_selected(hit))) {
                             c.set_toggled(if selected { accesskit::Toggled::True } else { accesskit::Toggled::False });
                         }

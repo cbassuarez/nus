@@ -673,6 +673,7 @@ impl App {
     /// already open. False when the pane has no find of this kind (the
     /// editor keeps its own, with replace).
     pub(crate) fn open_find(&mut self) -> bool {
+        if self.settings_view.is_some() { self.open_palette(crate::app::PaletteMode::Settings); return true; }
         let Some(tab) = self.tabs.get(self.active) else { return false };
         let id = (tab.id, tab.focus_right && tab.right.is_some());
         if !Self::searchable(tab.focused_ref()) {

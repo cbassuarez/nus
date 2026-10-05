@@ -13,7 +13,7 @@ impl App {
         NodeId(*self.library.access_ids.entry(key).or_insert(next))
     }
     fn library_access_visible(&self)->bool {
-        self.library_home().is_some() && self.palette.is_none() && self.start.is_none()
+        self.settings_view.is_none() && self.library_home().is_some() && self.palette.is_none() && self.start.is_none()
             && !self.me_card.open && !self.dl_menu && self.timeline.is_none() && self.page_menu.is_none()
     }
     pub(crate) fn library_access_tree(&mut self)->TreeUpdate {

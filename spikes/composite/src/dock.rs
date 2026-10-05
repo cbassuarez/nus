@@ -59,7 +59,7 @@ impl Dock {
         if crate::app_icon::mercury() {
             self.launch = None;
             self.mercury_revision = crate::mercury::presentation_revision();
-            self.mercury_motion = Some(mercury_motion::Mercury::new(reduced, true));
+            self.mercury_motion = Some(mercury_motion::Mercury::new(reduced, true, self.signal.unwrap_or(nus_render::theme::signal::RED)));
             return;
         }
         #[cfg(target_os = "macos")]
@@ -126,9 +126,9 @@ impl Dock {
                     self.stop();
                     self.mercury_motion = None; // Stop the old timer before sampling its visible icon.
                     self.mercury_revision = revision;
-                    self.mercury_motion = Some(mercury_motion::Mercury::new(reduced, true));
+                    self.mercury_motion = Some(mercury_motion::Mercury::new(reduced, true, signal));
                 }
-                if let Some(motion) = &mut self.mercury_motion { motion.update(reduced); }
+                if let Some(motion) = &mut self.mercury_motion { motion.update(reduced, signal); }
                 return;
             }
             if self.mercury_motion.take().is_some(){self.shown=None;}

@@ -461,6 +461,9 @@ mod tests {
         assert!(resolve(base, "preview", "new").is_err());
         assert!(old.join("profile/settings.json").is_file());
         assert!(!base.join("installs/preview/shared/profile").exists());
+        // Match Guard's explicit release: parallel tests may spawn a Unix
+        // child that briefly inherits this open file description before exec.
+        held.unlock().unwrap();
         drop(held);
         let (shared, _) = resolve(base, "preview", "new").unwrap();
         assert!(shared.join("profile/settings.json").is_file());

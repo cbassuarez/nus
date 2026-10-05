@@ -158,6 +158,7 @@ mod keep_side;
 mod celestial;
 mod settings;
 mod sound;
+mod page_load_cue;
 mod shot;
 mod splash;
 mod hyperdrive;
@@ -384,6 +385,10 @@ impl Host {
     /// Open a window: the first as the prefs say, later ones next to the
     /// window that asked, with one shell and no session restore.
     fn spawn_window(&mut self, event_loop: &ActiveEventLoop, from: Option<usize>) {
+        self.spawn_window_at(event_loop, from, None);
+    }
+
+    fn spawn_window_at(&mut self, event_loop: &ActiveEventLoop, from: Option<usize>, position: Option<winit::dpi::PhysicalPosition<i32>>) {
         // The window comes up as the prefs say: last place, maximized,
         // fullscreen, or centred at 1440×900.
         let prefs = prefs::Prefs::load();
@@ -437,6 +442,7 @@ impl Host {
                 }
             }
         }
+        if let Some(position)=position { attrs=attrs.with_position(position); }
         #[cfg(target_os="linux")]
         {
             // The same ID on Wayland and X11 links the window to its launcher.
@@ -455,6 +461,8 @@ impl Host {
         let adapter = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
         crate::macos::prepare_window(&window);
         if let Some(menu)=&self.application_menu {menu.attach(&window);}
+        // Fit before allocating the compositor or showing the first frame.
+        window_placement::place(&window, start, saved_rect.is_some(), secondary);
         // The folder the asking window works in, for a shell born here.
         let born_in = from.and_then(|i| self.apps.get(i)).and_then(|a| a.workspace.as_ref().map(|w| w.to_string_lossy().to_string()).or_else(|| a.focused_cwd()));
         match App::new(window.clone(), self.proxy.clone(), secondary, self.made, born_in) {
@@ -468,7 +476,6 @@ impl Host {
                     a.register_window();
                 }
                 // Prepare the complete shell before making the window visible.
-                window_placement::place(&window, start, saved_rect.is_some(), secondary);
                 let initial_size = window.inner_size();
                 a.resize(initial_size.width, initial_size.height);
                 a.redraw();
@@ -524,12 +531,10 @@ impl Host {
             },
             Dest::New | Dest::At(..) => {
                 let before = self.apps.len();
-                self.spawn_window(event_loop, Some(i));
+                let position=if let Dest::At(x,y)=dest {Some(winit::dpi::PhysicalPosition::new(x.saturating_sub(60),y.saturating_sub(20)))} else {None};
+                self.spawn_window_at(event_loop, Some(i), position);
                 if self.apps.len() > before {
                     let a = self.apps.last_mut().expect("just made");
-                    if let Dest::At(x, y) = dest {
-                        a.window.set_outer_position(winit::dpi::PhysicalPosition::new(x - 60, y - 20));
-                    }
                     a.receive_tab(tab);
                     // The window's own first tab gives way to the one it was made for.
                     a.drop_birth = true;
@@ -874,7 +879,7 @@ impl ApplicationHandler<UserEvent> for Host {
                 .with_visible(false)
                 .with_inner_size(winit::dpi::LogicalSize::new(little::LITTLE_W, little::LITTLE_H));
             match event_loop.create_window(attrs) {
-                Ok(w) => a.attach_little(Arc::new(w), &url),
+                Ok(w) => {window_placement::keep_inside(&w);a.attach_little(Arc::new(w), &url);},
                 Err(e) => tracing::warn!("little window: {e}"),
             }
         }

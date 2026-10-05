@@ -70,6 +70,8 @@ pub struct Shared {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    /// Restored pages skip their initial ready sound, independent of app ticks.
+    pub(crate) load_cue: crate::page_load_cue::PageLoadCue,
     pub(crate) navigation_at: Option<std::time::Instant>,
     pub requested_url: String,
     pub(crate) failed_url: Option<String>,
@@ -447,12 +449,14 @@ impl Shared {
         self.ended=None;
         self.port_watch=None;self.loaded_in=None;self.opened_at=None;
         self.address(url);self.requested_url=url.into();self.loading=true;self.progress=0.0;
+        self.load_cue.observe(true, crate::clock::now());
     }
     /// Chromium is taking the main frame somewhere. Its own retry of a page
     /// that failed (the error page reloads itself while the network may come
     /// back) keeps nus's page up, so its commands keep working meanwhile;
     /// the page goes when a document arrives (`arrived`).
     fn browse(&mut self,url:&str,gesture:bool) {
+        if gesture { self.load_cue.user_navigation(); }
         let retry=!gesture&&self.interstitial.as_ref().is_some_and(|p|p.url==url&&matches!(p.kind,crate::interstitial::Kind::Unreachable|crate::interstitial::Kind::Portal));
         if retry {self.navigation_at=Some(crate::clock::now());return;}
         self.navigation(url);
@@ -535,7 +539,9 @@ wrap_load_handler! {
         fn on_loading_state_change(&self,_browser:Option<&mut Browser>,is_loading: ::std::os::raw::c_int,_back: ::std::os::raw::c_int,_forward: ::std::os::raw::c_int) {
             let mut s=self.shared.borrow_mut();
             if s.native.is_some() || s.native_ask.is_some() { return; }
-            s.loading=is_loading!=0;
+            let loading=is_loading!=0;
+            s.loading=loading;
+            s.load_cue.observe(loading,crate::clock::now());
             if !s.loading {s.progress=1.0;s.settled=true;}
             s.paints+=1;
         }
@@ -3147,6 +3153,7 @@ impl BrowserTab {
     pub fn close_devtools(&self) { if let Some(host) = self.host() { host.close_dev_tools(); } }
 
     pub fn load(&self, url: &str) {
+        self.shared.borrow_mut().load_cue.user_navigation();
         if self.browser.is_none() {
             let mut s = self.shared.borrow_mut();
             s.url = url.into();
@@ -3229,6 +3236,7 @@ impl BrowserTab {
                 s.title = t;
             }
             s.loading = l;
+            s.load_cue.observe(l, crate::clock::now());
             s.progress = if l { 0.5 } else { 1.0 };
             return;
         }
@@ -3657,6 +3665,7 @@ impl BrowserTab {
     }
 
     pub fn back(&self) {
+        self.shared.borrow_mut().load_cue.user_navigation();
         {
             let mut s = self.shared.borrow_mut();
             if s.native.is_some() { s.reset_favicon(); s.loading = true; return s.native.as_ref().unwrap().back(); }
@@ -3666,6 +3675,7 @@ impl BrowserTab {
     }
 
     pub fn forward(&self) {
+        self.shared.borrow_mut().load_cue.user_navigation();
         {
             let mut s = self.shared.borrow_mut();
             if s.native.is_some() { s.reset_favicon(); s.loading = true; return s.native.as_ref().unwrap().forward(); }
@@ -3705,6 +3715,7 @@ impl BrowserTab {
     }
 
     pub fn reload(&self) {
+        self.shared.borrow_mut().load_cue.user_navigation();
         if self.browser.is_none() {
             self.shared.borrow_mut().interstitial_acts.push("retry".into());
             return;
@@ -3721,6 +3732,7 @@ impl BrowserTab {
 
     /// A hard reload: the page again, past the cache.
     pub fn reload_ignore_cache(&self) {
+        self.shared.borrow_mut().load_cue.user_navigation();
         if let Some(b)=&self.browser { b.reload_ignore_cache(); }
         self.nudge();
     }

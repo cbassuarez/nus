@@ -1,0 +1,67 @@
+{
+  "kind": "regular",
+  "form": "enamel-pebble",
+  "master_sha256": "d9fbcd7df7aceb86934f29edd296b998ea7b5c7297f5e938d84c263c852b2a29",
+  "blender": "4.5.3 LTS",
+  "size": 1024,
+  "samples": 256,
+  "pixel_filter": "Blackman-Harris, 0.85px",
+  "knots_linear": [
+    0.0,
+    0.002,
+    0.008,
+    0.032,
+    0.128,
+    0.5,
+    1.0
+  ],
+  "radiance_encoding": "sqrt(RGB / 64), uint16 little endian",
+  "camera": "hero, Dock framing 5.099999904632568",
+  "studio": "Ink, transparent, ground removed",
+  "faces": {
+    "plex": {
+      "index": 0,
+      "bytes": 9245428,
+      "sha256": "520c6bf6b90ddcca1610a2c75d054278fd48de8bf356490073f84f003eb17f92",
+      "peak_radiance": 24.485492706298828
+    },
+    "silkscreen": {
+      "index": 1,
+      "bytes": 10581923,
+      "sha256": "7ce3097424e3fe38e8bf475676fffc6e435b6ba98c666e45da0441abfcda517b",
+      "peak_radiance": 21.68292999267578
+    },
+    "plex-italic": {
+      "index": 2,
+      "bytes": 7388005,
+      "sha256": "4970b9643da163e13be435226df58fbd4ede0aa169ff8b2d2cdb0d3937b825eb",
+      "peak_radiance": 23.946352005004883
+    },
+    "bungee": {
+      "index": 3,
+      "bytes": 12765944,
+      "sha256": "9beb113b393df93d5bab61b1790fdd71e88d62c3c051c2cc11b82066b4b1abf0",
+      "peak_radiance": 25.22151756286621
+    },
+    "rubik": {
+      "index": 4,
+      "bytes": 13639903,
+      "sha256": "9260f9db3ad1221034a97cf45e37d67046a65eaa9f7f27d6ef0fd785087b9115",
+      "peak_radiance": 20.566030502319336
+    },
+    "newsreader": {
+      "index": 5,
+      "bytes": 8208767,
+      "sha256": "1bca66e3b9141da425a6e994ef40bebf9295c0f95aa3b329227a6cd50d218fe1",
+      "peak_radiance": 23.24542808532715
+    }
+  },
+  "format": "NUSD3D02; independent zlib levels, same scene-linear response encoding",
+  "levels": [
+    256,
+    1024
+  ],
+  "baked_master_sha256": "dfeb8c4f60dd48d9fd636dbf06751c9dd6aacb09222659f9172f6ccecd39de7e",
+  "default_render_data_sha256": "fdaf541e7d15cda0f2e669310e6ea9f5a7d22dc27da5e2404a24b9ba369653ff",
+  "changes": "Embedded builder, curved-volume source and README only; default meshes, shader inputs, transforms, cameras and lights unchanged."
+}

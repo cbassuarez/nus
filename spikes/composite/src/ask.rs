@@ -386,6 +386,9 @@ pub fn parse(md: &str) -> Vec<Block> {
 }
 
 impl App {
+    pub(crate) fn ask_open(&self) -> bool {
+        self.tabs.get(self.active).is_some_and(|tab| std::iter::once(&tab.left).chain(tab.right.as_ref()).any(|p| matches!(p, Pane::Term(t) if t.ask.is_some())))
+    }
     fn review_ask_secrets(&mut self){
         let Some(review)=self.ask_term().and_then(|t|t.ask.as_mut()).and_then(|a|if a.pending.is_none(){a.redaction_review.take()}else{None})else{return;};
         let preview:String=review.preview.chars().take(10000).collect();
@@ -412,8 +415,22 @@ impl App {
     /// Ctrl+Shift+?: open the panel (and focus its field), or close it.
     pub(crate) fn toggle_ask(&mut self) {
         if crate::private::enabled() { self.notice(nus_render::text::icons::EYE_SLASH, "Not In Incognito", "assistants work in regular nus windows"); return; }
+        self.close_settings();
+        // The header is available while a page or editor has focus too.
+        // Use this tab's shell, or make one beside a lone surface.
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let shell = if matches!(tab.left, Pane::Term(_)) { Some(false) }
+            else if matches!(tab.right, Some(Pane::Term(_))) { Some(true) } else { None };
+        if let Some(right) = shell {
+            self.tabs[self.active].focus_right = right;
+            self.tabs[self.active].solo = false;
+        } else if tab.right.is_none() {
+            let id = tab.id;
+            self.direct(crate::director::Op::SplitShell { tab: id });
+        } else {
+            self.new_tab(self.behavior.default_profile);
+        }
         let keys = self.behavior.ask_ctx.clone();
-        if self.ask_term().is_none() {self.open_settings_at(crate::settings::SEC_ASSISTANTS,None);return;}
         let Some(t) = self.ask_term() else { return };
         if t.ask.is_some() {
             t.ask = None;

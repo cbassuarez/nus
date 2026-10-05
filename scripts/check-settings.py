@@ -47,7 +47,7 @@ for section,first,second in [(3,'HdrStyle(Rail)','HdrStyle(Bar)'),(4,'OpenedBy(F
     steps += [f'settingsat {section}','wait 100',f'settingseek {first}',f'settingclick {first}','wait 100',f'assertchoice {first}',f'settingseek {second}',f'settingclick {second}','wait 100',f'assertchoice {second}']
 run('hatch-height','hatchsize 30\nwait 700\nasserthatchsize 30\nhatchsize 60\nwait 700\nasserthatchsize 60',prefs)
 run('native-clicks','\n'.join(steps)+'\nsettingsat 3\nwait 100\nsettingseek Slider(Grace,\nsliderdrag 0.8\nwait 100\nshot slider-drag',prefs)
-run('shared-windows','settingsat 4\nwait 100\nnewwindow\nwait 2200\nassertchoice OpenedBy(Front)\nsettingseek OpenedBy(Behind)\nsettingclick OpenedBy(Behind)\nwait 6000',prefs,second='wait 1200\nsettingsat 4\nwait 100\nsettingseek OpenedBy(Front)\nsettingclick OpenedBy(Front)\nwait 2500\nassertchoice OpenedBy(Behind)\nshot shared-secondary')
+run('shared-windows','settingsat 4\nwait 100\nnewwindow\nawaitchoice OpenedBy(Front)\nsettingseek OpenedBy(Behind)\nsettingclick OpenedBy(Behind)\nwait 6000',prefs,second='wait 1200\nsettingsat 4\nwait 100\nsettingseek OpenedBy(Front)\nsettingclick OpenedBy(Front)\nawaitchoice OpenedBy(Behind)\nshot shared-secondary')
 manual=run('manual-theme','appearance ink\nassertappearance ink',prefs,face=None)
 run('manual-theme-relaunch','assertappearance ink\nassertnoshells',json.loads((manual/'settings.json').read_text()),face=None)
 for width,face in [(2560,'paper'),(1440,'paper'),(800,'paper'),(480,'ink')]:

@@ -180,6 +180,7 @@ jobs:
           if [[ "$RUNNER_OS" == macOS ]]; then
             python scripts/check-browser.py --app dist/nus.app --out dist/browser-check
             python scripts/check-kept-keywords.py --app dist/nus.app --out dist/keyword-check
+            python scripts/check-session-sounds.py --app dist/nus.app --out dist/session-sound-check
           else
             xvfb-run -a python scripts/check-browser.py --app "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --out dist/browser-check
             xvfb-run -a python scripts/check-kept-keywords.py --app "dist/nus-${RELEASE_TAG#v}-$RELEASE_TARGET/nus" --out dist/keyword-check
@@ -191,6 +192,7 @@ jobs:
           path: |
             dist/browser-check/
             dist/keyword-check/
+            dist/session-sound-check/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: runner.os != 'Windows'
         with:

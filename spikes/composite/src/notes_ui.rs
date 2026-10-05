@@ -258,6 +258,16 @@ impl App {
         }
     }
 
+    pub(crate) fn header_note(&mut self) {
+        self.close_settings();
+        let profile = self.project_here().is_none();
+        if crate::private::enabled() { self.note_act(NoteAct::New { profile }); return; }
+        // Keep a page or shell already beside the work. Editors can open
+        // another buffer; other occupied splits get a separate note tab.
+        let whole_tab = self.tabs.get(self.active).is_some_and(|t| t.right.as_ref().is_some_and(|p| !matches!(p, Pane::Editor(_))));
+        self.new_note(profile, whole_tab);
+    }
+
     fn personal_home(&mut self) -> Option<Home> {
         let cap = match crate::notes_store::WriteCap::grant() {
             Ok(c) => c,

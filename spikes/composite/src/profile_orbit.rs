@@ -147,11 +147,11 @@ impl App {
         let value = Style { px: self.px(11.0), color: ink, ..label };
         for (i, n) in nodes.iter().enumerate() {
             let vw = self.fonts.measure(value, &n.value).max(self.fonts.measure(small, n.label));
-            let cw = vw + self.px(24.0);
-            let ch = self.px(44.0);
+            let cw = (vw + self.px(24.0)).min(r.w.max(0.0));
+            let ch = self.px(44.0).min(r.h.max(0.0));
             let mut cr = Rect::new(n.at.0 - cw / 2.0, n.at.1 - ch / 2.0, cw, ch);
-            cr.x = cr.x.clamp(r.x, r.right() - cw);
-            cr.y = cr.y.clamp(r.y, r.bottom() - ch);
+            cr.x = cr.x.clamp(r.x, (r.right() - cw).max(r.x));
+            cr.y = cr.y.clamp(r.y, (r.bottom() - ch).max(r.y));
             let hot = cr.contains(self.mouse.0, self.mouse.1);
             let lift = if hot { self.px(2.0) } else { 0.0 };
             let card = Rect::new(cr.x - lift, cr.y - lift, cr.w, cr.h);
@@ -167,9 +167,12 @@ impl App {
                     scene.outline(card, self.px(2.0), ink);
                 }
             }
-            self.fonts.draw(scene, small, card.x + self.px(12.0), card.y + self.px(17.0), n.label);
+            let text_width = (card.w - self.px(24.0)).max(0.0);
+            let caption = self.fit_as_is(small, n.label, text_width);
+            let words = self.fit_as_is(value, &n.value, text_width);
+            self.fonts.draw(scene, small, card.x + self.px(12.0), card.y + self.px(17.0), &caption);
             let vc = if n.set { ink } else if hot { signal } else { t.dim };
-            self.fonts.draw(scene, Style { color: vc, ..value }, card.x + self.px(12.0), card.y + self.px(33.0), &n.value);
+            self.fonts.draw(scene, Style { color: vc, ..value }, card.x + self.px(12.0), card.y + self.px(33.0), &words);
             self.settings_hits.push((cr, n.hit));
             self.offer_tip(hover_key("orbit-node", i), cr, n.tip.clone());
         }

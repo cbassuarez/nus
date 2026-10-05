@@ -40,6 +40,12 @@ impl App {
     }
 
     pub(crate) fn zoom_focused(&mut self, step: i32) {
+        if self.settings_view.is_some() {
+            self.ui_zoom = next(self.ui_zoom, step, 100, 75, 200);
+            self.layout(); self.dirty = true;
+            self.notice(nus_render::text::icons::SEARCH, "Zoom", format!("{}%", self.ui_zoom));
+            return;
+        }
         let term_px = self.terminal_px();
         let duration = self.motion.dur(160.0);
         let Some(pane) = self.tabs.get_mut(self.active).map(|t|t.focused()) else { return; };

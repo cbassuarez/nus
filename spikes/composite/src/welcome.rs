@@ -496,14 +496,14 @@ impl App {
             }
             Act::Studio => {
                 self.open_settings();
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.section = crate::settings::SEC_LOOK;
                 }
                 self.look_tab = crate::settings::LOOK_PRESETS;
             }
             Act::Settings(k) => {
                 self.open_settings();
-                if let Some(Pane::Settings(s)) = self.tabs.get_mut(self.active).map(|t| &mut t.left) {
+                if let Some(s) = self.settings_pane_mut() {
                     s.section = k;
                 }
             }

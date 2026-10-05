@@ -25,7 +25,7 @@ fn switch(hit: Hit) -> Option<(&'static str, Hit, Hit, bool)> {
 }
 
 pub(super) fn is_action(hit: Hit) -> bool {
-    matches!(hit, Hit::Workspace(_) | Hit::Play(_) | Hit::MeEdit(_) | Hit::MeCard | Hit::MeFolder | Hit::MeForget | Hit::MeWalk(_) |
+    matches!(hit, Hit::UpdateDetails(_) | Hit::UpdateCheck | Hit::UpdateInstall | Hit::UpdateConfirm | Hit::UpdateCancel | Hit::CopySupportDetails | Hit::RecoverPrevious | Hit::ProfileFolder | Hit::Report(_) | Hit::Workspace(_) | Hit::Play(_) | Hit::MeEdit(_) | Hit::MeCard | Hit::MeFolder | Hit::MeForget | Hit::MeWalk(_) |
         Hit::SyncKey | Hit::SyncEdit(_) | Hit::SyncForget | Hit::SyncNow | Hit::ForgeForget |
         Hit::CopyPhoneUrl | Hit::HandsForget | Hit::ForgetMemory | Hit::PortsHidden | Hit::Starter(_) |
         Hit::Search | Hit::FooterDefaults | Hit::PlaceEdit | Hit::Welcome | Hit::MenuPreview | Hit::MenuMove(..) | Hit::ReloadRules | Hit::OpenRules | Hit::ResetRules | Hit::MakeDefault | Hit::Unregister | Hit::Widevine |
