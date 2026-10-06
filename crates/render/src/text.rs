@@ -738,7 +738,11 @@ impl FontSystem {
             let first = starts.partition_point(|&b| b < at);
             let last = starts.partition_point(|&b| b < end);
             let n = last.saturating_sub(first).max(1);
-            for wi in widths.iter_mut().take(last.max(first + 1).min(starts.len())).skip(first) {
+            for wi in widths
+                .iter_mut()
+                .take(last.max(first + 1).min(starts.len()))
+                .skip(first)
+            {
                 *wi = w / n as f32;
             }
         }

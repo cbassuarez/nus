@@ -217,8 +217,17 @@ fn parse(args: &[String]) -> (Vec<String>, serde_json::Map<String, Value>) {
             let key = k.replace('-', "_");
             let takes_value = matches!(
                 k,
-                "tab" | "tab-id" | "window" | "profile" | "cwd" | "run" | "signal" | "which"
-                    | "title" | "open" | "source"
+                "tab"
+                    | "tab-id"
+                    | "window"
+                    | "profile"
+                    | "cwd"
+                    | "run"
+                    | "signal"
+                    | "which"
+                    | "title"
+                    | "open"
+                    | "source"
             );
             if takes_value && i + 1 < args.len() {
                 let v = &args[i + 1];
@@ -630,7 +639,9 @@ fn main() -> ExitCode {
         Ok(v) => {
             if cmd == "notify" && !want_json {
                 // Quiet on success, as a notifier in a script should be.
-            } else if want_json || !matches!(cmd, "ls" | "ports" | "block" | "theme" | "layout" | "sync") {
+            } else if want_json
+                || !matches!(cmd, "ls" | "ports" | "block" | "theme" | "layout" | "sync")
+            {
                 if !v.is_null() {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
                 }
@@ -762,14 +773,27 @@ mod tests {
         assert_eq!(o.get("profile").and_then(Value::as_str), Some("pwsh"));
         assert_eq!(o.get("split"), Some(&Value::Bool(true)));
         assert_eq!(o.get("cwd").and_then(Value::as_str), Some("C:\\x"));
-        let a: Vec<String> = ["notify", "prod", "is", "green", "--to-you", "--open", "https://fly.io", "--source", "deploy"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let a: Vec<String> = [
+            "notify",
+            "prod",
+            "is",
+            "green",
+            "--to-you",
+            "--open",
+            "https://fly.io",
+            "--source",
+            "deploy",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let (w, o) = parse(&a);
         assert_eq!(w, vec!["notify", "prod", "is", "green"]);
         assert_eq!(o.get("to_you"), Some(&Value::Bool(true)));
-        assert_eq!(o.get("open").and_then(Value::as_str), Some("https://fly.io"));
+        assert_eq!(
+            o.get("open").and_then(Value::as_str),
+            Some("https://fly.io")
+        );
         assert_eq!(o.get("source").and_then(Value::as_str), Some("deploy"));
         let (_, o) = parse(&["focus".into(), "--tab".into(), "3".into()]);
         assert_eq!(o.get("tab"), Some(&Value::from(3u64)));

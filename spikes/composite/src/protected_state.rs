@@ -104,10 +104,23 @@ pub fn migrate(profile: &Path) {
 }
 
 /// Only the current profile's protected records receive special editor I/O.
+/// A path in the form `canonicalize` gives, even when it does not exist yet:
+/// the nearest existing folder canonicalized, the rest as written. On
+/// Windows a canonical path is verbatim (`\\?\C:\…`), so a file about to be
+/// written (a new note) would otherwise never match its canonical profile.
+fn canonical(path: &Path) -> std::path::PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => canonical(parent).join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
 pub fn is_private_path(path: &Path) -> bool {
-    let root = std::env::current_dir().unwrap_or_default().join("profile");
-    let root = root.canonicalize().unwrap_or(root);
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let root = canonical(&std::env::current_dir().unwrap_or_default().join("profile"));
+    let path = canonical(path);
     let Ok(rel) = path.strip_prefix(root) else {
         return false;
     };
@@ -121,4 +134,21 @@ pub fn is_private_path(path: &Path) -> bool {
         // kept beside them (history, recovery, the index of imports); a
         // project's notes are its own files and stay plain.
         || rel.starts_with("notes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_not_written_yet_compares_like_its_folder() {
+        let dir = std::env::temp_dir().join(format!("nus-canonical-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = canonical(&dir);
+        // A note about to be written, two folders that do not exist yet down.
+        let new = canonical(&dir.join("notes").join(".state").join("a.md"));
+        assert!(new.starts_with(&root), "{new:?} is under {root:?}");
+        assert_eq!(new.strip_prefix(&root).unwrap(), Path::new("notes").join(".state").join("a.md"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

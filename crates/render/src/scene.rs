@@ -951,7 +951,8 @@ impl Scene {
         self.fade_at = None;
         if self.fade.is_some_and(|f| f < 1.0) {
             self.fade_at = Some(self.instances.len());
-            self.instances.push(Instance::rect(Rect::new(0.0, 0.0, 1.0e6, 1.0e6), [0.0; 4]));
+            self.instances
+                .push(Instance::rect(Rect::new(0.0, 0.0, 1.0e6, 1.0e6), [0.0; 4]));
         }
     }
 

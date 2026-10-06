@@ -239,7 +239,10 @@ impl Gpu {
             alpha: wgpu::BlendComponent::REPLACE,
         };
         let pipeline = make_pipeline(format, wgpu::BlendState::ALPHA_BLENDING);
-        let hdr_pipeline = make_pipeline(wgpu::TextureFormat::Rgba16Float, wgpu::BlendState::ALPHA_BLENDING);
+        let hdr_pipeline = make_pipeline(
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
         let ground_pipeline = make_pipeline(format, replace);
         let hdr_ground_pipeline = make_pipeline(wgpu::TextureFormat::Rgba16Float, replace);
         // The fade (Scene::fade) scales what is there by the blend constant
@@ -250,7 +253,10 @@ impl Gpu {
             dst_factor: wgpu::BlendFactor::Constant,
             operation: wgpu::BlendOperation::Add,
         };
-        let fade = wgpu::BlendState { color: scale, alpha: scale };
+        let fade = wgpu::BlendState {
+            color: scale,
+            alpha: scale,
+        };
         let fade_pipeline = make_pipeline(format, fade);
         let hdr_fade_pipeline = make_pipeline(wgpu::TextureFormat::Rgba16Float, fade);
         let shared = Arc::new(SharedGpu {
@@ -990,13 +996,22 @@ impl Gpu {
                 pass.draw(0..6, layer.range.start as u32..layer.range.end as u32);
             }
             if let Some((fade, at)) = scene.fade_pass() {
-                pass.set_pipeline(if hdr { &self.hdr_fade_pipeline } else { &self.fade_pipeline });
+                pass.set_pipeline(if hdr {
+                    &self.hdr_fade_pipeline
+                } else {
+                    &self.fade_pipeline
+                });
                 pass.set_immediates(0, bytemuck::cast_slice(&immediates));
                 pass.set_bind_group(0, &self.atlas_bind, &[]);
                 pass.set_bind_group(1, &self.points_bind, &[]);
                 pass.set_scissor_rect(0, 0, sw, sh);
                 let k = fade.clamp(0.0, 1.0) as f64;
-                pass.set_blend_constant(wgpu::Color { r: k, g: k, b: k, a: k });
+                pass.set_blend_constant(wgpu::Color {
+                    r: k,
+                    g: k,
+                    b: k,
+                    a: k,
+                });
                 pass.draw(0..6, at as u32..at as u32 + 1);
             }
         }
