@@ -1,6 +1,7 @@
 //! The sidebar's NOTES page, in the footer where the menu drawer's button
 //! was: the open tasks of this project's notes and the personal ones (tick
-//! one here, or go to it), then those notes themselves, newest first. The
+//! one here, or go to it), then those notes themselves, newest first, and
+//! their tags (a tag narrows the page to its notes). The
 //! picker (the header's note button) is for one note; this is for looking
 //! over them.
 
@@ -21,8 +22,10 @@ pub struct NotesSide {
     pub scroll: f32,
     pub rect: Option<Rect>,
     pub rows: Vec<Row>,
-    /// Sections folded to their heads: tasks, this project, personal.
-    pub folded: [bool; 3],
+    /// Sections folded to their heads: tasks, this project, personal, tags.
+    pub folded: [bool; 4],
+    /// A tag picked: the page shows its notes (and their tasks) only.
+    pub tag: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -30,7 +33,12 @@ pub enum Row {
     Head(usize),
     Task(Task),
     Note(PathBuf),
+    /// A tag, and how many notes carry it.
+    Tag(String, usize),
 }
+
+/// The head of the notes under a picked tag; a click clears the tag.
+const TAGGED: usize = 4;
 
 /// Tasks shown at most; the rest are in their notes.
 const TASKS: usize = 60;
@@ -80,7 +88,16 @@ impl App {
 
         // What there is: tasks, this project's notes, the personal ones.
         let here = project.as_ref().and_then(|p| Home::folder(p)).map(|h| h.id);
-        let tasks = index::tasks(here.as_deref(), TASKS);
+        let tags = index::tags(here.as_deref());
+        // A tag no note carries any more is let go.
+        if self.notes_side.tag.as_ref().is_some_and(|t| !tags.iter().any(|(n, _)| n == t)) {
+            self.notes_side.tag = None;
+        }
+        let tagged: Option<Vec<Hit>> = self.notes_side.tag.as_ref().map(|t| index::tagged(here.as_deref(), t, 80));
+        let mut tasks = index::tasks(here.as_deref(), TASKS);
+        if let Some(list) = &tagged {
+            tasks.retain(|t| list.iter().any(|h| h.path == t.note.path));
+        }
         let mine: Vec<Hit> = here.as_ref().map(|id| index::recent(Some(id), 40)).unwrap_or_default();
         let personal = index::recent_personal(40);
         let project_name = project.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default();
@@ -95,19 +112,33 @@ impl App {
         if !self.notes_side.folded[0] {
             rows.extend(tasks.iter().cloned().map(Row::Task));
         }
-        if here.is_some() {
-            heads.push((1, format!("{project_name} · {}", mine.len())));
-            rows.push(Row::Head(1));
-            if !self.notes_side.folded[1] {
-                rows.extend(mine.iter().map(|h| Row::Note(h.path.clone())));
+        if let (Some(tag), Some(list)) = (&self.notes_side.tag, &tagged) {
+            heads.push((TAGGED, format!("#{tag} · {}", list.len())));
+            rows.push(Row::Head(TAGGED));
+            rows.extend(list.iter().map(|h| Row::Note(h.path.clone())));
+        } else {
+            if here.is_some() {
+                heads.push((1, format!("{project_name} · {}", mine.len())));
+                rows.push(Row::Head(1));
+                if !self.notes_side.folded[1] {
+                    rows.extend(mine.iter().map(|h| Row::Note(h.path.clone())));
+                }
+            }
+            heads.push((2, format!("PERSONAL · {}", personal.len())));
+            rows.push(Row::Head(2));
+            if !self.notes_side.folded[2] {
+                rows.extend(personal.iter().map(|h| Row::Note(h.path.clone())));
             }
         }
-        heads.push((2, format!("PERSONAL · {}", personal.len())));
-        rows.push(Row::Head(2));
-        if !self.notes_side.folded[2] {
-            rows.extend(personal.iter().map(|h| Row::Note(h.path.clone())));
+        if !tags.is_empty() {
+            heads.push((3, format!("TAGS · {}", tags.len())));
+            rows.push(Row::Head(3));
+            if !self.notes_side.folded[3] {
+                rows.extend(tags.iter().map(|(t, n)| Row::Tag(t.clone(), *n)));
+            }
         }
-        let hits: Vec<&Hit> = mine.iter().chain(personal.iter()).collect();
+        let picked = self.notes_side.tag.clone();
+        let hits: Vec<&Hit> = mine.iter().chain(personal.iter()).chain(tagged.iter().flatten()).collect();
 
         let list = Rect::new(sb.x, top + head_h, sb.w, (bottom - top - head_h).max(0.0));
         self.notes_side.rect = Some(list);
@@ -129,12 +160,39 @@ impl App {
             self.side_hits.push((rr, SideHit::NotesRow(k)));
             match r {
                 Row::Head(s) => {
-                    let folded = self.notes_side.folded[*s];
                     let csz = self.px(10.0);
-                    self.fonts.draw_icon(scene, if folded { icons::CARET_RIGHT } else { icons::CARET_DOWN }, csz, sb.x + pad, b - csz + self.px(1.0), t.dim);
+                    // The picked tag's head clears it; the others fold.
+                    let (icon, color) = if *s == TAGGED {
+                        (icons::CLOSE, self.surface.signal)
+                    } else {
+                        (if self.notes_side.folded[*s] { icons::CARET_RIGHT } else { icons::CARET_DOWN }, t.dim)
+                    };
+                    self.fonts.draw_icon(scene, icon, csz, sb.x + pad, b - csz + self.px(1.0), color);
                     let words = heads.iter().find(|(i, _)| i == s).map(|(_, w)| w.clone()).unwrap_or_default();
-                    let shown = self.fit(dim, words, sb.w - 2.0 * pad - csz - self.px(8.0));
-                    self.fonts.draw(scene, dim, sb.x + pad + csz + self.px(8.0), b, &shown);
+                    let st = if *s == TAGGED { Style { color: self.surface.signal, ..label } } else { dim };
+                    // A tag is shown as written, not as a label.
+                    let shown = self.fit_as_is(st, words, sb.w - 2.0 * pad - csz - self.px(8.0)).into_owned();
+                    self.fonts.draw_as_is(scene, st, sb.x + pad + csz + self.px(8.0), b, &shown);
+                    if *s == TAGGED {
+                        self.offer_tip(hover_key("notes-tagged", 0), rr, "Every note again".into());
+                    }
+                }
+                Row::Tag(tag, count) => {
+                    let on = picked.as_deref() == Some(tag.as_str());
+                    if hot {
+                        scene.rect(rr, fade(t.tint, 0.5));
+                    }
+                    if on {
+                        scene.rect(Rect::new(sb.x, y, self.px(2.0), row_h), self.surface.signal);
+                    }
+                    let n = count.to_string();
+                    let nw = self.fonts.measure(dim, &n);
+                    let tx = sb.x + pad + self.px(4.0);
+                    let st = Style { color: if on { self.surface.signal } else { ink }, ..ui };
+                    let shown = self.fit_as_is(st, format!("#{tag}"), sb.right() - tx - pad - nw - self.px(10.0)).into_owned();
+                    self.fonts.draw_as_is(scene, st, tx, b, &shown);
+                    self.fonts.draw(scene, dim, sb.right() - pad - nw, b, &n);
+                    self.offer_tip(hover_key("notes-tag", k), rr, if on { format!("#{tag} · every note again") } else { format!("Only the notes tagged #{tag}") });
                 }
                 Row::Task(task) => {
                     if hot {
@@ -181,7 +239,13 @@ impl App {
     pub(crate) fn notes_side_click(&mut self, k: usize) {
         let Some(r) = self.notes_side.rows.get(k).cloned() else { return };
         match r {
+            Row::Head(TAGGED) => self.notes_side.tag = None,
             Row::Head(s) => self.notes_side.folded[s] = !self.notes_side.folded[s],
+            // A tag narrows the page to its notes; again, every note.
+            Row::Tag(tag, _) => {
+                self.notes_side.tag = if self.notes_side.tag.as_deref() == Some(tag.as_str()) { None } else { Some(tag) };
+                self.notes_side.scroll = 0.0;
+            }
             Row::Task(task) => self.open_note_at(&task.note.path, task.line),
             Row::Note(path) => self.place_note(&path),
         }

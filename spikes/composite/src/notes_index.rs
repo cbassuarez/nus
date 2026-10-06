@@ -50,6 +50,17 @@ pub struct Task {
     pub words: String,
 }
 
+/// A captured source and the note holding it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clip {
+    pub note: Hit,
+    pub source_id: String,
+    pub label: String,
+    /// `terminal`, `web`, `file`, `reading`.
+    pub kind: String,
+    pub body: String,
+}
+
 pub struct Index {
     conn: Connection,
     pub generation: u64,
@@ -232,6 +243,55 @@ impl Index {
     pub fn recent(&self, homes: Option<&[String]>, limit: usize) -> Vec<Hit> {
         let sql = format!("SELECT d.* FROM note_document d WHERE d.deleted = 0{} ORDER BY d.modified_ms DESC, d.home_id, d.note_id LIMIT {limit}", Self::home_clause(homes));
         self.rows(&sql, &[])
+    }
+
+    /// A captured source (a clipped block, a page, a file's lines) by its
+    /// id: the note that holds it, what it was, and that note's body.
+    pub fn clip(&self, source_id: &str) -> Option<Clip> {
+        self.conn.query_row(
+            "SELECT d.*, s.label AS s_label, s.kind AS s_kind FROM note_source s JOIN note_document d ON d.home_id = s.home_id AND d.note_id = s.note_id
+             WHERE s.source_id = ?1 AND s.kind != 'note' AND d.deleted = 0 ORDER BY d.modified_ms DESC LIMIT 1",
+            params![source_id],
+            |r| Ok(Clip { note: self.hit(r)?, source_id: source_id.to_string(), label: r.get("s_label")?, kind: r.get("s_kind")?, body: r.get("body")? }),
+        ).optional().ok().flatten()
+    }
+
+    /// Captured sources whose label has these words, newest first.
+    pub fn clips(&self, words: &str, homes: &[String], limit: usize) -> Vec<Clip> {
+        let sql = format!(
+            "SELECT d.*, s.label AS s_label, s.kind AS s_kind, s.source_id AS s_id FROM note_source s JOIN note_document d ON d.home_id = s.home_id AND d.note_id = s.note_id
+             WHERE s.kind != 'note' AND d.deleted = 0 AND lower(s.label) LIKE ?1{} ORDER BY s.captured_ms DESC LIMIT {limit}",
+            Self::home_clause(Some(homes))
+        );
+        let like = format!("%{}%", words.trim().to_lowercase().replace(['%', '_'], ""));
+        let Ok(mut st) = self.conn.prepare(&sql) else { return Vec::new() };
+        st.query_map(params![like], |r| Ok(Clip { note: self.hit(r)?, source_id: r.get("s_id")?, label: r.get("s_label")?, kind: r.get("s_kind")?, body: r.get("body")? }))
+            .map(|it| it.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Every tag in these homes' notes, with how many notes carry it, most
+    /// used first.
+    pub fn tags(&self, homes: &[String]) -> Vec<(String, usize)> {
+        let sql = format!("SELECT d.tags_text FROM note_document d WHERE d.deleted = 0{}", Self::home_clause(Some(homes)));
+        let Ok(mut st) = self.conn.prepare(&sql) else { return Vec::new() };
+        let rows: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect()).unwrap_or_default();
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for t in rows.iter().flat_map(|r| r.split_whitespace()) {
+            *counts.entry(t.to_string()).or_default() += 1;
+        }
+        let mut out: Vec<(String, usize)> = counts.into_iter().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out
+    }
+
+    /// The notes carrying a tag, newest first.
+    pub fn tagged(&self, homes: &[String], tag: &str, limit: usize) -> Vec<Hit> {
+        let sql = format!(
+            "SELECT d.* FROM note_document d WHERE d.deleted = 0 AND (' ' || d.tags_text || ' ') LIKE ?1{} ORDER BY d.modified_ms DESC LIMIT {limit}",
+            Self::home_clause(Some(homes))
+        );
+        let like = format!("% {} %", tag.replace(['%', '_'], ""));
+        self.rows(&sql, &[&like])
     }
 
     /// Open checklist items in these homes' notes, newest note first.
@@ -596,6 +656,39 @@ pub fn trashed(limit: usize) -> Vec<Hit> {
     read(|i| i.trashed(limit)).unwrap_or_default()
 }
 
+/// The homes the NOTES page and `![[` look in: this project's and the
+/// personal ones.
+fn here_and_personal(i: &Index, here: Option<&str>) -> Vec<String> {
+    let mut ids: Vec<String> = i.homes.iter().filter(|(_, (_, s))| *s == Scope::Personal).map(|(id, _)| id.clone()).collect();
+    ids.extend(here.map(str::to_string));
+    ids
+}
+
+pub fn clip(source_id: &str) -> Option<Clip> {
+    read(|i| i.clip(source_id)).flatten()
+}
+
+pub fn clips(words: &str, here: Option<&str>, limit: usize) -> Vec<Clip> {
+    read(|i| {
+        let ids = here_and_personal(i, here);
+        if ids.is_empty() { Vec::new() } else { i.clips(words, &ids, limit) }
+    }).unwrap_or_default()
+}
+
+pub fn tags(here: Option<&str>) -> Vec<(String, usize)> {
+    read(|i| {
+        let ids = here_and_personal(i, here);
+        if ids.is_empty() { Vec::new() } else { i.tags(&ids) }
+    }).unwrap_or_default()
+}
+
+pub fn tagged(here: Option<&str>, tag: &str, limit: usize) -> Vec<Hit> {
+    read(|i| {
+        let ids = here_and_personal(i, here);
+        if ids.is_empty() { Vec::new() } else { i.tagged(&ids, tag, limit) }
+    }).unwrap_or_default()
+}
+
 /// Open tasks in this project's notes (when there is one) and the
 /// personal ones.
 pub fn tasks(here: Option<&str>, limit: usize) -> Vec<Task> {
@@ -696,6 +789,20 @@ mod tests {
         d2.push_source(Source::new(Kind::Web, &"d".repeat(32), "captured reference", 0).with("url", json!("https://example.com/?x=1&utm_source=z#head")));
         i.put(&f, Path::new("/n/nus/2.md"), &d2, &"0".repeat(64), 1).unwrap();
         (i, p, f)
+    }
+
+    #[test]
+    fn tags_count_and_list_their_notes_and_clips_are_found_by_id_and_words() {
+        let (i, p, f) = fixture();
+        let both = vec![p.id.clone(), f.id.clone()];
+        assert_eq!(i.tags(&both), vec![("research".to_string(), 1)]);
+        assert_eq!(ids(&i.tagged(&both, "research", 9)), vec!["1"]);
+        assert!(i.tagged(&both, "resear", 9).is_empty(), "a tag is matched whole");
+        let c = i.clip(&"c".repeat(32)).unwrap();
+        assert_eq!((c.label.as_str(), c.kind.as_str(), c.note.key.note_id[..1].to_string()), ("terminal reflow", "terminal", "1".to_string()));
+        assert!(i.clip(&"e".repeat(32)).is_none());
+        assert_eq!(i.clips("REFLOW", &both, 9).iter().map(|c| c.label.clone()).collect::<Vec<_>>(), vec!["terminal reflow"]);
+        assert!(i.clips("reflow", &[f.id.clone()], 9).is_empty(), "only the homes asked for");
     }
 
     #[test]

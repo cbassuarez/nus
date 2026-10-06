@@ -155,14 +155,16 @@ impl App {
     }
 
     /// The project a folder belongs to for notes: the nearest folder above
-    /// it (itself included) that already has notes, else its repository's
+    /// it (itself included) that already has notes or is a repository's
     /// top, else the folder itself. Opening a subfolder never makes a
-    /// second home.
+    /// second home, and a repository is its own project even inside a
+    /// folder that has notes (a home folder's would otherwise take every
+    /// repository under it).
     pub(crate) fn notes_project(folder: &Path) -> PathBuf {
-        if let Some(p) = folder.ancestors().find(|a| a.join(".nus").join("notes").is_dir()) {
-            return p.to_path_buf();
-        }
-        folder.ancestors().find(|a| a.join(".git").exists()).unwrap_or(folder).to_path_buf()
+        folder.ancestors()
+            .find(|a| a.join(".nus").join("notes").is_dir() || a.join(".git").exists())
+            .unwrap_or(folder)
+            .to_path_buf()
     }
 
     fn project_here(&self) -> Option<PathBuf> {
@@ -1878,6 +1880,17 @@ impl App {
     /// file at its line. `note`: the note it is in; `right`: its pane.
     pub(crate) fn follow_note_link(&mut self, target: &str, note: Option<PathBuf>, right: bool) {
         let target = target.trim();
+        // A clip by reference: the note holding it, at the clip.
+        if let Some(id) = target.strip_prefix("source:") {
+            match index::clip(id) {
+                Some(c) => {
+                    let line = crate::notes_model::bindings(&c.body).into_iter().find(|b| b.source_id == c.source_id).map_or(0, |b| b.line + 1);
+                    self.open_note_at(&c.note.path, line);
+                }
+                None => self.notice(icons::PENCIL, "Clip Not Found", "its note may be in another project, or in the trash"),
+            }
+            return;
+        }
         let r = if let Some(id) = target.strip_prefix("note:") {
             let (home_id, note_id) = match id.split_once('/') {
                 Some((h, n)) => (Some(h.to_string()), n.to_string()),
@@ -1936,7 +1949,18 @@ pub(crate) fn note_completion(b: &crate::editor::Buffer) -> Option<crate::editor
             let me = b.note.as_ref().map(|v| v.key.clone());
             index::ensure_started();
             let hits = if q.trim().is_empty() { index::recent(None, 10) } else { index::search(q.trim(), None, 10).unwrap_or_default() };
-            let items: Vec<CompletionItem> = hits.into_iter().filter(|h| Some(&h.key) != me.as_ref()).map(|h| {
+            // After ![[, the clips too (blocks, pages' words, files' lines),
+            // embedded by reference: the excerpt where it was captured.
+            let clips: Vec<CompletionItem> = if embed {
+                index::clips(q, me.as_ref().map(|k| k.home_id.as_str()), 6).into_iter().map(|c| {
+                    let what = match c.kind.as_str() { "terminal" => "block", "web" => "page", "file" => "lines", "reading" => "reading", k => k };
+                    let held = if c.note.title.trim().is_empty() { "Untitled".to_string() } else { c.note.title.clone() };
+                    item(c.label.clone(), format!("{what} · in {held}"), format!("![[source:{}]]", c.source_id))
+                }).collect()
+            } else {
+                Vec::new()
+            };
+            let mut items: Vec<CompletionItem> = hits.into_iter().filter(|h| Some(&h.key) != me.as_ref()).map(|h| {
                 let id = if me.as_ref().is_some_and(|k| k.home_id == h.key.home_id) { h.key.note_id.clone() } else { format!("{}/{}", h.key.home_id, h.key.note_id) };
                 let title = if h.title.trim().is_empty() { "Untitled".to_string() } else { h.title.clone() };
                 if embed {
@@ -1946,6 +1970,7 @@ pub(crate) fn note_completion(b: &crate::editor::Buffer) -> Option<crate::editor
                     item(title, h.home_name.clone(), format!("[{words}](note:{id})"))
                 }
             }).collect();
+            items.extend(clips);
             return (!items.is_empty()).then_some(crate::editor::Completion { items, sel: 0, at: start, scroll: 0 });
         }
     }
@@ -1968,7 +1993,7 @@ pub(crate) fn note_completion(b: &crate::editor::Buffer) -> Option<crate::editor
         ("Code block", "``` ```", "```\n$0\n```".into()),
         ("Divider", "---", "---\n".into()),
         ("Link to a note", "[[", "[[".into()),
-        ("Embed a note", "![[ · live", "![[".into()),
+        ("Embed a note or a clip", "![[ · live", "![[".into()),
         ("Embed a file's lines", "![[path#L1-L10]] · live", "![[$0#L1-L10]]".into()),
         ("Today's date", "", today.clone()),
     ];
@@ -2205,7 +2230,33 @@ impl App {
                     None => em::note("", None),
                 }
             }
-            em::Target::Page(u) => em::page(u),
+            em::Target::Page(u) => {
+                // Live while a tab shows it; else as history last saw it.
+                let canon = crate::keep::canon(u);
+                let open = self.tabs.iter().flat_map(|t| std::iter::once(&t.left).chain(t.right.as_ref())).find_map(|p| match p {
+                    Pane::Web(w) => {
+                        let s = w.tab.shared.borrow();
+                        (crate::keep::canon(&s.url) == canon).then(|| s.title.clone())
+                    }
+                    _ => None,
+                });
+                let seen = || self.recent.iter().find_map(|r| match &r.item {
+                    crate::start::Saved::Page { url, title } if crate::keep::canon(url) == canon && !title.is_empty() => Some(title.clone()),
+                    _ => None,
+                });
+                let title = open.clone().filter(|t| !t.trim().is_empty()).or_else(seen);
+                em::page(u, title.as_deref(), open.is_some())
+            }
+            em::Target::Source { id } => {
+                let Some(c) = index::clip(id) else { return em::clip("", "", "", None, false) };
+                // The note holding it, as it stands if open (its excerpt
+                // may have been edited since); else as last saved.
+                let doc = session::document(&c.note.key);
+                let body = doc.as_ref().map(|d| d.body.clone()).unwrap_or(c.body.clone());
+                let excerpt = crate::notes_model::bindings(&body).into_iter().find(|b| b.source_id == c.source_id).and_then(|b| b.text);
+                let edited = doc.as_ref().is_some_and(|d| crate::notes_model::evidence(d).iter().any(|(b, e)| b.source_id == c.source_id && *e == crate::notes_model::Evidence::Edited));
+                em::clip(&c.label, &c.kind, &c.note.title, excerpt.as_deref(), edited)
+            }
         }
     }
 
@@ -2229,7 +2280,7 @@ impl App {
         let head = Style { color: text, ..self.label_strong() };
         let hb = (bx.y + lh * 0.75).round();
         let isz = self.px(12.0);
-        let icon = match target { Target::Note { .. } => icons::PENCIL, Target::File { .. } => icons::CODE, Target::Page(_) => icons::GLOBE };
+        let icon = match target { Target::Note { .. } => icons::PENCIL, Target::File { .. } => icons::CODE, Target::Page(_) => icons::GLOBE, Target::Source { .. } => icons::TERMINAL };
         self.fonts.draw_icon(scene, icon, isz, bx.x + pad, hb - isz + self.px(1.0), text);
         let hx = bx.x + pad + isz + self.px(8.0);
         // A file's or a note's name as it is, not as a label.
@@ -2595,5 +2646,29 @@ impl App {
         let r = Rect::new(area.x, y, area.w, btn);
         draw(self, scene, r, "◂", false, RailHit2::Fold);
         e.format_hits.push((r, RailHit2::Fold));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repository_is_its_own_project_even_under_a_folder_with_notes() {
+        let root = std::env::temp_dir().join(format!("nus-notes-project-{}", std::process::id()));
+        let home = root.join("home");
+        let repo = home.join("work").join("repo");
+        std::fs::create_dir_all(home.join(".nus").join("notes")).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src").join("deep")).unwrap();
+        std::fs::create_dir_all(home.join("loose")).unwrap();
+        // Inside the repository: its top, however deep.
+        assert_eq!(App::notes_project(&repo.join("src").join("deep")), repo);
+        // Outside any repository, under the folder with notes: that folder.
+        assert_eq!(App::notes_project(&home.join("loose")), home);
+        // A repository with notes in a subfolder: the nearer one wins.
+        std::fs::create_dir_all(repo.join("src").join(".nus").join("notes")).unwrap();
+        assert_eq!(App::notes_project(&repo.join("src").join("deep")), repo.join("src"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

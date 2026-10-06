@@ -2203,6 +2203,18 @@ today's date.
 no console). The cause of "every rail button crashes" was not reproduced
 in this code; the two ways a rail press landed somewhere else are gone.
 
-Not yet: tags on the NOTES page, embeds of clipped blocks by reference,
-page embeds with a live title, and a check of all this in an installed
-release build.
+**Tags, clips by reference, live page titles** (2026-10-06). The NOTES
+page lists its notes' tags with their counts; a tag narrows the page to
+its notes and their tasks, and its head (× #tag) brings every note back.
+`![[` offers the clips too (blocks, a page's words, a file's lines):
+`![[source:<id>]]` shows the excerpt as the note holding it has it now,
+says "edited excerpt" when it no longer matches the capture, and a click
+goes to the clip in its note. A page embed shows the page's title: live
+while a tab shows it (it says so), else as history last saw it.
+
+**A repository is its own project.** The project a folder's notes go to
+is the nearest folder above it that has notes *or* is a repository's top;
+it used to look for notes all the way up first, so a home folder with
+notes took every repository under it.
+
+Not yet: a check of all this in an installed release build.

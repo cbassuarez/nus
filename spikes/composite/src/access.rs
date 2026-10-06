@@ -168,7 +168,7 @@ impl App {
                 S::FilesUp => "up one folder".into(),
                 S::Notes => "notes: open tasks and notes".into(),
                 S::NotesNew => "new note".into(),
-                S::NotesRow(k) => match self.notes_side.rows.get(k) { Some(crate::notes_side::Row::Head(_)) => "fold this section".into(), Some(crate::notes_side::Row::Task(t)) => format!("task {}, go to it", t.words), Some(crate::notes_side::Row::Note(p)) => format!("note {}", crate::notes_index::title_of(p).unwrap_or_default()), None => String::new() },
+                S::NotesRow(k) => match self.notes_side.rows.get(k) { Some(crate::notes_side::Row::Head(_)) => "fold this section".into(), Some(crate::notes_side::Row::Task(t)) => format!("task {}, go to it", t.words), Some(crate::notes_side::Row::Note(p)) => format!("note {}", crate::notes_index::title_of(p).unwrap_or_default()), Some(crate::notes_side::Row::Tag(t, n)) => format!("tag {t}, {n} notes"), None => String::new() },
                 S::NotesTick(k) => match self.notes_side.rows.get(k) { Some(crate::notes_side::Row::Task(t)) => format!("tick task {}", t.words), _ => "tick".into() },
                 S::FileRow(k) => self.tree.rows.get(k).map(|n| if n.dir { format!("folder {}", n.name) } else { format!("file {}", n.name) }).unwrap_or_default(),
                 S::GitScm => "source control for this folder's repository".into(),

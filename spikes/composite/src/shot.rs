@@ -1396,6 +1396,19 @@ impl App {
             "compact" => self.toggle_compact(),
             "atlas" | "orrery" => self.open_orrery(false),
             "settings" => self.open_settings(),
+            // `openfolder <path>`: this window works there, a shell born in it.
+            "openfolder" => self.open_folder(rest.trim()),
+            // `noteact tags a b` sets the focused note's tags; `noteact clip`
+            // asks where this tab's last block goes (Add to Note).
+            "noteact" => {
+                use crate::notes_ui::NoteAct;
+                let (what, words) = rest.split_once(' ').unwrap_or((rest, ""));
+                match what {
+                    "tags" => self.note_act(NoteAct::SetTags(words.to_string())),
+                    "clip" => self.note_act(NoteAct::CaptureBlock(None)),
+                    other => panic!("noteact: unknown {other}"),
+                }
+            }
             // `railclick 3`: press the focused note's fourth formatting-rail
             // button, as the mouse would.
             "railclick" => {

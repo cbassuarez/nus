@@ -15,6 +15,9 @@ pub enum Target {
     /// A file and, when given, its lines (1-based, inclusive).
     File { path: String, lines: Option<(usize, usize)> },
     Page(String),
+    /// A clip (a block, a page's words, a file's lines) captured into a
+    /// note, by its source id: the excerpt as that note holds it now.
+    Source { id: String },
 }
 
 /// The target of a line that is only an embed.
@@ -29,6 +32,9 @@ pub fn parse(line: &str) -> Option<Target> {
             Some((h, n)) => Target::Note { id: n.to_string(), home: Some(h.to_string()) },
             None => Target::Note { id: id.to_string(), home: None },
         });
+    }
+    if let Some(id) = inner.strip_prefix("source:").filter(|id| id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit())) {
+        return Some(Target::Source { id: id.to_string() });
     }
     if inner.starts_with("http://") || inner.starts_with("https://") {
         return Some(Target::Page(inner.to_string()));
@@ -127,7 +133,12 @@ pub fn note(title: &str, body: Option<&str>) -> Shown {
         // The head names it already: a first heading that only says the
         // title again is left out.
         Some(b) => {
-            let mut lines: Vec<&str> = b.lines().filter(|l| !l.trim().is_empty()).collect();
+            // Its words and clips' text, not their machinery: no source
+            // markers, no fence lines.
+            let mut lines: Vec<&str> = b.lines().filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with("<!--") && !t.starts_with("```") && !t.starts_with("~~~")
+            }).collect();
             if lines.first().is_some_and(|l| l.trim_start().starts_with('#') && l.trim_start_matches('#').trim() == title.trim()) {
                 lines.remove(0);
             }
@@ -137,10 +148,31 @@ pub fn note(title: &str, body: Option<&str>) -> Shown {
     }
 }
 
-/// A page: its address, to open.
-pub fn page(url: &str) -> Shown {
-    let host = url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url);
-    Shown { head: host.to_string(), lines: vec![url.to_string()], note: None, code: false }
+/// A page: its title as last seen (live while a tab shows it), its address.
+pub fn page(url: &str, title: Option<&str>, open: bool) -> Shown {
+    let host = url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url).trim_start_matches("www.");
+    let head = match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("{t} · {host}"),
+        None => host.to_string(),
+    };
+    Shown { head, lines: vec![url.to_string()], note: open.then(|| "open in a tab".to_string()), code: false }
+}
+
+/// A clip by reference: what it was (its label), the excerpt as the note
+/// holding it has it now, and where that is. edited: the excerpt no
+/// longer matches what was captured.
+pub fn clip(label: &str, kind: &str, held_by: &str, excerpt: Option<&str>, edited: bool) -> Shown {
+    let label = if label.trim().is_empty() { "a clip" } else { label.trim() };
+    let held_by = if held_by.trim().is_empty() { "Untitled" } else { held_by.trim() };
+    match excerpt {
+        Some(text) => Shown {
+            head: format!("{label} · in {held_by}"),
+            lines: text.lines().take(MAX_LINES).map(|l| l.replace('\t', "    ")).collect(),
+            note: edited.then(|| "edited excerpt".to_string()),
+            code: matches!(kind, "terminal" | "file"),
+        },
+        None => Shown { head: label.to_string(), lines: Vec::new(), note: Some("not found here · its note may be in another project or the trash".into()), code: false },
+    }
 }
 
 /// Where a click on an embed goes, as a link would (`follow_note_link`).
@@ -151,6 +183,7 @@ pub fn link(t: &Target) -> String {
         Target::File { path, lines: Some((a, _)) } => format!("{path}:{a}"),
         Target::File { path, lines: None } => path.clone(),
         Target::Page(u) => u.clone(),
+        Target::Source { id } => format!("source:{id}"),
     }
 }
 
@@ -166,6 +199,8 @@ mod tests {
         assert_eq!(parse("![[src/a.rs#L7]]"), Some(Target::File { path: "src/a.rs".into(), lines: Some((7, 7)) }));
         assert_eq!(parse("![[README.md]]"), Some(Target::File { path: "README.md".into(), lines: None }));
         assert_eq!(parse("![[https://x.dev/a]]"), Some(Target::Page("https://x.dev/a".into())));
+        assert_eq!(parse(&format!("![[source:{}]]", "ab".repeat(16))), Some(Target::Source { id: "ab".repeat(16) }));
+        assert_eq!(parse("![[source:short]]"), Some(Target::File { path: "source:short".into(), lines: None }));
         assert_eq!(parse("see ![[note:abc]]"), None);
         assert_eq!(parse("![[]]"), None);
         assert_eq!(parse("![[src/a.rs#L9-L3]]"), Some(Target::File { path: "src/a.rs#L9-L3".into(), lines: None }));
@@ -193,6 +228,18 @@ mod tests {
         let s = note("Design doc", Some("# Design doc\n\nThe plan.\n## Why\n"));
         assert_eq!(s.lines, vec!["The plan.", "## Why"]);
         assert_eq!(note("Other", Some("# Design doc\nx")).lines, vec!["# Design doc", "x"]);
+        let clipped = note("Run", Some("<!-- nus:source abc -->\n```nus-block cmd=\"ls\"\nfile.txt\n```\n"));
+        assert_eq!(clipped.lines, vec!["file.txt"]);
+    }
+
+    #[test]
+    fn a_page_shows_its_title_and_a_clip_its_excerpt() {
+        assert_eq!(page("https://www.x.dev/a", Some("The A"), true).head, "The A · x.dev");
+        assert_eq!(page("https://x.dev/a", None, false).head, "x.dev");
+        assert_eq!(page("https://x.dev/a", None, true).note.as_deref(), Some("open in a tab"));
+        let c = clip("cargo test", "terminal", "Release", Some("ok\n2 passed"), true);
+        assert_eq!((c.head.as_str(), c.lines.len(), c.code, c.note.as_deref()), ("cargo test · in Release", 2, true, Some("edited excerpt")));
+        assert!(clip("x", "web", "N", None, false).note.is_some());
     }
 
     #[test]
