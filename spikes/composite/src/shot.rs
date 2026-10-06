@@ -1826,6 +1826,9 @@ impl App {
             "downloadhover"=>{let r=self.download_ui.anchor.expect("footer download icon");self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);}
             // The download peek (download_peek.rs). Focus is the app's own flag, never the OS's.
             "peekfocus"=>{self.window_focused=true;}
+            // A transfer told by hand, for the peek's states where the engine won't download.
+            "fakedownload"=>{let (name,total)=rest.rsplit_once(' ').expect("fakedownload NAME BYTES");let mut rows=crate::browser::DOWNLOADS.lock().unwrap();let key=rows.iter().map(|d|d.key).max().unwrap_or(0)+1;let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();rows.push(crate::downloads::Download{key,name:name.into(),original:name.into(),url:"https://nus.dev/releases".into(),source_url:"https://nus.dev/releases".into(),total:total.parse().unwrap(),speed:2_400_000,started:now,live:true,origin:Some(crate::finish_work::Origin::NusAction),..Default::default()});drop(rows);crate::downloads::changed();}
+            "fakeprogress"|"fakedone"|"fakefail"=>{let mut rows=crate::browser::DOWNLOADS.lock().unwrap();let d=rows.last_mut().expect("a download");match verb{"fakeprogress"=>d.received=d.total*rest.parse::<i64>().unwrap()/100,"fakedone"=>{d.received=d.total;d.done=true;},_=>d.interrupted=true}drop(rows);crate::downloads::changed();}
             "peekhover"=>{let r=self.download_ui.peek.rect.expect("peek out");self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);}
             "peekassert"=>{let mut w=rest.split_whitespace();match (w.next().unwrap_or(""),w.next()){
                 ("out",_)=>assert!(self.download_ui.peek.rect.is_some(),"peek should be out"),

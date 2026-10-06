@@ -268,9 +268,15 @@ impl App {
         }
     }
 
+    /// Light to spare: an HDR surface on a display that reports headroom.
+    /// An extended surface on an SDR display has none, so it gets the lift.
+    fn hdr_light(&self) -> bool {
+        self.target.hdr() && self.target.hdr_headroom() > 1.1
+    }
+
     /// A lit mark: radiance on HDR displays, the lifted signal elsewhere.
     fn lit(&self, scene: &mut Scene, r: Rect) {
-        if self.target.hdr() {
+        if self.hdr_light() {
             scene.caret(r, self.surface.signal, 0.35, LIT_GAIN);
         } else {
             scene.rect(r, self.lit_sdr());
@@ -313,7 +319,7 @@ impl App {
     /// The done dot: lit, round, beside a mark.
     fn done_dot(&self, scene: &mut Scene, x: f32, y: f32) {
         let d = self.px(5.0).round();
-        if self.target.hdr() {
+        if self.hdr_light() {
             scene.caret(Rect::new(x, y, d, d), self.surface.signal, 0.0, LIT_GAIN);
         } else {
             scene.push(nus_render::Instance::rounded(Rect::new(x, y, d, d), d * 0.5, self.lit_sdr()));
@@ -418,7 +424,10 @@ impl App {
                 if host.is_empty() { format!("done · {}", crate::downloads::bytes(d.received.max(d.total))) } else { format!("done · {} · {host}", crate::downloads::bytes(d.received.max(d.total))) }
             }
             State::Failed => "failed · ready to retry".into(),
-            _ => d.status().to_lowercase(),
+            State::Working(Some(f)) => format!("{}% · {} of {}", (f * 100.0).floor(), crate::downloads::bytes(d.received), crate::downloads::bytes(d.total)),
+            State::Paused(Some(f)) => format!("paused · {}% · {} of {}", (f * 100.0).floor(), crate::downloads::bytes(d.received), crate::downloads::bytes(d.total)),
+            State::Working(None) => format!("{} so far", crate::downloads::bytes(d.received)),
+            State::Paused(None) => format!("paused · {} so far", crate::downloads::bytes(d.received)),
         };
         let note = self.fit(note_st, note.as_str(), text_w).into_owned();
         self.fonts.draw(scene, note_st, tx, r.y + r.h * 0.5 + self.px(12.0), &note);
@@ -443,7 +452,7 @@ impl App {
         // The notch: where the foot would be, on the 4 px edge.
         if let (Some(s), true) = (State::of_all(&rows.iter().collect::<Vec<_>>()), self.sidebar_hoverable() && !self.sidebar_hover) {
             let foot = self.sidebar_foot_h();
-            let h = self.px(20.0).round();
+            let h = self.px(26.0).round();
             let x = if right { c.right() } else { c.x - self.px(4.0) };
             let r = Rect::new(x, (c.bottom() - foot * 0.5 - h * 0.5).round(), self.px(4.0), h);
             scene.layer(None);

@@ -867,6 +867,7 @@ mod tests {
         assert_eq!(back.others.len(), 1);
         assert_eq!(back.others[0].container, "WORK");
         assert_eq!(back.others[0].tabs.len(), 1);
+        assert!(back.others[0].tabs[0].anchor && !back.tabs[0].anchor, "the anchor rides along as itself");
         assert_eq!(s.summary(), "1 shell · 2 pages");
     }
 }
