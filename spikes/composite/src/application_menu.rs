@@ -48,6 +48,57 @@ pub const ITEMS: &[Item] = &[
     item!("Help","Request a Feature…",RequestFeature,None),
 ];
 
+/// The window chords: the File and Window menu's ⌘ keys and Settings.
+/// Edit's chords stay with whatever has focus (a page, DevTools).
+const WINDOW_CHORDS: &[Command] = &[Command::Settings, Command::NewTab, Command::NewWindow, Command::NewPrivateWindow, Command::CloseTab, Command::CloseWindow, Command::Reopen, Command::Minimize];
+
+/// The command a ⌘ chord names: `key` as the menu spells it
+/// ("CmdOrCtrl+Shift+KeyT"), against the character and Shift pressed.
+fn chord(key: &str, ch: &str, shift: bool) -> bool {
+    let mut parts = key.split('+');
+    let Some(last) = parts.next_back() else { return false };
+    let wants_shift = key.contains("+Shift+");
+    let named = match last { "Comma" => ",", "Equal" => "=", "Minus" => "-", _ => last.strip_prefix("Key").or_else(|| last.strip_prefix("Digit")).unwrap_or(last) };
+    wants_shift == shift && named.eq_ignore_ascii_case(ch)
+}
+
+pub fn window_chord(ch: &str, shift: bool) -> Option<Command> {
+    ITEMS.iter().filter(|i| WINDOW_CHORDS.contains(&i.command)).find(|i| i.key.is_some_and(|k| chord(k, ch, shift))).map(|i| i.command)
+}
+
+/// AppKit offers a ⌘ chord to the key window's views and the main menu
+/// before the window sees it, and on the way nus's window chords were
+/// lost: ⌘T and the rest worked from the menu bar only. A local monitor
+/// sees each key-down first. Over a nus window, a window chord runs the
+/// command its menu item runs; every other key goes on as before.
+#[cfg(target_os = "macos")]
+pub fn watch_window_chords(proxy: winit::event_loop::EventLoopProxy<crate::UserEvent>) {
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventMask, NSEventModifierFlags};
+    use std::ptr::NonNull;
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else { return };
+    let block = block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: AppKit hands the monitor a live event.
+        let ev = unsafe { event.as_ref() };
+        let flags = ev.modifierFlags();
+        let held = flags & (NSEventModifierFlags::Command | NSEventModifierFlags::Option | NSEventModifierFlags::Control);
+        if held == NSEventModifierFlags::Command && !ev.isARepeat() {
+            let ch = ev.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
+            if let Some(command) = window_chord(&ch, flags.contains(NSEventModifierFlags::Shift)) {
+                let ours = NSApplication::sharedApplication(mtm).keyWindow().is_some_and(|w| w.class().name().to_bytes().starts_with(b"Winit"));
+                if ours {
+                    let _ = proxy.send_event(crate::UserEvent::ApplicationCommand(command));
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+        event.as_ptr()
+    });
+    // SAFETY: the block returns the event it was given, or null to swallow it.
+    let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block) };
+    // The monitor lives as long as the process.
+    std::mem::forget(monitor);
+}
+
 pub fn from_id(id: &str) -> Option<Command> { id.strip_prefix("nus-app-")?.parse::<usize>().ok().and_then(|i|ITEMS.get(i)).map(|i|i.command) }
 
 #[cfg(any(windows,target_os="macos"))]
@@ -163,7 +214,7 @@ impl App {
         match command {
             Settings=>self.open_settings(), Quit=>{let _=self.proxy.send_event(crate::UserEvent::HatchQuit);},
             NewTab=>self.open_start_page(false), NewShell=>self.run(Action::NewTerminal(self.behavior.default_profile)),
-            NewWindow=>self.run(Action::NewWindow), CloseTab=>self.run(Action::CloseTab), CloseWindow=>{let _=self.proxy.send_event(crate::UserEvent::WindowControl(self.window.id(),0));}, Reopen=>self.run(Action::Reopen),
+            NewWindow=>self.run(Action::NewWindow), CloseTab=>if self.settings_view.is_some() {self.close_settings()} else {self.run(Action::CloseTab)}, CloseWindow=>{let _=self.proxy.send_event(crate::UserEvent::WindowControl(self.window.id(),0));}, Reopen=>self.run(Action::Reopen),
             NewPrivateWindow=>self.run(Action::NewPrivateWindow),
             ReportBug=>self.run(Action::Report(crate::support::Kind::Bug)),
             RequestFeature=>self.run(Action::Report(crate::support::Kind::Feature)),
@@ -212,6 +263,18 @@ impl App {
     #[test] fn every_menu_item_has_a_unique_round_tripping_command() {
         for (i,item) in ITEMS.iter().enumerate(){assert_eq!(from_id(&format!("nus-app-{i}")),Some(item.command));assert_eq!(ITEMS.iter().filter(|v|v.command==item.command).count(),1);}
         assert_eq!(from_id("hatch-show"),None);assert_eq!(from_id("nus-app-999999"),None);
+    }
+    #[test] fn window_chords_name_their_commands() {
+        assert_eq!(window_chord("t",false),Some(Command::NewTab));
+        assert_eq!(window_chord("T",true),Some(Command::Reopen));
+        assert_eq!(window_chord("n",false),Some(Command::NewWindow));
+        assert_eq!(window_chord("N",true),Some(Command::NewPrivateWindow));
+        assert_eq!(window_chord("w",false),Some(Command::CloseTab));
+        assert_eq!(window_chord("W",true),Some(Command::CloseWindow));
+        assert_eq!(window_chord(",",false),Some(Command::Settings));
+        assert_eq!(window_chord("m",false),Some(Command::Minimize));
+        // Edit's chords and the rest stay with whatever has focus.
+        for ch in ["c","v","a","z","f","r","k"] { assert_eq!(window_chord(ch,false),None,"{ch}"); }
         #[cfg(any(windows,target_os="macos"))]
         for item in ITEMS {if let Some(key)=item.key{assert!(key.parse::<tray_icon::menu::accelerator::Accelerator>().is_ok(),"{key}");}}
     }

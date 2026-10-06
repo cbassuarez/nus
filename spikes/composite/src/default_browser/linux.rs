@@ -1,7 +1,7 @@
 use super::{Identity,Observation,process};
 use std::{path::{Path,PathBuf},time::Duration,io::Write};
 
-fn applications()->Result<PathBuf,String> {
+pub(super) fn applications()->Result<PathBuf,String> {
     let data=std::env::var_os("XDG_DATA_HOME").filter(|s|!s.is_empty()).map(PathBuf::from)
         .or_else(||std::env::var_os("HOME").map(|p|PathBuf::from(p).join(".local/share")))
         .ok_or("Could not locate the user applications directory.")?;
@@ -28,7 +28,7 @@ fn value(text:&str)->Result<String,String> {
     if text.chars().any(|c|c.is_control()) {return Err("The installation path contains a control character.".into());}
     Ok(text.replace('\\',"\\\\"))
 }
-fn executable(path:&Path)->Result<String,String> {
+pub(super) fn executable(path:&Path)->Result<String,String> {
     let s=path.to_str().ok_or("The launcher path is not valid Unicode.")?;
     if !path.is_absolute() || s.contains('=') {return Err("Install nus at an absolute path without '=' before creating its desktop entry.".into());}
     let mut out=String::from("\"");

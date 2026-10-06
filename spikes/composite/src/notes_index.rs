@@ -40,6 +40,16 @@ pub struct Hit {
     pub content_sha256: String,
 }
 
+/// An open checklist item: its note, its line, the line as written (to
+/// tick it only while it still says that) and its words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Task {
+    pub note: Hit,
+    pub line: usize,
+    pub text: String,
+    pub words: String,
+}
+
 pub struct Index {
     conn: Connection,
     pub generation: u64,
@@ -222,6 +232,23 @@ impl Index {
     pub fn recent(&self, homes: Option<&[String]>, limit: usize) -> Vec<Hit> {
         let sql = format!("SELECT d.* FROM note_document d WHERE d.deleted = 0{} ORDER BY d.modified_ms DESC, d.home_id, d.note_id LIMIT {limit}", Self::home_clause(homes));
         self.rows(&sql, &[])
+    }
+
+    /// Open checklist items in these homes' notes, newest note first.
+    pub fn tasks(&self, homes: &[String], limit: usize) -> Vec<Task> {
+        let sql = format!("SELECT d.* FROM note_document d WHERE d.deleted = 0{} ORDER BY d.modified_ms DESC, d.home_id, d.note_id", Self::home_clause(Some(homes)));
+        let Ok(mut st) = self.conn.prepare(&sql) else { return Vec::new() };
+        let notes: Vec<(Hit, String)> = st.query_map([], |r| Ok((self.hit(r)?, r.get::<_, String>("body")?))).map(|it| it.flatten().collect()).unwrap_or_default();
+        let mut out = Vec::new();
+        for (hit, body) in notes {
+            for (line, text, words) in crate::notes_format::open_tasks(&body) {
+                if out.len() >= limit {
+                    return out;
+                }
+                out.push(Task { note: hit.clone(), line, text, words });
+            }
+        }
+        out
     }
 
     pub fn trashed(&self, limit: usize) -> Vec<Hit> {
@@ -569,6 +596,16 @@ pub fn trashed(limit: usize) -> Vec<Hit> {
     read(|i| i.trashed(limit)).unwrap_or_default()
 }
 
+/// Open tasks in this project's notes (when there is one) and the
+/// personal ones.
+pub fn tasks(here: Option<&str>, limit: usize) -> Vec<Task> {
+    read(|i| {
+        let mut ids: Vec<String> = i.homes.iter().filter(|(_, (_, s))| *s == Scope::Personal).map(|(id, _)| id.clone()).collect();
+        ids.extend(here.map(str::to_string));
+        if ids.is_empty() { Vec::new() } else { i.tasks(&ids, limit) }
+    }).unwrap_or_default()
+}
+
 pub fn backlinks(key: &NoteKey) -> Vec<Hit> {
     read(|i| i.backlinks(key)).unwrap_or_default()
 }
@@ -580,6 +617,11 @@ pub fn about(lookups: &[String]) -> Vec<Hit> {
 /// Where a note is, by its identity (its file may have been renamed).
 pub fn path_of(key: &NoteKey) -> Option<PathBuf> {
     read(|i| i.conn.query_row("SELECT locator FROM note_document WHERE home_id = ?1 AND note_id = ?2", params![key.home_id, key.note_id], |r| r.get::<_, String>(0)).optional().ok().flatten()).flatten().map(PathBuf::from)
+}
+
+/// A note's title and body as last indexed, by its identity.
+pub fn body_of(key: &NoteKey) -> Option<(String, String)> {
+    read(|i| i.conn.query_row("SELECT title, body FROM note_document WHERE home_id = ?1 AND note_id = ?2 AND deleted = 0", params![key.home_id, key.note_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).optional().ok().flatten()).flatten()
 }
 
 pub fn title_of(path: &Path) -> Option<String> {

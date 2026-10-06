@@ -485,6 +485,8 @@ pub struct Layer {
     pub range: Range<usize>,
     pub clip: Option<Rect>,
     pub bind: Bind,
+    /// Replaces what is beneath instead of blending over it (`Scene::ground`).
+    pub ground: bool,
 }
 
 /// Build with `push`/`text` inside `layer(...)` groups; instances within a
@@ -493,6 +495,12 @@ pub struct Layer {
 pub struct Scene {
     /// Round the complete window, including child surfaces and chrome.
     pub corner_radius: f32,
+    /// The finished frame's opacity, when below 1: every pixel, words and
+    /// grounds alike, scaled once after everything is drawn, so overlaps
+    /// do not thicken as translucent layers would.
+    pub fade: Option<f32>,
+    /// The instance the fade draws with (set by `finish`).
+    fade_at: Option<usize>,
     instances: Vec<Instance>,
     layers: Vec<Layer>,
     open: Option<(usize, Option<Rect>)>,
@@ -510,6 +518,8 @@ impl Scene {
 
     pub fn clear(&mut self) {
         self.corner_radius = 0.0;
+        self.fade = None;
+        self.fade_at = None;
         self.instances.clear();
         self.layers.clear();
         self.open = None;
@@ -618,6 +628,7 @@ impl Scene {
                     range: start..end,
                     clip,
                     bind: Bind::Atlas,
+                    ground: false,
                 });
             }
         }
@@ -637,6 +648,7 @@ impl Scene {
             range: start..start + 1,
             clip: None,
             bind: Bind::External(bind),
+            ground: false,
         });
     }
 
@@ -662,6 +674,7 @@ impl Scene {
             range: start..start + 1,
             clip,
             bind: Bind::External(bind),
+            ground: false,
         });
     }
 
@@ -823,6 +836,7 @@ impl Scene {
             range: start..start + 1,
             clip,
             bind: Bind::External(bind),
+            ground: false,
         });
     }
 
@@ -835,6 +849,28 @@ impl Scene {
 
     pub fn rect(&mut self, r: Rect, color: Color) {
         self.push(Instance::rect(r, color));
+    }
+
+    /// A region's own background. It replaces what is beneath rather than
+    /// blending over it, so a see-through pane is exactly as see-through as
+    /// its colour says, whatever was drawn under it first; a translucent
+    /// `rect` there would add its alpha to the window's. Opaque, the two
+    /// are the same.
+    pub fn ground(&mut self, r: Rect, color: Color) {
+        if color[3] >= 1.0 {
+            return self.rect(r, color);
+        }
+        let clip = self.clip();
+        self.close();
+        let start = self.instances.len();
+        self.instances.push(Instance::rect(r, color));
+        self.layers.push(Layer {
+            range: start..start + 1,
+            clip,
+            bind: Bind::Atlas,
+            ground: true,
+        });
+        self.open = Some((self.instances.len(), clip));
     }
 
     /// Shared pipe/cell material. Selection fills and replacement indicators
@@ -911,6 +947,17 @@ impl Scene {
     /// Finish the frame (closes the open layer). Call before rendering.
     pub fn finish(&mut self) {
         self.close();
+        // Outside every layer: only the fade draws it, over all the screen.
+        self.fade_at = None;
+        if self.fade.is_some_and(|f| f < 1.0) {
+            self.fade_at = Some(self.instances.len());
+            self.instances.push(Instance::rect(Rect::new(0.0, 0.0, 1.0e6, 1.0e6), [0.0; 4]));
+        }
+    }
+
+    /// The fade and the instance it draws with, once `finish` has run.
+    pub fn fade_pass(&self) -> Option<(f32, usize)> {
+        Some((self.fade?, self.fade_at?))
     }
 }
 
@@ -1108,5 +1155,49 @@ mod tests {
                         && c.right() <= b.right())
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ground_tests {
+    use super::*;
+
+    #[test]
+    fn a_translucent_ground_is_its_own_layer_in_the_open_clip() {
+        let clip = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut scene = Scene::new();
+        scene.layer(Some(clip));
+        scene.rect(Rect::new(0.0, 0.0, 10.0, 10.0), [1.0; 4]);
+        scene.ground(Rect::new(0.0, 0.0, 400.0, 300.0), [1.0, 1.0, 1.0, 0.6]);
+        scene.rect(Rect::new(5.0, 5.0, 10.0, 10.0), [0.0, 0.0, 0.0, 1.0]);
+        scene.finish();
+        let grounds: Vec<bool> = scene.layers().iter().map(|l| l.ground).collect();
+        assert_eq!(grounds, [false, true, false]);
+        assert!(scene.layers().iter().all(|l| l.clip == Some(clip)));
+        assert_eq!(scene.layers()[1].range.len(), 1);
+    }
+
+    #[test]
+    fn an_opaque_ground_is_an_ordinary_rect() {
+        let mut scene = Scene::new();
+        scene.ground(Rect::new(0.0, 0.0, 40.0, 30.0), [1.0; 4]);
+        scene.finish();
+        assert_eq!(scene.layers().len(), 1);
+        assert!(!scene.layers()[0].ground);
+    }
+
+    #[test]
+    fn the_fade_draws_one_instance_outside_every_layer() {
+        let mut scene = Scene::new();
+        scene.rect(Rect::new(0.0, 0.0, 40.0, 30.0), [1.0; 4]);
+        scene.fade = Some(0.7);
+        scene.finish();
+        let (fade, at) = scene.fade_pass().unwrap();
+        assert_eq!(fade, 0.7);
+        assert!(scene.layers().iter().all(|l| !l.range.contains(&at)));
+        scene.clear();
+        scene.fade = Some(1.0);
+        scene.finish();
+        assert!(scene.fade_pass().is_none());
     }
 }

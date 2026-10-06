@@ -24,6 +24,8 @@ pub enum SidePage {
     #[default]
     Tabs,
     Files,
+    /// Notes: their open tasks, and the notes (notes_side.rs).
+    Notes,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

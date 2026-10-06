@@ -20,6 +20,10 @@ pub struct SharedGpu {
     format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     hdr_pipeline: wgpu::RenderPipeline,
+    ground_pipeline: wgpu::RenderPipeline,
+    hdr_ground_pipeline: wgpu::RenderPipeline,
+    fade_pipeline: wgpu::RenderPipeline,
+    hdr_fade_pipeline: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     points_bgl: wgpu::BindGroupLayout,
@@ -102,12 +106,18 @@ impl Gpu {
         // can find, and the package ships CEF's beside nus.exe. That build
         // rejects our shaders on Intel iGPUs ("The parameter is incorrect"),
         // so nus would crash at launch there. FXC ships with Windows.
+        // Swapchains through DirectComposition: one made for the HWND
+        // itself can only be opaque, so the window could never be
+        // see-through. The windows that are see-through skip their
+        // redirection bitmap (main.rs), leaving the visual as their only
+        // content.
         let defaults = wgpu::InstanceDescriptor::new_without_display_handle();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
             backend_options: wgpu::BackendOptions {
                 dx12: wgpu::Dx12BackendOptions {
                     shader_compiler: wgpu::Dx12Compiler::Fxc,
+                    presentation_system: wgpu::Dx12SwapchainKind::DxgiFromVisual,
                     ..defaults.backend_options.dx12.clone()
                 },
                 ..defaults.backend_options.clone()
@@ -184,7 +194,7 @@ impl Gpu {
             bind_group_layouts: &[Some(&bgl), Some(&points_bgl)],
             immediate_size: 32,
         });
-        let make_pipeline = |format| {
+        let make_pipeline = |format, blend| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("quad"),
             layout: Some(&layout),
@@ -205,7 +215,7 @@ impl Gpu {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(blend),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -217,8 +227,32 @@ impl Gpu {
             cache: None,
         })
         };
-        let pipeline = make_pipeline(format);
-        let hdr_pipeline = make_pipeline(wgpu::TextureFormat::Rgba16Float);
+        // Grounds (Scene::ground) replace the pixel: the colour written
+        // premultiplied, as the surface holds it, and nothing of what was
+        // beneath kept.
+        let replace = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::Zero,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::REPLACE,
+        };
+        let pipeline = make_pipeline(format, wgpu::BlendState::ALPHA_BLENDING);
+        let hdr_pipeline = make_pipeline(wgpu::TextureFormat::Rgba16Float, wgpu::BlendState::ALPHA_BLENDING);
+        let ground_pipeline = make_pipeline(format, replace);
+        let hdr_ground_pipeline = make_pipeline(wgpu::TextureFormat::Rgba16Float, replace);
+        // The fade (Scene::fade) scales what is there by the blend constant
+        // and adds nothing: on a premultiplied surface, the whole frame's
+        // opacity.
+        let scale = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::Constant,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let fade = wgpu::BlendState { color: scale, alpha: scale };
+        let fade_pipeline = make_pipeline(format, fade);
+        let hdr_fade_pipeline = make_pipeline(wgpu::TextureFormat::Rgba16Float, fade);
         let shared = Arc::new(SharedGpu {
             device,
             queue,
@@ -226,6 +260,10 @@ impl Gpu {
             format,
             pipeline,
             hdr_pipeline,
+            ground_pipeline,
+            hdr_ground_pipeline,
+            fade_pipeline,
+            hdr_fade_pipeline,
             bgl,
             sampler,
             points_bgl,
@@ -896,27 +934,33 @@ impl Gpu {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(if hdr {
-                &self.hdr_pipeline
-            } else {
-                &self.pipeline
-            });
+            let pipeline = |ground: bool| match (hdr, ground) {
+                (false, false) => &self.pipeline,
+                (true, false) => &self.hdr_pipeline,
+                (false, true) => &self.ground_pipeline,
+                (true, true) => &self.hdr_ground_pipeline,
+            };
             let (sw, sh) = size;
-            pass.set_immediates(
-                0,
-                bytemuck::cast_slice(&[
-                    sw as f32,
-                    sh as f32,
-                    scene.corner_radius,
-                    hdr_scale,
-                    hdr_headroom,
-                    0.0,
-                    0.0,
-                    0.0,
-                ]),
-            );
+            let immediates = [
+                sw as f32,
+                sh as f32,
+                scene.corner_radius,
+                hdr_scale,
+                hdr_headroom,
+                0.0,
+                0.0,
+                0.0,
+            ];
+            // Everything but the pipeline's blend is shared, and set again
+            // with it.
+            let start = |pass: &mut wgpu::RenderPass<'_>, ground: bool| {
+                pass.set_pipeline(pipeline(ground));
+                pass.set_immediates(0, bytemuck::cast_slice(&immediates));
+                pass.set_bind_group(1, &self.points_bind, &[]);
+            };
+            start(&mut pass, false);
+            let mut grounding = false;
             pass.set_vertex_buffer(0, self.instances.slice(..));
-            pass.set_bind_group(1, &self.points_bind, &[]);
             for layer in scene.layers() {
                 if layer.range.is_empty() {
                     continue;
@@ -935,11 +979,25 @@ impl Gpu {
                     continue;
                 }
                 pass.set_scissor_rect(x, y, w, h);
+                if layer.ground != grounding {
+                    grounding = layer.ground;
+                    start(&mut pass, grounding);
+                }
                 match &layer.bind {
                     Bind::Atlas => pass.set_bind_group(0, &self.atlas_bind, &[]),
                     Bind::External(bg) => pass.set_bind_group(0, bg.as_ref(), &[]),
                 }
                 pass.draw(0..6, layer.range.start as u32..layer.range.end as u32);
+            }
+            if let Some((fade, at)) = scene.fade_pass() {
+                pass.set_pipeline(if hdr { &self.hdr_fade_pipeline } else { &self.fade_pipeline });
+                pass.set_immediates(0, bytemuck::cast_slice(&immediates));
+                pass.set_bind_group(0, &self.atlas_bind, &[]);
+                pass.set_bind_group(1, &self.points_bind, &[]);
+                pass.set_scissor_rect(0, 0, sw, sh);
+                let k = fade.clamp(0.0, 1.0) as f64;
+                pass.set_blend_constant(wgpu::Color { r: k, g: k, b: k, a: k });
+                pass.draw(0..6, at as u32..at as u32 + 1);
             }
         }
     }

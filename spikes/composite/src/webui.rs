@@ -141,7 +141,9 @@ impl App {
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
             let Pane::Web(w) = p else { continue };
             if let Some(&(_, allow)) = w.perm_hits.iter().find(|(r, _)| r.contains(x, y)) {
-                if let Some(ask) = w.tab.shared.borrow().permission.as_ref() {
+                // Notifications are nus's own, kept as the site's mode
+                // (answer_permission), not as a Chromium grant.
+                if let Some(ask) = w.tab.shared.borrow().permission.as_ref().filter(|a| !matches!(a.kind, crate::browser::AskKind::Notices)) {
                     for word in ask.what.split(" and ") {
                         crate::sites::remember(&ask.origin, word.trim(), allow);
                     }
@@ -164,7 +166,8 @@ impl App {
         if self.pip.as_ref().is_some_and(|p| p.tab_id == tab.id) || self.docked.as_ref().is_some_and(|d| d.src_tab == tab.id) {
             return true;
         }
-        std::iter::once(&tab.left).chain(tab.right.as_ref()).any(|p| matches!(p, Pane::Web(w) if w.asleep.is_none() && w.tab.playing()))
+        // A site you listen to (notices.rs) keeps its page, so it can tell you.
+        std::iter::once(&tab.left).chain(tab.right.as_ref()).any(|p| matches!(p, Pane::Web(w) if w.asleep.is_none() && (w.tab.playing() || crate::notices::listening(&w.tab.shared.borrow().url))))
     }
 
     /// Idle tabs: sleep pages after a while (blank them, keep the URL),

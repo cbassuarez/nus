@@ -27,6 +27,12 @@ pub struct SitePrefs {
     pub boosts: bool,
     #[serde(default = "yes")]
     pub blocking: bool,
+    /// What the site may tell you (notices.rs): ask, counts, notifications, nothing.
+    #[serde(default)]
+    pub notices: crate::notices::Mode,
+    /// Listened to: its page never sleeps, so it can keep telling you.
+    #[serde(default)]
+    pub listen: bool,
 }
 
 fn yes() -> bool {
@@ -42,7 +48,7 @@ pub fn default_zoom() -> u32 {
 
 impl Default for SitePrefs {
     fn default() -> Self {
-        SitePrefs { zoom: default_zoom(), autoplay: true, js: true, cookies: true, boosts: true, blocking: true }
+        SitePrefs { zoom: default_zoom(), autoplay: true, js: true, cookies: true, boosts: true, blocking: true, notices: crate::notices::Mode::Ask, listen: false }
     }
 }
 
@@ -89,6 +95,11 @@ pub fn host_of(url: &str) -> String {
 
 pub fn prefs(host: &str) -> SitePrefs {
     SITES.read().unwrap().get(host).cloned().unwrap_or_default()
+}
+
+/// Sites listened to, by host.
+pub fn listening_hosts() -> Vec<String> {
+    SITES.read().unwrap().iter().filter(|(_, p)| p.listen).map(|(h, _)| h.clone()).collect()
 }
 
 pub fn set(host: &str, p: SitePrefs) {
@@ -230,6 +241,8 @@ pub enum SiteHit {
     Blocking,
     Forget(usize),
     Reset,
+    Notices(crate::notices::Mode),
+    Listen,
 }
 
 /// JS that keeps media from starting on its own, and re-checks as the
@@ -298,12 +311,17 @@ impl App {
         if !p.autoplay {
             w.tab.eval(NO_AUTOPLAY);
         }
+        // The page's Notification learns the site's answer (notices.rs),
+        // in case its own "hi" came before nus knew the new address.
+        if !loading {
+            w.tab.eval(&crate::notices::perm_js(p.notices));
+        }
     }
 
     /// The panel's rect: under the URL row's right end.
     pub(crate) fn site_panel_rect(&self, w: &WebPane) -> Rect {
         let width = self.px(300.0).min(w.rect.w - self.px(16.0));
-        let rows = 6.0;
+        let rows = 8.0;
         let perms = permissions_for(&w.tab.shared.borrow().url).len().max(1) as f32;
         let h = self.px(42.0) + rows * self.px(32.0) + self.px(26.0) + self.px(44.0) + perms * self.px(26.0) + self.px(40.0);
         Rect::new(w.rect.right() - width - self.px(8.0), w.page.y + self.px(4.0), width, h.min(w.page.h - self.px(8.0)))
@@ -406,6 +424,35 @@ impl App {
         let c = toggle(self, scene, y, "BLOCKING", p.blocking, &note);
         w.site_hits.push((c, SiteHit::Blocking));
         y += row_h;
+        // Notifications: what the site may tell you (notices.rs).
+        {
+            let base = y + (row_h + self.px(m::LABEL_PX)) / 2.0 - self.px(2.0);
+            self.fonts.draw(scene, Style { color: ink, ..label }, r.x + pad, base, "NOTICES");
+            let small = Style { px: self.px(9.5), ..strong };
+            let mut x = r.right() - pad;
+            for mode in crate::notices::Mode::ALL.iter().rev() {
+                let word = mode.word();
+                let ww = self.fonts.measure(small, word) + self.px(10.0);
+                x -= ww;
+                let chip = Rect::new(x, y + (row_h - self.px(18.0)) / 2.0, ww, self.px(18.0));
+                let on = p.notices == *mode;
+                let hot = chip.contains(mx, my);
+                if on {
+                    scene.rect(chip, ink);
+                } else {
+                    scene.outline(chip, self.px(1.0), if hot { ink } else { t.dim });
+                }
+                self.fonts.draw(scene, Style { color: if on { paper } else { ink }, ..small }, chip.x + self.px(5.0), base, word);
+                w.site_hits.push((chip, SiteHit::Notices(*mode)));
+                x -= self.px(4.0);
+            }
+            y += row_h;
+        }
+        let listening = listening_hosts().len();
+        let note = if p.listen { format!("never sleeps · {listening} of {}", crate::notices::MAX_LISTENING) } else { String::new() };
+        let c = toggle(self, scene, y, "KEEP LISTENING", p.listen, &note);
+        w.site_hits.push((c, SiteHit::Listen));
+        y += row_h;
         // Cookies: clear.
         {
             let cell = Rect::new(r.x, y, r.w, self.px(22.0));
@@ -490,6 +537,7 @@ impl App {
         let host = host_of(&url);
         let mut p = prefs(&host);
         let mut reload = false;
+        let mut refused = false;
         match h {
             SiteHit::ZoomOut => p.zoom = crate::zoom::next(w.tab.zoom_percent(), -1, default_zoom(), 25, 500),
             SiteHit::ZoomIn => p.zoom = crate::zoom::next(w.tab.zoom_percent(), 1, default_zoom(), 25, 500),
@@ -528,6 +576,26 @@ impl App {
                 p = SitePrefs::default();
                 reload = true;
             }
+            SiteHit::Notices(mode) => {
+                p.notices = mode;
+                w.tab.eval(&crate::notices::perm_js(mode));
+                if !mode.counts() {
+                    w.tab.shared.borrow_mut().notices = Default::default();
+                }
+            }
+            SiteHit::Listen => {
+                if !p.listen && listening_hosts().len() >= crate::notices::MAX_LISTENING {
+                    refused = true;
+                } else {
+                    p.listen = !p.listen;
+                }
+            }
+        }
+        if refused {
+            let words = format!("{} sites already listen · each keeps a page awake", crate::notices::MAX_LISTENING);
+            self.toast(nus_render::text::icons::BROADCAST, "Too Many Listening", words, None);
+            self.dirty = true;
+            return true;
         }
         set(&host, p.clone());
         w.tab.zoom_to(p.zoom, self.motion.dur(160.0));

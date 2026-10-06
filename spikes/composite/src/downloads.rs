@@ -260,11 +260,14 @@ impl App {
                 }
             }
         }
+        self.tend_download_peek();
         // WHEN A DOWNLOAD FINISHES.
         let just_done: Vec<(u64, String)> = list().into_iter().filter(|d| d.live && d.done && !self.download_ui.finished.contains(&d.key)).map(|d| (d.key, d.name.clone())).collect();
         for (key, name) in just_done {
             self.download_ui.finished.insert(key);
             match self.behavior.download_done {
+                // The shelf already says so, in place.
+                crate::settings::DownloadDone::Notice if crate::download_peek::on_shelf(key) => {}
                 crate::settings::DownloadDone::Notice => self.toast(nus_render::text::icons::DOWNLOAD, "Downloaded", name, Some(crate::toast::Act::RevealDownload(key))),
                 crate::settings::DownloadDone::Reveal => self.download_action(Hit::Reveal(key)),
                 crate::settings::DownloadDone::Open => self.download_action(Hit::Open(key)),
@@ -431,6 +434,8 @@ pub enum Hit {
     Cancel(u64),
     Reveal(u64),
     Source(u64),
+    /// Off the shelf, without opening anything (download_peek.rs).
+    Dismiss(u64),
 }
 impl Hit {
     pub fn label(self) -> &'static str {
@@ -448,6 +453,7 @@ impl Hit {
             Self::Cancel(_) => "Cancel download",
             Self::Reveal(_) => "Show downloaded file in folder",
             Self::Source(_) => "Open download source",
+            Self::Dismiss(_) => "Dismiss from the sidebar",
         }
     }
     fn key(self) -> Option<u64> {
@@ -458,7 +464,8 @@ impl Hit {
             | Self::Resume(k)
             | Self::Cancel(k)
             | Self::Reveal(k)
-            | Self::Source(k) => Some(k),
+            | Self::Source(k)
+            | Self::Dismiss(k) => Some(k),
             _ => None,
         }
     }
@@ -494,6 +501,8 @@ pub struct Ui {
     pub save_ask: Option<(crate::browser::SaveAsk, crate::pick::Picker)>,
     /// Finished downloads already acted on (WHEN A DOWNLOAD FINISHES).
     pub finished: std::collections::HashSet<u64>,
+    /// The shelf and the peek (download_peek.rs).
+    pub peek: crate::download_peek::Peek,
 }
 pub(crate) fn matches(d: &Download, query: &str) -> bool {
     let text = format!(
@@ -592,7 +601,12 @@ impl App {
         self.dirty = true;
     }
     pub(crate) fn download_action(&mut self, hit: Hit) {
+        // Acting on a download is looking at it: off the shelf.
+        if let Hit::Open(k) | Hit::Reveal(k) | Hit::Retry(k) | Hit::Cancel(k) | Hit::Dismiss(k) = hit {
+            crate::download_peek::seen(k);
+        }
         match hit {
+            Hit::Dismiss(_) => {}
             Hit::Close => self.close_menus(),
             Hit::Page => self.open_downloads(),
             Hit::Search => {
@@ -871,7 +885,7 @@ impl App {
         if label.is_empty() {
             use nus_render::text::icons;
             let icon = match hit {
-                Hit::Close | Hit::Cancel(_) | Hit::ClearSearch => icons::CLOSE,
+                Hit::Close | Hit::Cancel(_) | Hit::ClearSearch | Hit::Dismiss(_) => icons::CLOSE,
                 Hit::Pause(_) => icons::PAUSE,
                 Hit::Resume(_) => icons::PLAY,
                 Hit::Open(_) => icons::OPEN_EXTERNAL,
@@ -933,7 +947,8 @@ impl App {
         };
         let rule = self.theme.tint;
         scene.layer(Some(r));
-        scene.rect(r, self.paper());
+        // A pane is as thin as the panes; the pop-up over them stays solid.
+        if modal { scene.rect(r, self.paper()); } else { self.pane_ground(scene, r, self.paper()); }
         let top = r.y + px(if modal { 26.0 } else { 36.0 });
         let title = Style {
             px: px(if width < px(280.0) {

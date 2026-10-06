@@ -1,5 +1,7 @@
 //! Strict HTTP(S) activation. Native URLs never become CLI switches or shell
 //! input. The early macOS queue is memory-only and bounded until Host exists.
+//! Documents come the same way (`--open-file`, an open-documents event), as
+//! file URLs to existing files of the kinds nus reads (default_browser/files.rs).
 use std::{collections::VecDeque,sync::{Mutex,atomic::{AtomicU64,Ordering}}};
 const MAX_COUNT:usize=128;
 const MAX_URL:usize=64*1024;
@@ -22,6 +24,14 @@ pub(crate) fn validate(value:&str)->Result<(),String> {
 /// A desktop launcher's `%U` expands to nothing when its icon is clicked: an
 /// empty batch opens nus with no links.
 pub fn arguments(args:&[String])->Result<Option<Vec<String>>,String> {
+    if args.first().map(String::as_str)==Some("--open-file") {
+        if args.get(1).map(String::as_str)!=Some("--") {return Err("Opening files requires '--open-file -- <path>'.".into());}
+        let files=&args[2..];
+        if files.len()>MAX_COUNT || files.iter().map(String::len).sum::<usize>()>MAX_BYTES {
+            return Err("Too many files at once.".into());
+        }
+        return files.iter().map(|f|crate::default_browser::files::accept(f)).collect::<Result<Vec<_>,_>>().map(Some);
+    }
     if args.first().map(String::as_str)!=Some("--open-external") {return Ok(None);}
     if args.get(1).map(String::as_str)!=Some("--") {return Err("External activation requires '--open-external -- <URL>'.".into());}
     let urls=&args[2..];
@@ -35,10 +45,20 @@ pub fn arguments(args:&[String])->Result<Option<Vec<String>>,String> {
 #[cfg(target_os="macos")]
 pub fn enqueue(url:String)->Result<u64,String> {
     validate(&url)?;
+    queue(url,"--open-external")
+}
+/// A document from an open-documents event: its file URL, once accepted.
+#[cfg(target_os="macos")]
+pub fn enqueue_file(url:String)->Result<u64,String> {
+    let url=crate::default_browser::files::accept(&url)?;
+    queue(url,"--open-file")
+}
+#[cfg(target_os="macos")]
+fn queue(url:String,mode:&str)->Result<u64,String> {
     if crate::private::enabled() {
         let exe=std::env::current_exe().map_err(|_|"Could not locate the regular nus application.")?;
         let mut command=nus_compat::command(exe);
-        command.args(["--open-external","--",&url]).stdin(std::process::Stdio::null())
+        command.args([mode,"--",&url]).stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         for key in ["NUS_PRIVATE_LOOK","NUS_SHOT","NUS_SHOT2","NUS_SHOT_DIR","NUS_SHOT_OUT"] {command.env_remove(key);}
         if let Some(home)=std::env::var_os("HOME") {command.current_dir(home);}
@@ -78,6 +98,16 @@ mod tests {
     #[test]fn ordinary_child_dispatch_untouched(){assert_eq!(arguments(&args(&["--type=renderer"])).unwrap(),None);}
     #[test]fn launcher_without_links_is_an_ordinary_launch(){
         assert_eq!(arguments(&args(&["--open-external","--"])).unwrap(),Some(Vec::new()));
+    }
+    #[test]fn file_tail_is_only_existing_documents(){
+        let dir=tempfile::tempdir().unwrap();
+        let md=dir.path().join("notes.md");std::fs::write(&md,"# n").unwrap();
+        let got=arguments(&args(&["--open-file","--",md.to_str().unwrap()])).unwrap().unwrap();
+        assert!(got[0].starts_with("file://")&&got[0].ends_with("notes.md"));
+        for f in ["--type=renderer","notes.md","https://x/a.md","nus://crash"] {
+            assert!(arguments(&args(&["--open-file","--",f])).is_err(),"{f}");
+        }
+        assert!(arguments(&args(&["--open-file",md.to_str().unwrap()])).is_err());
     }
     #[test]fn malformed_and_large_batches_fail(){
         assert!(arguments(&args(&["--open-external","https://x/"])).is_err());

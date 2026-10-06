@@ -326,7 +326,8 @@ impl Reader {
         self.layout(fonts, f, col_w, scale, ink);
         let max_scroll = (self.height - r.h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
-        scene.rect(r, paper);
+        // A ground: the caller's paper is as thin as the pane it reads in.
+        scene.ground(r, paper);
         scene.layer(Some(r));
         self.saved.viewport=Some(r); self.saved.scale=scale;
         self.saved.hits.clear(); self.saved.drawn.clear();

@@ -39,6 +39,9 @@ pub struct Buffer {
     pub anchor: Option<usize>,
     /// Column the caret wants when moving vertically through short lines.
     pub want_col: Option<usize>,
+    /// In a note, the x it wants instead (its face may be proportional);
+    /// good while `want_col` is set.
+    pub want_x: f32,
     /// The protocol's language id (`rust`), and the grammar's name for
     /// tree-sitter (`rust` too, mostly).
     pub language: &'static str,
@@ -329,6 +332,7 @@ impl Buffer {
             cursor: 0,
             anchor: None,
             want_col: None,
+            want_x: 0.0,
             language: "plaintext",
             dirty: false,
             scroll: 0,
@@ -512,7 +516,7 @@ impl Buffer {
     /// The next complete grapheme, only when the caret is on a boundary
     /// and there is text before the line ending. This also drives the
     /// replacement underline, so the mark agrees with the edit.
-    fn replacement_len(&self) -> Option<usize> {
+    pub(crate) fn replacement_len(&self) -> Option<usize> {
         if self.selection().is_some() { return None; }
         let line = self.line_text(self.line_of(self.cursor));
         let col = self.col_of(self.cursor);
@@ -826,6 +830,18 @@ pub struct EditorPane {
     pub notes: Option<crate::notes_ui::Rails>,
     /// The formatting rail's buttons, from the last draw.
     pub format_hits: Vec<(Rect, crate::notes_ui::RailHit2)>,
+    /// A note's rows as last drawn (wrapped, proportional): what a click,
+    /// a drag and Up/Down read instead of the cell grid.
+    pub note_layout: Option<crate::note_layout::Layout>,
+    /// The caret moved or the text changed: the next draw of a note
+    /// scrolls until the caret's row is on screen (rows wrap, so `reveal`
+    /// alone cannot know).
+    pub reveal_note: bool,
+    /// A note read, not written: every line formatted, no caret; typing
+    /// goes back to writing. Per view, like the caret.
+    pub read_view: bool,
+    /// Everything but the caret's paragraph dimmed.
+    pub focus: bool,
 }
 
 impl EditorPane {
@@ -854,6 +870,10 @@ impl EditorPane {
             search_needed: false,
             notes: None,
             format_hits: Vec::new(),
+            note_layout: None,
+            reveal_note: false,
+            read_view: false,
+            focus: false,
         }
     }
 
@@ -900,6 +920,13 @@ impl EditorPane {
     /// The (line, col) under a point, or None outside the text.
     pub fn cell_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
         let b = self.buf()?;
+        // A note: its rows as drawn, wrapped and in its own face.
+        if let Some(l) = self.note_layout.as_ref().filter(|_| b.note.is_some()) {
+            if y < self.origin.1 || l.rows.is_empty() {
+                return None;
+            }
+            return l.hit(x, y);
+        }
         let (cw, ch) = self.cell;
         if y < self.origin.1 || x < self.origin.0 - cw * 0.5 {
             return None;
@@ -915,6 +942,7 @@ impl EditorPane {
 
     /// Keep the caret on screen.
     pub fn reveal(&mut self) {
+        self.reveal_note = true;
         let rows = self.rows.max(1);
         if let Some(b) = self.buf_mut() {
             let line = b.line_of(b.cursor);
@@ -1175,6 +1203,10 @@ impl App {
         };
         if idx.is_some() {
             self.files_root_from(path);
+            // A pane that arrived beside another has no place yet: without
+            // this it is drawn into its 1×1 starting rect, and its buttons'
+            // hit boxes sit over whatever is at the window's corner.
+            self.layout();
             self.apply_term_resizes(false);
         }
         self.dirty = true;
@@ -1218,6 +1250,15 @@ impl App {
                 return false;
             };
             if e.buf().is_some_and(|b| !b.ready()) { return true; }
+            // A note read, not written: typing goes back to writing, and
+            // the key is typed (no dead keys, no mode to remember).
+            if e.read_view && !ctrl && !alt {
+                let types = text.as_deref().is_some_and(|t| !t.is_empty() && !t.chars().any(char::is_control))
+                    || matches!(key, WKey::Named(NamedKey::Backspace | NamedKey::Delete | NamedKey::Enter | NamedKey::Tab));
+                if types {
+                    e.read_view = false;
+                }
+            }
             // Goto line.
             if let Some(g) = e.goto.as_mut() {
                 match &key {
@@ -1316,8 +1357,21 @@ impl App {
                                     ins
                                 }
                             };
-                            let ins = ins.split("$0").next().unwrap_or(&ins).to_string();
-                            b.insert(&ins, false);
+                            if item.sort_text.as_deref() == Some(crate::notes_ui::NOTE_ITEM) {
+                                // A note's own item: all of it written, the
+                                // caret where its `$0` was (else at its end),
+                                // and the menu again when it asks for more
+                                // (`[[` lists the notes).
+                                let (head, tail) = ins.split_once("$0").unwrap_or((ins.as_str(), ""));
+                                b.insert(&format!("{head}{tail}"), false);
+                                b.cursor -= tail.chars().count();
+                                b.anchor = None;
+                                e.completion = e.buf().and_then(crate::notes_ui::note_completion);
+                                e.reveal();
+                            } else {
+                                let ins = ins.split("$0").next().unwrap_or(&ins).to_string();
+                                b.insert(&ins, false);
+                            }
                         }
                         self.dirty = true;
                         return true;
@@ -1333,6 +1387,7 @@ impl App {
             }
             let overwrite = e.overwrite;
             let page_rows = e.rows.max(1) as i64;
+            let note_layout = e.note_layout.clone();
             let Some(b) = e.buf_mut() else { return true };
             let n = b.len_chars();
             let sel = |b: &mut Buffer, shift: bool| {
@@ -1393,10 +1448,26 @@ impl App {
                     } else if ctrl {
                         moved = false;
                         scroll_lines = Some(if down { -1 } else { 1 });
+                    } else if let Some((lay, l, col)) = note_layout.as_ref().filter(|_| b.note.is_some()).map(|lay| (lay, b.line_of(b.cursor), b.col_of(b.cursor)))
+                        .filter(|(lay, l, col)| {
+                            let x = lay.caret(*l, *col).map_or(0.0, |c| c.0);
+                            lay.step(*l, *col, x, down).is_some()
+                        })
+                    {
+                        // A note moves by the rows it is drawn in, keeping
+                        // to the x it started from.
+                        sel(b, shift);
+                        let x = if b.want_col.is_some() { b.want_x } else { lay.caret(l, col).map_or(0.0, |c| c.0) };
+                        if let Some((tl, tc)) = lay.step(l, col, x, down) {
+                            b.cursor = b.at(tl, tc);
+                        }
+                        b.want_col = Some(0);
+                        b.want_x = x;
                     } else {
                         sel(b, shift);
                         let l = b.line_of(b.cursor);
-                        let col = b.want_col.unwrap_or(b.col_of(b.cursor));
+                        // A note's `want_col` only says its `want_x` holds.
+                        let col = if b.note.is_some() { b.col_of(b.cursor) } else { b.want_col.unwrap_or(b.col_of(b.cursor)) };
                         let target = if down { l + 1 } else { l.wrapping_sub(1) };
                         if target < b.text.len_lines() {
                             b.cursor = b.at(target, col);
@@ -1436,7 +1507,7 @@ impl App {
                     let rows = page_rows;
                     sel(b, shift);
                     let l = b.line_of(b.cursor) as i64;
-                    let col = b.want_col.unwrap_or(b.col_of(b.cursor));
+                    let col = if b.note.is_some() { b.col_of(b.cursor) } else { b.want_col.unwrap_or(b.col_of(b.cursor)) };
                     let target = (l + if down { rows } else { -rows })
                         .clamp(0, b.text.len_lines() as i64 - 1)
                         as usize;
@@ -1665,6 +1736,12 @@ impl App {
                     e.completion = None;
                 }
                 e.reveal();
+            }
+            // A note's menu follows what is typed: `[[`, `![[`, `/`.
+            if e.buf().is_some_and(|b| b.note.is_some())
+                && (matches!(key, WKey::Character(_)) || matches!(key, WKey::Named(NamedKey::Backspace | NamedKey::Space)))
+            {
+                e.completion = e.buf().and_then(crate::notes_ui::note_completion);
             }
         }
         if let Some(text) = copy {
@@ -2024,7 +2101,14 @@ impl App {
             color: t.dim,
             ..mono
         };
-        let cw = self.fonts.measure(mono, "M").max(1.0);
+        // A note's face may be proportional: its "cell" is an average
+        // letter, for the measure and the margins only; its text is laid
+        // out for real (note_layout.rs).
+        let cw = if is_note {
+            (self.fonts.measure_as_is(mono, "abcdefghijklmnopqrstuvwxyz ") / 27.0).max(1.0)
+        } else {
+            self.fonts.measure(mono, "M").max(1.0)
+        };
         let metrics = self.fonts.metrics(face, term_px);
         let ch = metrics.line_height.max(term_px * line_h);
         let ansi = |i: usize| crate::theme_edit::from_rgb(t.ansi[i]);
@@ -2064,7 +2148,7 @@ impl App {
         e.rect = outer;
         e.strip_hits.clear();
         e.mode_hit = None;
-        scene.rect(r, paper);
+        self.pane_ground(scene, r, paper);
         scene.layer(Some(r));
 
         // The strip: one cell per buffer, the active one underlined in signal.
@@ -2154,27 +2238,48 @@ impl App {
                 .max(3);
             cw * (digits as f32 + 2.0)
         };
+        // A note numbers its lines in the margin, smaller and faint, right
+        // against the column.
+        let numbers = is_note && self.behavior.notes_numbers;
+        let num_style = Style { px: (term_px * 0.78).round(), color: crate::surface::mix(paper, ink, 0.38), ..mono };
+        let num_w = if numbers {
+            let digits = e.buffers[bi].text.len_lines().max(1).to_string().len().max(2);
+            self.fonts.measure_as_is(num_style, &"0".repeat(digits)) + px(14.0)
+        } else {
+            0.0
+        };
         // A note's column sits in the middle once the pane is wider than
         // its measure, with a margin of its own either way.
         let margin = if measure > 0 {
             let column = cw * measure as f32;
-            ((r.w - column) / 2.0).max(px(24.0).min(r.w * 0.06))
+            ((r.w - column) / 2.0).max(px(24.0).min(r.w * 0.06)).max(num_w + px(6.0))
         } else {
             0.0
         };
         // Its formatting rail lives in that margin when the margin (and the
-        // pane's height) can hold it; else it is a row under the strip.
-        // Folding or unfolding it never moves the text in the margin case.
+        // pane's height) can hold it beside the numbers; else it is a row
+        // under the strip. Folding or unfolding it never moves the text in
+        // the margin case.
         e.format_hits.clear();
         let rail_w = px(40.0);
         let rail_btn = px(34.0);
-        let rail_len = rail_btn * (crate::notes_format::RAIL.len() + 1) as f32;
+        // The tools, Read and Focus, and the fold.
+        let rail_len = rail_btn * (crate::notes_format::RAIL.len() + 3) as f32;
         let rail = if !is_note {
             None
-        } else if margin >= rail_w + px(28.0) && r.h - strip_h - status_h >= rail_len + px(16.0) {
+        } else if margin >= rail_w + px(28.0) + num_w && r.h - strip_h - status_h >= rail_len + px(16.0) {
             Some(false)
         } else {
             Some(true)
+        };
+        // As a row it ends short of the pane's corner, where a split pane's
+        // controls (move, swap, solo, to tab, close) appear on hover.
+        let controls_w = if self.behavior.pane_controls != crate::panes::Controls::Never
+            && self.tabs.get(self.active).is_some_and(|t| t.right.is_some())
+        {
+            px(6.0) + px(22.0) * 5.0 + px(12.0)
+        } else {
+            0.0
         };
         let folded = self.behavior.notes_rail_folded;
         let row_h = match rail {
@@ -2243,7 +2348,8 @@ impl App {
         let sel_color = self.theme.selection;
         let match_color = fade(ansi(3), 0.25);
 
-        for row in 0..rows {
+        // Code on its grid; a note is laid out for real, after this.
+        for row in 0..if is_note { 0 } else { rows } {
             let line = b.scroll + row;
             if line >= n_lines {
                 break;
@@ -2330,10 +2436,6 @@ impl App {
                     );
                 }
             }
-            // A note: its Markdown, styled where it stands (markers faint).
-            if is_note {
-                self.draw_note_line(scene, b, line, (ox, ly, base), scroll_col, columns, (cw, ch), mono);
-            }
             // The text, as coloured runs.
             let spans: &[(usize, usize, crate::predict::Tok)] = if is_note { &[] } else { b.spans_for(line) };
             let chars: Vec<char> = b.text.slice(visible_start..visible_end).chars().collect();
@@ -2404,18 +2506,50 @@ impl App {
                 }
             }
         }
+        if is_note {
+            b.scroll_col = 0;
+            let frame = crate::notes_ui::NoteFrame {
+                pane: r,
+                left: ox,
+                top: oy,
+                bottom: text_bottom,
+                width: (r.right() - margin - ox).max(cw * 8.0),
+                ch,
+                baseline_off,
+                mono,
+                numbers: numbers.then_some(num_style),
+                focused,
+                caret: focused && e.goto.is_none() && e.find.is_none(),
+                overwrite: e.overwrite,
+                reveal: std::mem::take(&mut e.reveal_note),
+                read: e.read_view,
+                focus: e.focus,
+                sel,
+                matches: find_matches,
+                find_cur,
+                wash,
+                sel_color,
+                match_color,
+                match_cur: fade(ansi(3), 0.5),
+            };
+            e.note_layout = Some(self.draw_note_body(scene, b, &frame));
+        } else {
+            e.note_layout = None;
+        }
 
         // The formatting rail (or row), over what is under it.
         if let Some(as_row) = rail {
             let b = &e.buffers[bi];
             let line = b.line_of(b.cursor);
-            let active = crate::notes_format::active(&b.line_text(line), b.md_kind(line), b.col_of(b.cursor));
+            // Read view edits nothing, so no tool is lit.
+            let active = if e.read_view { Default::default() } else { crate::notes_format::active(&b.line_text(line), b.md_kind(line), b.col_of(b.cursor)) };
             let area = if as_row {
                 Rect::new(r.x, r.y + strip_h, r.w, row_h)
             } else {
-                Rect::new(r.x + (margin - rail_w) / 2.0, text_top, rail_w, if folded { rail_btn } else { rail_len })
+                let x = r.x + ((margin - num_w - rail_w) / 2.0).max(px(4.0));
+                Rect::new(x, text_top, rail_w, if folded { rail_btn } else { rail_len })
             };
-            self.draw_format_rail(scene, e, area, as_row, folded, &active);
+            self.draw_format_rail(scene, e, area, as_row, folded, &active, controls_w);
         }
         // Status row: path · Ln, Col · language · server, or the notice.
         let sy = r.bottom() - status_h;
@@ -2555,8 +2689,12 @@ impl App {
             let b = &e.buffers[bi];
             let row = b.line_of(b.cursor).saturating_sub(b.scroll);
             let col = b.col_of(c.at.min(b.cursor));
-            let cx = ox + col as f32 * cw;
-            let cy = oy + (row + 1) as f32 * ch;
+            // A note's rows are laid out for real: under the row it starts on.
+            let at_note = e.note_layout.as_ref().filter(|_| is_note).and_then(|l| {
+                let r = &l.rows[l.row_of(b.line_of(c.at.min(b.cursor)), col)?];
+                Some((r.x(col), r.y + r.h))
+            });
+            let (cx, cy) = at_note.unwrap_or((ox + col as f32 * cw, oy + (row + 1) as f32 * ch));
             let shown = c.items.len().min(8);
             let row_h = ch + px(4.0);
             let wmax = c

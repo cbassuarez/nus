@@ -26,6 +26,32 @@ define_class!(
         }
     }
 );
+/// Documents the system opens in nus (Finder, `open`, a default chosen in
+/// FILE VIEWERS) come to the app delegate as `application:openURLs:`.
+/// winit's delegate has no such method, so it's added to its class once
+/// the event loop has made it, before launching finishes. A web link that
+/// comes this way goes where the Get URL receiver sends one.
+pub fn accept_documents() {
+    use objc2::ffi;
+    use objc2::runtime::{AnyClass,Imp,Sel};
+    unsafe extern "C-unwind" fn open_urls(_this:*mut AnyObject,_sel:Sel,_app:*mut AnyObject,urls:*mut AnyObject) {
+        if urls.is_null() {return;}
+        let n:usize=unsafe{msg_send![urls,count]};
+        for i in 0..n.min(128) {
+            let url:*mut AnyObject=unsafe{msg_send![urls,objectAtIndex:i]};
+            let text:Option<Retained<NSString>>=unsafe{msg_send![url,absoluteString]};
+            let Some(text)=text.map(|t|t.to_string()) else {continue};
+            let queued=if text.starts_with("file:") {crate::external_open::enqueue_file(text)} else {crate::external_open::enqueue(text)};
+            if let Err(e)=queued {eprintln!("nus external activation: {e}");}
+        }
+    }
+    let Some(cls)=AnyClass::get(c"WinitApplicationDelegate") else {return};
+    unsafe {
+        let imp:Imp=std::mem::transmute(open_urls as unsafe extern "C-unwind" fn(*mut AnyObject,Sel,*mut AnyObject,*mut AnyObject));
+        let _=ffi::class_addMethod(cls as *const AnyClass as *mut AnyClass,sel!(application:openURLs:),imp,c"v@:@@".as_ptr());
+    }
+}
+
 pub struct Registration { manager:Retained<AnyObject>, _receiver:Retained<Receiver> }
 impl Drop for Registration {
     fn drop(&mut self){unsafe{let _:()=msg_send![&*self.manager,removeEventHandlerForEventClass:INTERNET,andEventID:GET_URL];}}

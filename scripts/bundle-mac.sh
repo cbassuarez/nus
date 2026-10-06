@@ -63,6 +63,11 @@ plist() { # plist <path> <executable> <identifier> <is-helper>
   local browser_keys=""
   if [[ "$4" == 0 ]]; then
     browser_keys='<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>dev.nus.web</string><key>CFBundleTypeRole</key><string>Viewer</string><key>CFBundleURLSchemes</key><array><string>http</string><string>https</string></array></dict></array>'
+    # Documents nus can open when asked (FILE VIEWERS); Alternate, so
+    # installing never makes nus their default. Markdown's type is declared
+    # for systems that don't know it.
+    browser_keys+='<key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>Document</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>net.daringfireball.markdown</string><string>com.adobe.pdf</string><string>public.json</string><string>public.comma-separated-values-text</string><string>public.tab-separated-values-text</string><string>public.plain-text</string></array></dict></array>'
+    browser_keys+='<key>UTImportedTypeDeclarations</key><array><dict><key>UTTypeIdentifier</key><string>net.daringfireball.markdown</string><key>UTTypeDescription</key><string>Markdown document</string><key>UTTypeConformsTo</key><array><string>public.plain-text</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>md</string><string>markdown</string><string>mdown</string></array><key>public.mime-type</key><array><string>text/markdown</string></array></dict></dict></array>'
   fi
   local icon_key="<key>CFBundleIconFile</key><string>$name.icns</string>"
   cat > "$1" <<PLIST

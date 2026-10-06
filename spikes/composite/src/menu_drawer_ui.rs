@@ -224,9 +224,9 @@ impl App {
         let now=Signal::collect(&self.hatch_state.work,&crate::downloads::list());
         let busy=Signal{running:2,..Signal::default()};
         let cap=Style{font:self.f.ui,px:self.px(9.0),color:self.theme.dim,tracking:0.08};
-        for (i,(words,state)) in [("MENU BAR · NOW",now),("WHILE TWO THINGS RUN",busy)].into_iter().enumerate(){
+        for (i,(words,state)) in [(format!("{} · NOW",crate::settings::tray_word().to_uppercase()),now),("WHILE TWO THINGS RUN".to_string(),busy)].into_iter().enumerate(){
             let y=at.y+i as f32*self.px(74.0);
-            self.fonts.draw(scene,cap,x,y+self.px(10.0),words);
+            self.fonts.draw(scene,cap,x,y+self.px(10.0),&words);
             let bar=Rect::new(x,y+self.px(18.0),self.px(150.0),self.px(30.0));
             scene.rect(bar,crate::surface::mix(self.theme.paper,self.theme.ink,0.06));scene.outline(bar,self.px(1.0),crate::app::fade(self.theme.ink,0.25));
             if !cfg.enabled{self.fonts.draw(scene,Style{px:self.px(11.0),..cap},bar.x+self.px(10.0),bar.y+self.px(19.0),"off · no icon");continue;}

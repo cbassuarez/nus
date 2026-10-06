@@ -11,8 +11,12 @@ pub fn default_footer()->f32{32.0}
 pub fn width(value:f32,available:f32)->f32 {if !value.is_finite(){return default_width().min(available.max(48.0));}value.clamp(48.0,480.0).min((available*0.72).max(48.0)).round()}
 impl App {
     pub(crate) fn sidebar_icons(&self)->bool {self.compact()||self.sidebar_w()<=self.px(104.0)}
-    pub(crate) fn sidebar_footer_h(&self)->f32{
-        let count=if self.sidebar_icons(){6}else{8};let cols=((self.list_rect().w/self.px(30.0)).floor() as usize).clamp(1,count);
+    /// The foot and the shelf above it (download_peek.rs): what the tab list makes room for.
+    pub(crate) fn sidebar_footer_h(&self)->f32{self.sidebar_foot_h()+self.shelf_h(self.list_rect().w)}
+    /// The foot alone: its icon rows.
+    pub(crate) fn sidebar_foot_h(&self)->f32{self.foot_h_for(self.list_rect().w)}
+    pub(crate) fn foot_h_for(&self,w:f32)->f32{
+        let count=if self.sidebar_icons(){6}else{8};let cols=((w/self.px(30.0)).floor() as usize).clamp(1,count);
         let rows=count.div_ceil(cols);let row=self.sidebar_rules.footer_row.clamp(28.0,64.0);
         self.px(row*rows as f32).min(self.sidebar_rect().h*0.45).round()
     }
@@ -20,7 +24,7 @@ impl App {
         if !self.sidebar_visible()||self.dl_menu{return None;}
         let r=self.sidebar_rect();let grab=self.px(4.0);let edge=if self.sidebar_right(){r.x}else{r.right()};
         if (x-edge).abs()<=grab&&y>=r.y&&y<=r.bottom(){return Some(Resize::Width);}
-        if x>=r.x&&x<=r.right()&&(y-(r.bottom()-self.sidebar_footer_h())).abs()<=grab{return Some(Resize::Footer);}
+        if x>=r.x&&x<=r.right()&&(y-(r.bottom()-self.sidebar_foot_h())).abs()<=grab{return Some(Resize::Footer);}
         None
     }
     pub(crate) fn sidebar_resize_to(&mut self,x:f32,y:f32){
@@ -32,18 +36,21 @@ impl App {
         self.sidebar_leave=None;self.layout();self.dirty=true;
     }
     pub(crate) fn draw_responsive_footer(&mut self,scene:&mut Scene,sb:Rect,fy:f32){
+        // The shelf sits on the foot: downloads you started, until you look.
+        let shelf=self.shelf_h(sb.w);scene.layer(Some(Rect::new(sb.x,fy,sb.w,shelf)));self.draw_shelf(scene,Rect::new(sb.x,fy,sb.w,shelf));let fy=fy+shelf;
         let count=if self.sidebar_icons(){6usize}else{8};
         let cols=((sb.w/self.px(30.0)).floor() as usize).clamp(1,count);let rows=count.div_ceil(cols);let h=sb.bottom()-fy;let cellh=(h/rows as f32).floor();
         scene.layer(Some(Rect::new(sb.x,fy,sb.w,h)));scene.rect(Rect::new(sb.x,fy,sb.w,h),self.paper());scene.hline(sb.x,fy,sb.w,self.px(1.0),if self.sidebar_resize_at(self.mouse.0,self.mouse.1)==Some(Resize::Footer){self.surface.signal}else{self.theme.ink});
-        let items=if self.sidebar_icons(){vec![SideHit::Profile,SideHit::Look,SideHit::Files,SideHit::Downloads,SideHit::MenuDrawer,SideHit::Settings]}else{vec![SideHit::Profile,SideHit::NewTab,SideHit::Look,SideHit::Files,SideHit::Closed,SideHit::Downloads,SideHit::MenuDrawer,SideHit::Settings]};
+        let items=if self.sidebar_icons(){vec![SideHit::Profile,SideHit::Look,SideHit::Files,SideHit::Downloads,SideHit::Notes,SideHit::Settings]}else{vec![SideHit::Profile,SideHit::NewTab,SideHit::Look,SideHit::Files,SideHit::Closed,SideHit::Downloads,SideHit::Notes,SideHit::Settings]};
         for (i,hit) in items.into_iter().enumerate(){
             let col=i%cols;let row=i/cols;let x=(sb.x+sb.w*col as f32/cols as f32).round();let right=(sb.x+sb.w*(col+1) as f32/cols as f32).round();let r=Rect::new(x,fy+row as f32*cellh,right-x,cellh);
             let size=self.px(16.0).min(cellh-self.px(8.0)).max(self.px(10.0));let ix=(r.x+(r.w-size)*0.5).round();let iy=(r.y+(r.h-size)*0.5).round();
-            let (icon,words)=match hit{SideHit::Profile=>(icons::USER,"Your profile"),SideHit::NewTab=>(icons::PLUS,"New tab"),SideHit::Look=>(icons::SETTINGS,"Themes"),SideHit::Files=>(icons::FOLDER_SIMPLE,"Files and folders"),SideHit::Closed=>(icons::HISTORY,"Recently closed"),SideHit::Downloads=>(icons::DOWNLOAD,"Downloads"),_=>(icons::SETTINGS,"Settings")};
+            let (icon,words)=match hit{SideHit::Profile=>(icons::USER,"Your profile"),SideHit::NewTab=>(icons::PLUS,"New tab"),SideHit::Look=>(icons::SETTINGS,"Themes"),SideHit::Files=>(icons::FOLDER_SIMPLE,"Files and folders"),SideHit::Closed=>(icons::HISTORY,"Recently closed"),SideHit::Downloads=>(icons::DOWNLOAD,"Downloads"),SideHit::Notes=>(icons::PENCIL,"Notes"),_=>(icons::SETTINGS,"Settings")};
             if hit==SideHit::Profile {let face=self.me.as_ref().map(|m|m.face.clone()).unwrap_or(crate::me::Face::Initial);let name=self.user_name.clone();self.draw_face(scene,Rect::new(ix,iy,size,size),&face,&name);}
             else if hit==SideHit::MenuDrawer {self.menu_drawer.footer=Some(r);if let Some(bind)=self.desktop_icon(){scene.texture(Rect::new(ix,iy,size,size),bind,None);}let state=crate::menu_drawer::Signal::collect(&self.hatch_state.work,&crate::downloads::list());if state.count()>0{scene.push(nus_render::Instance::rounded(Rect::new(ix+size-self.px(4.0),iy+size-self.px(4.0),self.px(5.0),self.px(5.0)),self.px(2.5),self.surface.signal));}self.foot_tip(hover_key("drawer",i),r,format!("Menu drawer · {}",state.text()));}
             else if hit==SideHit::Look {self.draw_look_chip(scene,r.x+self.px(4.0),r.y,r.h,r.w-self.px(8.0));self.side_hits.pop();}
-            else {let active=hit==SideHit::Settings&&self.settings_view.is_some()||hit==SideHit::Downloads&&crate::downloads::list().iter().any(|d|d.active());self.icon_button(scene,icon,size,ix,iy,if active{self.surface.signal}else{self.theme.ink},r,hover_key("foot",i),IconMotion::Still);if active{scene.rect(Rect::new(ix,r.bottom()-self.px(4.0),size,self.px(2.0)),self.surface.signal);}}
+            else if hit==SideHit::Downloads {self.draw_download_dial(scene,size,ix,iy,r,hover_key("foot",i));}
+            else {let active=(hit==SideHit::Settings&&self.settings_view.is_some())||(hit==SideHit::Notes&&self.side_page==crate::files::SidePage::Notes);self.icon_button(scene,icon,size,ix,iy,if active{self.surface.signal}else{self.theme.ink},r,hover_key("foot",i),IconMotion::Still);if active{scene.rect(Rect::new(ix,r.bottom()-self.px(4.0),size,self.px(2.0)),self.surface.signal);}}
             if hit==SideHit::Downloads{self.download_ui.anchor=Some(r);}else if hit!=SideHit::MenuDrawer{self.foot_tip(hover_key("foot-tip",i),r,words.into());}
             self.side_hits.push((r,hit));
         }

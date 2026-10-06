@@ -5,6 +5,7 @@ mod identity;
 #[cfg(windows)] mod windows;
 #[cfg(target_os="linux")] mod linux;
 mod process;
+pub mod files;
 
 use crate::startup_policy::{default_state,DefaultState,Handler,Requests};
 use std::{collections::VecDeque,sync::{Mutex,OnceLock},time::{Duration,Instant}};
@@ -208,6 +209,13 @@ fn platform_request(identity:&Identity)->Result<(),String> {
     #[cfg(not(any(windows,target_os="linux")))]
     {let _=identity;Err("Unsupported platform.".into())}
 }
+
+#[cfg(windows)]
+fn register_browser(identity:&Identity)->Result<(),String> {windows::register(identity)}
+#[cfg(target_os="linux")]
+fn linux_exec(path:&std::path::Path)->Result<String,String> {linux::executable(path)}
+#[cfg(target_os="linux")]
+fn linux_applications()->Result<std::path::PathBuf,String> {linux::applications()}
 
 /// Exact maintenance invocations, before profiles, URL intake and CEF startup.
 /// Only the entry installer writes registration; it never changes defaults.

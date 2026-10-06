@@ -13,6 +13,8 @@
 //!   nus hatch [toggle|show|hide|work|list|open --window ID --tab-id ID [--right]|hoist|land|quit]
 //!   nus block [last|all] [--tab N]  a shell's blocks, command and output
 //!   nus ask <question…>             the assistant, beside this shell
+//!   nus notify <words…> [--title T] [--to-you] [--open URL] [--source NAME]
+//!                                   a notice: to this shell's row, or the window
 //!   nus raise                       bring the window up
 //!   nus hook claude|codex           an assistant's hook, reporting to its pane (hook.rs)
 //!   nus hook install claude|codex   add those hooks to the assistant's config
@@ -216,6 +218,7 @@ fn parse(args: &[String]) -> (Vec<String>, serde_json::Map<String, Value>) {
             let takes_value = matches!(
                 k,
                 "tab" | "tab-id" | "window" | "profile" | "cwd" | "run" | "signal" | "which"
+                    | "title" | "open" | "source"
             );
             if takes_value && i + 1 < args.len() {
                 let v = &args[i + 1];
@@ -579,6 +582,15 @@ fn main() -> ExitCode {
             opts.insert("q".into(), Value::String(rest.join(" ")));
             ("ask", Value::Object(opts))
         }
+        // A notice: to the nus shell this runs in, or as a source's
+        // notice (cron, CI, a script) to the window in front.
+        "notify" => {
+            opts.insert("words".into(), Value::String(rest.join(" ")));
+            if let Ok(pane) = std::env::var("NUS_PANE") {
+                opts.insert("pane".into(), Value::String(pane));
+            }
+            ("notify", Value::Object(opts))
+        }
         "help" | "-h" | "--help" => {
             println!("{}", USAGE);
             return ExitCode::SUCCESS;
@@ -616,7 +628,9 @@ fn main() -> ExitCode {
     }
     match call(cmd, args) {
         Ok(v) => {
-            if want_json || !matches!(cmd, "ls" | "ports" | "block" | "theme" | "layout" | "sync") {
+            if cmd == "notify" && !want_json {
+                // Quiet on success, as a notifier in a script should be.
+            } else if want_json || !matches!(cmd, "ls" | "ports" | "block" | "theme" | "layout" | "sync") {
                 if !v.is_null() {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
                 }
@@ -714,6 +728,7 @@ const USAGE: &str = "usage: nus [<command> [args] [--json]]
   send-text <text> [--tab N] [--right] [--enter] · focus <tab> · close [<tab>] [--force]
   theme [<name>] · look [ink|paper] [--signal #rrggbb] · ports · hatch [toggle|show|hide|work|list|open --window ID --tab-id ID [--right]|hoist|land|quit]
   block [last|all] [--tab N] · ask <question> · raise
+  notify <words> [--title T] [--to-you] [--open URL] [--source NAME] · to this shell's row, or the window in front
   layout · layout save <name> · open <file>.nus.luau · ssh <host> [--split]
   sync [now] · sync key [--paper] · sync join <key|24 words> · sync status · sync folder <path> · sync git <remote>
   sync pair [<code>] [--to ADDR] [--discover] [--qr] · sync devices · sync rotate · sync forge github [--gh]
@@ -747,6 +762,15 @@ mod tests {
         assert_eq!(o.get("profile").and_then(Value::as_str), Some("pwsh"));
         assert_eq!(o.get("split"), Some(&Value::Bool(true)));
         assert_eq!(o.get("cwd").and_then(Value::as_str), Some("C:\\x"));
+        let a: Vec<String> = ["notify", "prod", "is", "green", "--to-you", "--open", "https://fly.io", "--source", "deploy"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (w, o) = parse(&a);
+        assert_eq!(w, vec!["notify", "prod", "is", "green"]);
+        assert_eq!(o.get("to_you"), Some(&Value::Bool(true)));
+        assert_eq!(o.get("open").and_then(Value::as_str), Some("https://fly.io"));
+        assert_eq!(o.get("source").and_then(Value::as_str), Some("deploy"));
         let (_, o) = parse(&["focus".into(), "--tab".into(), "3".into()]);
         assert_eq!(o.get("tab"), Some(&Value::from(3u64)));
     }

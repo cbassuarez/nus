@@ -309,8 +309,10 @@ waiting dot, children under a rule. Footer is one row: avatar (drop a
 `profile/avatar.png`), +, history, downloads, settings.
 
 **Surface.** Ramps, not a colour: 2–4 stops, angle, loop, aurora drift and
-breath. Signal, tint, opacity (on window / chrome / panes — Windows DX12 is
-opaque, the row says so). Grain remains an independent finish, with scale
+breath. Signal, tint, opacity: PANES thins the panes' grounds, CHROME TOO
+the strip and sidebar as well, WHOLE WINDOW the finished frame, words and
+all; pages keep their own white. Only a display that composites no alpha
+draws it solid, and the row says so. Grain remains an independent finish, with scale
 and strength, placed on the **carapace**, chrome, or panes. Saved stipple,
 stitch, linen and halftone looks still load; new choices offer None or Grain.
 The original frame retains its animated texture option. Shell:
@@ -2140,3 +2142,67 @@ prompt (and `nus sky|moon|tonight`), a dry word on a command's exit status, the 
 of this build under the masthead number, and (off) finished-work notices that wait
 for an eclipse's totality to end. The rule they were built to: accurate, quiet,
 optional — nothing animates unprompted but the sky, and none of it needs the network.
+
+## Notes you write in, and find again (2026-10-06)
+
+Decided with seb after a look at Bear, Obsidian, iA Writer and Drafts:
+live preview, the picker, a slash menu beside the rail, a NOTES page in
+the sidebar, tasks across notes, `[[` links and live embeds, Read view
+and Focus. Built in three passes, each checked in the app.
+
+**Set as written, in any face.** A note is laid out for real
+(note_layout.rs): every character where its face puts it, so Areal (most
+looks' notes face) no longer drifts from the caret. Lines wrap at the
+column; a list item's further rows stand under its words. The caret, a
+click, a drag, the selection and Up/Down all read the same stops; Up and
+Down move by the rows on screen and keep their x. Lines are numbered in
+the margin, faint; `line numbers` in the palette turns them off.
+
+**Live preview.** Off the caret's line the Markdown is the document:
+markers take no room, headings are set larger (H1 1.6×, H2 1.3×, H3
+1.1×) with room above, `-` is a bullet, `- [ ]` a box (a click ticks
+it), `>` a bar beside every row of the quote, a link its words. The
+caret's line shows its Markdown as typed. Note text is drawn as typed,
+never as a label (TODO stays TODO).
+
+**Read view and Focus.** Per view, on the rail (book, crosshair), in the
+palette, and ⌘⌥R / ⌘⌥F (Ctrl+Alt elsewhere). Read view formats every
+line and has no caret; a click on a link (or an embed) follows it, as
+⌘/Ctrl+click does while writing; typing goes back to writing with the
+key typed. Focus dims everything but the caret's paragraph.
+
+**The rail.** Every button names itself and its keys on hover. As a row
+it stops short of a split pane's corner, where the pane's own controls
+appear, so a press on the rail is never a press on move or close.
+
+**One note, from the header.** The note button opens a picker: a new
+note here or personal, the notes open elsewhere (another tab or window;
+choosing one is a second view of the same note), recent notes, and a
+search when you type. A fresh tab becomes the note; beside a page or a
+shell it gets a tab of its own, so neither is closed. A note opened
+beside another pane is laid out at once.
+
+**NOTES in the sidebar,** where the menu drawer's button was (the drawer
+is still the desktop's menu-bar icon): OPEN TASKS, every unticked `[ ]`
+in this project's notes and the personal ones, newest note first; then
+the project's notes and the personal ones. A task's box ticks it through
+its note's session, open or not, and only while its line still says what
+the list showed; a row goes to the line. The compact sidebar opens the
+picker instead.
+
+**Links, embeds, the slash menu.** `[[` lists notes by name and writes
+`[title](note:id)`. A line that is only `![[target]]` is an embed: a
+note's opening lines, a file's lines (`path#L10-L20`, relative to the
+project), or a page; off the caret's line it is a box of the source as
+it is now, saying when the file changed since the note was written or
+the lines moved. `/` at a line's start offers headings, lists, a
+checklist, a quote, a code block, a divider, a link or an embed, and
+today's date.
+
+**Seen to.** A crash leaves its panic in nus.log (an installed copy has
+no console). The cause of "every rail button crashes" was not reproduced
+in this code; the two ways a rail press landed somewhere else are gone.
+
+Not yet: tags on the NOTES page, embeds of clipped blocks by reference,
+page embeds with a live title, and a check of all this in an installed
+release build.

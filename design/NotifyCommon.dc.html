@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Common ground</title>
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+    .cap { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .dim { color: #8a857a; }
+    .sig { color: #c8102e; }
+    h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; white-space: nowrap; }
+    h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a857a; font-weight: 500; margin: 0; }
+    h2 b { color: #ece7da; font-weight: 600; }
+    .note { font-size: 12px; line-height: 1.6; color: #8a857a; }
+    .note b { color: #ece7da; font-weight: 600; }
+    .note code, .tbl code { color: #ece7da; font-size: 11px; }
+    .col { display: flex; flex-direction: column; gap: 8px; }
+    .box { border: 1.5px solid #ece7da; padding: 12px 14px; box-sizing: border-box; }
+    .sb { width: 300px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; box-sizing: border-box; flex-shrink: 0; }
+    .band { height: 5px; background: #c8102e; }
+    .hd { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border-bottom: 1.5px solid #ece7da; }
+    .r { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 30px; border-bottom: 1px solid rgba(236,231,218,0.16); white-space: nowrap; font-size: 12px; box-sizing: border-box; }
+    .r.on { background: rgba(236,231,218,0.08); font-weight: 600; box-shadow: inset 2px 0 0 #c8102e; }
+    .r .n { width: 12px; color: #8a857a; font-size: 10px; flex-shrink: 0; }
+    .r .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .r .h { color: #8a857a; font-size: 10px; }
+    .r .end { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .two { flex-direction: column; align-items: stretch; justify-content: center; gap: 1px; padding-top: 5px; padding-bottom: 5px; }
+    .two .l1 { display: flex; gap: 8px; align-items: center; min-width: 0; }
+    .sub { font-size: 10px; color: #8a857a; display: flex; gap: 6px; align-items: center; padding-left: 20px; overflow: hidden; white-space: nowrap; font-weight: 400; }
+    .sub.news { color: #ece7da; }
+    .cell { min-width: 46px; height: 18px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; font-size: 10px; letter-spacing: 0.04em; box-sizing: border-box; white-space: nowrap; }
+    .cell.sig { background: #c8102e; color: #fff; font-weight: 600; justify-content: center; }
+    .cell.out { border: 1px solid #ece7da; justify-content: center; }
+    .cell.stale { border: 1px dashed rgba(236,231,218,.55); color: #8a857a; justify-content: center; }
+    .cell.hatch { background: repeating-linear-gradient(135deg, rgba(200,16,46,.9) 0 3px, transparent 3px 6px); justify-content: center; }
+    .cell.hatch span { background: #141414; padding: 0 3px; color: #c8102e; font-weight: 600; }
+    .chip { height: 19px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(236,231,218,.5); font-size: 10px; letter-spacing: .04em; white-space: nowrap; box-sizing: border-box; }
+    .chip.on { border-color: #ece7da; background: #ece7da; color: #141414; font-weight: 600; }
+    .chip.sigc { border-color: #c8102e; color: #c8102e; }
+    .btn { white-space: nowrap; flex-shrink: 0; height: 20px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid #ece7da; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; box-sizing: border-box; }
+    .btn.fill { background: #ece7da; color: #141414; }
+    .page { border: 1.5px solid #ece7da; background: #0f0f0f; box-sizing: border-box; position: relative; }
+    .addr { height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1.5px solid #ece7da; background: #141414; font-size: 11.5px; }
+    .field { flex: 1; height: 22px; border: 1px solid rgba(236,231,218,.5); display: flex; align-items: center; gap: 6px; padding: 0 8px; min-width: 0; }
+    .bandmsg { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 34px; border-bottom: 1.5px solid #ece7da; font-size: 11px; background: #141414; }
+    .bandmsg .end { margin-left: auto; display: flex; gap: 6px; }
+    .panel { border: 1.5px solid #ece7da; background: #141414; box-shadow: 6px 6px 0 rgba(236,231,218,.3); box-sizing: border-box; }
+    .prow { display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 32px; border-bottom: 1px solid rgba(236,231,218,0.16); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+    .prow:last-child { border-bottom: 0; }
+    .prow .k { color: #8a857a; width: 118px; flex-shrink: 0; }
+    .prow .v { display: flex; gap: 5px; align-items: center; }
+    .prow .h { text-transform: none; letter-spacing: 0; color: #8a857a; font-size: 10px; margin-left: auto; }
+    .tip { position: absolute; border: 1.5px solid #ece7da; background: #ece7da; color: #141414; font-size: 10.5px; line-height: 1.5; padding: 6px 9px; white-space: nowrap; box-shadow: 4px 4px 0 rgba(236,231,218,.25); z-index: 2; }
+    .tip b { font-weight: 700; }
+    .pal { border: 2px solid #ece7da; background: #141414; box-shadow: 8px 8px 0 rgba(236,231,218,.3); box-sizing: border-box; }
+    .pal .in { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1.5px solid #ece7da; font-size: 13px; }
+    .pal .r { min-height: 30px; }
+    .pal .r .num { width: 22px; color: #8a857a; font-size: 11px; text-align: center; flex-shrink: 0; }
+    .caret { display: inline-block; width: 2px; height: 15px; background: #c8102e; }
+    .rail { width: 48px; border: 1.5px solid #ece7da; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; flex-shrink: 0; }
+    .rail .ic { position: relative; width: 48px; height: 38px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(236,231,218,.16); }
+    .rail .ic.on { background: rgba(236,231,218,.08); box-shadow: inset 2px 0 0 #c8102e; }
+    .corner { position: absolute; right: 7px; bottom: 6px; width: 8px; height: 8px; box-shadow: 0 0 0 1.5px #141414; }
+    .corner.s { background: #c8102e; }
+    .corner.o { border: 1px solid #ece7da; box-sizing: border-box; width: 8px; height: 8px; }
+    .corner.n { width: auto; height: 10px; padding: 0 2px; font-size: 8px; line-height: 10px; background: #ece7da; color: #141414; font-weight: 700; right: 4px; bottom: 4px; }
+    .tbl { display: grid; font-size: 11px; }
+    .tbl > div { padding: 6px 10px 6px 0; border-bottom: 1px solid rgba(236,231,218,0.16); display: block; min-width: 0; line-height: 1.45; }
+    .tbl svg { vertical-align: -2px; margin-right: 6px; }
+    .tbl code { white-space: nowrap; }
+    .tbl > .h { color: #8a857a; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1.5px solid #ece7da; }
+    .tbl .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lens { display: flex; border-bottom: 1.5px solid #ece7da; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+    .lens > div { padding: 7px 11px; border-right: 1px solid rgba(236,231,218,0.16); white-space: nowrap; display: flex; gap: 5px; align-items: center; }
+    .lens > div.on { background: #ece7da; color: #141414; font-weight: 600; }
+    .lens > div span { color: #8a857a; }
+    .lens > div.on span { color: #141414; }
+    .sec { display: flex; align-items: center; gap: 7px; padding: 0 12px; height: 24px; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: #8a857a; border-bottom: 1px solid rgba(236,231,218,0.16); }
+    .sec .end { margin-left: auto; }
+    pre.code { margin: 0; padding: 10px 12px; font-family: inherit; font-size: 10.5px; line-height: 1.55; color: rgba(236,231,218,.85); background: #0d0d0d; white-space: pre; overflow: hidden; }
+    pre.code i { color: #8a857a; font-style: normal; }
+    pre.code b { color: #c8102e; font-weight: 500; }
+    .sq { width: 13px; height: 13px; box-sizing: border-box; border: 1px solid rgba(236,231,218,.35); display: inline-block; }
+    .sq.on { background: #ece7da; border-color: #ece7da; }
+    .sq.s { background: #c8102e; border-color: #c8102e; }
+    .sq.held { background: repeating-linear-gradient(135deg, #ece7da 0 2px, transparent 2px 4px); border-color: #ece7da; }
+    .mx { display: grid; font-size: 11px; }
+    .mx > div { height: 27px; display: flex; align-items: center; border-bottom: 1px solid rgba(236,231,218,0.16); white-space: nowrap; overflow: hidden; }
+    .mx > .c { justify-content: center; }
+    .mx > .g { color: #8a857a; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1.5px solid #ece7da; height: 24px; gap: 6px; }
+    .mx > .hc { justify-content: center; border-bottom: 1.5px solid #ece7da; color: #8a857a; }
+</style>
+</helmet>
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 34px 40px; display:flex; flex-direction:column; gap: 22px; overflow:hidden;">
+  <div style="display:flex; gap: 40px; align-items: flex-end;">
+    <h1>Common ground</h1>
+    <div class="note" style="max-width: 960px; padding-bottom: 6px;"><b>What all three share.</b> One notice record, whether a shell, a page or a source sent it. One place on the tab-state ladder. And the facts the research turned up, which set the limits. The directions differ in where a notice comes from: the open page (A), a protocol with no page (B), or a line that knows the service (C).</div>
+  </div>
+<div style="display:grid;grid-template-columns:600px 1fr;gap:36px;"><div class="col" style="gap:18px"><div class="tbl" style="grid-template-columns:110px 1fr"><div class="h">field</div><div class="h">the notice, whoever sends it</div><div><b>from</b></div><div class="dim">a pane (shell, page, editor), a source, or <code>nus notify</code>, plus the tab it opens</div><div><b>to you</b></div><div class="dim">yes or no. Yes: a notification call, a mention, an assistant asking, a failure. No: a count</div><div><b>count</b></div><div class="dim">a number, or none. The newest replaces the old; it never adds up</div><div><b>words</b></div><div class="dim">title and one line, clipped to 120, never HTML, never run</div><div><b>at, seen</b></div><div class="dim">when it came; seen = its tab in front for 1 s, or the row read</div><div><b>as of</b></div><div class="dim">when the source last answered. Older than 10 min reads as stale, dashed</div></div><div class="tbl" style="grid-template-columns:150px 1fr"><div class="h">on the ladder</div><div class="h">where it sits among the tab states</div><div><span class="cell sig">WAITS</span></div><div class="dim">to you, from a page: beside a shell that waits, same rank</div><div><span class="cell hatch"><span>EXIT 1</span></span></div><div class="dim">a failure is still a failure</div><div><span class="cell">12</span></div><div class="dim">a count: quiet, under running, over playing</div><div><span class="cell stale"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 3.5l9.5 17h-19z"/><path d="M12 10v4.5M12 17.5v.5"/></svg>9</span></div><div class="dim">stale: says when, never pretends</div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px"><div class="note box"><b>Quiet.</b> Nothing blinks or steals focus. A system banner only when nus is in the background, and only for “to you”. Sounds are off until a channel turns them on.</div><div class="note box"><b>Private.</b> Private windows record nothing. A page’s words never leave the machine except to your own phone page. Each site keeps its own answer in sites.json.</div><div class="note box"><b>Bounded.</b> A site gets one notice per 10 s. Repeats with the same tag replace the last. The away rows keep 6, the store keeps 30 days.</div></div></div><div class="col" style="gap:14px"><div class="tbl" style="grid-template-columns:230px 1fr 86px"><div class="h">what we found</div><div class="h">so</div><div class="h">source</div><div><b>CEF has no web Notification API</b></div><div class="dim">Pages see none, so they fall back to the title. Every option needs nus to supply one: the shim is common.</div><div class="dim" style="font-size:10px">CEF #2951</div><div><b>No Web Push in CEF</b></div><div class="dim">A closed or sleeping page can’t be woken from a server. Only an open page, or a protocol, can tell you.</div><div class="dim" style="font-size:10px">CEF</div><div><b>Hidden pages slow down</b></div><div class="dim">Chromium runs a hidden page’s timers once a minute after 5 min, and nus sleeps pages at 30 min. Listening has to opt out of both.</div><div class="dim" style="font-size:10px">Chrome 88</div><div><b>Badging API is for installed apps</b></div><div class="dim"><code>setAppBadge</code> is rarely called in a tab, so the title count matters more.</div><div class="dim" style="font-size:10px">MDN, W3C</div><div><b>Gmail and 365 want OAuth</b></div><div class="dim">Google’s mail scopes are restricted: verification plus a yearly CASA review. Microsoft has retired basic auth. Their pages, then, not their APIs.</div><div class="dim" style="font-size:10px">Google, MS</div><div><b>Cheap and push-friendly</b></div><div class="dim">JMAP EventSource (Fastmail), IMAP IDLE, GitHub notifications (304 is free), ICS, feeds.</div><div class="dim" style="font-size:10px">RFC 8620</div><div><b>System banners need an identity</b></div><div class="dim">Windows toasts need an AppUserModelID and a Start menu shortcut; macOS needs the signed bundle. nus has only Dock attention today.</div><div class="dim" style="font-size:10px">WinRT</div><div><b>Recipes rot; stale badges lie</b></div><div class="dim">Ferdium’s DOM recipes break when sites ship, and a hibernated service’s old count misleads. Mark stale and broken, always.</div><div class="dim" style="font-size:10px">Ferdium</div></div></div></div><div class="tbl" style="grid-template-columns:150px 1fr 1fr 1fr"><div class="h">compared</div><div class="h">A · listening</div><div class="h">B · desk</div><div class="h">C · lines</div><div><b>set up</b></div><div class=dim>none: open the page, listen</div><div class=dim>a source at a time, with a token</div><div class=dim>pick lines from the gallery, set the board</div><div><b>page closed</b></div><div class=dim>silent</div><div class=dim><b>still works</b></div><div class=dim>silent (page lines), works (source lines)</div><div><b>cost</b></div><div class=dim>150–400 MB per listening page, 4 max</div><div class=dim><b>a few MB in total</b></div><div class=dim>A’s cost, plus the lines</div><div><b>Gmail, Slack</b></div><div class=dim><b>yes</b>, from the page</div><div class=dim>Gmail and 365 no (OAuth); Slack no</div><div class=dim><b>yes</b>, from the page</div><div><b>to you, precisely</b></div><div class=dim>when the page calls Notification</div><div class=dim>per protocol (flags, mentions)</div><div class=dim><b>per service, by channel</b></div><div><b>upkeep</b></div><div class=dim><b>none</b>: nothing knows a site</div><div class=dim>protocols barely change</div><div class=dim>the gallery breaks when sites do</div><div><b>new code</b></div><div class=dim>shim, title parse, listening, cell</div><div class=dim>store, workers, Desk page, keychain</div><div class=dim>line runtime, board, hold, digest</div></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

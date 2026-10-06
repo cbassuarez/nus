@@ -259,6 +259,8 @@ pub struct Shared {
     pub download_only: bool,
     /// …and that download is still going.
     pub(crate) download_waiting: bool,
+    /// What the page has said: notifications to you, its badge (notices.rs).
+    pub notices: crate::notices::PageNotices,
 }
 
 /// What a `Kind::Dialog` overlay answers.
@@ -417,7 +419,7 @@ impl Shared {
         if url.starts_with("chrome-error:") || self.failed_url.as_deref().is_some_and(|failed|failed!=url) {return;}
         // The blank document an interstitial is written over.
         if url == "about:blank" && (self.interstitial.is_some() || self.overlay.is_some()) {return;}
-        if origin_of(url)!=origin_of(&self.url) {self.reset_favicon();}
+        if origin_of(url)!=origin_of(&self.url) {self.reset_favicon();self.notices.badge=None;}
         if self.url!=url {self.zoom_motion=None;}
         self.url=url.into();self.paints+=1;
     }
@@ -657,6 +659,9 @@ pub struct PermissionAsk {
 pub enum AskKind {
     Prompt(PermissionPromptCallback),
     Media(MediaAccessCallback, u32),
+    /// `Notification.requestPermission()` from nus's own Notification
+    /// (notices.rs): the answer is the site's mode, not a Chromium grant.
+    Notices,
 }
 
 #[derive(Default)]
@@ -1940,6 +1945,35 @@ wrap_dev_tools_message_observer! {
                 }
                 return;
             }
+            // The page's Notification, badge or permission question
+            // (notices.rs): only from the top document's own site.
+            if v.get("name").and_then(|n| n.as_str()) == Some("nusNotify") {
+                let Some(context) = v.get("executionContextId").and_then(|i| i.as_i64()) else { return };
+                let Some(p) = v.get("payload").and_then(|p| p.as_str()).filter(|p| p.len() < 4096).and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok()) else { return };
+                let mut s = self.o.shared.borrow_mut();
+                let Some(origin) = s.contexts.get(&context).cloned() else { return };
+                if origin_of(&s.url).as_deref() != Some(origin.as_str()) { return; }
+                let mode = crate::notices::mode_for(&s.url);
+                let text = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                match text("k").as_str() {
+                    "hi" => { if s.notices.tell.len() < 16 { s.notices.tell.push(context); } }
+                    "n" if mode == crate::notices::Mode::Show => {
+                        let n = crate::notices::Notice::new(&text("title"), &text("body"), &text("tag"));
+                        if !n.line().is_empty() { s.notices.receive(n); }
+                    }
+                    "b" => {
+                        let n = p.get("n").and_then(|n| n.as_i64()).unwrap_or(0);
+                        s.notices.badge = Some(if n < 0 { crate::notices::Count::Dot } else { crate::notices::Count::N(n.min(99_999) as u32) });
+                    }
+                    "ask" if mode == crate::notices::Mode::Ask && s.permission.is_none() => {
+                        s.permission = Some(PermissionAsk { origin, what: "notifications".into(), kind: AskKind::Notices });
+                    }
+                    _ => return,
+                }
+                s.paints += 1;
+                crate::browser_runtime::wake();
+                return;
+            }
             if v.get("name").and_then(|n| n.as_str()) == Some("nusPrint") {
                 let mut s = self.o.shared.borrow_mut();
                 s.print_asked = true;
@@ -2903,6 +2937,9 @@ impl BrowserTab {
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusInterstitial" }));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusPrint" }));
         tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusOverscroll" }));
+        tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusNotify" }));
+        tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::notices::NOTIFY_JS, "runImmediately": true }));
+        tab.devtools("Runtime.evaluate", serde_json::json!({ "expression": crate::notices::NOTIFY_JS }));
         if !crate::private::enabled() {
             tab.devtools("Runtime.addBinding", serde_json::json!({ "name": "nusPassword" }));
             tab.devtools("Page.addScriptToEvaluateOnNewDocument", serde_json::json!({ "source": crate::passwords::JS }));
@@ -3001,6 +3038,16 @@ impl BrowserTab {
             match ask.kind {
                 AskKind::Prompt(cb) => cb.cont(if allow { PermissionRequestResult::ACCEPT } else { PermissionRequestResult::DENY }),
                 AskKind::Media(cb, perms) => cb.cont(if allow { perms } else { 0 }),
+                AskKind::Notices => {
+                    let url = self.shared.borrow().url.clone();
+                    let host = crate::sites::host_of(&url);
+                    if !host.is_empty() {
+                        let mut p = crate::sites::prefs(&host);
+                        p.notices = if allow { crate::notices::Mode::Show } else { crate::notices::Mode::Off };
+                        crate::sites::set(&host, p.clone());
+                        self.eval(&crate::notices::perm_js(p.notices));
+                    }
+                }
             }
         }
     }

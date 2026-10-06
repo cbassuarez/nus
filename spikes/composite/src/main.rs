@@ -32,6 +32,7 @@ mod cef_app_mac;
 mod agent;
 mod ledger;
 mod director;
+mod anchor;
 mod pane_mode;
 mod send;
 mod tab_drag;
@@ -65,6 +66,7 @@ mod external_open;
 mod external_open_macos;
 mod dock;
 mod downloads;
+mod download_peek;
 mod sidebar;
 mod pins;
 mod fonts;
@@ -174,10 +176,14 @@ mod forge;
 mod power;
 mod touch;
 mod news;
+mod notices;
 mod notes;
 mod notes_anchor;
 mod notes_capture;
 mod notes_format;
+mod note_layout;
+mod note_embed;
+mod notes_side;
 mod notes_import;
 mod notes_index;
 mod notes_model;
@@ -316,6 +322,15 @@ impl Host {
         if let Some(a) = self.apps.first() {
             storage::tick(self.apps.iter().filter_map(|a| a.recorder.as_ref().map(|r| r.dir.clone())).collect(), a.behavior.journal_keep, a.behavior.replay.days().unwrap_or(7));
         }
+        // A page or a source told you something while nus was behind
+        // (notices.rs): one informational bounce, as a finished command gets.
+        let focused_now=self.any_window_focused();
+        for i in 0..self.apps.len() {
+            if std::mem::take(&mut self.apps[i].notice_ring) {
+                let a=&self.apps[i];
+                self.dock.attention(&a.window,a.motion.reduced(),focused_now);
+            }
+        }
         let owner=self.apps.iter().filter_map(|a|a.hatch.as_ref()).find(|h|h.visible&&!h.hiding).map(|h|h.window.id());
         if self.hatch_owner==owner && self.work_at.is_some_and(|at|crate::clock::since(at).as_millis()<200){return;}
         let app_focused=self.any_window_focused();
@@ -403,11 +418,10 @@ impl Host {
             let rgba = nus_render::dock_icon::render(64, nus_render::theme::hex(0xc8102e), nus_render::dock_icon::Face::Newsreader);
             winit::window::Icon::from_rgba(rgba, 64, 64).ok()
         };
-        let mut attrs = Window::default_attributes()
+        let mut attrs = see_through(Window::default_attributes())
             .with_title("nus")
             .with_window_icon(icon.clone())
             .with_decorations(false)
-            .with_transparent(true)
             .with_visible(false)
             // Photographing itself (NUS_SHOT): come up without taking the
             // focus, so whatever the user is typing keeps going where it was.
@@ -595,7 +609,10 @@ impl ApplicationHandler<UserEvent> for Host {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.application_menu.is_none() { self.application_menu = Some(application_menu::NativeMenu::new(self.proxy.clone())); }
+        if self.application_menu.is_none() {
+            self.application_menu = Some(application_menu::NativeMenu::new(self.proxy.clone()));
+            #[cfg(target_os = "macos")] application_menu::watch_window_chords(self.proxy.clone());
+        }
         // The tray first on Linux: its icon plays the launch cycle on its own
         // thread while the first window is built (menu_tray_linux.rs).
         let first = self.apps.is_empty();
@@ -887,21 +904,20 @@ impl ApplicationHandler<UserEvent> for Host {
             let needed=crate::hatch_native::can_hide() && if badge {app_i==0 && a.hatch_state.badge.is_none()} else {a.behavior.hatch_dim && a.hatch_state.shade.is_none()};
             if needed {
                 #[allow(unused_mut)]
-                let mut attrs=Window::default_attributes().with_title(if badge {"nus · ongoing work"} else {"nus · backdrop"}).with_decorations(false).with_resizable(false).with_transparent(true).with_active(false).with_visible(false).with_window_level(if badge {winit::window::WindowLevel::AlwaysOnTop} else {winit::window::WindowLevel::Normal}).with_inner_size(winit::dpi::LogicalSize::new(330.0,30.0));
+                let mut attrs=see_through(Window::default_attributes()).with_title(if badge {"nus · ongoing work"} else {"nus · backdrop"}).with_decorations(false).with_resizable(false).with_active(false).with_visible(false).with_window_level(if badge {winit::window::WindowLevel::AlwaysOnTop} else {winit::window::WindowLevel::Normal}).with_inner_size(winit::dpi::LogicalSize::new(330.0,30.0));
                 #[cfg(windows)] {use winit::platform::windows::WindowAttributesExtWindows;attrs=attrs.with_skip_taskbar(true);}
                 match event_loop.create_window(attrs) {Ok(w)=>a.attach_hatch_overlay(Arc::new(w),badge),Err(e)=>tracing::warn!("Hatch overlay: {e}")}
             }
         }
         if let Some(((x, y), (w, h))) = a.hatch_request.take() {
             #[allow(unused_mut)]
-            let mut attrs = Window::default_attributes()
+            let mut attrs = see_through(Window::default_attributes())
                 .with_title("nus · hatch")
                 .with_active(false)
                 .with_window_icon(icon_default())
                 .with_decorations(false)
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
                 .with_resizable(true)
-                .with_transparent(true)
                 .with_min_inner_size(winit::dpi::LogicalSize::new(360.0,200.0))
                 .with_visible(false)
                 .with_position(winit::dpi::PhysicalPosition::new(x, y))
@@ -1270,6 +1286,14 @@ fn run() -> i32 {
             .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
             .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(move || file.clone()))
             .init();
+        // A panic says what and where in nus.log before the process ends:
+        // an installed copy has no console, so it would otherwise just vanish.
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+            tracing::error!("panic on thread {thread}: {info}");
+            default(info);
+        }));
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1326,6 +1350,9 @@ fn run() -> i32 {
     // application class has to answer before CEF starts (cef_app_mac.rs).
     #[cfg(target_os = "macos")]
     cef_app_mac::install();
+    // Documents the system opens in nus reach the app delegate.
+    #[cfg(target_os = "macos")]
+    external_open_macos::accept_documents();
     perf::startup(perf::StartupMark::EventLoopReady);
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
@@ -1387,6 +1414,20 @@ fn run() -> i32 {
                             serde_json::json!({ "ok": false, "error": "unavailable in incognito" })
                         } else {
                             match agent::route(&mut host.apps, &req.args) {
+                                Ok(v) => serde_json::json!({ "ok": true, "result": v }),
+                                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                            }
+                        };
+                        let _ = req.reply.send(reply);
+                    }
+                    // `nus notify`: to the shell it ran in, or the window in front.
+                    little::Inbound::Request(req) if req.cmd == "notify" => {
+                        let reply = if !req.origin.allows(&req.cmd) {
+                            serde_json::json!({ "ok": false, "error": "notify is not available from the phone" })
+                        } else if private::enabled() {
+                            serde_json::json!({ "ok": false, "error": "unavailable in incognito" })
+                        } else {
+                            match notices::route(&mut host.apps, idx, &req.args) {
                                 Ok(v) => serde_json::json!({ "ok": true, "result": v }),
                                 Err(e) => serde_json::json!({ "ok": false, "error": e }),
                             }
@@ -1509,4 +1550,14 @@ fn run() -> i32 {
 fn icon_default() -> Option<winit::window::Icon> {
     let rgba = nus_render::dock_icon::render(64, nus_render::theme::hex(0xc8102e), nus_render::dock_icon::Face::Newsreader);
     winit::window::Icon::from_rgba(rgba, 64, 64).ok()
+}
+
+/// A window the desktop can show through. On Windows its swapchain is a
+/// DirectComposition visual (render's gpu.rs); without a redirection bitmap
+/// that visual is all the window shows, so its alpha reaches the desktop.
+fn see_through(attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    let attrs = attrs.with_transparent(true);
+    #[cfg(windows)]
+    let attrs = winit::platform::windows::WindowAttributesExtWindows::with_no_redirection_bitmap(attrs, true);
+    attrs
 }

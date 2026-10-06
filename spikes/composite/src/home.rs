@@ -283,6 +283,7 @@ impl App {
                     self.open_layout(path);
                     if self.tabs.len() > before {
                         if launch {
+                            self.anchor_release(0);
                             self.tabs.remove(0);
                             self.tab_removed(0);
                             self.active = self.active.saturating_sub(1);
@@ -650,7 +651,7 @@ impl App {
         let t = self.theme.clone();
         let r = p.rect;
         let paper = self.paper();
-        scene.rect(r, paper);
+        self.pane_ground(scene, r, paper);
         let plate = self.behavior.home_look == HomeLook::Plate;
         let art = self.behavior.home_look == HomeLook::Art;
         let space_art = art && self.behavior.home_art=="space";

@@ -12,6 +12,10 @@
 //!   EXIT 1      failed while you were elsewhere: hatched, not colour alone
 //!   DONE        finished while you were elsewhere: outlined until seen
 //!   ▶           a page playing; … loading; ● an editor with unsaved edits
+//!   🔔 2        a page told you something (notices.rs): filled with signal,
+//!               and its words are the second line until the tab is in front
+//!   12          a page's count (its badge or its title); ■ when it only says "new"
+//!   ⚠ 9         a listening page went to a sign-in: its last count, dim
 //!   idle        a shell at its prompt, dim
 //!
 //! "Unseen" is the shell's own `waiting`: set when a command ends or rings
@@ -43,6 +47,14 @@ pub enum Cell {
     Playing,
     Loading,
     Edited,
+    /// A page told you something you haven't seen: how many.
+    Says(u32),
+    /// A page's count (its badge, its title, a source's).
+    Count(u32),
+    /// A page says there is something new, without a number.
+    New,
+    /// A listening page went to a sign-in; its last count.
+    Stale(u32),
     Idle,
     /// Nothing to say: a page at rest, settings, home.
     Quiet,
@@ -52,12 +64,12 @@ impl Cell {
     /// The ladder: waits, failed, busy, done, playing, the rest.
     pub fn rank(&self) -> u8 {
         match self {
-            Cell::Waits => 8,
+            Cell::Waits | Cell::Says(_) => 8,
             Cell::Failed(_) => 7,
             Cell::Running { .. } | Cell::Listening(_) | Cell::Working => 6,
-            Cell::Done => 5,
+            Cell::Done | Cell::Count(_) | Cell::New => 5,
             Cell::Playing => 4,
-            Cell::Loading | Cell::Edited => 3,
+            Cell::Loading | Cell::Edited | Cell::Stale(_) => 3,
             Cell::Idle => 2,
             Cell::Quiet => 0,
         }
@@ -67,6 +79,9 @@ impl Cell {
     fn kind(&self) -> u8 {
         match self {
             Cell::Running { .. } | Cell::Listening(_) | Cell::Working => 6,
+            Cell::Says(_) => 18,
+            Cell::Count(_) | Cell::New => 15,
+            Cell::Stale(_) => 13,
             c => c.rank(),
         }
     }
@@ -82,6 +97,9 @@ impl Cell {
             Cell::Playing => "playing",
             Cell::Loading => "loading",
             Cell::Edited => "edited",
+            Cell::Says(_) => "told you",
+            Cell::Count(_) | Cell::New => "unread",
+            Cell::Stale(_) => "stale",
             Cell::Idle => "idle",
             Cell::Quiet => "",
         };
@@ -89,6 +107,17 @@ impl Cell {
         let one = if n > 1 && self.kind() == 6 { "running" } else { one };
         if n > 1 { format!("{n} {one}") } else { one.to_string() }
     }
+}
+
+/// A listening page that went to a sign-in: the count it last had there.
+pub fn stale(s: &crate::browser::Shared) -> Option<u32> {
+    let (host, n, _) = s.notices.counted.as_ref()?;
+    (*host != crate::sites::host_of(&s.url) && crate::notices::sign_in(&s.url) && crate::sites::prefs(host).listen).then_some(*n)
+}
+
+/// A count as a cell has room for it.
+pub fn short_count(n: u32) -> String {
+    if n > 999 { "999+".into() } else { n.to_string() }
 }
 
 /// `m:ss` under an hour, `h:mm` after.
@@ -117,6 +146,8 @@ pub fn short_dir(dir: &str, home: Option<&str>) -> String {
 /// The second line, in parts the row draws in order.
 pub enum Bit {
     Text(String),
+    /// What a page just told you, until you look: in ink.
+    News(String),
     Branch(String, bool),
     Spine(Vec<u8>),
 }
@@ -164,10 +195,21 @@ impl App {
             }
             Pane::Web(w) => {
                 let s = w.tab.shared.borrow();
+                if s.notices.unseen > 0 {
+                    return Cell::Says(s.notices.unseen);
+                }
+                let mode = crate::notices::mode_for(&s.url);
+                match mode.counts().then(|| s.notices.count(&s.title)).flatten() {
+                    Some(crate::notices::Count::N(n)) if n > 0 => return Cell::Count(n),
+                    Some(crate::notices::Count::Dot) => return Cell::New,
+                    _ => {}
+                }
                 if s.media_playing {
                     Cell::Playing
                 } else if s.loading {
                     Cell::Loading
+                } else if let Some(n) = stale(&s) {
+                    Cell::Stale(n)
                 } else {
                     Cell::Quiet
                 }
@@ -226,8 +268,10 @@ impl App {
             Pane::Web(w) => {
                 let s = w.tab.shared.borrow();
                 let host = crate::sites::host_of(&s.url);
-                if !host.is_empty() {
-                    bits.push(Bit::Text(host));
+                match s.notices.latest.as_ref().filter(|_| s.notices.unseen > 0) {
+                    Some(n) => bits.push(Bit::News(n.line())),
+                    None if !host.is_empty() => bits.push(Bit::Text(host)),
+                    None => {}
                 }
             }
             Pane::Editor(e) => {
@@ -327,6 +371,29 @@ impl App {
             Cell::Playing => say(self, scene, Style { color: ink, ..label }, &self.cell_caps("plays"), false, Some(icons::SPEAKER)),
             Cell::Loading => say(self, scene, Style { color: dimc, ..label }, "…", false, None),
             Cell::Edited => say(self, scene, Style { color: ink, ..label }, &self.cell_caps("edited"), false, Some(icons::PENCIL)),
+            Cell::Says(k) => {
+                scene.rect(r, sig);
+                let style = Style { color: self.on_fill(sig), ..strong };
+                if n > 1 {
+                    say(self, scene, style, &self.cell_caps(&cell.words(n)), true, None);
+                } else {
+                    say(self, scene, style, &k.to_string(), true, Some(icons::BELL));
+                }
+            }
+            Cell::Count(k) => {
+                let text = if n > 1 { self.cell_caps(&cell.words(n)) } else { short_count(*k) };
+                say(self, scene, Style { color: ink, ..strong }, &text, false, None);
+            }
+            Cell::New => {
+                let d = self.px(6.0);
+                let sq = Rect::new(r.right() - d - self.px(4.0), r.y + (h - d) / 2.0, d, d);
+                scene.rect(sq, ink);
+                left.set(left.get().min(sq.x));
+            }
+            Cell::Stale(k) => {
+                scene.outline(r, self.px(m::HAIRLINE), fade(ink, 0.35));
+                say(self, scene, Style { color: dimc, ..label }, &short_count(*k), true, Some(icons::WARNING));
+            }
             Cell::Idle => say(self, scene, Style { color: dimc, ..label }, "idle", false, None),
             Cell::Quiet => {}
         }
@@ -355,6 +422,11 @@ impl App {
                 Bit::Text(s) => {
                     let s = self.fit(small, s.as_str(), right - x).into_owned();
                     x += self.fonts.draw(scene, small, x, base, &s) + gap;
+                }
+                Bit::News(s) => {
+                    let ink = Style { color: t.ink, ..small };
+                    let s = self.fit(ink, s.as_str(), right - x).into_owned();
+                    x += self.fonts.draw(scene, ink, x, base, &s) + gap;
                 }
                 Bit::Branch(name, dirty) => {
                     let isz = self.px(10.0);
@@ -402,9 +474,17 @@ impl App {
         let r = Rect::new(at.right() - d, at.bottom() - d, d, d);
         let ring = Rect::new(r.x - self.px(1.5), r.y - self.px(1.5), d + self.px(3.0), d + self.px(3.0));
         match cell {
-            Cell::Waits => {
+            Cell::Waits | Cell::Says(_) => {
                 scene.rect(ring, self.paper());
                 scene.rect(r, sig);
+            }
+            Cell::Count(_) | Cell::New => {
+                scene.rect(ring, self.paper());
+                scene.rect(r, ink);
+            }
+            Cell::Stale(_) => {
+                scene.rect(ring, self.paper());
+                scene.outline(r, self.px(1.0), fade(ink, 0.45));
             }
             Cell::Failed(_) => {
                 scene.rect(ring, self.paper());
@@ -437,6 +517,15 @@ mod tests {
         assert_eq!(cells[1], Cell::Failed(1));
         assert_eq!(cells[2], run);
         assert_eq!(cells.last(), Some(&Cell::Quiet));
+    }
+
+    #[test]
+    fn a_page_that_told_you_ranks_with_a_shell_that_waits() {
+        assert_eq!(Cell::Says(2).rank(), Cell::Waits.rank());
+        assert!(Cell::Count(12).rank() > Cell::Playing.rank());
+        assert!(Cell::Count(12).rank() < Cell::Running { since: Instant::now(), progress: None }.rank());
+        assert_ne!(Cell::Count(3).kind(), Cell::Done.kind(), "counts and finished commands roll up apart");
+        assert_eq!(short_count(12_000), "999+");
     }
 
     #[test]

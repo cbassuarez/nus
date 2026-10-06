@@ -133,6 +133,7 @@ impl App {
         for t in self.tabs.iter_mut().filter(|t| t.parent == Some(id)) {
             t.parent = None;
         }
+        self.anchor_release(i);
         let mut tab = self.tabs.remove(i);
         self.tile_forget(id);
         self.pins.live.retain(|_, live| *live != id);

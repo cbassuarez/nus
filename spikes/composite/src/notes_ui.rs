@@ -85,6 +85,11 @@ pub enum NoteAct {
     OpenReading(String, Option<String>),
     /// Formatting on the focused note (the rail, the keys, the palette).
     Format(crate::notes_format::Act),
+    /// Line numbers in notes' margins, on or off.
+    Numbers,
+    /// This view of the note: Read view, or Focus, on or off.
+    ReadView,
+    Focus,
 }
 
 /// Where a capture goes.
@@ -181,7 +186,7 @@ impl App {
             NoteAct::CaptureEditorSelection => self.capture_editor_selection(),
             NoteAct::CaptureInto(dest, why) => self.finish_capture(dest, &why),
             NoteAct::Hatch => self.note_in_hatch(),
-            NoteAct::Open(p) => self.open_note(&p, false),
+            NoteAct::Open(p) => self.place_note(&p),
             NoteAct::OpenAt(p, line) => self.open_note_at(&p, line),
             NoteAct::Title => self.ask_about_note(PaletteMode::NoteTitle),
             NoteAct::SetTitle(t) => self.with_note(|key| session::set_title(key, &t).map(|_| "Title Set")),
@@ -214,6 +219,21 @@ impl App {
             NoteAct::OpenOriginal(url) => self.open_url(&url, false),
             NoteAct::OpenReading(id, pinned) => self.open_pinned_reading(&id, pinned.as_deref()),
             NoteAct::Format(act) => self.note_format(act),
+            NoteAct::Numbers => {
+                self.behavior.notes_numbers = !self.behavior.notes_numbers;
+                self.save_prefs();
+            }
+            NoteAct::ReadView => {
+                if let Some(e) = self.focused_editor() {
+                    e.read_view = !e.read_view;
+                    e.reveal();
+                }
+            }
+            NoteAct::Focus => {
+                if let Some(e) = self.focused_editor() {
+                    e.focus = !e.focus;
+                }
+            }
         }
         self.dirty = true;
     }
@@ -253,19 +273,111 @@ impl App {
         let home = if profile { self.personal_home() } else { self.project_home_here() };
         let Some(home) = home else { return };
         match session::create(&home, "", true) {
-            Ok(path) => self.open_note(&path, whole_tab),
+            Ok(path) if whole_tab => self.open_note(&path, true),
+            Ok(path) => self.place_note(&path),
             Err(e) => self.notice_problem("Could Not Make Note", e.to_string()),
         }
     }
 
+    /// The header's note button: which note, first. New ones, the notes
+    /// open elsewhere (another tab, another window), the recent ones;
+    /// typing searches them all.
     pub(crate) fn header_note(&mut self) {
         self.close_settings();
         let profile = self.project_here().is_none();
         if crate::private::enabled() { self.note_act(NoteAct::New { profile }); return; }
-        // Keep a page or shell already beside the work. Editors can open
-        // another buffer; other occupied splits get a separate note tab.
-        let whole_tab = self.tabs.get(self.active).is_some_and(|t| t.right.as_ref().is_some_and(|p| !matches!(p, Pane::Editor(_))));
-        self.new_note(profile, whole_tab);
+        index::ensure_started();
+        self.open_palette(PaletteMode::NoteOpen);
+    }
+
+    /// A note into this tab where it fits: a fresh tab (only the home in
+    /// it) becomes the note; beside a page or a shell it gets a tab of its
+    /// own, so neither is closed; else it opens beside, or in the editor
+    /// already there.
+    pub(crate) fn place_note(&mut self, path: &Path) {
+        let Some(tab) = self.tabs.get(self.active) else { return self.open_note(path, true) };
+        if tab.right.is_none() && matches!(tab.left, Pane::Home(_)) {
+            let mut e = EditorPane::new(Rect::new(0.0, 0.0, 1.0, 1.0));
+            match e.open(path) {
+                Ok(_) => {
+                    let tab = &mut self.tabs[self.active];
+                    tab.left = Pane::Editor(e);
+                    tab.focus_right = false;
+                    self.layout();
+                    self.apply_term_resizes(false);
+                    self.dirty = true;
+                }
+                Err(err) => self.notice_problem("Could Not Open Note", err.to_string()),
+            }
+            return;
+        }
+        let whole_tab = tab.right.as_ref().is_some_and(|p| !matches!(p, Pane::Editor(_)));
+        self.open_note(path, whole_tab);
+    }
+
+    /// The note picker's rows (the header's note button).
+    pub(crate) fn note_open_rows(&self, input: &str) -> Vec<crate::app::PaletteRow> {
+        use crate::app::PaletteRow;
+        let row = |num: &str, text: String, action: Action| PaletteRow { num: num.into(), text, action };
+        let q = input.trim();
+        let mut rows = Vec::new();
+        let mut listed: Vec<PathBuf> = Vec::new();
+        // Notes this tab already shows are not offered again.
+        let here: Vec<PathBuf> = self.tabs.get(self.active).map(|t| std::iter::once(&t.left).chain(t.right.as_ref()).filter_map(|p| match p {
+            Pane::Editor(e) => e.buf().filter(|b| b.note.is_some()).and_then(|b| b.path.clone()),
+            _ => None,
+        }).collect()).unwrap_or_default();
+        let project = self.project_here();
+        let id = project.as_ref().and_then(|p| Home::folder(p)).map(|h| h.id);
+        // A title is a note's first line: short enough that where it is shows.
+        let short = |t: &str| {
+            let t = t.trim();
+            if t.is_empty() { "Untitled".to_string() } else if t.chars().count() > 44 { format!("{}…", t.chars().take(43).collect::<String>().trim_end()) } else { t.to_string() }
+        };
+        if q.is_empty() {
+            if let Some(p) = &project {
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                rows.push(row("+", format!("new note in {name} · local Markdown, out of git"), Action::Note(NoteAct::New { profile: false })));
+            }
+            rows.push(row("+", "new personal note · sealed on this device".into(), Action::Note(NoteAct::New { profile: true })));
+            // Open in another tab or window: a second view here, the same note.
+            for (_, path, title, home, views) in session::open() {
+                if here.contains(&path) || listed.contains(&path) {
+                    continue;
+                }
+                let many = if views > 1 { format!(" in {views} places") } else { String::new() };
+                rows.push(row("↗", format!("{} · open elsewhere{many} · {home}", short(&title)), Action::Note(NoteAct::Open(path.clone()))));
+                listed.push(path);
+            }
+        }
+        let hits: Vec<Hit> = if q.is_empty() {
+            let mut v = id.as_ref().map(|id| index::recent(Some(id), 8)).unwrap_or_default();
+            v.extend(index::recent_personal(8));
+            v
+        } else {
+            match index::search(q, id.as_deref(), 16) {
+                Ok(v) => v,
+                Err(why) => {
+                    rows.push(row("·", why, Action::Noop));
+                    Vec::new()
+                }
+            }
+        };
+        for h in hits {
+            if here.contains(&h.path) || listed.contains(&h.path) {
+                continue;
+            }
+            let mut text = format!("{} · {} · {}", short(&h.title), h.home_name, notes::when(h.modified, notes::now()));
+            if !h.snippet.is_empty() {
+                text.push_str(&format!(" · {}", h.snippet));
+            }
+            listed.push(h.path.clone());
+            rows.push(row("✎", text, Action::Note(NoteAct::Open(h.path))));
+        }
+        if !q.is_empty() && listed.is_empty() {
+            rows.push(row("·", format!("no notes match “{q}”"), Action::Noop));
+        }
+        rows
     }
 
     fn personal_home(&mut self) -> Option<Home> {
@@ -1025,6 +1137,11 @@ impl App {
                 return rows;
             }
             rows.push(("✎", "format… · bold, lists, headings · type: note format".into(), Action::Noop));
+            rows.push(("#", format!("line numbers · {} · every note", if self.behavior.notes_numbers { "on, turn off" } else { "off, turn on" }), Note(NoteAct::Numbers)));
+            let chord = if cfg!(target_os = "macos") { "⌘⌥" } else { "Ctrl+Alt+" };
+            let (reading, focusing) = self.tabs.get(self.active).and_then(|t| match t.focused_ref() { Pane::Editor(e) => Some((e.read_view, e.focus)), _ => None }).unwrap_or_default();
+            rows.push(("¶", format!("{} · {chord}R", if reading { "back to writing" } else { "read view · the note as a document" }), Note(NoteAct::ReadView)));
+            rows.push(("◎", format!("{} · {chord}F", if focusing { "focus off · every paragraph" } else { "focus · dim all but this paragraph" }), Note(NoteAct::Focus)));
             rows.push(("✎", "tags · this note".into(), Note(NoteAct::Tags)));
             let doc = session::document(&v.key);
             if doc.as_ref().is_some_and(|d| !d.filed()) {
@@ -1408,8 +1525,39 @@ impl App {
             (RailHit::Open(p), _) => open_here(self, &p, None),
             (RailHit::New { profile }, _) => self.new_note_in_place(profile, right),
             (_, Some(Err(h))) => open_here(self, &h.path, Some(h.line)),
-            (_, Some(Ok(Ref::Page { url, .. }))) => self.open_url(&url, false),
-            (_, Some(Ok(Ref::File { path, at, .. }))) => {
+            (_, Some(Ok(r))) => self.open_ref(r, note, right),
+            _ => {}
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Follow what a note points at: a page beside, a file beside at its
+    /// line, another note by its identity, a clip at its place in the note.
+    /// `note`: the note it is written in; `right`: the pane it is in.
+    pub(crate) fn open_ref(&mut self, r: Ref, note: Option<PathBuf>, right: bool) {
+        let open_here = |app: &mut App, path: &Path, line: Option<usize>| {
+            let tab = &mut app.tabs[app.active];
+            let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
+            let Some(Pane::Editor(e)) = pane else { return };
+            match e.open(path) {
+                Ok(i) => {
+                    if let (Some(line), Some(b)) = (line, e.buffers.get_mut(i)) {
+                        if b.ready() {
+                            b.cursor = b.at(line, 0);
+                            b.anchor = None;
+                        } else {
+                            b.pending_position = Some(nus_lsp::lsp_types::Position::new(line as u32, 0));
+                        }
+                    }
+                    e.reveal();
+                }
+                Err(err) => tracing::warn!("notes: {err}"),
+            }
+        };
+        match r {
+            Ref::Page { url, .. } => self.open_url(&url, false),
+            Ref::File { path, at, .. } => {
                 let base = note.as_deref().and_then(notes::folder_of).or_else(|| self.notes_folder()).unwrap_or_default();
                 let p = Path::new(path.trim_start_matches("./"));
                 let full = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
@@ -1428,7 +1576,7 @@ impl App {
                     self.notice(icons::PENCIL, "Not Found", full.display().to_string());
                 }
             }
-            (_, Some(Ok(Ref::Note { note_id, home_id, .. }))) => {
+            Ref::Note { note_id, home_id, .. } => {
                 // A link to a note: open it beside, found by its identity
                 // (a renamed file or title still resolves).
                 let home_of_note = note.as_deref().and_then(|p| crate::notes_store::WriteCap::grant().ok().and_then(|c| session::home_of(p, &c).ok()));
@@ -1445,14 +1593,12 @@ impl App {
                     None => self.notice(icons::PENCIL, "Note Not Found", "it may be in a project not open here, or in the trash"),
                 }
             }
-            (_, Some(Ok(Ref::Block { line, .. }))) => {
+            Ref::Block { line, .. } => {
                 // The clip keeps the block's text: go to it in the note.
                 if let Some(p) = note { open_here(self, &p, Some(line)); }
             }
-            _ => {}
         }
         self.dirty = true;
-        true
     }
 
     /// A new note from the rail's foot, opened in the pane that asked.
@@ -1612,6 +1758,19 @@ impl App {
         if !cfg!(target_os = "macos") && ev.text.as_ref().is_some_and(|t| !t.chars().all(|c| c.is_ascii_alphanumeric())) {
             return false;
         }
+        // Read view and Focus: states of this view, not edits.
+        if matches!(code, KeyCode::KeyR | KeyCode::KeyF) {
+            if let Some(e) = self.focused_editor() {
+                if code == KeyCode::KeyR {
+                    e.read_view = !e.read_view;
+                    e.reveal();
+                } else {
+                    e.focus = !e.focus;
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
         let act = match code {
             KeyCode::KeyB => Act::Bold,
             KeyCode::KeyI => Act::Italic,
@@ -1634,8 +1793,10 @@ impl App {
     /// A press on a note's formatting rail, or on a checklist box. True
     /// when taken.
     pub(crate) fn note_format_mouse(&mut self, x: f32, y: f32) -> bool {
+        let ctrl = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.control_key() };
         let Some(tab) = self.tabs.get_mut(self.active) else { return false };
         let mut hit = None;
+        let mut follow = None;
         for (right, p) in [(false, Some(&mut tab.left)), (true, tab.right.as_mut())] {
             let Some(Pane::Editor(e)) = p else { continue };
             if !e.rect.contains(x, y) {
@@ -1645,11 +1806,17 @@ impl App {
                 hit = Some((right, Some(*h)));
                 break;
             }
-            // A click on `[ ]` ticks it; anywhere else places the caret.
+            // A click on `[ ]` ticks it; on a link, in Read view (or with
+            // Ctrl/⌘), follows it; anywhere else places the caret.
+            let reading = e.read_view;
             let Some((line, col)) = e.cell_at(x, y) else { continue };
             let Some(b) = e.buf_mut().filter(|b| b.note.is_some()) else { continue };
             b.ensure_md_kinds();
             if b.md_kind(line) != crate::notes_format::LineKind::Text {
+                if reading {
+                    hit = Some((right, None));
+                    break;
+                }
                 continue;
             }
             let lt = b.line_text(line);
@@ -1659,19 +1826,73 @@ impl App {
                 hit = Some((right, None));
                 break;
             }
+            if reading || ctrl {
+                // An embed goes where it points; a link, where it links.
+                let embed = crate::note_embed::parse(&lt).map(|t| crate::note_embed::link(&t));
+                follow = embed.or_else(|| crate::notes_format::link_at(&lt, col)).map(|t| (t, b.path.clone(), right));
+                if follow.is_some() || reading {
+                    hit = Some((right, None));
+                    break;
+                }
+            }
         }
         let Some((right, act)) = hit else { return false };
         self.tabs[self.active].focus_right = right;
+
         match act {
             Some(crate::notes_ui::RailHit2::Act(a)) => self.note_format(a),
             Some(crate::notes_ui::RailHit2::Fold) => {
                 self.behavior.notes_rail_folded = !self.behavior.notes_rail_folded;
                 self.save_prefs();
             }
+            Some(crate::notes_ui::RailHit2::Read) => {
+                if let Some(e) = self.editor_in(right) {
+                    e.read_view = !e.read_view;
+                    e.reveal();
+                }
+            }
+            Some(crate::notes_ui::RailHit2::Focus) => {
+                if let Some(e) = self.editor_in(right) {
+                    e.focus = !e.focus;
+                }
+            }
             None => {}
+        }
+        if let Some((target, note, right)) = follow {
+            self.follow_note_link(&target, note, right);
         }
         self.dirty = true;
         true
+    }
+
+    /// The editor in this tab's left or right pane.
+    fn editor_in(&mut self, right: bool) -> Option<&mut EditorPane> {
+        let tab = self.tabs.get_mut(self.active)?;
+        match if right { tab.right.as_mut() } else { Some(&mut tab.left) } {
+            Some(Pane::Editor(e)) => Some(e),
+            _ => None,
+        }
+    }
+    /// A link clicked in a note's text goes where the same link in the
+    /// rails does (`open_ref`): another note by its identity, a page, a
+    /// file at its line. `note`: the note it is in; `right`: its pane.
+    pub(crate) fn follow_note_link(&mut self, target: &str, note: Option<PathBuf>, right: bool) {
+        let target = target.trim();
+        let r = if let Some(id) = target.strip_prefix("note:") {
+            let (home_id, note_id) = match id.split_once('/') {
+                Some((h, n)) => (Some(h.to_string()), n.to_string()),
+                None => (None, id.to_string()),
+            };
+            Some(Ref::Note { note_id, home_id, label: String::new(), line: 0 })
+        } else if target.starts_with("http://") || target.starts_with("https://") {
+            Some(Ref::Page { url: target.to_string(), line: 0 })
+        } else {
+            notes::file_ref(target, 0)
+        };
+        match r {
+            Some(r) => self.open_ref(r, note, right),
+            None => self.notice(icons::PENCIL, "Not A Link Nus Opens", target.to_string()),
+        }
     }
 }
 
@@ -1680,79 +1901,587 @@ impl App {
 pub enum RailHit2 {
     Act(crate::notes_format::Act),
     Fold,
+    /// Read view and Focus, on this view of the note.
+    Read,
+    Focus,
+}
+
+/// The menu a note offers as you type: after `[[` (or `![[`), notes by
+/// name, to link (or embed); after `/` at a line's start, what to make
+/// there. The editor's completion menu shows it; Enter or Tab writes it in
+/// place of what was typed. Items carry `NOTE_ITEM` so their `$0` places
+/// the caret.
+pub(crate) const NOTE_ITEM: &str = "nus-note";
+
+pub(crate) fn note_completion(b: &crate::editor::Buffer) -> Option<crate::editor::Completion> {
+    use nus_lsp::lsp_types::CompletionItem;
+    let line = b.line_of(b.cursor);
+    let col = b.col_of(b.cursor);
+    let before: String = b.line_text(line).chars().take(col).collect();
+    let ls = b.text.line_to_char(line);
+    let item = |label: String, detail: String, insert: String| CompletionItem {
+        label,
+        detail: Some(detail),
+        insert_text: Some(insert),
+        sort_text: Some(NOTE_ITEM.into()),
+        ..Default::default()
+    };
+    // Notes by name, after [[ (an embed after ![[).
+    if let Some(at) = before.rfind("[[") {
+        let q = &before[at + 2..];
+        if !q.contains("]]") {
+            let embed = before[..at].ends_with('!');
+            let from = if embed { at - 1 } else { at };
+            let start = ls + before[..from].chars().count();
+            let me = b.note.as_ref().map(|v| v.key.clone());
+            index::ensure_started();
+            let hits = if q.trim().is_empty() { index::recent(None, 10) } else { index::search(q.trim(), None, 10).unwrap_or_default() };
+            let items: Vec<CompletionItem> = hits.into_iter().filter(|h| Some(&h.key) != me.as_ref()).map(|h| {
+                let id = if me.as_ref().is_some_and(|k| k.home_id == h.key.home_id) { h.key.note_id.clone() } else { format!("{}/{}", h.key.home_id, h.key.note_id) };
+                let title = if h.title.trim().is_empty() { "Untitled".to_string() } else { h.title.clone() };
+                if embed {
+                    item(title, format!("embed · {}", h.home_name), format!("![[note:{id}]]"))
+                } else {
+                    let words = title.replace(['[', ']'], "");
+                    item(title, h.home_name.clone(), format!("[{words}](note:{id})"))
+                }
+            }).collect();
+            return (!items.is_empty()).then_some(crate::editor::Completion { items, sel: 0, at: start, scroll: 0 });
+        }
+    }
+    // What to make, after / at a line's start.
+    let trimmed = before.trim_start();
+    let q = trimmed.strip_prefix('/')?;
+    if q.contains(char::is_whitespace) {
+        return None;
+    }
+    let start = ls + before.chars().count() - trimmed.chars().count();
+    let today = crate::me::today();
+    let all: [(&str, &str, String); 13] = [
+        ("Heading 1", "# ", "# ".into()),
+        ("Heading 2", "## ", "## ".into()),
+        ("Heading 3", "### ", "### ".into()),
+        ("Bullet list", "- ", "- ".into()),
+        ("Numbered list", "1. ", "1. ".into()),
+        ("Checklist", "- [ ] · a task", "- [ ] ".into()),
+        ("Quote", "> ", "> ".into()),
+        ("Code block", "``` ```", "```\n$0\n```".into()),
+        ("Divider", "---", "---\n".into()),
+        ("Link to a note", "[[", "[[".into()),
+        ("Embed a note", "![[ · live", "![[".into()),
+        ("Embed a file's lines", "![[path#L1-L10]] · live", "![[$0#L1-L10]]".into()),
+        ("Today's date", "", today.clone()),
+    ];
+    let ql = q.to_lowercase();
+    let items: Vec<CompletionItem> = all.into_iter()
+        .filter(|(name, _, _)| ql.is_empty() || name.to_lowercase().split_whitespace().any(|w| w.starts_with(&ql)) || name.to_lowercase().starts_with(&ql))
+        .map(|(name, hint, insert)| item(name.to_string(), if hint.is_empty() { today.clone() } else { hint.to_string() }, insert))
+        .collect();
+    (!items.is_empty()).then_some(crate::editor::Completion { items, sel: 0, at: start, scroll: 0 })
+}
+
+/// What a note's body is drawn into, and with what (editor.rs hands it over).
+pub(crate) struct NoteFrame {
+    pub pane: Rect,
+    /// The column: where rows start, how wide they may run.
+    pub left: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub width: f32,
+    /// A body row's height, and its baseline from the row's top.
+    pub ch: f32,
+    pub baseline_off: f32,
+    pub mono: Style,
+    /// The line numbers' style, when they are on.
+    pub numbers: Option<Style>,
+    pub focused: bool,
+    pub caret: bool,
+    pub overwrite: bool,
+    /// Scroll until the caret's row is on screen.
+    pub reveal: bool,
+    /// Read view: every line formatted, no caret.
+    pub read: bool,
+    /// Focus: all but the caret's paragraph dimmed.
+    pub focus: bool,
+    pub sel: Option<(usize, usize)>,
+    pub matches: Vec<(usize, usize)>,
+    pub find_cur: Option<(usize, usize)>,
+    pub wash: nus_render::Color,
+    pub sel_color: nus_render::Color,
+    pub match_color: nus_render::Color,
+    pub match_cur: nus_render::Color,
+}
+
+/// How one character of a note is shown. Off the caret's line (and in
+/// Read view) the Markdown is the document: its markers take no room.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shown {
+    /// As typed.
+    Char(char),
+    /// Not at all: `#`, `**`, backticks, a link's address.
+    Hidden,
+    /// A list's dash, as a bullet.
+    Bullet,
+    /// A checkbox's `[ ]`, as one box.
+    Box,
+    /// A quote's `>`, as a bar beside its words.
+    Bar,
+}
+
+/// One line of a note, measured as it will be drawn: its characters, each
+/// one's Markdown style and how it shows, where each starts (one stop more
+/// than characters), how far rows after the first stand in, and a
+/// heading's size and the room above it.
+struct NoteLine {
+    chars: Vec<char>,
+    styles: Vec<crate::notes_format::Style>,
+    shown: Vec<Shown>,
+    xs: Vec<f32>,
+    hang: f32,
+    scale: f32,
+    above: f32,
+    /// A line that is only an embed: what it points at, and what shows.
+    embed: Option<(crate::note_embed::Target, crate::note_embed::Shown)>,
+}
+
+/// (colour, bold, tint behind, underline, strike) for a Markdown style.
+fn look_of(st: crate::notes_format::Style, ink: nus_render::Color, paper: nus_render::Color, signal: nus_render::Color) -> (nus_render::Color, bool, Option<nus_render::Color>, bool, bool) {
+    use crate::notes_format::Style as S;
+    let faint = crate::surface::mix(paper, ink, 0.42);
+    match st {
+        S::Plain => (ink, false, None, false, false),
+        S::Marker | S::Url | S::Fence => (faint, false, None, false, false),
+        S::Heading(_) | S::Bold => (ink, true, None, false, false),
+        S::Italic => (signal, false, None, false, false),
+        S::Code => (ink, false, Some(fade(ink, 0.07)), false, false),
+        S::FenceBody => (ink, false, Some(fade(ink, 0.05)), false, false),
+        S::Link => (signal, false, None, true, false),
+        S::Mark => (ink, false, Some(fade(signal, 0.28)), false, false),
+        S::Quote => (crate::surface::mix(paper, ink, 0.72), false, None, false, false),
+        S::Bullet => (signal, false, None, false, false),
+        S::Box { .. } => (signal, true, None, false, false),
+        S::Done => (crate::surface::mix(paper, ink, 0.5), false, None, false, true),
+    }
+}
+
+/// A heading's size against the body's, and the room above its first row
+/// (in body rows).
+fn heading_scale(level: Option<u8>) -> (f32, f32) {
+    match level {
+        Some(1) => (1.6, 0.5),
+        Some(2) => (1.3, 0.35),
+        Some(3) => (1.1, 0.2),
+        _ => (1.0, 0.0),
+    }
 }
 
 impl App {
-    /// One line of a note, styled from its Markdown: headings and bold in
-    /// the bold face, code and marks on a tint, links in the signal and
-    /// underlined, ticked items struck through, markers faint. Every
-    /// character keeps its cell, so the caret and the mouse stay exact.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_note_line(&mut self, scene: &mut Scene, b: &crate::editor::Buffer, line: usize, at: (f32, f32, f32), scroll_col: usize, columns: usize, cell: (f32, f32), mono: Style) {
-        use crate::notes_format::Style as S;
-        let (ox, ly, base) = at;
-        let (cw, ch) = cell;
+    /// Runs of one style (a tab is a run of its own): `(from, to, style)`.
+    fn note_runs(n: usize, chars: &[char], styles: &[crate::notes_format::Style]) -> Vec<(usize, usize, crate::notes_format::Style)> {
+        let mut runs = Vec::new();
+        let mut i = 0;
+        while i < n {
+            let mut j = i + 1;
+            if chars[i] != '\t' {
+                while j < n && styles[j] == styles[i] && chars[j] != '\t' {
+                    j += 1;
+                }
+            }
+            runs.push((i, j, styles[i]));
+            i = j;
+        }
+        runs
+    }
+
+    /// A note's line, measured run by run in the faces and size it is drawn
+    /// in. `raw`: the caret's line while writing, its Markdown as typed.
+    fn measure_note_line(&self, b: &crate::editor::Buffer, line: usize, mono: Style, raw: bool, ch: f32) -> NoteLine {
+        use crate::notes_format::{BlockKind, LineKind, Style as S};
         let full = b.line_text(line);
         let chars: Vec<char> = full.chars().collect();
         let n = chars.len();
-        if scroll_col >= n {
-            return;
-        }
-        let mut per = vec![S::Plain; n];
-        for sp in crate::notes_format::styles(&full, b.md_kind(line)) {
-            for c in sp.start..(sp.start + sp.len).min(n) {
-                per[c] = sp.style;
+        let kind = b.md_kind(line);
+        let mut styles = vec![S::Plain; n];
+        for sp in crate::notes_format::styles(&full, kind) {
+            for s in styles.iter_mut().take((sp.start + sp.len).min(n)).skip(sp.start) {
+                *s = sp.style;
             }
         }
-        let t = self.theme.clone();
-        let (ink, paper, signal) = (t.ink, t.paper, self.surface.signal);
-        let faint = crate::surface::mix(paper, ink, 0.42);
+        // An embed off the caret's line is a box of what it points at.
+        if !raw && kind == LineKind::Text {
+            if let Some(target) = crate::note_embed::parse(&full) {
+                let shown = self.embed_content(b, &target);
+                return NoteLine { chars, styles, shown: vec![Shown::Hidden; n], xs: vec![0.0; n + 1], hang: 0.0, scale: 1.0, above: 0.0, embed: Some((target, shown)) };
+            }
+        }
+        let blk = (kind == LineKind::Text).then(|| crate::notes_format::block(&full));
+        let (scale, above) = heading_scale(blk.as_ref().and_then(|b| match b.kind { BlockKind::Heading(l) => Some(l), _ => None }));
+        let mut shown: Vec<Shown> = chars.iter().map(|&c| Shown::Char(c)).collect();
+        if let Some(bk) = blk.as_ref().filter(|_| !raw) {
+            for (s, st) in shown.iter_mut().zip(&styles) {
+                if matches!(st, S::Marker | S::Url) {
+                    *s = Shown::Hidden;
+                }
+            }
+            let at = bk.indent.min(n);
+            match bk.kind {
+                BlockKind::Bullet(_) if at < n => shown[at] = Shown::Bullet,
+                BlockKind::Check { .. } => {
+                    for (k, s) in shown.iter_mut().enumerate().take((at + 5).min(n)).skip(at) {
+                        *s = if k < at + 2 { Shown::Hidden } else { Shown::Box };
+                    }
+                }
+                BlockKind::Quote if at < n => shown[at] = Shown::Bar,
+                _ => {}
+            }
+        }
+        let (ink, paper, signal) = (self.theme.ink, self.theme.paper, self.surface.signal);
+        let size = (mono.px * scale).round();
+        let bar_w = (size * 0.9).round();
+        let mut xs = Vec::with_capacity(n + 1);
+        xs.push(0.0);
+        let mut x = 0.0;
+        for (a, z, st) in Self::note_runs(n, &chars, &styles) {
+            let bold = look_of(st, ink, paper, signal).1;
+            let style = Style { font: if bold { self.f.notes_bold } else { mono.font }, px: size, ..mono };
+            let mut i = a;
+            while i < z {
+                match shown[i] {
+                    Shown::Hidden => {
+                        xs.push(x);
+                        i += 1;
+                    }
+                    Shown::Bar => {
+                        x += bar_w;
+                        xs.push(x);
+                        i += 1;
+                    }
+                    Shown::Char('\t') => {
+                        x += self.fonts.measure_as_is(style, "    ");
+                        xs.push(x);
+                        i += 1;
+                    }
+                    _ => {
+                        let mut j = i;
+                        let mut text = String::new();
+                        while j < z && !matches!(shown[j], Shown::Hidden | Shown::Bar | Shown::Char('\t')) {
+                            text.push(if shown[j] == Shown::Bullet { '•' } else { chars[j] });
+                            j += 1;
+                        }
+                        let stops = self.fonts.stops(style, &text);
+                        for k in 1..=(j - i) {
+                            xs.push(x + stops.get(k).copied().unwrap_or(0.0));
+                        }
+                        x += stops.last().copied().unwrap_or(0.0);
+                        i = j;
+                    }
+                }
+            }
+        }
+        // A list item's (or a quote's) further rows stand under its words.
+        let hang = match blk.as_ref().map(|b| (b.kind, (b.indent + b.marker_len).min(n))) {
+            Some((BlockKind::Para | BlockKind::Heading(_), _)) | None => 0.0,
+            Some((_, body)) => xs.get(body).copied().unwrap_or(0.0),
+        };
+        NoteLine { chars, styles, shown, xs, hang, scale, above: above * ch, embed: None }
+    }
+
+    /// What an embed shows now: a file's lines, another note's opening
+    /// lines (its open session's text first), a page's address.
+    fn embed_content(&self, b: &crate::editor::Buffer, target: &crate::note_embed::Target) -> crate::note_embed::Shown {
+        use crate::note_embed as em;
+        match target {
+            em::Target::File { path, lines } => {
+                let base = b.path.as_deref().and_then(notes::folder_of);
+                let since = b.path.as_deref().and_then(|p| std::fs::metadata(p).ok()?.modified().ok());
+                em::file(path, *lines, base.as_deref(), since)
+            }
+            em::Target::Note { id, home } => {
+                let home_id = home.clone().or_else(|| b.note.as_ref().map(|v| v.key.home_id.clone())).unwrap_or_default();
+                let key = NoteKey { home_id, note_id: id.clone() };
+                let live = session::document(&key).map(|d| (d.title().to_string(), d.body.clone()));
+                match live.or_else(|| index::body_of(&key)) {
+                    Some((t, body)) => em::note(&t, Some(&body)),
+                    None => em::note("", None),
+                }
+            }
+            em::Target::Page(u) => em::page(u),
+        }
+    }
+
+    /// An embed's box: its head, then its lines.
+    fn embed_height(s: &crate::note_embed::Shown, ch: f32) -> f32 {
+        ch * 0.5 + ch * 0.8 * (1 + s.lines.len()) as f32
+    }
+
+    /// An embed as a box in the note: a bar in the signal, what it is (and
+    /// a word when its source moved on), then its lines, in the editor's
+    /// face for code. Returns the head's baseline.
+    fn draw_embed(&mut self, scene: &mut Scene, target: &crate::note_embed::Target, s: &crate::note_embed::Shown, r: Rect, f: &NoteFrame, dim: bool) -> f32 {
+        use crate::note_embed::Target;
+        let (ink, paper, signal) = (self.theme.ink, self.theme.paper, self.surface.signal);
+        let lh = f.ch * 0.8;
+        let bx = Rect::new(r.x, r.y + f.ch * 0.15, r.w, r.h - f.ch * 0.3);
+        scene.rect(bx, crate::surface::mix(paper, ink, if dim { 0.02 } else { 0.045 }));
+        scene.rect(Rect::new(bx.x, bx.y, self.px(2.0).max(1.0), bx.h), if dim { fade(signal, 0.4) } else { signal });
+        let pad = self.px(12.0);
+        let text = if dim { crate::surface::mix(paper, ink, 0.35) } else { ink };
+        let head = Style { color: text, ..self.label_strong() };
+        let hb = (bx.y + lh * 0.75).round();
+        let isz = self.px(12.0);
+        let icon = match target { Target::Note { .. } => icons::PENCIL, Target::File { .. } => icons::CODE, Target::Page(_) => icons::GLOBE };
+        self.fonts.draw_icon(scene, icon, isz, bx.x + pad, hb - isz + self.px(1.0), text);
+        let hx = bx.x + pad + isz + self.px(8.0);
+        // A file's or a note's name as it is, not as a label.
+        let shown = self.fit_as_is(head, &s.head, bx.w * 0.55).into_owned();
+        let hw = self.fonts.draw_as_is(scene, head, hx, hb, &shown);
+        if let Some(n) = &s.note {
+            let ns = Style { color: if dim { fade(signal, 0.5) } else { signal }, ..self.label() };
+            let words = self.fit(ns, n, (bx.right() - pad - hx - hw - self.px(14.0)).max(0.0)).into_owned();
+            self.fonts.draw(scene, ns, hx + hw + self.px(14.0), hb, &words);
+        }
+        let body = Style { font: if s.code { self.f.editor } else { f.mono.font }, px: (f.mono.px * 0.82).round(), color: text, tracking: 0.0 };
+        for (k, l) in s.lines.iter().enumerate() {
+            let by = (bx.y + lh * (k as f32 + 1.0) + lh * 0.75).round();
+            let t = self.fit(body, l, bx.w - 2.0 * pad).into_owned();
+            self.fonts.draw_as_is(scene, body, bx.x + pad, by, &t);
+        }
+        hb
+    }
+
+    /// A measured line's rows at a width: (start, end) columns.
+    fn note_line_rows(l: &NoteLine, width: f32) -> Vec<(usize, usize)> {
+        if l.embed.is_some() {
+            return vec![(0, l.chars.len())];
+        }
+        let widths: Vec<f32> = l.xs.windows(2).map(|w| w[1] - w[0]).collect();
+        crate::note_layout::wrap(&l.chars, &widths, width, l.hang.min(width * 0.5))
+    }
+
+    /// How tall a measured line stands, wrapped at a width.
+    fn note_line_height(l: &NoteLine, width: f32, ch: f32) -> f32 {
+        if let Some((_, s)) = &l.embed {
+            return Self::embed_height(s, ch);
+        }
+        l.above + Self::note_line_rows(l, width).len() as f32 * ch * l.scale
+    }
+
+    /// A note's text in its own face, wrapped to the column, its lines
+    /// numbered in the margin; off the caret's line its Markdown is the
+    /// document (live preview). The selection, the find's matches, the
+    /// caret. Returns the rows as drawn, for a click and the keys.
+    pub(crate) fn draw_note_body(&mut self, scene: &mut Scene, b: &mut crate::editor::Buffer, f: &NoteFrame) -> crate::note_layout::Layout {
+        use crate::note_layout::{Layout, Row};
+        let n_lines = b.text.len_lines();
+        let cur_line = b.line_of(b.cursor);
+        let cur_col = b.col_of(b.cursor);
+        let raw = |line: usize| !f.read && line == cur_line;
+        // Focus: the caret's paragraph (the lines between blank ones).
+        let para = f.focus.then(|| {
+            let blank = |l: usize| b.line_text(l).trim().is_empty();
+            let (mut p0, mut p1) = (cur_line, cur_line);
+            while p0 > 0 && !blank(p0) && !blank(p0 - 1) {
+                p0 -= 1;
+            }
+            while p1 + 1 < n_lines && !blank(p1) && !blank(p1 + 1) {
+                p1 += 1;
+            }
+            (p0, p1)
+        });
+        // The caret's row on screen: the first line shown goes back only as
+        // far as still leaves room for every row down to the caret's.
+        if f.reveal {
+            if cur_line < b.scroll {
+                b.scroll = cur_line;
+            } else {
+                let here = self.measure_note_line(b, cur_line, f.mono, raw(cur_line), f.ch);
+                let rows = Self::note_line_rows(&here, f.width);
+                let k = rows.iter().position(|&(s, e)| cur_col >= s && cur_col < e).unwrap_or(rows.len() - 1);
+                let mut used = here.above + (k + 1) as f32 * f.ch * here.scale;
+                let mut first = cur_line;
+                while first > b.scroll {
+                    let above = self.measure_note_line(b, first - 1, f.mono, raw(first - 1), f.ch);
+                    let h = Self::note_line_height(&above, f.width, f.ch);
+                    if used + h > f.bottom - f.top + 0.5 {
+                        break;
+                    }
+                    used += h;
+                    first -= 1;
+                }
+                b.scroll = b.scroll.max(first);
+            }
+        }
+        let (ink, paper, signal) = (self.theme.ink, self.theme.paper, self.surface.signal);
         let px1 = self.px(1.0).max(1.0);
-        let end = n.min(scroll_col + columns);
-        let mut i = scroll_col;
-        while i < end {
-            let st = per[i];
-            let mut j = i + 1;
-            while j < end && per[j] == st {
-                j += 1;
+        let past = self.px(5.0);
+        let num_gap = self.px(10.0);
+        let bar = self.px(2.0).max(1.0);
+        let mut layout = Layout::default();
+        let mut y = f.top;
+        let mut line = b.scroll;
+        'lines: while line < n_lines && y < f.bottom {
+            let l = self.measure_note_line(b, line, f.mono, raw(line), f.ch);
+            let dim = para.is_some_and(|(p0, p1)| line < p0 || line > p1);
+            if let Some((target, shown)) = &l.embed {
+                let h = Self::embed_height(shown, f.ch);
+                if y + h > f.bottom + 0.5 && !layout.rows.is_empty() {
+                    break 'lines;
+                }
+                let base = self.draw_embed(scene, target, shown, Rect::new(f.left, y, f.width, h), f, dim);
+                if let Some(ns) = f.numbers {
+                    let num = (line + 1).to_string();
+                    let w = self.fonts.measure_as_is(ns, &num);
+                    self.fonts.draw_as_is(scene, ns, (f.left - num_gap - w).round(), base, &num);
+                }
+                let len = l.chars.len();
+                layout.rows.push(Row { line, start: 0, end: len, y, h, base, px: f.mono.px, x0: f.left, xs: vec![0.0; len + 1], last: true });
+                y += h;
+                line += 1;
+                continue;
             }
-            // (colour, bold, tint behind, underline, strike)
-            let (color, bold, bg, under, strike) = match st {
-                S::Plain => (ink, false, None, false, false),
-                S::Marker | S::Url | S::Fence => (faint, false, None, false, false),
-                S::Heading(_) | S::Bold => (ink, true, None, false, false),
-                S::Italic => (signal, false, None, false, false),
-                S::Code => (ink, false, Some(fade(ink, 0.07)), false, false),
-                S::FenceBody => (ink, false, Some(fade(ink, 0.05)), false, false),
-                S::Link => (signal, false, None, true, false),
-                S::Mark => (ink, false, Some(fade(signal, 0.28)), false, false),
-                S::Quote => (crate::surface::mix(paper, ink, 0.72), false, None, false, false),
-                S::Bullet => (signal, false, None, false, false),
-                S::Box { .. } => (signal, true, None, false, false),
-                S::Done => (crate::surface::mix(paper, ink, 0.5), false, None, false, true),
-            };
-            let x = ox + (i - scroll_col) as f32 * cw;
-            let w = (j - i) as f32 * cw;
-            if let Some(bg) = bg {
-                scene.rect(Rect::new(x, ly, w, ch), bg);
+            let spans = Self::note_line_rows(&l, f.width);
+            let ls = b.text.line_to_char(line);
+            let len = l.chars.len();
+            let last_k = spans.len() - 1;
+            let runs = Self::note_runs(len, &l.chars, &l.styles);
+            let rh = f.ch * l.scale;
+            let size = (f.mono.px * l.scale).round();
+            for (k, &(s, e)) in spans.iter().enumerate() {
+                let above = if k == 0 { l.above } else { 0.0 };
+                if y + above + rh > f.bottom + 0.5 {
+                    break 'lines;
+                }
+                let x0 = f.left + if k > 0 { l.hang.min(f.width * 0.5) } else { 0.0 };
+                let top = y + above;
+                let base = top + f.baseline_off * l.scale;
+                let row = Row { line, start: s, end: e, y, h: above + rh, base, px: size, x0, xs: l.xs[s..=e].iter().map(|x| x - l.xs[s]).collect(), last: k == last_k };
+                if line == cur_line && f.focused && !f.read {
+                    scene.rect(Rect::new(f.pane.x, top, f.pane.w, rh), f.wash);
+                }
+                // A quote's bar runs beside every row of it, not only the first.
+                if k > 0 {
+                    if let Some(i) = l.shown.iter().position(|s| *s == Shown::Bar) {
+                        let x = f.left + l.xs[i] + self.px(2.0);
+                        let h = if k == last_k { rh * 0.85 } else { rh };
+                        scene.rect(Rect::new(x, top, bar, h), crate::surface::mix(paper, ink, if dim { 0.15 } else { 0.35 }));
+                    }
+                }
+                if k == 0 {
+                    if let Some(ns) = f.numbers {
+                        let num = (line + 1).to_string();
+                        let ns = if line == cur_line && !f.read { Style { color: fade(ink, 0.7), ..ns } } else { ns };
+                        let w = self.fonts.measure_as_is(ns, &num);
+                        self.fonts.draw_as_is(scene, ns, (f.left - num_gap - w).round(), base, &num);
+                    }
+                }
+                // Under the words: the selection, then the find's matches.
+                let (rs, re) = (ls + s, ls + e);
+                let wash = |scene: &mut Scene, a: usize, z: usize, color| {
+                    let (s0, s1) = (a.max(rs), z.min(re));
+                    let past_end = row.last && z > ls + len;
+                    if s1 > s0 || (past_end && a <= re) {
+                        let x = row.x(s0 - ls);
+                        let w = row.x(s1.max(s0) - ls) - x + if past_end { past } else { 0.0 };
+                        scene.rect(Rect::new(x, top, w.max(px1), rh), color);
+                    }
+                };
+                if let Some((a, z)) = f.sel {
+                    wash(scene, a, z, f.sel_color);
+                }
+                for &(a, z) in &f.matches {
+                    wash(scene, a, z, if Some((a, z)) == f.find_cur { f.match_cur } else { f.match_color });
+                }
+                // The words, run by run, each piece at its own stop.
+                for &(a, z, st) in &runs {
+                    let (a, z) = (a.max(s), z.min(e));
+                    if z <= a {
+                        continue;
+                    }
+                    let (mut color, bold, bg, under, strike) = look_of(st, ink, paper, signal);
+                    if dim {
+                        color = crate::surface::mix(paper, color, 0.3);
+                    }
+                    let style = Style { font: if bold { self.f.notes_bold } else { f.mono.font }, px: size, color, ..f.mono };
+                    let mut i = a;
+                    while i < z {
+                        match l.shown[i] {
+                            Shown::Hidden | Shown::Char('\t') => i += 1,
+                            Shown::Bar => {
+                                let x = row.x(i) + self.px(2.0);
+                                let h = if last_k > 0 { rh * 0.85 } else { rh * 0.7 };
+                                scene.rect(Rect::new(x, top + rh * 0.15, bar, h), crate::surface::mix(paper, ink, if dim { 0.15 } else { 0.35 }));
+                                i += 1;
+                            }
+                            Shown::Box => {
+                                let mut j = i;
+                                while j < z && l.shown[j] == Shown::Box {
+                                    j += 1;
+                                }
+                                let checked = matches!(st, crate::notes_format::Style::Box { checked: true });
+                                let side = (size * 0.68).round();
+                                let x = (row.x(i) + (row.x(j) - row.x(i) - side) / 2.0).round();
+                                let by = (base - side * 0.9).round();
+                                let r = Rect::new(x, by, side, side);
+                                if checked {
+                                    scene.rect(r, color);
+                                    self.fonts.draw_icon(scene, nus_render::text::icons::CHECK, side, x, by, paper);
+                                } else {
+                                    scene.outline(r, self.px(1.5), color);
+                                }
+                                i = j;
+                            }
+                            _ => {
+                                let mut j = i;
+                                let mut text = String::new();
+                                while j < z && !matches!(l.shown[j], Shown::Hidden | Shown::Bar | Shown::Box | Shown::Char('\t')) {
+                                    text.push(if l.shown[j] == Shown::Bullet { '•' } else { l.chars[j] });
+                                    j += 1;
+                                }
+                                let x = row.x(i);
+                                let w = row.x(j) - x;
+                                if let Some(bg) = bg {
+                                    scene.rect(Rect::new(x, top, w, rh), bg);
+                                }
+                                // As typed: a note is not a label, whatever its tracking.
+                                self.fonts.draw_as_is(scene, style, x, base, &text);
+                                if under {
+                                    scene.rect(Rect::new(x, base + self.px(2.0), w, px1), color);
+                                }
+                                if strike {
+                                    scene.rect(Rect::new(x, top + rh * 0.55, w, px1), color);
+                                }
+                                i = j;
+                            }
+                        }
+                    }
+                }
+                y += above + rh;
+                layout.rows.push(row);
             }
-            let run: String = chars[i..j].iter().collect::<String>().replace('\t', "    ");
-            let style = Style { font: if bold { self.f.notes_bold } else { mono.font }, color, ..mono };
-            self.fonts.draw(scene, style, x, base, &run);
-            if under {
-                scene.rect(Rect::new(x, base + self.px(2.0), w, px1), color);
-            }
-            if strike {
-                scene.rect(Rect::new(x, ly + ch * 0.55, w, px1), color);
-            }
-            i = j;
+            line += 1;
         }
+        // The caret, where the rows put it (not in Read view).
+        if f.caret && !f.read {
+            if let Some(i) = layout.row_of(cur_line, cur_col) {
+                let r = &layout.rows[i];
+                let (x, base, size) = (r.x(cur_col), r.base, r.px);
+                if f.sel.is_some() {
+                    self.draw_selection_edge(scene, x, base, size, 1.0, self.last_key);
+                } else {
+                    let replacement = f.overwrite.then(|| b.replacement_len()).flatten().map(|n| r.x(cur_col + n) - x);
+                    self.draw_text_caret(scene, x, base, size, 1.0, self.last_key, replacement);
+                }
+            }
+        }
+        layout
     }
 
     /// The formatting rail in a note's margin (a column of buttons), or as
     /// a row under the strip when the margin is too narrow. Folded, it is
     /// one tab. A button lights when the caret's text already is that.
-    pub(crate) fn draw_format_rail(&mut self, scene: &mut Scene, e: &mut EditorPane, area: Rect, as_row: bool, folded: bool, active: &crate::notes_format::Active) {
+    /// `reserve`: the row's right end is left to the pane's own controls.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_format_rail(&mut self, scene: &mut Scene, e: &mut EditorPane, area: Rect, as_row: bool, folded: bool, active: &crate::notes_format::Active, reserve: f32) {
         use crate::notes_format::RAIL;
         let t = self.theme.clone();
         let (ink, paper) = (t.ink, t.paper);
@@ -1760,42 +2489,76 @@ impl App {
         let (mx, my) = self.mouse;
         let hair = self.px(m::HAIRLINE);
         let btn = self.px(34.0);
-        let draw = |app: &mut App, scene: &mut Scene, r: Rect, face: &str, lit: bool| {
+        let chord = if cfg!(target_os = "macos") { "⌘⌥" } else { "Ctrl+Alt+" };
+        let (reading, focusing) = (e.read_view, e.focus);
+        // Each button says what it does, and its keys, when the pointer rests.
+        let words = |hit: RailHit2, folded: bool| match hit {
+            RailHit2::Act(act) => {
+                let (name, key) = act.name();
+                format!("{name} · {chord}{key}")
+            }
+            RailHit2::Fold if folded => "Show the formatting tools".to_string(),
+            RailHit2::Fold => "Fold the formatting tools away".to_string(),
+            RailHit2::Read if reading => format!("Back to writing · {chord}R"),
+            RailHit2::Read => format!("Read view · {chord}R"),
+            RailHit2::Focus if focusing => format!("Show every paragraph · {chord}F"),
+            RailHit2::Focus => format!("Focus on this paragraph · {chord}F"),
+        };
+        let draw = |app: &mut App, scene: &mut Scene, r: Rect, face: &str, lit: bool, hit: RailHit2| {
             if lit {
                 scene.rect(r, ink);
             } else if r.contains(mx, my) {
                 scene.rect(r, crate::surface::mix(paper, ink, 0.08));
             }
             let st = Style { color: if lit { paper } else { ink }, ..strong };
-            let tw = app.fonts.measure(st, face);
-            app.fonts.draw(scene, st, (r.x + (r.w - tw) / 2.0).round(), (r.y + r.h * 0.64).round(), face);
+            let tw = app.fonts.measure_as_is(st, face);
+            app.fonts.draw_as_is(scene, st, (r.x + (r.w - tw) / 2.0).round(), (r.y + r.h * 0.64).round(), face);
+            app.offer_tip(crate::app::hover_key(&format!("note-rail:{hit:?}"), 0), r, words(hit, folded));
+        };
+        // Read and Focus are states of this view: icons, lit while on.
+        let toggle = |app: &mut App, scene: &mut Scene, r: Rect, hit: RailHit2| {
+            let (icon, lit) = if hit == RailHit2::Read { (icons::BOOK, reading) } else { (icons::CROSSHAIR, focusing) };
+            if lit {
+                scene.rect(r, ink);
+            }
+            let s = app.px(15.0);
+            let color = if lit { paper } else { ink };
+            app.icon_button(scene, icon, s, (r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round(), color, r, crate::app::hover_key(&format!("note-rail:{hit:?}"), 1), crate::app::IconMotion::Still);
+            app.offer_tip(crate::app::hover_key(&format!("note-rail:{hit:?}"), 0), r, words(hit, folded));
         };
         if as_row {
+            let area = Rect::new(area.x, area.y, (area.w - reserve).max(btn * 2.0), area.h);
             scene.rect(area, paper);
             scene.hline(area.x, area.bottom() - hair, area.w, hair, ink);
             let pad = self.px(8.0);
             if folded {
-                let tw = self.fonts.measure(strong, "▸ Aa");
+                let tw = self.fonts.measure_as_is(strong, "▸ Aa");
                 let r = Rect::new(area.x + pad, area.y, tw + self.px(20.0), area.h);
-                draw(self, scene, r, "▸ Aa", false);
+                draw(self, scene, r, "▸ Aa", false, RailHit2::Fold);
                 e.format_hits.push((r, RailHit2::Fold));
                 return;
             }
             let fold = Rect::new(area.right() - btn - pad, area.y, btn, area.h);
+            let read = Rect::new(fold.x - 2.0 * btn - pad, area.y, btn, area.h);
+            let focus = Rect::new(fold.x - btn - pad, area.y, btn, area.h);
+            toggle(self, scene, read, RailHit2::Read);
+            e.format_hits.push((read, RailHit2::Read));
+            toggle(self, scene, focus, RailHit2::Focus);
+            e.format_hits.push((focus, RailHit2::Focus));
             let mut x = area.x + pad;
             for act in RAIL {
                 let face = act.face();
                 let w = (self.fonts.measure(strong, face) + self.px(18.0)).max(btn);
                 // What does not fit is still in the palette (`note format`).
-                if x + w > fold.x - pad {
+                if x + w > read.x - pad {
                     break;
                 }
                 let r = Rect::new(x, area.y, w, area.h);
-                draw(self, scene, r, face, act.lit(active));
+                draw(self, scene, r, face, act.lit(active), RailHit2::Act(act));
                 e.format_hits.push((r, RailHit2::Act(act)));
                 x += w;
             }
-            draw(self, scene, fold, "◂", false);
+            draw(self, scene, fold, "◂", false, RailHit2::Fold);
             e.format_hits.push((fold, RailHit2::Fold));
             return;
         }
@@ -1804,7 +2567,7 @@ impl App {
             let r = Rect::new(area.x, area.y, area.w, btn);
             scene.rect(r, paper);
             scene.outline(r, hair, ink);
-            draw(self, scene, r, "▸", false);
+            draw(self, scene, r, "▸", false, RailHit2::Fold);
             e.format_hits.push((r, RailHit2::Fold));
             return;
         }
@@ -1817,13 +2580,20 @@ impl App {
                 scene.hline(area.x, y, area.w, hair, crate::surface::mix(paper, ink, 0.3));
             }
             let r = Rect::new(area.x, y, area.w, btn);
-            draw(self, scene, r, act.face(), act.lit(active));
+            draw(self, scene, r, act.face(), act.lit(active), RailHit2::Act(act));
             e.format_hits.push((r, RailHit2::Act(act)));
+            y += btn;
+        }
+        scene.hline(area.x, y, area.w, hair, crate::surface::mix(paper, ink, 0.3));
+        for hit in [RailHit2::Read, RailHit2::Focus] {
+            let r = Rect::new(area.x, y, area.w, btn);
+            toggle(self, scene, r, hit);
+            e.format_hits.push((r, hit));
             y += btn;
         }
         scene.hline(area.x, y, area.w, hair, ink);
         let r = Rect::new(area.x, y, area.w, btn);
-        draw(self, scene, r, "◂", false);
+        draw(self, scene, r, "◂", false, RailHit2::Fold);
         e.format_hits.push((r, RailHit2::Fold));
     }
 }

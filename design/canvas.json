@@ -305,6 +305,78 @@
       "h": 1000,
       "title": "Common ground \u00b7 record, verb, mark, bands",
       "page": "page-7"
+    },
+    {
+      "file": "NotifyListening.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-8",
+      "title": "A \u00b7 Listening"
+    },
+    {
+      "file": "NotifyDesk.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-8",
+      "title": "B \u00b7 Desk"
+    },
+    {
+      "file": "NotifyLines.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-8",
+      "title": "C \u00b7 Lines"
+    },
+    {
+      "file": "NotifyCommon.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-8",
+      "title": "Common ground \u00b7 the notice, the ladder, the limits"
+    },
+    {
+      "file": "DlFlight.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-9",
+      "title": "A \u00b7 Flight"
+    },
+    {
+      "file": "DlWire.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-9",
+      "title": "B \u00b7 Wire"
+    },
+    {
+      "file": "DlPeek.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-9",
+      "title": "C \u00b7 Peek"
+    },
+    {
+      "file": "DlCommon.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-9",
+      "title": "Common ground \u00b7 origins, landings, the icon, rules"
     }
   ],
   "annotations": [
@@ -459,11 +531,27 @@
       "w": 760,
       "page": "page-7",
       "text": "Bookmarks \u2014 one store for everything kept. Today six places keep a link (pins, folders, the reading list, saved commands, notes' sources, history); here they become one record with roles: in (collections), pin, to read, keyword, copy, quote, and here (personal or this project). One verb, \u2318D; one mark, the ribbon.\nA browses in the sidebar, B on one Library page, C nowhere: \u2318D keeps, \u2318K finds. Common ground (bottom right) holds the record, the verb, the bands and the two homes.\nSuggested mix: C's verb and recall everywhere (kept leads the palette and the address field), B's Library as the one place to tidy (the reading-list page grown up), and from A only Pinned and This project in the sidebar. Approve one or name the mix."
+    },
+    {
+      "id": "n-notify",
+      "x": 0,
+      "y": -170,
+      "w": 760,
+      "page": "page-8",
+      "text": "Notifications: three systems for sites that have news (mail, chat, calendars, GitHub, feeds). A listens to the open page: its notifications, its badge, the count in its title, with nothing to set up. B is a Desk fed by protocols, with no page running. C is lines: a small signed file per service, plus a switchboard that routes channels and holds them while you're busy.\nCommon ground (bottom right) holds the notice record, its place on the tab-state ladder, and the research that sets the limits: CEF has no Notification API and no Web Push, hidden pages slow down, and Gmail and 365 want OAuth.\nSuggested mix: A as the base (the shim and listening tabs, because every option needs the shim), C's switchboard and hold without lines at first, and from B only nus notify and GitHub. Approve one or name the mix."
+    },
+    {
+      "id": "n-downloads",
+      "x": 0,
+      "y": -170,
+      "w": 760,
+      "page": "page-9",
+      "text": "Downloads: three ways to show that a download happened and where it went, which is the downloads icon in the sidebar\u2019s foot. The sidebar is usually hidden, so each option also has to work against the hot edge. A sends the file there (a slip slides into the edge), B draws a rule there and makes the window\u2019s foot the progress bar, C brings the place to you (the sidebar\u2019s foot peeks out with the file on it).\nCommon ground (bottom right): motion only when you started it, never toward a place that isn\u2019t drawn, the icon\u2019s underline fills by bytes, reduced motion keeps the state and drops the travel.\nSuggested mix: A\u2019s slip for the click, landing in the corner and becoming B\u2019s foot rule for the duration; C\u2019s peek only for your first three downloads, as the lesson. Approve one or name the mix."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-7"
+    "page": "page-9"
   },
   "pages": [
     {
@@ -493,6 +581,14 @@
     {
       "id": "page-7",
       "name": "Bookmarks"
+    },
+    {
+      "id": "page-8",
+      "name": "Notifications"
+    },
+    {
+      "id": "page-9",
+      "name": "Downloads"
     }
   ]
 }

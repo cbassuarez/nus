@@ -158,7 +158,7 @@ pub fn refs(text: &str) -> Vec<Ref> {
     out
 }
 
-fn file_ref(w: &str, line: usize) -> Option<Ref> {
+pub(crate) fn file_ref(w: &str, line: usize) -> Option<Ref> {
     if w.contains("://") || !w.contains('/') {
         return None;
     }

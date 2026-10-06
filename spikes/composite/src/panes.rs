@@ -50,6 +50,10 @@ pub enum PaneHit {
     /// A lone pane: a shell beside it, or a page.
     SplitShell,
     SplitPage,
+    /// This pane kept beside every tab (anchor.rs); the anchor let go; closed.
+    Anchor(bool),
+    Unanchor,
+    CloseAnchor,
 }
 
 impl PaneHit {
@@ -64,6 +68,9 @@ impl PaneHit {
             PaneHit::Close(r) => format!("Close the {} pane · what runs there stops", side(r)),
             PaneHit::SplitShell => "Split · a shell beside this one, in the same folder".into(),
             PaneHit::SplitPage => "Split · a page beside this one".into(),
+            PaneHit::Anchor(_) => "Anchor · keep this pane beside every tab".into(),
+            PaneHit::Unanchor => "Let go · back into a tab of its own".into(),
+            PaneHit::CloseAnchor => "Close the anchored pane · what runs there stops".into(),
         }
     }
 }
@@ -194,15 +201,31 @@ impl App {
         // Alone, a pane offers its two splits: a shell (a terminal's
         // multiplexing, with the cursor) and a page. Split, the five below.
         let lone_shell = !split && !crate::private::enabled() && self.tabs.get(self.active).is_some_and(|t| matches!(t.left, Pane::Term(_)));
-        let lone: Vec<((&'static str, &'static str), PaneHit, crate::app::IconMotion)> = if split {
-            Vec::new()
+        use crate::app::IconMotion as Mo;
+        let items: Vec<((&'static str, &'static str), PaneHit, Mo)> = if split && self.anchor_lent_here() {
+            // The anchor on the right: let go, or close. Beside it, the
+            // tab's own pane can take its place or close.
+            if right {
+                vec![(icons::ANCHOR, PaneHit::Unanchor, Mo::Bob), (icons::CLOSE, PaneHit::CloseAnchor, Mo::Spin(90.0))]
+            } else {
+                vec![(icons::ANCHOR, PaneHit::Anchor(false), Mo::Bob), (icons::CLOSE, PaneHit::Close(false), Mo::Spin(90.0))]
+            }
+        } else if split {
+            vec![
+                (icons::ARROWS_OUT, PaneHit::Move(right), Mo::Still),
+                (icons::SWAP, PaneHit::Swap, Mo::Spin(180.0)),
+                (icons::SOLO, PaneHit::Solo(right), Mo::Pop),
+                (icons::TO_TAB, PaneHit::ToTab(right), Mo::Bob),
+                (icons::ANCHOR, PaneHit::Anchor(right), Mo::Bob),
+                (icons::CLOSE, PaneHit::Close(right), Mo::Spin(90.0)),
+            ]
         } else if lone_shell {
-            vec![(icons::TERMINAL, PaneHit::SplitShell, crate::app::IconMotion::Pop), (icons::GLOBE, PaneHit::SplitPage, crate::app::IconMotion::Pop)]
+            vec![(icons::TERMINAL, PaneHit::SplitShell, Mo::Pop), (icons::GLOBE, PaneHit::SplitPage, Mo::Pop), (icons::ANCHOR, PaneHit::Anchor(false), Mo::Bob)]
         } else {
             // A lone page's corner is the site's own; it stays clear.
             return;
         };
-        let n = if split { 5.0 } else { lone.len() as f32 };
+        let n = items.len() as f32;
         let k = if self.pane_drag.is_some() && split { 1.0 } else { self.corner_field(r, n) };
         if k <= 0.02 {
             return;
@@ -218,17 +241,6 @@ impl App {
         let wash = Rect::new(cx0 - self.px(4.0), cy - self.px(2.0), n * cell + self.px(8.0), cell + self.px(4.0));
         scene.push(nus_render::Instance::rounded(wash, self.px(6.0), crate::app::fade(self.paper(), 0.82 * k)));
         let solo = self.tabs.get(self.active).is_some_and(|t| t.solo);
-        let items = if split {
-            vec![
-                (icons::ARROWS_OUT, PaneHit::Move(right), crate::app::IconMotion::Still),
-                (icons::SWAP, PaneHit::Swap, crate::app::IconMotion::Spin(180.0)),
-                (icons::SOLO, PaneHit::Solo(right), crate::app::IconMotion::Pop),
-                (icons::TO_TAB, PaneHit::ToTab(right), crate::app::IconMotion::Bob),
-                (icons::CLOSE, PaneHit::Close(right), crate::app::IconMotion::Spin(90.0)),
-            ]
-        } else {
-            lone
-        };
         let last = items.len().saturating_sub(1);
         for (i, (icon, hit, motion)) in items.into_iter().enumerate() {
             // Each glyph blooms a beat after the one nearer the corner: the
@@ -240,7 +252,7 @@ impl App {
             }
             let rise = (1.0 - ki) * self.px(6.0);
             let c = Rect::new(cx0 + i as f32 * cell, cy, cell, cell);
-            let on = matches!(hit, PaneHit::Solo(_)) && solo;
+            let on = matches!(hit, PaneHit::Solo(_)) && solo || hit == PaneHit::Unanchor;
             let color = crate::app::fade(if on { self.surface.signal } else { ink }, ki);
             self.icon_button(scene, icon, isz, c.x + (cell - isz) / 2.0, c.y + (cell - isz) / 2.0 + rise, color, c, crate::app::hover_key("pane", i + if right { 10 } else { 0 }), motion);
             if ki > 0.5 {
@@ -289,6 +301,9 @@ impl App {
             PaneHit::Solo(r) => self.solo_pane(r),
             PaneHit::ToTab(r) => self.detach_pane(r),
             PaneHit::Close(r) => self.close_pane(r),
+            PaneHit::Anchor(r) => self.anchor_pane(r),
+            PaneHit::Unanchor => self.unanchor(),
+            PaneHit::CloseAnchor => self.close_anchor(),
             PaneHit::Move(r) => {
                 self.pane_drag = Some((self.active, r, x, y));
                 self.sidebar_hover = true;

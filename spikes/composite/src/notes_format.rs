@@ -455,6 +455,59 @@ pub fn renumber(lines: &[&str], from: usize) -> Vec<(usize, String)> {
     out
 }
 
+/// A note's open checklist items, outside code: (line, the line as written,
+/// the item's words).
+pub fn open_tasks(body: &str) -> Vec<(usize, String, String)> {
+    let lines: Vec<&str> = body.lines().collect();
+    let kinds = line_kinds(lines.iter().copied());
+    lines.iter().zip(kinds).enumerate().filter_map(|(i, (l, k))| {
+        if k != LineKind::Text {
+            return None;
+        }
+        let b = block(l);
+        if !matches!(b.kind, BlockKind::Check { checked: false, .. }) {
+            return None;
+        }
+        let words: String = l.chars().skip(b.indent + b.marker_len).collect();
+        let words = words.trim();
+        (!words.is_empty()).then(|| (i, l.to_string(), words.to_string()))
+    }).collect()
+}
+
+/// Where the link at a column goes: a Markdown link's address (the column
+/// on its words or its address), else a bare http(s) address there.
+pub fn link_at(line: &str, col: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        if chars[i] == '[' {
+            if let Some(close) = find(&chars, i + 1, n, &[']', '(']) {
+                if let Some(paren) = find(&chars, close + 2, n, &[')']) {
+                    if (i..=paren).contains(&col) {
+                        return Some(chars[close + 2..paren].iter().collect());
+                    }
+                    i = paren + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    let col = col.min(n);
+    let mut a = col;
+    while a > 0 && !chars[a - 1].is_whitespace() {
+        a -= 1;
+    }
+    let mut z = col;
+    while z < n && !chars[z].is_whitespace() {
+        z += 1;
+    }
+    let word: String = chars[a..z].iter().collect();
+    let w = word.trim_start_matches(['(', '<']).trim_end_matches(['.', ',', ';', ')', '>']);
+    (w.starts_with("http://") || w.starts_with("https://")).then(|| w.to_string())
+}
+
 /// Tick or untick a checklist item: the column of the character to change
 /// and what it becomes.
 pub fn toggle_box(line: &str) -> Option<(usize, char)> {
@@ -539,6 +592,25 @@ impl Act {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_tasks_are_unticked_items_outside_code() {
+        let body = "# Plan\n- [ ] write it\n- [x] done\n  * [ ] nested one\n```\n- [ ] not a task\n```\n- [ ] \n1. [ ] numbered is not a box";
+        let t = open_tasks(body);
+        assert_eq!(t.iter().map(|(l, _, w)| (*l, w.as_str())).collect::<Vec<_>>(), vec![(1, "write it"), (3, "nested one")]);
+        assert_eq!(t[1].1, "  * [ ] nested one");
+    }
+
+    #[test]
+    fn link_at_finds_the_address_from_words_or_address() {
+        let l = "see [the doc](https://x.dev/a) and note:abc";
+        assert_eq!(link_at(l, 6).as_deref(), Some("https://x.dev/a"));
+        assert_eq!(link_at(l, 20).as_deref(), Some("https://x.dev/a"));
+        assert_eq!(link_at(l, 1), None);
+        assert_eq!(link_at("[n](note:k1) after", 1).as_deref(), Some("note:k1"));
+        assert_eq!(link_at("go to https://a.b/c, then", 9).as_deref(), Some("https://a.b/c"));
+        assert_eq!(link_at("é [ü](https://ü.de) x", 3).as_deref(), Some("https://ü.de"));
+    }
 
     fn kinds(line: &str) -> Vec<(String, Style)> {
         let chars: Vec<char> = line.chars().collect();

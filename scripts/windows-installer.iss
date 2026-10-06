@@ -26,6 +26,7 @@
   #error Channel must be preview or release
 #endif
 #define UrlProgId BrowserKey + ".url"
+#define FileProgId BrowserKey + ".file"
 
 [Setup]
 AppId={#AppIdGuid}
@@ -199,6 +200,21 @@ begin
   RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\{#UrlProgId}');
   RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Clients\StartMenuInternet\{#BrowserKey}');
   RegDeleteValue(HKCU, 'Software\RegisteredApplications', '{#BrowserKey}');
+end;
+
+{ What FILE VIEWERS registered when asked: nus's document class and its
+  place in each kind's Open With list. }
+procedure RemoveFileType(const Ext: String);
+begin
+  RegDeleteValue(HKCU, 'Software\Classes\.' + Ext + '\OpenWithProgids', '{#FileProgId}');
+end;
+
+procedure RemoveFileTypes;
+begin
+  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\{#FileProgId}');
+  RemoveFileType('md'); RemoveFileType('markdown'); RemoveFileType('mdown');
+  RemoveFileType('pdf'); RemoveFileType('json'); RemoveFileType('csv');
+  RemoveFileType('tsv'); RemoveFileType('txt'); RemoveFileType('log');
 end;
 
 { nus running from this folder ------------------------------------------- }
@@ -671,6 +687,8 @@ begin
     end;
   end else if CurUninstallStep = usPostUninstall then begin
     RemoveFromPath;
+    RemoveBrowser;
+    RemoveFileTypes;
     if RemoveProfile then begin
       RemoveDir(ExpandConstant('{localappdata}\nus\installs'));
       RemoveDir(ExpandConstant('{localappdata}\nus\logs'));

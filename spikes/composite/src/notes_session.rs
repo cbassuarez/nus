@@ -545,6 +545,29 @@ fn canonical(p: &Path) -> PathBuf {
     PathBuf::from(c.to_string_lossy().trim_start_matches(r"\\?\"))
 }
 
+/// Tick the checklist item on a line of a note, open or not, as one undo
+/// step: only while the line still says what was shown (`expect`), so a
+/// stale list never ticks the wrong line. True when it was ticked.
+pub fn toggle_task(path: &Path, line: usize, expect: &str) -> Result<bool, NoteError> {
+    let (mut view, text) = attach(path)?;
+    let ticked = (line < text.len_lines()).then(|| {
+        let now: String = text.line(line).chars().collect();
+        let now = now.trim_end_matches(['\r', '\n']);
+        if now != expect {
+            return false;
+        }
+        let Some((col, c)) = crate::notes_format::toggle_box(now) else { return false };
+        let at = text.line_to_char(line) + col;
+        let mut next = text.clone();
+        next.remove(at..at + 1);
+        next.insert_char(at, c);
+        push(&mut view, &next, false);
+        true
+    }).unwrap_or(false);
+    detach(&view);
+    Ok(ticked)
+}
+
 /// A view goes away. The session stays while it has unsaved text: it
 /// keeps saving on its own, and closing never discards it.
 pub fn detach(view: &View) {
@@ -659,6 +682,17 @@ pub fn where_is(key: &NoteKey) -> Option<(PathBuf, String, Scope)> {
 /// The session's header and body as they stand (unsaved changes too).
 pub fn document(key: &NoteKey) -> Option<Document> {
     with(|s| s.sessions.get(key).map(Session::document))
+}
+
+/// Notes open in some view, in any window: key, file, title, home and how
+/// many views hold it. For the note picker's "open elsewhere".
+pub fn open() -> Vec<(NoteKey, PathBuf, String, String, usize)> {
+    with(|s| {
+        let mut v: Vec<_> = s.sessions.values().filter(|x| x.views > 0)
+            .map(|x| (x.key.clone(), x.path.clone(), x.title(), x.home.name(), x.views, x.last_change)).collect();
+        v.sort_by(|a, b| b.5.cmp(&a.5));
+        v.into_iter().map(|(k, p, t, h, n, _)| (k, p, t, h, n)).collect()
+    })
 }
 
 /// Sessions with text not yet saved, for Close and Quit to ask about.

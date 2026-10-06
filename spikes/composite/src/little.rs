@@ -211,7 +211,10 @@ impl App {
         // A requested URL is more important than a decorative introduction.
         if self.splash.is_some() { self.finish_arrival(); self.splash = None; }
         if let Some(p) = url.strip_prefix("file://") {
-            self.open_file(std::path::Path::new(p), false);
+            // A proper file URL (percent-encoded, file:///C:/… on Windows),
+            // or the bare form an older launch wrote.
+            let path = url::Url::parse(url).ok().and_then(|u| u.to_file_path().ok()).unwrap_or_else(|| std::path::PathBuf::from(p));
+            self.open_from_system(&path);
             self.window.focus_window();
             return;
         }
@@ -231,6 +234,20 @@ impl App {
             self.open_url_by_other(url);
         } else {
             self.little_request = Some(url.to_string());
+        }
+    }
+
+    /// A file the system handed nus: a PDF in Chromium's viewer, the kinds
+    /// nus reads in its viewers (FILE VIEWERS), anything else in the editor.
+    fn open_from_system(&mut self, path: &std::path::Path) {
+        if crate::default_browser::files::Doc::of(path) == Some(crate::default_browser::files::Doc::Pdf) && !crate::private::enabled() {
+            if let Ok(url) = path.canonicalize().map_err(|_| ()).and_then(|p| url::Url::from_file_path(p)) {
+                self.open_url(url.as_str(), true);
+                return;
+            }
+        }
+        if !self.open_document(path, false) {
+            self.open_file(path, false);
         }
     }
 

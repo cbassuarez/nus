@@ -36,9 +36,15 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 - **Popups → stacks.** `on_before_popup` hands the URL to the app instead of
   loading in place; the app opens it as a stack child (or split / new tab by
   rule). `window.open` from CDP needs `userGesture: true` or Chrome blocks it.
-- **DX12 swapchain alpha is Opaque.** `get_capabilities().alpha_modes` is
-  `[Opaque]` here, so window opacity has no effect on Windows without
-  DirectComposition; the OPACITY row says so. Metal/Wayland to be checked.
+- **A DX12 swapchain for an HWND is opaque.** Its `alpha_modes` are
+  `[Opaque]`; one made for a DirectComposition visual offers PreMultiplied.
+  So the instance asks for `Dx12SwapchainKind::DxgiFromVisual`, and the
+  see-through windows are created without a redirection bitmap (`see_through`
+  in main.rs), or the bitmap's black shows under the visual.
+- **Grounds replace, they do not blend.** A pane's background at 60% drawn
+  over the window's 60% paper would come out 84% opaque. `Scene::ground`
+  draws with a replace blend, so each region is exactly as thin as LOOK
+  says; WHOLE WINDOW is one `Scene::fade` pass over the finished frame.
 - **Luau in-process.** mlua (luau, vendored) adds ~1 min to a clean build
   and sandboxes fine: `io`/`os`/`require` are absent in `sandbox(true)`.
 
@@ -119,7 +125,6 @@ source scripts/env.sh && cd spikes/composite && RUST_LOG=info cargo run
 ## Not done here (v1)
 - Font fallback (symbols, emoji) — `⌘`/`▸`/`↵` are boxes in Plex Mono.
 - Colour emoji (RGBA atlas), Sixel, output folding, custom hint regexes.
-- Window transparency on Windows (needs a DirectComposition swapchain).
 - Single instance over a named pipe / unix socket (loopback TCP here).
 - Reader mode images (captions only here) and link following.
 

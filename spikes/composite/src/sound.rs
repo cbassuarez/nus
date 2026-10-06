@@ -380,7 +380,7 @@ impl Player {
 // ── Events ───────────────────────────────────────────────────────────────
 
 /// Things the app does that can make a sound. The name is what rules see.
-pub const EVENTS: [(&str, &str, &str); 15] = [
+pub const EVENTS: [(&str, &str, &str); 16] = [
     ("launch", "arrival", "with the splash"),
     ("mercury.claim", "arrival", "earning the silver n"),
     ("tab.switch", "page", ""),
@@ -396,6 +396,7 @@ pub const EVENTS: [(&str, &str, &str); 15] = [
     ("bell", "error", "inactive tabs only"),
     ("onboarding.tick", "sparkle", ""),
     ("hover", "", "quiet unless you say so · 150ms throttle"),
+    ("download.done", "ready", "only when it took over 5 s"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

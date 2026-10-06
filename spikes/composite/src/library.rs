@@ -809,7 +809,7 @@ impl App {
     pub(crate) fn draw_library(&mut self,scene:&mut Scene,h:&mut HomePane) {
         let outer=scene.clip();let r=h.rect;let scale=self.scale;let px=|v:f32|v*scale;
         let ink=self.theme.ink;let dim=self.theme.dim;let paper=self.paper();let label=self.label();
-        scene.layer(Some(r));scene.rect(r,paper);h.hits.clear();h.keys.clear();h.library_ui.hits.clear();
+        scene.layer(Some(r));self.pane_ground(scene,r,paper);h.hits.clear();h.keys.clear();h.library_ui.hits.clear();
         if h.library_ui.draft.is_some(){self.draw_library_form(scene,h);scene.layer(outer);return;}
         if h.library_ui.size==0.0{h.library_ui.size=1.0;}
         let current=h.reading.as_ref().and_then(|rd|self.library.entries.get(&rd.id)).cloned();
@@ -854,7 +854,8 @@ impl App {
                 reading.reader.layout(&self.fonts,&f,width,rs,ink);
                 reading.reader.saved.viewport=Some(body);reading.reader.saved.scale=rs;
                 if let Some(p)=anchor{if !reading.reader.restore_reading_position(&p,&reading.version){reading.note="Saved copy · reading position restored approximately".into();}}
-                reading.reader.draw(scene,&mut self.fonts,&f,body,rs,ink,dim,paper,self.surface.signal);
+                let ground=self.pane_paper_of(paper);
+                reading.reader.draw(scene,&mut self.fonts,&f,body,rs,ink,dim,ground,self.surface.signal);
                 if h.library_ui.focus.is_none() && !h.library_ui.confirm && reading.reader.saved.find.is_none() {
                     if let Some((_, end))=reading.reader.saved.selection.filter(|(a,b)|a!=b) {
                         if let Some((_,rect,style))=reading.reader.saved.drawn.iter().find(|(line,_,_)|*line==end.line) {

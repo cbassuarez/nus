@@ -68,6 +68,9 @@ pub enum PaletteMode {
     /// A note's title, or its tags, for the focused note.
     NoteTitle,
     NoteTags,
+    /// The header's note button: a new note, one open elsewhere, a recent
+    /// one, or a search (notes_ui.rs `note_open_rows`).
+    NoteOpen,
     /// Everything kept, narrowed by words (keep_find.rs).
     Kept,
     /// A word that opens the kept item a slip was showing.
@@ -202,6 +205,10 @@ pub enum Action {
     PaneRedo,
     /// A pane op from the palette, on the active tab.
     Pane(crate::director::Op),
+    /// The focused pane kept beside every tab (anchor.rs); let go; closed.
+    Anchor,
+    Unanchor,
+    CloseAnchor,
     /// The focused pane (or tab) to another window, or a new one.
     SendTo(crate::send::Dest),
     /// PROMPT · SEARCH ENGINE: a template of your own, from the palette.
@@ -597,6 +604,11 @@ pub enum SideHit {
     NewWindow,
     /// The footer's folder: the sidebar's FILES page, on or off.
     Files,
+    /// The footer's pencil: the sidebar's NOTES page; its +, a row, a task's box.
+    Notes,
+    NotesNew,
+    NotesRow(usize),
+    NotesTick(usize),
     /// The tree's head: keep this folder (bind the window), or let it follow.
     FilesPin,
     /// The tree's root, up one.
@@ -825,11 +837,22 @@ pub struct Tab {
     /// A shell stack's place in the signal's family (shell_colors.rs); the
     /// color is worked out from it and the theme.
     pub shell_slot: Option<u8>,
+    /// While the window's anchor stands in this tab's right slot
+    /// (anchor.rs): the tab's own right pane, which side had focus, its
+    /// width and solo, until the anchor moves on.
+    pub held_right: Option<Pane>,
+    pub held_focus_right: bool,
+    pub held_split_w: Option<f32>,
+    pub held_solo: bool,
 }
 
 impl Tab {
     pub(crate) fn waiting(&self) -> bool {
-        let w = |p: &Pane| matches!(p, Pane::Term(t) if t.waiting);
+        let w = |p: &Pane| match p {
+            Pane::Term(t) => t.waiting,
+            Pane::Web(w) => w.tab.shared.borrow().notices.unseen > 0,
+            _ => false,
+        };
         w(&self.left) || self.right.as_ref().is_some_and(w)
     }
 
@@ -1075,6 +1098,10 @@ pub struct App {
     pub tiling: Option<crate::tiles::Tiling>,
     /// Every layout change goes through here, and can be taken back.
     pub director: crate::director::Director,
+    /// The pane this window keeps beside every tab (anchor.rs).
+    pub anchor: Option<crate::anchor::Anchor>,
+    /// The revision of what opens files that this window last drew.
+    pub default_files_seen: u64,
     /// What a divider drag started from, recorded for undo when it ends.
     pub drag_from: Option<crate::director::Op>,
     /// Pane mode (Ctrl+Alt+P): single keys drive the director.
@@ -1321,6 +1348,7 @@ pub struct App {
     /// Which page the sidebar shows, and the tree behind FILES.
     pub side_page: crate::files::SidePage,
     pub tree: crate::files::Tree,
+    pub notes_side: crate::notes_side::NotesSide,
     /// The folder this window is bound to, when it is: its name, its
     /// tree, where new shells are born.
     pub workspace: Option<std::path::PathBuf>,
@@ -1356,6 +1384,12 @@ pub struct App {
     /// Closing a stack's parent asks first: the parent's index.
     pub confirm_stack: Option<usize>,
     pub window_focused: bool,
+    /// A page or a source told you something while nus was behind: the
+    /// host rings the Dock once and clears it (notices.rs).
+    pub notice_ring: bool,
+    /// What sources with no page said (`nus notify`, GitHub), for the
+    /// away rows.
+    pub sources: crate::notices::Sources,
     pub palette: Option<(PaletteMode, String)>,
     /// Find: the bar and its ladder (find.rs).
     pub find_bar: Option<crate::find::Bar>,
@@ -1544,6 +1578,8 @@ impl App {
             tab_menu_last: None,
             tiling: None,
             director: Default::default(),
+            anchor: None,
+            default_files_seen: 0,
             drag_from: None,
             pane_mode: false,
             pane_zoomed: None,
@@ -1706,6 +1742,7 @@ impl App {
             inbound: None,
             side_page: Default::default(),
             tree: Default::default(),
+            notes_side: Default::default(),
             workspace: None,
             avatar: None,
             avatar_pick: None,
@@ -1727,6 +1764,8 @@ impl App {
             welcome_reach: 0.0,
             confirm_stack: None,
             window_focused: true,
+            notice_ring: false,
+            sources: Default::default(),
             user_name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "you".into()),
             palette: None,
             find_bar: None,
@@ -2341,6 +2380,43 @@ impl App {
         self.theme.paper
     }
 
+    /// How much of the desktop a region's ground lets through, as LOOK ·
+    /// OPACITY says: PANES thins the panes, CHROME TOO the strip and the
+    /// sidebar as well. WHOLE WINDOW keeps every ground opaque and thins
+    /// the finished frame instead (`window_fade`), words and all. Opaque
+    /// wherever the window cannot be see-through.
+    pub(crate) fn ground_alpha(&self, chrome: bool) -> f32 {
+        use crate::surface::OpacityOn;
+        if !self.target.translucent() {
+            return 1.0;
+        }
+        match self.surface.opacity_on {
+            OpacityOn::Panes if chrome => 1.0,
+            OpacityOn::Panes | OpacityOn::Chrome => self.surface.opacity,
+            OpacityOn::Window => 1.0,
+        }
+    }
+
+    /// A pane's background in `color`, at the panes' opacity. A ground
+    /// replaces what is beneath, so it may lie over the window's own.
+    pub(crate) fn pane_ground(&self, scene: &mut Scene, r: Rect, color: nus_render::Color) {
+        scene.ground(r, self.pane_paper_of(color));
+    }
+
+    /// `color` as thin as the panes are.
+    pub(crate) fn pane_paper_of(&self, color: nus_render::Color) -> nus_render::Color {
+        [color[0], color[1], color[2], color[3] * self.ground_alpha(false)]
+    }
+
+    /// The whole frame's opacity: below 1 only for WHOLE WINDOW.
+    pub(crate) fn window_fade(&self) -> f32 {
+        if self.target.translucent() && self.surface.opacity_on == crate::surface::OpacityOn::Window {
+            self.surface.opacity
+        } else {
+            1.0
+        }
+    }
+
     /// The colour for words on a `fill`: paper or ink, whichever reads
     /// better, made to reach 4.5:1. A button that fills on hover asks this
     /// so its label flips with the fill, whatever the fill turns out to be.
@@ -2378,6 +2454,7 @@ impl App {
     }
 
     pub fn layout(&mut self) {
+        self.tend_anchor();
         let c = self.content_rect();
         if let Some(s) = self.settings_pane_mut() { s.rect = c; }
         let split_w = self.px(m::SPLIT);
@@ -2477,6 +2554,7 @@ impl App {
 
     /// Time-based housekeeping, once per loop iteration.
     pub fn tick(&mut self) {
+        self.tend_anchor();
         // The page's tint moved (a slider, a preset, a rule): the words
         // are made to read on the new paper.
         if self.legible_on != (self.surface.base, self.surface.tint) {
@@ -2622,6 +2700,7 @@ impl App {
             self.register_window();
         }
         self.tend_idle_tabs();
+        self.tend_notices();
         self.tend_swipe();
         self.prewake();
         self.welcome_tick();
@@ -4342,6 +4421,7 @@ impl App {
 
     pub fn redraw(&mut self) {
         if self.hatch_state.main_hidden {return;}
+        self.tend_anchor();
         let changed = if self.arriving() { false } else { self.pump() };
         if !(changed || self.dirty || self.frames == 0) {
             return;
@@ -4363,8 +4443,10 @@ impl App {
             self.gpu.upload_glyph(x, y, w, h, &data);
         }
         self.window.pre_present_notify();
-        // Outside a rounded shell: the opposite theme's paper until the window
-        // itself is transparent (v1).
+        // Outside a rounded shell: the desktop, or the opposite theme's paper
+        // where the window cannot be see-through. Elsewhere the chrome's
+        // paper, as thin as LOOK makes the chrome; panes thinner than that
+        // lay their own ground over it (`build`).
         let clear = if arrival_frame && self.target.translucent() {
             [0.0; 4]
         } else if self.surface.shell_radius > 0.0 && self.target.translucent() {
@@ -4373,7 +4455,7 @@ impl App {
             if self.theme.mode == nus_render::Mode::Ink { Theme::paper().paper } else { Theme::ink().paper }
         } else {
             let p = self.paper();
-            let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
+            let a = self.ground_alpha(true);
             [p[0] * a, p[1] * a, p[2] * a, a]
         };
         let presented = self.gpu.render(&mut self.target, &self.scene, clear);
@@ -4790,11 +4872,13 @@ impl App {
         let win = Rect::new(0.0, 0.0, w, h);
         let radius = self.px(self.surface.shell_radius);
         scene.corner_radius = radius;
+        scene.fade = Some(self.window_fade()).filter(|&f| f < 1.0);
+        let chrome_a = self.ground_alpha(true);
         // During first arrival the window clear is transparent. Supply the
         // normal paper inside the composition so it can be inked into view.
         if self.arriving() && radius == 0.0 {
             let mut paper = self.paper();
-            paper[3] = if self.target.translucent() { self.surface.opacity } else { 1.0 };
+            paper[3] = chrome_a;
             scene.rect(win, paper);
         }
         let sw = self.px(self.surface.shell_width);
@@ -4803,8 +4887,13 @@ impl App {
             // clear color. It is as translucent as the flat window's clear
             // would be, so a radius never makes the window opaque.
             let p = self.paper();
-            let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
-            scene.push(nus_render::Instance::rounded(win, radius, [p[0], p[1], p[2], a]));
+            scene.push(nus_render::Instance::rounded(win, radius, [p[0], p[1], p[2], chrome_a]));
+        }
+        // The panes' own ground, under everything drawn in them (the pane
+        // texture included), when they are thinner than the chrome around.
+        if self.ground_alpha(false) < chrome_a {
+            let p = self.paper();
+            self.pane_ground(&mut scene, self.content_rect(), p);
         }
         let stops = self.surface.ramp(ink);
         let angle = self.surface.angle;
@@ -5024,6 +5113,8 @@ impl App {
             let x = if self.sidebar_right() { sb.x - self.px(m::STRUCTURE) } else { sb.right() };
             scene.vline(x, sb.y, sb.h, self.px(m::STRUCTURE), ink);
         }
+        // A download you started: the notch on the edge, and the peek.
+        self.draw_download_peek(&mut scene);
 
         if self.sidebar_visible() { self.draw_window_menu(&mut scene); }
         self.draw_compact_tip(&mut scene);
@@ -5088,7 +5179,7 @@ impl App {
             };
             let base = r.y + self.px(14.0) + self.px(16.0);
             let mut px = r.x + self.px(18.0);
-            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name", PaletteMode::ShellAdd => "shell", PaletteMode::NoteCapture | PaletteMode::NoteTitle | PaletteMode::NoteTags => "note", PaletteMode::Kept => "kept", PaletteMode::KeepKeyword => "keyword" };
+            let word = match mode { PaletteMode::Application => "menu", PaletteMode::Go => "go", PaletteMode::New => "new", PaletteMode::Url => "url", PaletteMode::Rename => "name", PaletteMode::SaveLayout => "layout", PaletteMode::SyncFolder | PaletteMode::SyncGit | PaletteMode::SyncJoin => "sync", PaletteMode::Place => "place", PaletteMode::Settings => "settings", PaletteMode::RenameTab(_) => "tab", PaletteMode::IconTab(_) => "icon", PaletteMode::Folder(_) => "folder", PaletteMode::Preference(_) => "choose", PaletteMode::Assistant(id) => crate::assistants::NAMES[id as usize], PaletteMode::PromptPin | PaletteMode::SavedEdit(_) => "save", PaletteMode::SavedName(_) => "name", PaletteMode::ShellAdd => "shell", PaletteMode::NoteCapture | PaletteMode::NoteTitle | PaletteMode::NoteTags | PaletteMode::NoteOpen => "note", PaletteMode::Kept => "kept", PaletteMode::KeepKeyword => "keyword" };
             px += self.fonts.draw(&mut scene, wm, px, base, word) + self.px(12.0);
             let big = Style {
                 font: self.f.ui,
@@ -5636,6 +5727,12 @@ impl App {
             self.draw_sidebar_menus(scene, sb);
             return;
         }
+        if self.side_page == crate::files::SidePage::Notes {
+            self.draw_notes_side(scene, sb, sb.y + row_h, g.foot_y);
+            self.draw_sidebar_footer(scene, sb, g.foot_y);
+            self.draw_sidebar_menus(scene, sb);
+            return;
+        }
         self.draw_pins(scene,sb);
         let tiled_ids: Vec<u64> = self.tiling.as_ref().map(|t| t.ids()).unwrap_or_default();
         let tabs = std::mem::take(&mut self.tabs);
@@ -5771,7 +5868,25 @@ impl App {
                 };
                 if cell != crate::tab_state::Cell::Quiet {
                     let cx = self.draw_cell(scene, &cell, n, right, y + row_h / 2.0, active);
+                    // What a page said, in words, on the cell (notices.rs).
+                    let cr = Rect::new(cx, y, right - cx, row_h);
+                    if members.is_none() && cr.contains(self.mouse.0, self.mouse.1) {
+                        if let Some(words) = self.notice_words(tab) {
+                            self.offer_tip(hover_key("notice", tab.id as usize), cr, words);
+                        }
+                    }
                     right = cx - self.px(8.0);
+                }
+                // A site you listen to: the broadcast mark, before the cell.
+                let listening = members.is_none() && matches!(&tab.left, Pane::Web(w) if w.asleep.is_none() && crate::notices::listening(&w.tab.shared.borrow().url));
+                if listening {
+                    let lsz = self.px(10.0);
+                    let lr = Rect::new(right - lsz, y + (row_h - lsz) / 2.0, lsz, lsz);
+                    self.fonts.draw_icon(scene, nus_render::text::icons::BROADCAST, lsz, lr.x, lr.y, if active { ink } else { t.dim });
+                    if lr.contains(self.mouse.0, self.mouse.1) {
+                        self.offer_tip(hover_key("listening", tab.id as usize), lr, "listening · this page never sleeps, so it can tell you".into());
+                    }
+                    right -= lsz + self.px(6.0);
                 }
             }
             if tiled_ids.contains(&tab.id) {
@@ -6099,6 +6214,10 @@ impl App {
             SideHit::LookQuick(q) => self.quick_look(q),
 
             SideHit::Files => self.toggle_files(),
+            SideHit::Notes => self.toggle_notes_side(),
+            SideHit::NotesNew => self.notes_side_new(),
+            SideHit::NotesRow(k) => self.notes_side_click(k),
+            SideHit::NotesTick(k) => self.notes_side_tick(k),
             SideHit::FilesPin => {
                 if self.workspace.is_some() {
                     self.bind_workspace(None);
@@ -7010,6 +7129,7 @@ impl App {
 
     /// Remove the panel (skip, or done). The marker is written either way.
     pub(crate) fn dismiss_hints(&mut self) {
+        self.park_anchor();
         crate::install::complete();
         self.previous_install = None;
         if !self.hints.iter().all(|&h| h) {
@@ -7150,7 +7270,7 @@ impl App {
             Pane::Ports(p) => {
                 let r = p.rect;
                 let t = self.theme.clone();
-                scene.rect(r, t.paper);
+                self.pane_ground(scene, r, t.paper);
                 self.board.rect = r;
                 self.draw_board(scene, r, false);
             }
@@ -7200,11 +7320,10 @@ impl App {
                 }
                 let clip = Rect::new(r.x, r.y + hh, r.w, r.h - hh);
                 scene.layer(Some(clip));
-                // The rules' paper for this tab; carries the window opacity so
-                // a translucent window stays translucent.
+                // The rules' paper for this tab, as thin as the panes: a
+                // ground, so it takes the place of the window's paper.
                 if let Some(bg) = look.bg {
-                    let a = if self.target.translucent() { self.surface.opacity } else { 1.0 };
-                    scene.rect(clip, [bg[0], bg[1], bg[2], a]);
+                    self.pane_ground(scene, clip, bg);
                 }
                 // In a tunnel the page takes the tunnel's hue, faintly; the
                 // rails and the tag below say where it goes.
@@ -7355,7 +7474,7 @@ impl App {
                     self.draw_pip_notice(scene, p.page);
                 } else if let Some(reader) = p.reader.as_mut() {
                     let rf = self.reader_fonts();
-                    let paper = self.paper();
+                    let paper = self.pane_paper_of(self.paper());
                     reader.draw(scene, &mut self.fonts, &rf, p.page, self.scale, ink, t.dim, paper, self.surface.signal);
                 } else if let Some(bind) = bind {
                     // Stretched past its end, the page moves and the pane shows behind it.
@@ -7916,6 +8035,7 @@ impl App {
             PaletteMode::NoteCapture => return self.note_capture_rows(input),
             PaletteMode::NoteTitle => return self.note_title_rows(input),
             PaletteMode::NoteTags => return self.note_tags_rows(input),
+            PaletteMode::NoteOpen => return self.note_open_rows(input),
             PaletteMode::IconTab(i) => {
                 if !q.is_empty() {
                     rows.push(row("→", format!("{q}  as the icon"), Action::IconTab(i, q.chars().take(2).collect())));
@@ -8157,6 +8277,12 @@ impl App {
             Action::PinUrl(url) => self.pin_url(&url),
             Action::PinActive => self.pin_tab(self.active),
             Action::PaneUndo => self.pane_undo(),
+            Action::Anchor => {
+                let right = self.tabs.get(self.active).is_some_and(|t| t.focus_right && t.right.is_some());
+                self.anchor_pane(right);
+            }
+            Action::Unanchor => self.unanchor(),
+            Action::CloseAnchor => self.close_anchor(),
             Action::PaneRedo => self.pane_redo(),
             Action::Pane(op) => { self.direct(op); }
             Action::SendTo(dest) => self.send_focused(dest),
@@ -8324,6 +8450,7 @@ impl App {
 
     pub fn key_in(&mut self, ev: &KeyIn) {
         let _key = crate::perf::scope("input_handler");
+        self.tend_anchor();
         if ev.state == ElementState::Pressed {
             self.last_key = crate::clock::now();
             self.dirty = true;
@@ -9078,7 +9205,7 @@ impl App {
         self.next_id += 1;
         let shell_slot = self.new_shell_slot(&left);
         let look = self.look_with(&left, None, shell_slot);
-        let mut tab = Tab { id, parent: None, closes_on_back: false, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, picked: None, peek: None, hatch: false, split_w: None, solo: false, look, shell_slot };
+        let mut tab = Tab { id, parent: None, closes_on_back: false, left, right, focus_right: false, pinned: false, last_active: crate::clock::now(), name: None, emoji: None, tint: None, picked: None, peek: None, hatch: false, split_w: None, solo: false, look, shell_slot, held_right: None, held_focus_right: false, held_split_w: None, held_solo: false };
         Self::fit_palette(&self.theme, &mut tab);
         tab
     }
@@ -9471,6 +9598,7 @@ impl App {
             let was_active = self.tabs.get(self.active).map(|t| t.id);
             for id in &batch {
                 let Some(i) = self.tabs.iter().position(|t| t.id == *id) else { continue };
+                self.anchor_release(i);
                 if self.tabs.len() <= 1 {
                     self.tabs[i].left = Pane::Home(crate::home::HomePane::new());
                     self.tabs[i].right = None;
@@ -9504,6 +9632,9 @@ impl App {
         }
         for (id, right) in gone {
             let Some(i) = self.tabs.iter().position(|t| t.id == id) else { continue };
+            if self.anchor_ended(i, right) {
+                continue;
+            }
             let tab = &mut self.tabs[i];
             if right {
                 tab.right = None;
@@ -9616,8 +9747,10 @@ impl App {
         self.active = i;
         let tab = &mut self.tabs[i];
         for p in std::iter::once(&mut tab.left).chain(tab.right.as_mut()) {
-            if let Pane::Term(t) = p {
-                t.waiting = false;
+            match p {
+                Pane::Term(t) => t.waiting = false,
+                Pane::Web(w) => w.tab.shared.borrow_mut().notices.seen(),
+                _ => {}
             }
         }
         self.mru.retain(|&t| t != i);
@@ -9861,6 +9994,7 @@ impl App {
         let Pane::Term(t) = &tab.left else { return };
         let Some(id) = t.pty.held_id().map(String::from) else { return };
         let Some(info) = nus_pty::hold::Info::read(&Self::hold_dir(), &id) else { return };
+        self.anchor_release(i);
         let tab = self.tabs.remove(i);
         self.tile_forget(tab.id);
         self.closed.push(Closed::Held(info));
@@ -9898,6 +10032,7 @@ impl App {
     /// with a foreground process asks first.
     pub(crate) fn close_tabs(&mut self, force: bool) {
         if self.settings_view.is_some() { self.close_settings(); return; }
+        self.park_anchor();
         self.close_timeline();
         let force = force || !self.behavior.close_asks;
         let mut targets: Vec<usize> = if self.selected.is_empty() {
@@ -10053,6 +10188,10 @@ impl App {
     }
 
     pub(crate) fn toggle_split(&mut self) {
+        if self.anchor_lent_here() {
+            self.notice(nus_render::text::icons::ANCHOR, "The Anchor Holds The Right", "let it go to split this tab");
+            return;
+        }
         let Some(t) = self.tabs.get(self.active) else { return };
         // A shell splits into another shell (that's how a terminal
         // multiplexes); anything else gets a page beside it.
@@ -10374,6 +10513,7 @@ impl App {
     }
 
     pub fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        self.tend_anchor();
         let (x, y) = self.mouse;
         let pressed = state == ElementState::Pressed;
         if button == MouseButton::Left { self.caret_dragging = pressed; self.last_key = crate::clock::now(); }
@@ -10432,6 +10572,7 @@ impl App {
         if self.start_mouse(button, state, x, y) {
             return;
         }
+        if pressed && button==MouseButton::Left && self.download_peek_click(x,y) {return;}
         if pressed && button==MouseButton::Left && (self.dl_menu || !(self.sidebar_visible()&&self.sidebar_rect().contains(x,y))) && self.download_click(x,y) {return;}
         if pressed && button == MouseButton::Left && self.toast_click(x, y) {
             return;
@@ -10982,6 +11123,9 @@ impl App {
             return;
         }
         if self.ask_wheel(x, y, dy_px) {
+            return;
+        }
+        if self.notes_side_wheel(x, y, dy_px) {
             return;
         }
         if self.tree_wheel(x, y, dy_px) {
@@ -11756,6 +11900,9 @@ impl App {
             return;
         }
         for &(i, right) in gone.iter().rev() {
+            if self.anchor_ended(i, right) {
+                continue;
+            }
             let Some(tab) = self.tabs.get_mut(i) else { continue };
             if right {
                 tab.right = None;

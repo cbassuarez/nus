@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Common ground</title>
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,wght@1,400;1,500&display=swap">
+  <style>
+body { margin: 0; font-family: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; background: #141414; color: #ece7da; font-size: 13px; }
+.dim { color: #8a857a; } .sig { color: #c8102e; }
+h1 { font-family: 'Newsreader', Georgia, serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0; white-space: nowrap; }
+h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a857a; font-weight: 500; margin: 0; }
+h2 b { color: #ece7da; font-weight: 600; }
+.note { font-size: 12px; line-height: 1.6; color: #8a857a; }
+.note b { color: #ece7da; font-weight: 600; }
+.note code, .tbl code { color: #ece7da; font-size: 11px; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.box { border: 1.5px solid #ece7da; padding: 12px 14px; box-sizing: border-box; }
+.tbl { display: grid; font-size: 11px; line-height: 1.45; border-top: 1.5px solid #ece7da; }
+.tbl > div { padding: 6px 8px 6px 0; border-bottom: 1px solid rgba(236,231,218,.16); }
+.tbl .h { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #8a857a; }
+.tip { position: absolute; background: #ece7da; color: #141414; font-size: 10.5px; line-height: 1.45; padding: 5px 8px; white-space: nowrap; z-index: 20; box-shadow: 3px 3px 0 rgba(0,0,0,.35); }
+.tip b { font-weight: 600; }
+
+/* the live stage: a nus window, sidebar hidden (the default) */
+.stage { position: relative; width: 820px; height: 560px; border: 1.5px solid #ece7da; box-sizing: border-box; background: #0d0d0d; overflow: hidden; flex-shrink: 0; }
+.strip { position: absolute; left: 0; right: 0; top: 0; height: 30px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border-bottom: 1.5px solid #ece7da; box-sizing: border-box; font-size: 11px; background: #141414; }
+.strip .wm { font-family: Newsreader, Georgia, serif; font-style: italic; font-size: 17px; }
+.strip .end { margin-left: auto; display: flex; gap: 12px; align-items: center; color: #ece7da; }
+.content { position: absolute; left: 0; right: 0; top: 30px; bottom: 0; overflow: hidden; }
+.page { position: absolute; left: 4px; right: 0; top: 0; bottom: 0; background: #efeae0; color: #1b1b1b; padding: 26px 40px; box-sizing: border-box; font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; }
+.page h3 { margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
+.page .meta { font-size: 12px; color: #7a756a; margin-bottom: 16px; }
+.page .bar { height: 7px; background: rgba(27,27,27,.12); margin: 7px 0; border-radius: 1px; }
+.assets { margin-top: 20px; border: 1px solid rgba(27,27,27,.18); border-radius: 4px; width: 560px; font-size: 12.5px; }
+.assets .ah { padding: 8px 12px; font-weight: 600; border-bottom: 1px solid rgba(27,27,27,.14); background: rgba(27,27,27,.03); }
+.assets .ar { display: flex; gap: 9px; align-items: center; padding: 8px 12px; border-bottom: 1px solid rgba(27,27,27,.1); }
+.assets .ar:last-child { border-bottom: 0; }
+.assets .ar a { color: #0b57d0; text-decoration: none; }
+.assets .ar .sz { margin-left: auto; color: #7a756a; font-size: 11.5px; }
+.edge { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: rgba(236,231,218,.14); z-index: 6; }
+.notch { position: absolute; left: 0; width: 4px; height: 20px; bottom: 14px; background: #c8102e; z-index: 7; }
+.cursor { position: absolute; left: 0; top: 0; z-index: 30; width: 14px; height: 20px; }
+.ring { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border: 1.5px solid #c8102e; border-radius: 50%; z-index: 29; opacity: 0; }
+.slip { position: absolute; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 11px; background: #141414; color: #ece7da; border: 1.5px solid #ece7da; box-sizing: border-box; font-size: 11.5px; white-space: nowrap; box-shadow: 4px 4px 0 rgba(0,0,0,.35); z-index: 5; }
+.slip .h { color: #8a857a; font-size: 10px; }
+.slip .pg { position: absolute; left: -1.5px; bottom: -1.5px; height: 2px; background: #c8102e; }
+.caption { position: absolute; right: 10px; bottom: 8px; font-size: 10px; color: #7a756a; z-index: 8; }
+
+/* the filmstrip */
+.film { display: flex; gap: 10px; }
+.fr { display: flex; flex-direction: column; gap: 5px; width: 154px; }
+.fr .t { font-size: 10px; color: #8a857a; letter-spacing: .04em; }
+.fr .t b { color: #ece7da; font-weight: 600; }
+.mini { position: relative; width: 154px; height: 98px; border: 1.5px solid #ece7da; box-sizing: border-box; background: #efeae0; overflow: hidden; }
+.mini .ms { position: absolute; left: 0; right: 0; top: 0; height: 9px; background: #141414; border-bottom: 1px solid #ece7da; }
+.mini .sb { position: absolute; left: 0; top: 9px; bottom: 0; width: 44px; background: #141414; border-right: 1.5px solid #ece7da; }
+.mini .sb i { display: block; height: 1px; margin: 9px 5px 0; background: rgba(236,231,218,.25); }
+.mini .sb .ft { position: absolute; left: 0; right: 0; bottom: 0; height: 14px; border-top: 1px solid rgba(236,231,218,.3); display: flex; align-items: center; justify-content: space-around; padding: 0 2px; color: #ece7da; }
+.mini .ed { position: absolute; left: 0; top: 9px; bottom: 0; width: 2px; background: rgba(27,27,27,.2); }
+.mini .ln { position: absolute; height: 3px; background: rgba(27,27,27,.13); }
+.mini .lk { position: absolute; height: 3px; background: #0b57d0; }
+.mini .sl { position: absolute; height: 12px; background: #141414; border: 1px solid #ece7da; box-sizing: border-box; box-shadow: 2px 2px 0 rgba(0,0,0,.3); }
+.mini .nt { position: absolute; left: 0; width: 2px; height: 8px; bottom: 4px; background: #c8102e; }
+.mini .dt { position: absolute; width: 4px; height: 4px; border-radius: 2px; background: #c8102e; }
+.mini .rl { position: absolute; background: #c8102e; }
+.mini .ghost { position: absolute; height: 12px; border: 1px dashed rgba(27,27,27,.4); box-sizing: border-box; }
+@keyframes cur {
+  0.00% { transform: translate(560px,140px) }
+  3.57% { transform: translate(560px,140px) }
+  13.57% { transform: translate(120px,241px) }
+  15.00% { transform: translate(120px,243px) }
+  16.43% { transform: translate(120px,241px) }
+  34.29% { transform: translate(162px,213px) }
+  94.29% { transform: translate(162px,213px) }
+  100.00% { transform: translate(560px,140px) }
+}
+@keyframes ring {
+  0.00% { opacity:0; transform: scale(.4) }
+  14.29% { opacity:0; transform: scale(.4) }
+  15.00% { opacity:1; transform: scale(.6) }
+  20.71% { opacity:0; transform: scale(1.3) }
+  100.00% { opacity:0 }
+}
+
+  </style>
+</helmet>
+<div style="width:1440px; height:1000px; box-sizing:border-box; padding: 34px 40px; display:flex; flex-direction:column; gap: 22px; overflow:hidden;">
+<div style="display:flex; gap: 40px; align-items: flex-end;"><h1>Common ground</h1><div class="note" style="max-width: 980px; padding-bottom: 6px;"><b>What all three share.</b> Where the movement starts, where it’s allowed to land, what the icon says afterwards, and the rules that keep it from becoming noise. The research is underneath: two peers fly or flash, and one of them flew to places that weren’t there.</div></div><div style="display:flex; gap: 32px; align-items:flex-start;">
+<div class="col" style="gap:18px"><div class="col"><h2><b>where it starts</b></h2><div class="tbl" style="grid-template-columns:150px 1fr;width:440px">
+<div class="h">it began with</div><div class="h">it moves from</div>
+<div>a link you clicked</div><div class="dim">the click point (the gesture nus already tracks for <code>download_origin</code>)</div>
+<div>save image · video</div><div class="dim">the image’s own rect; the slip carries its thumbnail</div>
+<div>save as PDF · print</div><div class="dim">the page’s centre</div>
+<div>ask where to save</div><div class="dim">after the dialog closes, from the window’s centre</div>
+<div>the page, on its own</div><div class="dim"><b style="color:#ece7da">nothing moves</b>: the icon’s state only. A page can’t make the chrome perform.</div>
+<div>a dangerous file</div><div class="dim">nothing: the interstitial speaks first, and only after <i>keep</i> does it start</div>
+</div></div><div class="col"><h2><b>where it lands</b></h2><div class="tbl" style="grid-template-columns:150px 1fr;width:440px">
+<div class="h">the window shows</div><div class="h">it lands on</div>
+<div>sidebar revealed</div><div class="dim">the downloads icon in the foot (left or right)</div>
+<div>sidebar hidden</div><div class="dim">the hot edge, at the foot’s height: a notch. Never a place that isn’t drawn.</div>
+<div>Downloads open in a tab</div><div class="dim">its list: the new row slides in at the top, and nothing else moves</div>
+<div>another window</div><div class="dim">only the window where it began; the others just update the icon</div>
+<div>fullscreen · video · focus</div><div class="dim">nothing moves; the notch waits for you to come back</div>
+</div></div></div>
+<div class="col" style="gap:18px;width:330px;flex-shrink:0"><div class="col"><h2><b>the icon after</b> · words in the tooltip</h2><div style="border-top:1.5px solid #ece7da"><div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(236,231,218,.16)"><span style="position:relative;display:flex;width:18px;height:22px;align-items:flex-start;justify-content:center;color:#ece7da"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg></span><span style="width:104px;font-size:11px;white-space:nowrap">nothing new</span><span class="dim" style="font-size:10.5px">“Downloads · Ctrl+J”</span></div><div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(236,231,218,.16)"><span style="position:relative;display:flex;width:18px;height:22px;align-items:flex-start;justify-content:center;color:#c8102e"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg><span style="position:absolute;left:0;bottom:0;width:18px;height:2px;background:rgba(200,16,46,.25)"></span><span style="position:absolute;left:0;bottom:0;width:7px;height:2px;background:#c8102e;opacity:1.0"></span></span><span style="width:104px;font-size:11px;white-space:nowrap">working</span><span class="dim" style="font-size:10.5px">“nus-0.0.3-x64.msi · 41% · 12 s left”</span></div><div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(236,231,218,.16)"><span style="position:relative;display:flex;width:18px;height:22px;align-items:flex-start;justify-content:center;color:#c8102e"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg><span style="position:absolute;left:0;bottom:0;width:18px;height:2px;background:rgba(200,16,46,.25)"></span><span style="position:absolute;left:0;bottom:0;width:11px;height:2px;background:#c8102e;opacity:1.0"></span></span><span style="width:104px;font-size:11px;white-space:nowrap">several</span><span class="dim" style="font-size:10.5px">“3 downloading · 61% of 212 MB”</span></div><div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(236,231,218,.16)"><span style="position:relative;display:flex;width:18px;height:22px;align-items:flex-start;justify-content:center;color:#8a857a"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg><span style="position:absolute;left:0;bottom:0;width:18px;height:2px;background:rgba(200,16,46,.25)"></span><span style="position:absolute;left:0;bottom:0;width:7px;height:2px;background:#c8102e;opacity:0.45"></span></span><span style="width:104px;font-size:11px;white-space:nowrap">paused</span><span class="dim" style="font-size:10.5px">“paused · 34 of 84 MB · click to resume”</span></div><div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(236,231,218,.16)"><span style="position:relative;display:flex;width:18px;height:22px;align-items:flex-start;justify-content:center;color:#ece7da"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg><span style="position:absolute;right:-3px;top:-3px;width:6px;height:6px;border-radius:3px;background:#c8102e"></span></span><span style="width:104px;font-size:11px;white-space:nowrap">done, unseen</span><span class="dim" style="font-size:10.5px">“nus-0.0.3-x64.msi saved · Enter opens”</span></div><div style="display:flex;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid rgba(236,231,218,.16)"><span style="position:relative;display:flex;width:18px;height:22px;align-items:flex-start;justify-content:center;color:#c8102e"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg><span style="position:absolute;left:0;bottom:0;width:18px;height:2px;background:rgba(200,16,46,.25)"></span><span style="position:absolute;left:0;bottom:0;width:18px;height:2px;background:repeating-linear-gradient(90deg,#c8102e 0 2px,transparent 2px 4px);opacity:1.0"></span></span><span style="width:104px;font-size:11px;white-space:nowrap">failed</span><span class="dim" style="font-size:10.5px">“interrupted · network · ready to retry”</span></div></div></div>
+<div class="col"><h2><b>reduced motion</b> · the whole of it</h2><div style="display:flex;gap:10px"><div class="mini"><div class="ms"></div><div class="ln" style="left:12px; top:18px; width:70px"></div><div class="ln" style="left:12px; top:26px; width:60px"></div><div class="ln" style="left:12px; top:34px; width:66px"></div><div class="lk" style="left:20px; top:52px; width:40px"></div><div class="ed"></div><div class="nt"></div></div><div class="mini"><div class="ms"></div><div class="ln" style="left:52px; top:18px; width:70px"></div><div class="ln" style="left:52px; top:26px; width:60px"></div><div class="ln" style="left:52px; top:34px; width:66px"></div><div class="lk" style="left:60px; top:52px; width:40px"></div><div class="sb"><i></i><i></i><i></i><i></i><div class="ft"><span style="display:flex"><svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg></span><span style="display:flex"><svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M3 6h6l2 2h10v11H3z"/></svg></span><span style="display:flex"><svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;color:#c8102e"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg></span><span style="display:flex"><svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg></span></div></div><div class="dt" style="left:30px;top:82px"></div></div></div><div class="note" style="font-size:10.5px">The state appears in place. No slip, no rule run, no peek.</div></div></div>
+<div class="col" style="gap:12px;width:500px;flex-shrink:0"><div class="note box" style="padding:9px 12px"><b>Only when you did it.</b> Motion plays only when <code>download_origin</code> is Some, meaning your click, your key or a nus action. Background and page-started downloads update the icon silently. It’s the same test that already decides whether a download may keep the machine awake.</div><div class="note box" style="padding:9px 12px"><b>Once per gesture.</b> Three or more files within 600 ms are one movement labelled “3 files”. Repeats of the same URL within 5 s are not shown again.</div><div class="note box" style="padding:9px 12px"><b>Reduced motion.</b> Nothing travels. The notch or icon state appears with one 80 ms tint, and the tooltip carries the words. The register scales every duration as it does today (<code>Motion::travel</code> clamps to 0.16–0.44 s).</div><div class="note box" style="padding:9px 12px"><b>Sound.</b> Two new events on the sound page: <code>download.start</code> (quiet by default) and <code>download.done</code> → <i>ready</i>, played only when the download took over 5 s, like <code>page.ready</code>.</div><div class="note box" style="padding:9px 12px"><b>The icon becomes a dial.</b> Today the foot icon turns signal with a full underline while anything is active. Instead the underline fills by bytes, and the done dot is the one the menu drawer already uses. Words live in the tooltip, never in caps on the row.</div>
+<h2 style="margin-top:4px"><b>research</b></h2><div class="note" style="font-size:11px;line-height:1.55"><b>Safari.</b> The file’s icon arcs from the click to the Downloads stack in the Dock, or to the toolbar button. When the stack isn’t in the Dock, people report the icon stuck on screen. <b>Lesson:</b> never fly to a place that isn’t drawn, which is why the hidden sidebar gets a notch.</div><div class="note" style="font-size:11px;line-height:1.55"><b>Chrome (2023).</b> Replaced the bottom shelf with a toolbar button that animates progress, and opens its bubble when a download completes. <b>Lesson:</b> progress on the button is right; opening a panel unasked is loud (C’s risk).</div><div class="note" style="font-size:11px;line-height:1.55"><b>Firefox.</b> An animated arrow drops into the toolbar button. Support threads ask how to turn it off. <b>Lesson:</b> once, short, and under the motion setting.</div><div class="note" style="font-size:11px;line-height:1.55"><b>nus today.</b> The Downloads icon goes signal with a full underline while active. <code>IconMotion::Bob</code> exists “like a download landing” but downloads never use it. Save as PDF raises a toast.</div></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>

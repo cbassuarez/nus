@@ -58,6 +58,8 @@ pub enum Act {
     RetryNote(crate::notes_store::NoteKey),
     /// Save what this note holds as a new note beside it.
     SaveNoteCopy(crate::notes_store::NoteKey),
+    /// Open where a notice leads, in a new tab (notices.rs).
+    OpenUrl(String),
 }
 
 impl Act {
@@ -81,6 +83,7 @@ impl Act {
             Act::UndoCapture(..) => ("Undo", String::new()),
             Act::RetryNote(_) => ("Retry", String::new()),
             Act::SaveNoteCopy(_) => ("Save Copy", String::new()),
+            Act::OpenUrl(_) => ("Open", String::new()),
         }
     }
 }
@@ -338,6 +341,7 @@ impl App {
                 }
             }
             Some(Act::RevealDownload(key)) => self.download_action(crate::downloads::Hit::Reveal(key)),
+            Some(Act::OpenUrl(url)) => self.open_url(&url, true),
             Some(Act::OpenPort(key)) => {
                 self.board.toast = None;
                 self.ports_act(&key, crate::ports::Act::Open);

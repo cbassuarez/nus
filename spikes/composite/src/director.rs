@@ -165,6 +165,18 @@ impl App {
         if self.director.can_redo() && hit("pane redo layout again") {
             rows.push(("pane redo · the layout change again (ctrl+alt+shift+z)".into(), Action::PaneRedo));
         }
+        if self.anchor_lent_here() {
+            if hit("pane unanchor let go anchor") {
+                rows.push(("pane let go · the anchored pane into a tab of its own".into(), Action::Unanchor));
+            }
+            if hit("pane close anchor anchored") {
+                rows.push(("pane close anchored · what runs there stops".into(), Action::CloseAnchor));
+            }
+            // The right side is the anchor's: the split rows don't apply.
+            return rows;
+        } else if hit("pane anchor keep beside every tab") {
+            rows.push(("pane anchor · keep this pane beside every tab".into(), Action::Anchor));
+        }
         let Some(t) = self.tabs.get(self.active) else { return rows };
         let tab = t.id;
         if t.right.is_none() {
@@ -241,7 +253,16 @@ impl App {
 
     /// Apply an op. None: it couldn't be done. Some(None): done, and there
     /// is no way back. Some(Some(inverse)): done, and this undoes it.
+    /// Ops see the tabs as they are: the anchor (anchor.rs) is taken out
+    /// of the tab in front first and lent back after.
     fn apply_op(&mut self, op: Op) -> Option<Option<Op>> {
+        self.park_anchor();
+        let out = self.apply_op_here(op);
+        self.tend_anchor();
+        out
+    }
+
+    fn apply_op_here(&mut self, op: Op) -> Option<Option<Op>> {
         let out = match op {
             Op::SplitShell { tab } => {
                 let i = self.tab_at(tab)?;

@@ -101,6 +101,33 @@ impl App {
             let go = tab_of(&e.tab, &self.tabs).map(Action::SwitchTab).unwrap_or_else(|| Action::ShellAt(e.cwd.clone()));
             out.push(PaletteRow { num: "✗".into(), text: format!("{} · exit {} · {} · {}", crate::journal::oneline(&e.cmd), e.exit.unwrap_or(0), crate::journal::when(e.start), crate::plate::tail(&e.cwd)), action: go });
         }
+        // What pages and sources told you (notices.rs), newest first.
+        let mut told: Vec<(u64, PaletteRow)> = Vec::new();
+        for (i, t) in self.tabs.iter().enumerate() {
+            for p in std::iter::once(&t.left).chain(t.right.as_ref()) {
+                let crate::app::Pane::Web(w) = p else { continue };
+                let s = w.tab.shared.borrow();
+                let site = crate::sites::host_of(&s.url);
+                for n in s.notices.recent.iter().filter(|n| n.wall >= since) {
+                    told.push((n.wall, PaletteRow { num: "●".into(), text: format!("{site} · {} · {}", n.line(), crate::journal::when(n.wall)), action: Action::SwitchTab(i) }));
+                }
+            }
+        }
+        for n in self.sources.recent.iter().filter(|n| n.notice.wall >= since) {
+            let action = match n.open.clone() {
+                Some(url) => Action::NewBrowser(url),
+                None => continue,
+            };
+            let mark = if n.to_you { "●" } else { "○" };
+            told.push((n.notice.wall, PaletteRow { num: mark.into(), text: format!("{} · {} · {}", n.source, n.notice.line(), crate::journal::when(n.notice.wall)), action }));
+        }
+        told.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        for (_, row) in told {
+            if out.len() >= 6 {
+                break;
+            }
+            out.push(row);
+        }
         // What ran long and finished.
         for e in entries.iter().filter(|e| e.exit == Some(0) && e.ms >= 30_000) {
             if out.len() >= 6 {

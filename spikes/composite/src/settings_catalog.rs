@@ -3,7 +3,7 @@
 use super::*;
 
 fn switch(hit: Hit) -> Option<(&'static str, Hit, Hit, bool)> {
-    macro_rules! switches { ($($variant:ident => $title:literal),* $(,)?) => {
+    macro_rules! switches { ($($variant:ident => $title:expr),* $(,)?) => {
         match hit { $(Hit::$variant(v) => Some(($title, Hit::$variant(true), Hit::$variant(false), v)),)* _ => None }
     }; }
     switches! {
@@ -16,11 +16,11 @@ fn switch(hit: Hit) -> Option<(&'static str, Hit, Hit, bool)> {
         CopyOnSelect => "COPY SELECTED TEXT", MiddlePaste => "PASTE WITH MIDDLE CLICK", PageSmooth => "SMOOTH PAGE SCROLLING",
         PaneDivider => "RESIZE SPLIT PANES", Blocks => "COMMAND STATUS MARKERS", Journal => "REMEMBER COMMANDS I RUN",
         PortsRemember => "REMEMBER PORT LABELS", ClickToSource => "OPEN SOURCE FROM A PAGE", Remember => "REMEMBER OPEN TABS",
-        HandsSubmit => "CONFIRM FORM SUBMISSION", ProgressSidebar => "SIDEBAR PROGRESS", ProgressTaskbar => "DOCK / TASKBAR PROGRESS",
+        HandsSubmit => "CONFIRM FORM SUBMISSION", ProgressSidebar => "SIDEBAR PROGRESS", ProgressTaskbar => "TASKBAR PROGRESS",
         SshIntegration => "SHELL INTEGRATION OVER SSH", Selvedge => "LETTER PLACE EDGES", ForgeGit => "GIT USES THE FORGE SIGN-IN", Dedupe => "DUPLICATE PAGE NOTICE", SyncSession => "SYNC OPEN TABS",
-        SyncAtQuit => "SYNC WHEN QUITTING", PortsToast => "NEW PORT NOTIFICATIONS", PortsProbe => "DETECT WEB SERVERS",
+        SyncAtQuit => "SYNC WHEN QUITTING", PortsToast => "NEW PORT NOTIFICATIONS", GithubNotices => "GITHUB NOTIFICATIONS", PortsProbe => "DETECT WEB SERVERS",
         HatchAutohide => "HIDE HATCH WHEN UNFOCUSED", HatchStatus => "COMPACT WORK STATUS", HatchBackground => "KEEP NUS IN BACKGROUND", HatchDim => "DIM BEHIND MODAL", HatchNotify => "COMPLETION NOTICES", Phone => "PHONE ACCESS", SoundOn => "APP SOUNDS",
-        StartupSound => "LAUNCH SOUND", MenuEnabled=>"MENU BAR / TRAY ICON", MenuNames=>"SHOW TASK & FILE NAMES", MenuRecent=>"INCLUDE FINISHED ITEMS"
+        StartupSound => "LAUNCH SOUND", MenuEnabled=>if cfg!(target_os="macos"){"MENU BAR ICON"}else{"TRAY ICON"}, MenuNames=>"SHOW TASK & FILE NAMES", MenuRecent=>"INCLUDE FINISHED ITEMS"
     }
 }
 
@@ -56,7 +56,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::Reaction(Reaction::Expressive) => "Give activity more visible movement while keeping the pace calm.",
         Hit::ReactTo(source, on) => return Some(format!("{} the carapace respond to {}.", if on { "Let" } else { "Do not let" }, source.name())),
         Hit::ApplyBlueprint => "Apply the Blueprint palette, Areal Mono Medium, a gliding underline cursor and a subtle stitch texture.",
-        Hit::MenuEnabled(true)=>"Show nus in your menu bar or tray.",Hit::MenuEnabled(false)=>"Use the drawer from the nus footer only.",
+        Hit::MenuEnabled(true)=>if cfg!(target_os="macos"){"Show nus in your menu bar."}else{"Show nus in your tray."},Hit::MenuEnabled(false)=>"Use the drawer from the nus footer only.",
         Hit::MenuSignal(crate::menu_drawer::SignalStyle::Dot)=>"A quiet mark with an activity or attention dot.",
         Hit::MenuSignal(crate::menu_drawer::SignalStyle::Count)=>"Show the number of active tasks and downloads.",
         Hit::MenuSignal(crate::menu_drawer::SignalStyle::Text)=>"Show a short status, such as 2 active.",
@@ -151,6 +151,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::SyncAtQuit(true) => "Attempt a final sync when quitting.", Hit::SyncAtQuit(false) => "Quit without starting a sync.",
         Hit::Phone(true) => "Serve a phone view on your network.", Hit::Phone(false) => "Stop access; revoke the old link.",
         Hit::PortsToast(true) => "Notify when a new port appears.", Hit::PortsToast(false) => "Update the list without a toast.",
+        Hit::GithubNotices(true) => "Ask GitHub for your notifications.", Hit::GithubNotices(false) => "Leave GitHub's notifications on GitHub.",
         Hit::PortsProbe(true) => "Send HTTP requests to identify apps.", Hit::PortsProbe(false) => "List ports without probing them.",
         Hit::PortsShow(k, on) => return Some(format!("{} {} in the port list.", if on { "Include" } else { "Hide" }, ["system services", "UDP listeners", "connections", "Docker ports"][k.min(3) as usize])),
         Hit::PortsPoll(n) => return Some(format!("Refresh the port list every {n}s.")),
@@ -214,7 +215,7 @@ impl App {
                         "SHELL COLORS"=>Some("When a script sets the terminal's colors (OSC 10/11: kitty's set-colors, a base16 script), nus can take them for the whole window: paper or ink from the background, the accent from the foreground. Offer puts a chip on the pane to apply them; Always applies them at once; Pane only keeps them in that terminal. nus theme <name> and nus look do the same on purpose."),
                         "PROGRAM COLORS"=>Some("claude, codex, htop and every TUI pick colors against someone else's background, and some of that text can't be read on yours. The grade moves only the unreadable text toward ink until it meets the contrast you pick (WCAG: 3:1, 4.5:1 AA, 7:1 AAA). Text that already reads is left alone."),
                         "TRUECOLOR"=>Some("Programs that send 24-bit color ignore your theme. The theme's sixteen snaps each of those colors to the nearest of the theme's sixteen, so every program wears the theme. In rules.luau, program(p) gives one program its own sixteen, remaps a color it hardcodes, or sets these per program."),
-                        "PROGRESS"=>Some("A command can report how far along it is (OSC 9;4, as winget, some build tools and a one-line printf in a script do). nus draws it as a bar along the pane's top, and, with these on, as a line under the tab in the sidebar and on the taskbar button (Windows), so you can look away while it runs. Rules see it too: on_progress."),
+                        "PROGRESS"=>Some(if cfg!(windows) {"A command can report how far along it is (OSC 9;4, as winget, some build tools and a one-line printf in a script do). nus draws it as a bar along the pane's top, and, with these on, as a line under the tab in the sidebar and on the taskbar button, so you can look away while it runs. Rules see it too: on_progress."} else {"A command can report how far along it is (OSC 9;4, as winget, some build tools and a one-line printf in a script do). nus draws it as a bar along the pane's top, and, with this on, as a line under the tab in the sidebar, so you can look away while it runs. Rules see it too: on_progress."}),
                         "SCROLLBACK"=>Some("Lines a new shell keeps behind it; shells already open keep what they started with. Restored with the session."),
                         _=>None,
                     };

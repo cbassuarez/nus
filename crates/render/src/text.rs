@@ -715,6 +715,43 @@ impl FontSystem {
         LabelText::Shared(label)
     }
 
+    /// Where each character of `text` starts, as `draw_as_is` lays it out:
+    /// one stop per character and one after the last, from 0. A cluster
+    /// of several characters (a ligature) shares its width evenly, so a
+    /// caret can stand between any two characters.
+    pub fn stops(&self, s: Style, text: &str) -> Vec<f32> {
+        let starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+        let mut widths = vec![0.0f32; starts.len()];
+        let glyphs = self.shape(s.font, s.px, text);
+        // Advance per cluster, by the cluster's first byte.
+        let mut clusters: Vec<(usize, f32)> = Vec::new();
+        for g in glyphs.iter() {
+            let at = g.cluster as usize;
+            match clusters.iter_mut().find(|(c, _)| *c == at) {
+                Some((_, w)) => *w += g.x_advance + s.tracking,
+                None => clusters.push((at, g.x_advance + s.tracking)),
+            }
+        }
+        clusters.sort_by_key(|(c, _)| *c);
+        for (k, &(at, w)) in clusters.iter().enumerate() {
+            let end = clusters.get(k + 1).map_or(text.len(), |(c, _)| *c);
+            let first = starts.partition_point(|&b| b < at);
+            let last = starts.partition_point(|&b| b < end);
+            let n = last.saturating_sub(first).max(1);
+            for wi in widths.iter_mut().take(last.max(first + 1).min(starts.len())).skip(first) {
+                *wi = w / n as f32;
+            }
+        }
+        let mut out = Vec::with_capacity(starts.len() + 1);
+        let mut x = 0.0;
+        out.push(x);
+        for w in widths {
+            x += w;
+            out.push(x);
+        }
+        out
+    }
+
     /// Width of `text` without drawing it.
     pub fn measure(&self, s: Style, text: &str) -> f32 {
         if s.tracking > 0.0 {
@@ -779,6 +816,7 @@ pub mod icons {
     icon!(MAXIMIZE, "square");
     icon!(CLOSE, "x");
     icon!(PIN, "push-pin");
+    icon!(ANCHOR, "anchor");
     icon!(CARET_RIGHT, "caret-right");
     icon!(CARET_DOWN, "caret-down");
     icon!(STACK, "stack");
@@ -833,6 +871,7 @@ pub mod icons {
     icon!(CIRCLE, "circle");
     icon!(BOOK, "book-open");
     icon!(BOOK_TEXT, "book-open-text");
+    icon!(CROSSHAIR, "crosshair-simple");
     icon!(CONSOLE, "terminal");
     icon!(NETWORK, "network");
     icon!(PLANET, "planet");

@@ -196,6 +196,11 @@ pub fn ensure() -> bool {
         no_sandbox: test_unsandboxed() as i32,
         windowless_rendering_enabled: 1,
         external_message_pump: 1,
+        // Where a page paints no background, white, as in Chrome. CEF's
+        // default (alpha 0) makes an off-screen browser paint nothing there,
+        // so pages that assume the white canvas (Google's sign-in) showed
+        // the pane, or the desktop, through. Every browser inherits it.
+        background_color: 0xFFFF_FFFF,
         user_agent_product: format!("Chrome/{}", crate::chromium_version())
             .as_str()
             .into(),

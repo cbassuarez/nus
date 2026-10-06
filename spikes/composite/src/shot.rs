@@ -1357,6 +1357,21 @@ impl App {
                 eprintln!("RESOURCE_STATS {rest} browsers={} replay_bytes={} tabs={} rss_kib={}",crate::browser::live_count(),streams,self.tabs.len(),rss);
             }
             "asserttabs" => assert_eq!(self.tabs.len(), rest.parse::<usize>().expect("tab count")),
+            // `assertanchor none`, or `assertanchor <kind>`: the window's
+            // anchor is that kind of pane (term, web, editor) and stands on
+            // screen as the right pane of the tab in front.
+            "assertanchor" => {
+                if rest == "none" {
+                    assert!(self.anchor.is_none(), "an anchor at step `{step}`");
+                } else {
+                    assert!(self.anchor_lent_here(), "the anchor is not beside the tab in front at step `{step}`");
+                    let t = &self.tabs[self.active];
+                    let kind = match t.right.as_ref() { Some(Pane::Term(_)) => "term", Some(Pane::Web(_)) => "web", Some(Pane::Editor(_)) => "editor", Some(_) => "other", None => "missing" };
+                    assert_eq!(kind, rest, "anchored pane at step `{step}`");
+                    let r = t.right.as_ref().unwrap().rect();
+                    assert!(r.x > 0.0 && r.w > 1.0 && r.right() <= self.target.size.0 as f32 + 1.0, "the anchor is off screen: {r:?}");
+                }
+            }
             "newwindowlook" => {
                 self.behavior.new_window = match rest {
                     "prompt" => crate::settings::NewWindow::Prompt,
@@ -1381,6 +1396,18 @@ impl App {
             "compact" => self.toggle_compact(),
             "atlas" | "orrery" => self.open_orrery(false),
             "settings" => self.open_settings(),
+            // `railclick 3`: press the focused note's fourth formatting-rail
+            // button, as the mouse would.
+            "railclick" => {
+                let n: usize = rest.trim().parse().expect("railclick <index>");
+                let hits = self.focused_editor().expect("railclick: no editor").format_hits.clone();
+                eprintln!("shot: rail has {} buttons", hits.len());
+                let (r, h) = *hits.get(n).expect("railclick: no such button");
+                eprintln!("shot: rail button {n} is {h:?}");
+                self.mouse_moved(r.x + r.w * 0.5, r.y + r.h * 0.5);
+                self.mouse_button(MouseButton::Left, ElementState::Pressed);
+                self.mouse_button(MouseButton::Left, ElementState::Released);
+            }
             "headerclick" => {
                 use crate::app::CrumbHit;
                 let hit = match rest { "settings" => CrumbHit::Settings, "assistant" => CrumbHit::Assistant, "note" => CrumbHit::Note, _ => panic!("unknown header button: {rest}") };
@@ -1718,6 +1745,16 @@ impl App {
                 assert!(self.look_scroll>0.0,"footer scroll did not move");
             }
             "radius" => {self.surface.shell_radius=rest.parse().unwrap();self.save_prefs();self.dirty=true;}
+            // `opacity 0.6 chrome`: LOOK's OPACITY and what it thins (panes, chrome, window).
+            "opacity" => {
+                use crate::surface::OpacityOn;
+                let mut w=rest.split_whitespace();
+                self.surface.opacity=w.next().and_then(|v|v.parse::<f32>().ok()).expect("opacity <0.5..1>").clamp(0.5,1.0);
+                if let Some(on)=w.next() {
+                    self.surface.opacity_on=match on {"panes"=>OpacityOn::Panes,"chrome"=>OpacityOn::Chrome,"window"=>OpacityOn::Window,other=>panic!("opacity: unknown target {other}")};
+                }
+                self.save_prefs();self.dirty=true;
+            }
             // Deterministic material proofs, separate from the real shell/browser probes.
             "carapacefixture" => {
                 if rest == "off" { self.carapace.fixture = None; } else {
@@ -1774,6 +1811,16 @@ impl App {
                 name=>assert!(rows.iter().any(|d|d.name==name),"missing {name}: {rows:?}"),
             }}
             "downloadhover"=>{let r=self.download_ui.anchor.expect("footer download icon");self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);}
+            // The download peek (download_peek.rs). Focus is the app's own flag, never the OS's.
+            "peekfocus"=>{self.window_focused=true;}
+            "peekhover"=>{let r=self.download_ui.peek.rect.expect("peek out");self.mouse_moved(r.x+r.w*0.5,r.y+r.h*0.5);}
+            "peekassert"=>{let mut w=rest.split_whitespace();match (w.next().unwrap_or(""),w.next()){
+                ("out",_)=>assert!(self.download_ui.peek.rect.is_some(),"peek should be out"),
+                ("away",_)=>assert!(self.download_ui.peek.rect.is_none(),"peek should be away"),
+                ("shelf",Some(n))=>assert_eq!(self.shelf_h(self.list_rect().w)>0.0,n!="0","shelf {n}"),
+                ("state",Some(want))=>{let got=format!("{:?}",self.download_dial()).to_lowercase();assert!(got.contains(want),"dial {got}, wanted {want}");},
+                (other,_)=>panic!("peekassert {other}?"),
+            }}
             "sideclick" => {
                 let r = self.side_hits.iter().rev().find(|(_, h)| format!("{h:?}") == rest).expect("sidebar action").0;
                 self.mouse_moved(r.x + r.w * 0.5, r.y + r.h * 0.5);
@@ -2225,6 +2272,10 @@ impl App {
                     "kill"=>{self.direct(Op::Kill{tab,right:right.unwrap_or(true)});},
                     "width"=>{let v=rest.split_whitespace().nth(1).and_then(|v|v.parse().ok());self.direct(Op::SplitWidth{tab,w:v});},
                     "join"=>{let to=rest.split_whitespace().nth(1).and_then(|v|v.parse::<usize>().ok()).and_then(|k|self.tabs.get(k)).map(|t|t.id).expect("pane join <tab index>");self.direct(Op::Join{from:tab,right:true,to,side_right:true});},
+                    // The anchor (anchor.rs): `pane anchor [left|right]`, `pane unanchor`, `pane closeanchor`.
+                    "anchor"=>self.anchor_pane(right.unwrap_or(false)),
+                    "unanchor"=>self.unanchor(),
+                    "closeanchor"=>self.close_anchor(),
                     other=>panic!("pane: unknown verb {other}"),
                 }
                 self.dirty=true;
@@ -2644,6 +2695,21 @@ impl App {
                     self.shot_key(&if c == ' ' { "space".to_string() } else { c.to_string() });
                 }
             }
+            // `text <words>`: each character as typed, capitals and symbols
+            // too (`keys` goes by key, so `#` or `A` cannot come through).
+            "text" => {
+                use winit::keyboard::{Key as WKey, NativeKeyCode, PhysicalKey, SmolStr};
+                let was = self.mods;
+                self.mods = ModifiersState::empty();
+                for c in rest.chars() {
+                    let s = SmolStr::new(c.to_string());
+                    let mut k = crate::app::KeyIn { physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified), logical_key: WKey::Character(s.clone()), text: Some(s), state: ElementState::Pressed, repeat: false };
+                    self.key_in(&k);
+                    k.state = ElementState::Released;
+                    self.key_in(&k);
+                }
+                self.mods = was;
+            }
             // The find bar's query, set whole (for patterns the key path
             // can't type here: shifted symbols).
             "findquery" => {
@@ -2978,7 +3044,9 @@ impl App {
     /// as a PNG at `path`. Returns the written size.
     pub(crate) fn snapshot_png(&mut self, clear: [f32; 4], crop: Option<(u32, u32, u32, u32)>, path: &std::path::Path) -> Result<(u32, u32), String> {
         let (w, h) = self.target.size;
-        let rgba = if self.arriving() { self.gpu.snapshot_alpha((w, h), &self.scene, clear) }
+        // A see-through window keeps its alpha too: what the desktop would show.
+        let see_through = self.target.translucent() && self.surface.opacity < 1.0;
+        let rgba = if self.arriving() || see_through { self.gpu.snapshot_alpha((w, h), &self.scene, clear) }
             else { self.gpu.snapshot((w, h), &self.scene, clear) };
         let (x0, y0, cw, ch) = match crop {
             Some((x, y, cw, ch)) => (x.min(w - 1), y.min(h - 1), cw.max(1).min(w - x.min(w - 1)), ch.max(1).min(h - y.min(h - 1))),

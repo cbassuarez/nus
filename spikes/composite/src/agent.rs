@@ -385,6 +385,22 @@ impl App {
         self.dirty = true;
     }
 
+    /// `nus notify` from a shell nus opened: the shell's own notification,
+    /// as an OSC 9 from it would say it (notices.rs).
+    pub(crate) fn shell_notice(&mut self, uid: &str, words: String) -> bool {
+        let Some(at) = self.pane_by_uid(uid) else { return false };
+        let looked_at = at.0 == self.active && self.window.has_focus() && !self.hatch_state.main_hidden;
+        let Some(t) = self.term_at_mut(at) else { return false };
+        t.notice = Some(words);
+        if !looked_at {
+            t.waiting = true;
+            self.notice_ring = true;
+            self.play_event("bell");
+        }
+        self.dirty = true;
+        true
+    }
+
     /// The sidebar answered a permission: the keys the assistant's prompt
     /// takes, into its pane. False when there is nothing to answer.
     pub(crate) fn answer_agent(&mut self, tab: usize, answer: Answer) -> bool {

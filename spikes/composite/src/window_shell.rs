@@ -200,6 +200,8 @@ impl App {
     }
 
     pub(crate) fn poll_default_browser_ui(&mut self) {
+        let files=crate::default_browser::files::status().0;
+        if files!=self.default_files_seen { self.default_files_seen=files; self.dirty=true; }
         let (revision,note)=crate::default_browser::status();
         if self.traffic_lights.shell.default_revision!=revision {
             self.traffic_lights.shell.default_revision=revision;

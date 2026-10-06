@@ -38,7 +38,7 @@ fn owned_command(command:&str,identity:&Identity)->bool {
     let Some((target,_))=tail.split_once('"') else{return false};
     same_path(Path::new(target),&identity.gui)
 }
-fn register(identity:&Identity)->Result<(),String> {
+pub(super) fn register(identity:&Identity)->Result<(),String> {
     let classes=format!(r"Software\Classes\{}",identity.prog_id);
     let old=read(&format!(r"{classes}\shell\open\command"),"")?;
     if old.as_ref().is_some_and(|cmd|!owned_command(cmd,identity)) {

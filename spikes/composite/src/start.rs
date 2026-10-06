@@ -81,6 +81,9 @@ pub struct SavedTab {
     pub split: Option<f32>,
     /// A shell stack's place in the signal's family (shell_colors.rs).
     pub shell_slot: Option<u8>,
+    /// Not a tab: the window's anchor (anchor.rs), its pane in `left` and
+    /// its width in `split`. Older builds restore it as a plain tab.
+    pub anchor: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -159,6 +162,7 @@ impl SavedTab {
                     "split": t.split,
                     "shell_slot": t.shell_slot,
                     "hatch": t.hatch,
+                    "anchor": t.anchor,
                 })
     }
 }
@@ -198,6 +202,7 @@ impl Session {
                 split: t.get("split").and_then(|v| v.as_f64()).map(|v| v as f32),
                 shell_slot: t.get("shell_slot").and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()).filter(|&v| (v as usize) < crate::shell_colors::SLOTS),
                 hatch: t.get("hatch").and_then(|v| v.as_bool()).unwrap_or(false),
+                anchor: t.get("anchor").and_then(|v| v.as_bool()).unwrap_or(false),
             })
             .collect();
         let tiles = v.get("tiles").and_then(|t| t.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect()).unwrap_or_default();
@@ -448,6 +453,11 @@ impl App {
                 ids.push(None);
                 continue;
             };
+            if t.anchor && self.anchor.is_none() {
+                self.anchor = Some(crate::anchor::Anchor { host: None, parked: Some(left), w: t.split });
+                ids.push(None);
+                continue;
+            }
             let right = match &t.right {
                 Some(Saved::Page { url, .. }) => {
                     let container = self.container.clone();
@@ -520,6 +530,7 @@ impl App {
             return;
         }
         if matches!(&self.tabs[0].left, Pane::Home(_)) {
+            self.anchor_release(0);
             self.tabs.remove(0);
             self.active = self.active.saturating_sub(1);
             self.tab_removed(0);
@@ -533,6 +544,7 @@ impl App {
         self.drop_birth = false;
         let idle = matches!(&self.tabs[0].left, Pane::Term(t) if t.term.at_prompt() && t.pty.foreground_process().is_none()) && self.tabs[0].right.is_none();
         if idle {
+            self.anchor_release(0);
             let mut tab = self.tabs.remove(0);
             if let Pane::Term(t) = &mut tab.left {
                 if t.pty.held_id().is_some() {
@@ -577,11 +589,27 @@ impl App {
         };
         let listed: Vec<&crate::app::Tab> = self.tabs.iter().filter(|t| t.peek.is_none()).collect();
         let index_of = |id: u64| listed.iter().position(|t| t.id == id);
-        let tabs: Vec<SavedTab> = listed
+        // The tab holding the anchor saves its own right pane; the anchor
+        // goes last, as an entry of its own.
+        let host = self.anchor.as_ref().and_then(|a| a.host);
+        let mut tabs: Vec<SavedTab> = listed
             .iter()
-            .map(|t| SavedTab { left: saved(&t.left), right: t.right.as_ref().and_then(saved), shell: state(&t.left, t.id, "l"), shell_right: t.right.as_ref().and_then(|p| state(p, t.id, "r")), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), picked: t.picked, container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split: t.split_w, hatch: t.hatch, shell_slot: t.shell_slot })
+            .map(|t| {
+                let hosting = host == Some(t.id);
+                let right = if hosting { t.held_right.as_ref() } else { t.right.as_ref() };
+                let split = if hosting { t.held_split_w } else { t.split_w };
+                SavedTab { left: saved(&t.left), right: right.and_then(saved), shell: state(&t.left, t.id, "l"), shell_right: right.and_then(|p| state(p, t.id, "r")), pinned: t.pinned, parent: t.parent.and_then(index_of), name: t.name.clone(), emoji: t.emoji.clone(), colour: t.tint.map(crate::surface::hex), picked: t.picked, container: match &t.left { Pane::Web(w) => Some(w.container.clone()), _ => None }, split, hatch: t.hatch, shell_slot: t.shell_slot, anchor: false }
+            })
             .filter(|t| t.left.is_some())
             .collect();
+        if let Some(a) = self.anchor.as_ref() {
+            let lent = a.host.and_then(|h| self.tabs.iter().find(|t| t.id == h)).and_then(|t| t.right.as_ref().map(|p| (p, t.split_w)));
+            if let Some((p, w)) = lent.or_else(|| a.parked.as_ref().map(|p| (p, a.w))) {
+                let container = match p { Pane::Web(w) => Some(w.container.clone()), _ => None };
+                tabs.push(SavedTab { left: saved(p), shell: state(p, 0, "a"), split: w, container, anchor: true, ..Default::default() });
+            }
+        }
+        let tabs: Vec<SavedTab> = tabs.into_iter().filter(|t| t.left.is_some()).collect();
         let tiles = self.tiling.as_ref().map(|t| t.ids().iter().filter_map(|&id| index_of(id)).collect()).unwrap_or_default();
         let tile_shape = self.tiling.as_ref().and_then(|t| t.root.map(&|id| index_of(id)));
         Session { tabs, active: self.active, tiles, tile_shape, container: self.container.clone(), others: self.other_sessions.clone(), folder: self.workspace.as_ref().map(|w| w.to_string_lossy().to_string()) }
@@ -800,14 +828,14 @@ mod tests {
     fn session_json_roundtrip() {
         let s = Session {
             tabs: vec![
-                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), shell: Some(ShellState { cwd: Some("/x".into()), running: Some(("claude".into(), 7)), snapshot: Some("hi".into()), held: None, pane: None }), shell_right: None, pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), picked: None, container: Some("WORK".into()), split: None, hatch: false, shell_slot: Some(11) },
-                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, picked: None, container: None, split: None, hatch: false, shell_slot: None },
+                SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: Some(Saved::Page { url: "https://a".into(), title: "A".into() }), shell: Some(ShellState { cwd: Some("/x".into()), running: Some(("claude".into(), 7)), snapshot: Some("hi".into()), held: None, pane: None }), shell_right: None, pinned: true, parent: None, name: Some("deploy notes".into()), emoji: Some("📌".into()), colour: Some("#2e7d32".into()), picked: None, container: Some("WORK".into()), split: None, hatch: false, shell_slot: Some(11), anchor: false },
+                SavedTab { left: Some(Saved::Page { url: "https://b".into(), title: "B".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: Some(0), name: None, emoji: None, colour: None, picked: None, container: None, split: None, hatch: false, shell_slot: None, anchor: false },
             ],
             active: 1,
             tiles: vec![0, 1],
             tile_shape: crate::tiles::Node::template(&[0usize, 1]),
             container: "PERSONAL".into(),
-            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, picked: None, container: None, split: None, hatch: false, shell_slot: None }], active: 0, tiles: vec![], tile_shape: None, container: "WORK".into(), others: vec![], folder: None }],
+            others: vec![Session { tabs: vec![SavedTab { left: Some(Saved::Shell { profile: "pwsh".into() }), right: None, shell: None, shell_right: None, pinned: false, parent: None, name: None, emoji: None, colour: None, picked: None, container: None, split: None, hatch: false, shell_slot: None, anchor: true }], active: 0, tiles: vec![], tile_shape: None, container: "WORK".into(), others: vec![], folder: None }],
             folder: None,
         };
         let dir = std::env::temp_dir().join(format!("nus-test-{}", std::process::id()));
