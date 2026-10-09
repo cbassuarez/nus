@@ -1189,8 +1189,7 @@ impl App {
                 match e.open(path) {
                     Ok(i) => {
                         let tab = self.make_tab(Pane::Editor(e), None);
-                        self.tabs.push(tab);
-                        let n = self.tabs.len() - 1;
+                        let n = self.add_tab(tab);
                         self.activate(n);
                         Some((n, false, i))
                     }

@@ -979,7 +979,7 @@ impl ApplicationHandler<UserEvent> for Host {
             if let Some((_,adapter,_))=self.access.iter_mut().find(|(wid,_,_)|*wid==id){adapter.process_event(&a.hatch.as_ref().unwrap().window,&event);}
             match event {
                 WindowEvent::CloseRequested => a.hide_hatch(),
-                WindowEvent::Focused(f) => a.hatch_focus(f),
+                WindowEvent::Focused(f) => { nus_pty::input_log::note(format!("hatch focus {f}")); a.hatch_focus(f) }
                 WindowEvent::Resized(s) => a.hatch_resized(s.width, s.height),
                 WindowEvent::ScaleFactorChanged { .. } => {let s=a.hatch.as_ref().unwrap().window.inner_size();a.hatch_resized(s.width,s.height);},
                 WindowEvent::Ime(winit::event::Ime::Commit(text)) => a.hatch_ime(&text),
@@ -994,7 +994,10 @@ impl ApplicationHandler<UserEvent> for Host {
                 }
                 WindowEvent::CursorLeft {..} => {if let Some(h)=&mut a.hatch{h.pos=(-1.0,-1.0);}},
                 WindowEvent::ModifiersChanged(m) => a.hatch_modifiers(m.state()),
-                WindowEvent::KeyboardInput { event, .. } => a.hatch_key(&event),
+                WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+                    nus_pty::input_log::note(format!("hatch key {:?} {:?} text={:?} repeat={} synthetic={is_synthetic}", event.state, event.logical_key, event.text, event.repeat));
+                    a.hatch_key(&event)
+                }
                 WindowEvent::CursorMoved { position, .. } => a.hatch_cursor((position.x as f32, position.y as f32)),
                 WindowEvent::MouseInput { state, button, .. } => {
                     let pos = a.hatch.as_ref().map(|h| h.pos).unwrap_or((0.0, 0.0));
@@ -1093,10 +1096,11 @@ impl ApplicationHandler<UserEvent> for Host {
                 }
             }
             WindowEvent::Focused(f) => {
+                nus_pty::input_log::note(format!("focus {f}"));
                 a.focus_changed(f);
                 if f { default_browser::refresh(); }
             },
-            WindowEvent::ModifiersChanged(m) => a.modifiers(m.state()),
+            WindowEvent::ModifiersChanged(m) => { nus_pty::input_log::note(format!("mods {:?}", m.state())); a.modifiers(m.state()) },
             WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
                 a.last_key = clock::now();
                 a.prompt_composing = !text.is_empty();
@@ -1114,7 +1118,8 @@ impl ApplicationHandler<UserEvent> for Host {
                 a.prompt_composing = false;
                 a.dirty = true;
             }
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+                nus_pty::input_log::note(format!("key {:?} {:?} text={:?} repeat={} synthetic={is_synthetic}", event.state, event.logical_key, event.text, event.repeat));
                 a.key(&event);
                 a.dirty = true;
             }

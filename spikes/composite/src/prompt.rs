@@ -797,8 +797,8 @@ impl App {
                     t.type_origin = Some(crate::finish_work::Origin::NusAction);
                 }
                 let tab = self.make_tab(Pane::Term(t), None);
-                self.tabs.push(tab);
-                self.activate(self.tabs.len() - 1);
+                let at = self.add_tab(tab);
+                self.activate(at);
                 self.layout();
             }
             Err(e) => self.notice_problem("Could Not Open Terminal", e.to_string()),

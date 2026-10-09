@@ -99,6 +99,7 @@ fn which(exe: &str) -> bool {
 }
 
 pub mod hold;
+pub mod input_log;
 
 /// A running shell attached to a PTY. Output arrives on a channel fed by a
 /// reader thread; `on_output` is called from that thread so the host can
@@ -265,10 +266,12 @@ impl Pty {
         out
     }
 
+    #[track_caller]
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
+        input_log::wrote(bytes, std::panic::Location::caller());
         match &mut self.inner {
             Inner::Local { writer, .. } => {
                 writer.write_all(bytes).context("pty write")?;

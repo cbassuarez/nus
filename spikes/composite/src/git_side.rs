@@ -341,8 +341,8 @@ impl App {
         if let Ok(mut t) = self.new_term_pane_at(false, profile, Some(dir)) {
             t.type_at_prompt = Some(format!("git --no-pager show --stat --patch {}\r", c.hash));
             let tab = self.make_tab(crate::app::Pane::Term(t), None);
-            self.tabs.push(tab);
-            self.activate(self.tabs.len() - 1);
+            let at = self.add_tab(tab);
+            self.activate(at);
         }
     }
 

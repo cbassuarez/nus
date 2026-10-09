@@ -351,9 +351,7 @@ impl App {
             l.scene.push(nus_render::Instance::stroke(Rect::new(0.0, 0.0, w, h), 0.0, th, ink, None, 0.0));
         }
         l.scene.finish();
-        for (x, y, w, h, data) in self.fonts.uploads.drain(..) {
-            self.gpu.upload_glyph(x, y, w, h, &data);
-        }
+        crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
         let clear = self.paper();
         self.gpu.render(&mut l.target, &l.scene, clear);
         self.little = Some(l);

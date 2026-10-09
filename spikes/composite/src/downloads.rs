@@ -561,8 +561,8 @@ impl App {
             return;
         }
         let tab = self.make_tab(Pane::Downloads(DownloadsPane::default()), None);
-        self.tabs.push(tab);
-        self.activate(self.tabs.len() - 1);
+        let at = self.add_tab(tab);
+        self.activate(at);
         self.layout();
         self.save_session();
     }
@@ -575,8 +575,8 @@ impl App {
         if let Some(w) = self.new_web_pane_in(url, container) {
             self.close_menus();
             let tab = self.make_tab(Pane::Web(w), None);
-            self.tabs.push(tab);
-            self.activate(self.tabs.len() - 1);
+            let at = self.add_tab(tab);
+            self.activate(at);
             self.layout();
             self.save_session();
         }

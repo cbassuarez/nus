@@ -226,8 +226,8 @@ impl App {
                     }
                 } else {
                     let tab = self.make_tab(Pane::Term(t), None);
-                    self.tabs.push(tab);
-                    self.activate(self.tabs.len() - 1);
+                    let at = self.add_tab(tab);
+                    self.activate(at);
                 }
             }
             Err(e) => self.notice_problem("Could Not Open Terminal", e.to_string()),

@@ -386,8 +386,8 @@ impl App {
             Ok(mut t) => {
                 t.type_at_prompt = Some(o.command.clone());
                 let tab = self.make_tab(crate::app::Pane::Term(t), None);
-                self.tabs.push(tab);
-                self.activate(self.tabs.len() - 1);
+                let at = self.add_tab(tab);
+                self.activate(at);
                 self.layout();
                 self.notice(nus_render::text::icons::DOWNLOAD, format!("Get {}", o.shell), "press Enter to run it · then LOOK AGAIN in Terminal settings");
             }

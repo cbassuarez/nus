@@ -342,8 +342,8 @@ impl App {
                                 }),
                                 None,
                             );
-                            self.tabs.push(tab);
-                            self.activate(self.tabs.len() - 1);
+                            let at = self.add_tab(tab);
+                            self.activate(at);
                         }
                         Target::Settings => self.open_settings(),
                         Target::Prompt => self.open_home(),
@@ -362,8 +362,8 @@ impl App {
                                 return;
                             };
                             let tab = self.make_tab(Pane::Web(web), None);
-                            self.tabs.push(tab);
-                            self.activate(self.tabs.len() - 1);
+                            let at = self.add_tab(tab);
+                            self.activate(at);
                         }
                         Target::File { path } => self.open_file(std::path::Path::new(path), false),
                     }

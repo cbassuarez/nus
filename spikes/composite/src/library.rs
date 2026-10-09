@@ -248,7 +248,7 @@ impl App {
         }
         let mut h = HomePane::new(); h.library = true; h.library_ui.focus = Some(Hit::Search);
         let mut tab = self.make_tab(Pane::Home(h), None); tab.name = Some("Kept".into());
-        self.tabs.push(tab); self.activate(self.tabs.len()-1); self.layout(); self.dirty = true;
+        let at = self.add_tab(tab); self.activate(at); self.layout(); self.dirty = true;
     }
     pub(crate) fn save_reading(&mut self) { self.save_reading_mode(false, None); }
     pub(crate) fn refresh_reading(&mut self) { self.save_reading_mode(true, None); }
@@ -509,7 +509,7 @@ impl App {
             if matches!(url.scheme(),"http"|"https") && url.username().is_empty() && url.password().is_none() {
                 let name=e.container.as_deref().unwrap_or(crate::containers::PERSONAL);
                 if !self.containers.iter().any(|c|c.name==name) {self.library_message("The source browser container is unavailable. No other sign-in context was substituted.");return;}
-                if let Some(w)=self.new_web_pane_in(url.as_str(),name){let tab=self.make_tab(Pane::Web(w),None);self.tabs.push(tab);self.activate(self.tabs.len()-1);self.layout();}
+                if let Some(w)=self.new_web_pane_in(url.as_str(),name){let tab=self.make_tab(Pane::Web(w),None);let at = self.add_tab(tab);self.activate(at);self.layout();}
                 return;
             }
             if url.scheme()=="file" && e.source.starts_with("file://") {if let Ok(path)=url.to_file_path(){self.open_file(&path,false);return;}}

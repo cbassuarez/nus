@@ -342,8 +342,8 @@ impl App {
             // A new tab: back on its first page closes it (swipe.rs).
             let mut tab = self.make_tab(pane, None);
             tab.closes_on_back = true;
-            self.tabs.push(tab);
-            self.activate(self.tabs.len() - 1);
+            let at = self.add_tab(tab);
+            self.activate(at);
             self.layout();
             self.dirty = true;
         }
@@ -356,8 +356,8 @@ impl App {
             return;
         }
         let tab = self.make_tab(Pane::Home(HomePane::new()), None);
-        self.tabs.push(tab);
-        self.activate(self.tabs.len() - 1);
+        let at = self.add_tab(tab);
+        self.activate(at);
         self.layout();
         self.dirty = true;
     }

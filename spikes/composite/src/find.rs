@@ -809,8 +809,8 @@ impl App {
                         // Typed, not run: you read it, you press Enter.
                         t.type_at_prompt = Some(cmd);
                         let tab = self.make_tab(Pane::Term(t), None);
-                        self.tabs.push(tab);
-                        self.activate(self.tabs.len() - 1);
+                        let at = self.add_tab(tab);
+                        self.activate(at);
                     }
                     Err(e) => self.notice_problem("Could Not Open A Shell", e.to_string()),
                 }

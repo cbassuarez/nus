@@ -156,6 +156,8 @@ impl App {
 
     /// Insert a tab at `at`, keeping the indexes that point past it right.
     pub(crate) fn insert_tab_at(&mut self, at: usize, tab: crate::app::Tab) {
+        let had = !self.tabs.is_empty();
+        let at = at.min(self.tabs.len());
         self.tabs.insert(at, tab);
         for t in self.mru.iter_mut() {
             if *t >= at {
@@ -168,7 +170,7 @@ impl App {
                 p.tab += 1;
             }
         }
-        if self.active >= at {
+        if had && self.active >= at {
             self.active += 1;
         }
     }

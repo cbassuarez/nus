@@ -75,8 +75,8 @@ impl App {
             return self.activate(i);
         }
         let tab = self.make_tab(Pane::Hints(crate::app::HintsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0), scroll: 0.0 }), None);
-        self.tabs.push(tab);
-        self.activate(self.tabs.len() - 1);
+        let at = self.add_tab(tab);
+        self.activate(at);
         self.layout();
     }
 

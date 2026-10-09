@@ -4439,9 +4439,7 @@ impl App {
         self.sync_traffic_lights();
         self.sync_webkit();
         self.scene.finish();
-        for (x, y, w, h, data) in self.fonts.uploads.drain(..) {
-            self.gpu.upload_glyph(x, y, w, h, &data);
-        }
+        crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
         self.window.pre_present_notify();
         // Outside a rounded shell: the desktop, or the opposite theme's paper
         // where the window cannot be see-through. Elsewhere the chrome's
@@ -8265,8 +8263,8 @@ impl App {
                 let profile = self.behavior.default_profile;
                 if let Ok(t) = self.new_term_pane_at(false, profile, Some(cwd)) {
                     let tab = self.make_tab(Pane::Term(t), None);
-                    self.tabs.push(tab);
-                    self.activate(self.tabs.len() - 1);
+                    let at = self.add_tab(tab);
+                    self.activate(at);
                 }
             }
             Action::AttachHeld(id) => {
@@ -9487,6 +9485,23 @@ impl App {
         self.place_in_stack(source, w);
     }
 
+    /// Where a tab you open goes (A NEW TAB GOES): just under the current
+    /// tab and anything stacked under it, or at the end.
+    pub(crate) fn new_tab_at(&self) -> usize {
+        if self.tabs.is_empty() || self.behavior.new_tab_place == crate::settings::NewTabPlace::End {
+            return self.tabs.len();
+        }
+        let root = self.stack_root(self.active.min(self.tabs.len() - 1));
+        self.subtree(root).into_iter().max().unwrap_or(root).max(root) + 1
+    }
+
+    /// A tab you opened, placed by A NEW TAB GOES. Its index; not yet active.
+    pub(crate) fn add_tab(&mut self, tab: Tab) -> usize {
+        let at = self.new_tab_at();
+        self.insert_tab_at(at, tab);
+        at
+    }
+
     /// A page opened from a page nests under it: the tree grows with depth.
     pub(crate) fn place_in_stack(&mut self, source: usize, w: WebPane) {
         let root = source;
@@ -9497,22 +9512,7 @@ impl App {
         tab.look = self.look_for(&tab.left, Some(&parent_look));
         self.collapsed.remove(&self.tabs[root].id);
         let at = self.subtree(root).last().copied().unwrap_or(root) + 1;
-        self.tabs.insert(at, tab);
-        // Indices after `at` shifted by one.
-        for t in self.mru.iter_mut() {
-            if *t >= at {
-                *t += 1;
-            }
-        }
-        self.selected = self.selected.iter().map(|&t| if t >= at { t + 1 } else { t }).collect();
-        if let Some(p) = self.pip.as_mut() {
-            if p.tab >= at {
-                p.tab += 1;
-            }
-        }
-        if self.active >= at {
-            self.active += 1;
-        }
+        self.insert_tab_at(at, tab);
         self.activate(at);
     }
 
@@ -9549,8 +9549,8 @@ impl App {
                 }
                 crate::settings::Links::NewTab => {
                     let tab = self.make_tab(Pane::Web(w), None);
-                    self.tabs.push(tab);
-                    self.activate(self.tabs.len() - 1);
+                    let at = self.add_tab(tab);
+                    self.activate(at);
                 }
                 _ => self.place_in_stack(i, w),
             }
@@ -9885,7 +9885,7 @@ impl App {
             let mut tab = self.make_tab(Pane::Web(w), None);
             tab.closes_on_back = true;
             let at = (self.active + 1).min(self.tabs.len());
-            self.tabs.insert(at, tab);
+            self.insert_tab_at(at, tab);
             self.notice(nus_render::text::icons::GLOBE, "Opened Behind", crate::app::fit_cmd(url, 60));
             self.layout();
         }
@@ -9903,8 +9903,8 @@ impl App {
             if let Some(w) = self.new_web_pane(url) {
                 let mut tab = self.make_tab(Pane::Web(w), None);
                 tab.closes_on_back = true;
-                self.tabs.push(tab);
-                self.activate(self.tabs.len() - 1);
+                let at = self.add_tab(tab);
+                self.activate(at);
             }
         } else {
             // The focused page changes its address. A shell gets the page
@@ -10009,8 +10009,8 @@ impl App {
         match self.new_term_pane_attached(false, info) {
             Ok(t) => {
                 let tab = self.make_tab(Pane::Term(t), None);
-                self.tabs.push(tab);
-                self.activate(self.tabs.len() - 1);
+                let at = self.add_tab(tab);
+                self.activate(at);
             }
             Err(e) => self.notice_problem("Could Not Attach", e.to_string()),
         }
@@ -10023,8 +10023,8 @@ impl App {
         }
         if let Ok(t) = self.new_term_pane(false, profile) {
             let tab = self.make_tab(Pane::Term(t), None);
-            self.tabs.push(tab);
-            self.activate(self.tabs.len() - 1);
+            let at = self.add_tab(tab);
+            self.activate(at);
         }
     }
 
@@ -11644,6 +11644,18 @@ pub(crate) fn open_with_os(path: &std::path::Path) {
     } else {
         nus_compat::command("xdg-open").arg(&p).spawn()
     };
+}
+
+/// A frame's new glyphs to the GPU. When the atlas ran out while the frame
+/// was built, it starts over and another frame is wanted: until then a
+/// glyph or two may be missing, never for the rest of the session.
+pub(crate) fn upload_glyphs(fonts: &mut FontSystem, gpu: &Gpu, dirty: &mut bool) {
+    for (x, y, w, h, data) in fonts.uploads.drain(..) {
+        gpu.upload_glyph(x, y, w, h, &data);
+    }
+    if fonts.reset_atlas_if_full() {
+        *dirty = true;
+    }
 }
 
 pub(crate) fn fade(c: nus_render::Color, k: f32) -> nus_render::Color {

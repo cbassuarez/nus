@@ -364,8 +364,8 @@ impl App {
                 term.type_at_prompt = Some(command);
                 let mut tab = self.make_tab(Pane::Term(term), None);
                 tab.name = Some(format!("{} · {} status", NAMES[id as usize], if on { "connect" } else { "disconnect" }));
-                self.tabs.push(tab);
-                self.activate(self.tabs.len() - 1);
+                let at = self.add_tab(tab);
+                self.activate(at);
                 self.layout();
                 self.notice(nus_render::text::icons::ENTER, "Review The Command", if on { "then press Enter · a backup of the config is kept beside it" } else { "then press Enter · only nus's hooks are removed" });
             }
@@ -421,8 +421,8 @@ impl App {
                 term.type_at_prompt = Some(command);
                 let mut tab = self.make_tab(Pane::Term(term), None);
                 tab.name = Some(format!("{} · connect nus tools", NAMES[id as usize]));
-                self.tabs.push(tab);
-                self.activate(self.tabs.len() - 1);
+                let at = self.add_tab(tab);
+                self.activate(at);
                 self.layout();
                 self.notice(nus_render::text::icons::ENTER, "Review The Command", "then press Enter to register nus tools with this assistant");
             }
@@ -572,8 +572,8 @@ impl App {
                 term.type_origin = Some(crate::finish_work::Origin::NusAction);
                 let mut tab = self.make_tab(Pane::Term(term), None);
                 tab.name = Some(format!("{} · session", NAMES[id as usize]));
-                self.tabs.push(tab);
-                self.activate(self.tabs.len() - 1);
+                let at = self.add_tab(tab);
+                self.activate(at);
                 self.layout();
                 self.dirty = true;
             }

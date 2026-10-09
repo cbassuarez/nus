@@ -191,7 +191,7 @@ impl App {
             let width=notch.width as f32+(w-notch.width as f32)*reveal;
             h.scene.clip_all(Rect::new((w-width)/2.0,0.0,width,height*reveal));
         }
-        for (x,y,w,h,data) in self.fonts.uploads.drain(..) {self.gpu.upload_glyph(x,y,w,h,&data);}
+        crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
         self.gpu.render(&mut h.target,&h.scene,if h.notch.is_some(){[0.0;4]}else{paper});
     }
 
@@ -294,7 +294,7 @@ impl App {
             self.fonts.draw(&mut badge.scene,label,x+if notice{px(28.0)}else{0.0},px(20.0),&summary);
         }
         badge.scene.finish();
-        for(x,y,w,h,data)in self.fonts.uploads.drain(..){self.gpu.upload_glyph(x,y,w,h,&data);}
+        crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
         self.gpu.render(&mut badge.target,&badge.scene,[0.0;4]);
         crate::hatch_native::show_passive(&badge.window);badge.visible=true;
     }

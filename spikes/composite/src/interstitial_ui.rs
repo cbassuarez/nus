@@ -174,8 +174,8 @@ impl App {
                         t.type_at_prompt = Some(format!("{}\r", m.command));
                         t.type_origin = Some(crate::finish_work::Origin::NusAction);
                         let tab = self.make_tab(Pane::Term(t), None);
-                        self.tabs.push(tab);
-                        let said = format!("{} started in tab {}", m.process, self.tab_label(self.tabs.len() - 1));
+                        let at = self.add_tab(tab);
+                        let said = format!("{} started in tab {}", m.process, self.tab_label(at));
                         if let Some(w) = self.web_pane_by_id(id, right) {
                             w.tab.watch_port(Some(said));
                         }

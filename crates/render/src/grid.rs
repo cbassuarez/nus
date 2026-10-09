@@ -186,6 +186,7 @@ impl GridRenderer {
         let default_bg = to_color(palette.get(nus_vt::palette::BG));
         let policy = &self.policy;
         let policy_stamp = policy.stamp();
+        let atlas = fonts.atlas_generation();
         let sixteen: [nus_vt::Rgb; 16] = std::array::from_fn(|i| palette.get(i));
         self.rows.resize_with(rows, || CachedRow {
             hash: 0,
@@ -225,6 +226,8 @@ impl GridRenderer {
                 (rgb.r, rgb.g, rgb.b).hash(&mut h);
             }
             policy_stamp.hash(&mut h);
+            // Rows hold atlas coordinates: a fresh atlas rebuilds them all.
+            atlas.hash(&mut h);
             let hash = h.finish();
             if self.rows[r].hash != hash || self.rows[r].hash == 0 {
                 let cached = &mut self.rows[r];

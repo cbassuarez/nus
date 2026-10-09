@@ -426,8 +426,7 @@ impl App {
         match e.open(path) {
             Ok(_) => {
                 let tab = self.make_tab(Pane::Editor(e), None);
-                self.tabs.push(tab);
-                let n = self.tabs.len() - 1;
+                let n = self.add_tab(tab);
                 self.activate(n);
                 self.apply_term_resizes(false);
                 self.dirty = true;

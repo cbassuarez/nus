@@ -408,6 +408,15 @@ pub enum OpenedBy {
     Front,
 }
 
+/// Where a tab you open goes: under the one you're on (with its stack),
+/// or at the end of the list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum NewTabPlace {
+    #[default]
+    Next,
+    End,
+}
+
 /// What the prompt looks like: the line alone, or the line under the
 /// plate — the icon at a plate's size, your last places as stops on its
 /// band (plate.rs). The same typing, rows and enter either way.
@@ -596,6 +605,9 @@ pub struct Behavior {
     /// TABS · OPENED BY OTHERS.
     #[serde(default)]
     pub opened_by_others: OpenedBy,
+    /// WHERE NEW PAGES OPEN · A NEW TAB GOES.
+    #[serde(default)]
+    pub new_tab_place: NewTabPlace,
     /// STARTUP · A NEW WINDOW.
     #[serde(default)]
     pub new_window: NewWindow,
@@ -1018,6 +1030,7 @@ impl Default for Behavior {
             swipe_look: SwipeLook::Arrow,
             swipe_reach: default_swipe_reach(),
             opened_by_others: OpenedBy::Behind,
+            new_tab_place: NewTabPlace::Next,
             new_window: NewWindow::Prompt,
             ask_backend: String::new(),
             prompt: Default::default(),
@@ -1381,6 +1394,7 @@ pub enum Hit {
     SwipeLook(SwipeLook),
     SwipeReach(u16),
     OpenedBy(OpenedBy),
+    NewTabPlace(NewTabPlace),
     NewWindow(NewWindow),
     /// ASSISTANTS · ASK WITH: an index into the backends on the machine.
     AskBackend(usize),
@@ -2015,6 +2029,7 @@ impl App {
             Hit::Splash(m) => format!("splash {:?}", m).to_lowercase(),
             Hit::HomeLook(l) => format!("home {:?}", l).to_lowercase(),
             Hit::OpenedBy(o) => format!("opened by others {:?}", o).to_lowercase(),
+            Hit::NewTabPlace(p) => match p { NewTabPlace::Next => "a new tab goes under the current tab".into(), NewTabPlace::End => "a new tab goes at the end".into() },
             Hit::SwipeLook(l) => format!("swipe overlay {:?}", l).to_lowercase(),
             Hit::SwipeReach(r) => format!("swipe distance {r} px"),
             Hit::NewWindow(w) => format!("a new window {:?}", w).to_lowercase(),
@@ -2625,6 +2640,7 @@ impl App {
             Hit::Splash(m) => self.behavior.splash = m,
             Hit::HomeLook(l) => self.behavior.home_look = l,
             Hit::OpenedBy(o) => self.behavior.opened_by_others = o,
+            Hit::NewTabPlace(p) => self.behavior.new_tab_place = p,
             Hit::SwipeLook(l) => self.behavior.swipe_look = l,
             Hit::SwipeReach(r) => self.behavior.swipe_reach = r,
             Hit::NewWindow(w) => self.behavior.new_window = w,
@@ -4170,6 +4186,10 @@ impl App {
             ],
             4 => vec![
                 ("WHERE NEW PAGES OPEN".into(), Section),
+                ("A NEW TAB GOES".into(), Choice(vec![
+                    ("UNDER THE CURRENT TAB".into(), Hit::NewTabPlace(NewTabPlace::Next), self.behavior.new_tab_place == NewTabPlace::Next),
+                    ("AT THE END".into(), Hit::NewTabPlace(NewTabPlace::End), self.behavior.new_tab_place == NewTabPlace::End),
+                ])),
                 ("A LINK CLICKED ON A PAGE".into(), Choice(vec![
                     ("UNDER IT, AS A STACK".into(), Hit::Links(Links::Stack), self.behavior.links == Links::Stack),
                     ("BESIDE IT".into(), Hit::Links(Links::Split), self.behavior.links == Links::Split),

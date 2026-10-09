@@ -976,8 +976,7 @@ impl App {
             return;
         }
         let tab = self.make_tab(Pane::Ports(PortsPane { rect: Rect::new(0.0, 0.0, 1.0, 1.0) }), None);
-        self.tabs.push(tab);
-        let n = self.tabs.len() - 1;
+        let n = self.add_tab(tab);
         self.activate(n);
         self.dirty = true;
     }
@@ -1053,9 +1052,9 @@ impl App {
                             t.type_at_prompt = Some(format!("{cmd}\r"));
                             t.type_origin = Some(crate::finish_work::Origin::NusAction);
                             let tab = self.make_tab(Pane::Term(t), None);
-                            self.tabs.push(tab);
+                            let at = self.add_tab(tab);
                             self.close_board();
-                            self.activate(self.tabs.len() - 1);
+                            self.activate(at);
                         }
                         Err(_) => self.toast_problem("Could Not Open Terminal", format!("for port {}", r.port), None),
                     }
@@ -1088,8 +1087,7 @@ impl App {
                     i
                 } else {
                     let tab = self.make_tab(Pane::Term(t), None);
-                    self.tabs.push(tab);
-                    self.tabs.len() - 1
+                    self.add_tab(tab)
                 };
                 self.activate(i);
                 let id = self.tabs[i].id;

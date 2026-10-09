@@ -146,6 +146,11 @@ pub struct FontSystem {
     shelf_x: u32,
     shelf_y: u32,
     shelf_h: u32,
+    /// The atlas ran out of room since the last `reset_atlas_if_full`.
+    overflowed: bool,
+    /// Bumped each time the atlas starts over: anything holding atlas
+    /// coordinates (the grid's row cache) rebuilds when it changes.
+    generation: u64,
     /// Pending atlas uploads: (x, y, w, h, data).
     pub uploads: Vec<(u32, u32, u32, u32, Vec<u8>)>,
     db: std::cell::RefCell<Option<FontDb>>,
@@ -274,6 +279,8 @@ impl FontSystem {
             shelf_x: 0,
             shelf_y: 0,
             shelf_h: 0,
+            overflowed: false,
+            generation: 0,
             uploads: Vec::new(),
             db: std::cell::RefCell::new(None),
             icons: HashMap::new(),
@@ -582,6 +589,9 @@ impl FontSystem {
     }
 
     pub fn glyph(&mut self, font: FontId, px: f32, id: u16) -> Option<AtlasGlyph> {
+        // Eighth-pixel sizes: anything animating its size reuses a handful
+        // of rasterizations instead of filling the atlas a frame at a time.
+        let px = (px * 8.0).round() / 8.0;
         let key = GlyphKey {
             font,
             px_x64: (px * 64.0) as u32,
@@ -627,10 +637,37 @@ impl FontSystem {
                 height: h,
             })
         });
-        if self.glyphs.len() < 65_536 {
+        // Out of room is not "no glyph": it is asked for again after the reset.
+        if self.glyphs.len() < 65_536 && !(entry.is_none() && self.overflowed) {
             self.glyphs.insert(key, entry);
         }
         entry
+    }
+
+    /// Which atlas the coordinates handed out belong to.
+    pub fn atlas_generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// After a frame's uploads have gone to the GPU: if the atlas ran out
+    /// while building it, start the atlas over. Every glyph and icon is
+    /// rasterized again on demand, so the caller draws another frame.
+    pub fn reset_atlas_if_full(&mut self) -> bool {
+        if !std::mem::take(&mut self.overflowed) {
+            return false;
+        }
+        tracing::info!(
+            glyphs = self.glyphs.len(),
+            icons = self.icons.len(),
+            "glyph atlas full: starting it over"
+        );
+        self.glyphs.clear();
+        self.icons.clear();
+        self.generation += 1;
+        self.shelf_x = 0;
+        self.shelf_y = 0;
+        self.shelf_h = 0;
+        true
     }
 
     fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
@@ -641,7 +678,7 @@ impl FontSystem {
             self.shelf_h = 0;
         }
         if self.shelf_y + h1 > ATLAS_SIZE {
-            tracing::warn!("glyph atlas full");
+            self.overflowed = true;
             return None;
         }
         let pos = (self.shelf_x, self.shelf_y);
@@ -925,9 +962,11 @@ impl FontSystem {
     /// name and size.
     pub fn icon(&mut self, icon: (&'static str, &'static str), px: f32) -> Option<AtlasGlyph> {
         let (name, svg) = icon;
+        // Keyed by the whole-pixel square it is rasterized at, so a size in
+        // motion does not rasterize the same square again and again.
         let key = IconKey {
             name,
-            px_x64: (px * 64.0) as u32,
+            px_x64: (px.round().max(1.0) * 64.0) as u32,
         };
         if let Some(g) = self.icons.get(&key) {
             return *g;
@@ -959,7 +998,9 @@ impl FontSystem {
                 height: side,
             })
         })();
-        self.icons.insert(key, entry);
+        if !(entry.is_none() && self.overflowed) {
+            self.icons.insert(key, entry);
+        }
         entry
     }
 
@@ -1021,6 +1062,55 @@ struct IconKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_atlas_starts_over_instead_of_dropping_glyphs() {
+        let mut fonts = FontSystem::new();
+        let font = fonts.load_bytes(bundled::PLEX_MONO, 0).unwrap();
+        let id = fonts.shape(font, 40.0, "W")[0].id;
+        // Large sizes of one letter until the atlas runs out.
+        let mut px = 40.0;
+        while fonts.glyph(font, px, id).is_some() {
+            px += 1.0;
+            assert!(px < 4000.0, "the atlas never filled");
+        }
+        let generation = fonts.atlas_generation();
+        // The miss is not remembered as "no glyph".
+        assert!(!fonts.glyphs.contains_key(&GlyphKey {
+            font,
+            px_x64: (px * 64.0) as u32,
+            id
+        }));
+        assert!(fonts.reset_atlas_if_full());
+        assert_eq!(fonts.atlas_generation(), generation + 1);
+        assert!(
+            fonts.glyph(font, px, id).is_some(),
+            "drawn again after the reset"
+        );
+        assert!(!fonts.reset_atlas_if_full(), "one reset per overflow");
+    }
+
+    #[test]
+    fn sizes_in_motion_share_rasterizations() {
+        let mut fonts = FontSystem::new();
+        let font = fonts.load_bytes(bundled::PLEX_MONO, 0).unwrap();
+        let id = fonts.shape(font, 13.0, "a")[0].id;
+        for i in 0..200 {
+            fonts.glyph(font, 13.0 + i as f32 * 0.01, id);
+            fonts.icon(icons::DOWNLOAD, 16.0 + i as f32 * 0.0128);
+        }
+        // 2 px of glyph sizes in eighths; the icon only at whole pixels (16 to 19).
+        assert!(
+            fonts.glyphs.len() <= 17,
+            "{} glyph rasterizations",
+            fonts.glyphs.len()
+        );
+        assert!(
+            fonts.icons.len() <= 4,
+            "{} icon rasterizations",
+            fonts.icons.len()
+        );
+    }
 
     #[test]
     fn label_cache_is_bounded_shared_and_reclaimable() {

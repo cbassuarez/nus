@@ -91,6 +91,7 @@ fn description(hit: Hit) -> Option<String> {
         Hit::SwipeLook(crate::settings::SwipeLook::Arrow) => "A disc with an arrow at the page edge.", Hit::SwipeLook(crate::settings::SwipeLook::Card) => "The arrow, and what the swipe will do.", Hit::SwipeLook(crate::settings::SwipeLook::Edge) => "A band that grows down the page edge.", Hit::SwipeLook(crate::settings::SwipeLook::Off) => "Swipe without an overlay.",
         Hit::SwipeReach(120) => "Fire after a short swipe.", Hit::SwipeReach(180) => "Fire after a medium swipe.", Hit::SwipeReach(_) => "Fire only after a long swipe.",
         Hit::OpenedBy(OpenedBy::Behind) => "Keep working; announce new tabs.", Hit::OpenedBy(OpenedBy::Front) => "Switch to externally opened tabs.",
+        Hit::NewTabPlace(crate::settings::NewTabPlace::Next) => "Open new tabs right under this one.", Hit::NewTabPlace(crate::settings::NewTabPlace::End) => "Open new tabs at the bottom of the list.",
         Hit::Links(Links::Stack) => "Nest linked pages under this tab.", Hit::Links(Links::Split) => "Show linked pages beside this one.", Hit::Links(Links::NewTab) => "Open linked pages as separate tabs.",
         Hit::PromptUrl(PromptUrl::Split) => "Open typed URLs beside the shell.", Hit::PromptUrl(PromptUrl::NewTab) => "Open typed URLs in their own tabs.",
         Hit::CloseAsks(true) => "Ask before stopping a busy shell.", Hit::CloseAsks(false) => "Close busy shells immediately.",

@@ -16,7 +16,7 @@ impl App {
                     Ok(mut pane) => {
                         pane.type_at_prompt = Some(command);
                         let tab = self.make_tab(crate::app::Pane::Term(pane), None);
-                        self.tabs.push(tab); self.activate(self.tabs.len()-1); self.layout();
+                        let at = self.add_tab(tab); self.activate(at); self.layout();
                     }
                     Err(error) => self.notice_problem("Could Not Open Terminal", error.to_string()),
                 }

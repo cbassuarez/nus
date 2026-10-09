@@ -455,8 +455,7 @@ impl App {
                 let idx = self.behavior.default_profile;
                 if let Ok(t) = self.new_term_pane_at(false, idx, Some(k)) {
                     let tab = self.make_tab(Pane::Term(t), None);
-                    self.tabs.push(tab);
-                    let i = self.tabs.len() - 1;
+                    let i = self.add_tab(tab);
                     self.activate(i);
                 }
             }

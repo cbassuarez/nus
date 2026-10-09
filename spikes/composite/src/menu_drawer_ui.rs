@@ -157,7 +157,7 @@ impl App {
         if !crate::hatch_native::wayland(){d.window.set_outer_position(winit::dpi::PhysicalPosition::new(pos.0,pos.1));}
         let mut scene=std::mem::take(&mut d.scene);
         self.paint_drawer(&mut scene,&mut d.p,rows,content,(size.0 as f32,size.1 as f32),scale);
-        scene.finish();for(x,y,w,h,data)in self.fonts.uploads.drain(..){self.gpu.upload_glyph(x,y,w,h,&data);}
+        scene.finish();crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
         let paper=self.theme.paper;self.gpu.render(&mut d.target,&scene,paper);d.scene=scene;self.menu_drawer.window=Some(d);
     }
     /// The drawer, into `scene` at the origin, `size` physical px.
@@ -209,7 +209,7 @@ impl App {
         p.pos=if at.contains(self.mouse.0,self.mouse.1){(self.mouse.0-at.x,self.mouse.1-at.y)}else{(-1.0,-1.0)};
         let mut own=Scene::new();self.paint_drawer(&mut own,&mut p,rows,content,(size.0 as f32,size.1 as f32),scale);own.finish();
         self.menu_drawer.preview.paint=p;self.menu_drawer.preview.rect=at;
-        for(x,y,w,h,data)in self.fonts.uploads.drain(..){self.gpu.upload_glyph(x,y,w,h,&data);}
+        crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
         if self.menu_drawer.preview.texture.as_ref().is_none_or(|t|t.2!=size){
             let tex=self.gpu.offscreen_texture(size);let bind=(self.bind_texture)(&tex);self.menu_drawer.preview.texture=Some((tex,bind,size));
         }

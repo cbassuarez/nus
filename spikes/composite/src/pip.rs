@@ -567,7 +567,7 @@ impl App {
         let pip = self.pip.as_mut().unwrap();
         pip.window.pre_present_notify();
         let Pip { target, scene, .. } = pip;
-        for (x,y,w,h,data) in self.fonts.uploads.drain(..) {self.gpu.upload_glyph(x,y,w,h,&data);}
+        crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
         let presented=self.gpu.render(target, scene, clear);
         if presented && picture_ready {
             let p=self.pip.as_mut().unwrap();
