@@ -23,6 +23,8 @@ use crate::settings::{HatchLook, HatchMonitor};
 use crate::hatch_work::{Item, Target as WorkTarget};
 #[path = "hatch_ui.rs"]
 mod ui;
+#[path = "hatch_lamps.rs"]
+mod lamps;
 
 pub struct Overlay {
     pub window: Arc<Window>,
@@ -47,11 +49,22 @@ pub struct State {
     pub foreground: crate::hatch_native::Foreground,
     pub completion: Option<(Item, Instant)>,
     pub island_open: Option<(i32,i32,u32,u32,f32)>,
+    /// The pointer over the closed hatch, in screen px (the window moves
+    /// and widens under it when a tooltip shows).
+    pub badge_hover: Option<(f32, f32)>,
+    /// Each lamp's target, in screen px, and the tab's own rect.
+    pub badge_hits: Vec<(Rect, WorkTarget)>,
+    pub badge_tab: Option<Rect>,
+    /// Something up there breathes or blooms: redraw it on the beat.
+    pub badge_live: bool,
+    /// A camera housing to draw the island round, for shots taken on a
+    /// display without one (the `hatchlamps` verb's notch=).
+    pub shot_notch: Option<crate::hatch_native::Notch>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { work: Vec::new(), overview: true, selected: 0, scroll: 0, main_hidden: false, summoned: None, badge_suppressed: false, access: Default::default(), badge: None, shade: None, foreground: Default::default(), completion: None, island_open: None }
+        Self { work: Vec::new(), overview: true, selected: 0, scroll: 0, main_hidden: false, summoned: None, badge_suppressed: false, access: Default::default(), badge: None, shade: None, foreground: Default::default(), completion: None, island_open: None, badge_hover: None, badge_hits: Vec::new(), badge_tab: None, badge_live: false, shot_notch: None }
     }
 }
 

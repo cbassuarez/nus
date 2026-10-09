@@ -385,6 +385,9 @@ impl Host {
             if i==0 {
                 if newest.is_none() && a.hatch_state.badge.as_ref().is_none_or(|b| !b.window.has_focus()) { a.hatch_state.foreground = hatch_native::Foreground::capture(); }
                 a.hatch_badge_frame();
+                if let Some(id)=a.hatch_state.badge.as_ref().map(|b|b.window.id()) {
+                    if let Some((_,adapter,_))=self.access.iter_mut().find(|(wid,_,_)|*wid==id){adapter.update_if_active(||a.hatch_badge_access_tree());}
+                }
             }
             if let Some(id)=a.hatch.as_ref().filter(|h|h.visible).map(|h|h.window.id()) {
                 if let Some((_,adapter,_))=self.access.iter_mut().find(|(wid,_,_)|*wid==id){adapter.update_if_active(||a.hatch_access_tree());}
@@ -741,13 +744,14 @@ impl ApplicationHandler<UserEvent> for Host {
                 let hatch=a.hatch.as_ref().is_some_and(|h|h.window.id()==e.window_id);
                 let pip=a.pip.as_ref().is_some_and(|p|p.window.id()==e.window_id);
                 let drawer=a.menu_drawer.window.as_ref().is_some_and(|d|d.window.id()==e.window_id);
+                let badge=a.hatch_state.badge.as_ref().is_some_and(|b|b.window.id()==e.window_id);
                 match e.window_event {
                     accesskit_winit::WindowEvent::InitialTreeRequested => {
                         if let Some((_, ad, _)) = self.access.iter_mut().find(|(id, _, _)| *id == e.window_id) {
-                            ad.update_if_active(|| if pip {a.pip_access_tree()} else if drawer {a.menu_drawer_access_tree()} else if hatch {a.hatch_access_tree()} else {a.library_access_tree()});
+                            ad.update_if_active(|| if pip {a.pip_access_tree()} else if drawer {a.menu_drawer_access_tree()} else if hatch {a.hatch_access_tree()} else if badge {a.hatch_badge_access_tree()} else {a.library_access_tree()});
                         }
                     }
-                    accesskit_winit::WindowEvent::ActionRequested(req) => if pip {a.pip_access_action(req)} else if drawer {a.menu_drawer_access_action(req)} else if hatch {a.hatch_access_action(req)} else {a.library_access_action(req)},
+                    accesskit_winit::WindowEvent::ActionRequested(req) => if pip {a.pip_access_action(req)} else if drawer {a.menu_drawer_access_action(req)} else if hatch {a.hatch_access_action(req)} else if badge {a.hatch_badge_access_action(req)} else {a.library_access_action(req)},
                     accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
                 }
             }
@@ -765,6 +769,7 @@ impl ApplicationHandler<UserEvent> for Host {
             if let Some(tray)=&mut self.tray {tray.refresh_icon(a.surface.signal);}
         }
         self.refresh_hatch_work();
+        if let Some(a)=self.apps.first_mut().filter(|a|a.hatch_state.badge_live) {a.hatch_badge_frame();}
         self.refresh_finish_work();
         if let Some(menu)=&self.application_menu {if let Some(a)=self.focused.and_then(|id|self.app_index(id)).and_then(|i|self.apps.get(i)).or(self.apps.first()){menu.refresh(a);}}
         // Requests the apps can't answer themselves: new windows, fronting.
@@ -906,7 +911,13 @@ impl ApplicationHandler<UserEvent> for Host {
                 #[allow(unused_mut)]
                 let mut attrs=see_through(Window::default_attributes()).with_title(if badge {"nus · ongoing work"} else {"nus · backdrop"}).with_decorations(false).with_resizable(false).with_active(false).with_visible(false).with_window_level(if badge {winit::window::WindowLevel::AlwaysOnTop} else {winit::window::WindowLevel::Normal}).with_inner_size(winit::dpi::LogicalSize::new(330.0,30.0));
                 #[cfg(windows)] {use winit::platform::windows::WindowAttributesExtWindows;attrs=attrs.with_skip_taskbar(true);}
-                match event_loop.create_window(attrs) {Ok(w)=>a.attach_hatch_overlay(Arc::new(w),badge),Err(e)=>tracing::warn!("Hatch overlay: {e}")}
+                match event_loop.create_window(attrs) {
+                    Ok(w)=>{
+                        if badge {let adapter=accesskit_winit::Adapter::with_event_loop_proxy(event_loop,&w,self.proxy.clone());self.access.push((w.id(),adapter,0));}
+                        a.attach_hatch_overlay(Arc::new(w),badge)
+                    },
+                    Err(e)=>tracing::warn!("Hatch overlay: {e}"),
+                }
             }
         }
         if let Some(((x, y), (w, h))) = a.hatch_request.take() {
@@ -958,17 +969,20 @@ impl ApplicationHandler<UserEvent> for Host {
             }
         }
         if a.hatch_state.badge.as_ref().is_some_and(|b|b.window.id()==id) {
+            if let Some((_,adapter,_))=self.access.iter_mut().find(|(wid,_,_)|*wid==id){adapter.process_event(&a.hatch_state.badge.as_ref().unwrap().window,&event);}
             match event {
-                WindowEvent::MouseInput{state:ElementState::Released,button:MouseButton::Left,..}=>{
-                    if let Some((item, _))=a.hatch_state.completion.take() {
-                        a.hatch_click(hatch::Hit::Job(item.target));
-                    } else {
-                        let previous=a.hatch_state.foreground.clone();a.show_hatch_work();a.hatch_state.foreground=previous;
-                    }
+                // Kept in screen px: a tooltip widens the window and moves its origin.
+                WindowEvent::CursorMoved{position,..}=>{
+                    let (x,y)=a.hatch_state.badge.as_ref().and_then(|b|b.position).unwrap_or((0,0));
+                    a.hatch_state.badge_hover=Some((x as f32+position.x as f32,y as f32+position.y as f32));
+                    a.hatch_badge_frame();
                 },
+                WindowEvent::CursorLeft{..}=>{a.hatch_state.badge_hover=None;a.hatch_badge_frame();},
+                WindowEvent::MouseInput{state:ElementState::Released,button:MouseButton::Left,..}=>a.hatch_badge_click(),
                 WindowEvent::RedrawRequested|WindowEvent::ScaleFactorChanged{..}=>{if let Some(b)=&mut a.hatch_state.badge{b.text.clear();}a.hatch_badge_frame();},
                 _=>{}
             }
+            if let Some((_,adapter,_))=self.access.iter_mut().find(|(wid,_,_)|*wid==id){adapter.update_if_active(||a.hatch_badge_access_tree());}
             return;
         }
         if a.hatch_state.shade.as_ref().is_some_and(|b|b.window.id()==id) {

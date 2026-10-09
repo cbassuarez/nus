@@ -1498,6 +1498,63 @@ impl App {
                 enc.set_color(png::ColorType::Rgba);enc.set_depth(png::BitDepth::Eight);
                 enc.write_header().unwrap().write_image_data(&bytes).unwrap();
             }
+            // The closed hatch with made-up work, photographed: NAME, then one
+            // word per lamp (run, progNN, input, rang, done, fail, idle; a
+            // title after a colon, - for spaces), hover=N|tab, notice=N,
+            // notch=W (an island round a W px housing, 32 tall, as on a
+            // notched Mac; open makes it the joint under an open hatch).
+            // Real work comes back afterwards.
+            "hatchlamps" => {
+                use crate::hatch_work::{Item,Status,Target};
+                let mut words=rest.split_whitespace();
+                let name=words.next().expect("hatchlamps NAME LAMP...");
+                let (mut work,mut hover,mut notice,mut notch,mut joint)=(Vec::new(),None,None,None,false);
+                for word in words {
+                    if let Some(v)=word.strip_prefix("hover=") {hover=Some(v.to_string());continue;}
+                    if let Some(v)=word.strip_prefix("notch=") {notch=v.parse::<f32>().ok();continue;}
+                    if word=="open" {joint=true;continue;}
+                    if let Some(v)=word.strip_prefix("notice=") {notice=v.parse::<usize>().ok();continue;}
+                    let (kind,title)=word.split_once(':').unwrap_or((word,"job"));
+                    let (status,progress,exit,unread)=match kind {
+                        "run"=>(Status::Running,None,None,false),
+                        "input"=>(Status::NeedsInput,None,None,true),
+                        "rang"=>(Status::Attention,None,None,true),
+                        "done"=>(Status::Finished,None,Some(0),true),
+                        "fail"=>(Status::Failed,None,Some(1),true),
+                        "idle"=>(Status::Idle,None,None,false),
+                        k=>(Status::Running,Some(k.trim_start_matches("prog").parse::<u8>().expect("progNN")),None,false),
+                    };
+                    let n=work.len() as u64;
+                    work.push(Item{target:Target{window:u64::from(self.window.id()),tab:1_000_000+n,right:false},title:title.replace('-'," "),command:String::new(),space:self.space_name.clone(),cwd:"~/nus".into(),status,exit,progress,unread});
+                }
+                let saved=(std::mem::replace(&mut self.hatch_state.work,work),self.hatch_state.completion.take(),self.hatch_state.badge_hover.take(),self.hatch_state.main_hidden,self.hatch_state.badge_suppressed,self.behavior.hatch_status,self.behavior.hatch_notify);
+                self.hatch_state.main_hidden=true;self.hatch_state.badge_suppressed=false;self.behavior.hatch_status=true;self.behavior.hatch_notify=true;
+                let mon=self.hatch_geometry().2;
+                if let Some(w)=notch {
+                    let (width,height)=((w*mon.4).round() as u32,(32.0*mon.4).round() as u32);
+                    self.hatch_state.shot_notch=Some(crate::hatch_native::Notch{left:(mon.2 as i32-width as i32)/2,width,height});
+                    if joint {self.hatch_state.island_open=Some(mon);}
+                }
+                if let Some(i)=notice {self.hatch_state.completion=Some((self.hatch_state.work[i].clone(),std::time::Instant::now()-Duration::from_millis(180)));}
+                self.hatch_badge_frame();
+                let at=match hover.as_deref() {
+                    Some("tab")=>self.hatch_state.badge_tab,
+                    Some(i)=>self.hatch_state.badge_hits.get(i.parse::<usize>().expect("hover=N|tab")).map(|(r,_)|*r),
+                    None=>None,
+                };
+                if let Some(r)=at {self.hatch_state.badge_hover=Some((r.x+r.w/2.0,r.y+r.h/2.0));self.hatch_badge_frame();}
+                let badge=self.hatch_state.badge.as_ref().expect("badge window");
+                let bytes=self.gpu.snapshot_alpha(badge.target.size,&badge.scene,[0.0;4]);
+                let shot=self.shot.as_ref().unwrap();std::fs::create_dir_all(&shot.out).unwrap();
+                let path=shot.out.join(format!("{name}-{}.png",shot.face));
+                let mut enc=png::Encoder::new(std::fs::File::create(&path).unwrap(),badge.target.size.0,badge.target.size.1);
+                enc.set_color(png::ColorType::Rgba);enc.set_depth(png::BitDepth::Eight);
+                enc.write_header().unwrap().write_image_data(&bytes).unwrap();
+                eprintln!("HATCH LAMPS: {} {:?} at {:?}",path.display(),badge.target.size,badge.position);
+                (self.hatch_state.work,self.hatch_state.completion,self.hatch_state.badge_hover,self.hatch_state.main_hidden,self.hatch_state.badge_suppressed,self.behavior.hatch_status,self.behavior.hatch_notify)=saved;
+                self.hatch_state.shot_notch=None;if joint {self.hatch_state.island_open=None;}
+                self.hatch_badge_frame();
+            }
             "hatchshot" => {
                 self.hatch_frame();
                 let h=self.hatch.as_ref().expect("hatch exists");

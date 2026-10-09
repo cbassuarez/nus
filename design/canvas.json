@@ -377,6 +377,42 @@
       "h": 1000,
       "page": "page-9",
       "title": "Common ground \u00b7 origins, landings, the icon, rules"
+    },
+    {
+      "file": "HatchSeam.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-10",
+      "title": "A \u00b7 Seam"
+    },
+    {
+      "file": "HatchLamps.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-10",
+      "title": "B \u00b7 Lamps (chosen)"
+    },
+    {
+      "file": "HatchOrbit.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-10",
+      "title": "C \u00b7 Orbit"
+    },
+    {
+      "file": "HatchCommon.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1000,
+      "page": "page-10",
+      "title": "Common ground \u00b7 today, what others do, marks, rules"
     }
   ],
   "annotations": [
@@ -547,11 +583,19 @@
       "w": 760,
       "page": "page-9",
       "text": "Downloads: three ways to show that a download happened and where it went, which is the downloads icon in the sidebar\u2019s foot. The sidebar is usually hidden, so each option also has to work against the hot edge. A sends the file there (a slip slides into the edge), B draws a rule there and makes the window\u2019s foot the progress bar, C brings the place to you (the sidebar\u2019s foot peeks out with the file on it).\nCommon ground (bottom right): motion only when you started it, never toward a place that isn\u2019t drawn, the icon\u2019s underline fills by bytes, reduced motion keeps the state and drops the travel.\nSuggested mix: A\u2019s slip for the click, landing in the corner and becoming B\u2019s foot rule for the duration; C\u2019s peek only for your first three downloads, as the lesson. Approve one or name the mix."
+    },
+    {
+      "id": "n-hatch-rest",
+      "x": 0,
+      "y": -170,
+      "w": 760,
+      "page": "page-10",
+      "text": "Hatch at rest: three ways to draw the closed hatch where there is no notch (Windows, Linux, Macs on other displays). Today that\u2019s a 330 \u00d7 30 bar reading \u201cHatch \u00b7 ready\u201d. A is only the lip: a 5 px seam with a segment per piece of work. B is the sheet rolled up: a 19 px tab of lamps, each one a button. C is the mark: the icon\u2019s orbit on a cord, turning while work runs and stopping when something needs you.\nCommon ground (bottom right): what others do (Dynamic Island, notch apps, quake terminals, the Windows top edge, calm technology, the dark cockpit), one set of marks for all three, and the rules.\nSuggested mix: A at rest, lowering into B\u2019s tab when you reach for it, so it stays 5 px until you want the lamps. C as a second look later. Chosen 2026-10-09: B, Lamps, on its own (built in hatch_lamps.rs). The orbit stays on the page."
     }
   ],
   "launch": {
     "view": "canvas",
-    "page": "page-9"
+    "page": "page-10"
   },
   "pages": [
     {
@@ -589,6 +633,10 @@
     {
       "id": "page-9",
       "name": "Downloads"
+    },
+    {
+      "id": "page-10",
+      "name": "Hatch at rest"
     }
   ]
 }

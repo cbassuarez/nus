@@ -2218,3 +2218,45 @@ it used to look for notes all the way up first, so a home folder with
 notes took every repository under it.
 
 Not yet: a check of all this in an installed release build.
+
+## The hatch at rest: lamps (2026-10-09)
+
+Picked from three directions on the design canvas (page 10, "Hatch at
+rest": A Seam, B Lamps, C Orbit). Where there is no camera housing
+(Windows, Linux, a Mac on another display) the closed hatch is no longer a
+330 × 30 bar that says "Hatch · ready": it is the sheet rolled up, a tab
+hanging from the top edge of the hatch's monitor (under the menu bar on a
+Mac) in the theme's paper, 1.5 px edges on three sides and the Space's lip
+along its foot, 19 px tall.
+
+**One lamp per piece of work.** A square breathes while it runs (the
+sidebar's ten-frames-a-second breath) and, when the command reports
+progress, is hollow and fills from its foot. A diamond needs input; a
+hollow diamond rang the bell. A circle finished and a hatched square
+failed, both until you look. Idle shells and work you've seen get no lamp.
+Shape carries the state, so Blueprint, whose signal is its ink, reads the
+same as a red-signal theme. Lamps keep their places (the order the
+sessions were opened) and new work joins on the right; six, then a ⋯ for
+the rest, which are in Work. With nothing to show and nus in the
+background, the tab is a chevron.
+
+**Words only when you look.** A lamp's tooltip is the session's title and
+what it's doing ("Cargo Test · Running 62 %"); the tab's own is the
+summary. A click on a lamp brings that session down; anywhere else on the
+tab, Work. A completion notice (six seconds, Completion notices) blooms its
+lamp once and adds the session's title under the lamps with a check or a
+cross. Reduce Motion: nothing breathes or blooms. Without a see-through
+compositor the tab is drawn alone, with no shadow or tooltips. The badge
+window has its own accessibility tree: the summary, a button for Work, a
+button per lamp.
+
+**On a notched Mac** the island keeps its shape, black and joined to the
+camera housing, and its wings carry the lamps instead of a count and
+✓ / ! / ↓: what is going on the left, what wants you or ended unseen on the
+right, three to a wing (two and a ⋯ past that), in the island's own white,
+green and red. With nothing to show, the right wing has the chevron. A
+notice is a check or a cross and the session's title under the housing.
+While the hatch is open below it the island is only the joint, as before.
+
+`hatchlamps NAME LAMP…` (shot.rs) photographs the tab with made-up work;
+`notch=W` draws the island round a W px housing on any display.

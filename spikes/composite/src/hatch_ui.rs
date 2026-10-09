@@ -233,69 +233,19 @@ impl App {
     pub(crate) fn hatch_badge_frame(&mut self) {
         if self.hatch_state.completion.as_ref().is_some_and(|(_,at)|crate::clock::since(at).as_secs()>=6) || !self.behavior.hatch_notify {self.hatch_state.completion=None;}
         let notice=self.hatch_state.completion.is_some();
-        let summary=self.hatch_state.completion.as_ref().map(|(item,_)|format!("{} · {}",item.title,item.status.label().to_lowercase())).unwrap_or_else(||crate::hatch_work::summary(&self.hatch_state.work));
+        let summary=crate::hatch_work::summary(&self.hatch_state.work);
         let open=self.hatch_state.island_open.is_some();
         let mon=self.hatch_state.island_open.unwrap_or_else(||self.hatch_geometry().2);
-        let (x,y,w,_,scale)=mon;
-        let top=crate::hatch_native::top_area(x,y,scale);
+        let (x,y,_,_,scale)=mon;
+        let mut top=crate::hatch_native::top_area(x,y,scale);
+        if let Some(n)=self.hatch_state.shot_notch {top.notch=Some(n);}
         let attached=open && top.notch.is_some();
         let show=attached || !self.hatch_state.badge_suppressed && (self.behavior.hatch_status && (summary!="Hatch · ready" || self.hatch_state.main_hidden) || notice)
             && self.hatch.as_ref().is_none_or(|h|!h.visible);
-        let px=|v:f32|(v*scale).round();
-        let (width,height,pos)=if let Some(n)=top.notch {
-            let width=(n.width+px(if attached {12.0}else{116.0}) as u32).min(w);
-            let height=n.height+px(if attached {2.0}else if notice {30.0}else{8.0}) as u32;
-            (width,height,(x+n.left+(n.width as i32-width as i32)/2,y))
-        } else {
-            let width=px(330.0).min(w as f32).max(1.0) as u32;
-            (width,px(30.0).max(1.0) as u32,(x+(w as i32-width as i32)/2,y+top.menu))
-        };
-        let background=if top.notch.is_some(){[0.0,0.0,0.0,1.0]}else{self.theme.ink};
-        let foreground=if top.notch.is_some(){[0.95,0.95,0.95,1.0]}else{self.theme.paper};
-        let label=Style{font:self.f.ui,px:px(12.0),color:foreground,tracking:0.0};
-        let summary=self.fit(label,&summary,width as f32-px(if notice{48.0}else{16.0}));
-        let key=format!("{summary}:{attached}:{notice}:{background:?}:{:?}",self.surface.signal);
-        let notice_icon=if show&&notice{self.desktop_icon()}else{None};
-        let running=self.hatch_state.work.iter().filter(|i|i.status==Status::Running).count();
-        let attention=self.hatch_state.work.iter().filter(|i|i.status.attention()&&i.unread).count();
-        let finished=self.hatch_state.work.iter().filter(|i|i.status==Status::Finished&&i.unread).count();
-        let Some(badge)=&mut self.hatch_state.badge else {return;};
-        if !show {if badge.visible {badge.window.set_visible(false);badge.visible=false;}return;}
-        crate::hatch_native::island_level(&badge.window,top.notch.is_some());
-        if badge.position!=Some(pos) {badge.window.set_outer_position(winit::dpi::PhysicalPosition::new(pos.0,pos.1));badge.position=Some(pos);}
-        let changed=badge.text!=key || badge.target.size!=(width,height) || !badge.visible;
-        if !changed {return;}
-        badge.text=key;
-        let _=badge.window.request_inner_size(winit::dpi::PhysicalSize::new(width,height));
-        badge.target.resize(&self.gpu.device,width,height);
-        // Resize can move the top edge on AppKit: pin it again to screen.frame.
-        badge.window.set_outer_position(winit::dpi::PhysicalPosition::new(pos.0,pos.1));
-        badge.scene.clear();badge.scene.layer(None);
-        if let Some(notch)=top.notch {
-            badge.scene.push(nus_render::Instance::rounded(Rect::new(0.0,-px(14.0),width as f32,height as f32+px(14.0)),px(14.0),background));
-            if !attached {
-                let left=if running>0 {format!("{running}")}else{"nus".into()};
-                let right=if attention>0 {format!("! {attention}")}else if finished>0 {format!("✓ {finished}")}else{"↓".into()};
-                let wing=(width-notch.width) as f32/2.0;
-                let baseline=notch.height as f32/2.0+px(4.0);
-                self.fonts.draw(&mut badge.scene,label,((wing-self.fonts.measure(label,&left))/2.0).max(px(4.0)),baseline,&left);
-                self.fonts.draw(&mut badge.scene,label,width as f32-wing+(wing-self.fonts.measure(label,&right))/2.0,baseline,&right);
-                if notice {
-                    let tw=self.fonts.measure(label,&summary);let x=((width as f32-tw-px(28.0))/2.0).max(px(6.0));
-                    if let Some(icon)=notice_icon.clone(){badge.scene.texture(Rect::new(x,notch.height as f32+px(4.0),px(22.0),px(22.0)),icon,None);badge.scene.layer(None);}
-                    self.fonts.draw(&mut badge.scene,label,x+px(28.0),notch.height as f32+px(20.0),&summary);
-                }
-            }
-        } else {
-            badge.scene.rect(Rect::new(0.0,0.0,width as f32,height as f32),background);
-            let tw=self.fonts.measure(label,&summary);
-            let x=if notice{((width as f32-tw-px(28.0))/2.0).max(px(6.0))}else{((width as f32-tw)/2.0).max(px(4.0))};
-            if let Some(icon)=notice_icon {badge.scene.texture(Rect::new(x,px(4.0),px(22.0),px(22.0)),icon,None);badge.scene.layer(None);}
-            self.fonts.draw(&mut badge.scene,label,x+if notice{px(28.0)}else{0.0},px(20.0),&summary);
+        // Lamps either way (hatch_lamps.rs): round the camera housing, or a tab from the top edge.
+        match top.notch {
+            Some(n)=>self.hatch_badge_island(show,mon,n,attached),
+            None=>self.hatch_badge_lamps(show,mon,top.menu),
         }
-        badge.scene.finish();
-        crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
-        self.gpu.render(&mut badge.target,&badge.scene,[0.0;4]);
-        crate::hatch_native::show_passive(&badge.window);badge.visible=true;
     }
 }
