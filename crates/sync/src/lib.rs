@@ -1036,10 +1036,14 @@ mod tests {
             Some(k)
         );
         assert_eq!(decode_any(&encode_key(&k)), Some(k));
-        // A wrong last word fails the checksum.
+        // A wrong last word fails the checksum. The last word is three bits
+        // of the key and eight of checksum: a word that differs in a
+        // checksum bit alone is always wrong (an arbitrary one is right
+        // about one time in 290, which made this test fail now and then).
+        let list = bip39::Language::English.word_list();
         let mut w: Vec<&str> = words.split_whitespace().collect();
-        let last = if w[23] == "abandon" { "zoo" } else { "abandon" };
-        w[23] = last;
+        let i = list.iter().position(|x| *x == w[23]).unwrap();
+        w[23] = list[i ^ 1];
         assert_eq!(from_paper(&w.join(" ")), None);
     }
 
