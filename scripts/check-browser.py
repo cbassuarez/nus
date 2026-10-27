@@ -82,7 +82,9 @@ def main():
         'key down', 'key enter', 'awaitpage nus browser fixture', 'awaitpaint',
         'browsercrash', 'awaittranscript crash', 'wait 200', 'shot crash',
         'key enter', 'awaitpage nus browser fixture', 'awaitpaint',
-        'eval while(true){}', 'awaittranscript hung', 'wait 200', 'shot hung',
+        # Stuck, and waited on (a key it never answers): nus says so. A busy
+        # page nobody is waiting on is left alone.
+        'eval while(true){}', 'key space', 'awaittranscript hung', 'wait 200', 'shot hung',
         'key down', 'key enter', 'awaittranscript crash', 'wait 500',
         'key enter', 'awaitpage nus browser fixture', 'awaitpaint',
         'perfstats browser-complete',

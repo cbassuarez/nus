@@ -88,5 +88,5 @@ command at the `»` prompt, opens it.
 - `nus://interstitial/<cert|malware|clock|oom|crash|permission|file|resubmit|sleep|portal|unreachable|slow|hung>`: the page with sample facts
 - `nus://crash`: crashes this page's renderer (CDP `Page.crash`)
 - `nus://oom`: allocates until V8 aborts
-- `nus://hang`: loops the main thread; the watch catches it in about 10s
+- `nus://hang`: loops the main thread; once you click or type in it, the watch catches it in about 10s
 - `nus://block-download`: downloads a blob named `invoice.pdf.exe`
