@@ -42,6 +42,7 @@ pub struct Shared {
     pub pip_covered: bool,
     /// Download provenance (Finish Work, finish_work.rs). The user's own
     /// input into this page, as nus forwarded it: a page cannot make these.
+    /// The watch reads it too: only a page you are waiting on is hung.
     pub gesture_at: Option<std::time::Instant>,
     /// The last main-frame navigation Chromium marked as a user gesture.
     pub nav_gesture_at: Option<std::time::Instant>,
@@ -377,6 +378,7 @@ impl Shared {
     /// The page stopped answering for `secs`: say so over it.
     fn raise_hung(&mut self, secs: u64) {
         let url = self.url.clone();
+        tracing::warn!("watch: {url} has not answered for {secs} s");
         self.hung_secs = secs;
         self.overlay = Some(crate::interstitial::Page::hung(&url, secs, &self.seen()));
         self.paints += 1;
@@ -1506,7 +1508,10 @@ wrap_render_handler! {
             let popup = type_ != PaintElementType::default();
             use cef::osr_texture_import::shared_texture_handle::SharedTextureHandle;
             let handle = SharedTextureHandle::new(info);
-            match handle.import_texture(&self.osr.device) {
+            // SAFETY: inside CEF's own callback, with its current frame, on
+            // the device and queue the compositor draws with. The import
+            // copies the frame and waits, so the texture outlives the call.
+            match unsafe { handle.import_texture(&self.osr.device, &self.osr.queue) } {
                 Ok(texture) => {
                     let bind = (self.osr.bind_texture)(&texture);
                     let mut s = self.osr.shared.borrow_mut();
@@ -3543,20 +3548,26 @@ impl BrowserTab {
     }
 
     /// While shown: ask the page something trivial every few seconds. A
-    /// page whose main thread is stuck can't answer, and after
-    /// `HUNG_AFTER` without one the hung transcript comes up over it.
-    /// Chromium's own hang signal (on input) raises it too.
+    /// page whose main thread is stuck can't answer. After `HUNG_AFTER`
+    /// without one, and a click or a key it has not answered for
+    /// `WAITED`, the hung transcript comes up over it. A page you are only
+    /// reading is left alone however long it is busy (a collection, a
+    /// machine short of memory): as in Chrome, unresponsive means it is not
+    /// answering you. Chromium's own hang signal (on input) raises it too.
     pub fn watch(&self) {
         let expired = self.shared.borrow_mut().check_navigation_deadline(crate::clock::now());
         if expired { if let Some(b) = &self.browser { b.stop_load(); } }
         const EVERY: std::time::Duration = std::time::Duration::from_secs(3);
         const HUNG_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+        const WAITED: std::time::Duration = std::time::Duration::from_secs(5);
         if self.browser.is_none() { return; }
         let ask = {
             let mut s = self.shared.borrow_mut();
             if s.interstitial.is_some() || s.suspended { return; }
+            // Waiting on it: a click or a key since it last answered.
+            let waiting = s.gesture_at.is_some_and(|g| s.answered.is_none_or(|a| g > a) && crate::clock::since(g) >= WAITED);
             match s.ping {
-                Some((_, at)) if crate::clock::since(at) >= HUNG_AFTER && s.overlay.is_none() => {
+                Some((_, at)) if crate::clock::since(at) >= HUNG_AFTER && s.overlay.is_none() && waiting => {
                     s.raise_hung(crate::clock::since(at).as_secs());
                     false
                 }

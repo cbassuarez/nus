@@ -764,9 +764,28 @@ impl FontSystem {
         let mut clusters: Vec<(usize, f32)> = Vec::new();
         for g in glyphs.iter() {
             let at = g.cluster as usize;
+            let advance = g.x_advance + s.tracking;
+            // Glyphs come in cluster order but for the odd reordering, so the
+            // last cluster is tried first: a long line (a note's paragraph)
+            // stays linear instead of searching every cluster per glyph.
+            match clusters.last_mut() {
+                Some((c, w)) if *c == at => {
+                    *w += advance;
+                    continue;
+                }
+                Some((c, _)) if *c < at => {
+                    clusters.push((at, advance));
+                    continue;
+                }
+                None => {
+                    clusters.push((at, advance));
+                    continue;
+                }
+                _ => {}
+            }
             match clusters.iter_mut().find(|(c, _)| *c == at) {
-                Some((_, w)) => *w += g.x_advance + s.tracking,
-                None => clusters.push((at, g.x_advance + s.tracking)),
+                Some((_, w)) => *w += advance,
+                None => clusters.push((at, advance)),
             }
         }
         clusters.sort_by_key(|(c, _)| *c);
@@ -1182,6 +1201,29 @@ mod tests {
             fonts.fallbacks.borrow().is_empty(),
             "ASCII must not load fallback collections"
         );
+    }
+
+    #[test]
+    fn a_long_line_has_a_stop_per_character_in_order() {
+        let mut fonts = FontSystem::new();
+        let font = fonts.load_bytes(bundled::PLEX_MONO, 0).unwrap();
+        let style = Style {
+            font,
+            px: 14.0,
+            color: crate::theme::hex(0x000000),
+            tracking: 0.5,
+        };
+        // Past the shaper's cache, with a ligature-prone run in it.
+        let text = "a paragraph, written on -> != and on ".repeat(40);
+        let stops = fonts.stops(style, &text);
+        assert_eq!(stops.len(), text.chars().count() + 1);
+        assert!(stops.windows(2).all(|w| w[1] >= w[0]));
+        let advance: f32 = fonts
+            .shape(font, 14.0, &text)
+            .iter()
+            .map(|g| g.x_advance + 0.5)
+            .sum();
+        assert!((stops.last().unwrap() - advance).abs() < 0.01 * advance);
     }
 
     #[test]

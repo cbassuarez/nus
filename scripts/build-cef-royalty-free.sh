@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds CEF for nus with MP4/H.264/AAC *support* but none of FFmpeg's
 # software H.264/AAC decoders: decoding uses VideoToolbox and AudioToolbox
-# (patches/chromium-152). This is a system-codec build, not a determination
+# (patches/chromium-156). This is a system-codec build, not a determination
 # of patent or distribution obligations. It does not grant DRM/provider
 # acceptance. macOS streaming pages use system WebKit without this build.
 #
@@ -9,7 +9,7 @@
 #   CEF_BUILD_DIR=/Volumes/big/cef scripts/build-cef-royalty-free.sh
 #
 # Needs Xcode, ~70 GB free and several hours. Pinned to the CEF that
-# vendor/cef-rs expects (152.0.6+g708dc14, Chromium 152.0.7977.83).
+# vendor/cef-rs expects (156.0.14+g4fa4ab5, Chromium 156.0.8078.48).
 # Chromium comes without its git history (the full history alone is ~70 GB)
 # and is built without debug symbols (they roughly double the output).
 # Safe to run again after a failure: it resumes where it stopped.
@@ -25,8 +25,8 @@ work="${CEF_BUILD_DIR:-$HOME/cef_build}"
 export GIT_CONFIG_COUNT=2 \
   GIT_CONFIG_KEY_0=filter.lfs.process GIT_CONFIG_VALUE_0= \
   GIT_CONFIG_KEY_1=filter.lfs.required GIT_CONFIG_VALUE_1=false
-branch=7977
-commit=708dc14
+branch=8078
+commit=4fa4ab5
 arch_flag=--arm64-build
 [[ "$(uname -m)" == x86_64 ]] && arch_flag=--x64-build
 mkdir -p "$work"
@@ -80,7 +80,7 @@ if [[ ! -f "$chromium/.gclient_entries" || -n "$broken" ]]; then
 fi
 
 echo "· patch Chromium: AAC through AudioToolbox, and let GN build it"
-for patch in "$root"/patches/chromium-152/*.patch; do
+for patch in "$root"/patches/chromium-156/*.patch; do
   if git -C "$src" apply --reverse --check "$patch" 2>/dev/null; then
     echo "  $(basename "$patch"): already applied"
   else

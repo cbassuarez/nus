@@ -759,9 +759,13 @@ impl ApplicationHandler<UserEvent> for Host {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(level) = memory_pressure::poll() {
-            tracing::warn!(?level, "system memory pressure: reclaiming disposable caches");
-            for app in &mut self.apps { app.reclaim_memory(level); }
+        if let Some(memory_pressure::Reclaim { level, pages }) = memory_pressure::poll() {
+            if pages {
+                tracing::warn!(?level, "system memory pressure: reclaiming disposable caches, pages told");
+            } else {
+                tracing::debug!(?level, "system memory pressure holds: reclaiming disposable caches");
+            }
+            for app in &mut self.apps { app.reclaim_memory(level, pages); }
         }
         if let Some(a)=self.focused.and_then(|id|self.apps.iter().find(|a|a.window.id()==id)).or_else(||self.apps.first()) {
             crate::app_icon::select(a.behavior.app_icon);

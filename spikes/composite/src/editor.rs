@@ -48,6 +48,10 @@ pub struct Buffer {
     pub dirty: bool,
     /// First visible line.
     pub scroll: usize,
+    /// A note's rows of that line already scrolled past (a paragraph is
+    /// one line over many rows): `(line, rows)`, which holds only while
+    /// `scroll` is still that line.
+    pub scroll_row: (usize, usize),
     undo: Vec<Snap>,
     redo: Vec<Snap>,
     last_edit: Instant,
@@ -336,6 +340,7 @@ impl Buffer {
             language: "plaintext",
             dirty: false,
             scroll: 0,
+            scroll_row: (0, 0),
             undo: Vec::new(),
             redo: Vec::new(),
             last_edit: crate::clock::now(),
@@ -842,6 +847,14 @@ pub struct EditorPane {
     pub read_view: bool,
     /// Everything but the caret's paragraph dimmed.
     pub focus: bool,
+    /// Rows a note is to scroll (down is positive), settled when it is
+    /// next drawn and its rows are measured.
+    pub note_scroll: i64,
+    /// Page Up/Down in a note: the caret's height in the column and its x,
+    /// kept while the note scrolls a page under it (`draw_note_body`).
+    pub note_page: Option<(f32, f32)>,
+    /// What the wheel or a touchpad has turned short of a whole row.
+    pub wheel_carry: f32,
 }
 
 impl EditorPane {
@@ -874,6 +887,9 @@ impl EditorPane {
             reveal_note: false,
             read_view: false,
             focus: false,
+            note_scroll: 0,
+            note_page: None,
+            wheel_carry: 0.0,
         }
     }
 
@@ -945,6 +961,10 @@ impl EditorPane {
         self.reveal_note = true;
         let rows = self.rows.max(1);
         if let Some(b) = self.buf_mut() {
+            // A note's rows are known when it is drawn: it scrolls then.
+            if b.note.is_some() {
+                return;
+            }
             let line = b.line_of(b.cursor);
             if line < b.scroll {
                 b.scroll = line;
@@ -955,6 +975,12 @@ impl EditorPane {
     }
 
     pub fn scroll_by(&mut self, lines: i64) {
+        // A note scrolls by the rows it is drawn in, not its lines (a
+        // paragraph is one line), settled at its next draw.
+        if self.buf().is_some_and(|b| b.note.is_some()) {
+            self.note_scroll -= lines;
+            return;
+        }
         let rows = self.rows.max(1);
         if let Some(b) = self.buf_mut() {
             let max = b
@@ -1220,6 +1246,9 @@ impl App {
         let sup = self.mods.super_key();
         let mods = self.mods;
         let cmd = if cfg!(target_os = "macos") { sup } else { ctrl };
+        // AltGr arrives as Ctrl+Alt off macOS, and Option types characters
+        // on a Mac (– … é): when they type something, it is text.
+        let composed = !sup && if cfg!(target_os = "macos") { alt && !ctrl } else { ctrl && alt };
         let Some(tab) = self.tabs.get(self.active) else {
             return false;
         };
@@ -1239,6 +1268,7 @@ impl App {
         }
         let key = ev.logical_key.clone();
         let text = ev.text.as_ref().map(|s| s.to_string());
+        let composed = composed && text.as_deref().is_some_and(|t| !t.is_empty() && !t.chars().any(char::is_control));
         let mut request: Option<(&'static str, Pending)> = None;
         let mut save = false;
         let mut goto_def = false;
@@ -1251,7 +1281,7 @@ impl App {
             if e.buf().is_some_and(|b| !b.ready()) { return true; }
             // A note read, not written: typing goes back to writing, and
             // the key is typed (no dead keys, no mode to remember).
-            if e.read_view && !ctrl && !alt {
+            if e.read_view && ((!ctrl && !alt) || composed) {
                 let types = text.as_deref().is_some_and(|t| !t.is_empty() && !t.chars().any(char::is_control))
                     || matches!(key, WKey::Named(NamedKey::Backspace | NamedKey::Delete | NamedKey::Enter | NamedKey::Tab));
                 if types {
@@ -1400,6 +1430,7 @@ impl App {
             };
             let mut moved = true;
             let mut scroll_lines: Option<i64> = None;
+            let mut note_page: Option<(f32, f32)> = None;
             match &key {
                 WKey::Named(NamedKey::ArrowLeft) => {
                     sel(b, shift);
@@ -1478,6 +1509,19 @@ impl App {
                         }
                     }
                 }
+                WKey::Named(NamedKey::Home) | WKey::Named(NamedKey::End) if !ctrl && note_layout.as_ref().filter(|_| b.note.is_some()).and_then(|lay| lay.row_of(b.line_of(b.cursor), b.col_of(b.cursor)).map(|i| &lay.rows[i])).is_some_and(|r| !(r.start == 0 && r.last)) => {
+                    // A wrapped line (a paragraph): Home and End go to the
+                    // ends of the row on screen, as a writing app's do.
+                    let lay = note_layout.as_ref().unwrap();
+                    let (l, col) = (b.line_of(b.cursor), b.col_of(b.cursor));
+                    let r = &lay.rows[lay.row_of(l, col).unwrap()];
+                    sel(b, shift);
+                    // A row the line goes on from ends at its break, which is
+                    // the next row's start: the caret stops before it.
+                    let to = if matches!(key, WKey::Named(NamedKey::Home)) { r.start } else if r.last { r.end } else { r.end.saturating_sub(1).max(r.start) };
+                    b.cursor = b.at(l, to);
+                    b.want_col = None;
+                }
                 WKey::Named(NamedKey::Home) => {
                     sel(b, shift);
                     if ctrl {
@@ -1500,6 +1544,18 @@ impl App {
                         b.cursor = b.text.line_to_char(l) + b.line_len(l);
                     }
                     b.want_col = None;
+                }
+                WKey::Named(NamedKey::PageUp) | WKey::Named(NamedKey::PageDown) if note_layout.as_ref().is_some_and(|lay| b.note.is_some() && lay.caret(b.line_of(b.cursor), b.col_of(b.cursor)).is_some()) => {
+                    // A note pages by the rows on screen, and the caret keeps
+                    // its place in the column while the page moves under it.
+                    let down = matches!(key, WKey::Named(NamedKey::PageDown));
+                    let lay = note_layout.as_ref().unwrap();
+                    let (x, y) = lay.caret(b.line_of(b.cursor), b.col_of(b.cursor)).unwrap();
+                    sel(b, shift);
+                    let page = lay.rows.len().saturating_sub(1).max(1) as i64;
+                    note_page = Some((y, if b.want_col.is_some() { b.want_x } else { x }));
+                    scroll_lines = Some(if down { -page } else { page });
+                    moved = false;
                 }
                 WKey::Named(NamedKey::PageUp) | WKey::Named(NamedKey::PageDown) => {
                     let down = matches!(key, WKey::Named(NamedKey::PageDown));
@@ -1552,7 +1608,7 @@ impl App {
                 WKey::Named(NamedKey::F2) => {
                     moved = false;
                 }
-                WKey::Character(s) if cmd => {
+                WKey::Character(s) if cmd && !composed => {
                     moved = false;
                     match s.to_lowercase().as_str() {
                         "a" => {
@@ -1707,7 +1763,7 @@ impl App {
                         .as_deref()
                         .filter(|t| !t.is_empty() && !t.chars().any(char::is_control))
                     {
-                        if !ctrl && !alt {
+                        if (!ctrl && !alt) || composed {
                             b.type_text(t, overwrite);
                             // A trigger character asks the server as you type.
                             if let Some(uri) = b.uri.clone() {
@@ -1728,6 +1784,9 @@ impl App {
             }
             if let Some(n) = scroll_lines {
                 e.scroll_by(n);
+            }
+            if note_page.is_some() {
+                e.note_page = note_page;
             }
             if moved {
                 e.hover = None;
@@ -2521,6 +2580,8 @@ impl App {
                 caret: focused && e.goto.is_none() && e.find.is_none(),
                 overwrite: e.overwrite,
                 reveal: std::mem::take(&mut e.reveal_note),
+                scroll: std::mem::take(&mut e.note_scroll),
+                page: e.note_page.take(),
                 read: e.read_view,
                 focus: e.focus,
                 sel,

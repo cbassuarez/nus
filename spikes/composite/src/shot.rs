@@ -44,6 +44,7 @@
 //!   down 40 200 · up 300 90    the left button pressed, released there (a drag)
 //!   mods shift ctrl | none     modifiers held from here on
 //!   click 900 500              a left click there
+//!   scrollat 900 500 -3 [px]   the wheel over a point (logical px): notches, or a touchpad's px
 //!   rclick 900 500             a right click there (the page's menu)
 //!   altclick 900 500           with Alt held (a peek)
 //!   srcclick 900 500           with Alt+Shift held (click to source)
@@ -65,6 +66,7 @@
 //!   home | hometype <text> | homeclear | homeenter   the prompt: open it, type into it, empty it, commit
 //!   mecard [sync|folder|forge|token|key|next|back]   the profile card: the view, a step of the walk, or a press
 //!   files | bind <folder> | treeclick <row>   the sidebar's FILES page: turn it, bind the window, click a row
+//!   notesside                  the sidebar's NOTES page, on or off
 //!   news <unix seconds>        the prompt tells what happened since then (while you were away)
 //!   homelook plate | line | art <key>   HOME: the prompt under the plate, the line alone, or an art behind it
 //!   other https://…            a tab opened by something other than you (TABS · OPENED BY OTHERS)
@@ -833,6 +835,7 @@ impl App {
                 self.news.made = None;
             }
             "files" => self.toggle_files(),
+            "notesside" => self.toggle_notes_side(),
             "bind" => self.bind_workspace(if rest.trim().is_empty() { None } else { Some(std::path::PathBuf::from(rest.trim())) }),
             "treeclick" => {
                 let k = rest.trim().parse::<usize>().unwrap_or(0);
@@ -1160,7 +1163,7 @@ impl App {
             }
             "memorypressure" => {
                 let level = match rest { "warning" => crate::memory_pressure::Level::Warning, "critical" => crate::memory_pressure::Level::Critical, _ => panic!("memorypressure requires warning or critical") };
-                self.reclaim_memory(level);
+                self.reclaim_memory(level, true);
             }
             "memory" => eprintln!("MEMORY {} {}", rest, crate::perf::memory_snapshot()),
             "awaitperf" => assert!(crate::perf::has_samples(rest), "missing performance metric: {rest}"),
@@ -1344,6 +1347,20 @@ impl App {
                 self.mouse_moved(x, y);
                 self.mouse_button(winit::event::MouseButton::Left, winit::event::ElementState::Pressed);
                 self.mouse_button(winit::event::MouseButton::Left, winit::event::ElementState::Released);
+            }
+            // `scrollat 900 400 -3`: the wheel, three notches toward the end
+            // over that point (logical px); `scrollat 900 400 -6 px`, a
+            // touchpad's six. (`wheel` is the page's trackpad gesture.)
+            "scrollat" => {
+                let a: Vec<&str> = rest.split_whitespace().collect();
+                let n = |i: usize| a.get(i).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                self.mouse_moved(n(0) * self.scale, n(1) * self.scale);
+                let delta = if a.get(3) == Some(&"px") {
+                    winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, f64::from(n(2) * self.scale)))
+                } else {
+                    winit::event::MouseScrollDelta::LineDelta(0.0, n(2))
+                };
+                self.wheel(delta);
             }
             "assertsleep" => {
                 let (i,asleep)=rest.split_once(' ').unwrap();

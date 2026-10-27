@@ -2023,6 +2023,11 @@ pub(crate) struct NoteFrame {
     pub overwrite: bool,
     /// Scroll until the caret's row is on screen.
     pub reveal: bool,
+    /// Rows to scroll first (the wheel, the keys): down is positive.
+    pub scroll: i64,
+    /// Page Up/Down: the caret goes to the row at this height and x once
+    /// the page has moved.
+    pub page: Option<(f32, f32)>,
     /// Read view: every line formatted, no caret.
     pub read: bool,
     /// Focus: all but the caret's paragraph dimmed.
@@ -2056,6 +2061,7 @@ enum Shown {
 /// one's Markdown style and how it shows, where each starts (one stop more
 /// than characters), how far rows after the first stand in, and a
 /// heading's size and the room above it.
+#[derive(Clone)]
 struct NoteLine {
     chars: Vec<char>,
     styles: Vec<crate::notes_format::Style>,
@@ -2066,6 +2072,77 @@ struct NoteLine {
     above: f32,
     /// A line that is only an embed: what it points at, and what shows.
     embed: Option<(crate::note_embed::Target, crate::note_embed::Shown)>,
+}
+
+/// What a line is measured from: its text and kind, whether it shows its
+/// Markdown, and the faces and sizes it is set in.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MeasureKey {
+    text: String,
+    kind: crate::notes_format::LineKind,
+    raw: bool,
+    face: nus_render::text::FontId,
+    bold: nus_render::text::FontId,
+    px: u32,
+    tracking: u32,
+    ch: u32,
+}
+
+/// Lines as last measured, embeds aside (theirs are live). A paragraph is
+/// one line, laid out on every frame and again as the caret moves; a long
+/// one is past the shaper's own cache, so it was shaped afresh each time.
+const MEASURED_MAX: usize = 4096;
+thread_local! {
+    static MEASURED: std::cell::RefCell<std::collections::HashMap<MeasureKey, NoteLine>> = Default::default();
+}
+
+/// Forget the measured lines (memory pressure).
+pub(crate) fn forget_measured() {
+    MEASURED.with(|m| *m.borrow_mut() = Default::default());
+}
+
+/// A note's rows as (line, row), stepped one at a time, each line measured
+/// once: scrolling by the wheel, showing the caret, paging.
+struct RowWalk<'a> {
+    app: &'a App,
+    b: &'a crate::editor::Buffer,
+    f: &'a NoteFrame,
+    raw: &'a dyn Fn(usize) -> bool,
+    heights: std::collections::HashMap<usize, Vec<f32>>,
+}
+
+impl RowWalk<'_> {
+    fn heights(&mut self, line: usize) -> &[f32] {
+        let (app, b, f, raw) = (self.app, self.b, self.f, self.raw);
+        self.heights.entry(line).or_insert_with(|| app.note_row_heights(b, line, f, raw(line)))
+    }
+
+    fn rows(&mut self, line: usize) -> usize {
+        self.heights(line).len()
+    }
+
+    fn height(&mut self, (line, row): (usize, usize)) -> f32 {
+        let h = self.heights(line);
+        h[row.min(h.len() - 1)]
+    }
+
+    fn next(&mut self, (line, row): (usize, usize)) -> Option<(usize, usize)> {
+        if row + 1 < self.rows(line) {
+            Some((line, row + 1))
+        } else {
+            (line + 1 < self.b.text.len_lines()).then_some((line + 1, 0))
+        }
+    }
+
+    fn prev(&mut self, (line, row): (usize, usize)) -> Option<(usize, usize)> {
+        if row > 0 {
+            Some((line, row - 1))
+        } else if line > 0 {
+            Some((line - 1, self.rows(line - 1) - 1))
+        } else {
+            None
+        }
+    }
 }
 
 /// (colour, bold, tint behind, underline, strike) for a Markdown style.
@@ -2138,6 +2215,10 @@ impl App {
                 return NoteLine { chars, styles, shown: vec![Shown::Hidden; n], xs: vec![0.0; n + 1], hang: 0.0, scale: 1.0, above: 0.0, embed: Some((target, shown)) };
             }
         }
+        let key = MeasureKey { text: full.clone(), kind, raw, face: mono.font, bold: self.f.notes_bold, px: mono.px.to_bits(), tracking: mono.tracking.to_bits(), ch: ch.to_bits() };
+        if let Some(hit) = MEASURED.with(|m| m.borrow().get(&key).cloned()) {
+            return hit;
+        }
         let blk = (kind == LineKind::Text).then(|| crate::notes_format::block(&full));
         let (scale, above) = heading_scale(blk.as_ref().and_then(|b| match b.kind { BlockKind::Heading(l) => Some(l), _ => None }));
         let mut shown: Vec<Shown> = chars.iter().map(|&c| Shown::Char(c)).collect();
@@ -2207,7 +2288,15 @@ impl App {
             Some((BlockKind::Para | BlockKind::Heading(_), _)) | None => 0.0,
             Some((_, body)) => xs.get(body).copied().unwrap_or(0.0),
         };
-        NoteLine { chars, styles, shown, xs, hang, scale, above: above * ch, embed: None }
+        let measured = NoteLine { chars, styles, shown, xs, hang, scale, above: above * ch, embed: None };
+        MEASURED.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= MEASURED_MAX {
+                m.clear();
+            }
+            m.insert(key, measured.clone());
+        });
+        measured
     }
 
     /// What an embed shows now: a file's lines, another note's opening
@@ -2308,12 +2397,31 @@ impl App {
         crate::note_layout::wrap(&l.chars, &widths, width, l.hang.min(width * 0.5))
     }
 
-    /// How tall a measured line stands, wrapped at a width.
-    fn note_line_height(l: &NoteLine, width: f32, ch: f32) -> f32 {
+    /// How tall each row of a line stands as drawn: a heading's first row
+    /// has its room above, and an embed is one box.
+    fn note_row_heights(&self, b: &crate::editor::Buffer, line: usize, f: &NoteFrame, raw: bool) -> Vec<f32> {
+        let l = self.measure_note_line(b, line, f.mono, raw, f.ch);
         if let Some((_, s)) = &l.embed {
-            return Self::embed_height(s, ch);
+            return vec![Self::embed_height(s, f.ch)];
         }
-        l.above + Self::note_line_rows(l, width).len() as f32 * ch * l.scale
+        (0..Self::note_line_rows(&l, f.width).len()).map(|k| (if k == 0 { l.above } else { 0.0 }) + f.ch * l.scale).collect()
+    }
+
+    /// Row `k` of a line, laid out as the body draws it, with its top at
+    /// `y`: the rows just off the screen, for Up and Down.
+    fn note_row_at(&self, b: &crate::editor::Buffer, f: &NoteFrame, line: usize, k: usize, raw: bool, y: f32) -> Option<crate::note_layout::Row> {
+        use crate::note_layout::Row;
+        let l = self.measure_note_line(b, line, f.mono, raw, f.ch);
+        let len = l.chars.len();
+        if let Some((_, s)) = &l.embed {
+            let h = Self::embed_height(s, f.ch);
+            return Some(Row { line, start: 0, end: len, y, h, base: y + h * 0.5, px: f.mono.px, x0: f.left, xs: vec![0.0; len + 1], last: true });
+        }
+        let spans = Self::note_line_rows(&l, f.width);
+        let &(s, e) = spans.get(k)?;
+        let above = if k == 0 { l.above } else { 0.0 };
+        let x0 = f.left + if k > 0 { l.hang.min(f.width * 0.5) } else { 0.0 };
+        Some(Row { line, start: s, end: e, y, h: above + f.ch * l.scale, base: y + above + f.baseline_off * l.scale, px: (f.mono.px * l.scale).round(), x0, xs: l.xs[s..=e].iter().map(|x| x - l.xs[s]).collect(), last: k + 1 == spans.len() })
     }
 
     /// A note's text in its own face, wrapped to the column, its lines
@@ -2338,29 +2446,66 @@ impl App {
             }
             (p0, p1)
         });
-        // The caret's row on screen: the first line shown goes back only as
-        // far as still leaves room for every row down to the caret's.
-        if f.reveal {
-            if cur_line < b.scroll {
-                b.scroll = cur_line;
-            } else {
-                let here = self.measure_note_line(b, cur_line, f.mono, raw(cur_line), f.ch);
-                let rows = Self::note_line_rows(&here, f.width);
-                let k = rows.iter().position(|&(s, e)| cur_col >= s && cur_col < e).unwrap_or(rows.len() - 1);
-                let mut used = here.above + (k + 1) as f32 * f.ch * here.scale;
-                let mut first = cur_line;
-                while first > b.scroll {
-                    let above = self.measure_note_line(b, first - 1, f.mono, raw(first - 1), f.ch);
-                    let h = Self::note_line_height(&above, f.width, f.ch);
-                    if used + h > f.bottom - f.top + 0.5 {
+        // Where the column starts: a line and how many of its rows are
+        // already above it, moved by the wheel and the keys row by row
+        // (never so far down that the note's end stands above the column's
+        // foot), then, if the caret moved, as little as shows its row.
+        let view = f.bottom - f.top + 0.5;
+        let caret_row = {
+            let here = self.measure_note_line(b, cur_line, f.mono, raw(cur_line), f.ch);
+            let rows = Self::note_line_rows(&here, f.width);
+            rows.iter().position(|&(s, e)| cur_col >= s && cur_col < e).unwrap_or(rows.len() - 1)
+        };
+        let (first_row, moved) = {
+            let mut w = RowWalk { app: &*self, b: &*b, f, raw: &raw, heights: Default::default() };
+            let first = (b.scroll, if b.scroll_row.0 == b.scroll { b.scroll_row.1 } else { 0 });
+            let start = (first.0, first.1.min(w.rows(first.0) - 1));
+            let mut top = start;
+            if f.scroll > 0 {
+                for _ in 0..f.scroll {
+                    match w.next(top) { Some(p) => top = p, None => break }
+                }
+                let last = n_lines - 1;
+                let mut end = (last, w.rows(last) - 1);
+                let mut used = w.height(end);
+                while let Some(p) = w.prev(end) {
+                    let h = w.height(p);
+                    if used + h > view {
                         break;
                     }
                     used += h;
-                    first -= 1;
+                    end = p;
                 }
-                b.scroll = b.scroll.max(first);
+                top = top.min(end.max(start));
+            } else {
+                for _ in 0..f.scroll.unsigned_abs() {
+                    match w.prev(top) { Some(p) => top = p, None => break }
+                }
             }
-        }
+            // While a page turns the caret follows it instead.
+            if f.reveal && f.page.is_none() {
+                let caret = (cur_line, caret_row);
+                if caret < top {
+                    top = caret;
+                } else {
+                    let mut pos = caret;
+                    let mut used = w.height(caret);
+                    while pos > top {
+                        let Some(p) = w.prev(pos) else { break };
+                        let h = w.height(p);
+                        if used + h > view {
+                            break;
+                        }
+                        used += h;
+                        pos = p;
+                    }
+                    top = top.max(pos);
+                }
+            }
+            (top, top != start)
+        };
+        b.scroll = first_row.0;
+        b.scroll_row = first_row;
         let (ink, paper, signal) = (self.theme.ink, self.theme.paper, self.surface.signal);
         let px1 = self.px(1.0).max(1.0);
         let past = self.px(5.0);
@@ -2369,12 +2514,15 @@ impl App {
         let mut layout = Layout::default();
         let mut y = f.top;
         let mut line = b.scroll;
+        // The first row that did not fit.
+        let mut next: Option<(usize, usize)> = None;
         'lines: while line < n_lines && y < f.bottom {
             let l = self.measure_note_line(b, line, f.mono, raw(line), f.ch);
             let dim = para.is_some_and(|(p0, p1)| line < p0 || line > p1);
             if let Some((target, shown)) = &l.embed {
                 let h = Self::embed_height(shown, f.ch);
                 if y + h > f.bottom + 0.5 && !layout.rows.is_empty() {
+                    next = Some((line, 0));
                     break 'lines;
                 }
                 let base = self.draw_embed(scene, target, shown, Rect::new(f.left, y, f.width, h), f, dim);
@@ -2397,8 +2545,13 @@ impl App {
             let rh = f.ch * l.scale;
             let size = (f.mono.px * l.scale).round();
             for (k, &(s, e)) in spans.iter().enumerate() {
+                // The first line's rows already scrolled past.
+                if line == first_row.0 && k < first_row.1 {
+                    continue;
+                }
                 let above = if k == 0 { l.above } else { 0.0 };
                 if y + above + rh > f.bottom + 0.5 {
+                    next = Some((line, k));
                     break 'lines;
                 }
                 let x0 = f.left + if k > 0 { l.hang.min(f.width * 0.5) } else { 0.0 };
@@ -2510,6 +2663,29 @@ impl App {
             }
             line += 1;
         }
+        // The rows just past each edge, for Up and Down to step onto.
+        let next = next.or((line < n_lines).then_some((line, 0)));
+        layout.after = next.and_then(|(l, k)| self.note_row_at(b, f, l, k, raw(l), y));
+        let before = RowWalk { app: &*self, b: &*b, f, raw: &raw, heights: Default::default() }.prev(first_row);
+        layout.before = before.and_then(|(l, k)| self.note_row_at(b, f, l, k, raw(l), f.top)).map(|r| Row { y: r.y - r.h, base: r.base - r.h, ..r });
+        // Page Up/Down: the caret to the row at the height it had, now the
+        // page has moved under it; to the note's end (or start) when it
+        // could not move.
+        if let Some((py, px)) = f.page {
+            match layout.hit(px, py + 1.0).filter(|_| moved) {
+                Some((l, c)) => {
+                    b.cursor = b.at(l, c);
+                    b.want_col = Some(0);
+                    b.want_x = px;
+                }
+                None => {
+                    b.cursor = if f.scroll > 0 { b.len_chars() } else { 0 };
+                    b.want_col = None;
+                }
+            }
+            self.dirty = true;
+        }
+        let (cur_line, cur_col) = (b.line_of(b.cursor), b.col_of(b.cursor));
         // The caret, where the rows put it (not in Read view).
         if f.caret && !f.read {
             if let Some(i) = layout.row_of(cur_line, cur_col) {

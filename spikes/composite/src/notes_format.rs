@@ -37,7 +37,7 @@ pub struct Span {
     pub style: Style,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LineKind {
     Text,
     FenceEdge,

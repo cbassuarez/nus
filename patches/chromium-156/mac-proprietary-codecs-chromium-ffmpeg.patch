@@ -2,7 +2,7 @@ diff --git a/media/BUILD.gn b/media/BUILD.gn
 index 5c60f7e080..db68e70cf4 100644
 --- a/media/BUILD.gn
 +++ b/media/BUILD.gn
-@@ -86,11 +86,9 @@ buildflag_header("media_buildflags") {
+@@ -87,11 +87,9 @@ buildflag_header("media_buildflags") {
    }
  }
  

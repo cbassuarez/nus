@@ -2260,3 +2260,49 @@ While the hatch is open below it the island is only the joint, as before.
 
 `hatchlamps NAME LAMP…` (shot.rs) photographs the tab with made-up work;
 `notch=W` draws the island round a W px housing on any display.
+
+## Chromium 156, notes that scroll, pages left to be read (2026-10-26)
+
+**Chromium 156.** CEF 156.0.14 (Chromium 156.0.8078.48), through cef-rs
+156.2.0, in place of CEF 152.0.6: four milestones of Chromium's security
+fixes. The accelerated-paint import now copies each frame before CEF's
+callback returns. The royalty-free macOS build is pinned to the same CEF,
+and its two patches (patches/chromium-156) were checked against 156's
+sources: they apply, one hunk a line further down. Rust
+dependencies are at their newest compatible versions; rustls 0.23.46,
+rustls-webpki 0.103.16, webpki-roots 1.0.11, tokio 1.54 and zip 9.0.5 clear
+every RustSec advisory that has a fix. nus embeds neither PHP nor
+Tailscale.
+
+**A note scrolls.** It used to scroll by its lines, and stop where the
+number of lines left was the number of rows on screen; a paragraph is one
+line over many rows, so a note of long paragraphs could not be scrolled at
+all. The wheel, a touchpad (its small turns add up instead of rounding to
+nothing), Ctrl+↑/↓ and Page Up/Down now move by the rows as drawn, the
+first paragraph may be partly above the column, and the end of the note
+stops at the column's foot. Page Up/Down turns a screen and the caret keeps
+its height. ↑/↓ at the column's edge step onto the next row and the note
+follows, instead of jumping a paragraph. Home and End go to the ends of the
+row on screen.
+
+**Typing every character.** AltGr (Ctrl+Alt off macOS) and Option on a Mac
+type what they type, in notes and code: `@ { } [ ] \ |` on many layouts,
+`– … é` on a Mac. A Ctrl+Alt key that types nothing is still a chord.
+
+**Lighter to type in.** A note's lines are measured once and kept (embeds
+aside, which are live), rather than shaped afresh on every frame; a long
+paragraph is past the shaper's own cache. Measuring a line's characters no
+longer searches every cluster per glyph.
+
+**A page you are reading is not "unresponsive".** The watch still asks a
+shown page something trivial every 3 s, but the hung transcript comes up
+only when it hasn't answered for 10 s *and* you clicked or typed in it at
+least 5 s ago without an answer since: as in Chrome, unresponsive means
+not answering you. And pages hear of system memory pressure once, as it
+rises, not every 30 s while it holds: each critical notice made every page
+collect its whole heap on its main thread, so on a machine short of memory
+a mail or a PDF stopped answering the watch while you read it. nus's own
+caches are still let go of every 30 s.
+
+`scrollat X Y N [px]` (shot.rs) turns the wheel over a point, by notches
+or a touchpad's pixels; `notesside` turns the sidebar's NOTES page.

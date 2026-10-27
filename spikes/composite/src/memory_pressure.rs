@@ -37,24 +37,34 @@ fn available_level(available: u64, total: u64) -> Option<Level> {
     Some(if ratio < 0.05 { Level::Critical } else if ratio < 0.10 { Level::Warning } else { Level::Normal })
 }
 
+/// A reclaim: how hard, and whether pages hear of it. A page told of
+/// critical pressure collects its whole heap on its main thread; told again
+/// every 30 s while the pressure holds, a big page spends its time
+/// collecting and stops answering (the hung transcript over a page you are
+/// only reading). So pages hear of a level once, as it rises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reclaim { pub level: Level, pub pages: bool }
+
 #[derive(Default)]
-struct Monitor { sampled: Option<Instant>, reclaimed: Option<Instant>, last: Option<Level> }
+struct Monitor { sampled: Option<Instant>, reclaimed: Option<Instant>, last: Option<Level>, told: Option<Level> }
 impl Monitor {
-    fn accept(&mut self, now: Instant, level: Option<Level>) -> Option<Level> {
+    fn accept(&mut self, now: Instant, level: Option<Level>) -> Option<Reclaim> {
         let previous = self.last;
         self.last = level;
         let level = level?;
-        if level == Level::Normal { return None; }
+        if level == Level::Normal { self.told = None; return None; }
         // Escalation is immediate; sustained/flapping pressure is rate limited.
         if previous == Some(Level::Warning) && level == Level::Critical
             || self.reclaimed.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(30)) {
             self.reclaimed = Some(now);
-            Some(level)
+            let pages = self.told.is_none_or(|told| level > told);
+            if pages { self.told = Some(level); }
+            Some(Reclaim { level, pages })
         } else { None }
     }
 }
 thread_local! { static MONITOR: std::cell::RefCell<Monitor> = Default::default(); }
-pub fn poll() -> Option<Level> {
+pub fn poll() -> Option<Reclaim> {
     MONITOR.with(|m| {
         let mut m = m.borrow_mut();
         let now = Instant::now();
@@ -74,14 +84,16 @@ pub fn footprint_kib(pid: u32) -> Option<u64> {
 pub fn footprint_kib(_pid: u32) -> Option<u64> { None }
 
 impl crate::app::App {
-    pub(crate) fn reclaim_memory(&mut self, level: Level) {
+    pub(crate) fn reclaim_memory(&mut self, level: Level, pages: bool) {
         self.fonts.reclaim_caches();
         self.prompt_cache.borrow_mut().clear();
+        crate::notes_ui::forget_measured();
         for art in self.art.iter_mut().chain(self.art_previews.values_mut()) { art.reclaim_scratch(); }
         if let Some((_, art)) = &mut self.welcome_art { art.reclaim_scratch(); }
         self.icon_previews.clear();
         self.pic_icons.clear();
         self.gpu.flush_uploads();
+        if !pages { self.dirty = true; return; }
         let notification = match level { Level::Normal => return, Level::Warning => "moderate", Level::Critical => "critical" };
         for tab in &self.tabs {
             for pane in std::iter::once(&tab.left).chain(tab.right.as_ref()) {
@@ -107,12 +119,28 @@ mod tests {
         assert_eq!(available_level(9, 100), Some(Level::Warning));
         assert_eq!(available_level(10, 100), Some(Level::Normal));
         let mut m = Monitor::default(); let t = Instant::now();
+        let level = |r: Option<Reclaim>| r.map(|r| r.level);
         assert_eq!(m.accept(t, None), None);
-        assert_eq!(m.accept(t, Some(Level::Warning)), Some(Level::Warning));
+        assert_eq!(level(m.accept(t, Some(Level::Warning))), Some(Level::Warning));
         assert_eq!(m.accept(t, Some(Level::Warning)), None);
-        assert_eq!(m.accept(t, Some(Level::Critical)), Some(Level::Critical));
+        assert_eq!(level(m.accept(t, Some(Level::Critical))), Some(Level::Critical));
         assert_eq!(m.accept(t, Some(Level::Normal)), None);
         assert_eq!(m.accept(t, Some(Level::Critical)), None);
-        assert_eq!(m.accept(t + Duration::from_secs(30), Some(Level::Critical)), Some(Level::Critical));
+        assert_eq!(level(m.accept(t + Duration::from_secs(30), Some(Level::Critical))), Some(Level::Critical));
+    }
+
+    #[test]
+    fn pages_hear_of_pressure_as_it_rises_not_while_it_holds() {
+        let mut m = Monitor::default(); let t = Instant::now();
+        let s = |n: u64| t + Duration::from_secs(30 * n);
+        assert_eq!(m.accept(s(0), Some(Level::Warning)), Some(Reclaim { level: Level::Warning, pages: true }));
+        assert_eq!(m.accept(s(1), Some(Level::Warning)), Some(Reclaim { level: Level::Warning, pages: false }));
+        assert_eq!(m.accept(s(1), Some(Level::Critical)), Some(Reclaim { level: Level::Critical, pages: true }));
+        // Holding, or easing back to warning: nus's own caches only.
+        assert_eq!(m.accept(s(2), Some(Level::Critical)), Some(Reclaim { level: Level::Critical, pages: false }));
+        assert_eq!(m.accept(s(3), Some(Level::Warning)), Some(Reclaim { level: Level::Warning, pages: false }));
+        // Once it has passed, the next rise is news again.
+        assert_eq!(m.accept(s(4), Some(Level::Normal)), None);
+        assert_eq!(m.accept(s(5), Some(Level::Warning)), Some(Reclaim { level: Level::Warning, pages: true }));
     }
 }

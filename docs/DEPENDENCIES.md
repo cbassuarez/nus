@@ -2,7 +2,7 @@
 
 ## Bundle (fetched by `scripts/fetch-cef.sh`, never committed)
 - **CEF** binary distribution, version pinned by the `vendor/cef-rs` submodule
-  commit (currently CEF 152 / Chromium 152). Windows
+  commit (currently CEF 156 / Chromium 156). Windows
   x64, macOS arm64, Linux x64. Bump monthly with Chromium.
 - **Fonts:** JetBrains Mono (OFL) as default, Symbols Nerd Font for icons.
 

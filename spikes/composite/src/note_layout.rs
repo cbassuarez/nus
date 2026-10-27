@@ -40,10 +40,13 @@ impl Row {
     }
 }
 
-/// The rows on screen.
+/// The rows on screen, and the one just past each edge (measured, not
+/// drawn), so Up and Down can step off the screen a row at a time.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub rows: Vec<Row>,
+    pub before: Option<Row>,
+    pub after: Option<Row>,
 }
 
 impl Layout {
@@ -76,12 +79,19 @@ impl Layout {
         Some((r.line, r.nearest(x)))
     }
 
-    /// Up or Down from (line, col), keeping to `x`: None when the row it
-    /// would go to is not on screen.
+    /// Up or Down from (line, col), keeping to `x`, onto the row just off
+    /// the screen when that is where it goes: None at the note's ends, or
+    /// when the caret is not on screen.
     pub fn step(&self, line: usize, col: usize, x: f32, down: bool) -> Option<(usize, usize)> {
         let i = self.row_of(line, col)?;
-        let j = if down { i + 1 } else { i.checked_sub(1)? };
-        let r = self.rows.get(j)?;
+        let r = if down {
+            self.rows.get(i + 1).or(self.after.as_ref())?
+        } else {
+            match i.checked_sub(1) {
+                Some(j) => &self.rows[j],
+                None => self.before.as_ref()?,
+            }
+        };
         Some((r.line, r.nearest(x)))
     }
 }
@@ -161,7 +171,7 @@ mod tests {
     fn layout() -> Layout {
         // "aaa bbb" wrapped after the space, then a second line "cc".
         let row = |line, start, end, y: f32, last| Row { line, start, end, y, h: 10.0, base: y + 8.0, px: 10.0, x0: 10.0, xs: (0..=end - start).map(|k| k as f32 * 2.0).collect(), last };
-        Layout { rows: vec![row(0, 0, 4, 0.0, false), row(0, 4, 7, 10.0, true), row(1, 0, 2, 20.0, true)] }
+        Layout { rows: vec![row(0, 0, 4, 0.0, false), row(0, 4, 7, 10.0, true), row(1, 0, 2, 20.0, true)], ..Default::default() }
     }
 
     #[test]
@@ -201,5 +211,17 @@ mod tests {
         assert_eq!(l.step(0, 5, 12.0, true), Some((1, 1)));
         assert_eq!(l.step(1, 1, 12.0, false), Some((0, 5)));
         assert_eq!(l.step(0, 1, 12.0, false), None);
+    }
+
+    #[test]
+    fn up_and_down_step_onto_the_rows_just_off_screen() {
+        let mut l = layout();
+        let off = |line, start, end, y: f32| Row { line, start, end, y, h: 10.0, base: y + 8.0, px: 10.0, x0: 10.0, xs: (0..=end - start).map(|k| k as f32 * 2.0).collect(), last: true };
+        l.before = Some(off(4, 0, 6, -10.0));
+        l.after = Some(off(2, 0, 3, 30.0));
+        assert_eq!(l.step(0, 1, 12.0, false), Some((4, 1)));
+        assert_eq!(l.step(1, 1, 14.0, true), Some((2, 2)));
+        // Off screen itself, the caret has nowhere to step from.
+        assert_eq!(l.step(2, 1, 12.0, true), None);
     }
 }

@@ -11262,11 +11262,18 @@ impl App {
                 let tab = &mut self.tabs[self.active];
                 let pane = if right { tab.right.as_mut() } else { Some(&mut tab.left) };
                 let Some(Pane::Editor(e)) = pane else { return };
+                // Whole lines (a note's rows); what a touchpad or a fine
+                // wheel turns short of one is carried to the next turn.
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (y * wheel_lines).round() as i64,
-                    MouseScrollDelta::PixelDelta(p) => (p.y as f32 / e.cell.1).round() as i64,
+                    MouseScrollDelta::LineDelta(_, y) => y * wheel_lines,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / e.cell.1,
                 };
-                e.scroll_by(lines);
+                if lines * e.wheel_carry < 0.0 {
+                    e.wheel_carry = 0.0;
+                }
+                let turned = lines + e.wheel_carry;
+                e.wheel_carry = turned.fract();
+                e.scroll_by(turned.trunc() as i64);
                 e.hover = None;
                 self.dirty = true;
             }
