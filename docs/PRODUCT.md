@@ -2265,8 +2265,10 @@ While the hatch is open below it the island is only the joint, as before.
 
 **Chromium 156.** CEF 156.0.14 (Chromium 156.0.8078.48), through cef-rs
 156.2.0, in place of CEF 152.0.6: four milestones of Chromium's security
-fixes. The accelerated-paint import now copies each frame before CEF's
-callback returns. The royalty-free macOS build is pinned to the same CEF,
+fixes. nus's cef-rs (the `nus-156` branch of the fork) keeps 152's
+accelerated-paint import, which takes the frame without a copy: upstream's
+new copy-and-wait (#498) froze the UI thread on macOS while tabs were
+switched, which the release's session-sound check caught. The royalty-free macOS build is pinned to the same CEF,
 and its two patches (patches/chromium-156) were checked against 156's
 sources: they apply, one hunk a line further down. Rust
 dependencies are at their newest compatible versions; rustls 0.23.46,

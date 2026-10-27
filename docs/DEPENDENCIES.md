@@ -8,7 +8,11 @@
 
 ## Fork (git submodule under `vendor/`, we carry patches)
 - `vendor/cef-rs` — tauri-apps/cef-rs. Expect patches around OSR shared
-  textures and Chrome-runtime windowless mode.
+  textures and Chrome-runtime windowless mode. Branch `nus-156` (cef-rs
+  156.2.0) reverts upstream #498: the accelerated-paint import that copies
+  the frame and waits for the GPU inside CEF's callback froze the UI thread
+  on macOS while tabs were switched. Drop the revert once that is fixed
+  upstream and the release's session-sound check passes without it.
 
 ## Temporary source patch
 - `vendor/wgpu-hal` — crates.io 30.0.1 plus the macOS first-frame fix from
