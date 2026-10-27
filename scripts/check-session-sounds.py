@@ -81,7 +81,10 @@ def main():
     (profile / "session.json").write_text(json.dumps(session))
     (profile / "onboarded").write_text("skip")
     (profile / "settings.json").write_text(json.dumps({
-        "behavior": {"splash": "None", "then": "Prompt", "remember": True,
+        # New tabs at the end, so the tab this check opens leaves the restored
+        # ones where `benchtab` looks for them (the default is under the
+        # current tab).
+        "behavior": {"splash": "None", "then": "Prompt", "remember": True, "new_tab_place": "End",
                      "new_window": "Prompt", "keep_alive": "Off", "close_asks": False,
                      "update_checks": False, "follow_os_theme": False},
         "motion": {"register": 0.5, "reduce": True},

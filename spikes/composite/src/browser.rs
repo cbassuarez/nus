@@ -1508,10 +1508,10 @@ wrap_render_handler! {
             let popup = type_ != PaintElementType::default();
             use cef::osr_texture_import::shared_texture_handle::SharedTextureHandle;
             let handle = SharedTextureHandle::new(info);
-            // The frame is taken as it is, without a copy: nus's cef-rs keeps
-            // 152's import (upstream's copy-and-wait, #498, froze the UI
-            // thread on macOS while tabs were switched).
-            match handle.import_texture(&self.osr.device) {
+            // SAFETY: inside CEF's own callback, with its current frame, on
+            // the device and queue the compositor draws with. The import
+            // copies the frame and waits, so the texture outlives the call.
+            match unsafe { handle.import_texture(&self.osr.device, &self.osr.queue) } {
                 Ok(texture) => {
                     let bind = (self.osr.bind_texture)(&texture);
                     let mut s = self.osr.shared.borrow_mut();
