@@ -104,6 +104,9 @@ def main():
             try:
                 code = proc.wait(timeout=100)
             except BaseException:
+                # Stuck: where every thread is, kept with the evidence.
+                subprocess.run(["sample", str(proc.pid), "3", "-file", str(evidence / "sample.txt")],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
                 os.killpg(proc.pid, 15)
                 proc.wait(timeout=10)
                 raise
