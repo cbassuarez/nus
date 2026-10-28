@@ -37,7 +37,7 @@ use crate::app::App;
 use crate::browser::Video;
 
 #[path="pip_geometry.rs"] mod geometry;
-#[path="pip_native.rs"] mod native;
+#[path="pip_native.rs"] pub(crate) mod native;
 
 // Swept skip marks: the value sits below the arrowhead, with its baseline
 // at y=20 alongside the opposite tail. The two marks are exact mirrors.

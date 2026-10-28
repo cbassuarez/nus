@@ -181,18 +181,28 @@ impl App {
             let x=w-edge-px(offset);self.fonts.draw(&mut h.scene,muted,x,foot+px(20.0),text);
             h.hits.push((Rect::new(x-px(5.0),foot,px(44.0),px(26.0)),hit));
         }
-        let lip=Rect::new(0.0,height-px(6.0),w,px(6.0));h.scene.rect(lip,self.surface.signal);
-        h.hits.push((Rect::new(0.0,height-px(10.0),w,px(10.0)),Hit::Lip));
+        // The lip runs along the edge facing away from where it comes in: a drawer's inner side.
+        let (lip,grab)=match h.side {
+            Some(Side::Right)=>(Rect::new(0.0,0.0,px(6.0),height),Rect::new(0.0,0.0,px(10.0),height)),
+            Some(Side::Left)=>(Rect::new(w-px(6.0),0.0,px(6.0),height),Rect::new(w-px(10.0),0.0,px(10.0),height)),
+            None=>(Rect::new(0.0,height-px(6.0),w,px(6.0)),Rect::new(0.0,height-px(10.0),w,px(10.0))),
+        };
+        h.scene.rect(lip,self.surface.signal);h.hits.push((grab,Hit::Lip));
         if h.look==HatchLook::Card { h.hits.push((Rect::new(0.0,0.0,right,px(43.0)),Hit::Frame)); }
         h.scene.finish();
         self.painting_hatch = false;
+        let reveal=h.slide.value();
         if let Some(notch)=h.notch {
-            let reveal=h.slide.value();
             let width=notch.width as f32+(w-notch.width as f32)*reveal;
             h.scene.clip_all(Rect::new((w-width)/2.0,0.0,width,height*reveal));
+        } else if let Some(side)=h.side {
+            // A drawer comes out of its edge in place: the window never moves onto a neighbouring monitor.
+            let width=(w*reveal).round();
+            h.scene.clip_all(Rect::new(if side==Side::Right {w-width} else {0.0},0.0,width,height));
         }
+        let clear=if h.notch.is_some() || h.side.is_some() && h.target.translucent() {[0.0;4]} else {paper};
         crate::app::upload_glyphs(&mut self.fonts, &self.gpu, &mut self.dirty);
-        self.gpu.render(&mut h.target,&h.scene,if h.notch.is_some(){[0.0;4]}else{paper});
+        self.gpu.render(&mut h.target,&h.scene,clear);
     }
 
     pub(crate) fn attach_hatch_overlay(&mut self, window:Arc<Window>, badge:bool) {
@@ -242,10 +252,12 @@ impl App {
         let attached=open && top.notch.is_some();
         let show=attached || !self.hatch_state.badge_suppressed && (self.behavior.hatch_status && (summary!="Hatch · ready" || self.hatch_state.main_hidden) || notice)
             && self.hatch.as_ref().is_none_or(|h|!h.visible);
-        // Lamps either way (hatch_lamps.rs): round the camera housing, or a tab from the top edge.
-        match top.notch {
-            Some(n)=>self.hatch_badge_island(show,mon,n,attached),
-            None=>self.hatch_badge_lamps(show,mon,top.menu),
+        // Lamps any way (hatch_lamps.rs): round the camera housing, a tab from the top edge on a Mac,
+        // or one from the side the drawer comes in from, whichever look is chosen.
+        match (top.notch,self.hatch_side()) {
+            (Some(n),_)=>self.hatch_badge_island(show,mon,n,attached),
+            (None,Some(side))=>self.hatch_badge_edge(show,mon,side),
+            (None,None)=>self.hatch_badge_lamps(show,mon,top.menu),
         }
     }
 }

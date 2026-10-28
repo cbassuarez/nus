@@ -2306,3 +2306,28 @@ caches are still let go of every 30 s.
 
 `scrollat X Y N [px]` (shot.rs) turns the wheel over a point, by notches
 or a touchpad's pixels; `notesside` turns the sidebar's NOTES page.
+
+## The hatch comes in from the side (2026-10-28)
+
+Off macOS the sheet is a drawer from the side of the screen away from the
+tabs sidebar: tabs on the left, it comes in from the right edge; tabs on
+the right (SIDEBAR · SIDE OF THE WINDOW), from the left, at once if it is
+pinned open. It is flush with that edge of the work area, so it keeps clear
+of the taskbar (and of one docked on that side), and as tall as the work
+area less 16 px above and below. SIZE is how far it comes out: 30–60 % of
+the monitor's width, never under 360 px. The lip runs down its inner edge
+and drags the width. It comes out of its edge in place, the reveal the
+island uses, rather than sliding the window in from past the edge, which
+would carry it across a neighbouring monitor. The card is still centred.
+
+The closed hatch is a tab on the same edge, level with the drawer's middle:
+the lamps in a column by the screen's edge, the edges and the lip round the
+other three sides, and the notice's line and the tooltips opening inward.
+Ready is a chevron pointing in. Settings say "wide", SLIDES IN FROM THE
+SIDE and "a drawer from the side away from the tabs" off macOS.
+
+A Mac is unchanged: the sheet drops from the top (from the camera housing
+where there is one) and its tab hangs from the top edge.
+
+`hatchassertside` (shot.rs) checks the drawer's edge, height and window and
+the closed tab's edge and middle for the current sidebar side.

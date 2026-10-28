@@ -878,6 +878,7 @@ pub mod icons {
     icon!(PIN, "push-pin");
     icon!(ANCHOR, "anchor");
     icon!(CARET_RIGHT, "caret-right");
+    icon!(CARET_LEFT, "caret-left");
     icon!(CARET_DOWN, "caret-down");
     icon!(STACK, "stack");
     icon!(LINK, "link");

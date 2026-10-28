@@ -127,6 +127,33 @@ pub fn top_area(mx: i32, my: i32, scale: f32) -> TopArea {
 
 pub fn safe_top(mx:i32,my:i32,scale:f32)->i32 {top_area(mx,my,scale).content_top()}
 
+/// The part of a monitor the taskbar and panels leave, as (left, top,
+/// right, bottom) in physical px from the monitor's top-left corner; the
+/// whole monitor where the OS won't say.
+pub fn work_area(mx:i32,my:i32,mw:u32,mh:u32)->(i32,i32,i32,i32) {
+    let whole=(0,0,mw as i32,mh as i32);
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW,MonitorFromRect,MONITORINFO,MONITOR_DEFAULTTONEAREST};
+        let rect=RECT{left:mx,top:my,right:mx+mw as i32,bottom:my+mh as i32};
+        let mut info:MONITORINFO=unsafe{std::mem::zeroed()};info.cbSize=std::mem::size_of::<MONITORINFO>() as u32;
+        if unsafe{GetMonitorInfoW(MonitorFromRect(&rect,MONITOR_DEFAULTTONEAREST),&mut info)}!=0 {
+            let w=info.rcWork;
+            return (w.left-mx,w.top-my,w.right-mx,w.bottom-my);
+        }
+    }
+    #[cfg(target_os="linux")]
+    if !wayland() {
+        let monitor=crate::pip::LRect{x:mx as f64,y:my as f64,w:mw as f64,h:mh as f64};
+        if let Some(a)=crate::pip::native::x11_work_area(monitor,1.0) {
+            return (a.x as i32-mx,a.y as i32-my,(a.x+a.w) as i32-mx,(a.y+a.h) as i32-my);
+        }
+    }
+    let _=(mx,my);
+    whole
+}
+
 /// Only the island and its attached dropdown sit at status-window level.
 /// Modal and backdrop windows keep their ordinary floating/normal levels.
 pub fn island_level(window:&Window, attached:bool) {

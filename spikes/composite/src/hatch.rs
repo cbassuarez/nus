@@ -20,6 +20,7 @@ use winit::window::Window;
 
 use crate::app::{App, Pane};
 use crate::settings::{HatchLook, HatchMonitor};
+use crate::surface::Side;
 use crate::hatch_work::{Item, Target as WorkTarget};
 #[path = "hatch_ui.rs"]
 mod ui;
@@ -89,8 +90,11 @@ pub struct Hatch {
     pub home: (i32, i32),
     pub position: (i32, i32),
     pub notch: Option<crate::hatch_native::Notch>,
+    /// Off macOS the sheet is a drawer from this edge of the screen.
+    pub side: Option<Side>,
     pub size: (u32, u32),
-    /// Sheet: the height as a fraction of the monitor, once dragged.
+    /// Sheet: how far it comes out (its height, or a drawer's width) as a
+    /// fraction of the monitor, once dragged.
     pub frac: f32,
     pub lip_drag: Option<(f32, f32)>,
     pub frame_drag: Option<(i32, i32, f32, f32)>,
@@ -231,6 +235,7 @@ impl App {
             mon: (0, 0, 1920, 1080, scale),
             home: window.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0)),
             notch: None,
+            side: None,
             position: window.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0)),
             size: (window.inner_size().width, window.inner_size().height),
             frac: self.behavior.hatch_size as f32 / 100.0,
@@ -273,12 +278,18 @@ impl App {
         let top = crate::hatch_native::top_area(mx, my, scale);
         let safe = top.content_top();
         let (size, home) = match look {
-            HatchLook::Sheet => {
-                let w = ((960.0 * scale) as u32).min(mw.saturating_sub((32.0 * scale) as u32));
-                let max_h = mh.saturating_sub(safe as u32 + (32.0 * scale) as u32).max(1);
-                let hh = ((mh as f32 * frac) as u32).clamp(((200.0 * scale) as u32).min(max_h), max_h);
-                ((w.max(1), hh), (mx + top.notch.map(|n|n.left+n.width as i32/2-w as i32/2).unwrap_or((mw as i32-w as i32)/2).clamp(0,mw.saturating_sub(w) as i32), my + safe))
-            }
+            HatchLook::Sheet => match self.hatch_side() {
+                Some(side) => {
+                    let ((x, y), size) = drawer(mw, crate::hatch_native::work_area(mx, my, mw, mh), scale, frac, side);
+                    (size, (mx + x, my + y))
+                }
+                None => {
+                    let w = ((960.0 * scale) as u32).min(mw.saturating_sub((32.0 * scale) as u32));
+                    let max_h = mh.saturating_sub(safe as u32 + (32.0 * scale) as u32).max(1);
+                    let hh = ((mh as f32 * frac) as u32).clamp(((200.0 * scale) as u32).min(max_h), max_h);
+                    ((w.max(1), hh), (mx + top.notch.map(|n|n.left+n.width as i32/2-w as i32/2).unwrap_or((mw as i32-w as i32)/2).clamp(0,mw.saturating_sub(w) as i32), my + safe))
+                }
+            },
             HatchLook::Card => {
                 let w = (mw as f32 * 0.7) as u32;
                 let max_h = mh.saturating_sub((40.0 * scale) as u32).max(1);
@@ -289,11 +300,21 @@ impl App {
         (home, size, (mx, my, mw, mh, scale))
     }
 
+    /// The edge the sheet comes in from: off macOS the side of the screen
+    /// away from the tabs sidebar; a Mac's drops from the top (from the camera
+    /// housing when there is one).
+    pub(crate) fn hatch_side(&self) -> Option<Side> {
+        if cfg!(target_os = "macos") { return None; }
+        Some(if self.sidebar_right() { Side::Left } else { Side::Right })
+    }
+
     /// Pick the monitor and size the window for the look.
     fn place_hatch(&mut self) {
         let (home, size, mon) = self.hatch_geometry();
+        let side = self.hatch_side();
         let Some(h) = self.hatch.as_mut() else { return };
         h.mon = mon;
+        h.side = side.filter(|_| h.look == HatchLook::Sheet);
         h.notch = if h.look==HatchLook::Sheet {crate::hatch_native::top_area(mon.0,mon.1,mon.4).notch} else {None};
         crate::hatch_native::island_level(&h.window,h.notch.is_some());
         h.home = home;
@@ -312,7 +333,9 @@ impl App {
         }
         let s = h.slide.value();
         let (x, y) = match h.look {
-            HatchLook::Sheet if h.notch.is_some() => h.home,
+            // Revealed in place from its edge (draw_hatch), so it never
+            // passes over a neighbouring monitor.
+            HatchLook::Sheet if h.notch.is_some() || h.side.is_some() => h.home,
             HatchLook::Sheet => (h.home.0, h.home.1 - ((1.0 - s) * h.size.1 as f32) as i32),
             HatchLook::Card => (h.home.0, h.home.1 + ((1.0 - s) * 12.0 * h.mon.4) as i32),
         };
@@ -338,7 +361,10 @@ impl App {
         let Some(h) = self.hatch.as_ref() else { return };
         let (w, hh) = (h.target.size.0 as f32, h.target.size.1 as f32);
         let edge = if h.look == HatchLook::Card { 16.0 } else { 2.0 } * scale;
-        let content = Rect::new(edge, 82.0 * scale, (w-2.0*edge).max(1.0), (hh-116.0*scale).max(1.0));
+        // A drawer's lip runs down its inner edge.
+        let lip = 6.0 * scale;
+        let (lead, trail) = match h.side { Some(Side::Right) => (lip, 0.0), Some(Side::Left) => (0.0, lip), None => (0.0, 0.0) };
+        let content = Rect::new(edge + lead, 82.0 * scale, (w-2.0*edge-lead-trail).max(1.0), (hh-116.0*scale).max(1.0));
         let min = (180.0 * scale).min(content.w / 2.0);
         let split_w = (self.tabs[i].split_w.unwrap_or(m::SPLIT) * scale).clamp(min, (content.w-min-rule).max(min));
         let Some(tab) = self.tabs.get_mut(i) else { return };
@@ -529,6 +555,23 @@ impl App {
     pub fn hatch_cursor(&mut self, pos: (f32, f32)) {
         let Some(h) = self.hatch.as_mut() else { return };
         h.pos = pos;
+        if let Some((at0, frac0)) = h.lip_drag.filter(|_| h.side.is_some()) {
+            // Drawer: the lip drags the width, from where the pointer is on
+            // screen (the window moves under it), and the window keeps to its edge.
+            let dx = h.position.0 as f32 + pos.0 - at0;
+            let toward = if h.side == Some(Side::Right) { -dx } else { dx };
+            h.frac = (frac0 + toward / h.mon.2 as f32).clamp(0.15, 0.95);
+            let (home, size, _) = self.hatch_geometry();
+            let Some(h) = self.hatch.as_mut() else { return };
+            if (h.home, h.size) != (home, size) {
+                h.home = home;
+                h.position = home;
+                h.window.set_outer_position(winit::dpi::PhysicalPosition::new(home.0, home.1));
+                let _ = h.window.request_inner_size(winit::dpi::PhysicalSize::new(size.0, size.1));
+            }
+            self.dirty = true;
+            return;
+        }
         if let Some((y0, frac0)) = h.lip_drag {
             // Sheet: the lip drags the height.
             let dy = pos.1 - y0;
@@ -581,7 +624,7 @@ impl App {
                 Some(Hit::Pin) => return self.toggle_pin(),
                 Some(Hit::Close) => return self.hide_hatch(),
                 Some(Hit::Lip) => {
-                    h.lip_drag = Some((pos.1, h.frac));
+                    h.lip_drag = Some((if h.side.is_some() { h.position.0 as f32 + pos.0 } else { pos.1 }, h.frac));
                     return;
                 }
                 Some(Hit::Frame) => {
@@ -694,5 +737,46 @@ impl App {
             self.hotkey = None;
             self.hotkey = Some(crate::hotkey::Hotkey::register(chord, self.proxy.clone()));
         }
+    }
+}
+
+/// The drawer off macOS: flush with `side` of the work area (clear of the
+/// taskbar), as tall as the work area less a margin above and below, `frac`
+/// of the monitor's width deep (at least 360 px, and leaving the same margin
+/// on the far side). `work` is (left, top, right, bottom) from the monitor's
+/// corner; returns the window's corner from the monitor's, and its size, in
+/// physical px.
+pub(crate) fn drawer(mw: u32, work: (i32, i32, i32, i32), scale: f32, frac: f32, side: Side) -> ((i32, i32), (u32, u32)) {
+    let margin = (16.0 * scale) as i32;
+    let (left, top, right, bottom) = work;
+    let max_w = (right - left - 2 * margin).max(1) as u32;
+    let w = ((mw as f32 * frac) as u32).clamp(((360.0 * scale) as u32).min(max_w), max_w);
+    let h = (bottom - top - 2 * margin).max(1) as u32;
+    let x = if side == Side::Right { right - w as i32 } else { left };
+    ((x, top + margin), (w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_drawer_comes_in_from_the_side_away_from_the_tabs() {
+        // 1920 × 1080 at 125 %, a 60 px taskbar along the foot.
+        let work = (0, 0, 1920, 1020);
+        assert_eq!(drawer(1920, work, 1.25, 0.4, Side::Right), ((1152, 20), (768, 980)));
+        assert_eq!(drawer(1920, work, 1.25, 0.4, Side::Left), ((0, 20), (768, 980)));
+        // A taskbar on the right: the drawer keeps clear of it.
+        assert_eq!(drawer(1920, (0, 0, 1860, 1080), 1.25, 0.4, Side::Right), ((1092, 20), (768, 1040)));
+    }
+
+    #[test]
+    fn the_drawer_stays_usable_and_on_its_monitor() {
+        // Never narrower than 360 px…
+        assert_eq!(drawer(1920, (0, 0, 1920, 1080), 1.0, 0.1, Side::Right).1 .0, 360);
+        // …nor wider than the work area less a margin.
+        assert_eq!(drawer(1000, (0, 0, 900, 800), 1.0, 0.95, Side::Left), ((0, 16), (868, 768)));
+        // A work area too small for 360 still fits.
+        assert_eq!(drawer(300, (0, 0, 300, 400), 1.0, 0.4, Side::Right), ((32, 16), (268, 368)));
     }
 }

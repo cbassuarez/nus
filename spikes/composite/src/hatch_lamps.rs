@@ -1,7 +1,8 @@
 //! The hatch at rest, as lamps (design/HatchLamps.dc.html, picked
-//! 2026-10-09). Where there's no camera housing (Windows, Linux, a Mac on
-//! another display) it is the sheet rolled up: a tab hanging from the top
-//! edge with one lamp per piece of work. On a notched Mac the island keeps
+//! 2026-10-09). Where there's no camera housing it is the sheet rolled up:
+//! a tab with one lamp per piece of work, hanging from the top edge on a
+//! Mac, and on Windows and Linux from the side of the screen the drawer
+//! comes in from (away from the tabs). On a notched Mac the island keeps
 //! its shape and its wings carry the lamps: what is going on the left, what
 //! wants you or ended unseen on the right.
 //!
@@ -143,6 +144,13 @@ fn draw_dots(s: &mut Scene, x: f32, cy: f32, color: Color, px: Px) {
     for n in 0..3 { s.rect(Rect::new(x + n as f32 * dot * 2.0, y, dot, dot), color); }
 }
 
+/// The ⋯ for the rest down a column, from `y`, centred on `cx`.
+fn draw_dots_down(s: &mut Scene, cx: f32, y: f32, color: Color, px: Px) {
+    let dot = px.thin(2.0);
+    let x = (cx - dot / 2.0).round();
+    for n in 0..3 { s.rect(Rect::new(x, y + n as f32 * dot * 2.0, dot, dot), color); }
+}
+
 /// The notice's line: a check or a cross and the session's own title,
 /// centred in `row`.
 fn draw_notice(fonts: &mut FontSystem, s: &mut Scene, row: Rect, item: &Item, line: &str, style: Style, m: Marks, px: Px) {
@@ -247,6 +255,17 @@ impl App {
         }
     }
 
+    /// The tab's colours: the theme's opaque paper and ink, the Space's signal.
+    fn hatch_badge_marks(&self) -> Marks {
+        Marks {
+            paper: { let p = self.theme.paper; [p[0], p[1], p[2], 1.0] },
+            ink: self.theme.ink,
+            signal: self.surface.signal,
+            green: crate::theme_edit::from_rgb(self.theme.ansi[2]),
+            red: crate::theme_edit::from_rgb(self.theme.ansi[1]),
+        }
+    }
+
     /// The tab, drawn into the badge window (or hidden). `top` is where it
     /// hangs from: the screen's top edge, or under a menu bar.
     pub(super) fn hatch_badge_lamps(&mut self, show: bool, mon: (i32, i32, u32, u32, f32), top: i32) {
@@ -254,13 +273,7 @@ impl App {
         let Some(translucent) = self.hatch_state.badge.as_ref().map(|b| b.target.translucent()) else { return };
         if !show { return self.hatch_badge_hide(); }
         let px = Px(scale);
-        let marks = Marks {
-            paper: { let p = self.theme.paper; [p[0], p[1], p[2], 1.0] },
-            ink: self.theme.ink,
-            signal: self.surface.signal,
-            green: crate::theme_edit::from_rgb(self.theme.ansi[2]),
-            red: crate::theme_edit::from_rgb(self.theme.ansi[1]),
-        };
+        let marks = self.hatch_badge_marks();
         let now = self.hatch_badge_now(|all| all.len().min(MAX_LAMPS));
         let shown = now.all.len().min(MAX_LAMPS);
         let more = now.all.len() > MAX_LAMPS;
@@ -347,6 +360,117 @@ impl App {
         }
         if let (Some(r), Some(text)) = (tip_rect, &tip_text) {
             draw_tip(&mut self.fonts, s, r, text, label, marks.paper, marks.ink, shadow, px);
+        }
+        self.hatch_badge_show();
+    }
+
+    /// The tab off macOS, hanging from the side of the screen the drawer
+    /// comes in from, level with the middle of where it comes out: the lamps
+    /// in a column by the screen's edge, the notice's line inward of them for
+    /// six seconds, the lip and the edges round three sides (none on the
+    /// screen's), a tooltip opening inward.
+    pub(super) fn hatch_badge_edge(&mut self, show: bool, mon: (i32, i32, u32, u32, f32), side: Side) {
+        let (mx, my, mw, mh, scale) = mon;
+        let Some(translucent) = self.hatch_state.badge.as_ref().map(|b| b.target.translucent()) else { return };
+        if !show { return self.hatch_badge_hide(); }
+        let px = Px(scale);
+        let marks = self.hatch_badge_marks();
+        let now = self.hatch_badge_now(|all| all.len().min(MAX_LAMPS));
+        let shown = now.all.len().min(MAX_LAMPS);
+        let more = now.all.len() > MAX_LAMPS;
+        let right = side == Side::Right;
+
+        let (edge, lip, pad, size, gap, dot) = (px.thin(1.5), px.thin(2.0), px.of(7.0), px.of(7.0), px.of(6.0), px.thin(2.0));
+        // A compositor without alpha gets the tab alone: no shadow, no tooltip.
+        let shadow = if translucent { px.of(3.0) } else { 0.0 };
+        let ready = now.all.is_empty();
+        // Across: the lamps' band by the screen's edge. Along: their run.
+        let band = if ready { px.of(11.0) } else { px.of(16.0) };
+        let mut run = if ready { px.of(10.0) } else { shown as f32 * size + shown.saturating_sub(1) as f32 * gap };
+        if more { run += gap + dot * 5.0; }
+        let title = Style { font: self.f.ui, px: px.of(11.0), color: marks.ink, tracking: 0.0 };
+        let line = now.notice.as_ref().map(|(item, _)| self.fit(title, item.title.as_str(), px.of(240.0)).into_owned());
+        let line_w = line.as_ref().map_or(0.0, |t| px.of(16.0) + self.fonts.measure(title, t) + 2.0 * pad);
+        let line_h = if line.is_some() { px.of(17.0) } else { 0.0 };
+        let inner = run.max(line_h);
+        let tab_w = band + line_w + lip + edge;
+        let tab_h = inner + 2.0 * (pad + edge);
+
+        // Where it all sits on screen: against the work area's edge, clear of
+        // the taskbar, whether or not a tooltip widens the window around it.
+        let (left, top, right_x, bottom) = crate::hatch_native::work_area(mx, my, mw, mh);
+        let tab_sx = if right { (mx + right_x) as f32 - tab_w } else { (mx + left) as f32 };
+        let tab_sy = (my as f32 + (top + bottom) as f32 / 2.0 - tab_h / 2.0).round();
+        let tab_screen = Rect::new(tab_sx, tab_sy, tab_w, tab_h);
+        let band_x = if right { tab_screen.right() - band } else { tab_sx };
+        let lx = band_x + ((band - size) / 2.0).round();
+        let ly0 = tab_sy + edge + pad + ((inner - run) / 2.0).round();
+        let rects: Vec<Rect> = (0..shown).map(|i| Rect::new(lx, ly0 + i as f32 * (size + gap), size, size)).collect();
+        let hits: Vec<(Rect, WorkTarget)> = rects.iter().zip(&now.all)
+            .map(|(r, (item, _))| (Rect::new(band_x, r.y - gap / 2.0, band, size + gap), item.target)).collect();
+        let hover = self.hatch_state.badge_hover;
+        let hovered = hover.and_then(|(x, y)| hits.iter().position(|(r, _)| r.contains(x, y)));
+        let on_tab = hover.is_some_and(|(x, y)| tab_screen.contains(x, y));
+
+        let label = self.hatch_badge_label(px);
+        let tip_text = if translucent { self.hatch_badge_tip(hovered.map(|i| &now.all[i].0), on_tab, label, px) } else { None };
+        let tip_size = tip_text.as_ref().map(|t| (self.fonts.measure(label, t) + px.of(16.0), (label.px * 1.4).max(px.of(16.0)) + px.of(8.0)));
+        let tip_gap = px.of(6.0);
+        let tip_screen = tip_size.map(|(w, h)| {
+            let anchor = hovered.map_or(tab_screen, |i| rects[i]);
+            let x = if right { tab_sx - tip_gap - w } else { tab_screen.right() + tip_gap };
+            Rect::new(x.round(), (anchor.y + anchor.h / 2.0 - h / 2.0).round(), w, h)
+        });
+        // The window holds the tab and the tooltip with their shadows, and
+        // nothing past the screen's edge.
+        let (mut x0, mut y0, mut x1, mut y1) = (tab_sx, tab_sy, tab_screen.right() + shadow, tab_screen.bottom() + shadow);
+        if let Some(t) = tip_screen { x0 = x0.min(t.x); y0 = y0.min(t.y); x1 = x1.max(t.right() + shadow); y1 = y1.max(t.bottom() + shadow); }
+        if right { x1 = x1.min(tab_screen.right()); }
+        let pos = (x0.floor() as i32, y0.floor() as i32);
+        let (ox, oy) = (pos.0 as f32, pos.1 as f32);
+        let (win_w, win_h) = ((x1 - ox).ceil(), (y1 - oy).ceil());
+        let local = |r: Rect| Rect::new(r.x - ox, r.y - oy, r.w, r.h);
+
+        let kinds: Vec<Lamp> = now.all.iter().map(|(_, l)| *l).collect();
+        let bloom_at = now.bloom.and_then(|(t, q)| now.all.iter().take(shown).position(|(i, _)| i.target == t).map(|i| (i, q)));
+        let key = format!("edge:{win_w}x{win_h}@{pos:?}|{right}|{kinds:?}|{hovered:?}|{tip_text:?}|{:?}|{:?}|{line:?}|{:?}{:?}{:?}{:?}{:?}|{translucent}",
+            now.step, bloom_at.map(|(i, q)| (i, (q * 15.0) as u32)), marks.paper, marks.ink, marks.signal, marks.green, marks.red);
+        self.hatch_state.badge_hits = hits;
+        self.hatch_state.badge_tab = Some(tab_screen);
+        self.hatch_state.badge_live = now.step.is_some() || bloom_at.is_some();
+        if !self.hatch_badge_place(pos, (win_w.max(1.0) as u32, win_h.max(1.0) as u32), key, false) { return; }
+
+        let Some(badge) = &mut self.hatch_state.badge else { return };
+        let s = &mut badge.scene;
+        s.clear();
+        s.layer(None);
+        let tab = local(tab_screen);
+        let band_l = local(Rect::new(band_x, tab_sy, band, tab_h));
+        if shadow > 0.0 { s.rect(Rect::new(tab.x + shadow, tab.y + shadow, tab.w, tab.h), SHADE); }
+        s.rect(tab, marks.paper);
+        s.hline(tab.x, tab.y, tab.w, edge, marks.ink);
+        s.hline(tab.x, tab.bottom() - edge, tab.w, edge, marks.ink);
+        let (inner_edge, lip_x) = if right { (tab.x, tab.x + edge) } else { (tab.right() - edge, tab.right() - edge - lip) };
+        s.vline(inner_edge, tab.y, tab.h, edge, marks.ink);
+        s.vline(lip_x, tab.y + edge, tab.h - 2.0 * edge, lip, marks.signal);
+        if ready {
+            let g = px.of(10.0);
+            let caret = if right { icons::CARET_LEFT } else { icons::CARET_RIGHT };
+            self.fonts.draw_icon(s, caret, g, (band_l.x + (band - g) / 2.0).round(), (tab.y + (tab.h - g) / 2.0).round(), fade(marks.ink, 0.8));
+        }
+        for (i, r) in rects.iter().enumerate() {
+            let r = local(*r);
+            draw_lamp(s, r, kinds[i], marks, now.breath, px);
+            draw_marks_over(s, r, kinds[i], marks, hovered == Some(i), bloom_at.filter(|(b, _)| *b == i).map(|(_, q)| q), px);
+        }
+        if more { draw_dots_down(s, lx - ox + size / 2.0, local(rects[shown - 1]).bottom() + gap, marks.ink, px); }
+        if let (Some(line), Some((item, _))) = (&line, &now.notice) {
+            let (x, rule) = if right { (band_l.x - line_w, band_l.x) } else { (band_l.right(), band_l.right()) };
+            s.vline(rule, tab.y + edge + pad, inner, px.thin(1.0), fade(marks.ink, 0.3));
+            draw_notice(&mut self.fonts, s, Rect::new(x, tab.y + edge + pad, line_w, inner), item, line, title, marks, px);
+        }
+        if let (Some(r), Some(text)) = (tip_screen, &tip_text) {
+            draw_tip(&mut self.fonts, s, local(r), text, label, marks.paper, marks.ink, shadow, px);
         }
         self.hatch_badge_show();
     }

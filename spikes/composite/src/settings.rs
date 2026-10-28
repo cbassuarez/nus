@@ -2002,7 +2002,7 @@ impl App {
             Hit::MenuPreview=>"open menu drawer".into(),
             Hit::HatchHotkey(c) => c.label().to_lowercase(),
             Hit::HatchRecord => "record a hatch hotkey".into(),
-            Hit::HatchSize(n) => format!("{n}% tall"),
+            Hit::HatchSize(n) => format!("{n}% {}", if cfg!(target_os = "macos") { "tall" } else { "wide" }),
             Hit::HatchMonitor(m) => format!("on the {:?} monitor", m).to_lowercase(),
             Hit::HatchStatus(b) => if b { "compact work status on".into() } else { "compact work status off".into() },
             Hit::HatchBackground(b) => if b { "keep nus available in the background".into() } else { "closing windows ends their sessions".into() },
@@ -2154,6 +2154,8 @@ impl App {
                 self.sidebar_rules.side = side;
                 self.sidebar_hover = false;
                 self.layout();
+                // The hatch keeps to the other side.
+                self.hatch_settings_changed();
             }
             Hit::HoverFrom(h) => self.sidebar_rules.hover_from = h,
             Hit::SmallTabs(mode)=>{self.sidebar_rules.small_tabs=mode;self.layout();},
@@ -4650,7 +4652,7 @@ impl App {
                     ])),
                     ("HOW IT LOOKS".into(), Section),
                     ("SHAPE".into(), Choice(vec![
-                        ("DROPS FROM THE TOP".into(), Hit::HatchLook(HatchLook::Sheet), b.hatch_look == HatchLook::Sheet),
+                        (if cfg!(target_os = "macos") { "DROPS FROM THE TOP" } else { "SLIDES IN FROM THE SIDE" }.into(), Hit::HatchLook(HatchLook::Sheet), b.hatch_look == HatchLook::Sheet),
                         ("FLOATING CARD".into(), Hit::HatchLook(HatchLook::Card), b.hatch_look == HatchLook::Card),
                     ])),
                     ("HEIGHT".into(), Choice(vec![

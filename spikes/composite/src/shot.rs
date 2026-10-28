@@ -1572,6 +1572,44 @@ impl App {
                 self.hatch_state.shot_notch=None;if joint {self.hatch_state.island_open=None;}
                 self.hatch_badge_frame();
             }
+            // Off macOS the sheet is a drawer from the side away from the
+            // tabs, flush with the work area's edge and as tall as it less a
+            // margin, and the closed hatch's tab hangs from that edge level
+            // with the drawer's middle. An open drawer's window is checked
+            // where the OS put it.
+            "hatchassertside" => {
+                use crate::surface::Side;
+                assert_eq!(self.behavior.hatch_look,crate::settings::HatchLook::Sheet,"hatchassertside places the sheet");
+                let ((hx,hy),(w,h),(mx,my,mw,mh,scale))=self.hatch_geometry();
+                let (left,top,right,bottom)=crate::hatch_native::work_area(mx,my,mw,mh);
+                let side=self.hatch_side();
+                let margin=(16.0*scale) as i32;
+                if !cfg!(target_os="macos") {
+                    let want=if self.sidebar_right() {Side::Left} else {Side::Right};
+                    assert_eq!(side,Some(want),"the drawer's side");
+                    if want==Side::Right {assert_eq!(hx+w as i32,mx+right,"flush with the right edge");} else {assert_eq!(hx,mx+left,"flush with the left edge");}
+                    assert_eq!((hy,h as i32),(my+top+margin,bottom-top-2*margin),"the work area's height less a margin");
+                }
+                let at=self.hatch.as_ref().filter(|h|h.visible).and_then(|h|h.window.outer_position().ok()).map(|p|(p.x,p.y));
+                if let Some(at)=at {assert_eq!(at,(hx,hy),"the open drawer's window");}
+                // A closed one: its tab, raised for the check and put back.
+                let tab=if at.is_none() {
+                    let saved=(self.hatch_state.main_hidden,self.hatch_state.badge_suppressed,self.behavior.hatch_status);
+                    self.hatch_state.main_hidden=true;self.hatch_state.badge_suppressed=false;self.behavior.hatch_status=true;
+                    self.hatch_badge_frame();
+                    let tab=self.hatch_state.badge_tab.expect("the closed hatch's tab");
+                    if let Some(side)=side {
+                        let (against,edge)=if side==Side::Right {(tab.right(),mx+right)} else {(tab.x,mx+left)};
+                        assert_eq!(against.round() as i32,edge,"the tab against the screen's edge");
+                        let (tc,dc)=(tab.y+tab.h/2.0,hy as f32+h as f32/2.0);
+                        assert!((tc-dc).abs()<=1.0,"the tab's middle {tc} level with the drawer's {dc}");
+                    }
+                    (self.hatch_state.main_hidden,self.hatch_state.badge_suppressed,self.behavior.hatch_status)=saved;
+                    self.hatch_badge_frame();
+                    Some(tab)
+                } else {None};
+                eprintln!("HATCH SIDE: sidebar {} · drawer {side:?} at ({hx},{hy}) {w}×{h} · work {left},{top}–{right},{bottom} on monitor {mx},{my} · window {at:?} · tab {tab:?}",if self.sidebar_right() {"right"} else {"left"});
+            }
             "hatchshot" => {
                 self.hatch_frame();
                 let h=self.hatch.as_ref().expect("hatch exists");

@@ -70,7 +70,7 @@ pub fn work_area(window: &Window) -> LRect {
     fallback
 }
 #[cfg(target_os="linux")]
-fn x11_work_area(monitor:LRect,scale:f64)->Option<LRect> {
+pub(crate) fn x11_work_area(monitor:LRect,scale:f64)->Option<LRect> {
     use x11rb::{connection::Connection,protocol::xproto::{ConnectionExt,AtomEnum}};
     let (conn,screen)=x11rb::connect(None).ok()?;let root=conn.setup().roots.get(screen)?.root;
     let property=|name:&[u8]|->Option<Vec<u32>>{

@@ -156,8 +156,8 @@ fn description(hit: Hit) -> Option<String> {
         Hit::PortsProbe(true) => "Send HTTP requests to identify apps.", Hit::PortsProbe(false) => "List ports without probing them.",
         Hit::PortsShow(k, on) => return Some(format!("{} {} in the port list.", if on { "Include" } else { "Hide" }, ["system services", "UDP listeners", "connections", "Docker ports"][k.min(3) as usize])),
         Hit::PortsPoll(n) => return Some(format!("Refresh the port list every {n}s.")),
-        Hit::HatchLook(HatchLook::Sheet) => "A terminal sheet from the top.", Hit::HatchLook(HatchLook::Card) => "A floating terminal card.",
-        Hit::HatchSize(n) => return Some(format!("Use {n}% of the screen height.")),
+        Hit::HatchLook(HatchLook::Sheet) => if cfg!(target_os = "macos") { "A terminal sheet from the top." } else { "A terminal drawer from the side away from the tabs." }, Hit::HatchLook(HatchLook::Card) => "A floating terminal card.",
+        Hit::HatchSize(n) => return Some(format!("Use {n}% of the screen {}.", if cfg!(target_os = "macos") { "height" } else { "width" })),
         Hit::HatchAutohide(true) => "Dismiss when another app is focused.", Hit::HatchAutohide(false) => "Keep the hatch visible until hidden.",
         Hit::HatchMonitor(HatchMonitor::Pointer) => "Open on the pointer's screen.", Hit::HatchMonitor(HatchMonitor::Foreground) => "Open on this nus window's screen.", Hit::HatchMonitor(HatchMonitor::Primary) => "Always open on the main screen.",
         Hit::Play(_) => "Play a preview of this sound.",
@@ -411,7 +411,8 @@ impl App {
                 scene.outline(r,line,faint);
                 let h = match hit {Hit::HatchSize(n)=>n as f32/100.0, _=>0.6};
                 let floating=matches!(hit,Hit::HatchLook(HatchLook::Card));
-                let b=Rect::new(r.x+r.w*0.12,r.y+if floating {r.h*0.2} else {0.0},r.w*0.76,r.h*h);
+                let b=if floating || cfg!(target_os="macos") {Rect::new(r.x+r.w*0.12,r.y+if floating {r.h*0.2} else {0.0},r.w*0.76,r.h*h)}
+                    else {Rect::new(if self.sidebar_right() {r.x} else {r.right()-r.w*h},r.y+r.h*0.08,r.w*h,r.h*0.84)};
                 scene.rect(b,ink); rows(scene,b.inset(self.px(7.0)),3,paper); scene.rect(Rect::new(b.x+self.px(7.0),b.bottom()-self.px(7.0),self.px(5.0),self.px(5.0)),accent);
             }
             Hit::PortsGrouping(_) | Hit::PortsOpen(_) | Hit::PortsPoll(_) | Hit::PortsToast(_) | Hit::PortsShow(..) | Hit::PortsKill(_) | Hit::PortsProbe(_) | Hit::PortsTunnel(_) | Hit::PortsRemember(_) => {
